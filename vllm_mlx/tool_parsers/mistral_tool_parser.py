@@ -52,6 +52,9 @@ class MistralToolParser(ToolParser):
     BOT_TOKEN = "[TOOL_CALLS]"
     TOOL_CALL_REGEX = re.compile(r"\[{.*}\]", re.DOTALL)
 
+    def has_pending_tool_call(self, text: str) -> bool:
+        return "[TOOL_CALLS]" in text
+
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
         self.bot_token_id = self.vocab.get(self.BOT_TOKEN) if self.vocab else None

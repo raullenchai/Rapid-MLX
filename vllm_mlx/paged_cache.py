@@ -120,6 +120,7 @@ class CacheBlock:
     token_count: int = 0
     hash_value: Optional[str] = None  # Legacy string hash for compatibility
     last_access: float = field(default_factory=time.time)
+    access_count: int = 0  # Total times this block was touched/reused
 
     def is_full(self, block_size: int) -> bool:
         """Check if block is at capacity."""
@@ -135,8 +136,9 @@ class CacheBlock:
         self.hash_value = None
 
     def touch(self) -> None:
-        """Update last access time."""
+        """Update last access time and increment access count."""
         self.last_access = time.time()
+        self.access_count += 1
 
     def __repr__(self) -> str:
         prev_id = self.prev_free_block.block_id if self.prev_free_block else None
@@ -235,6 +237,34 @@ class FreeKVCacheBlockQueue:
         self.num_free_blocks -= 1
 
         return block
+
+    def popleft_lfu(self, window: int = 8) -> CacheBlock:
+        """Pop block with lowest frequency from an LRU window.
+
+        Examines the first ``window`` non-pinned blocks in LRU order and
+        evicts the one with the lowest ``access_count``.  Ties are broken
+        by LRU position (earlier in list = older).
+
+        Args:
+            window: Number of candidates to consider from the LRU end.
+
+        Raises:
+            ValueError: If no free blocks available.
+        """
+        candidates: List[CacheBlock] = []
+        block = self.fake_head.next_free_block
+        while block is not self.fake_tail and len(candidates) < window:
+            if not block.is_pinned:
+                candidates.append(block)
+            block = block.next_free_block
+
+        if not candidates:
+            raise ValueError("No free blocks available")
+
+        # Pick lowest access_count; ties broken by list position (first = LRU)
+        victim = min(candidates, key=lambda b: b.access_count)
+        self.remove(victim)
+        return victim
 
     def popleft_n(self, n: int) -> List[CacheBlock]:
         """
@@ -385,6 +415,22 @@ class BlockHashToBlockMap:
             return blocks
         if isinstance(blocks, dict):
             return next(iter(blocks.values()))
+        return None
+
+    def get_best_block(self, block_hash: BlockHash) -> Optional[CacheBlock]:
+        """Get block with highest access count for given hash.
+
+        When multiple blocks share the same hash (e.g., in hybrid models),
+        prefer the one with the highest reuse count for better cache
+        locality.
+        """
+        blocks = self._cache.get(block_hash)
+        if blocks is None:
+            return None
+        if isinstance(blocks, CacheBlock):
+            return blocks
+        if isinstance(blocks, dict):
+            return max(blocks.values(), key=lambda b: b.access_count)
         return None
 
     def insert(self, block_hash: BlockHash, block: CacheBlock) -> None:
@@ -568,6 +614,9 @@ class PagedCacheManager:
         """
         Allocate a new cache block.
 
+        When prefix caching is enabled, uses frequency-aware eviction
+        (LRU-LFU hybrid) to prefer evicting low-frequency blocks.
+
         Returns:
             CacheBlock if available, None if out of memory.
         """
@@ -576,7 +625,10 @@ class PagedCacheManager:
                 logger.warning("Out of cache blocks")
                 return None
 
-            block = self.free_block_queue.popleft()
+            if self.enable_caching:
+                block = self.free_block_queue.popleft_lfu()
+            else:
+                block = self.free_block_queue.popleft()
 
             # Evict from hash cache if needed
             if self.enable_caching:
@@ -878,8 +930,8 @@ class PagedCacheManager:
                 # Compute expected hash
                 block_hash = compute_block_hash(parent_hash, block_tokens)
 
-                # Look up in cache
-                cached_block = self.cached_block_hash_to_block.get_block(block_hash)
+                # Look up in cache (prefer highest-frequency block)
+                cached_block = self.cached_block_hash_to_block.get_best_block(block_hash)
                 if cached_block is None:
                     self.stats.cache_misses += 1
                     break  # Cache miss, stop here
@@ -1084,18 +1136,21 @@ class PagedCacheManager:
 
     def evict_lru_blocks(self, num_blocks: int) -> int:
         """
-        Evict least recently used blocks.
+        Evict blocks using frequency-aware LRU-LFU hybrid.
 
-        With the doubly linked list, LRU blocks are already at the front
-        of the free queue. We just need to pop from front.
+        When caching is enabled, examines a small window of LRU candidates
+        and picks the one with the lowest access_count (frequency).  This
+        keeps high-frequency blocks (e.g. system prompt) cached longer.
         """
         with self._lock:
             evicted = 0
 
-            # Get evictable blocks from free queue (they're already LRU ordered)
             for _ in range(min(num_blocks, self.free_block_queue.num_free_blocks)):
                 try:
-                    block = self.free_block_queue.popleft()
+                    if self.enable_caching:
+                        block = self.free_block_queue.popleft_lfu()
+                    else:
+                        block = self.free_block_queue.popleft()
                     self._maybe_evict_cached_block(block)
                     # Put back at end (now available for allocation)
                     self.free_block_queue.append(block)

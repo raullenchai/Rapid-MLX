@@ -41,6 +41,9 @@ class LlamaToolParser(ToolParser):
     # Pattern for Llama-style: <function=name>{"json"}</function>
     FUNCTION_PATTERN = re.compile(r"<function=([^>]+)>(\{.*?\})</function>", re.DOTALL)
 
+    def has_pending_tool_call(self, text: str) -> bool:
+        return "<function=" in text
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:

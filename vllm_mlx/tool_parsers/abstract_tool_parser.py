@@ -159,6 +159,14 @@ class ToolParser(ABC):
         """
         return None
 
+    def has_pending_tool_call(self, text: str) -> bool:
+        """Check if text contains incomplete tool call markup.
+
+        Used as a fallback when streaming ends before the parser's closing
+        tag arrives.  Subclasses should override for non-standard markers.
+        """
+        return "<tool_call>" in text
+
     def reset(self) -> None:
         """Reset parser state for a new request."""
         self.current_tool_id = -1

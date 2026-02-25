@@ -465,27 +465,27 @@ Prioritized optimization plan based on analysis of upstream vLLM features, adapt
 
 See [docs/plans/](docs/plans/) for detailed implementation plans.
 
-### Tier 0: Quick Wins (In Progress)
+### Tier 0: Quick Wins (Merged)
 
 Low-risk, high-impact changes. [Full plan](docs/plans/tier0-pinned-prefix-cache.md).
 
-| Optimization | Impact | Upstream Ref |
-|-------------|--------|-------------|
-| **GC Control** -- disable Python GC during generation | Eliminates latency spikes | [vLLM #33575](https://github.com/vllm-project/vllm/pull/33575) |
-| **Detokenizer Caching** -- incremental token counting | O(n^2) -> O(1) per chunk | [vLLM #20413](https://github.com/vllm-project/vllm/pull/20413) |
-| **Schema Error Hardening** -- graceful fallback on bad schemas | Prevents server crashes | [vLLM #30346](https://github.com/vllm-project/vllm/pull/30346) |
-| **Pinned Prefix Cache** -- prevent system prompt eviction | Turn4/Turn1 TTFT 2.09x -> ~1.0x | [vLLM #27097](https://github.com/vllm-project/vllm/pull/27097) |
+| Optimization | Impact | Status |
+|-------------|--------|--------|
+| **GC Control** -- disable Python GC during generation | Eliminates latency spikes | Merged |
+| **Detokenizer Caching** -- incremental token counting | O(n^2) -> O(1) per chunk | Merged |
+| **Schema Error Hardening** -- graceful fallback on bad schemas | Prevents server crashes | Merged |
+| **Pinned Prefix Cache** -- prevent system prompt eviction | Turn4/Turn1 TTFT 2.09x -> ~1.0x | Merged |
 
-### Tier 1: Implement Soon (High Impact, Medium Complexity)
+### Tier 1: High Impact Optimizations (Partially Merged)
 
-| Optimization | Expected Impact | Upstream Ref |
-|-------------|----------------|-------------|
-| **Jump-Forward Decoding** -- skip constrained tokens in guided gen | 2-5x faster JSON generation | [vLLM #15490](https://github.com/vllm-project/vllm/pull/15490) |
-| **Structural Tags for Tool Calling** -- guarantee valid JSON args | <1% tool call failure rate | [vLLM #32202](https://github.com/vllm-project/vllm/pull/32202) |
-| **Frequency-Aware Cache Eviction** -- smarter LRU for multi-turn | Better cache retention for conversations | [vLLM #27539](https://github.com/vllm-project/vllm/pull/27539) |
-| **KV Block Reuse Ordering** -- improved prefix cache hit rates | Higher cache hit ratio | [vLLM #33710](https://github.com/vllm-project/vllm/pull/33710) |
-| **Fix Streaming Tool Truncation** -- reliable streaming tool calls | Eliminates truncated tool args | [vLLM #34101](https://github.com/vllm-project/vllm/pull/34101) |
-| **LogitsProcessor Interface** -- clean extensibility for custom logits | Plugin architecture for constrained decoding | [vLLM #13360](https://github.com/vllm-project/vllm/pull/13360) |
+| Optimization | Expected Impact | Status |
+|-------------|----------------|--------|
+| **Fix Streaming Tool Truncation** -- parser-aware fallback for incomplete tool calls | Eliminates silently lost MiniMax/Llama/Mistral tool calls | Merged |
+| **Frequency-Aware Cache Eviction** -- LRU-LFU hybrid for multi-turn | System prompt blocks survive 100x longer under pressure | Merged |
+| **KV Block Reuse Ordering** -- prefer high-frequency blocks on hash collision | Higher cache hit ratio for hybrid models | Merged |
+| **Jump-Forward Decoding** -- skip constrained tokens in guided gen | 2-5x faster JSON generation | Planned |
+| **Structural Tags for Tool Calling** -- guarantee valid JSON args | <1% tool call failure rate | Planned |
+| **LogitsProcessor Interface** -- clean extensibility for custom logits | Plugin architecture for constrained decoding | Planned |
 
 ### Tier 2: Evaluate Later (High Potential, High Complexity)
 

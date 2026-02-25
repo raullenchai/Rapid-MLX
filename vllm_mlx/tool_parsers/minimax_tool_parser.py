@@ -44,27 +44,55 @@ class MiniMaxToolParser(ToolParser):
         r"<minimax:tool_call>(.*?)</minimax:tool_call>", re.DOTALL
     )
     INVOKE_PATTERN = re.compile(r'<invoke\s+name="([^"]+)">(.*?)</invoke>', re.DOTALL)
+    # Fallback: <invoke name="..."> without closing </invoke> (truncated stream)
+    INVOKE_PARTIAL = re.compile(r'<invoke\s+name="([^"]+)">(.*)', re.DOTALL)
     PARAM_PATTERN = re.compile(
         r'<parameter\s+name="([^"]+)">(.*?)</parameter>', re.DOTALL
     )
+    # Fallback: <parameter name="..."> without closing </parameter>
+    PARAM_PARTIAL = re.compile(
+        r'<parameter\s+name="([^"]+)">([^<]*)', re.DOTALL
+    )
     THINK_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL)
 
+    def has_pending_tool_call(self, text: str) -> bool:
+        return "<minimax:tool_call>" in text or "<invoke name=" in text
+
     def _extract_invokes(self, text: str) -> list[dict[str, Any]]:
-        """Extract tool calls from invoke elements, with or without wrapper."""
+        """Extract tool calls from invoke elements, with or without wrapper.
+
+        Handles truncated input where closing tags (</parameter>, </invoke>)
+        may be missing due to streaming ending early.
+        """
         tool_calls: list[dict[str, Any]] = []
+
+        # Try complete invokes first
         invokes = self.INVOKE_PATTERN.findall(text)
+
+        # If none found, try partial (truncated) invokes
+        if not invokes:
+            invokes = self.INVOKE_PARTIAL.findall(text)
+
         for func_name, params_block in invokes:
+            # Try complete params first, then fall back to partial
             params = self.PARAM_PATTERN.findall(params_block)
+            if not params:
+                params = self.PARAM_PARTIAL.findall(params_block)
             # Skip bare <invoke> tags without parameters (hallucinated junk)
             if not params:
                 continue
             arguments = {}
             for p_name, p_value in params:
                 p_value = p_value.strip()
+                if not p_value:
+                    continue
                 try:
                     arguments[p_name] = json.loads(p_value)
                 except (json.JSONDecodeError, ValueError):
                     arguments[p_name] = p_value
+
+            if not arguments:
+                continue
 
             tool_calls.append(
                 {
