@@ -17,7 +17,8 @@ SPECIAL_TOKENS_PATTERN = re.compile(
     r"<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>|"
     r"<\|end\|>|<\|eot_id\|>|<\|start_header_id\|>|<\|end_header_id\|>|"
     r"<\|channel\|>|<\|message\|>|<\|start\|>|<\|return\|>|<\|call\|>|<\|constrain\|>|"
-    r"</s>|<s>|<pad>|\[PAD\]|\[SEP\]|\[CLS\]"
+    r"</s>|<s>|<pad>|\[PAD\]|\[SEP\]|\[CLS\]|"
+    r"\[e~\[|\]~b\][a-z]*|\]~!b\["
 )
 
 
@@ -98,6 +99,86 @@ def clean_output_text(text: str) -> str:
     if "</think>" in text and not text.lstrip().startswith("<think>"):
         text = "<think>" + text
 
+    return text
+
+
+# Pattern to match <think>...</think> blocks
+THINK_PATTERN = re.compile(r"<think>[\s\S]*?</think>\s*", re.DOTALL)
+
+
+def strip_thinking_tags(text: str) -> str:
+    """
+    Remove <think>...</think> blocks from model output.
+
+    Used when the client expects pure content (e.g., JSON) without
+    reasoning blocks that would break parsing.
+
+    Args:
+        text: Model output that may contain thinking blocks
+
+    Returns:
+        Text with thinking blocks removed
+    """
+    if not text:
+        return text
+    return THINK_PATTERN.sub("", text).strip()
+
+
+def extract_json_from_response(text: str) -> str:
+    """
+    Extract JSON object/array from model response that may contain reasoning text.
+
+    Qwen3 and other reasoning models often output:
+    "Let me think... reasoning text... {\"result\": 123}"
+
+    This function extracts just the JSON part when present.
+
+    Args:
+        text: Model output that may contain text before/after JSON
+
+    Returns:
+        Extracted JSON string if found, otherwise original text
+    """
+    if not text:
+        return text
+
+    text = text.strip()
+
+    # If already valid JSON, return as-is
+    if (text.startswith("{") and text.endswith("}")) or (
+        text.startswith("[") and text.endswith("]")
+    ):
+        return text
+
+    # Try to find JSON object at the end of the response
+    # Find the last { and match to the end
+    last_brace = text.rfind("{")
+    if last_brace != -1 and text.endswith("}"):
+        potential_json = text[last_brace:]
+        # Validate it's balanced
+        depth = 0
+        for char in potential_json:
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+        if depth == 0:
+            return potential_json
+
+    # Try to find JSON array at the end
+    last_bracket = text.rfind("[")
+    if last_bracket != -1 and text.endswith("]"):
+        potential_json = text[last_bracket:]
+        depth = 0
+        for char in potential_json:
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+        if depth == 0:
+            return potential_json
+
+    # No JSON found, return original
     return text
 
 

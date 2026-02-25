@@ -377,6 +377,136 @@ Submit PRs to: [https://github.com/waybarrios/vllm-mlx](https://github.com/wayba
 
 Apache 2.0 - see [LICENSE](LICENSE) for details.
 
+## Baseline Benchmark — MiniMax-M2.5 on M3 Ultra
+
+Benchmark measured on **Mac Studio M3 Ultra (256GB)** running **MiniMax-M2.5-MLX-4bit (229B MoE, ~120GB)** with `--reasoning-parser deepseek_r1 --tool-call-parser minimax --enable-auto-tool-choice --enable-prefix-cache`.
+
+Date: 2026-02-24 | Branch: `feat-minimax-parser` | Server mode: Simple (no continuous batching)
+
+### TTFT (Time To First Token)
+
+| Prompt Size | TTFT | Decode Speed |
+|-------------|------|-------------|
+| Short (~50 tok) | 0.331s | 54.1 tok/s |
+| Medium (~500 tok) | 0.753s | 53.5 tok/s |
+| Long (~2K tok) | 1.396s | 52.1 tok/s |
+
+### Decode Throughput
+
+| Output Length | Speed | Total Time |
+|--------------|-------|------------|
+| 128 tokens | 52.8 tok/s | 2.8s |
+| 512 tokens | 52.0 tok/s | 10.2s |
+| 2048 tokens | 49.6 tok/s | 41.7s |
+
+### Prefix Cache (Multi-Turn Conversation)
+
+| Turn | TTFT | Prompt Growth |
+|------|------|--------------|
+| Turn 1 | 0.497s | baseline |
+| Turn 2 | 0.585s | +assistant reply |
+| Turn 3 | 0.871s | +2 turns |
+| Turn 4 | 1.040s | +3 turns |
+
+Turn 4 / Turn 1 TTFT ratio: **2.09x** (ideally should stay close to 1.0x with perfect cache hits)
+
+### Tool Calling
+
+| Test | Result | Latency | Tools Called |
+|------|--------|---------|-------------|
+| Simple (weather) | OK | 2.00s | get_weather |
+| Multi-arg (search) | OK | 2.51s | search_web |
+| Code execution | OK | 3.99s | run_python |
+| Multi-tool selection | OK | 3.04s | get_weather, search_web |
+
+Accuracy: **4/4 (100%)**  |  Avg latency: **2.89s**
+
+### Reasoning Separation (deepseek_r1 parser)
+
+| Test | Reasoning | Content | Separated |
+|------|-----------|---------|-----------|
+| Math (17*23) | 1013 chars | 259 chars | OK |
+| Logic | 2154 chars | 0 chars | PARTIAL |
+| Code | 2011 chars | 0 chars | PARTIAL |
+
+Properly separated: **1/3** (reasoning parser needs improvement for non-math tasks)
+
+### Long Generation Stability
+
+| Metric | Value |
+|--------|-------|
+| Max tokens | 8192 |
+| Completed | Yes (finish_reason=length) |
+| Decode speed | 33.0 tok/s |
+| Total time | 249.0s |
+| Output chars | 36,609 |
+
+### Run the Benchmark
+
+```bash
+# Start server
+python -m vllm_mlx.cli serve <model> \
+  --tool-call-parser minimax --enable-auto-tool-choice \
+  --reasoning-parser deepseek_r1 --enable-prefix-cache
+
+# Run all tests
+python benchmark_minmax.py --output results.json
+
+# Run specific test
+python benchmark_minmax.py --test ttft
+python benchmark_minmax.py --test tool_call
+```
+
+---
+
+## Optimization Roadmap
+
+Prioritized optimization plan based on analysis of upstream vLLM features, adapted for MLX on Apple Silicon. Focused on large-model serving (MiniMax-M2.5 229B MoE, ~120GB on M3 Ultra 256GB).
+
+See [docs/plans/](docs/plans/) for detailed implementation plans.
+
+### Tier 0: Quick Wins (In Progress)
+
+Low-risk, high-impact changes. [Full plan](docs/plans/tier0-pinned-prefix-cache.md).
+
+| Optimization | Impact | Upstream Ref |
+|-------------|--------|-------------|
+| **GC Control** -- disable Python GC during generation | Eliminates latency spikes | [vLLM #33575](https://github.com/vllm-project/vllm/pull/33575) |
+| **Detokenizer Caching** -- incremental token counting | O(n^2) -> O(1) per chunk | [vLLM #20413](https://github.com/vllm-project/vllm/pull/20413) |
+| **Schema Error Hardening** -- graceful fallback on bad schemas | Prevents server crashes | [vLLM #30346](https://github.com/vllm-project/vllm/pull/30346) |
+| **Pinned Prefix Cache** -- prevent system prompt eviction | Turn4/Turn1 TTFT 2.09x -> ~1.0x | [vLLM #27097](https://github.com/vllm-project/vllm/pull/27097) |
+
+### Tier 1: Implement Soon (High Impact, Medium Complexity)
+
+| Optimization | Expected Impact | Upstream Ref |
+|-------------|----------------|-------------|
+| **Jump-Forward Decoding** -- skip constrained tokens in guided gen | 2-5x faster JSON generation | [vLLM #15490](https://github.com/vllm-project/vllm/pull/15490) |
+| **Structural Tags for Tool Calling** -- guarantee valid JSON args | <1% tool call failure rate | [vLLM #32202](https://github.com/vllm-project/vllm/pull/32202) |
+| **Frequency-Aware Cache Eviction** -- smarter LRU for multi-turn | Better cache retention for conversations | [vLLM #27539](https://github.com/vllm-project/vllm/pull/27539) |
+| **KV Block Reuse Ordering** -- improved prefix cache hit rates | Higher cache hit ratio | [vLLM #33710](https://github.com/vllm-project/vllm/pull/33710) |
+| **Fix Streaming Tool Truncation** -- reliable streaming tool calls | Eliminates truncated tool args | [vLLM #34101](https://github.com/vllm-project/vllm/pull/34101) |
+| **LogitsProcessor Interface** -- clean extensibility for custom logits | Plugin architecture for constrained decoding | [vLLM #13360](https://github.com/vllm-project/vllm/pull/13360) |
+
+### Tier 2: Evaluate Later (High Potential, High Complexity)
+
+| Optimization | Expected Impact | Upstream Ref |
+|-------------|----------------|-------------|
+| **Beam Search + Structured Output** -- best-quality tool arguments | Highest quality constrained generation | [vLLM #35022](https://github.com/vllm-project/vllm/pull/35022) |
+| **Draft Model Speculative Decoding** -- faster generation overall | 1.5-2x decode speedup | [vLLM #32662](https://github.com/vllm-project/vllm/pull/32662) |
+| **Inter-Prefill-Budget** -- better TTFT under concurrent load | 37% TTFT reduction for concurrent requests | [vLLM #33743](https://github.com/vllm-project/vllm/pull/33743) |
+| **Tool Calling Redesign** -- better architecture for tool call parsing | Cleaner, more maintainable tool call path | [vLLM #22977](https://github.com/vllm-project/vllm/pull/22977) |
+
+### Estimated Combined Impact (Tier 0 + Tier 1)
+
+For 10-turn agentic conversations with tool calling (e.g., OpenClaw on MiniMax-M2.5):
+
+- **TTFT**: 2x improvement (pinned prefix cache + GC control)
+- **Tool call reliability**: 95% -> 99%+ (structural tags + streaming fix)
+- **Throughput consistency**: Eliminate GC-induced spikes
+- **Long generation**: O(n^2) -> O(1) per-chunk overhead
+
+---
+
 ## Citation
 
 If you use vLLM-MLX in your research or project, please cite:

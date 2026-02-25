@@ -17,6 +17,15 @@ from .base import BaseEngine, GenerationOutput
 
 logger = logging.getLogger(__name__)
 
+# Check for guided generation availability
+try:
+    from ..api.guided import GuidedGenerator, is_guided_available
+
+    HAS_GUIDED = is_guided_available()
+except ImportError:
+    HAS_GUIDED = False
+    GuidedGenerator = None
+
 
 class SimpleEngine(BaseEngine):
     """
@@ -32,6 +41,8 @@ class SimpleEngine(BaseEngine):
         trust_remote_code: bool = True,
         enable_cache: bool = True,
         force_mllm: bool = False,
+        draft_model: str | None = None,
+        num_draft_tokens: int = 4,
     ):
         """
         Initialize the simple engine.
@@ -41,11 +52,15 @@ class SimpleEngine(BaseEngine):
             trust_remote_code: Whether to trust remote code
             enable_cache: Enable VLM cache for multimodal models
             force_mllm: Force loading as MLLM even if not auto-detected
+            draft_model: Optional draft model path for speculative decoding
+            num_draft_tokens: Number of tokens to generate speculatively per step
         """
         self._model_name = model_name
         self._trust_remote_code = trust_remote_code
         self._enable_cache = enable_cache
         self._is_mllm = force_mllm or is_mllm_model(model_name)
+        self._draft_model_name = draft_model
+        self._num_draft_tokens = num_draft_tokens
 
         self._model = None
         self._loaded = False
@@ -85,17 +100,27 @@ class SimpleEngine(BaseEngine):
                 trust_remote_code=self._trust_remote_code,
                 enable_cache=self._enable_cache,
             )
+            if self._draft_model_name:
+                logger.warning("Speculative decoding is not supported with MLLM models")
         else:
             from ..models.llm import MLXLanguageModel
 
             self._model = MLXLanguageModel(
                 self._model_name,
                 trust_remote_code=self._trust_remote_code,
+                draft_model=self._draft_model_name,
+                num_draft_tokens=self._num_draft_tokens,
             )
 
         self._model.load()
         self._loaded = True
-        logger.info(f"SimpleEngine loaded: {self._model_name} (MLLM={self._is_mllm})")
+
+        spec_info = ""
+        if self._draft_model_name and not self._is_mllm:
+            spec_info = f", speculative={self._draft_model_name}"
+        logger.info(
+            f"SimpleEngine loaded: {self._model_name} (MLLM={self._is_mllm}{spec_info})"
+        )
 
     async def stop(self) -> None:
         """Stop the engine and cleanup resources."""
@@ -440,3 +465,174 @@ class SimpleEngine(BaseEngine):
         if self._is_mllm and self._model is not None:
             return self._model.get_cache_stats()
         return None
+
+    async def _inject_shared_model(
+        self,
+        model,
+        tokenizer,
+    ) -> None:
+        """
+        Inject a pre-loaded shared model instead of loading a new one.
+
+        This is used by HybridEngine to share a single model instance
+        between SimpleEngine and BatchedEngine, saving ~44GB of RAM.
+
+        Args:
+            model: Pre-loaded MLX model
+            tokenizer: Pre-loaded tokenizer
+        """
+        from ..models.llm import MLXLanguageModel
+
+        # Create MLXLanguageModel wrapper without loading
+        self._model = MLXLanguageModel.__new__(MLXLanguageModel)
+        self._model.model_name = self._model_name
+        self._model.tokenizer_name = self._model_name
+        self._model.trust_remote_code = self._trust_remote_code
+        self._model.draft_model_name = self._draft_model_name
+        self._model.num_draft_tokens = self._num_draft_tokens
+        self._model.model = model
+        self._model.tokenizer = tokenizer
+        self._model.draft_model = None
+        self._model._loaded = True
+
+        # Load draft model separately if specified
+        if self._draft_model_name:
+            from mlx_lm import load as mlx_load
+
+            logger.info(
+                f"Loading draft model for speculative decoding: {self._draft_model_name}"
+            )
+            self._model.draft_model, draft_tokenizer = mlx_load(self._draft_model_name)
+
+            # Validate tokenizer compatibility
+            if draft_tokenizer.vocab_size != tokenizer.vocab_size:
+                logger.warning(
+                    f"Draft model tokenizer vocab size ({draft_tokenizer.vocab_size}) "
+                    f"differs from main model ({tokenizer.vocab_size}). "
+                    "This may reduce speculative decoding effectiveness."
+                )
+
+            logger.info(
+                f"Speculative decoding enabled: draft={self._draft_model_name}, "
+                f"num_draft_tokens={self._num_draft_tokens}"
+            )
+
+        self._loaded = True
+        logger.info(f"SimpleEngine injected with shared model: {self._model_name}")
+
+    @property
+    def supports_guided_generation(self) -> bool:
+        """Check if guided generation is available."""
+        return HAS_GUIDED and not self._is_mllm
+
+    async def generate_with_schema(
+        self,
+        messages: list[dict[str, Any]],
+        json_schema: dict[str, Any],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        **kwargs,
+    ) -> GenerationOutput:
+        """
+        Generate JSON output constrained to a schema using guided decoding.
+
+        This method uses outlines for constrained generation to guarantee
+        the output is valid JSON matching the specified schema.
+
+        Args:
+            messages: List of chat messages
+            json_schema: JSON schema to constrain output
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            top_p: Top-p sampling
+            **kwargs: Additional parameters
+
+        Returns:
+            GenerationOutput with JSON text matching the schema
+        """
+        if not self.supports_guided_generation:
+            raise RuntimeError(
+                "Guided generation not available. "
+                "Install with: pip install 'vllm-mlx[guided]'"
+            )
+
+        if not self._loaded:
+            await self.start()
+
+        # Build prompt from messages
+        tokenizer = self._model.tokenizer
+        if hasattr(tokenizer, "apply_chat_template"):
+            prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        else:
+            prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+            prompt += "\nassistant:"
+
+        async with self._generation_lock:
+            # Run guided generation in thread pool
+            result = await asyncio.to_thread(
+                self._run_guided_generation,
+                prompt=prompt,
+                json_schema=json_schema,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+
+            if result is None:
+                # Fallback to regular generation
+                logger.warning(
+                    "Guided generation failed, falling back to regular generation"
+                )
+                return await self.generate(
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    **kwargs,
+                )
+
+            # Tokenize for completion count
+            tokens = tokenizer.encode(result)
+
+            return GenerationOutput(
+                text=result,
+                tokens=tokens,
+                prompt_tokens=len(tokenizer.encode(prompt)),
+                completion_tokens=len(tokens),
+                finish_reason="stop",
+            )
+
+    def _run_guided_generation(
+        self,
+        prompt: str,
+        json_schema: dict[str, Any],
+        max_tokens: int,
+        temperature: float,
+    ) -> str | None:
+        """
+        Run guided generation synchronously (called from thread pool).
+
+        Args:
+            prompt: Input prompt
+            json_schema: JSON schema
+            max_tokens: Maximum tokens
+            temperature: Sampling temperature
+
+        Returns:
+            JSON string or None if failed
+        """
+        try:
+            generator = GuidedGenerator(self._model.model, self._model.tokenizer)
+            return generator.generate_json(
+                prompt=prompt,
+                json_schema=json_schema,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception as e:
+            logger.error(f"Guided generation error: {e}")
+            return None

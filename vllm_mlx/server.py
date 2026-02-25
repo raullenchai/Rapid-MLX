@@ -39,6 +39,8 @@ The server provides:
 
 import argparse
 import asyncio
+import gc
+import hashlib
 import json
 import logging
 import os
@@ -93,16 +95,25 @@ from .api.models import (
 from .api.tool_calling import (
     build_json_system_prompt,
     convert_tools_for_template,
+    extract_json_schema_for_guided,
     parse_json_output,
     parse_tool_calls,
 )
 from .api.utils import (
     SPECIAL_TOKENS_PATTERN,
     clean_output_text,
+    extract_json_from_response,
     extract_multimodal_content,
     is_mllm_model,  # noqa: F401
+    strip_thinking_tags,
 )
-from .engine import BaseEngine, BatchedEngine, GenerationOutput, SimpleEngine
+from .engine import (
+    BaseEngine,
+    BatchedEngine,
+    GenerationOutput,
+    HybridEngine,
+    SimpleEngine,
+)
 from .tool_parsers import ToolParserManager
 
 logging.basicConfig(level=logging.INFO)
@@ -158,6 +169,82 @@ _enable_auto_tool_choice: bool = False
 _tool_call_parser: str | None = None  # Parser name: auto, mistral, qwen, llama, hermes
 _tool_parser_instance = None  # Instantiated parser
 
+# GC control (Tier 0 optimization)
+_gc_control: bool = True  # Disable GC during generation to avoid latency spikes
+
+# Pinned prefix cache (Tier 0 optimization)
+_pin_system_prompt: bool = False  # Auto-pin system prompt prefix cache blocks
+_pinned_system_prompt_hash: str | None = None  # Hash of pinned system prompt
+
+
+def _maybe_pin_system_prompt(messages: list) -> None:
+    """Auto-pin system prompt prefix cache blocks on first request."""
+    global _pinned_system_prompt_hash
+
+    if not _pin_system_prompt or _engine is None:
+        return
+
+    # Extract system message content
+    system_content = None
+    for msg in messages:
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        if role == "system":
+            content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+            if isinstance(content, str):
+                system_content = content
+                break
+
+    if not system_content:
+        return
+
+    # Check if this system prompt is already pinned
+    prompt_hash = hashlib.sha256(system_content.encode()).hexdigest()[:16]
+    if prompt_hash == _pinned_system_prompt_hash:
+        return  # Already pinned
+
+    # Try to pin via engine's cache manager
+    try:
+        # Get the tokenizer to encode the system prompt
+        tokenizer = None
+        if hasattr(_engine, "_tokenizer"):
+            tokenizer = _engine._tokenizer
+        elif hasattr(_engine, "_model") and hasattr(_engine._model, "tokenizer"):
+            tokenizer = _engine._model.tokenizer
+
+        if tokenizer is None:
+            return
+
+        system_tokens = tokenizer.encode(system_content)
+        if not system_tokens or len(system_tokens) < 16:
+            return  # Too short to pin
+
+        # Try BlockAwarePrefixCache (paged cache mode)
+        if hasattr(_engine, "_prefix_cache") and _engine._prefix_cache is not None:
+            cache = _engine._prefix_cache
+            if hasattr(cache, "pin_prefix"):
+                if cache.pin_prefix(system_tokens):
+                    _pinned_system_prompt_hash = prompt_hash
+                    logger.info(
+                        f"Auto-pinned system prompt: {len(system_tokens)} tokens, "
+                        f"hash={prompt_hash}"
+                    )
+                    return
+
+        # Try PrefixCacheManager (trie-based cache mode)
+        if hasattr(_engine, "_cache_manager") and _engine._cache_manager is not None:
+            cache = _engine._cache_manager
+            if hasattr(cache, "pin_prefix"):
+                if cache.pin_prefix(system_tokens):
+                    _pinned_system_prompt_hash = prompt_hash
+                    logger.info(
+                        f"Auto-pinned system prompt (trie): {len(system_tokens)} tokens, "
+                        f"hash={prompt_hash}"
+                    )
+                    return
+
+    except Exception as e:
+        logger.debug(f"System prompt pinning failed: {e}")
+
 
 def _load_prefix_cache_from_disk() -> None:
     """Load prefix cache from disk during startup."""
@@ -206,6 +293,11 @@ def _get_cache_dir() -> str:
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager
+
+    # GC control: raise thresholds to reduce GC frequency with large models
+    if _gc_control:
+        gc.set_threshold(100_000, 50, 50)
+        logger.info("GC control enabled: thresholds set to (100000, 50, 50)")
 
     # Startup: Start engine if loaded (needed for BatchedEngine in uvicorn's event loop)
     if _engine is not None and hasattr(_engine, "_loaded") and not _engine._loaded:
@@ -467,6 +559,9 @@ def load_model(
     stream_interval: int = 1,
     max_tokens: int = 32768,
     force_mllm: bool = False,
+    gpu_memory_utilization: float = 0.90,
+    draft_model: str | None = None,
+    num_draft_tokens: int = 4,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -478,6 +573,10 @@ def load_model(
         stream_interval: Tokens to batch before streaming (batched mode only)
         max_tokens: Default max tokens for generation
         force_mllm: Force loading as MLLM even if not auto-detected
+        gpu_memory_utilization: Fraction of device memory for Metal allocation
+            limit and emergency threshold (0.0-1.0, default 0.90)
+        draft_model: Optional draft model for speculative decoding
+        num_draft_tokens: Number of tokens to generate speculatively per step
     """
     global _engine, _model_name, _default_max_tokens, _tool_parser_instance
 
@@ -489,20 +588,47 @@ def load_model(
     if force_mllm:
         logger.info("Force MLLM mode enabled via --mllm flag")
 
-    if use_batching:
+    if draft_model:
+        logger.info(f"Speculative decoding enabled with draft model: {draft_model}")
+        logger.info(f"  num_draft_tokens: {num_draft_tokens}")
+
+    if use_batching and draft_model:
+        # Hybrid mode: shared model with speculative decoding + continuous batching
+        logger.info(f"Loading model with HybridEngine: {model_name}")
+        logger.info(
+            "  Hybrid mode: speculative decoding for single user, "
+            "batching for multiple users"
+        )
+        _engine = HybridEngine(
+            model_name=model_name,
+            draft_model=draft_model,
+            num_draft_tokens=num_draft_tokens,
+            scheduler_config=scheduler_config,
+            stream_interval=stream_interval,
+            force_mllm=force_mllm,
+        )
+        # HybridEngine will be started in lifespan (uvicorn's event loop)
+        logger.info(f"Model loaded (hybrid mode): {model_name}")
+    elif use_batching:
         logger.info(f"Loading model with BatchedEngine: {model_name}")
         _engine = BatchedEngine(
             model_name=model_name,
             scheduler_config=scheduler_config,
             stream_interval=stream_interval,
             force_mllm=force_mllm,
+            gpu_memory_utilization=gpu_memory_utilization,
         )
         # BatchedEngine will be started in lifespan (uvicorn's event loop)
         # Just log for now
         logger.info(f"Model loaded (batched mode): {model_name}")
     else:
         logger.info(f"Loading model with SimpleEngine: {model_name}")
-        _engine = SimpleEngine(model_name=model_name, force_mllm=force_mllm)
+        _engine = SimpleEngine(
+            model_name=model_name,
+            force_mllm=force_mllm,
+            draft_model=draft_model,
+            num_draft_tokens=num_draft_tokens,
+        )
         # Start SimpleEngine synchronously (no background loop)
         # Use new_event_loop() for Python 3.10+ compatibility (get_event_loop() is deprecated)
         loop = asyncio.new_event_loop()
@@ -1052,6 +1178,26 @@ async def _disconnect_guard(
                     f"{chunk_count} chunks, elapsed={_elapsed()}"
                 )
                 break
+            except Exception as exc:
+                logger.error(
+                    f"[disconnect_guard] generator raised {type(exc).__name__}: "
+                    f"{exc}, {chunk_count} chunks, elapsed={_elapsed()}",
+                    exc_info=True,
+                )
+                # Yield an error event so the client sees something before [DONE]
+                import json as _json
+
+                error_data = _json.dumps(
+                    {
+                        "error": {
+                            "message": f"Internal error during streaming: {exc}",
+                            "type": type(exc).__name__,
+                        }
+                    }
+                )
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
+                break
             chunk_count += 1
             if chunk_count == 1:
                 logger.info(
@@ -1329,6 +1475,10 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
     has_media = bool(images or videos)
 
+    # Auto-pin system prompt prefix cache blocks (non-blocking, first request only)
+    if _pin_system_prompt:
+        _maybe_pin_system_prompt(messages)
+
     # Handle response_format - inject system prompt if needed
     response_format = request.response_format
     if response_format:
@@ -1370,11 +1520,57 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     start_time = time.perf_counter()
     timeout = request.timeout or _default_timeout
 
-    output = await _wait_with_disconnect(
-        engine.chat(messages=messages, **chat_kwargs),
-        raw_request,
-        timeout=timeout,
-    )
+    # Disable GC during generation to avoid latency spikes
+    gc_was_enabled = gc.isenabled()
+    if _gc_control and gc_was_enabled:
+        gc.disable()
+
+    # Check if we should use guided generation for JSON schema
+    use_guided = False
+    json_schema = None
+    if response_format and not request.tools:
+        json_schema = extract_json_schema_for_guided(response_format)
+        if json_schema and hasattr(engine, "supports_guided_generation"):
+            use_guided = engine.supports_guided_generation
+            if use_guided:
+                logger.info("Using guided generation for JSON schema enforcement")
+
+    try:
+        if use_guided and json_schema:
+            # Use guided generation for constrained JSON output
+            # Fall back to standard generation if guided fails (bad schema, etc.)
+            try:
+                output = await _wait_with_disconnect(
+                    engine.generate_with_schema(
+                        messages=messages,
+                        json_schema=json_schema,
+                        **chat_kwargs,
+                    ),
+                    raw_request,
+                    timeout=timeout,
+                )
+            except Exception as guided_err:
+                logger.warning(
+                    f"Guided generation failed, falling back to standard: {guided_err}"
+                )
+                logger.debug(f"Problematic schema: {json_schema}")
+                output = await _wait_with_disconnect(
+                    engine.chat(messages=messages, **chat_kwargs),
+                    raw_request,
+                    timeout=timeout,
+                )
+        else:
+            # Standard generation
+            output = await _wait_with_disconnect(
+                engine.chat(messages=messages, **chat_kwargs),
+                raw_request,
+                timeout=timeout,
+            )
+    finally:
+        if _gc_control and gc_was_enabled:
+            gc.enable()
+            gc.collect()
+
     if output is None:
         return Response(status_code=499)  # Client closed request
 
@@ -1408,12 +1604,22 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     # Determine finish reason
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
 
+    # Clean and strip thinking tags from content
+    # Thinking tags break JSON parsing in clients expecting pure content
+    # Also extract JSON if model outputs reasoning text before JSON
+    final_content = None
+    if cleaned_text:
+        final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+        # If response looks like it ends with JSON, extract just the JSON part
+        # This handles Qwen3 reasoning mode: "Let me think... {json}"
+        final_content = extract_json_from_response(final_content)
+
     return ChatCompletionResponse(
         model=request.model,
         choices=[
             ChatCompletionChoice(
                 message=AssistantMessage(
-                    content=clean_output_text(cleaned_text) if cleaned_text else None,
+                    content=final_content,
                     reasoning=reasoning_text,
                     tool_calls=tool_calls,
                 ),
@@ -1432,7 +1638,11 @@ def _inject_json_instruction(messages: list, instruction: str) -> list:
     """
     Inject JSON instruction into messages.
 
-    If a system message exists, append to it. Otherwise, prepend a new system message.
+    PREPENDS instruction to system message for better instruction following.
+    JSON formatting instructions at the beginning of system message are more
+    likely to be followed than instructions at the end.
+
+    If a system message exists, prepend to it. Otherwise, prepend a new system message.
     """
     messages = list(messages)  # Make a copy
 
@@ -1445,14 +1655,15 @@ def _inject_json_instruction(messages: list, instruction: str) -> list:
             break
 
     if system_idx is not None:
-        # Append to existing system message
+        # PREPEND to existing system message (not append!)
+        # Instructions at the start are more effective
         msg = messages[system_idx]
         if isinstance(msg, dict):
             existing = msg.get("content", "")
-            msg["content"] = f"{existing}\n\n{instruction}"
+            msg["content"] = f"{instruction}\n\n{existing}"
         else:
             existing = getattr(msg, "content", "") or ""
-            msg.content = f"{existing}\n\n{instruction}"
+            msg.content = f"{instruction}\n\n{existing}"
     else:
         # Prepend new system message
         messages.insert(0, {"role": "system", "content": instruction})
@@ -1848,6 +2059,10 @@ async def stream_chat_completion(
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response."""
+    gc_was_enabled = gc.isenabled()
+    if _gc_control and gc_was_enabled:
+        gc.disable()
+
     response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     start_time = time.perf_counter()
 
@@ -1928,16 +2143,99 @@ async def stream_chat_completion(
                 # Skip this chunk (e.g., <think> token itself)
                 continue
 
+            content = delta_msg.content
+            reasoning = delta_msg.reasoning
+
+            # Some models (e.g. MiniMax) wrap tool calls in <think>
+            # blocks, so reasoning parser captures tool call XML as
+            # reasoning while content stays None.  Redirect reasoning
+            # to the content stream so the tool parser can handle it.
+            if tool_parser and reasoning and not content:
+                _check = tool_accumulated_text + reasoning
+                if (
+                    "<minimax:tool_call>" in _check
+                    or "<tool_call>" in _check
+                    or '<invoke name="' in _check
+                ):
+                    content = reasoning
+                    reasoning = None
+
+            # Tool call parsing on content portion
+            if tool_parser and content:
+                if not tool_markup_possible and "<" not in content:
+                    tool_accumulated_text += content
+                    # Suppress whitespace-only content when tools are active;
+                    # avoids emitting stray newlines before tool call XML.
+                    if not content.strip():
+                        continue
+                else:
+                    if not tool_markup_possible:
+                        tool_markup_possible = True
+                    tool_previous = tool_accumulated_text
+                    tool_accumulated_text += content
+                    tool_result = tool_parser.extract_tool_calls_streaming(
+                        tool_previous, tool_accumulated_text, content
+                    )
+
+                    if tool_result is None:
+                        # Inside tool markup - suppress content output
+                        if reasoning:
+                            # Still emit reasoning while buffering tool call
+                            chunk = ChatCompletionChunk(
+                                id=response_id,
+                                model=request.model,
+                                choices=[
+                                    ChatCompletionChunkChoice(
+                                        delta=ChatCompletionChunkDelta(
+                                            reasoning=reasoning,
+                                        ),
+                                        finish_reason=None,
+                                    )
+                                ],
+                                usage=None,
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+                        continue
+
+                    if "tool_calls" in tool_result:
+                        # Emit structured tool calls
+                        tool_calls_detected = True
+                        chunk = ChatCompletionChunk(
+                            id=response_id,
+                            model=request.model,
+                            choices=[
+                                ChatCompletionChunkChoice(
+                                    delta=ChatCompletionChunkDelta(
+                                        tool_calls=tool_result["tool_calls"],
+                                        reasoning=reasoning,
+                                    ),
+                                    finish_reason=(
+                                        "tool_calls" if output.finished else None
+                                    ),
+                                )
+                            ],
+                            usage=get_usage(output) if output.finished else None,
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        continue
+
+                    # Normal content from tool parser
+                    content = tool_result.get("content", "")
+
             chunk = ChatCompletionChunk(
                 id=response_id,
                 model=request.model,
                 choices=[
                     ChatCompletionChunkChoice(
                         delta=ChatCompletionChunkDelta(
-                            content=delta_msg.content,
-                            reasoning=delta_msg.reasoning,
+                            content=content if content else None,
+                            reasoning=reasoning,
                         ),
-                        finish_reason=output.finish_reason if output.finished else None,
+                        finish_reason=(
+                            "tool_calls"
+                            if (output.finished and tool_calls_detected)
+                            else (output.finish_reason if output.finished else None)
+                        ),
                     )
                 ],
                 usage=get_usage(output) if output.finished else None,
@@ -2077,6 +2375,11 @@ async def stream_chat_completion(
         yield f"data: {usage_chunk.model_dump_json()}\n\n"
 
     yield "data: [DONE]\n\n"
+
+    # Re-enable GC and collect after generation completes
+    if _gc_control and gc_was_enabled:
+        gc.enable()
+        gc.collect()
 
 
 # =============================================================================
@@ -2219,6 +2522,18 @@ Examples:
         default=None,
         help="Default top_p for generation when not specified in request",
     )
+    parser.add_argument(
+        "--draft-model",
+        type=str,
+        default=None,
+        help="Draft model for speculative decoding (must use same tokenizer as main model)",
+    )
+    parser.add_argument(
+        "--num-draft-tokens",
+        type=int,
+        default=4,
+        help="Number of tokens to generate speculatively per step (default: 4)",
+    )
 
     args = parser.parse_args()
 
@@ -2276,6 +2591,8 @@ Examples:
         use_batching=args.continuous_batching,
         max_tokens=args.max_tokens,
         force_mllm=args.mllm,
+        draft_model=args.draft_model,
+        num_draft_tokens=args.num_draft_tokens,
     )
 
     # Start server

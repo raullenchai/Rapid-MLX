@@ -110,6 +110,7 @@ class CacheBlock:
 
     # Special flags
     is_null: bool = False
+    is_pinned: bool = False  # Pinned blocks are never evicted (e.g., system prompt)
 
     # Actual tensor data for this block
     # List of (keys, values) per layer, shape: (1, n_kv_heads, block_tokens, head_dim)
@@ -202,7 +203,10 @@ class FreeKVCacheBlockQueue:
 
     def popleft(self) -> CacheBlock:
         """
-        Pop and return the first (LRU) free block.
+        Pop and return the first (LRU) non-pinned free block.
+
+        Pinned blocks are skipped to prevent eviction of important
+        prefix cache entries (e.g., system prompts).
 
         Raises:
             ValueError: If no free blocks available
@@ -210,13 +214,21 @@ class FreeKVCacheBlockQueue:
         if self.fake_head.next_free_block is self.fake_tail:
             raise ValueError("No free blocks available")
 
+        # Skip pinned blocks
         block = self.fake_head.next_free_block
+        while block is not self.fake_tail and block.is_pinned:
+            block = block.next_free_block
+
+        if block is self.fake_tail:
+            raise ValueError("No free blocks available (all free blocks are pinned)")
+
         assert block is not None
 
-        # Remove from list
-        self.fake_head.next_free_block = block.next_free_block
+        # Remove from list (may not be head if pinned blocks were skipped)
+        if block.prev_free_block:
+            block.prev_free_block.next_free_block = block.next_free_block
         if block.next_free_block:
-            block.next_free_block.prev_free_block = self.fake_head
+            block.next_free_block.prev_free_block = block.prev_free_block
 
         block.prev_free_block = None
         block.next_free_block = None
@@ -226,7 +238,10 @@ class FreeKVCacheBlockQueue:
 
     def popleft_n(self, n: int) -> List[CacheBlock]:
         """
-        Pop n blocks from the front.
+        Pop n non-pinned blocks from the front.
+
+        Pinned blocks are skipped to prevent eviction of important
+        prefix cache entries (e.g., system prompts).
 
         Args:
             n: Number of blocks to allocate
@@ -247,19 +262,27 @@ class FreeKVCacheBlockQueue:
         result = []
         curr = self.fake_head.next_free_block
 
-        for _ in range(n):
-            assert curr is not None and curr is not self.fake_tail
-            result.append(curr)
-            last = curr
-            curr = curr.next_free_block
-            # Clear pointers
-            last.prev_free_block = None
-            last.next_free_block = None
+        while len(result) < n:
+            assert curr is not None and curr is not self.fake_tail, (
+                f"Need {n} blocks, only found {len(result)} non-pinned"
+            )
 
-        # Reconnect list
-        self.fake_head.next_free_block = curr
-        if curr:
-            curr.prev_free_block = self.fake_head
+            if curr.is_pinned:
+                curr = curr.next_free_block
+                continue
+
+            # Remove this block from the list
+            block = curr
+            curr = curr.next_free_block
+
+            if block.prev_free_block:
+                block.prev_free_block.next_free_block = block.next_free_block
+            if block.next_free_block:
+                block.next_free_block.prev_free_block = block.prev_free_block
+
+            block.prev_free_block = None
+            block.next_free_block = None
+            result.append(block)
 
         self.num_free_blocks -= n
         return result
@@ -613,6 +636,9 @@ class PagedCacheManager:
         Returns:
             True if block was evicted from cache
         """
+        if block.is_pinned:
+            return False
+
         if block.block_hash is None:
             return False
 
@@ -1137,6 +1163,64 @@ class PagedCacheManager:
                     else 0
                 ),
             }
+
+    # =========================================================================
+    # Block Pinning (prevent eviction of important prefixes)
+    # =========================================================================
+
+    def pin_blocks(self, block_ids: List[int]) -> int:
+        """
+        Pin blocks to prevent eviction (e.g., system prompt cache).
+
+        Args:
+            block_ids: Block IDs to pin
+
+        Returns:
+            Number of blocks actually pinned
+        """
+        with self._lock:
+            pinned = 0
+            for block_id in block_ids:
+                block = self.allocated_blocks.get(block_id)
+                if block and not block.is_null and not block.is_pinned:
+                    block.is_pinned = True
+                    pinned += 1
+            if pinned:
+                logger.info(f"Pinned {pinned} cache blocks: {block_ids}")
+            return pinned
+
+    def unpin_blocks(self, block_ids: List[int]) -> int:
+        """
+        Unpin blocks to allow eviction.
+
+        Args:
+            block_ids: Block IDs to unpin
+
+        Returns:
+            Number of blocks actually unpinned
+        """
+        with self._lock:
+            unpinned = 0
+            for block_id in block_ids:
+                block = self.allocated_blocks.get(block_id)
+                if not block:
+                    # Also check blocks in the free queue
+                    if block_id < len(self.blocks):
+                        block = self.blocks[block_id]
+                if block and block.is_pinned:
+                    block.is_pinned = False
+                    unpinned += 1
+            if unpinned:
+                logger.info(f"Unpinned {unpinned} cache blocks: {block_ids}")
+            return unpinned
+
+    def get_pinned_block_ids(self) -> List[int]:
+        """Get list of all pinned block IDs."""
+        with self._lock:
+            return [
+                b.block_id for b in self.blocks
+                if b.is_pinned
+            ]
 
     def reset_stats(self) -> None:
         """Reset statistics counters."""

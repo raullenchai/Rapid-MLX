@@ -347,6 +347,52 @@ class PrefixCacheManager:
         self._lru.clear()
         self.reset_stats()
 
+    def pin_prefix(self, tokens: List[int]) -> bool:
+        """
+        Pin a prefix in the cache to prevent eviction.
+
+        For the trie-based cache, this removes the entry from the LRU queue
+        so it is never evicted. The entry remains accessible for lookups.
+
+        Args:
+            tokens: Token sequence of the prefix to pin
+
+        Returns:
+            True if prefix was found and pinned
+        """
+        tokens_tuple = tuple(tokens)
+        key = (self.model_key, tokens_tuple)
+        try:
+            self._lru.remove(key)
+            logger.info(f"Pinned prefix ({len(tokens)} tokens) - removed from LRU")
+            return True
+        except ValueError:
+            logger.warning(f"Cannot pin prefix: not found in cache")
+            return False
+
+    def unpin_prefix(self, tokens: List[int]) -> bool:
+        """
+        Unpin a prefix, making it eligible for LRU eviction again.
+
+        Args:
+            tokens: Token sequence of the prefix to unpin
+
+        Returns:
+            True if prefix was found and unpinned
+        """
+        tokens_tuple = tuple(tokens)
+        key = (self.model_key, tokens_tuple)
+        # Check the entry exists in the trie
+        entry = self._get_cache_entry(tokens)
+        if entry is None:
+            return False
+        # Re-add to LRU (at MRU end)
+        if key not in self._lru:
+            self._lru.append(key)
+            logger.info(f"Unpinned prefix ({len(tokens)} tokens) - added back to LRU")
+            return True
+        return False
+
     def __len__(self) -> int:
         """Return number of cached entries."""
         return len(self._lru)
@@ -946,6 +992,65 @@ class BlockAwarePrefixCache:
         self._prefix_index.clear()
         self.paged_cache.clear()
         self.reset_stats()
+
+    def pin_prefix(self, tokens: List[int]) -> bool:
+        """
+        Pin blocks covering a token prefix to prevent eviction.
+
+        Args:
+            tokens: Token sequence of the prefix to pin
+
+        Returns:
+            True if blocks were found and pinned
+        """
+        # Find blocks covering this prefix
+        shared_block_ids, _ = self.paged_cache.find_shared_prefix(tokens)
+        if shared_block_ids:
+            pinned = self.paged_cache.pin_blocks(shared_block_ids)
+            if pinned > 0:
+                logger.info(
+                    f"Pinned prefix: {pinned} blocks, "
+                    f"{len(tokens)} tokens"
+                )
+                return True
+
+        # Try prefix index
+        best_match = self._find_best_prefix_match(tokens)
+        if best_match:
+            _, block_ids = best_match
+            pinned = self.paged_cache.pin_blocks(block_ids)
+            if pinned > 0:
+                logger.info(
+                    f"Pinned prefix via index: {pinned} blocks, "
+                    f"{len(tokens)} tokens"
+                )
+                return True
+
+        logger.warning(f"Cannot pin prefix: no cached blocks found for {len(tokens)} tokens")
+        return False
+
+    def unpin_prefix(self, tokens: List[int]) -> bool:
+        """
+        Unpin blocks covering a token prefix.
+
+        Args:
+            tokens: Token sequence of the prefix to unpin
+
+        Returns:
+            True if blocks were found and unpinned
+        """
+        shared_block_ids, _ = self.paged_cache.find_shared_prefix(tokens)
+        if shared_block_ids:
+            unpinned = self.paged_cache.unpin_blocks(shared_block_ids)
+            return unpinned > 0
+
+        best_match = self._find_best_prefix_match(tokens)
+        if best_match:
+            _, block_ids = best_match
+            unpinned = self.paged_cache.unpin_blocks(block_ids)
+            return unpinned > 0
+
+        return False
 
     def __len__(self) -> int:
         """Return number of active request entries."""

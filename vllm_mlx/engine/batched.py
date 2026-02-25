@@ -137,6 +137,7 @@ class BatchedEngine(BaseEngine):
         scheduler_config: Any | None = None,
         stream_interval: int = 1,
         force_mllm: bool = False,
+        gpu_memory_utilization: float = 0.90,
     ):
         """
         Initialize the batched engine.
@@ -147,11 +148,14 @@ class BatchedEngine(BaseEngine):
             scheduler_config: Optional scheduler configuration
             stream_interval: Tokens to batch before streaming (1=every token)
             force_mllm: Force loading as MLLM even if not auto-detected
+            gpu_memory_utilization: Fraction of device memory for Metal allocation
+                limit and emergency threshold (0.0-1.0, default 0.90)
         """
         self._model_name = model_name
         self._trust_remote_code = trust_remote_code
         self._scheduler_config = scheduler_config
         self._stream_interval = stream_interval
+        self._gpu_memory_utilization = gpu_memory_utilization
         self._is_mllm = force_mllm or is_mllm_model(model_name)
 
         self._model = None
@@ -161,6 +165,7 @@ class BatchedEngine(BaseEngine):
         self._mllm_scheduler = None  # MLLMScheduler for MLLM
         self._mllm_instance = None  # MLXMultimodalLM instance
         self._loaded = False
+        self._engine_started = False  # Track if engine loop is running
 
     @property
     def model_name(self) -> str:
@@ -283,13 +288,14 @@ class BatchedEngine(BaseEngine):
                     device_info.get("memory_size", 0),
                 )
                 if max_recommended > 0:
-                    soft_limit = int(max_recommended * 0.90)
+                    soft_limit = int(max_recommended * self._gpu_memory_utilization)
                     mx.set_memory_limit(soft_limit)
                     mx.set_cache_limit(32 * 1024 * 1024 * 1024)  # 32GB
+                    pct = self._gpu_memory_utilization * 100
                     logger.info(
                         f"Metal memory limits set: "
                         f"allocation_limit={soft_limit / 1e9:.1f}GB "
-                        f"(90% of {max_recommended / 1e9:.1f}GB), "
+                        f"({pct:.0f}% of {max_recommended / 1e9:.1f}GB), "
                         f"cache_limit=32GB"
                     )
         except Exception as e:
@@ -301,6 +307,7 @@ class BatchedEngine(BaseEngine):
             model_name=self._model_name,
             scheduler_config=scheduler_config,
             stream_interval=self._stream_interval,
+            gpu_memory_utilization=self._gpu_memory_utilization,
         )
 
         # Create async engine
@@ -800,3 +807,52 @@ class BatchedEngine(BaseEngine):
         if self._engine:
             return self._engine.load_cache_from_disk(cache_dir)
         return 0
+
+    async def _inject_shared_model(
+        self,
+        model,
+        tokenizer,
+        start_engine: bool = True,
+    ) -> None:
+        """
+        Inject a pre-loaded shared model instead of loading a new one.
+
+        This is used by HybridEngine to share a single model instance
+        between SimpleEngine and BatchedEngine, saving ~44GB of RAM.
+
+        Args:
+            model: Pre-loaded MLX model
+            tokenizer: Pre-loaded tokenizer
+            start_engine: Whether to start the engine loop immediately.
+                         Set to False for HybridEngine (lazy start on first use).
+        """
+        from ..engine_core import AsyncEngineCore, EngineConfig
+        from ..scheduler import SchedulerConfig
+
+        self._model = model
+        self._tokenizer = tokenizer
+
+        # Create engine config
+        scheduler_config = self._scheduler_config or SchedulerConfig()
+        engine_config = EngineConfig(
+            model_name=self._model_name,
+            scheduler_config=scheduler_config,
+            stream_interval=self._stream_interval,
+        )
+
+        # Create async engine with shared model
+        self._engine = AsyncEngineCore(
+            model=self._model,
+            tokenizer=self._tokenizer,
+            config=engine_config,
+        )
+
+        # Only start engine loop if requested (HybridEngine starts lazily)
+        if start_engine:
+            await self._engine.engine.start()
+
+        self._loaded = True
+        self._engine_started = start_engine
+        logger.info(
+            f"BatchedEngine injected with shared model: {self._model_name} (started={start_engine})"
+        )

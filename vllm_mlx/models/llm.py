@@ -50,6 +50,8 @@ class MLXLanguageModel:
         model_name: str,
         tokenizer_name: str | None = None,
         trust_remote_code: bool = False,
+        draft_model: str | None = None,
+        num_draft_tokens: int = 4,
     ):
         """
         Initialize the MLX language model.
@@ -58,13 +60,18 @@ class MLXLanguageModel:
             model_name: HuggingFace model name or local path
             tokenizer_name: Optional separate tokenizer name
             trust_remote_code: Whether to trust remote code
+            draft_model: Optional draft model path for speculative decoding
+            num_draft_tokens: Number of tokens to generate speculatively per step
         """
         self.model_name = model_name
         self.tokenizer_name = tokenizer_name or model_name
         self.trust_remote_code = trust_remote_code
+        self.draft_model_name = draft_model
+        self.num_draft_tokens = num_draft_tokens
 
         self.model = None
         self.tokenizer = None
+        self.draft_model = None
         self._loaded = False
 
     def load(self) -> None:
@@ -90,6 +97,28 @@ class MLXLanguageModel:
                 self.model_name,
                 tokenizer_config=tokenizer_config,
             )
+
+            # Load draft model for speculative decoding if specified
+            if self.draft_model_name:
+                logger.info(
+                    f"Loading draft model for speculative decoding: {self.draft_model_name}"
+                )
+                from mlx_lm import load as mlx_load
+
+                self.draft_model, draft_tokenizer = mlx_load(self.draft_model_name)
+
+                # Validate tokenizer compatibility
+                if draft_tokenizer.vocab_size != self.tokenizer.vocab_size:
+                    logger.warning(
+                        f"Draft model tokenizer vocab size ({draft_tokenizer.vocab_size}) "
+                        f"differs from main model ({self.tokenizer.vocab_size}). "
+                        "This may reduce speculative decoding effectiveness."
+                    )
+
+                logger.info(
+                    f"Speculative decoding enabled: draft={self.draft_model_name}, "
+                    f"num_draft_tokens={self.num_draft_tokens}"
+                )
 
             self._loaded = True
             logger.info(f"Model loaded successfully: {self.model_name}")
@@ -147,15 +176,31 @@ class MLXLanguageModel:
         # Create sampler with parameters
         sampler = self._create_sampler(temperature, top_p)
 
-        # Generate text
-        output_text = generate(
-            self.model,
-            self.tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            verbose=False,
-        )
+        # Note: mlx_lm.generate() doesn't support draft_model directly,
+        # speculative decoding is only available via stream_generate()
+        if self.draft_model is not None:
+            # Use streaming with draft model and collect result
+            output_text = ""
+            for chunk in self.stream_generate(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop,
+            ):
+                output_text += chunk.text
+                if chunk.finished:
+                    break
+        else:
+            # Generate text without speculative decoding
+            output_text = generate(
+                self.model,
+                self.tokenizer,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                verbose=False,
+            )
 
         # Tokenize output to get token IDs
         tokens = self.tokenizer.encode(output_text)
@@ -203,12 +248,22 @@ class MLXLanguageModel:
         token_count = 0
         accumulated_text = ""
 
+        # Build generation kwargs
+        gen_kwargs = {
+            "max_tokens": max_tokens,
+            "sampler": sampler,
+        }
+
+        # Add draft model for speculative decoding if available
+        if self.draft_model is not None:
+            gen_kwargs["draft_model"] = self.draft_model
+            gen_kwargs["num_draft_tokens"] = self.num_draft_tokens
+
         for response in stream_generate(
             self.model,
             self.tokenizer,
             prompt=prompt,
-            max_tokens=max_tokens,
-            sampler=sampler,
+            **gen_kwargs,
         ):
             token_count += 1
             # response.text is the new token text (not accumulated)

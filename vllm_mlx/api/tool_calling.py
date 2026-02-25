@@ -21,6 +21,42 @@ from jsonschema import validate, ValidationError
 from .models import FunctionCall, ResponseFormat, ToolCall
 
 
+def _is_tool_call_json(obj: dict) -> bool:
+    """
+    Check if a JSON object looks like a tool call.
+
+    A tool call must have:
+    - "name" key with a string value (function name)
+    - "arguments" key (the function arguments)
+
+    This prevents false positives where regular JSON like {"name": "John", "age": 30}
+    would be incorrectly parsed as a tool call.
+
+    Args:
+        obj: JSON object to check
+
+    Returns:
+        True if object appears to be a tool call
+    """
+    if not isinstance(obj, dict):
+        return False
+
+    # Must have both "name" and "arguments" keys
+    if "name" not in obj or "arguments" not in obj:
+        return False
+
+    # "name" must be a non-empty string (function name)
+    if not isinstance(obj["name"], str) or not obj["name"].strip():
+        return False
+
+    # "arguments" must be a dict or string
+    args = obj["arguments"]
+    if not isinstance(args, (dict, str)):
+        return False
+
+    return True
+
+
 def _parse_raw_json_tool_calls(text: str) -> Optional[List[dict]]:
     """
     Parse raw JSON tool calls from model output.
@@ -29,6 +65,9 @@ def _parse_raw_json_tool_calls(text: str) -> Optional[List[dict]]:
     - Single JSON object: {"name": "func", "arguments": {...}}
     - Multiple objects separated by commas: {...}, {...}
     - JSON array: [{...}, {...}]
+
+    Only objects with BOTH "name" AND "arguments" keys are considered tool calls.
+    This prevents false positives with regular JSON objects.
 
     Args:
         text: Raw model output text
@@ -46,7 +85,7 @@ def _parse_raw_json_tool_calls(text: str) -> Optional[List[dict]]:
         try:
             parsed = json.loads(text)
             if isinstance(parsed, list) and all(
-                isinstance(item, dict) and "name" in item for item in parsed
+                _is_tool_call_json(item) for item in parsed
             ):
                 return [
                     {"name": item["name"], "arguments": item.get("arguments", {})}
@@ -71,7 +110,8 @@ def _parse_raw_json_tool_calls(text: str) -> Optional[List[dict]]:
                 json_str = text[start : i + 1]
                 try:
                     obj = json.loads(json_str)
-                    if isinstance(obj, dict) and "name" in obj:
+                    # Only consider as tool call if it has both "name" AND "arguments"
+                    if _is_tool_call_json(obj):
                         tool_calls.append(
                             {"name": obj["name"], "arguments": obj.get("arguments", {})}
                         )
@@ -524,8 +564,14 @@ def build_json_system_prompt(
 
     if format_type == "json_object":
         return (
-            "You must respond with valid JSON only. "
-            "Do not include any explanation or text outside the JSON object."
+            "⚠️ JSON OUTPUT REQUIRED ⚠️\n\n"
+            "You MUST respond with ONLY a valid JSON object.\n\n"
+            "RULES:\n"
+            "- Start response with { or [\n"
+            "- NO text before or after JSON\n"
+            "- NO thinking or explanations\n"
+            "- NO markdown code blocks (```)\n"
+            "- ONLY the raw JSON object"
         )
 
     if format_type == "json_schema":
@@ -533,14 +579,89 @@ def build_json_system_prompt(
         schema = json_schema_spec.get("schema", {})
         name = json_schema_spec.get("name", "response")
         description = json_schema_spec.get("description", "")
+        strict = json_schema_spec.get("strict", False)
 
-        prompt = f"You must respond with valid JSON matching the '{name}' schema."
+        # If strict mode is enabled and guided generation is available,
+        # the server should use guided decoding instead of prompt injection
+        if strict:
+            # Return stronger instruction for strict mode
+            prompt = (
+                f"⚠️ STRICT JSON OUTPUT REQUIRED ⚠️\n\n"
+                f"You MUST respond with ONLY a valid JSON object matching the '{name}' schema.\n"
+            )
+            if description:
+                prompt += f"Purpose: {description}\n"
+            prompt += (
+                f"\nJSON Schema:\n```json\n{json.dumps(schema, indent=2)}\n```\n\n"
+                "STRICT RULES:\n"
+                "- Start response with {{ or [\n"
+                "- NO text before or after JSON\n"
+                "- NO thinking, reasoning, or explanations\n"
+                "- NO markdown code blocks\n"
+                "- ONLY the JSON object"
+            )
+            return prompt
+
+        # Standard (non-strict) mode - still strong but less aggressive
+        prompt = (
+            f"⚠️ JSON OUTPUT REQUIRED ⚠️\n\n"
+            f"Respond with a valid JSON object matching the '{name}' schema.\n"
+        )
         if description:
-            prompt += f" {description}"
+            prompt += f"Purpose: {description}\n"
         prompt += (
-            f"\n\nJSON Schema:\n```json\n{json.dumps(schema, indent=2)}\n```\n\n"
-            "Respond with only the JSON object, no additional text or explanation."
+            f"\nJSON Schema:\n```json\n{json.dumps(schema, indent=2)}\n```\n\n"
+            "RULES:\n"
+            "- Start response with { or [\n"
+            "- NO text before or after JSON\n"
+            "- NO markdown code blocks\n"
+            "- ONLY the JSON object"
         )
         return prompt
 
     return None
+
+
+def extract_json_schema_for_guided(
+    response_format: Optional[Union[ResponseFormat, Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Extract JSON schema from response_format for guided generation.
+
+    Returns the schema dict if response_format specifies json_schema type,
+    otherwise returns None.
+
+    Args:
+        response_format: ResponseFormat specification
+
+    Returns:
+        JSON schema dict or None
+    """
+    if response_format is None:
+        return None
+
+    # Normalize to dict
+    if isinstance(response_format, ResponseFormat):
+        rf_dict = {"type": response_format.type, "json_schema": None}
+        if response_format.json_schema:
+            rf_dict["json_schema"] = {
+                "name": response_format.json_schema.name,
+                "description": response_format.json_schema.description,
+                "schema": response_format.json_schema.schema_,
+                "strict": response_format.json_schema.strict,
+            }
+    else:
+        rf_dict = response_format
+
+    format_type = rf_dict.get("type", "text")
+
+    if format_type != "json_schema":
+        return None
+
+    json_schema_spec = rf_dict.get("json_schema", {})
+    schema = json_schema_spec.get("schema", {})
+
+    if not schema:
+        return None
+
+    return schema

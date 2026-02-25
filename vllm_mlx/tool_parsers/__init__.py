@@ -57,6 +57,7 @@ from .qwen_tool_parser import QwenToolParser
 from .xlam_tool_parser import xLAMToolParser
 from .glm47_tool_parser import Glm47ToolParser
 from .harmony_tool_parser import HarmonyToolParser
+from .minimax_tool_parser import MiniMaxToolParser
 
 __all__ = [
     # Base classes
@@ -77,4 +78,5 @@ __all__ = [
     "FunctionaryToolParser",
     "Glm47ToolParser",
     "HarmonyToolParser",
+    "MiniMaxToolParser",
 ]

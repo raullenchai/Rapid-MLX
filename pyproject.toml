@@ -77,6 +77,10 @@ vision = [
     "torch>=2.3.0",
     "torchvision>=0.18.0",
 ]
+# Guided decoding with outlines for structured JSON output
+guided = [
+    "outlines[mlxlm]>=1.0.0",
+]
 # Audio dependencies for TTS/STT (mlx-audio)
 audio = [
     "mlx-audio>=0.2.9",

@@ -38,6 +38,7 @@ vllm-mlx serve <model> [options]
 | `--paged-cache-block-size` | Tokens per cache block | 64 |
 | `--max-cache-blocks` | Maximum cache blocks | 1000 |
 | `--max-num-seqs` | Max concurrent sequences | 256 |
+| `--gpu-memory-utilization` | Fraction of device memory for Metal allocation limit (0.0-1.0) | 0.90 |
 | `--default-temperature` | Default temperature when not specified in request | None |
 | `--default-top-p` | Default top_p when not specified in request | None |
 | `--reasoning-parser` | Parser for reasoning models (`qwen3`, `deepseek_r1`) | None |
@@ -87,6 +88,11 @@ vllm-mlx serve mlx-community/granite-4.0-tiny-preview-4bit \
 
 # With API key authentication
 vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --api-key your-secret-key
+
+# Large models (200GB+) — raise memory limit to avoid cache thrashing
+vllm-mlx serve mlx-community/Qwen3.5-397B-A17B-nvfp4 \
+  --continuous-batching \
+  --gpu-memory-utilization 0.95
 
 # Production setup with security options
 vllm-mlx serve mlx-community/Qwen3-4B-4bit \

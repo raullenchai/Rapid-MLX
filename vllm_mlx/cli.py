@@ -37,6 +37,13 @@ def serve_command(args):
         print("Example: --enable-auto-tool-choice --tool-call-parser mistral")
         sys.exit(1)
 
+    # Validate gpu-memory-utilization range
+    if not (0.0 < args.gpu_memory_utilization <= 1.0):
+        print(
+            "Error: --gpu-memory-utilization must be between 0.0 (exclusive) and 1.0 (inclusive)"
+        )
+        sys.exit(1)
+
     # Configure server security settings
     server._api_key = args.api_key
     server._default_timeout = args.timeout
@@ -44,6 +51,13 @@ def serve_command(args):
         server._rate_limiter = RateLimiter(
             requests_per_minute=args.rate_limit, enabled=True
         )
+
+    # Configure GC control
+    gc_control = args.gc_control and not args.no_gc_control
+    server._gc_control = gc_control
+
+    # Configure system prompt pinning
+    server._pin_system_prompt = args.pin_system_prompt
 
     # Configure tool calling
     if args.enable_auto_tool_choice and args.tool_call_parser:
@@ -103,10 +117,17 @@ def serve_command(args):
         print(f"  Reasoning: ENABLED (parser: {args.reasoning_parser})")
     else:
         print("  Reasoning: Use --reasoning-parser to enable")
+    print(f"  GC control: {'ENABLED' if gc_control else 'DISABLED'}")
+    if args.pin_system_prompt:
+        print("  Pin system prompt: ENABLED")
     print("=" * 60)
 
     print(f"Loading model: {args.model}")
     print(f"Default max tokens: {args.max_tokens}")
+    if args.draft_model:
+        print("Speculative decoding: ENABLED")
+        print(f"  Draft model: {args.draft_model}")
+        print(f"  Draft tokens: {args.num_draft_tokens}")
 
     # Store MCP config path for FastAPI startup
     if args.mcp_config:
@@ -187,6 +208,9 @@ def serve_command(args):
         stream_interval=args.stream_interval if args.continuous_batching else 1,
         max_tokens=args.max_tokens,
         force_mllm=args.mllm,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        draft_model=args.draft_model,
+        num_draft_tokens=args.num_draft_tokens,
     )
 
     # Start server
@@ -681,6 +705,14 @@ Examples:
         action="store_true",
         help="Enable continuous batching for multiple concurrent users (slower for single user)",
     )
+    serve_parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=0.90,
+        help="Fraction of device memory for Metal allocation limit and emergency "
+        "cache clear threshold (0.0-1.0, default: 0.90). Increase to 0.95 for "
+        "large models (200GB+) that need more memory headroom.",
+    )
     # Paged cache options (experimental)
     serve_parser.add_argument(
         "--use-paged-cache",
@@ -778,13 +810,27 @@ Examples:
             "xlam",
             "functionary",
             "glm47",
+            "minimax",
         ],
         help=(
             "Select the tool call parser for the model. Options: "
             "auto (auto-detect), mistral, qwen, qwen3_coder, llama, hermes, "
-            "deepseek, kimi, granite, nemotron, xlam, functionary, glm47. "
+            "deepseek, kimi, granite, nemotron, xlam, functionary, glm47, minimax. "
             "Required for --enable-auto-tool-choice."
         ),
+    )
+    # Speculative decoding options
+    serve_parser.add_argument(
+        "--draft-model",
+        type=str,
+        default=None,
+        help="Draft model for speculative decoding (must use same tokenizer as main model)",
+    )
+    serve_parser.add_argument(
+        "--num-draft-tokens",
+        type=int,
+        default=4,
+        help="Number of tokens to generate speculatively per step (default: 4)",
     )
     # Reasoning parser options - choices loaded dynamically from registry
     from .reasoning import list_parsers
@@ -800,6 +846,25 @@ Examples:
             "Extracts <think>...</think> tags into reasoning_content field. "
             f"Options: {', '.join(reasoning_choices)}."
         ),
+    )
+    # GC control (Tier 0 optimization)
+    serve_parser.add_argument(
+        "--gc-control",
+        action="store_true",
+        default=True,
+        help="Disable Python GC during generation to avoid latency spikes (default: enabled)",
+    )
+    serve_parser.add_argument(
+        "--no-gc-control",
+        action="store_true",
+        help="Disable GC control (allow normal GC during generation)",
+    )
+    # Pinned prefix cache (Tier 0 optimization)
+    serve_parser.add_argument(
+        "--pin-system-prompt",
+        action="store_true",
+        default=False,
+        help="Auto-pin system prompt in prefix cache to prevent eviction under memory pressure",
     )
     # Multimodal option
     serve_parser.add_argument(
