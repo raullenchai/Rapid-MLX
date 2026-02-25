@@ -1095,6 +1095,26 @@ async def _disconnect_guard(
                     f"{chunk_count} chunks, elapsed={_elapsed()}"
                 )
                 break
+            except Exception as exc:
+                logger.error(
+                    f"[disconnect_guard] generator raised {type(exc).__name__}: "
+                    f"{exc}, {chunk_count} chunks, elapsed={_elapsed()}",
+                    exc_info=True,
+                )
+                # Yield an error event so the client sees something before [DONE]
+                import json as _json
+
+                error_data = _json.dumps(
+                    {
+                        "error": {
+                            "message": f"Internal error during streaming: {exc}",
+                            "type": type(exc).__name__,
+                        }
+                    }
+                )
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
+                break
             chunk_count += 1
             if chunk_count == 1:
                 logger.info(
