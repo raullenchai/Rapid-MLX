@@ -462,8 +462,35 @@ def _parse_tool_calls_with_parser(
 
     request_dict = request.model_dump() if request else None
 
-    # If auto tool choice is not enabled, use the generic parser
+    # If auto tool choice is not enabled, try inferred parser from reasoning parser
     if not _enable_auto_tool_choice or not _tool_call_parser:
+        if _reasoning_parser_name and request and request.tools:
+            _PARSER_MAP = {"minimax": "minimax"}
+            inferred = _PARSER_MAP.get(_reasoning_parser_name)
+            if inferred:
+                try:
+                    parser_cls = ToolParserManager.get_tool_parser(inferred)
+                    tokenizer = getattr(_engine, "_tokenizer", None)
+                    parser = parser_cls(tokenizer)
+                    parser.reset()
+                    result = parser.extract_tool_calls(
+                        output_text, request_dict
+                    )
+                    if result.tools_called:
+                        tool_calls = [
+                            ToolCall(
+                                id=tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                                type="function",
+                                function=FunctionCall(
+                                    name=tc["name"],
+                                    arguments=tc["arguments"],
+                                ),
+                            )
+                            for tc in result.tool_calls
+                        ]
+                        return result.content or "", tool_calls
+                except Exception as e:
+                    logger.debug(f"Auto-infer tool parser failed: {e}")
         return parse_tool_calls(output_text, request_dict)
 
     # Initialize parser if needed
@@ -2380,6 +2407,19 @@ async def stream_chat_completion(
         if _tool_parser_instance is not None:
             tool_parser = _tool_parser_instance
             tool_parser.reset()
+
+    # Fallback: auto-infer tool parser when tools requested + reasoning parser set
+    if tool_parser is None and request.tools and _reasoning_parser_name:
+        _PARSER_MAP = {"minimax": "minimax"}
+        inferred = _PARSER_MAP.get(_reasoning_parser_name)
+        if inferred:
+            try:
+                parser_cls = ToolParserManager.get_tool_parser(inferred)
+                tokenizer = getattr(_engine, "_tokenizer", None)
+                tool_parser = parser_cls(tokenizer)
+                tool_parser.reset()
+            except Exception as e:
+                logger.debug(f"Auto-infer tool parser for streaming failed: {e}")
 
     # Stream content
     async for output in engine.stream_chat(messages=messages, **kwargs):
