@@ -152,14 +152,13 @@ class MiniMaxToolParser(ToolParser):
 
     def _has_tool_end(self, current: str, previous: str) -> bool:
         """Check if a tool call block just completed."""
-        # If wrapped format is used, only trigger on the wrapper closing tag
+        # If wrapped format is used, trigger when a NEW closing tag appears
         if "<minimax:tool_call>" in current:
-            return (
-                "</minimax:tool_call>" in current
-                and "</minimax:tool_call>" not in previous
+            return current.count("</minimax:tool_call>") > previous.count(
+                "</minimax:tool_call>"
             )
-        # Bare invoke: </invoke> just appeared
-        if "</invoke>" in current and "</invoke>" not in previous:
+        # Bare invoke: new </invoke> appeared
+        if current.count("</invoke>") > previous.count("</invoke>"):
             return True
         return False
 
@@ -181,20 +180,32 @@ class MiniMaxToolParser(ToolParser):
         if self._has_tool_end(current_text, previous_text):
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
-                return {
-                    "tool_calls": [
-                        {
-                            "index": i,
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": tc["arguments"],
-                            },
-                        }
-                        for i, tc in enumerate(result.tool_calls)
-                    ]
-                }
+                # Count previously completed blocks to only emit NEW tool calls.
+                # Use completed closing-tag count (not extract_tool_calls on
+                # previous_text, which would match partial/bare invokes too).
+                prev_complete = previous_text.count("</minimax:tool_call>")
+                if prev_complete == 0:
+                    # Also check bare </invoke> completions
+                    prev_complete = previous_text.count("</invoke>")
+                    # But only if we're not in wrapped mode
+                    if "<minimax:tool_call>" in previous_text:
+                        prev_complete = 0
+                new_calls = result.tool_calls[prev_complete:]
+                if new_calls:
+                    return {
+                        "tool_calls": [
+                            {
+                                "index": prev_complete + i,
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": tc["arguments"],
+                                },
+                            }
+                            for i, tc in enumerate(new_calls)
+                        ]
+                    }
 
         # Inside tool call block but not yet complete — suppress output
         return None
