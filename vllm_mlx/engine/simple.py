@@ -78,6 +78,11 @@ class SimpleEngine(BaseEngine):
         self._generation_lock = asyncio.Lock()
 
     @property
+    def model(self):
+        """Get the underlying MLXLanguageModel instance."""
+        return self._model
+
+    @property
     def model_name(self) -> str:
         """Get the model name."""
         return self._model_name
@@ -366,6 +371,48 @@ class SimpleEngine(BaseEngine):
                     completion_tokens=len(output.tokens),
                     finish_reason=output.finish_reason,
                 )
+
+    def build_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict] | None = None,
+        **kwargs,
+    ) -> str:
+        """
+        Apply chat template to messages and return the prompt string.
+
+        This is the same logic used by stream_chat, extracted for reuse
+        (e.g. cloud routing needs the prompt to estimate token counts).
+        """
+        if not self._loaded:
+            raise RuntimeError("Engine not loaded — call start() first")
+
+        if self._is_mllm:
+            raise RuntimeError("build_prompt is not supported for MLLM models")
+
+        template_tools = convert_tools_for_template(tools) if tools else None
+
+        tokenizer = self._model.tokenizer
+        if hasattr(tokenizer, "apply_chat_template"):
+            enable_thinking = "coder" not in self._model_name.lower()
+            template_kwargs = {
+                "tokenize": False,
+                "add_generation_prompt": True,
+                "enable_thinking": enable_thinking,
+            }
+            if template_tools:
+                template_kwargs["tools"] = template_tools
+
+            try:
+                return tokenizer.apply_chat_template(messages, **template_kwargs)
+            except TypeError:
+                for key in ["tools", "enable_thinking"]:
+                    if key in template_kwargs:
+                        del template_kwargs[key]
+                return tokenizer.apply_chat_template(messages, **template_kwargs)
+        else:
+            prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+            return prompt + "\nassistant:"
 
     async def stream_chat(
         self,

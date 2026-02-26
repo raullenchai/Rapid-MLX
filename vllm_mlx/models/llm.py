@@ -305,6 +305,29 @@ class MLXLanguageModel:
         suffix = prompt_token_ids[common_len:]
         return suffix
 
+    def estimate_new_tokens(self, prompt: str) -> tuple[int, int]:
+        """
+        Estimate (total_tokens, new_tokens) without modifying cache state.
+
+        Peeks at the cache overlap to determine how many tokens would need
+        prefilling. Used by cloud routing to decide whether to offload.
+
+        Returns:
+            (total_tokens, new_tokens) tuple
+        """
+        if not self._loaded:
+            self.load()
+
+        add_special_tokens = (
+            self.tokenizer.bos_token is None
+            or not prompt.startswith(self.tokenizer.bos_token)
+        )
+        full_token_ids = self.tokenizer.encode(
+            prompt, add_special_tokens=add_special_tokens
+        )
+        common_len = self._find_common_prefix_len(full_token_ids)
+        return len(full_token_ids), len(full_token_ids) - common_len
+
     def stream_generate(
         self,
         prompt: str,

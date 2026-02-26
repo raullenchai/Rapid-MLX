@@ -126,6 +126,10 @@ def serve_command(args):
     print(f"  GC control: {'ENABLED' if gc_control else 'DISABLED'}")
     if args.pin_system_prompt:
         print("  Pin system prompt: ENABLED")
+    if args.cloud_model:
+        print(f"  Cloud routing: ENABLED (model: {args.cloud_model}, threshold: {args.cloud_threshold} tokens)")
+    else:
+        print("  Cloud routing: DISABLED - Use --cloud-model to enable")
     print("=" * 60)
 
     print(f"Loading model: {args.model}")
@@ -220,6 +224,8 @@ def serve_command(args):
         prefill_step_size=args.prefill_step_size,
         kv_bits=args.kv_bits,
         kv_group_size=args.kv_group_size,
+        cloud_model=args.cloud_model,
+        cloud_threshold=args.cloud_threshold,
     )
 
     # Start server
@@ -920,6 +926,21 @@ Examples:
         type=float,
         default=None,
         help="Override default top_p for all requests (default: use model default)",
+    )
+    # Cloud routing options
+    serve_parser.add_argument(
+        "--cloud-model",
+        type=str,
+        default=None,
+        help="Cloud model string for litellm (e.g. 'anthropic/claude-sonnet-4-5-20250929'). "
+        "When set, large-context requests are routed to the cloud provider.",
+    )
+    serve_parser.add_argument(
+        "--cloud-threshold",
+        type=int,
+        default=20000,
+        help="New token threshold to trigger cloud routing (default: 20000). "
+        "Only requests with more new (uncached) tokens than this are routed.",
     )
     # Embedding model option
     serve_parser.add_argument(

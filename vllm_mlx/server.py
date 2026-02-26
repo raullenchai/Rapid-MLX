@@ -174,6 +174,9 @@ _tool_call_parser: str | None = None  # Parser name: auto, mistral, qwen, llama,
 _tool_parser_instance = None  # Instantiated parser
 _enable_tool_logits_bias: bool = False  # Jump-forward decoding for tool calls
 
+# Cloud routing (offload large-context requests to cloud LLM)
+_cloud_router = None  # CloudRouter instance when --cloud-model is set
+
 # GC control (Tier 0 optimization)
 _gc_control: bool = True  # Disable GC during generation to avoid latency spikes
 
@@ -652,6 +655,8 @@ def load_model(
     prefill_step_size: int = 2048,
     kv_bits: int | None = None,
     kv_group_size: int = 64,
+    cloud_model: str | None = None,
+    cloud_threshold: int = 20000,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -671,12 +676,23 @@ def load_model(
         kv_bits: KV cache quantization bits (None=no quantization, 4 or 8)
         kv_group_size: Group size for KV cache quantization (default: 64)
     """
-    global _engine, _model_name, _default_max_tokens, _tool_parser_instance
+    global _engine, _model_name, _default_max_tokens, _tool_parser_instance, _cloud_router
 
     _default_max_tokens = max_tokens
     _model_name = model_name
     # Reset tool parser instance when model is reloaded (tokenizer may change)
     _tool_parser_instance = None
+
+    # Initialize cloud router if --cloud-model is set
+    if cloud_model:
+        from .cloud_router import CloudRouter
+
+        _cloud_router = CloudRouter(cloud_model=cloud_model, threshold=cloud_threshold)
+        logger.info(
+            f"Cloud routing enabled: model={cloud_model}, threshold={cloud_threshold} new tokens"
+        )
+    else:
+        _cloud_router = None
 
     if force_mllm:
         logger.info("Force MLLM mode enabled via --mllm flag")
@@ -1753,6 +1769,55 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     # Add tools if provided
     if request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(request.tools)
+
+    # Cloud routing: offload large-context requests to cloud LLM
+    if _cloud_router and not engine.is_mllm and hasattr(engine, "build_prompt"):
+        try:
+            prompt = engine.build_prompt(messages, tools=request.tools)
+            total_tokens, new_tokens = engine.model.estimate_new_tokens(prompt)
+            if _cloud_router.should_route_to_cloud(new_tokens):
+                logger.info(
+                    f"[CLOUD ROUTE] {new_tokens} new tokens (total {total_tokens}) "
+                    f"> threshold {_cloud_router.threshold}, "
+                    f"routing to {_cloud_router.cloud_model}"
+                )
+                # Pass original dict-format messages to cloud (not template-applied prompt)
+                cloud_messages = messages
+                cloud_kwargs = {
+                    "temperature": chat_kwargs.get("temperature"),
+                    "max_tokens": chat_kwargs.get("max_tokens"),
+                    "top_p": chat_kwargs.get("top_p"),
+                }
+                if request.tools:
+                    # Pass raw tool defs (OpenAI format), not template-converted
+                    cloud_kwargs["tools"] = [
+                        t.model_dump() if hasattr(t, "model_dump") else t
+                        for t in request.tools
+                    ]
+                if request.stream:
+                    return StreamingResponse(
+                        _cloud_router.stream_completion(
+                            cloud_messages,
+                            model_name=_model_name or "cloud",
+                            **cloud_kwargs,
+                        ),
+                        media_type="text/event-stream",
+                    )
+                else:
+                    result = await _cloud_router.completion(
+                        cloud_messages, **cloud_kwargs
+                    )
+                    return Response(
+                        content=json.dumps(result),
+                        media_type="application/json",
+                    )
+            else:
+                logger.info(
+                    f"[LOCAL] {new_tokens} new tokens (total {total_tokens}) "
+                    f"<= threshold {_cloud_router.threshold}, using local inference"
+                )
+        except Exception as e:
+            logger.warning(f"[CLOUD ROUTE] Error during routing check: {e}, falling back to local")
 
     if request.stream:
         return StreamingResponse(
@@ -2919,6 +2984,19 @@ Examples:
         default=64,
         help="Group size for KV cache quantization (default: 64)",
     )
+    parser.add_argument(
+        "--cloud-model",
+        type=str,
+        default=None,
+        help="Cloud model string for litellm (e.g. 'anthropic/claude-sonnet-4-5-20250929'). "
+        "When set, large-context requests are routed to the cloud provider.",
+    )
+    parser.add_argument(
+        "--cloud-threshold",
+        type=int,
+        default=20000,
+        help="New token threshold to trigger cloud routing (default: 20000)",
+    )
 
     args = parser.parse_args()
 
@@ -2993,6 +3071,8 @@ Examples:
         prefill_step_size=args.prefill_step_size,
         kv_bits=args.kv_bits,
         kv_group_size=args.kv_group_size,
+        cloud_model=args.cloud_model,
+        cloud_threshold=args.cloud_threshold,
     )
 
     # Start server
