@@ -66,7 +66,7 @@ if [ -d "$INSTALL_DIR" ]; then
     echo "  Existing installation found at $INSTALL_DIR"
     echo "  Upgrading..."
     "$INSTALL_DIR/bin/pip" install --upgrade pip -q
-    "$INSTALL_DIR/bin/pip" install --upgrade --no-cache-dir "vllm-mlx @ git+${REPO}"
+    "$INSTALL_DIR/bin/pip" install --force-reinstall --no-cache-dir --no-deps "vllm-mlx @ git+${REPO}"
 else
     echo ""
     echo "  Installing to $INSTALL_DIR ..."
