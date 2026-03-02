@@ -46,6 +46,7 @@ Local models are fast and private, but they break in agent workflows. Quantized 
 | [Claude Code](https://claude.ai/claude-code) | Verified | Env var config, streaming tools |
 | [Cursor](https://cursor.com) | Verified | Settings UI config |
 | [Continue.dev](https://continue.dev) | Verified | YAML config, VS Code + JetBrains |
+| [Open WebUI](https://github.com/open-webui/open-webui) | Verified | Self-hosted ChatGPT UI, Docker one-liner |
 | [OpenCode](https://github.com/opencode-ai/opencode) | Verified | JSON config |
 | Any OpenAI SDK client | Compatible | Drop-in `base_url` swap |
 
@@ -174,6 +175,25 @@ Add to `~/.config/opencode/opencode.json`:
   }
 }
 ```
+
+### Open WebUI (Self-Hosted ChatGPT)
+
+Use vllm-mlx as the backend for [Open WebUI](https://github.com/open-webui/open-webui) — a self-hosted ChatGPT-style interface with chat history, multi-user support, and RAG. No Ollama required.
+
+```bash
+docker run -d -p 3000:8080 \
+  --add-host=host.docker.internal:host-gateway \
+  -e ENABLE_OLLAMA_API=False \
+  -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 \
+  -e OPENAI_API_KEY=not-needed \
+  -v open-webui:/app/backend/data \
+  --name open-webui \
+  ghcr.io/open-webui/open-webui:main
+```
+
+Then open `http://localhost:3000`, create an account, and start chatting. Your vllm-mlx model appears automatically in the model dropdown. Streaming, markdown rendering, and tool calling all work out of the box.
+
+> **Migrating from Ollama?** Just swap the backend — Open WebUI works identically with vllm-mlx, but you get prompt caching (10-30x faster multi-turn), reliable tool calling, and better agent stability.
 
 ### Aider
 
