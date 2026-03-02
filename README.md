@@ -43,9 +43,13 @@ Local models are fast and private, but they break in agent workflows. Quantized 
 | [OpenClaw](https://github.com/nicepkg/openclaw) | Verified | 14 tools, multi-round, streaming |
 | [Aider](https://aider.chat) | Verified | Code editing agent |
 | [LangChain](https://langchain.com) | Compatible | Standard OpenAI client |
-| [Claude Code](https://claude.ai/claude-code) | Planned | OpenAI-compatible endpoint |
-| [Cursor](https://cursor.com) | Planned | OpenAI-compatible endpoint |
+| [Claude Code](https://claude.ai/claude-code) | Verified | Env var config, streaming tools |
+| [Cursor](https://cursor.com) | Verified | Settings UI config |
+| [Continue.dev](https://continue.dev) | Verified | YAML config, VS Code + JetBrains |
+| [OpenCode](https://github.com/opencode-ai/opencode) | Verified | JSON config |
 | Any OpenAI SDK client | Compatible | Drop-in `base_url` swap |
+
+> **These tables are community-maintained.** Tested on M3 Ultra so far — if you verify a client or model on your hardware, [open an issue](https://github.com/raullenchai/vllm-mlx/issues) or PR to update the tables. We can't test every Mac + model + client combo alone.
 
 ---
 
@@ -105,6 +109,84 @@ OPENAI_BASE_URL=http://localhost:8000/v1 claude
 aider --openai-api-base http://localhost:8000/v1
 
 # Any OpenAI SDK — just set base_url
+```
+
+---
+
+## Client Setup
+
+### Claude Code
+
+```bash
+# Option 1: Environment variable (recommended)
+OPENAI_BASE_URL=http://localhost:8000/v1 claude
+
+# Option 2: Persistent config — add to ~/.claude/settings.json
+```
+
+```json
+{
+  "env": {
+    "OPENAI_BASE_URL": "http://localhost:8000/v1"
+  }
+}
+```
+
+Set the model name in Claude Code with `/model` — use `default` or match whatever `--model` you loaded.
+
+### Cursor
+
+1. Open **Settings > Models > OpenAI API Base**
+2. Set the base URL to `http://localhost:8000/v1`
+3. Add a model named `default` (or match your `--model`)
+4. Set API key to any non-empty string (e.g. `not-needed`)
+
+### Continue.dev (VS Code / JetBrains)
+
+Add to `~/.continue/config.yaml`:
+
+```yaml
+models:
+  - name: vllm-mlx
+    provider: openai
+    model: default
+    apiBase: http://localhost:8000/v1
+    apiKey: not-needed
+```
+
+### OpenCode
+
+Add to `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "provider": {
+    "openai-compatible": {
+      "apiKey": "not-needed",
+      "models": {
+        "default": {
+          "id": "default",
+          "name": "vllm-mlx local",
+          "api_base": "http://localhost:8000/v1"
+        }
+      }
+    }
+  }
+}
+```
+
+### Aider
+
+```bash
+aider --openai-api-base http://localhost:8000/v1 --openai-api-key not-needed
+```
+
+Or set permanently with environment variables:
+
+```bash
+export OPENAI_API_BASE=http://localhost:8000/v1
+export OPENAI_API_KEY=not-needed
+aider
 ```
 
 ---
@@ -229,6 +311,37 @@ Disabled by default. Cost estimate: ~$0.02-0.05 per cloud-routed request with GP
 | [MiniMax-M2.5](https://huggingface.co/lmstudio-community/MiniMax-M2.5-MLX-4bit) | 229B/10B | 4bit | 130GB | 33-38 tok/s | `minimax` | Deep reasoning (192GB+) |
 
 Benchmarks on Mac Studio M3 Ultra (256GB), 800 GB/s memory bandwidth.
+
+### Hardware Requirements
+
+How much RAM do you need? Model weights must fit in unified memory, plus ~20% headroom for KV cache. If your Mac uses >90% of RAM, you'll hit swap thrashing and decode speed drops to <5 tok/s.
+
+| Mac RAM | Recommended Model | Weights | Decode Speed | Notes |
+|---------|-------------------|---------|-------------|-------|
+| 16 GB | Llama 3.2 3B 4bit | ~2 GB | ~100 tok/s | Small tasks only, limited tool calling |
+| 32 GB | Qwen3-Coder-Next 4bit | ~42 GB | ~80 tok/s | Fits with swap, ok for short sessions |
+| 64 GB | Qwen3-Coder-Next 6bit | ~60 GB | ~65 tok/s | Sweet spot for coding agents |
+| 96 GB | Qwen3.5-122B mxfp4 | ~74 GB | ~45 tok/s | Best model fits comfortably |
+| 128 GB | Qwen3.5-122B mxfp4 + `--kv-bits 4` | ~74 GB | ~45 tok/s | Long contexts (50K+ tokens) |
+| 192 GB | Qwen3.5-122B + large KV headroom | ~74 GB | ~45 tok/s | 100K+ context, multi-turn agent sessions |
+| 256 GB | MiniMax-M2.5 4bit or Qwen3.5 8bit | 130 GB+ | 33-38 tok/s | Maximum model quality |
+
+**Rule of thumb:** model weights + 20% = minimum RAM. Use `--kv-bits 4` or `--kv-bits 8` to halve KV cache memory for long contexts.
+
+#### Help Us Fill This Table
+
+These numbers are from a single M3 Ultra (256GB). We need community data for other configs — M1, M2, M4, MacBook Air/Pro, different RAM tiers. If you test a model, **copy the template below into a [new issue](https://github.com/raullenchai/vllm-mlx/issues/new):**
+
+```
+**Hardware:** Mac ___ (___GB RAM), macOS ___
+**Model:** ___ (quantization: ___)
+**Server flags:** `python -m vllm_mlx.server --model ___ ...`
+**Decode speed:** ___ tok/s
+**TTFT (cold / cached):** ___s / ___s
+**Agent client tested:** Claude Code / Cursor / Aider / other
+**Did it fit in RAM?** Yes / No (swap used: ___GB)
+**Notes:** ___
+```
 
 ### Model Comparison: Qwen3.5-122B vs MiniMax-M2.5
 
@@ -539,9 +652,50 @@ Research-backed optimizations ranked by impact-to-effort ratio. Papers surveyed 
 
 ---
 
+## Troubleshooting
+
+### "parameters not found in model" warnings at startup
+
+This is normal for vision-language models (Qwen3-VL, etc.). The warning means vision tower weights are present in the checkpoint but not used by the text-only model class. They are auto-skipped — no action needed.
+
+### Out of memory / very slow decode (<5 tok/s)
+
+Your model is too large for your RAM. Check the [Hardware Requirements](#hardware-requirements) table. Fixes:
+- Switch to a smaller quantization (`4bit` instead of `6bit` or `8bit`)
+- Use `--kv-bits 4` to halve KV cache memory for long contexts
+- Close other apps — browsers, Docker, etc. compete for unified memory
+- If Activity Monitor shows memory pressure in red, the model doesn't fit
+
+### Empty streaming content (blank responses)
+
+This happens when a reasoning parser is set (e.g. `--reasoning-parser qwen3`) but the model doesn't emit `<think>` tags. The parser waits for closing tags that never come. Fix: remove `--reasoning-parser` for non-thinking models, or use `--reasoning-parser` only with models that actually produce chain-of-thought (Qwen3 with thinking enabled, MiniMax-M2.5, DeepSeek-R1). This fork auto-corrects for Qwen3 no-tag output.
+
+### Tool calls appear as plain text in responses
+
+The model is outputting tool calls in text format instead of structured `tool_calls`. This usually means `--tool-call-parser` is not set, or is set to the wrong parser. Check the [Tool Parser Selection Guide](#tool-parser-selection-guide) for the correct parser for your model. Even when this happens, vllm-mlx auto-recovers degraded tool calls — but setting the correct parser gives the best results.
+
+### Slow time-to-first-token (TTFT) on first request
+
+Cold start is normal — the first request prefills the full prompt with no cache. Subsequent requests with shared prefixes (same system prompt, growing conversation) hit the prompt cache and are 10-30x faster. To speed up cold starts:
+- Increase `--prefill-step-size` (e.g. `8192` or `16384`) for faster chunked prefill
+- Use `--kv-bits 8` to reduce memory pressure during prefill
+- Consider `--cloud-model` to route large cold requests to a cloud LLM
+
+### Server stops responding after client disconnects
+
+Fixed in this fork. The streaming disconnect guard ensures that when a client disconnects mid-stream, the server releases all locks and saves the prompt cache. If you're on an older version, upgrade to the latest.
+
+---
+
 ## Contributing
 
 Issues and PRs welcome at [github.com/raullenchai/vllm-mlx](https://github.com/raullenchai/vllm-mlx).
+
+**We need your help.** The hardware tables, model benchmarks, and client configs in this README are based on one M3 Ultra (256GB). There are dozens of Mac + model + client combos we haven't tested. The easiest way to contribute:
+
+1. **Report your hardware benchmarks** — use the [issue template](#help-us-fill-this-table) in the Hardware Requirements section
+2. **Verify a client** — if you get Claude Code, Cursor, Continue.dev, or another client working, let us know what worked (and what didn't)
+3. **Fix a doc** — if something in this README is wrong or missing, PRs are welcome
 
 Built on [waybarrios/vllm-mlx](https://github.com/waybarrios/vllm-mlx) — all upstream features (multimodal, audio, embeddings, Anthropic API, MCP) are available.
 
