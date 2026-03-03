@@ -418,17 +418,20 @@ Tested on Mac Studio M3 Ultra (256GB) with OpenClaw (14 tools, multi-turn agent 
 
 ### Eval Framework
 
-Standardized eval framework covering speed, tool calling (30 scenarios), coding, reasoning, and instruction following. Run on your own Apple Silicon Mac and submit results!
+Standardized eval framework covering speed, tool calling (30 scenarios), coding, reasoning, and instruction following. All evals run with `enable_thinking: false` for fair comparison. Run on your own Apple Silicon Mac and submit results!
 
 | Model | Quant | Decode | Tools | Code | Reason | General |
 |-------|-------|--------|-------|------|--------|---------|
-| Qwen3.5-122B-A10B | 8bit | 43 t/s | **100%** | 70% | 30% | 50% |
-| Qwen3.5-122B-A10B | mxfp4 | 58 t/s | 97% | 90% | 40% | 70% |
-| Qwen3.5-35B-A3B | 8bit | 82 t/s | 97% | 90% | 40% | 70% |
-| Qwen3.5-35B-A3B | 4bit | 105 t/s | 93% | **100%** | 40% | 60% |
-| Qwen3-Coder-Next | 4bit | 74 t/s | 90% | **100%** | 80% | **100%** |
+| Qwen3.5-122B-A10B | mxfp4 | 58 t/s | 90% | 90% | **90%** | 80% |
+| Qwen3.5-122B-A10B | 8bit | 44 t/s | **93%** | 60% | **90%** | 60% |
+| Qwen3.5-35B-A3B | 4bit | 104 t/s | 77% | **100%** | **90%** | 80% |
+| Qwen3.5-35B-A3B | 8bit | 82 t/s | 77% | **100%** | **90%** | 90% |
 | Qwen3-Coder-Next | 6bit | 68 t/s | 87% | **100%** | **90%** | **100%** |
+| Qwen3-Coder-Next | 4bit | 74 t/s | 90% | **100%** | 80% | **100%** |
+| GPT-OSS-20B | mxfp4-q8 | 124 t/s | 77% | 90% | **90%** | **100%** |
+| GLM-4.7-Flash | 8bit | 58 t/s | 73% | **100%** | 80% | 90% |
 | MiniMax-M2.5 | 4bit | 51 t/s | 87% | 40% | 60% | 90% |
+| Hermes-3-Llama-8B | 4bit | 123 t/s | 17% | **100%** | 70% | 60% |
 | Qwen3-0.6B | 4bit | 372 t/s | 50% | 0% | 30% | 50% |
 
 *Tested on Apple M3 Ultra (256GB). See full [scorecard](evals/SCORECARD.md) for details.*
