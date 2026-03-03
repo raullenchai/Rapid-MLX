@@ -483,7 +483,18 @@ class MLXLanguageModel:
                     _generated_ids, skip_special_tokens=False
                 )
                 new_text = _raw_text[len(_prev_raw_text):]
-                _prev_raw_text = _raw_text
+
+                # Guard against multi-byte character boundaries: if the
+                # tokenizer produced a replacement character (U+FFFD) for
+                # an incomplete multi-byte sequence (e.g. emoji split
+                # across tokens), hold the delta and re-decode next
+                # iteration with more tokens to complete the character.
+                if "\ufffd" in new_text:
+                    # Don't update _prev_raw_text so next decode
+                    # recomputes the delta from the last good position.
+                    new_text = ""
+                else:
+                    _prev_raw_text = _raw_text
                 accumulated_text += new_text
 
                 # Check for stop sequences

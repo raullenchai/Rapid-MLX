@@ -2485,13 +2485,6 @@ async def stream_chat_completion(
     completion_tokens = 0
     last_output = None
 
-    # Think-tag suppression for streaming (strip <think>...</think> from content)
-    # MiniMax M2.5 may omit <think> but always emits </think> before the answer.
-    # Buffer content until </think> is found, then emit only the answer.
-    _in_think = False
-    _think_done = False  # True after </think> seen or determined no thinking
-    _think_buffer = ""
-
     # Tool call streaming state
     global _tool_parser_instance
     tool_parser = None
@@ -2699,38 +2692,6 @@ async def stream_chat_completion(
 
                     # Normal content from tool parser
                     content = tool_result.get("content", "")
-
-            # Strip <think>...</think> from streaming content when no reasoning parser.
-            # MiniMax M2.5 often omits <think> but outputs </think> before the answer.
-            # Strategy: buffer until </think> seen, then emit only content after it.
-            if content and not _reasoning_parser and not _think_done:
-                _think_buffer += content
-                content = None
-
-                # Check for </think> in accumulated buffer
-                end_idx = _think_buffer.find("</think>")
-                if end_idx >= 0:
-                    _think_done = True
-                    after = _think_buffer[end_idx + len("</think>"):]
-                    _think_buffer = ""
-                    content = after.lstrip("\n") if after.strip() else None
-                elif "<think>" in _think_buffer:
-                    # Explicit <think> tag found — mark as in-think
-                    _in_think = True
-                    _think_buffer = _think_buffer[_think_buffer.find("<think>") + len("<think>"):]
-                elif len(_think_buffer) > 2000:
-                    # Safety: if 2000+ chars without </think>, model isn't thinking
-                    _think_done = True
-                    content = _think_buffer
-                    _think_buffer = ""
-
-            # Flush think buffer on generation end if </think> was never seen.
-            # This handles responses without thinking (e.g., after tool results)
-            # where content would otherwise be permanently stuck in the buffer.
-            if output.finished and _think_buffer and not _think_done:
-                _think_done = True
-                content = _think_buffer
-                _think_buffer = ""
 
             # Skip empty-string content but preserve whitespace/newlines
             # (newlines are significant for markdown formatting)

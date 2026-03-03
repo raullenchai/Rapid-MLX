@@ -18,6 +18,81 @@ import pytest
 
 from vllm_mlx.reasoning import get_parser
 
+# Mirror SPECIAL_TOKENS_PATTERN from server.py
+from vllm_mlx.api.utils import SPECIAL_TOKENS_PATTERN
+
+
+def simulate_server_streaming_no_parser(tokens: list[str]) -> list[str]:
+    """
+    Simulate the server's standard streaming path WITHOUT a reasoning parser.
+
+    This mirrors the actual logic in stream_chat_completion() lines 2636+
+    (the `else` branch when _reasoning_parser is None):
+    - Special tokens are filtered via SPECIAL_TOKENS_PATTERN
+    - Empty-string content is filtered
+    - No think buffer — think tags pass through to the client
+
+    Returns:
+        list of SSE content strings the client would receive
+    """
+    sse_chunks = []
+
+    for i, token in enumerate(tokens):
+        content = token
+
+        # Filter special tokens (server.py line 2642)
+        if content:
+            content = SPECIAL_TOKENS_PATTERN.sub("", content)
+
+        # Skip empty-string content (server.py line 2698)
+        if content is not None and content == "":
+            content = None
+
+        # Compute finish reason
+        is_finished = (i == len(tokens) - 1)
+        finish_reason = "stop" if is_finished else None
+
+        # Skip empty chunks (server.py line 2709)
+        if not content and not finish_reason:
+            continue
+
+        if content:
+            sse_chunks.append(content)
+
+    return sse_chunks
+
+
+def simulate_tokenizer_decode(tokens: list[str]) -> list[str]:
+    """
+    Simulate the multi-byte character guard in MLXLanguageModel.stream_generate().
+
+    Each entry in `tokens` represents the FULL decode of all IDs so far
+    (simulating tokenizer.decode(_generated_ids)). This tests the delta
+    extraction logic with the U+FFFD guard.
+
+    Args:
+        tokens: List of cumulative decode results (what tokenizer.decode()
+                returns as more IDs are appended).
+
+    Returns:
+        list of delta strings that would be yielded as StreamingOutput.text
+    """
+    _prev_raw_text = ""
+    deltas = []
+
+    for _raw_text in tokens:
+        new_text = _raw_text[len(_prev_raw_text):]
+
+        # Guard against multi-byte character boundaries (llm.py)
+        if "\ufffd" in new_text:
+            new_text = ""
+        else:
+            _prev_raw_text = _raw_text
+
+        deltas.append(new_text)
+
+    return deltas
+
 
 def simulate_server_streaming(tokens: list[str], use_reasoning_parser: str = "qwen3"):
     """
@@ -277,3 +352,242 @@ class TestScenario5_EdgeCases:
         chunks = simulate_server_streaming(tokens)
         full = "".join(chunks)
         assert "a\n\tb" in full
+
+
+class TestScenario6_NoParserThinkTagPassthrough:
+    """Test the standard path (no reasoning parser).
+
+    After removing the think buffer, <think>...</think> tags should pass
+    through to the client so UIs like Open WebUI can render them natively.
+    """
+
+    def test_think_tags_pass_through(self):
+        """<think> and </think> tags should appear in the output."""
+        tokens = ["<think>", "reasoning here", "</think>", "\n\n", "Answer: 42"]
+        chunks = simulate_server_streaming_no_parser(tokens)
+        full = "".join(chunks)
+        assert "<think>" in full
+        assert "</think>" in full
+        assert "reasoning here" in full
+        assert "Answer: 42" in full
+
+    def test_emojis_stream_immediately(self):
+        """Emojis should stream token-by-token, not be buffered."""
+        tokens = ["😀", "😃", "😄", "😁", "😆"]
+        chunks = simulate_server_streaming_no_parser(tokens)
+        # Each emoji should be a separate chunk (immediate streaming)
+        assert len(chunks) == 5, f"Expected 5 chunks, got {len(chunks)}: {chunks}"
+        full = "".join(chunks)
+        assert full == "😀😃😄😁😆"
+
+    def test_100_emojis(self):
+        """The exact test case from the Reddit report: 'Output 100 different emojis'."""
+        emojis = list("😀😃😄😁😆😅🤣😂🙂🙃😉😊😇🥰😍🤩😘😗☺😚😙"
+                       "🥲😋😛😜🤪😝🤑🤗🤭🤫🤔🫡🤐🤨😐😑😶🫥😏😒"
+                       "🙄😬🤥🫨😌😔😪🤤😴😷🤒🤕🤢🤮🤧🥵🥶🥴😵🤯"
+                       "🤠🥳🥸😎🤓🧐😕🫤😟🙁☹😮😯😲😳🥺🥹😦😧😨"
+                       "😰😥😢😭😱😖😣😞😓😩😫🥱😤😡😠🤬😈👿💀☠💩")
+        # Take first 100
+        emoji_tokens = emojis[:100]
+        chunks = simulate_server_streaming_no_parser(emoji_tokens)
+        full = "".join(chunks)
+        # All emojis should be present
+        assert len(full) == len(emoji_tokens), (
+            f"Expected {len(emoji_tokens)} chars, got {len(full)}"
+        )
+        for e in emoji_tokens:
+            assert e in full, f"Missing emoji: {e}"
+
+    def test_think_then_emojis(self):
+        """Model thinks first, then outputs emojis — both should pass through."""
+        tokens = [
+            "<think>", "Let me list emojis", "</think>", "\n\n",
+            "😀", " ", "😃", " ", "😄", " ", "😁",
+        ]
+        chunks = simulate_server_streaming_no_parser(tokens)
+        full = "".join(chunks)
+        assert "<think>" in full
+        assert "Let me list emojis" in full
+        assert "</think>" in full
+        assert "😀" in full
+        assert "😁" in full
+
+    def test_no_think_tags_plain_text(self):
+        """Plain text without think tags streams normally."""
+        tokens = ["Hello ", "world ", "this ", "is ", "a ", "test."]
+        chunks = simulate_server_streaming_no_parser(tokens)
+        full = "".join(chunks)
+        assert full == "Hello world this is a test."
+
+    def test_special_tokens_still_filtered(self):
+        """Special tokens like <|im_end|> should still be removed."""
+        tokens = ["Hello", "<|im_end|>", " world"]
+        chunks = simulate_server_streaming_no_parser(tokens)
+        full = "".join(chunks)
+        assert full == "Hello world"
+        assert "<|im_end|>" not in full
+
+    def test_mixed_emojis_and_text_with_special_tokens(self):
+        """Emojis mixed with text and special tokens."""
+        tokens = ["Great ", "job! ", "🎉", "🎊", "<|im_end|>"]
+        chunks = simulate_server_streaming_no_parser(tokens)
+        full = "".join(chunks)
+        assert full == "Great job! 🎉🎊"
+
+    def test_empty_think_block_passthrough(self):
+        """<think></think> with empty reasoning should pass through."""
+        tokens = ["<think>", "</think>", "Direct answer."]
+        chunks = simulate_server_streaming_no_parser(tokens)
+        full = "".join(chunks)
+        assert "<think>" in full
+        assert "</think>" in full
+        assert "Direct answer." in full
+
+
+class TestScenario7_MultiByteBoundary:
+    """Test multi-byte character boundary handling in tokenizer decode.
+
+    When emojis span multiple tokens, tokenizer.decode() may produce
+    U+FFFD (replacement character) for incomplete byte sequences.
+    The guard should hold the delta until the character is complete.
+    """
+
+    def test_emoji_split_across_two_tokens(self):
+        """Emoji completed on second token — should emit once, correctly."""
+        # Simulate: tok1 decodes to "Hello \ufffd", tok2 completes to "Hello 😀"
+        cumulative_decodes = [
+            "Hello ",       # tok0: normal text
+            "Hello \ufffd", # tok1: partial emoji (first bytes)
+            "Hello 😀",     # tok2: emoji complete
+        ]
+        deltas = simulate_tokenizer_decode(cumulative_decodes)
+        assert deltas[0] == "Hello "
+        assert deltas[1] == ""  # skipped due to U+FFFD
+        assert deltas[2] == "😀"  # complete emoji emitted
+        full = "".join(deltas)
+        assert full == "Hello 😀"
+        assert "\ufffd" not in full
+
+    def test_emoji_split_across_three_tokens(self):
+        """Emoji needing 3 tokens to complete."""
+        cumulative_decodes = [
+            "Hi ",
+            "Hi \ufffd",      # partial
+            "Hi \ufffd",      # still partial (different bytes, same result)
+            "Hi 🏳️‍🌈",     # complete (rainbow flag, multi-codepoint)
+        ]
+        deltas = simulate_tokenizer_decode(cumulative_decodes)
+        assert deltas[1] == ""  # skipped
+        assert deltas[2] == ""  # skipped
+        full = "".join(deltas)
+        assert "🏳️‍🌈" in full
+        assert "\ufffd" not in full
+
+    def test_no_replacement_chars_normal_flow(self):
+        """Normal text without multi-byte issues — no deltas dropped."""
+        cumulative_decodes = [
+            "H",
+            "He",
+            "Hel",
+            "Hell",
+            "Hello",
+        ]
+        deltas = simulate_tokenizer_decode(cumulative_decodes)
+        assert deltas == ["H", "e", "l", "l", "o"]
+
+    def test_multiple_emojis_some_split(self):
+        """Multiple emojis, some split across tokens, some single-token."""
+        cumulative_decodes = [
+            "😀",           # emoji as single token
+            "😀\ufffd",     # next emoji partial
+            "😀🎉",         # second emoji complete
+            "😀🎉 done",    # trailing text
+        ]
+        deltas = simulate_tokenizer_decode(cumulative_decodes)
+        assert deltas[0] == "😀"
+        assert deltas[1] == ""       # skipped
+        assert deltas[2] == "🎉"
+        assert deltas[3] == " done"
+        full = "".join(deltas)
+        assert full == "😀🎉 done"
+
+    def test_replacement_char_at_end_of_stream(self):
+        """If stream ends with a replacement char, it's still suppressed."""
+        cumulative_decodes = [
+            "text",
+            "text\ufffd",  # partial at end — suppressed
+        ]
+        deltas = simulate_tokenizer_decode(cumulative_decodes)
+        full = "".join(deltas)
+        assert full == "text"
+        assert "\ufffd" not in full
+
+    def test_chinese_characters_single_token(self):
+        """CJK characters (multi-byte UTF-8) as single tokens work fine."""
+        cumulative_decodes = [
+            "你",
+            "你好",
+            "你好世",
+            "你好世界",
+        ]
+        deltas = simulate_tokenizer_decode(cumulative_decodes)
+        assert deltas == ["你", "好", "世", "界"]
+
+
+class TestScenario8_RegressionNoParser:
+    """Regression tests: the no-parser path should NOT break existing behavior.
+
+    With reasoning parser enabled, behavior is unchanged (tested by Scenarios 1-5).
+    Without a reasoning parser, the old think buffer stripped think tags.
+    The NEW behavior: think tags pass through. These tests verify the
+    transition is intentional and complete.
+    """
+
+    def test_reasoning_parser_still_strips_think_tags(self):
+        """WITH a reasoning parser, think tags are still extracted (not in content)."""
+        tokens = ["<think>", "reasoning", "</think>", "content"]
+        chunks = simulate_server_streaming(tokens, use_reasoning_parser="qwen3")
+        full = "".join(chunks)
+        assert "content" in full
+        assert "<think>" not in full
+        assert "reasoning" not in full
+
+    def test_no_parser_preserves_full_output(self):
+        """WITHOUT a reasoning parser, nothing is stripped — full output preserved."""
+        tokens = [
+            "<think>", "I need to reason.", "</think>", "\n",
+            "The answer is 42.",
+        ]
+        chunks = simulate_server_streaming_no_parser(tokens)
+        full = "".join(chunks)
+        # Everything should be present
+        assert "<think>" in full
+        assert "I need to reason." in full
+        assert "</think>" in full
+        assert "The answer is 42." in full
+
+    def test_no_parser_markdown_with_emojis(self):
+        """Markdown + emojis stream correctly without parser."""
+        tokens = [
+            "# Emoji List ", "🎯", "\n\n",
+            "1. ", "😀", " - Grinning", "\n",
+            "2. ", "🎉", " - Party", "\n",
+            "3. ", "🚀", " - Rocket", "\n",
+        ]
+        chunks = simulate_server_streaming_no_parser(tokens)
+        full = "".join(chunks)
+        assert "# Emoji List 🎯" in full
+        assert "😀 - Grinning" in full
+        assert "🎉 - Party" in full
+        assert "🚀 - Rocket" in full
+
+    def test_no_parser_long_emoji_sequence(self):
+        """Long emoji-only output streams immediately, not buffered."""
+        # 50 emojis — old code would buffer all, new code streams immediately
+        emojis = list("🌍🌎🌏🌐🗺🧭🏔⛰🌋🗻🏕🏖🏜🏝🏞🏟🏛🏗🧱🪨"
+                       "🪵🛖🏘🏚🏠🏡🏢🏣🏤🏥🏦🏨🏩🏪🏫🏬🏭🏯🏰💒")
+        chunks = simulate_server_streaming_no_parser(emojis)
+        # Each emoji should be a separate chunk (not batched)
+        assert len(chunks) == len(emojis), (
+            f"Expected {len(emojis)} chunks (immediate streaming), got {len(chunks)}"
+        )
