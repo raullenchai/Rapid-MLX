@@ -320,6 +320,7 @@ class BatchedEngine(BaseEngine):
         )
 
         await self._engine.engine.start()
+        self._engine_started = True
 
     async def stop(self) -> None:
         """Stop the engine and cleanup resources."""
@@ -337,6 +338,7 @@ class BatchedEngine(BaseEngine):
         self._processor = None
         self._mllm_instance = None
         self._loaded = False
+        self._engine_started = False
         logger.info("BatchedEngine stopped")
 
     def _apply_chat_template(
