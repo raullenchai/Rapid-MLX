@@ -74,6 +74,8 @@ def _array_memory(arr) -> int:
     Returns:
         Estimated memory in bytes.
     """
+    if arr is None:
+        return 0
     if hasattr(arr, "shape") and hasattr(arr, "dtype"):
         dtype = arr.dtype
         if hasattr(dtype, "size"):
@@ -104,6 +106,8 @@ def estimate_kv_cache_memory(cache: list[Any]) -> int:
     total_bytes = 0
 
     for layer_cache in cache:
+        if layer_cache is None:
+            continue
         # Handle different cache object types
         # Check dict first since dicts have .keys() method that would match below
         if isinstance(layer_cache, dict) and "state" in layer_cache:
@@ -273,6 +277,9 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any]:
 
     trimmed: list[Any] = []
     for layer_cache in cache:
+        if layer_cache is None:
+            trimmed.append(layer_cache)
+            continue
         if QuantizedKVCache is not None and isinstance(layer_cache, QuantizedKVCache):
             tc = QuantizedKVCache.__new__(QuantizedKVCache)
             tc.keys = layer_cache.keys
@@ -298,6 +305,8 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any]:
 
 def _needs_kv_trim(layer: Any) -> bool:
     """Check if a cache layer has oversized KV arrays (duck-typed, no MLX import)."""
+    if layer is None:
+        return False
     keys = getattr(layer, "keys", None)
     offset = getattr(layer, "offset", None)
     if keys is None or offset is None:
@@ -359,6 +368,9 @@ def _quantize_cache(cache: list[Any], bits: int = 8, group_size: int = 64) -> li
 
     quantized = []
     for layer in cache:
+        if layer is None:
+            quantized.append(layer)
+            continue
         if isinstance(layer, KVCache) and layer.keys is not None:
             quantized.append(layer.to_quantized(group_size=group_size, bits=bits))
         else:
@@ -373,6 +385,9 @@ def _dequantize_cache(cache: list[Any]) -> list[Any]:
 
     result = []
     for layer in cache:
+        if layer is None:
+            result.append(layer)
+            continue
         if isinstance(layer, QuantizedKVCache) and layer.keys is not None:
             kv = KVCache()
             kv.keys = mx.dequantize(

@@ -110,6 +110,7 @@ class HybridEngine(BaseEngine):
         # State
         self._loaded = False
         self._is_mllm = False
+        self._batched_engine_started: bool = True
 
     @property
     def model_name(self) -> str:
@@ -253,7 +254,7 @@ class HybridEngine(BaseEngine):
                 # Switching to batched mode
                 if self._batched and self._batched._engine:
                     # Start BatchedEngine's engine loop if not started yet (lazy start)
-                    if not getattr(self, "_batched_engine_started", True):
+                    if not self._batched_engine_started:
                         logger.info("HybridEngine: starting BatchedEngine (lazy start)")
                         await self._batched._engine.engine.start()
                         self._batched_engine_started = True
