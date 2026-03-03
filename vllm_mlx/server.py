@@ -379,6 +379,15 @@ class RateLimiter:
         window_start = current_time - self.window_size
 
         with self._lock:
+            # Periodically purge stale client keys (every ~100 requests)
+            if len(self._requests) > 100:
+                stale = [
+                    k for k, v in self._requests.items()
+                    if not v or max(v) <= window_start
+                ]
+                for k in stale:
+                    del self._requests[k]
+
             # Clean old requests outside window
             self._requests[client_id] = [
                 t for t in self._requests[client_id] if t > window_start
@@ -1676,7 +1685,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         f"total_chars={total_chars} tools={n_tools} "
         f"response_format={request.response_format}"
     )
-    logger.info(f"[REQUEST] last user message preview: {last_user_preview!r}")
+    logger.debug(f"[REQUEST] last user message preview: {last_user_preview!r}")
 
     # Save original messages (clean dicts) for cloud routing BEFORE
     # local mutations (extract_multimodal_content, developer→system, suffix injection).
@@ -2104,7 +2113,7 @@ async def create_anthropic_message(
         f"msgs={n_msgs} total_chars={total_chars} system_chars={sys_chars} "
         f"tools={n_tools}"
     )
-    logger.info(f"[REQUEST] last user message preview: {last_user_preview!r}")
+    logger.debug(f"[REQUEST] last user message preview: {last_user_preview!r}")
 
     # Convert Anthropic request -> OpenAI request
     openai_request = anthropic_to_openai(anthropic_request)
