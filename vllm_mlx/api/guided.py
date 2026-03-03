@@ -128,7 +128,7 @@ class GuidedGenerator:
         json_schema: dict[str, Any],
         max_tokens: int = 256,
         temperature: float = 0.7,
-    ) -> str:
+    ) -> str | None:
         """
         Generate JSON output constrained to a schema.
 
@@ -139,7 +139,7 @@ class GuidedGenerator:
             temperature: Sampling temperature
 
         Returns:
-            JSON string matching the schema
+            JSON string matching the schema, or None on failure
         """
         # Convert schema to Pydantic model
         pydantic_model = json_schema_to_pydantic(json_schema)
@@ -172,7 +172,7 @@ class GuidedGenerator:
         prompt: str,
         max_tokens: int = 256,
         temperature: float = 0.7,
-    ) -> str:
+    ) -> str | None:
         """
         Generate any valid JSON object.
 
@@ -182,7 +182,7 @@ class GuidedGenerator:
             temperature: Sampling temperature
 
         Returns:
-            JSON string
+            JSON string, or None on failure
         """
         try:
             from outlines import generate
