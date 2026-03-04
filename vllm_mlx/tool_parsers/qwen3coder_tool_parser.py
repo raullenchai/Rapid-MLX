@@ -76,10 +76,9 @@ def _convert_param_value(
             return int(param_value)
         except (ValueError, TypeError):
             return param_value
-    elif param_type.startswith(("num", "float")):
+    elif param_type.startswith(("num", "float", "double")):
         try:
-            fv = float(param_value)
-            return fv if fv - int(fv) != 0 else int(fv)
+            return float(param_value)
         except (ValueError, TypeError):
             return param_value
     elif param_type in ("boolean", "bool", "binary"):
