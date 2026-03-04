@@ -293,7 +293,8 @@ class Qwen3CoderToolParser(ToolParser):
                     ]
                     if content_before:
                         return {"content": content_before}
-                return None
+                # Fall through to header parsing below instead of returning
+                # None — the function header may already be in current_text.
             else:
                 if (
                     current_text.rstrip().endswith(self.tool_call_end_token)
@@ -340,6 +341,41 @@ class Qwen3CoderToolParser(ToolParser):
                     self._current_tool_id = _generate_tool_id()
                     self.header_sent = True
                     self.in_function = True
+
+                    # If the function body is already complete, emit the full
+                    # tool call in one chunk to prevent header-only output
+                    # when coarse deltas or max_tokens truncation leave no
+                    # further parser calls.
+                    if self.function_end_token in tool_text:
+                        tools = None
+                        if request and isinstance(request, dict):
+                            tools = request.get("tools")
+                        fc = tool_text[func_start:tool_text.find(
+                            self.function_end_token, func_start
+                        )]
+                        parsed = self._parse_xml_function_call(fc, tools)
+                        args = parsed["arguments"] if parsed else "{}"
+                        self.json_started = True
+                        self.json_closed = True
+                        self.in_function = False
+                        self.accumulated_params = {}
+                        self.prev_tool_call_arr.append(
+                            {"name": self.current_function_name, "arguments": args}
+                        )
+                        return {
+                            "tool_calls": [
+                                {
+                                    "index": self.current_tool_index,
+                                    "id": self._current_tool_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": self.current_function_name,
+                                        "arguments": args,
+                                    },
+                                }
+                            ]
+                        }
+
                     self.prev_tool_call_arr.append(
                         {"name": self.current_function_name, "arguments": "{}"}
                     )

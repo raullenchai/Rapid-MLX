@@ -805,6 +805,40 @@ class TestSeedOssUpstreamStreaming:
         parsed = json.loads(full_args)
         assert parsed["location"] == "Paris"
 
+    def test_streaming_coarse_deltas_complete(self, seed_oss_parser, seed_oss_request):
+        """Two coarse deltas: header + complete body → full args emitted.
+
+        Reproduces the scenario where the function body is already complete
+        when the header is first detected (e.g. fast model, large chunk).
+        """
+        deltas = [
+            "<seed:tool_call>\n<function=get_weather>"
+            "\n<parameter=location>Paris</parameter>\n</function>"
+            "\n</seed:tool_call>",
+        ]
+        text = ""
+        collected = []
+        for d in deltas:
+            prev = text
+            text += d
+            r = seed_oss_parser.extract_tool_calls_streaming(
+                previous_text=prev, current_text=text, delta_text=d,
+                request=seed_oss_request,
+            )
+            if r:
+                collected.append(r)
+
+        # Must have at least one tool_calls chunk with non-empty arguments
+        tc_chunks = [c for c in collected if "tool_calls" in c]
+        assert len(tc_chunks) >= 1
+        # First chunk should have complete arguments (fast-path)
+        first_tc = tc_chunks[0]["tool_calls"][0]
+        assert first_tc["function"]["name"] == "get_weather"
+        args = first_tc["function"]["arguments"]
+        assert args  # not empty
+        parsed = json.loads(args)
+        assert parsed["location"] == "Paris"
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # DeepSeek V3.1 — ported from vLLM test_deepseekv31_tool_parser.py
@@ -1143,6 +1177,36 @@ class TestQwen3CoderUpstreamStreaming:
         assert full_args.startswith("{")
         assert full_args.endswith("}")
         parsed = json.loads(full_args)
+        assert parsed["city"] == "Dallas"
+
+    def test_streaming_coarse_deltas_complete(
+        self, qwen3coder_parser, qwen3coder_request
+    ):
+        """Single coarse delta with complete tool call → full args emitted."""
+        deltas = [
+            "<tool_call>\n<function=get_current_weather>"
+            "\n<parameter=city>Dallas</parameter>\n</function>"
+            "\n</tool_call>",
+        ]
+        text = ""
+        collected = []
+        for d in deltas:
+            prev = text
+            text += d
+            r = qwen3coder_parser.extract_tool_calls_streaming(
+                previous_text=prev, current_text=text, delta_text=d,
+                request=qwen3coder_request,
+            )
+            if r:
+                collected.append(r)
+
+        tc_chunks = [c for c in collected if "tool_calls" in c]
+        assert len(tc_chunks) >= 1
+        first_tc = tc_chunks[0]["tool_calls"][0]
+        assert first_tc["function"]["name"] == "get_current_weather"
+        args = first_tc["function"]["arguments"]
+        assert args
+        parsed = json.loads(args)
         assert parsed["city"] == "Dallas"
 
 
