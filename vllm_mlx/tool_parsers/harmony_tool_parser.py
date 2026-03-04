@@ -29,9 +29,9 @@ def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
-# Tool call pattern — supports both formats:
-#   Real template:  to=functions.NAME<|channel|>commentary json<|message|>ARGS<|call|>
-#   Legacy/test:    <|channel|>commentary to=functions.NAME <|constrain|>json <|message|>ARGS<|call|>
+# Tool call pattern — supports both formats from the harmony spec:
+#   Model-generated: <|channel|>commentary to=functions.NAME <|constrain|>json<|message|>ARGS<|call|>
+#   Template-encoded (history): to=functions.NAME<|channel|>commentary json<|message|>ARGS<|call|>
 _COMMENTARY_BLOCK_PATTERN = re.compile(
     r"(?:"
     # Real format: to=functions.NAME<|channel|>commentary [content_type]<|message|>
@@ -63,7 +63,11 @@ class HarmonyToolParser(ToolParser):
     Used when --enable-auto-tool-choice --tool-call-parser harmony are set.
     """
 
-    SUPPORTS_NATIVE_TOOL_FORMAT = False
+    # GPT-OSS chat template natively handles tool_calls and role="tool"
+    # messages using harmony channel tokens (to=functions.NAME, <|call|>).
+    # Without this, tool history is converted to "[Calling tool: ...]" text
+    # which breaks the model's understanding of the tool flow.
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None

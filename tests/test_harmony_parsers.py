@@ -1323,14 +1323,18 @@ class TestHarmonyCLIIntegration:
 
 
 class TestHarmonyNativeFormat:
-    """Test that Harmony parser correctly declares no native format support."""
+    """Test that Harmony parser declares native format support.
 
-    def test_supports_native_format_false(self):
-        """HarmonyToolParser does not support native tool format."""
-        assert HarmonyToolParser.SUPPORTS_NATIVE_TOOL_FORMAT is False
-        assert HarmonyToolParser.supports_native_format() is False
+    GPT-OSS chat templates natively handle tool_calls and role='tool'
+    messages using harmony channel tokens.
+    """
+
+    def test_supports_native_format_true(self):
+        """HarmonyToolParser supports native tool format."""
+        assert HarmonyToolParser.SUPPORTS_NATIVE_TOOL_FORMAT is True
+        assert HarmonyToolParser.supports_native_format() is True
 
     def test_instance_supports_native_format(self):
-        """Instance-level check also returns False."""
+        """Instance-level check also returns True."""
         parser = HarmonyToolParser()
-        assert parser.supports_native_format() is False
+        assert parser.supports_native_format() is True

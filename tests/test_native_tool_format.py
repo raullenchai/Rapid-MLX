@@ -13,6 +13,7 @@ from vllm_mlx.tool_parsers import (
     DeepSeekToolParser,
     FunctionaryToolParser,
     GraniteToolParser,
+    HarmonyToolParser,
     HermesToolParser,
     KimiToolParser,
     LlamaToolParser,
@@ -37,6 +38,7 @@ class TestNativeToolFormatCapability:
             FunctionaryToolParser,
             KimiToolParser,
             HermesToolParser,
+            HarmonyToolParser,
         ]
         for parser_cls in native_parsers:
             assert (
@@ -73,6 +75,7 @@ class TestNativeToolFormatCapability:
             "functionary",
             "kimi",
             "hermes",
+            "harmony",
         ]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             assert (

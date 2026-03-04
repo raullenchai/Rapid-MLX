@@ -58,8 +58,8 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
             logger.warning(f"Standard tokenizer loading failed, using fallback: {e}")
             return _load_with_tokenizer_fallback(model_name)
         # Fallback for multimodal models loaded as text-only (skip vision weights)
-        elif "parameters not in model" in str(e):
-            logger.warning(f"Model has extra parameters (likely vision weights), retrying with strict=False: {e}")
+        elif "parameters not in model" in str(e) or "Missing" in str(e) and "parameters" in str(e):
+            logger.warning(f"Model has extra/missing parameters (likely VLM weights), retrying with strict=False: {e}")
             return _load_non_strict(model_name, tokenizer_config)
         else:
             raise
