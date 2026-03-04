@@ -175,8 +175,14 @@ class Glm47ToolParser(ToolParser):
                     }
             return None
 
-        # No tool call detected yet; strip think tags and emit content
-        clean_delta = self.strip_think_tags(delta_text)
-        if clean_delta:
-            return {"content": clean_delta}
+        # No tool call detected yet; emit content delta.
+        # Only strip think tags if they're actually present (avoid .strip()
+        # on normal deltas which would eat inter-word spaces).
+        if "</think>" in delta_text:
+            clean_delta = self.strip_think_tags(delta_text)
+            if clean_delta:
+                return {"content": clean_delta}
+            return None
+        if delta_text:
+            return {"content": delta_text}
         return None

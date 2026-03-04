@@ -290,12 +290,7 @@ class TestGlm47UpstreamStreaming:
     """Streaming tests ported from upstream vLLM."""
 
     def test_streaming_no_tool_calls(self, glm47_parser, glm47_request):
-        """Regular text in streaming → content delta.
-
-        Note: GLM47's strip_think_tags() currently strips leading/trailing
-        whitespace from content deltas.  This is a known minor issue tracked
-        separately; the test reflects current behaviour so CI stays green.
-        """
+        """Regular text in streaming → content delta."""
         result = glm47_parser.extract_tool_calls_streaming(
             previous_text="Hello",
             current_text="Hello world",
@@ -303,7 +298,7 @@ class TestGlm47UpstreamStreaming:
             request=glm47_request,
         )
         assert result is not None
-        assert result["content"] == "world"  # leading space stripped by strip_think_tags
+        assert result["content"] == " world"
 
     def test_streaming_buffers_during_tool_call(self, glm47_parser, glm47_request):
         """While inside <tool_call> but before </tool_call>, returns None."""
@@ -772,12 +767,15 @@ class TestSeedOssUpstreamStreaming:
         """Multi-step streaming: header → { → param → } across calls.
 
         Streaming parsers emit one piece per call; callers must invoke
-        extract_tool_calls_streaming once per token/delta.
+        extract_tool_calls_streaming once per token/delta (fine-grained).
         """
         deltas = [
-            "<seed:tool_call>\n<function=get_weather>",
-            "\n<parameter=location>Paris</parameter>",
-            "\n</function>\n</seed:tool_call>",
+            "<seed:tool_call>",
+            "\n<function=get_weather>",
+            "\n",
+            "<parameter=location>Paris</parameter>",
+            "\n</function>",
+            "\n</seed:tool_call>",
         ]
         text = ""
         collected = []
@@ -1114,9 +1112,12 @@ class TestQwen3CoderUpstreamStreaming:
     ):
         """Multi-step streaming: header → { → param → } across calls."""
         deltas = [
-            "<tool_call>\n<function=get_current_weather>",
-            "\n<parameter=city>Dallas</parameter>",
-            "\n</function>\n</tool_call>",
+            "<tool_call>",
+            "\n<function=get_current_weather>",
+            "\n",
+            "<parameter=city>Dallas</parameter>",
+            "\n</function>",
+            "\n</tool_call>",
         ]
         text = ""
         collected = []
