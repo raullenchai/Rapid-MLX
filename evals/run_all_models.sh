@@ -4,6 +4,8 @@
 # Examples:
 #   bash evals/run_all_models.sh                    # all suites
 #   bash evals/run_all_models.sh speed tool_calling # specific suites
+# NOTE: Model paths below are machine-specific. Update them to match your
+#       local model directory before running (or set MODEL_DIR env var).
 # No set -e: server kill/wait returns non-zero which is expected
 
 PYTHON=python3.12
