@@ -24,7 +24,7 @@ fi
 declare -a MODELS=(
   "Qwen3-0.6B-4bit|/Users/raullenstudio/.lmstudio/models/mlx-community/Qwen3-0.6B-MLX-4bit|hermes|4bit"
   "GLM-4.7-4bit|/Users/raullenstudio/.lmstudio/models/mlx-community/GLM-4.7-4bit|glm47|4bit"
-  "GPT-OSS-20B-mxfp4-q8|/Users/raullenstudio/.lmstudio/models/mlx-community/gpt-oss-20b-MXFP4-Q8|seed_oss|mxfp4-q8"
+  "GPT-OSS-20B-mxfp4-q8|/Users/raullenstudio/.lmstudio/models/mlx-community/gpt-oss-20b-MXFP4-Q8|harmony|mxfp4-q8"
   "MiniMax-M2.5-4bit|/Users/raullenstudio/.lmstudio/models/lmstudio-community/MiniMax-M2.5-MLX-4bit|minimax|4bit"
   "Qwen3.5-35B-A3B-4bit|/Users/raullenstudio/.lmstudio/models/mlx-community/Qwen3.5-35B-A3B-4bit|hermes|4bit"
   "Qwen3.5-35B-A3B-8bit|/Users/raullenstudio/.lmstudio/models/mlx-community/Qwen3.5-35B-A3B-8bit|hermes|8bit"

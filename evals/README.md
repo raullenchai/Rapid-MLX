@@ -25,7 +25,7 @@ Different models require different server flags for tool calling. Use the correc
 | Model Family | Server Flags |
 |-------------|-------------|
 | **Qwen / Hermes** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
-| **GPT-OSS / Seed-OSS** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser seed_oss` |
+| **GPT-OSS (Harmony)** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser harmony` |
 | **MiniMax** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser minimax` |
 | **DeepSeek V3.1 / R1-0528** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser deepseek_v31` |
 | **GLM-4** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser glm47` |
@@ -35,7 +35,7 @@ Different models require different server flags for tool calling. Use the correc
 Then pass the matching `--parser` to the eval script:
 ```bash
 python evals/run_eval.py --model "X" --parser hermes    # for Qwen/Hermes models
-python evals/run_eval.py --model "X" --parser seed_oss   # for GPT-OSS / Seed-OSS models
+python evals/run_eval.py --model "X" --parser harmony    # for GPT-OSS (Harmony) models
 python evals/run_eval.py --model "X" --parser minimax   # for MiniMax models
 python evals/run_eval.py --model "X" --parser deepseek_v31  # for DeepSeek V3.1 / R1-0528
 python evals/run_eval.py --model "X" --parser glm47     # for GLM-4 models
