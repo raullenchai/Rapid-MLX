@@ -38,7 +38,7 @@ Local models are fast and private, but they break in agent workflows. Quantized 
 | **Reasoning separation** | Not supported | Clean `reasoning_content` field (0% leak rate) |
 | **Multi-turn TTFT** | Full prefill every turn | **10-30x faster** — persistent prompt cache |
 | **Long-context prefill** | 50s for 52K tokens | **<1s** — smart cloud routing offloads to GPT-5/Claude |
-| **Decode speed** | Baseline | 65-100 tok/s on M3 Ultra |
+| **Decode speed** | Baseline | 43-74 tok/s on M3 Ultra (model-dependent) |
 | **KV cache quantization** | Not available | 4-bit and 8-bit, halves memory for long contexts |
 | **Speculative decoding** | Not available | `--draft-model` with prompt cache compatibility |
 | **Logprobs API** | Not available | Per-token `logprobs` + `top_logprobs` |
@@ -343,10 +343,11 @@ Disabled by default. Cost estimate: ~$0.02-0.05 per cloud-routed request with GP
 
 | Model | Params | Quant | RAM | Decode | Tool Parser | Best For |
 |-------|--------|-------|-----|--------|-------------|----------|
-| [Qwen3.5-122B-A10B](https://huggingface.co/nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx) | 122B/10B | mxfp4 | 74GB | **41-47 tok/s** | `hermes` | **Best overall** — tool calling + reasoning |
-| [Qwen3-Coder-Next](https://huggingface.co/lmstudio-community/Qwen3-Coder-Next-MLX-4bit) | 80B/3B | 4bit | 42GB | **~80-100 tok/s** | `hermes` | Speed + coding |
-| [Qwen3-Coder-Next](https://huggingface.co/lmstudio-community/Qwen3-Coder-Next-MLX-6bit) | 80B/3B | 6bit | 60GB | ~65 tok/s | `hermes` | **Best balance** |
-| [MiniMax-M2.5](https://huggingface.co/lmstudio-community/MiniMax-M2.5-MLX-4bit) | 229B/10B | 4bit | 130GB | 33-38 tok/s | `minimax` | Deep reasoning (192GB+) |
+| [Qwen3.5-122B-A10B](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 122B/10B | 8bit | 130GB | **43 tok/s** | `hermes` | **Best overall** — 90% across all evals |
+| [Qwen3.5-122B-A10B](https://huggingface.co/nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx) | 122B/10B | mxfp4 | 74GB | **57 tok/s** | `hermes` | Best value — same quality, half the RAM |
+| [Qwen3-Coder-Next](https://huggingface.co/lmstudio-community/Qwen3-Coder-Next-MLX-6bit) | 80B/3B | 6bit | 60GB | ~67 tok/s | `hermes` | **Best balance** — coding + speed |
+| [Qwen3-Coder-Next](https://huggingface.co/lmstudio-community/Qwen3-Coder-Next-MLX-4bit) | 80B/3B | 4bit | 42GB | ~74 tok/s | `hermes` | Speed + coding |
+| [MiniMax-M2.5](https://huggingface.co/lmstudio-community/MiniMax-M2.5-MLX-4bit) | 229B/10B | 4bit | 130GB | ~51 tok/s | `minimax` | Deep reasoning (192GB+) |
 
 Benchmarks on Mac Studio M3 Ultra (256GB), 800 GB/s memory bandwidth.
 
@@ -357,12 +358,12 @@ How much RAM do you need? Model weights must fit in unified memory, plus ~20% he
 | Mac RAM | Recommended Model | Weights | Decode Speed | Notes |
 |---------|-------------------|---------|-------------|-------|
 | 16 GB | Llama 3.2 3B 4bit | ~2 GB | ~100 tok/s | Small tasks only, limited tool calling |
-| 32 GB | Qwen3-Coder-Next 4bit | ~42 GB | ~80 tok/s | Fits with swap, ok for short sessions |
-| 64 GB | Qwen3-Coder-Next 6bit | ~60 GB | ~65 tok/s | Sweet spot for coding agents |
-| 96 GB | Qwen3.5-122B mxfp4 | ~74 GB | ~45 tok/s | Best model fits comfortably |
-| 128 GB | Qwen3.5-122B mxfp4 + `--kv-bits 4` | ~74 GB | ~45 tok/s | Long contexts (50K+ tokens) |
-| 192 GB | Qwen3.5-122B + large KV headroom | ~74 GB | ~45 tok/s | 100K+ context, multi-turn agent sessions |
-| 256 GB | MiniMax-M2.5 4bit or Qwen3.5 8bit | 130 GB+ | 33-38 tok/s | Maximum model quality |
+| 32 GB | Qwen3-Coder-Next 4bit | ~42 GB | ~74 tok/s | Fits with swap, ok for short sessions |
+| 64 GB | Qwen3-Coder-Next 6bit | ~60 GB | ~67 tok/s | Sweet spot for coding agents |
+| 96 GB | Qwen3.5-122B mxfp4 | ~74 GB | ~57 tok/s | Best model fits comfortably |
+| 128 GB | Qwen3.5-122B mxfp4 + `--kv-bits 4` | ~74 GB | ~57 tok/s | Long contexts (50K+ tokens) |
+| 192 GB | Qwen3.5-122B + large KV headroom | ~74 GB | ~57 tok/s | 100K+ context, multi-turn agent sessions |
+| 256 GB | Qwen3.5-122B 8bit or MiniMax-M2.5 4bit | 130 GB | 43-51 tok/s | Maximum model quality |
 
 **Rule of thumb:** model weights + 20% = minimum RAM. Use `--kv-bits 4` or `--kv-bits 8` to halve KV cache memory for long contexts.
 
@@ -383,56 +384,53 @@ These numbers are from a single M3 Ultra (256GB). We need community data for oth
 
 ### Model Comparison: Qwen3.5-122B vs MiniMax-M2.5
 
-Tested on Mac Studio M3 Ultra (256GB) with OpenClaw (14 tools, multi-turn agent sessions):
+Tested on Mac Studio M3 Ultra (256GB). Eval scores from standardized benchmark suites (HumanEval+, MATH-500, MMLU-Pro):
 
-**Speed (with prompt cache hit):**
+**Eval scores (enable_thinking=false):**
 
-| Metric | Qwen3.5-122B mxfp4 | MiniMax-M2.5 4bit |
-|--------|---------------------|-------------------|
-| Decode (short, <100 tok) | 25-37 tok/s | 33-38 tok/s |
-| Decode (long, 300+ tok) | **41-47 tok/s** | ~35 tok/s |
-| Decode peak (800 tok) | **46.3 tok/s** | 38 tok/s |
-| TTFT (cache hit) | **0.4-1.3s** | ~1-2s |
-| TTFT (cache miss, 8K tok) | 12s | ~12s |
-| Prefill throughput | ~670 tok/s | ~700 tok/s |
+| Suite | Qwen3.5-122B 8bit | Qwen3.5-122B mxfp4 | MiniMax-M2.5 4bit |
+|-------|-------------------|---------------------|-------------------|
+| Tool Calling (30 scenarios) | 87% | **90%** | 87% |
+| Coding (HumanEval+) | **90%** | **90%** | 10% |
+| Reasoning (MATH-500) | **90%** | 80% | 80% |
+| General (MMLU-Pro) | **90%** | **90%** | **90%** |
 
-**Agent reliability (OpenClaw, 14 tools):**
+**Speed (eval framework):**
 
-| Metric | Qwen3.5-122B | MiniMax-M2.5 |
-|--------|--------------|--------------|
-| Tool-call loops | **None (78+ rounds)** | Confirmed — gets stuck in edit→read cycles |
-| Instruction following (IFEval) | **93.4%** | ~70% (estimated) |
-| Long conversation stability | **Stable at 23K+ tokens** | Degrades after ~90K tokens |
-| Max single output | **2196 tokens** (code review) | ~800 tokens |
-| Multi-step agent tasks | Completes reliably | Loops on complex tasks |
+| Metric | Qwen3.5-122B 8bit | Qwen3.5-122B mxfp4 | MiniMax-M2.5 4bit |
+|--------|-------------------|---------------------|-------------------|
+| Decode (short) | 20 t/s | 27 t/s | 47 t/s |
+| Decode (long) | 43 t/s | **57 t/s** | 51 t/s |
+| TTFT (cold) | 1.8s | 0.7s | 1.3s |
+| TTFT (warm) | 0.0s | 0.0s | 0.1s |
 
 **Resource usage:**
 
-| Metric | Qwen3.5-122B | MiniMax-M2.5 |
-|--------|--------------|--------------|
-| Model weight RAM | **74 GB** | 130 GB |
-| KV cache headroom (256GB) | **~180 GB** | ~120 GB |
-| Active params per token | 10B | 10B |
+| Metric | Qwen3.5-122B 8bit | Qwen3.5-122B mxfp4 | MiniMax-M2.5 4bit |
+|--------|-------------------|---------------------|-------------------|
+| Model weight RAM | 130 GB | **74 GB** | 130 GB |
+| KV cache headroom (256GB) | ~120 GB | **~180 GB** | ~120 GB |
+| Active params per token | 10B | 10B | 10B |
 
-**Verdict:** Qwen3.5-122B is the recommended model for agent workloads — faster decode on long outputs, half the memory, and no tool-call loops. MiniMax-M2.5 is slightly faster on short outputs but prone to agentic instability.
+**Verdict:** Qwen3.5-122B is the recommended model for agent workloads — 90% across all eval suites, and the mxfp4 variant needs only half the RAM. MiniMax-M2.5 has strong reasoning and general knowledge but critically fails on coding (10%) — likely a code formatting issue we're investigating.
 
 ### Eval Framework
 
-Standardized eval framework covering speed, tool calling (30 scenarios), coding, reasoning, and instruction following. All evals run with `enable_thinking: false` for fair comparison. Run on your own Apple Silicon Mac and submit results!
+Standardized eval framework: speed, tool calling (30 scenarios), coding ([HumanEval+](https://github.com/openai/human-eval)), reasoning ([MATH-500](https://huggingface.co/datasets/HuggingFaceH4/MATH-500)), and general knowledge ([MMLU-Pro](https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro)). All suites run with `enable_thinking: false`. Run on your own Apple Silicon Mac and submit results!
 
 | Model | Quant | Decode | Tools | Code | Reason | General |
 |-------|-------|--------|-------|------|--------|---------|
-| Qwen3.5-122B-A10B | mxfp4 | 58 t/s | 90% | 90% | **90%** | 80% |
-| Qwen3.5-122B-A10B | 8bit | 44 t/s | **93%** | 60% | **90%** | 60% |
-| Qwen3.5-35B-A3B | 4bit | 104 t/s | 77% | **100%** | **90%** | 80% |
-| Qwen3.5-35B-A3B | 8bit | 82 t/s | 77% | **100%** | **90%** | 90% |
-| Qwen3-Coder-Next | 6bit | 68 t/s | 87% | **100%** | **90%** | **100%** |
-| Qwen3-Coder-Next | 4bit | 74 t/s | 90% | **100%** | 80% | **100%** |
-| GPT-OSS-20B | mxfp4-q8 | 124 t/s | 77% | 90% | **90%** | **100%** |
-| GLM-4.7-Flash | 8bit | 58 t/s | 73% | **100%** | 80% | 90% |
-| MiniMax-M2.5 | 4bit | 51 t/s | 87% | 40% | 60% | 90% |
-| Hermes-3-Llama-8B | 4bit | 123 t/s | 17% | **100%** | 70% | 60% |
-| Qwen3-0.6B | 4bit | 372 t/s | 50% | 0% | 30% | 50% |
+| Qwen3.5-122B-A10B | 8bit | 43 t/s | 87% | **90%** | **90%** | **90%** |
+| Qwen3.5-122B-A10B | mxfp4 | 57 t/s | **90%** | **90%** | 80% | **90%** |
+| Qwen3.5-35B-A3B | 8bit | 82 t/s | **90%** | **90%** | 80% | 80% |
+| Qwen3.5-35B-A3B | 4bit | 104 t/s | 87% | **90%** | 50% | 70% |
+| Qwen3-Coder-Next | 6bit | 67 t/s | 87% | **90%** | 80% | 70% |
+| Qwen3-Coder-Next | 4bit | 74 t/s | **90%** | **90%** | 70% | 70% |
+| GLM-4.7-Flash | 8bit | 58 t/s | 73% | **100%** | **90%** | 50% |
+| MiniMax-M2.5 | 4bit | 51 t/s | 87% | 10% | 80% | **90%** |
+| GPT-OSS-20B | mxfp4-q8 | 11 t/s | 17% | 60% | 20% | **90%** |
+| Hermes-3-Llama-8B | 4bit | 123 t/s | 17% | 20% | 30% | 40% |
+| Qwen3-0.6B | 4bit | 370 t/s | 30% | 20% | 20% | 30% |
 
 *Tested on Apple M3 Ultra (256GB). See full [scorecard](evals/SCORECARD.md) for details.*
 

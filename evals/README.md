@@ -25,7 +25,7 @@ Different models require different server flags for tool calling. Use the correc
 | Model Family | Server Flags |
 |-------------|-------------|
 | **Qwen / Hermes** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
-| **GPT-OSS** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser harmony` |
+| **GPT-OSS** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser minimax` |
 | **MiniMax** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser minimax` |
 | **GLM-4** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser glm47` |
 | **Other / No tools** | `vllm-mlx serve <model> --port 8000` |
@@ -33,7 +33,7 @@ Different models require different server flags for tool calling. Use the correc
 Then pass the matching `--parser` to the eval script:
 ```bash
 python evals/run_eval.py --model "X" --parser hermes    # for Qwen/Hermes models
-python evals/run_eval.py --model "X" --parser harmony   # for GPT-OSS models
+python evals/run_eval.py --model "X" --parser minimax   # for GPT-OSS models
 python evals/run_eval.py --model "X" --parser minimax   # for MiniMax models
 python evals/run_eval.py --model "X" --parser glm47     # for GLM-4 models
 ```
@@ -44,9 +44,9 @@ python evals/run_eval.py --model "X" --parser glm47     # for GLM-4 models
 |-------|-------|---------------|---------|
 | **Speed** | 4 metrics | TTFT cold/warm, decode tok/s short/long | Absolute numbers |
 | **Tool Calling** | 30 scenarios | Tool detection, parallel calls, irrelevance, error recovery | % fully correct |
-| **Coding** | 10 tasks | Function writing, bug fixing, refactoring | % tests pass |
-| **Reasoning** | 10 problems | GSM8K math (grade school word problems) | % correct answer |
-| **General** | 10 tasks | Instruction following, factual, JSON output | % checks pass |
+| **Coding** | 10 tasks | HumanEval+ problems (medium-hard) | % tests pass |
+| **Reasoning** | 10 problems | MATH-500 competition math (levels 2-5, fractions + integers) | % correct answer |
+| **General** | 10 questions | MMLU-Pro multiple choice (CS, Physics, Math, Chemistry, etc.) | % correct letter |
 
 ### Thinking Mode Disabled
 
@@ -116,8 +116,8 @@ evals/
 ├── prompts/
 │   ├── tool_calling.json     # 30 tool-calling scenarios (9 categories, L1-L5)
 │   ├── coding.json           # 10 code generation tasks
-│   ├── reasoning.json        # 10 GSM8K math problems
-│   └── general.json          # 10 instruction following tasks
+│   ├── reasoning.json        # 10 MATH-500 competition math problems
+│   └── general.json          # 10 MMLU-Pro multiple choice questions
 └── results/
     └── <model-name>.json     # One file per model evaluation
 ```
