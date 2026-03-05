@@ -272,6 +272,8 @@ class MLXLanguageModel:
         if common_len == 0:
             # No overlap — reset cache entirely
             for c in self._prompt_cache:
+                if not c.is_trimmable():
+                    continue
                 current = c.offset if hasattr(c, 'offset') else 0
                 if current > 0:
                     c.trim(current)
@@ -283,6 +285,8 @@ class MLXLanguageModel:
         # so we must trim (cache_offset - common_len), not just
         # (cached_token_ids_len - common_len).
         for c in self._prompt_cache:
+            if not c.is_trimmable():
+                continue
             current = c.offset if hasattr(c, 'offset') else 0
             to_trim = current - common_len
             if to_trim > 0:
@@ -424,7 +428,8 @@ class MLXLanguageModel:
         if not suffix_tokens:
             if self._prompt_cache and full_token_ids:
                 for c in self._prompt_cache:
-                    c.trim(1)
+                    if c.is_trimmable():
+                        c.trim(1)
                 prompt_to_send = full_token_ids[-1:]
             else:
                 prompt_to_send = full_token_ids
