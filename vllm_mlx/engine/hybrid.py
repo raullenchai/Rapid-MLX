@@ -36,10 +36,10 @@ from typing import Any
 
 from mlx_lm import load
 
+from ..model_registry import get_registry
 from .base import BaseEngine, GenerationOutput
 from .batched import BatchedEngine
 from .simple import SimpleEngine
-from ..model_registry import get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -288,11 +288,12 @@ class HybridEngine(BaseEngine):
             self._current_mode = target_mode
             logger.info(f"HybridEngine: mode switched {old_mode} -> {target_mode}")
 
-    async def _decide_and_switch_mode(self, entering: bool = True) -> str:
+    async def _decide_and_switch_mode(self, active: int, entering: bool = True) -> str:
         """
         Decide which mode to use and switch if necessary.
 
         Args:
+            active: Current active request count (must be passed from caller)
             entering: True when entering a request, False when exiting
 
         Returns:
@@ -304,7 +305,7 @@ class HybridEngine(BaseEngine):
         # Decide based on active request count
         # When entering: count includes this request
         # When exiting: count excludes this request
-        active = self._active_requests
+        # active is passed in to avoid race conditions
 
         if active >= self._switch_threshold:
             target_mode = "batched"
@@ -348,7 +349,9 @@ class HybridEngine(BaseEngine):
 
         try:
             # Decide mode and switch if needed
-            mode = await self._decide_and_switch_mode(entering=True)
+            mode = await self._decide_and_switch_mode(
+                self._active_requests, entering=True
+            )
             engine = self._simple if mode == "simple" else self._batched
 
             return await engine.generate(
@@ -363,7 +366,7 @@ class HybridEngine(BaseEngine):
             async with self._lock:
                 self._active_requests -= 1
             # Check if we should switch back to simple mode
-            await self._decide_and_switch_mode(entering=False)
+            await self._decide_and_switch_mode(self._active_requests, entering=False)
 
     async def stream_generate(
         self,
@@ -383,7 +386,9 @@ class HybridEngine(BaseEngine):
 
         try:
             # Decide mode and switch if needed
-            mode = await self._decide_and_switch_mode(entering=True)
+            mode = await self._decide_and_switch_mode(
+                self._active_requests, entering=True
+            )
             engine = self._simple if mode == "simple" else self._batched
 
             async for output in engine.stream_generate(
@@ -399,7 +404,7 @@ class HybridEngine(BaseEngine):
             async with self._lock:
                 self._active_requests -= 1
             # Check if we should switch back to simple mode
-            await self._decide_and_switch_mode(entering=False)
+            await self._decide_and_switch_mode(self._active_requests, entering=False)
 
     async def chat(
         self,
@@ -421,7 +426,9 @@ class HybridEngine(BaseEngine):
 
         try:
             # Decide mode and switch if needed
-            mode = await self._decide_and_switch_mode(entering=True)
+            mode = await self._decide_and_switch_mode(
+                self._active_requests, entering=True
+            )
             engine = self._simple if mode == "simple" else self._batched
 
             return await engine.chat(
@@ -438,7 +445,7 @@ class HybridEngine(BaseEngine):
             async with self._lock:
                 self._active_requests -= 1
             # Check if we should switch back to simple mode
-            await self._decide_and_switch_mode(entering=False)
+            await self._decide_and_switch_mode(self._active_requests, entering=False)
 
     async def stream_chat(
         self,
@@ -460,7 +467,9 @@ class HybridEngine(BaseEngine):
 
         try:
             # Decide mode and switch if needed
-            mode = await self._decide_and_switch_mode(entering=True)
+            mode = await self._decide_and_switch_mode(
+                self._active_requests, entering=True
+            )
             engine = self._simple if mode == "simple" else self._batched
 
             async for output in engine.stream_chat(
@@ -478,7 +487,7 @@ class HybridEngine(BaseEngine):
             async with self._lock:
                 self._active_requests -= 1
             # Check if we should switch back to simple mode
-            await self._decide_and_switch_mode(entering=False)
+            await self._decide_and_switch_mode(self._active_requests, entering=False)
 
     def get_stats(self) -> dict[str, Any]:
         """Get engine statistics."""

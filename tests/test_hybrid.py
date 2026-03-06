@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for HybridEngine."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,11 +10,14 @@ from vllm_mlx.engine.base import GenerationOutput
 
 def _make_engine(**overrides):
     """Create HybridEngine with all heavy imports mocked."""
-    with patch("vllm_mlx.engine.hybrid.load"), \
-         patch("vllm_mlx.engine.hybrid.SimpleEngine"), \
-         patch("vllm_mlx.engine.hybrid.BatchedEngine"), \
-         patch("vllm_mlx.engine.hybrid.get_registry"):
+    with (
+        patch("vllm_mlx.engine.hybrid.load"),
+        patch("vllm_mlx.engine.hybrid.SimpleEngine"),
+        patch("vllm_mlx.engine.hybrid.BatchedEngine"),
+        patch("vllm_mlx.engine.hybrid.get_registry"),
+    ):
         from vllm_mlx.engine.hybrid import HybridEngine
+
         defaults = {"model_name": "test_model"}
         defaults.update(overrides)
         return HybridEngine(**defaults)
@@ -34,11 +36,13 @@ def _make_mock_simple():
     async def _stream_gen(**kwargs):
         yield GenerationOutput(text="", new_text="chunk1", finished=False)
         yield GenerationOutput(text="chunk1chunk2", new_text="chunk2", finished=True)
+
     engine.stream_generate = _stream_gen
 
     async def _stream_chat(**kwargs):
         yield GenerationOutput(text="", new_text="c1", finished=False)
         yield GenerationOutput(text="c1c2", new_text="c2", finished=True)
+
     engine.stream_chat = _stream_chat
 
     return engine
@@ -63,16 +67,19 @@ def _make_mock_batched():
     async def _stream_gen(**kwargs):
         yield GenerationOutput(text="", new_text="b1", finished=False)
         yield GenerationOutput(text="b1b2", new_text="b2", finished=True)
+
     engine.stream_generate = _stream_gen
 
     async def _stream_chat(**kwargs):
         yield GenerationOutput(text="", new_text="bc1", finished=False)
+
     engine.stream_chat = _stream_chat
 
     return engine
 
 
 # ── Init ──────────────────────────────────────────────────────────────────
+
 
 class TestHybridEngineInit:
     def test_default_params(self):
@@ -88,8 +95,10 @@ class TestHybridEngineInit:
 
     def test_custom_params(self):
         engine = _make_engine(
-            draft_model="draft", num_draft_tokens=10,
-            switch_threshold=5, force_mllm=True,
+            draft_model="draft",
+            num_draft_tokens=10,
+            switch_threshold=5,
+            force_mllm=True,
         )
         assert engine._draft_model_name == "draft"
         assert engine._num_draft_tokens == 10
@@ -98,6 +107,7 @@ class TestHybridEngineInit:
 
 
 # ── Properties ────────────────────────────────────────────────────────────
+
 
 class TestProperties:
     def test_model_name(self):
@@ -116,6 +126,7 @@ class TestProperties:
 
 # ── Start / Stop ──────────────────────────────────────────────────────────
 
+
 class TestStart:
     @pytest.mark.asyncio
     async def test_start_normal_mode(self):
@@ -123,12 +134,15 @@ class TestStart:
         mock_batched = _make_mock_batched()
         mock_model, mock_tok = MagicMock(), MagicMock()
 
-        with patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)), \
-             patch("vllm_mlx.api.utils.is_mllm_model", return_value=False), \
-             patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple), \
-             patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched), \
-             patch("vllm_mlx.engine.hybrid.get_registry"):
+        with (
+            patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
             from vllm_mlx.engine.hybrid import HybridEngine
+
             engine = HybridEngine(model_name="test_model")
             await engine.start()
 
@@ -144,12 +158,15 @@ class TestStart:
         mock_batched = _make_mock_batched()
         mock_model, mock_tok = MagicMock(), MagicMock()
 
-        with patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)), \
-             patch("vllm_mlx.api.utils.is_mllm_model", return_value=False), \
-             patch("vllm_mlx.engine.hybrid.SimpleEngine"), \
-             patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched), \
-             patch("vllm_mlx.engine.hybrid.get_registry"):
+        with (
+            patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine"),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
             from vllm_mlx.engine.hybrid import HybridEngine
+
             engine = HybridEngine(model_name="test_model", force_mllm=True)
             await engine.start()
 
@@ -162,12 +179,19 @@ class TestStart:
         mock_model, mock_tok = MagicMock(), MagicMock()
         mock_batched = _make_mock_batched()
 
-        with patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)) as mock_load, \
-             patch("vllm_mlx.api.utils.is_mllm_model", return_value=False), \
-             patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=_make_mock_simple()), \
-             patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched), \
-             patch("vllm_mlx.engine.hybrid.get_registry"):
+        with (
+            patch(
+                "vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)
+            ) as mock_load,
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch(
+                "vllm_mlx.engine.hybrid.SimpleEngine", return_value=_make_mock_simple()
+            ),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
             from vllm_mlx.engine.hybrid import HybridEngine
+
             engine = HybridEngine(model_name="test_model")
             await engine.start()
             await engine.start()  # second call no-op
@@ -181,12 +205,15 @@ class TestStop:
         mock_batched = _make_mock_batched()
         mock_model, mock_tok = MagicMock(), MagicMock()
 
-        with patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)), \
-             patch("vllm_mlx.api.utils.is_mllm_model", return_value=False), \
-             patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple), \
-             patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched), \
-             patch("vllm_mlx.engine.hybrid.get_registry"):
+        with (
+            patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
             from vllm_mlx.engine.hybrid import HybridEngine
+
             engine = HybridEngine(model_name="test_model")
             await engine.start()
             await engine.stop()
@@ -200,6 +227,7 @@ class TestStop:
 
 
 # ── _get_engine_for_request ───────────────────────────────────────────────
+
 
 class TestGetEngineForRequest:
     def test_mllm_returns_batched(self):
@@ -223,6 +251,7 @@ class TestGetEngineForRequest:
 
 # ── Mode Switching ────────────────────────────────────────────────────────
 
+
 class TestModeSwitching:
     @pytest.mark.asyncio
     async def test_switch_to_same_mode_noop(self):
@@ -236,7 +265,7 @@ class TestModeSwitching:
         engine = _make_engine()
         engine._is_mllm = True
         engine._active_requests = 0
-        mode = await engine._decide_and_switch_mode()
+        mode = await engine._decide_and_switch_mode(active=0)
         assert mode == "batched"
 
     @pytest.mark.asyncio
@@ -245,8 +274,10 @@ class TestModeSwitching:
         engine._current_mode = "simple"
         engine._active_requests = 3
 
-        with patch.object(engine, "_switch_to_mode", new_callable=AsyncMock) as mock_switch:
-            await engine._decide_and_switch_mode(entering=True)
+        with patch.object(
+            engine, "_switch_to_mode", new_callable=AsyncMock
+        ) as mock_switch:
+            await engine._decide_and_switch_mode(active=3, entering=True)
             mock_switch.assert_called_with("batched")
 
     @pytest.mark.asyncio
@@ -255,8 +286,10 @@ class TestModeSwitching:
         engine._current_mode = "batched"
         engine._active_requests = 0
 
-        with patch.object(engine, "_switch_to_mode", new_callable=AsyncMock) as mock_switch:
-            await engine._decide_and_switch_mode(entering=False)
+        with patch.object(
+            engine, "_switch_to_mode", new_callable=AsyncMock
+        ) as mock_switch:
+            await engine._decide_and_switch_mode(active=0, entering=False)
             mock_switch.assert_called_with("simple")
 
     @pytest.mark.asyncio
@@ -266,8 +299,10 @@ class TestModeSwitching:
         engine._current_mode = "batched"
         engine._active_requests = 1
 
-        with patch.object(engine, "_switch_to_mode", new_callable=AsyncMock) as mock_switch:
-            await engine._decide_and_switch_mode(entering=False)
+        with patch.object(
+            engine, "_switch_to_mode", new_callable=AsyncMock
+        ) as mock_switch:
+            await engine._decide_and_switch_mode(active=1, entering=False)
             mock_switch.assert_not_called()
 
     @pytest.mark.asyncio
@@ -305,6 +340,7 @@ class TestModeSwitching:
 
 # ── generate ──────────────────────────────────────────────────────────────
 
+
 class TestGenerate:
     @pytest.mark.asyncio
     async def test_generate_uses_simple(self):
@@ -312,12 +348,15 @@ class TestGenerate:
         mock_batched = _make_mock_batched()
         mock_model, mock_tok = MagicMock(), MagicMock()
 
-        with patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)), \
-             patch("vllm_mlx.api.utils.is_mllm_model", return_value=False), \
-             patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple), \
-             patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched), \
-             patch("vllm_mlx.engine.hybrid.get_registry"):
+        with (
+            patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
             from vllm_mlx.engine.hybrid import HybridEngine
+
             engine = HybridEngine(model_name="test_model", switch_threshold=10)
             await engine.start()
 
@@ -331,12 +370,15 @@ class TestGenerate:
         mock_batched = _make_mock_batched()
         mock_model, mock_tok = MagicMock(), MagicMock()
 
-        with patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)), \
-             patch("vllm_mlx.api.utils.is_mllm_model", return_value=False), \
-             patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple), \
-             patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched), \
-             patch("vllm_mlx.engine.hybrid.get_registry"):
+        with (
+            patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
             from vllm_mlx.engine.hybrid import HybridEngine
+
             engine = HybridEngine(model_name="test_model", switch_threshold=10)
             # Don't call start() — generate() should auto-start
             result = await engine.generate("test")
@@ -350,12 +392,15 @@ class TestGenerate:
         mock_batched = _make_mock_batched()
         mock_model, mock_tok = MagicMock(), MagicMock()
 
-        with patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)), \
-             patch("vllm_mlx.api.utils.is_mllm_model", return_value=False), \
-             patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple), \
-             patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched), \
-             patch("vllm_mlx.engine.hybrid.get_registry"):
+        with (
+            patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
             from vllm_mlx.engine.hybrid import HybridEngine
+
             engine = HybridEngine(model_name="test_model", switch_threshold=10)
             await engine.start()
 
@@ -366,6 +411,7 @@ class TestGenerate:
 
 # ── stream_generate ───────────────────────────────────────────────────────
 
+
 class TestStreamGenerate:
     @pytest.mark.asyncio
     async def test_stream_generate_yields_chunks(self):
@@ -373,12 +419,15 @@ class TestStreamGenerate:
         mock_batched = _make_mock_batched()
         mock_model, mock_tok = MagicMock(), MagicMock()
 
-        with patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)), \
-             patch("vllm_mlx.api.utils.is_mllm_model", return_value=False), \
-             patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple), \
-             patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched), \
-             patch("vllm_mlx.engine.hybrid.get_registry"):
+        with (
+            patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
             from vllm_mlx.engine.hybrid import HybridEngine
+
             engine = HybridEngine(model_name="test_model", switch_threshold=10)
             await engine.start()
 
@@ -393,6 +442,7 @@ class TestStreamGenerate:
 
 # ── chat ──────────────────────────────────────────────────────────────────
 
+
 class TestChat:
     @pytest.mark.asyncio
     async def test_chat_delegates(self):
@@ -400,12 +450,15 @@ class TestChat:
         mock_batched = _make_mock_batched()
         mock_model, mock_tok = MagicMock(), MagicMock()
 
-        with patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)), \
-             patch("vllm_mlx.api.utils.is_mllm_model", return_value=False), \
-             patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple), \
-             patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched), \
-             patch("vllm_mlx.engine.hybrid.get_registry"):
+        with (
+            patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
             from vllm_mlx.engine.hybrid import HybridEngine
+
             engine = HybridEngine(model_name="test_model", switch_threshold=10)
             await engine.start()
 
@@ -417,6 +470,7 @@ class TestChat:
 
 # ── stream_chat ───────────────────────────────────────────────────────────
 
+
 class TestStreamChat:
     @pytest.mark.asyncio
     async def test_stream_chat_yields(self):
@@ -424,12 +478,15 @@ class TestStreamChat:
         mock_batched = _make_mock_batched()
         mock_model, mock_tok = MagicMock(), MagicMock()
 
-        with patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)), \
-             patch("vllm_mlx.api.utils.is_mllm_model", return_value=False), \
-             patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple), \
-             patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched), \
-             patch("vllm_mlx.engine.hybrid.get_registry"):
+        with (
+            patch("vllm_mlx.engine.hybrid.load", return_value=(mock_model, mock_tok)),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
             from vllm_mlx.engine.hybrid import HybridEngine
+
             engine = HybridEngine(model_name="test_model", switch_threshold=10)
             await engine.start()
 
@@ -444,6 +501,7 @@ class TestStreamChat:
 
 
 # ── get_stats ─────────────────────────────────────────────────────────────
+
 
 class TestGetStats:
     def test_initial_stats(self):
@@ -468,6 +526,7 @@ class TestGetStats:
 
 
 # ── get_cache_stats ───────────────────────────────────────────────────────
+
 
 class TestGetCacheStats:
     def test_cache_stats_simple_mode(self):

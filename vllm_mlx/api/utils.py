@@ -227,10 +227,7 @@ def is_mllm_model(model_name: str) -> bool:
         True if model is detected as MLLM/VLM
     """
     model_lower = model_name.lower()
-    for pattern in MLLM_PATTERNS:
-        if pattern.lower() in model_lower:
-            return True
-    return False
+    return any(pattern.lower() in model_lower for pattern in MLLM_PATTERNS)
 
 
 # Backwards compatibility alias

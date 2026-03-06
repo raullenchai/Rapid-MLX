@@ -123,7 +123,7 @@ class MiniMaxToolLogitsProcessor:
 
         # Pre-tokenize common JSON structural tokens for parameter value bias
         self._json_tokens: dict[str, list[int]] = {}
-        for char in ['"', '{', '[', ']', '}', ',', ':', 'true', 'false', 'null']:
+        for char in ['"', "{", "[", "]", "}", ",", ":", "true", "false", "null"]:
             toks = tokenizer.encode(char, add_special_tokens=False)
             if toks:
                 self._json_tokens[char] = toks
@@ -132,7 +132,9 @@ class MiniMaxToolLogitsProcessor:
         self._recent_text = ""
         self._active_pattern: str | None = None
         self._pattern_pos = 0  # Position within active pattern's token sequence
-        self._last_param_close_pos = -1  # Track last </parameter> position to avoid re-triggering
+        self._last_param_close_pos = (
+            -1
+        )  # Track last </parameter> position to avoid re-triggering
         self._consecutive_bias_count = 0  # Safety: escape hatch for stuck patterns
         self._max_consecutive_bias = 50  # Max tokens to bias before force-resetting
 
@@ -157,7 +159,7 @@ class MiniMaxToolLogitsProcessor:
     # Regex patterns for detecting tool/parameter context
     _INVOKE_RE = re.compile(r'<invoke\s+name="([^"]+)"')
     _PARAM_OPEN_RE = re.compile(r'<parameter\s+name="([^"]+)">')
-    _PARAM_CLOSE_RE = re.compile(r'</parameter>')
+    _PARAM_CLOSE_RE = re.compile(r"</parameter>")
 
     def _update_param_state(self) -> None:
         """Update parameter value tracking state from recent text."""
@@ -352,7 +354,7 @@ class MiniMaxToolLogitsProcessor:
         # Only trigger once per </parameter> occurrence to avoid repeated bias
         param_close_pos = self._recent_text.rfind("</parameter>")
         if param_close_pos > self._last_param_close_pos:
-            after_param = self._recent_text[param_close_pos + len("</parameter>"):]
+            after_param = self._recent_text[param_close_pos + len("</parameter>") :]
             # If the text after </parameter> is whitespace only, we might
             # be about to see </invoke> or another <parameter
             stripped = after_param.strip()
