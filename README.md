@@ -33,7 +33,7 @@ Local models are fast and private, but they break in agent workflows. Quantized 
 
 | Capability | Upstream | This Fork |
 |-----------|----------|-----------|
-| **Tool calling** | Not supported | 7 parser formats, streaming, **auto-recovery of degraded outputs** |
+| **Tool calling** | Not supported | 17 parser formats, streaming, **auto-recovery of degraded outputs** |
 | **Agent reliability** | N/A | Disconnect guard, think-tag filtering, text-format tool call recovery |
 | **Reasoning separation** | Not supported | Clean `reasoning_content` field (0% leak rate) |
 | **Multi-turn TTFT** | Full prefill every turn | **10-30x faster** — persistent prompt cache |
@@ -233,7 +233,7 @@ aider
 
 ### Tool Calling (Any Model, Any Quantization)
 
-Full OpenAI-compatible tool calling with streaming support. 7 parser formats built in, and **automatic recovery when models break**.
+Full OpenAI-compatible tool calling with streaming support. 17 parser formats built in, and **automatic recovery when models break**.
 
 ```python
 tools = [{
@@ -262,7 +262,7 @@ print(tool_call.function.name)       # "get_weather"
 print(tool_call.function.arguments)  # '{"city": "Tokyo"}'
 ```
 
-Supported parsers: `hermes`, `minimax`, `qwen`, `qwen3_coder`, `llama`, `deepseek`, `functionary`, and more. Use `--tool-call-parser <name>` to select.
+Supported parsers: `hermes`, `minimax`, `qwen`, `qwen3_coder`, `llama`, `deepseek`, `deepseek_v31`, `seed_oss`, `functionary`, `glm47`, `harmony`, `mistral`, `nemotron`, `granite`, `kimi`, `xlam`, `auto`. Use `--tool-call-parser <name>` to select.
 
 #### Robust Tool Call Recovery
 
@@ -293,8 +293,8 @@ Models with chain-of-thought (MiniMax-M2.5, Qwen3, DeepSeek-R1) output reasoning
 
 ```bash
 python -m vllm_mlx.server \
-  --model lmstudio-community/MiniMax-M2.5-MLX-4bit \
-  --reasoning-parser minimax \
+  --model mlx-community/Qwen3.5-122B-A10B-8bit \
+  --reasoning-parser qwen3 \
   --port 8000
 ```
 
@@ -343,11 +343,12 @@ Disabled by default. Cost estimate: ~$0.02-0.05 per cloud-routed request with GP
 
 | Model | Params | Quant | RAM | Decode | Tool Parser | Best For |
 |-------|--------|-------|-----|--------|-------------|----------|
-| [Qwen3.5-122B-A10B](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 122B/10B | 8bit | 130GB | **43 tok/s** | `hermes` | **Best overall** — 90% across all evals |
-| [Qwen3.5-122B-A10B](https://huggingface.co/nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx) | 122B/10B | mxfp4 | 74GB | **57 tok/s** | `hermes` | Best value — same quality, half the RAM |
-| [Qwen3-Coder-Next](https://huggingface.co/lmstudio-community/Qwen3-Coder-Next-MLX-6bit) | 80B/3B | 6bit | 60GB | ~67 tok/s | `hermes` | **Best balance** — coding + speed |
-| [Qwen3-Coder-Next](https://huggingface.co/lmstudio-community/Qwen3-Coder-Next-MLX-4bit) | 80B/3B | 4bit | 42GB | ~74 tok/s | `hermes` | Speed + coding |
-| [MiniMax-M2.5](https://huggingface.co/lmstudio-community/MiniMax-M2.5-MLX-4bit) | 229B/10B | 4bit | 130GB | ~51 tok/s | `minimax` | Deep reasoning (192GB+) |
+| [Qwen3.5-122B-A10B](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 122B/10B | 8bit | 130GB | 43 tok/s | `hermes` | **Best overall** — 89% avg |
+| [Qwen3.5-122B-A10B](https://huggingface.co/nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx) | 122B/10B | mxfp4 | 65GB | 57 tok/s | `hermes` | **Best value** — same quality, half the RAM |
+| [Qwen3.5-35B-A3B](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 35B/3B | 8bit | 37GB | 80 tok/s | `hermes` | Best for 64GB Macs — 85% avg |
+| [Qwen3-Coder-Next](https://huggingface.co/lmstudio-community/Qwen3-Coder-Next-MLX-4bit) | 80B/3B | 4bit | 45GB | 74 tok/s | `hermes` | Fast coding agent |
+| [Qwen3.5-9B](https://huggingface.co/mlx-community/Qwen3.5-9B-4bit) | 9B | 4bit | 5.1GB | 106 tok/s | `hermes` | Best small model — 71% avg, fits any Mac |
+| [Qwen3.5-4B](https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit) | 4B | 4bit | 2.4GB | 158 tok/s | `hermes` | Ultralight — 56% avg, 16GB MacBook Air |
 
 Benchmarks on Mac Studio M3 Ultra (256GB), 800 GB/s memory bandwidth.
 
@@ -357,13 +358,13 @@ How much RAM do you need? Model weights must fit in unified memory, plus ~20% he
 
 | Mac RAM | Recommended Model | Weights | Decode Speed | Notes |
 |---------|-------------------|---------|-------------|-------|
-| 16 GB | Llama 3.2 3B 4bit | ~2 GB | ~100 tok/s | Small tasks only, limited tool calling |
-| 32 GB | Qwen3-Coder-Next 4bit | ~42 GB | ~74 tok/s | Fits with swap, ok for short sessions |
-| 64 GB | Qwen3-Coder-Next 6bit | ~60 GB | ~67 tok/s | Sweet spot for coding agents |
-| 96 GB | Qwen3.5-122B mxfp4 | ~74 GB | ~57 tok/s | Best model fits comfortably |
-| 128 GB | Qwen3.5-122B mxfp4 + `--kv-bits 4` | ~74 GB | ~57 tok/s | Long contexts (50K+ tokens) |
-| 192 GB | Qwen3.5-122B + large KV headroom | ~74 GB | ~57 tok/s | 100K+ context, multi-turn agent sessions |
-| 256 GB | Qwen3.5-122B 8bit or MiniMax-M2.5 4bit | 130 GB | 43-51 tok/s | Maximum model quality |
+| 16 GB | Qwen3.5-4B 4bit | 2.4 GB | ~158 tok/s | Chat, simple tasks, 73% tool calling |
+| 24 GB | Qwen3.5-9B 4bit | 5.1 GB | ~106 tok/s | Good all-rounder — 71% avg |
+| 32 GB | Qwen3.5-27B 4bit | 15.3 GB | ~38 tok/s | 76% avg, solid for coding |
+| 64 GB | Qwen3.5-35B-A3B 8bit | 37 GB | ~80 tok/s | **Sweet spot** — 85% avg, fast MoE |
+| 96 GB | Qwen3.5-122B mxfp4 | 65 GB | ~57 tok/s | Best model fits comfortably |
+| 128 GB | Qwen3.5-122B mxfp4 + `--kv-bits 4` | 65 GB | ~57 tok/s | Long contexts (50K+ tokens) |
+| 192 GB+ | Qwen3.5-122B 8bit | 130 GB | ~43 tok/s | Maximum quality — 89% avg |
 
 **Rule of thumb:** model weights + 20% = minimum RAM. Use `--kv-bits 4` or `--kv-bits 8` to halve KV cache memory for long contexts.
 
@@ -412,7 +413,7 @@ Tested on Mac Studio M3 Ultra (256GB). Eval scores from standardized benchmark s
 | KV cache headroom (256GB) | ~120 GB | **~180 GB** | ~120 GB |
 | Active params per token | 10B | 10B | 10B |
 
-**Verdict:** Qwen3.5-122B is the recommended model for agent workloads — 90% across all eval suites, and the mxfp4 variant needs only half the RAM. MiniMax-M2.5 has strong reasoning and general knowledge but critically fails on coding (10%) — likely a code formatting issue we're investigating.
+**Verdict:** Qwen3.5-122B is the recommended model for agent workloads — 89% average across all eval suites, and the mxfp4 variant needs only half the RAM. MiniMax-M2.5 has strong reasoning and general knowledge; its low coding score (10%) is likely a code extraction parser issue rather than model capability — investigation ongoing.
 
 ### Eval Framework
 
@@ -420,19 +421,27 @@ Standardized eval framework: speed, tool calling (30 scenarios), coding ([HumanE
 
 | Model | Quant | RAM | Decode | Tools | Code | Reason | General | Avg |
 |-------|-------|-----|--------|-------|------|--------|---------|-----|
-| Qwen3.5-122B-A10B | 8bit | — | 43 t/s | 87% | **90%** | **90%** | **90%** | **89%** |
-| Qwen3.5-122B-A10B | mxfp4 | — | 57 t/s | **90%** | **90%** | 80% | **90%** | 88% |
-| Qwen3.5-35B-A3B | 8bit | 36.9 GB | 82 t/s | **90%** | **90%** | 80% | 80% | 85% |
-| Qwen3.5-35B-A3B | 4bit | 19.6 GB | 99 t/s | 87% | **90%** | 50% | 70% | 74% |
-| Qwen3-Coder-Next | 6bit | — | 67 t/s | 87% | **90%** | 80% | 70% | 82% |
-| Qwen3-Coder-Next | 4bit | 44.9 GB | 72 t/s | **90%** | **90%** | 70% | 70% | 80% |
-| GLM-4.7-Flash | 8bit | — | 58 t/s | 73% | **100%** | **90%** | 50% | 78% |
-| MiniMax-M2.5 | 4bit | — | 51 t/s | 87% | 10% | 80% | **90%** | 67% |
-| GPT-OSS-20B | mxfp4-q8 | 12.1 GB | 86 t/s | **80%** | 20% | 60% | **90%** | 63% |
-| Hermes-3-Llama-8B | 4bit | — | 123 t/s | 17% | 20% | 30% | 40% | 27% |
-| Qwen3-0.6B | 4bit | 0.4 GB | 354 t/s | 30% | 20% | 20% | 30% | 25% |
+| Qwen3.5-122B-A10B | 8bit | 129.8 GB | 43 t/s | 87% | **90%** | **90%** | **90%** | **89%** |
+| Qwen3.5-122B-A10B | mxfp4 | 65.0 GB | 57 t/s | **90%** | **90%** | 80% | **90%** | 88% |
+| Qwen3.5-35B-A3B | 8bit | 36.9 GB | 80 t/s | **90%** | **90%** | 80% | 80% | 85% |
+| Qwen3-Coder-Next | 6bit | 64.8 GB | 66 t/s | 87% | **90%** | 80% | 70% | 82% |
+| Qwen3-Coder-Next | 4bit | 44.9 GB | 74 t/s | **90%** | **90%** | 70% | 70% | 80% |
+| GLM-4.5-Air | 4bit | 60.3 GB | 54 t/s | 73% | **90%** | 70% | 80% | 78% |
+| GLM-4.7-Flash | 8bit | 31.9 GB | 57 t/s | 73% | **100%** | **90%** | 50% | 78% |
+| Qwen3.5-27B | 4bit | 15.3 GB | 38 t/s | 83% | **90%** | 50% | 80% | 76% |
+| Qwen3.5-35B-A3B | 4bit | 19.6 GB | 95 t/s | 87% | **90%** | 50% | 70% | 74% |
+| Qwen3.5-9B | 4bit | 5.1 GB | 106 t/s | 83% | 70% | 60% | 70% | 71% |
+| MiniMax-M2.5 | 4bit | 128.9 GB | 50 t/s | 87% | 10%\* | 80% | **90%** | 67% |
+| Devstral-Small-2 | 4bit | 13.4 GB | 47 t/s | 17% | **90%** | 70% | 70% | 62% |
+| GPT-OSS-20B | mxfp4-q8 | 12.1 GB | 124 t/s | 80% | 20% | 60% | **90%** | 62% |
+| Qwen3.5-4B | 4bit | 2.4 GB | 158 t/s | 73% | 50% | 50% | 50% | 56% |
+| Mistral-Small-3.2 | 4bit | 13.4 GB | 47 t/s | 17% | 80% | 60% | 60% | 54% |
+| Hermes-3-Llama-8B | 4bit | 4.6 GB | 123 t/s | 17% | 20% | 30% | 40% | 27% |
+| Qwen3-0.6B | 4bit | 0.4 GB | 365 t/s | 30% | 20% | 20% | 30% | 25% |
 
-*Tested on Apple M3 Ultra (256GB). See full [scorecard](evals/SCORECARD.md) for details.*
+\* *MiniMax coding score likely affected by a code extraction parser issue, not model capability.*
+
+*17 models tested on Apple M3 Ultra (256GB). Decode = long generation speed. See full [scorecard](evals/SCORECARD.md) for details.*
 
 ```bash
 # Run all eval suites against a running server (~5 min)
@@ -460,24 +469,19 @@ python -m vllm_mlx.server \
   --prefill-step-size 8192 \
   --port 8000
 
-# MiniMax-M2.5 — deep reasoning with tool calling
+# Qwen3.5-35B-A3B — best for 64GB Macs (85% avg, 80 tok/s)
 python -m vllm_mlx.server \
-  --model lmstudio-community/MiniMax-M2.5-MLX-4bit \
-  --tool-call-parser minimax \
-  --reasoning-parser minimax \
-  --max-tokens 2048 \
-  --port 8000
-
-# Llama 3.2 — lightweight, fast
-python -m vllm_mlx.server \
-  --model mlx-community/Llama-3.2-3B-Instruct-4bit \
-  --tool-call-parser llama \
-  --port 8000
-
-# Mistral — general purpose
-python -m vllm_mlx.server \
-  --model mlx-community/Mistral-7B-Instruct-v0.3-4bit \
+  --model mlx-community/Qwen3.5-35B-A3B-8bit \
   --tool-call-parser hermes \
+  --reasoning-parser qwen3 \
+  --prefill-step-size 8192 \
+  --port 8000
+
+# Qwen3.5-9B — lightweight, fits any Mac (71% avg, 106 tok/s)
+python -m vllm_mlx.server \
+  --model mlx-community/Qwen3.5-9B-4bit \
+  --tool-call-parser hermes \
+  --reasoning-parser qwen3 \
   --port 8000
 
 # DeepSeek-R1 — reasoning-focused
@@ -499,15 +503,19 @@ python -m vllm_mlx.server \
 | Model Family | `--tool-call-parser` | `--reasoning-parser` | Notes |
 |-------------|---------------------|---------------------|-------|
 | Qwen3.5-122B-A10B | `hermes` | `qwen3` | **Recommended** — best agent stability |
+| Qwen3.5-35B/27B/9B/4B | `hermes` | `qwen3` | Same family, same parsers |
 | Qwen3-Coder-Next | `hermes` | *(none)* | Non-thinking mode, fast |
 | Qwen3 (thinking) | `qwen` or `qwen3_coder` | `qwen3` | With `<think>` tags |
 | MiniMax-M2.5 | `minimax` | `minimax` | XML tool format |
+| GPT-OSS | `seed_oss` | `gpt_oss` | Native format |
+| GLM-4.7 | `glm47` | *(none)* | GLM-specific format |
 | Llama 3.x | `llama` | *(none)* | JSON tool format |
 | DeepSeek-R1 | `deepseek` | `deepseek_r1` | With reasoning |
+| DeepSeek-V3.1 | `deepseek_v31` | *(none)* | Updated format |
 | Mistral | `hermes` | *(none)* | Hermes-compatible |
 | Functionary | `functionary` | *(none)* | Custom format |
 
-All parsers include automatic text-format tool call recovery — if a quantized model degrades and outputs tool calls as plain text, they're automatically converted back to structured `tool_calls`.
+All 17 parsers include automatic text-format tool call recovery — if a quantized model degrades and outputs tool calls as plain text, they're automatically converted back to structured `tool_calls`.
 
 ---
 
@@ -592,15 +600,14 @@ python -m vllm_mlx.server \
   --port 8000
 ```
 
-**Deep reasoning + tool calling:**
+**64GB Mac — best balance of quality + speed:**
 
 ```bash
 python -m vllm_mlx.server \
-  --model lmstudio-community/MiniMax-M2.5-MLX-4bit \
-  --tool-call-parser minimax \
-  --reasoning-parser minimax \
-  --prefill-step-size 4096 \
-  --kv-bits 4 \
+  --model mlx-community/Qwen3.5-35B-A3B-8bit \
+  --tool-call-parser hermes \
+  --reasoning-parser qwen3 \
+  --prefill-step-size 8192 \
   --port 8000
 ```
 
@@ -658,10 +665,13 @@ OPENAI_API_KEY=sk-... python -m vllm_mlx.server \
 
 ## What This Fork Adds (vs. Upstream)
 
-### Agent-Grade Tool Calling (13 features)
+<details>
+<summary><strong>Agent-Grade Tool Calling (13 features)</strong></summary>
+
+### Agent-Grade Tool Calling
 
 - **Text-format tool call recovery** — quantized models degrade and output tool calls as plain text; server auto-detects and converts back to structured `tool_calls` (works with any model, any parser)
-- 7 tool parsers — Hermes, MiniMax, Qwen, Qwen3-Coder, Llama, DeepSeek, Functionary
+- 17 tool parsers — Hermes, MiniMax, Qwen, Qwen3-Coder, Llama, DeepSeek, DeepSeek-v31, Seed-OSS, Functionary, GLM-4.7, Harmony, Mistral, Nemotron, Granite, Kimi, xLAM, Auto
 - MiniMax tool call parser — streaming + non-streaming XML extraction
 - `--tool-call-parser` flag — explicit parser selection for any model
 - Auto-infer tool parser — `--reasoning-parser minimax` auto-selects matching tool parser
@@ -674,13 +684,23 @@ OPENAI_API_KEY=sk-... python -m vllm_mlx.server \
 - Logprobs API — per-token `logprobs` + `top_logprobs`
 - End-to-end agent simulation tests — 14 tools, 8+ rounds, verified with OpenClaw
 
-### Reasoning Separation (3 features)
+</details>
+
+<details>
+<summary><strong>Reasoning Separation (3 features)</strong></summary>
+
+### Reasoning Separation
 
 - MiniMax reasoning parser — heuristic no-tag stripping (0% leak rate, was 60%)
 - Chinese reasoning pattern recognition
 - Clean `reasoning_content` field — reasoning never mixed into `content`
 
-### Performance (6 features)
+</details>
+
+<details>
+<summary><strong>Performance (6 features)</strong></summary>
+
+### Performance
 
 - Prompt cache (SimpleEngine) — persistent KV cache, 10-30x faster multi-turn
 - `--prefill-step-size` — configurable prefill chunks for TTFT tuning
@@ -689,7 +709,12 @@ OPENAI_API_KEY=sk-... python -m vllm_mlx.server \
 - Smart cloud routing — `--cloud-model` offloads large prefills to cloud LLMs
 - Frequency-aware cache eviction — LRU-LFU hybrid under memory pressure
 
-### Reliability (6 features)
+</details>
+
+<details>
+<summary><strong>Reliability (6 features)</strong></summary>
+
+### Reliability
 
 - Accurate `prompt_tokens` reporting (was always 0)
 - Prompt cache EOS fix — cache saved correctly on EOS
@@ -697,6 +722,8 @@ OPENAI_API_KEY=sk-... python -m vllm_mlx.server \
 - GC control during generation to avoid latency spikes
 - System prompt pinning in prefix cache
 - **1500+ tests** — unit tests + end-to-end agent simulation with real tool execution
+
+</details>
 
 ---
 
