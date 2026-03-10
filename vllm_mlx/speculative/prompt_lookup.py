@@ -11,6 +11,7 @@ Reference: https://github.com/apoorvumang/prompt-lookup-decoding
 
 import logging
 from collections import defaultdict
+
 import mlx.core as mx
 
 logger = logging.getLogger(__name__)
@@ -73,15 +74,22 @@ class PromptLookupDecoder:
             self._add_token(token)
 
     def _add_token(self, token: int):
-        """Add a single token to history and update n-gram index."""
+        """Add a single token to history and update n-gram index.
+
+        For each n in [1, ngram_size], record n-grams that END at this
+        position.  The n-gram is history[pos-n+1 : pos+1] (the last n
+        tokens including the one just appended).  The index maps this
+        n-gram to the START of the n-gram (pos-n+1), so continuation
+        tokens begin at pos+1.
+        """
         self._token_history.append(token)
 
-        # Update n-gram index for all n-gram sizes up to ngram_size
         pos = len(self._token_history) - 1
-        for n in range(1, min(self.ngram_size + 1, pos + 1)):
-            if pos >= n:
-                ngram = tuple(self._token_history[pos - n : pos])
-                self._ngram_index[ngram].append(pos)
+        for n in range(1, min(self.ngram_size + 1, pos + 2)):
+            start = pos - n + 1
+            if start >= 0:
+                ngram = tuple(self._token_history[start : pos + 1])
+                self._ngram_index[ngram].append(start)
 
     def add_generated_token(self, token: int):
         """
@@ -96,41 +104,47 @@ class PromptLookupDecoder:
         """
         Get draft tokens based on n-gram lookup.
 
+        The index maps an n-gram (a substring of n consecutive tokens) to
+        the start positions where that n-gram appeared.  We query with the
+        last ``ngram_size`` tokens in the history, find earlier occurrences,
+        and return the tokens that followed as draft candidates.
+
         Returns:
             List of draft token IDs (may be empty if no match found)
         """
         if len(self._token_history) < self.ngram_size:
             return []
 
-        # Get the last ngram_size tokens as the query
+        # Query: the last ngram_size tokens
         query = tuple(self._token_history[-self.ngram_size :])
 
-        # Look up positions where this n-gram occurred
+        # Look up start positions where this n-gram occurred
         positions = self._ngram_index.get(query, [])
 
         if not positions:
             return []
 
-        # Find the best match (most recent, or one with longest continuation)
+        # The n-gram occupies [start, start+ngram_size).
+        # Continuation begins at start + ngram_size.
+        current_start = len(self._token_history) - self.ngram_size
+
         draft_tokens = []
         best_continuation_length = 0
 
-        for pos in positions:
-            # Skip if this is the current position
-            if pos == len(self._token_history) - 1:
+        for start in positions:
+            # Skip the current occurrence (the query itself)
+            if start == current_start:
                 continue
 
-            # Check if there are tokens after this position
-            if pos < len(self._token_history) - 1:
-                # Get continuation tokens
-                continuation_end = min(
-                    pos + self.num_draft_tokens + 1, len(self._token_history)
-                )
-                continuation = self._token_history[pos + 1 : continuation_end]
+            cont_begin = start + self.ngram_size
+            cont_end = min(
+                cont_begin + self.num_draft_tokens, len(self._token_history)
+            )
+            continuation = self._token_history[cont_begin:cont_end]
 
-                if len(continuation) > best_continuation_length:
-                    best_continuation_length = len(continuation)
-                    draft_tokens = continuation[: self.num_draft_tokens]
+            if len(continuation) > best_continuation_length:
+                best_continuation_length = len(continuation)
+                draft_tokens = continuation[: self.num_draft_tokens]
 
         if len(draft_tokens) >= self.min_matches:
             self.total_drafts += 1

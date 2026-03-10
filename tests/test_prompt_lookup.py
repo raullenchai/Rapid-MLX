@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for PromptLookupDecoder."""
 
-import pytest
 from vllm_mlx.speculative.prompt_lookup import PromptLookupDecoder
 
 
@@ -20,9 +19,7 @@ class TestPromptLookupDecoderInit:
         assert decoder.accepted_tokens == 0
 
     def test_custom_init(self):
-        decoder = PromptLookupDecoder(
-            num_draft_tokens=8, ngram_size=5, min_matches=3
-        )
+        decoder = PromptLookupDecoder(num_draft_tokens=8, ngram_size=5, min_matches=3)
         assert decoder.num_draft_tokens == 8
         assert decoder.ngram_size == 5
         assert decoder.min_matches == 3
@@ -109,22 +106,18 @@ class TestPromptLookupDecoderGetDraftTokens:
 
     def test_ngram_match_found(self):
         """When last 3 tokens match an earlier n-gram, return continuation."""
-        decoder = PromptLookupDecoder(
-            num_draft_tokens=4, ngram_size=3, min_matches=1
-        )
+        decoder = PromptLookupDecoder(num_draft_tokens=4, ngram_size=3, min_matches=1)
         # History: [1, 2, 3, 4, 5, 1, 2, 3]
-        # At pos 3 (token=4): ngram (1,2,3) -> pos 3
-        # query = history[-3:] = (1, 2, 3), matches pos 3
-        # continuation from pos 3+1: [5, 1, 2, 3]
+        # query = history[-3:] = (1, 2, 3)
+        # (1,2,3) appears at start=0 and start=5 (current), skip current
+        # continuation from 0+3=3: [4, 5, 1, 2]
         decoder.add_prompt_tokens([1, 2, 3, 4, 5, 1, 2, 3])
         drafts = decoder.get_draft_tokens()
-        assert drafts == [5, 1, 2, 3]
+        assert drafts == [4, 5, 1, 2]
 
     def test_min_matches_threshold_not_met(self):
         """Draft not returned if continuation < min_matches."""
-        decoder = PromptLookupDecoder(
-            num_draft_tokens=4, ngram_size=3, min_matches=3
-        )
+        decoder = PromptLookupDecoder(num_draft_tokens=4, ngram_size=3, min_matches=3)
         # History: [1, 2, 3, 4, 5, 1, 2, 3]
         # Match at pos 3, continuation = [5, 1, 2, 3] (4 tokens >= min 3)
         decoder.add_prompt_tokens([1, 2, 3, 4, 5, 1, 2, 3])
@@ -133,9 +126,7 @@ class TestPromptLookupDecoderGetDraftTokens:
 
     def test_min_matches_threshold_blocks(self):
         """Draft not returned when continuation is too short."""
-        decoder = PromptLookupDecoder(
-            num_draft_tokens=4, ngram_size=3, min_matches=3
-        )
+        decoder = PromptLookupDecoder(num_draft_tokens=4, ngram_size=3, min_matches=3)
         # History: [1, 2, 3, 4, 1, 2, 3]
         # Match at pos 3 (token=4), continuation = [1, 2, 3] (3 tokens)
         # But continuation is capped by num_draft_tokens and history end
@@ -145,22 +136,18 @@ class TestPromptLookupDecoderGetDraftTokens:
         assert len(drafts) >= 3
 
     def test_num_draft_tokens_limits_output(self):
-        decoder = PromptLookupDecoder(
-            num_draft_tokens=2, ngram_size=3, min_matches=1
-        )
+        decoder = PromptLookupDecoder(num_draft_tokens=2, ngram_size=3, min_matches=1)
         # History: [1, 2, 3, 4, 5, 6, 1, 2, 3]
-        # query = (1,2,3), match at pos 3. Token at pos 3 is 4.
-        # continuation from pos 3+1 = [5,6,1,2,3], limited to 2
+        # query = (1,2,3), matches at start=0 (start=6 is current, skipped)
+        # continuation from 0+3=3: [4, 5, 6, 1, 2, 3], limited to 2
         decoder.add_prompt_tokens([1, 2, 3, 4, 5, 6, 1, 2, 3])
         drafts = decoder.get_draft_tokens()
         assert len(drafts) == 2
-        assert drafts == [5, 6]
+        assert drafts == [4, 5]
 
     def test_repeating_pattern(self):
         """Repeating pattern gives long continuations."""
-        decoder = PromptLookupDecoder(
-            num_draft_tokens=4, ngram_size=3, min_matches=1
-        )
+        decoder = PromptLookupDecoder(num_draft_tokens=4, ngram_size=3, min_matches=1)
         # History: [1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6, 1, 2, 3]
         # query = (_, 2, 3) -> matches multiple positions
         # Best continuation starts after the latest non-current match
@@ -172,9 +159,7 @@ class TestPromptLookupDecoderGetDraftTokens:
 
     def test_best_continuation_selected(self):
         """Longest continuation wins among multiple matches."""
-        decoder = PromptLookupDecoder(
-            num_draft_tokens=4, ngram_size=2, min_matches=1
-        )
+        decoder = PromptLookupDecoder(num_draft_tokens=4, ngram_size=2, min_matches=1)
         # History: [1, 2, 1, 2, 3, 4, 5, 1, 2]
         # query = (1, 2)
         # Match at pos 2 (token=1): continuation [2, 3, 4, 5] (4 tokens)
@@ -191,9 +176,7 @@ class TestPromptLookupDecoderGetDraftTokens:
 
     def test_current_position_excluded(self):
         """Current position in n-gram index should be skipped."""
-        decoder = PromptLookupDecoder(
-            num_draft_tokens=2, ngram_size=3, min_matches=1
-        )
+        decoder = PromptLookupDecoder(num_draft_tokens=2, ngram_size=3, min_matches=1)
         # History: [1, 2, 3] — only one occurrence of (1,2,3) at the end
         # query = (1, 2, 3), only position is current -> skip -> empty
         decoder.add_prompt_tokens([1, 2, 3])
@@ -283,9 +266,7 @@ class TestPromptLookupDecoderEdgeCases:
 
     def test_ngram_size_one(self):
         """With ngram_size=1, single token lookup."""
-        decoder = PromptLookupDecoder(
-            ngram_size=1, num_draft_tokens=3, min_matches=1
-        )
+        decoder = PromptLookupDecoder(ngram_size=1, num_draft_tokens=3, min_matches=1)
         # History: [5, 5, 5, 5]
         # query = (5,) — matches positions where preceding 1-gram is (5)
         # At pos 1: ngram (5,) -> pos 1
@@ -343,9 +324,7 @@ class TestPromptLookupDecoderEdgeCases:
 
     def test_generated_tokens_extend_ngram_index(self):
         """Generated tokens create new n-grams for future lookup."""
-        decoder = PromptLookupDecoder(
-            ngram_size=3, num_draft_tokens=2, min_matches=1
-        )
+        decoder = PromptLookupDecoder(ngram_size=3, num_draft_tokens=2, min_matches=1)
         # Prompt: [1, 2, 3, 4]
         decoder.add_prompt_tokens([1, 2, 3, 4])
 
@@ -357,7 +336,8 @@ class TestPromptLookupDecoderEdgeCases:
         decoder.add_generated_token(2)
         decoder.add_generated_token(3)
         # History = [1,2,3,4,1,2,3]
-        # query = (1,2,3), matches pos 3. continuation from pos 4 = [1,2,3]
+        # query = (1,2,3), matches at start=0 (start=4 is current, skipped)
+        # continuation from 0+3=3: [4, 1, 2, 3], limited to 2 -> [4, 1]
         drafts = decoder.get_draft_tokens()
         assert len(drafts) > 0
-        assert drafts[0] == 1
+        assert drafts[0] == 4
