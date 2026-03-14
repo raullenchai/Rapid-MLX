@@ -66,91 +66,116 @@ print(response.choices[0].message.content)
 
 ## Choose Your Model
 
-### Performance — 13 models, 5 engines
+### Decode Speed — 14 models, 5 engines
 
-All benchmarks on Mac Studio M3 Ultra (256GB). Rapid-MLX is the fastest or tied on 11 of 13 models.
+All benchmarks on Mac Studio M3 Ultra (256GB). Sorted by model size.
 
 ```
-Phi-4 Mini 14B            ⚡ Rapid-MLX  ████████████████████████████████████████████████████████████  174
-                            vllm-mlx   ██████████████████████████████████████████████████████████     170
-                            mlx-lm     ████████████████████████                                      77
-                            llama.cpp  █████████████████                                              55
-                            Ollama     ████████████████                                               51
+Qwen3.5-4B                  Rapid-MLX  ███████████████████████████████████████████████       158
+                            vllm-mlx   ██████████████████████████████████████████████        155
+                            mlx-lm     ██████████████████████████████████████████████████    168
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
 
-Qwen3.5-4B                ⚡ Rapid-MLX  █████████████████████████████████████████████████████         158
-                            vllm-mlx   █████████████████████████████████████████████████████          155
-                            mlx-lm     ████████████████████████████████████████████████████████       168
-                            llama.cpp                                                              n/a
-                            Ollama                                                                 n/a
+Hermes-3-Llama 8B           Rapid-MLX  █████████████████████████████████████                 123
+                            vllm-mlx   ████████████████████████████████████                  122
+                            mlx-lm     ██████████████████████████████████████                127
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
 
-GPT-OSS 20B               ⚡ Rapid-MLX  ████████████████████████████████████████                      123
-                            vllm-mlx   █████████████████████████                                      79
-                            mlx-lm     █████████████████████████                                      79
-                            llama.cpp                                                              n/a
-                            Ollama                                                                 n/a
+Qwen3.5-9B                ⚡ Rapid-MLX  █████████████████████████████████                     109
+                            vllm-mlx   ███████████████████████████████                       104
+                            mlx-lm     ██████████████████                                    61
+                            llama.cpp                                           not supported
+                            Ollama     ████████                                              26
 
-Hermes-3-Llama 8B         ⚡ Rapid-MLX  ████████████████████████████████████████                      123
-                            vllm-mlx   ███████████████████████████████████████                        122
-                            mlx-lm     █████████████████████████████████████████                      127
-                            llama.cpp                                                              n/a
-                            Ollama                                                                 n/a
+GLM-4.7-Flash 9B          ⚡ Rapid-MLX  ██████████████████                                    60
+                            vllm-mlx   █████████████████                                     56
+                            mlx-lm                                              not supported
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
 
-Qwen3.5-9B                ⚡ Rapid-MLX  ███████████████████████████████████                           109
-                            vllm-mlx   █████████████████████████████████                              104
-                            mlx-lm     ███████████████████                                            61
-                            llama.cpp                                                              n/a
-                            Ollama     ████████                                                       26
+Gemma 3 12B                 Rapid-MLX  ███████████████                                       49
+                            vllm-mlx                                            not supported
+                            mlx-lm     ██████████████████████                                73
+                            llama.cpp                                           not supported
+                            Ollama     ████████████████                                      54
 
-Qwen3.5-35B-A3B           ⚡ Rapid-MLX  ██████████████████████████                                     82
-                            vllm-mlx   █████████████████████████                                       80
-                            mlx-lm     ███████████████████████████                                     85
-                            llama.cpp                                                              n/a
-                            Ollama                                                                 n/a
+Phi-4 Mini 14B            ⚡ Rapid-MLX  ████████████████████████████████████████████████████  174
+                            vllm-mlx   ███████████████████████████████████████████████████   170
+                            mlx-lm     ███████████████████████                               77
+                            llama.cpp  ████████████████                                      55
+                            Ollama     ███████████████                                       51
 
-Qwen3-Coder-Next 80B      ⚡ Rapid-MLX  ████████████████████████                                       74
-                            vllm-mlx   ██████████████████████                                          69
-                            mlx-lm     ████████████████████████                                        76
-                            llama.cpp                                                              n/a
-                            Ollama                                                                 n/a
+GPT-OSS 20B               ⚡ Rapid-MLX  █████████████████████████████████████                 123
+                            vllm-mlx   ████████████████████████                              79
+                            mlx-lm     ████████████████████████                              79
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
 
-GLM-4.7-Flash 9B          ⚡ Rapid-MLX  ███████████████████                                            60
-                            vllm-mlx   █████████████████                                               56
-                            mlx-lm                                                                 n/a
-                            llama.cpp                                                              n/a
-                            Ollama                                                                 n/a
+Mistral Small 24B         ⚡ Rapid-MLX  ██████████████                                        48
+                            vllm-mlx   ██████████████                                        47
+                            mlx-lm     ████████████                                          41
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
 
-Gemma 3 12B                 Rapid-MLX  ███████████████                                                49
-                            vllm-mlx                                                               n/a
-                            mlx-lm     ███████████████████████                                         73
-                            llama.cpp                                                              n/a
-                            Ollama     █████████████████                                               54
+Devstral-Small-2 24B        Rapid-MLX  ██████████████                                        48
+                            vllm-mlx   ██████████████                                        48
+                            mlx-lm     ███████████████                                       49
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
 
-Devstral-Small-2 24B      ⚡ Rapid-MLX  ███████████████                                                48
-                            vllm-mlx   ███████████████                                                 48
-                            mlx-lm     ███████████████                                                 49
-                            llama.cpp                                                              n/a
-                            Ollama                                                                 n/a
+Qwen3.5-27B               ⚡ Rapid-MLX  ████████████                                          39
+                            vllm-mlx   ███████████                                           38
+                            mlx-lm     ████████████                                          39
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
 
-Mistral Small 24B          ⚡ Rapid-MLX  ███████████████                                                48
-                            vllm-mlx   ██████████████                                                  47
-                            mlx-lm     █████████████                                                   41
-                            llama.cpp                                                              n/a
-                            Ollama                                                                 n/a
+Qwen3.5-35B-A3B             Rapid-MLX  █████████████████████████                             82
+                            vllm-mlx   ████████████████████████                              80
+                            mlx-lm     █████████████████████████                             85
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
 
-Qwen3.5-122B-A10B          ⚡ Rapid-MLX  ██████████████                                                 44
-                            vllm-mlx   █████████████                                                   43
-                            mlx-lm     ██████████████                                                  45
-                            llama.cpp                                                              n/a
-                            Ollama                                                                 n/a
+Qwen3-Coder-Next 80B        Rapid-MLX  ██████████████████████                                74
+                            vllm-mlx   █████████████████████                                 69
+                            mlx-lm     ███████████████████████                               76
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
 
-Qwen3.5-27B                 Rapid-MLX  ████████████                                                   39
-                            vllm-mlx   ████████████                                                    38
-                            mlx-lm     ████████████                                                    39
-                            llama.cpp                                                              n/a
-                            Ollama                                                                 n/a
+GLM-4.5-Air                 Rapid-MLX  ██████████████                                        46
+                            vllm-mlx   ████████████████                                      54
+                            mlx-lm     █████████████████                                     56
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
+
+Qwen3.5-122B-A10B           Rapid-MLX  █████████████                                         44
+                            vllm-mlx   █████████████                                         43
+                            mlx-lm     █████████████                                         45
+                            llama.cpp                                           not supported
+                            Ollama                                              not supported
 ```
 
-*tok/s decode speed. ⚡ = Rapid-MLX is fastest or tied. n/a = engine doesn't support this model. Engines: [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX), [vllm-mlx](https://github.com/waybarrios/vllm-mlx) (upstream), [mlx-lm](https://github.com/ml-explore/mlx-examples), [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp).*
+*tok/s decode speed. ⚡ = fastest across all engines. Engines: [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX), [vllm-mlx](https://github.com/waybarrios/vllm-mlx) (upstream), [mlx-lm](https://github.com/ml-explore/mlx-examples), [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp).*
+
+### Time to First Token (TTFT) — multi-turn
+
+Prompt caching makes multi-turn conversations feel instant. Rapid-MLX is **1.3-4.1x faster** than upstream vllm-mlx on first-token latency across most models.
+
+| Model | Rapid-MLX | vllm-mlx | Ollama | llama.cpp | vs upstream |
+|:---|:---:|:---:|:---:|:---:|:---:|
+| Hermes-3-Llama 8B | **0.08s** | 0.18s | — | — | **2.3x** |
+| Qwen3.5-9B | **0.18s** | 0.26s | 0.27s | — | **1.4x** |
+| GLM-4.7-Flash 9B | **0.15s** | 0.23s | — | — | **1.5x** |
+| Phi-4 Mini 14B | 0.10s | 0.15s | 0.06s | **0.03s** | 1.5x |
+| GPT-OSS 20B | **0.12s** | 0.27s | — | — | **2.3x** |
+| Mistral Small 24B | **0.10s** | 0.38s | — | — | **3.8x** |
+| Devstral-Small-2 24B | **0.10s** | 0.38s | — | — | **3.7x** |
+| Qwen3.5-35B-A3B | **0.19s** | 0.24s | — | — | **1.3x** |
+| Qwen3-Coder-Next 80B | **0.10s** | 0.27s | — | — | **2.6x** |
+| GLM-4.5-Air | **0.12s** | 0.47s | — | — | **4.1x** |
+
+*Seconds to first visible token in a multi-turn conversation. Lower is better. Bold = fastest engine for that model. Ollama has no prompt cache — every turn re-prefills the full context.*
 
 ### What fits my Mac?
 
