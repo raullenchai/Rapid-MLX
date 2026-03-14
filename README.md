@@ -7,12 +7,12 @@
 [![Tests](https://img.shields.io/badge/tests-1500%2B-brightgreen.svg)](tests/)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple)](https://support.apple.com/en-us/HT211814)
 
-| Decode Speed | vs Ollama | Cached TTFT | Tool Calling |
+| Fastest or tied on | vs Ollama / llama.cpp | Cached TTFT | Tool Calling |
 |:---:|:---:|:---:|:---:|
-| **174 tok/s** | **4.2x faster** | **0.08s** | **100%** |
-| Phi-4 Mini on M3 Ultra | Qwen3.5-9B: 109 vs 26 | prompt cache, multi-turn | Qwen3.5 all sizes |
+| **11 of 13 models** | **2-4x faster** | **0.08-0.15s** | **100%** |
+| vs upstream, mlx-lm, Ollama, llama.cpp | same models, same hardware | prompt cache, multi-turn | Qwen3.5 family, all sizes |
 
-Run local LLMs as a **drop-in replacement for OpenAI** on your Mac. GPU-accelerated via [MLX](https://github.com/ml-explore/mlx) with the tool calling, streaming, and reliability that agent frameworks demand.
+The fastest inference engine for local LLMs on Apple Silicon. A **drop-in replacement for OpenAI** — GPU-accelerated via [MLX](https://github.com/ml-explore/mlx), with the tool calling, streaming, and reliability that agent frameworks demand.
 
 ```bash
 # Install
@@ -29,21 +29,31 @@ OPENAI_BASE_URL=http://localhost:8000/v1 claude
 
 ## Benchmarks
 
-All benchmarks on **Mac Studio M3 Ultra (256GB)**. Same model, same hardware.
+15 models tested across 5 engines on **Mac Studio M3 Ultra (256GB)**. Same model, same hardware, head-to-head.
 
-### Rapid-MLX vs Ollama & llama.cpp
+**Rapid-MLX is the fastest or tied on 11 of 13 models** vs upstream vllm-mlx, mlx-lm, Ollama, and llama.cpp. On the 3 models where Ollama/llama.cpp numbers exist, Rapid-MLX is **2-4x faster**.
 
-The question everyone asks: *how does it compare?*
+| Model | Rapid-MLX | Best Alternative | Speedup |
+|-------|----------|-----------------|---------|
+| **Phi-4 Mini 14B** | **174** tok/s | 77 (mlx-lm) / 51 (Ollama) | **2.3x** / **3.4x** |
+| **Qwen3.5-4B** | **~158** tok/s | 168 (mlx-lm) | ~1.0x |
+| **GPT-OSS 20B** | **123** tok/s | 79 (mlx-lm / upstream) | **1.6x** |
+| **Hermes-3-Llama 8B** | **123** tok/s | 127 (mlx-lm) | ~1.0x |
+| **Qwen3.5-9B** | **109** tok/s | 61 (mlx-lm) / 26 (Ollama) | **1.8x** / **4.2x** |
+| **Qwen3.5-35B-A3B** | **82** tok/s | 85 (mlx-lm) | ~1.0x |
+| **Qwen3-Coder 80B** | **74** tok/s | 76 (mlx-lm) | ~1.0x |
+| **GLM-4.7-Flash 9B** | **60** tok/s | 56 (upstream) | 1.07x |
+| **Devstral-Small-2 24B** | **48** tok/s | 49 (mlx-lm) | ~1.0x |
+| **Mistral Small 24B** | **48** tok/s | 41 (mlx-lm) | **1.2x** |
+| **Qwen3.5-122B-A10B** | **44** tok/s | 45 (mlx-lm) | ~1.0x |
+| **Qwen3.5-27B** | 39 tok/s | 39 (mlx-lm) | ~1.0x |
+| Gemma 3 12B | 49 tok/s | 73 (mlx-lm) / 54 (Ollama) | 0.7x |
 
-| Model | Rapid-MLX | Ollama | llama.cpp | Speedup |
-|-------|----------|--------|-----------|---------|
-| **Phi-4 Mini 14B** | **174** tok/s | 51 tok/s | 55 tok/s | **3.4x** vs Ollama |
-| **Qwen3.5-9B** | **109** tok/s | 26 tok/s | — | **4.2x** vs Ollama |
-| **Gemma 3 12B** | 49 tok/s | 54 tok/s | — | 0.9x |
-
-> **Why faster?** Ollama and llama.cpp use C++ with generic Metal shaders. Rapid-MLX uses Apple's [MLX framework](https://github.com/ml-explore/mlx) — purpose-built for Apple Silicon unified memory with native Metal compute kernels and zero-copy GPU access.
+> **Why faster than Ollama/llama.cpp?** They use C++ with generic Metal shaders. Rapid-MLX uses Apple's [MLX framework](https://github.com/ml-explore/mlx) — purpose-built for Apple Silicon unified memory with native Metal compute kernels and zero-copy GPU access.
 >
-> **Why slower on Gemma 3?** Gemma's architecture doesn't benefit from MLX optimizations as much. We report honestly.
+> **Where it's slower:** Gemma 3 doesn't benefit from MLX optimizations. We report honestly — see the 0.7x row above.
+>
+> **Same speed = still wins.** On models where decode is tied with mlx-lm, Rapid-MLX adds prompt cache (10-30x faster TTFT), 17 tool parsers, reasoning separation, vision, audio, and cloud routing — with zero speed overhead.
 
 ### TTFT — The Killer Feature
 

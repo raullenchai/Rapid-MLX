@@ -20,13 +20,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ruff black
+          pip install ruff
 
-      - name: Run ruff
-        run: ruff check vllm_mlx/ tests/ --select E,F,W --ignore E402,E501,E731,F811,F841
+      - name: Run ruff lint
+        run: ruff check vllm_mlx/ tests/
 
-      - name: Run black
-        run: black --check vllm_mlx/ tests/
+      - name: Run ruff format check
+        run: ruff format --check vllm_mlx/ tests/
 
   type-check:
     runs-on: ubuntu-latest

@@ -128,7 +128,30 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
-ignore = ["E501", "B905"]
+ignore = [
+    "E402",   # module-level import not at top
+    "E501",   # line too long
+    "E731",   # lambda assignment
+    "F811",   # redefined unused
+    "F841",   # unused variable
+    "B004",   # unreliable callable check
+    "B007",   # unused loop variable
+    "B008",   # function call in default arg
+    "B011",   # assert false
+    "B017",   # assert raises exception
+    "B905",   # zip without strict
+    "N801",   # class name casing
+    "N806",   # variable in function casing
+    "SIM103", # needless bool
+    "SIM108", # ternary instead of if-else
+    "SIM110", # reimplemented builtin
+    "SIM222", # expr or true
+    "UP028",  # yield in for loop
+    "SIM102", # collapsible if
+    "SIM105", # suppressible exception
+    "SIM115", # open file with context handler
+    "B904",   # raise without from inside except
+]
 
 [tool.mypy]
 python_version = "3.10"

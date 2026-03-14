@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 try:
-    import mlx.core as mx
+    import mlx.core as mx  # noqa: F401
 
     HAS_MLX = True
 except ImportError:
