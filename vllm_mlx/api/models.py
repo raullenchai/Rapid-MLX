@@ -458,6 +458,7 @@ class ChatCompletionChunkDelta(BaseModel):
 
     role: str | None = None
     content: str | None = None
+    reasoning: str | None = None
     tool_calls: list[dict] | None = None
 
 

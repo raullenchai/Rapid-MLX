@@ -649,12 +649,16 @@ class TestModelSerialization:
         assert "test-model" in json_str
         assert "Hi!" in json_str
 
-    def test_chunk_delta_no_reasoning_fields(self):
-        """Streaming chunk delta should not have reasoning fields."""
+    def test_chunk_delta_reasoning_field(self):
+        """Streaming chunk delta supports optional reasoning field."""
         delta = ChatCompletionChunkDelta(content="hello")
         data = delta.model_dump()
-        assert "reasoning" not in data
+        assert data["reasoning"] is None
         assert "reasoning_content" not in data
+
+        delta_with = ChatCompletionChunkDelta(reasoning="thinking...")
+        data_with = delta_with.model_dump()
+        assert data_with["reasoning"] == "thinking..."
 
     def test_response_format_json_schema_alias(self):
         schema = ResponseFormatJsonSchema(

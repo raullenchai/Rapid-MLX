@@ -186,7 +186,7 @@ class TestStartStop:
 
 def _make_chunk(text, finished=False, finish_reason=None, prompt_tokens=5, token=1):
     """Helper to create mock streaming chunks."""
-    c = MagicMock()
+    c = MagicMock(spec=[])  # spec=[] prevents auto-creating attributes
     c.text = text
     c.finished = finished
     c.finish_reason = finish_reason

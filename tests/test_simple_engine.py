@@ -94,9 +94,10 @@ class TestSimpleEngineConcurrency:
         """Test that the lock prevents concurrent chat calls."""
         from vllm_mlx.engine.simple import SimpleEngine
 
-        with patch("vllm_mlx.engine.simple.is_mllm_model", return_value=False):
+        with patch("vllm_mlx.engine.simple.is_mllm_model", return_value=True):
             engine = SimpleEngine("test-model")
             engine._model = mock_llm_model
+            engine._is_mllm = True
             engine._loaded = True
 
             # Launch multiple concurrent chat calls
@@ -123,7 +124,7 @@ class TestSimpleEngineConcurrency:
         def stream_generate_side_effect(**kwargs):
             # Yield a few chunks
             for i in range(3):
-                chunk = MagicMock()
+                chunk = MagicMock(spec=[])
                 chunk.text = f"chunk{i}"
                 chunk.prompt_tokens = 5
                 chunk.finished = i == 2
