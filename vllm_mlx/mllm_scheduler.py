@@ -344,6 +344,7 @@ class MLLMScheduler:
         # Mark as aborted
         request.status = RequestStatus.FINISHED_ABORTED
         self.finished_req_ids.add(request_id)
+        self.requests.pop(request_id, None)
 
         # Signal output queue
         if request_id in self.output_queues:
@@ -503,6 +504,7 @@ class MLLMScheduler:
 
             # Track as finished
             self.finished_req_ids.add(request_id)
+            self.requests.pop(request_id, None)
 
     def step(self) -> MLLMSchedulerOutput:
         """
@@ -545,6 +547,8 @@ class MLLMScheduler:
                             pass
 
                 self._cleanup_finished(finished_ids)
+                if finished_ids:
+                    mx.clear_cache()
 
         # Clear finished tracking for next step
         self.finished_req_ids = set()

@@ -337,6 +337,7 @@ class SimpleEngine(BaseEngine):
                     temperature=temperature,
                     top_p=top_p,
                     stop=stop,
+                    tools=template_tools,
                     **kwargs,
                 )
                 return GenerationOutput(
@@ -485,6 +486,7 @@ class SimpleEngine(BaseEngine):
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
+                    tools=template_tools,
                     **kwargs,
                 )
 
