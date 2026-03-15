@@ -212,15 +212,44 @@ class TestPrefixCacheManager:
         # Stats should also be reset
         assert cache_manager.stats.hits == 0
 
-    def test_cache_no_copy(self, cache_manager):
-        """Test that fetched cache is a reference (no copy) — MLX arrays are immutable."""
-        original = [[1, 2, 3]]
+    def test_fetch_returns_deep_copy(self, cache_manager):
+        """Test that fetched cache is a deep copy — mutations must not corrupt stored entry."""
+
+        class MutableLayer:
+            def __init__(self, offset):
+                self.offset = offset
+
+        original = [MutableLayer(10)]
         cache_manager.store_cache([1, 2], original)
 
+        # Fetch and mutate the returned copy
         cache, _ = cache_manager.fetch_cache([1, 2])
+        assert cache is not original
+        cache[0].offset = 999
 
-        # Returns the same object (no deep copy overhead)
-        assert cache is original
+        # Fetch again — stored entry must be unchanged
+        cache2, _ = cache_manager.fetch_cache([1, 2])
+        assert cache2[0].offset == 10, "Stored cache entry was corrupted by mutation"
+
+    def test_fetch_shorter_prefix_returns_deep_copy(self, cache_manager):
+        """Test that shorter prefix fetch also returns a deep copy."""
+
+        class MutableLayer:
+            def __init__(self, offset):
+                self.offset = offset
+
+        original = [MutableLayer(20)]
+        cache_manager.store_cache([1, 2, 3], original)
+
+        # Fetch shorter prefix
+        cache, remaining = cache_manager.fetch_cache([1, 2, 3, 4, 5])
+        assert remaining == [4, 5]
+        assert cache is not original
+        cache[0].offset = 999
+
+        # Fetch again — stored entry must be unchanged
+        cache2, _ = cache_manager.fetch_cache([1, 2, 3])
+        assert cache2[0].offset == 20, "Stored cache entry was corrupted by mutation"
 
     def test_multiple_prefixes(self, cache_manager):
         """Test multiple different prefixes."""

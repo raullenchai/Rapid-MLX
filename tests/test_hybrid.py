@@ -154,6 +154,54 @@ class TestStart:
             mock_batched._inject_shared_model.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_start_passes_trust_remote_code(self):
+        """Regression: load() must receive trust_remote_code from engine config."""
+        mock_simple = _make_mock_simple()
+        mock_batched = _make_mock_batched()
+        mock_model, mock_tok = MagicMock(), MagicMock()
+        mock_load = MagicMock(return_value=(mock_model, mock_tok))
+
+        with (
+            patch("vllm_mlx.engine.hybrid.load", mock_load),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
+            from vllm_mlx.engine.hybrid import HybridEngine
+
+            engine = HybridEngine(model_name="test_model", trust_remote_code=True)
+            await engine.start()
+
+            mock_load.assert_called_once_with(
+                "test_model", trust_remote_code=True
+            )
+
+    @pytest.mark.asyncio
+    async def test_start_trust_remote_code_false(self):
+        """trust_remote_code=False must also be forwarded to load()."""
+        mock_simple = _make_mock_simple()
+        mock_batched = _make_mock_batched()
+        mock_model, mock_tok = MagicMock(), MagicMock()
+        mock_load = MagicMock(return_value=(mock_model, mock_tok))
+
+        with (
+            patch("vllm_mlx.engine.hybrid.load", mock_load),
+            patch("vllm_mlx.api.utils.is_mllm_model", return_value=False),
+            patch("vllm_mlx.engine.hybrid.SimpleEngine", return_value=mock_simple),
+            patch("vllm_mlx.engine.hybrid.BatchedEngine", return_value=mock_batched),
+            patch("vllm_mlx.engine.hybrid.get_registry"),
+        ):
+            from vllm_mlx.engine.hybrid import HybridEngine
+
+            engine = HybridEngine(model_name="test_model", trust_remote_code=False)
+            await engine.start()
+
+            mock_load.assert_called_once_with(
+                "test_model", trust_remote_code=False
+            )
+
+    @pytest.mark.asyncio
     async def test_start_mllm_mode(self):
         mock_batched = _make_mock_batched()
         mock_model, mock_tok = MagicMock(), MagicMock()
