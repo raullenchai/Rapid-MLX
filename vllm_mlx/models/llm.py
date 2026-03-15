@@ -93,6 +93,10 @@ class MLXLanguageModel:
         self._cached_token_ids: list[int] = []
         self._cache_lock = False  # Simple guard against concurrent use
 
+        # DeltaNet/hybrid cache snapshot for prefix reuse
+        self._rnn_state_snapshot: list | None = None  # deep-copied ArraysCache states
+        self._snapshot_prefix_ids: list[int] = []     # token IDs at snapshot time
+
     def load(self) -> None:
         """Load the model and tokenizer."""
         if self._loaded:
@@ -235,6 +239,61 @@ class MLXLanguageModel:
         # The cache itself is the live object — we just track what's in it
         self._cached_token_ids = list(token_ids)
 
+    def _is_hybrid_cache(self) -> bool:
+        """Check if cache has a mix of trimmable + non-trimmable layers (e.g. Qwen3.5)."""
+        if self._prompt_cache is None:
+            return False
+        has_trimmable = any(c.is_trimmable() for c in self._prompt_cache)
+        has_non_trimmable = any(not c.is_trimmable() for c in self._prompt_cache)
+        return has_trimmable and has_non_trimmable
+
+    def _snapshot_rnn_layers(self, prefix_ids: list[int]) -> None:
+        """Deep-copy non-trimmable (ArraysCache) layer states for prefix reuse."""
+        import copy
+
+        if self._prompt_cache is None:
+            return
+        snapshot = []
+        for c in self._prompt_cache:
+            if not c.is_trimmable():
+                snapshot.append(copy.deepcopy(c))
+            else:
+                snapshot.append(None)  # placeholder — KVCache is trimmed, not snapshotted
+        self._rnn_state_snapshot = snapshot
+        self._snapshot_prefix_ids = list(prefix_ids)
+        logger.info(f"Saved RNN state snapshot for {len(prefix_ids)} token prefix")
+
+    def _restore_rnn_layers(self, prompt_token_ids: list[int], common_len: int) -> bool:
+        """Restore non-trimmable layers from snapshot and trim trimmable layers.
+
+        Returns True if restore succeeded.
+        """
+        import copy
+
+        if self._rnn_state_snapshot is None:
+            return False
+        snap_len = len(self._snapshot_prefix_ids)
+        # Snapshot only usable if full snapshot prefix is matched
+        if common_len < snap_len:
+            return False
+        # Verify token match
+        if prompt_token_ids[:snap_len] != self._snapshot_prefix_ids:
+            return False
+        # Restore non-trimmable layers from snapshot
+        for i, snap in enumerate(self._rnn_state_snapshot):
+            if snap is not None:
+                self._prompt_cache[i] = copy.deepcopy(snap)
+        # Trim trimmable layers to common_len
+        for c in self._prompt_cache:
+            if c.is_trimmable():
+                current = c.offset if hasattr(c, "offset") else c.size()
+                to_trim = current - common_len
+                if to_trim > 0:
+                    c.trim(to_trim)
+        self._cached_token_ids = self._cached_token_ids[:common_len]
+        logger.info(f"Restored RNN snapshot ({snap_len} tok), trimmed KV to {common_len}")
+        return True
+
     def _make_fresh_cache(self) -> list:
         """Create a fresh prompt cache from the model (and draft model)."""
         from mlx_lm.models.cache import make_prompt_cache
@@ -276,9 +335,14 @@ class MLXLanguageModel:
         common_len = self._find_common_prefix_len(prompt_token_ids)
 
         if not self._cache_is_trimmable():
-            # Non-trimmable caches (e.g. ArraysCache, mixed CacheList) cannot
-            # be partially trimmed.  Recreate from scratch so recurrent state
-            # doesn't leak across unrelated prompts.
+            if self._is_hybrid_cache():
+                # Hybrid cache (e.g. Qwen3.5): mix of trimmable KVCache +
+                # non-trimmable ArraysCache.  Try to restore from snapshot.
+                common_len = self._find_common_prefix_len(prompt_token_ids)
+                if common_len > 0 and self._restore_rnn_layers(prompt_token_ids, common_len):
+                    suffix = prompt_token_ids[common_len:]
+                    return suffix
+            # Pure non-trimmable or no snapshot match — recreate
             self._prompt_cache = self._make_fresh_cache()
             self._cached_token_ids = []
             return prompt_token_ids
@@ -334,7 +398,13 @@ class MLXLanguageModel:
         )
 
         # Non-trimmable caches get fully recreated — no prefix reuse
+        # Exception: hybrid caches with a valid RNN snapshot can reuse prefix
         if self._prompt_cache is not None and not self._cache_is_trimmable():
+            if self._is_hybrid_cache() and self._rnn_state_snapshot is not None:
+                snap_len = len(self._snapshot_prefix_ids)
+                common_len = self._find_common_prefix_len(full_token_ids)
+                if common_len >= snap_len:
+                    return len(full_token_ids), len(full_token_ids) - common_len
             return len(full_token_ids), len(full_token_ids)
 
         common_len = self._find_common_prefix_len(full_token_ids)
@@ -496,6 +566,11 @@ class MLXLanguageModel:
                         f"(prompt={len(full_token_ids)} tokens, "
                         f"prefilled={len(prompt_to_send)} tokens)"
                     )
+                    # Snapshot RNN state after first prompt processing
+                    if (self._is_hybrid_cache() and
+                        (self._rnn_state_snapshot is None or
+                         len(full_token_ids) > len(self._snapshot_prefix_ids))):
+                        self._snapshot_rnn_layers(full_token_ids)
                 token_id = response.token if hasattr(response, "token") else 0
                 new_text = decoder.add_token(token_id)
                 accumulated_text += new_text
