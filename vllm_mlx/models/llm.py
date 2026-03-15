@@ -98,6 +98,11 @@ class MLXLanguageModel:
         self._snapshot_prefix_ids: list[int] = []     # token IDs at snapshot time
         self._main_cache_len: int = 0  # number of main model cache layers (excl. draft)
 
+        # MTP (Multi-Token Prediction) — uses model's built-in MTP head
+        self.enable_mtp: bool = False
+        self.mtp_optimistic: bool = False
+        self._mtp_validated: bool = False
+
     def load(self) -> None:
         """Load the model and tokenizer."""
         if self._loaded:
@@ -145,6 +150,11 @@ class MLXLanguageModel:
                 )
 
             self._loaded = True
+
+            # Validate MTP support if enabled
+            if self.enable_mtp:
+                self._validate_and_setup_mtp()
+
             logger.info(f"Model loaded successfully: {self.model_name}")
 
         except ImportError:
@@ -377,6 +387,25 @@ class MLXLanguageModel:
             cache.extend(make_prompt_cache(self.draft_model))
         return cache
 
+    def _validate_and_setup_mtp(self) -> None:
+        """Validate MTP support and set up if available."""
+        from ..patches.qwen3_next_mtp import validate_mtp_support
+
+        if validate_mtp_support(self.model):
+            self._mtp_validated = True
+            if self.draft_model is not None:
+                logger.warning(
+                    "[MTP] Both MTP and speculative decoding (draft model) are enabled. "
+                    "MTP will be used; draft model will be ignored during MTP generation."
+                )
+            logger.info("[MTP] MTP validated and enabled for SimpleEngine")
+        else:
+            self._mtp_validated = False
+            logger.warning(
+                "[MTP] MTP validation failed — --enable-mtp will be ignored. "
+                "Model may not have MTP weights. Run scripts/add_mtp_weights.py."
+            )
+
     def _cache_is_trimmable(self) -> bool:
         """Check if all layers in the prompt cache support trim."""
         from mlx_lm.models.cache import can_trim_prompt_cache
@@ -503,6 +532,297 @@ class MLXLanguageModel:
         common_len = self._find_common_prefix_len(full_token_ids)
         return len(full_token_ids), len(full_token_ids) - common_len
 
+    def _mtp_generate(
+        self,
+        suffix_tokens: list[int],
+        full_token_ids: list[int],
+        max_tokens: int,
+        sampler,
+        stop: list[str] | None = None,
+    ) -> Iterator[StreamingOutput]:
+        """Custom generation loop with MTP (Multi-Token Prediction).
+
+        Uses the model's built-in MTP head for speculative generation:
+        1. Forward pass with return_hidden → (logits, hidden)
+        2. Sample primary token P
+        3. MTP draft: model.mtp_forward(hidden, P) → draft token D
+        4. Always-advance verify: model([P, D], cache) → verify logits
+        5. Accept: yield P + D; Reject: trim cache, yield P only.
+
+        Args:
+            suffix_tokens: Token IDs to prefill (non-cached portion)
+            full_token_ids: Complete prompt token IDs
+            max_tokens: Maximum tokens to generate
+            sampler: Sampling function for primary tokens
+            stop: Optional stop sequences
+        """
+        import copy
+
+        import mlx.core as mx
+        from mlx_lm.sample_utils import make_sampler
+
+        model = self.model
+        main_cache = self._prompt_cache[:self._main_cache_len]
+        is_hybrid = self._is_hybrid_cache()
+        draft_sampler = make_sampler(temp=0.0)
+        decoder = IncrementalDecoder(self.tokenizer, skip_special_tokens=False)
+
+        # Determine EOS token(s)
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        eos_token_ids = set()
+        if isinstance(eos_token_id, int):
+            eos_token_ids.add(eos_token_id)
+        elif isinstance(eos_token_id, (list, set)):
+            eos_token_ids.update(eos_token_id)
+        # Also check eos_token_ids attribute (some tokenizers)
+        extra_eos = getattr(self.tokenizer, "eos_token_ids", None)
+        if extra_eos:
+            if isinstance(extra_eos, (list, set)):
+                eos_token_ids.update(extra_eos)
+
+        # Prefill suffix (all but last token)
+        if len(suffix_tokens) > 1:
+            self._prefill_cache(mx.array(suffix_tokens[:-1]))
+
+        # Run last suffix token with return_hidden to start generation
+        last_token = mx.array([[suffix_tokens[-1]]])
+        model_output = model(last_token, cache=main_cache, return_hidden=True)
+        if isinstance(model_output, tuple):
+            logits, hidden = model_output
+        else:
+            # Model doesn't support return_hidden — shouldn't happen if validated
+            raise RuntimeError(
+                "[MTP] model forward did not return hidden states despite validation"
+            )
+        logits = logits[:, -1, :]
+        hidden = hidden[:, -1:, :]
+
+        # Track generation
+        token_count = 0
+        accumulated_text = ""
+        skip_state = None
+        mtp_stats = {"accepted": 0, "rejected": 0, "errors": 0}
+
+        with mx.stream(mx.default_stream(mx.default_device())):
+            while token_count < max_tokens:
+                # --- 1. Get logits + hidden (from skip_state or fresh forward) ---
+                if skip_state is not None:
+                    logits = skip_state["logits"]
+                    hidden = skip_state["hidden"]
+                    skip_state = None
+
+                # --- 2. Sample primary token ---
+                logprobs = logits - mx.logsumexp(logits, keepdims=True)
+                primary = sampler(logprobs[None] if logits.ndim == 1 else logprobs)
+                mx.eval(primary)
+                primary_id = primary.item()
+
+                # Check EOS on primary
+                if primary_id in eos_token_ids:
+                    new_text = decoder.add_token(primary_id)
+                    accumulated_text += new_text
+                    token_count += 1
+                    self._cached_token_ids.append(primary_id)
+                    yield StreamingOutput(
+                        text=new_text,
+                        token=primary_id,
+                        finished=True,
+                        finish_reason="stop",
+                        prompt_tokens=len(full_token_ids),
+                    )
+                    break
+
+                # Yield primary token
+                new_text = decoder.add_token(primary_id)
+                accumulated_text += new_text
+                token_count += 1
+                self._cached_token_ids.append(primary_id)
+
+                # Check stop sequences
+                should_stop = False
+                if stop:
+                    for stop_seq in stop:
+                        if stop_seq in accumulated_text:
+                            should_stop = True
+                            break
+
+                finished = should_stop or token_count >= max_tokens
+                yield StreamingOutput(
+                    text=new_text,
+                    token=primary_id,
+                    finished=finished,
+                    finish_reason="stop" if should_stop else ("length" if token_count >= max_tokens else None),
+                    prompt_tokens=len(full_token_ids),
+                )
+                if finished:
+                    break
+
+                # --- 3. MTP draft ---
+                try:
+                    primary_arr = mx.array([[primary_id]])
+                    draft_logits = model.mtp_forward(
+                        hidden,
+                        primary_arr,
+                        mtp_cache=None,
+                    )
+                    draft_logits = draft_logits[:, -1, :]
+                    draft_logprobs = draft_logits - mx.logsumexp(
+                        draft_logits, axis=-1, keepdims=True
+                    )
+                    draft_token = draft_sampler(draft_logprobs)
+
+                    # --- 4. Snapshot RNN if hybrid ---
+                    rnn_snapshots = {}
+                    if is_hybrid:
+                        for ci, c in enumerate(main_cache):
+                            if not (hasattr(c, "is_trimmable") and c.is_trimmable()):
+                                if hasattr(c, "state"):
+                                    rnn_snapshots[ci] = [
+                                        s.copy() if s is not None else None
+                                        for s in c.state
+                                    ]
+
+                    # --- 5. Always-advance verify [P, D] ---
+                    verify_input = mx.concatenate(
+                        [primary_arr, draft_token[:, None]], axis=1
+                    )
+                    verify_output = model(
+                        verify_input, cache=main_cache, return_hidden=True
+                    )
+                    if isinstance(verify_output, tuple):
+                        verify_logits, verify_hidden = verify_output
+                    else:
+                        verify_logits = verify_output
+                        verify_hidden = None
+
+                    if self.mtp_optimistic:
+                        # --- OPTIMISTIC: always accept ---
+                        mx.eval(draft_token)
+                        draft_id = draft_token.item()
+                        mtp_stats["accepted"] += 1
+
+                        if verify_hidden is not None:
+                            skip_state = {
+                                "logits": verify_logits[:, 1, :],
+                                "hidden": verify_hidden[:, -1:, :],
+                            }
+                            mx.async_eval(skip_state["logits"], skip_state["hidden"])
+
+                    else:
+                        # --- VERIFIED: compare argmax of verify vs draft ---
+                        verify_pred = mx.argmax(verify_logits[:, 0, :], axis=-1)
+                        mx.eval(verify_pred, draft_token)
+                        accepted = verify_pred.item() == draft_token.item()
+                        draft_id = draft_token.item()
+
+                        if accepted and verify_hidden is not None:
+                            # --- ACCEPT ---
+                            skip_state = {
+                                "logits": verify_logits[:, 1, :],
+                                "hidden": verify_hidden[:, -1:, :],
+                            }
+                            mx.async_eval(skip_state["logits"], skip_state["hidden"])
+                            mtp_stats["accepted"] += 1
+                        else:
+                            # --- REJECT ---
+                            mtp_stats["rejected"] += 1
+                            if rnn_snapshots:
+                                # Hybrid: trim KV by 2, restore RNN, re-advance with P
+                                for c in main_cache:
+                                    if hasattr(c, "is_trimmable") and c.is_trimmable():
+                                        c.trim(2)
+                                for ci, snap in rnn_snapshots.items():
+                                    main_cache[ci].state = snap
+                                # Re-advance with primary only
+                                rerun_out = model(
+                                    primary_arr, cache=main_cache, return_hidden=True
+                                )
+                                if isinstance(rerun_out, tuple):
+                                    rerun_logits, rerun_hidden = rerun_out
+                                else:
+                                    rerun_logits = rerun_out
+                                    rerun_hidden = None
+                                if rerun_hidden is not None:
+                                    skip_state = {
+                                        "logits": rerun_logits[:, -1, :],
+                                        "hidden": rerun_hidden[:, -1:, :],
+                                    }
+                                    mx.async_eval(
+                                        skip_state["logits"], skip_state["hidden"]
+                                    )
+                            else:
+                                # Pure attention: trim 1 (remove draft only)
+                                for c in main_cache:
+                                    if hasattr(c, "is_trimmable") and c.is_trimmable():
+                                        c.trim(1)
+                                if verify_hidden is not None:
+                                    skip_state = {
+                                        "logits": verify_logits[:, 0, :],
+                                        "hidden": verify_hidden[:, 0:1, :],
+                                    }
+                                    mx.async_eval(
+                                        skip_state["logits"], skip_state["hidden"]
+                                    )
+                            # Don't yield the draft on reject
+                            continue
+
+                    # --- 6. Yield accepted draft token ---
+                    if draft_id in eos_token_ids:
+                        new_text = decoder.add_token(draft_id)
+                        accumulated_text += new_text
+                        token_count += 1
+                        self._cached_token_ids.append(draft_id)
+                        yield StreamingOutput(
+                            text=new_text,
+                            token=draft_id,
+                            finished=True,
+                            finish_reason="stop",
+                            prompt_tokens=len(full_token_ids),
+                        )
+                        break
+
+                    new_text = decoder.add_token(draft_id)
+                    accumulated_text += new_text
+                    token_count += 1
+                    self._cached_token_ids.append(draft_id)
+
+                    # Check stop sequences after draft
+                    should_stop = False
+                    if stop:
+                        for stop_seq in stop:
+                            if stop_seq in accumulated_text:
+                                should_stop = True
+                                break
+
+                    finished = should_stop or token_count >= max_tokens
+                    yield StreamingOutput(
+                        text=new_text,
+                        token=draft_id,
+                        finished=finished,
+                        finish_reason="stop" if should_stop else ("length" if token_count >= max_tokens else None),
+                        prompt_tokens=len(full_token_ids),
+                    )
+                    if finished:
+                        break
+
+                except Exception as e:
+                    logger.debug(f"[MTP] draft/verify failed: {e}")
+                    mtp_stats["errors"] += 1
+                    skip_state = None
+                    # Fall through to next iteration — model forward will
+                    # be called fresh without skip_state
+
+        # Log MTP stats
+        total = mtp_stats["accepted"] + mtp_stats["rejected"]
+        if total > 0:
+            rate = mtp_stats["accepted"] / total * 100
+            logger.info(
+                f"[MTP] Stats: {mtp_stats['accepted']} accepted, "
+                f"{mtp_stats['rejected']} rejected ({rate:.1f}% accept rate), "
+                f"{mtp_stats['errors']} errors, "
+                f"{token_count} total tokens"
+            )
+
     def stream_generate(
         self,
         prompt: str,
@@ -613,6 +933,24 @@ class MLXLanguageModel:
                 prompt_to_send = full_token_ids
         else:
             prompt_to_send = suffix_tokens
+
+        # MTP path: use custom generation loop when MTP is validated
+        if self.enable_mtp and self._mtp_validated:
+            cache_saved = False
+            try:
+                for chunk in self._mtp_generate(
+                    prompt_to_send, full_token_ids, max_tokens, sampler, stop
+                ):
+                    if chunk.finished:
+                        self._save_cache_snapshot(full_token_ids)
+                        cache_saved = True
+                        yield chunk
+                        break
+                    yield chunk
+            finally:
+                if not cache_saved:
+                    self._save_cache_snapshot(full_token_ids)
+            return
 
         t_first_token = None
         cache_saved = False

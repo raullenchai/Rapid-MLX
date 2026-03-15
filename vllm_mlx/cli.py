@@ -212,6 +212,9 @@ def serve_command(args):
             print(f"Prefix cache: max_entries={args.prefix_cache_size}")
     else:
         print("Mode: Simple (maximum throughput)")
+        if args.enable_mtp:
+            mode = "optimistic" if args.mtp_optimistic else "verified"
+            print(f"MTP: enabled ({mode} mode)")
 
     # Load model with unified server
     load_model(
@@ -231,6 +234,8 @@ def serve_command(args):
         cloud_threshold=args.cloud_threshold,
         cloud_api_base=args.cloud_api_base,
         cloud_api_key=args.cloud_api_key,
+        enable_mtp=args.enable_mtp if not args.continuous_batching else False,
+        mtp_optimistic=args.mtp_optimistic if not args.continuous_batching else False,
     )
 
     # Start server

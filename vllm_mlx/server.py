@@ -669,6 +669,8 @@ def load_model(
     cloud_threshold: int = 20000,
     cloud_api_base: str | None = None,
     cloud_api_key: str | None = None,
+    enable_mtp: bool = False,
+    mtp_optimistic: bool = False,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -762,6 +764,8 @@ def load_model(
             prefill_step_size=prefill_step_size,
             kv_bits=kv_bits,
             kv_group_size=kv_group_size,
+            enable_mtp=enable_mtp,
+            mtp_optimistic=mtp_optimistic,
         )
         # Start SimpleEngine synchronously (no background loop)
         # Use new_event_loop() for Python 3.10+ compatibility (get_event_loop() is deprecated)

@@ -47,6 +47,8 @@ class SimpleEngine(BaseEngine):
         prefill_step_size: int = 2048,
         kv_bits: int | None = None,
         kv_group_size: int = 64,
+        enable_mtp: bool = False,
+        mtp_optimistic: bool = False,
     ):
         """
         Initialize the simple engine.
@@ -71,6 +73,8 @@ class SimpleEngine(BaseEngine):
         self._prefill_step_size = prefill_step_size
         self._kv_bits = kv_bits
         self._kv_group_size = kv_group_size
+        self._enable_mtp = enable_mtp
+        self._mtp_optimistic = mtp_optimistic
         self._model = None
         self._loaded = False
 
@@ -128,6 +132,10 @@ class SimpleEngine(BaseEngine):
                 kv_bits=self._kv_bits,
                 kv_group_size=self._kv_group_size,
             )
+            # Set MTP flags before load() so validation runs during model load
+            if self._enable_mtp:
+                self._model.enable_mtp = True
+                self._model.mtp_optimistic = self._mtp_optimistic
 
         self._model.load()
         self._loaded = True
@@ -135,8 +143,13 @@ class SimpleEngine(BaseEngine):
         spec_info = ""
         if self._draft_model_name and not self._is_mllm:
             spec_info = f", speculative={self._draft_model_name}"
+        mtp_info = ""
+        if self._enable_mtp and not self._is_mllm:
+            validated = getattr(self._model, "_mtp_validated", False)
+            mode = "optimistic" if self._mtp_optimistic else "verified"
+            mtp_info = f", MTP={'active' if validated else 'failed'}({mode})"
         logger.info(
-            f"SimpleEngine loaded: {self._model_name} (MLLM={self._is_mllm}{spec_info})"
+            f"SimpleEngine loaded: {self._model_name} (MLLM={self._is_mllm}{spec_info}{mtp_info})"
         )
 
     async def stop(self) -> None:
@@ -595,6 +608,9 @@ class SimpleEngine(BaseEngine):
         self._model.model = model
         self._model.tokenizer = tokenizer
         self._model.draft_model = None
+        self._model.enable_mtp = self._enable_mtp
+        self._model.mtp_optimistic = self._mtp_optimistic
+        self._model._mtp_validated = False
         self._model._loaded = True
 
         # Load draft model separately if specified
