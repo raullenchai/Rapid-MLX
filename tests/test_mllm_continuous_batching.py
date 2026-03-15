@@ -28,7 +28,15 @@ try:
 except ImportError:
     HAS_MLX = False
 
+try:
+    import mlx_lm  # noqa: F401
+
+    HAS_MLX_LM = True
+except ImportError:
+    HAS_MLX_LM = False
+
 pytestmark = pytest.mark.skipif(not HAS_MLX, reason="MLX not available")
+_skip_no_mlx_lm = pytest.mark.skipif(not HAS_MLX_LM, reason="mlx-lm not available")
 
 
 # Test image (small PNG)
@@ -478,6 +486,7 @@ class TestVisionCache:
         assert hit is False
 
 
+@_skip_no_mlx_lm
 class TestMLLMSchedulerStopSequences:
     """Regression tests for stop sequence forwarding (PR #21)."""
 
@@ -579,6 +588,7 @@ class TestMLLMSchedulerStopSequences:
         assert request.stop == ["<|end|>", "STOP"]
 
 
+@_skip_no_mlx_lm
 class TestPrefillErrorCleanup:
     """Regression tests for prefill error cleaning batch generator state (PR #21)."""
 
@@ -676,6 +686,7 @@ class TestPrefillErrorCleanup:
         assert bg.unprocessed_requests[0].request_id == "good-req"
 
 
+@_skip_no_mlx_lm
 class TestDeferredAbortWaitingDeque:
     """Regression tests for deferred abort cleaning up waiting deque (PR #21)."""
 
