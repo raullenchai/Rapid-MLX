@@ -467,6 +467,7 @@ class BatchedEngine(BaseEngine):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                stop=stop,
             )
 
             return GenerationOutput(
@@ -539,6 +540,7 @@ class BatchedEngine(BaseEngine):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                stop=stop,
             )
 
             async for output in self._mllm_scheduler.stream_outputs(request_id):

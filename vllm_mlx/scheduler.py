@@ -1670,13 +1670,27 @@ class Scheduler:
         was_running = False
         removed_from_batch = False
 
-        # Remove from waiting queue
+        # Remove from waiting queue.
+        # When request is not None we can remove by identity; when it's None
+        # (already popped by _cleanup_request) we must scan by request_id so
+        # the deque entry doesn't survive the abort.
         if request is not None and request.status == RequestStatus.WAITING:
             was_waiting = True
             try:
                 self.waiting.remove(request)
             except ValueError:
                 pass
+        elif request is None:
+            # Scan waiting deque by request_id — request object was already
+            # removed from self.requests but may still sit in the deque.
+            for waiting_req in list(self.waiting):
+                if waiting_req.request_id == request_id:
+                    was_waiting = True
+                    try:
+                        self.waiting.remove(waiting_req)
+                    except ValueError:
+                        pass
+                    break
 
         # Remove from running (BatchGenerator) — do this even if request
         # was already cleaned up from self.requests, because the UID may

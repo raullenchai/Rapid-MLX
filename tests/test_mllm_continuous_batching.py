@@ -478,6 +478,147 @@ class TestVisionCache:
         assert hit is False
 
 
+class TestMLLMSchedulerStopSequences:
+    """Regression tests for stop sequence forwarding (PR #21)."""
+
+    def test_mllm_request_carries_stop(self):
+        """MLLMRequest should carry text-based stop sequences."""
+        from vllm_mlx.mllm_scheduler import MLLMRequest
+
+        req = MLLMRequest(
+            request_id="test-stop",
+            prompt="Hello",
+            stop=["###", "\n\n"],
+        )
+        assert req.stop == ["###", "\n\n"]
+
+    def test_mllm_request_default_stop_empty(self):
+        """MLLMRequest.stop should default to empty list."""
+        from vllm_mlx.mllm_scheduler import MLLMRequest
+
+        req = MLLMRequest(request_id="test-default", prompt="Hello")
+        assert req.stop == []
+
+    def test_process_batch_responses_stop_string(self):
+        """_process_batch_responses should finish request when stop string found."""
+        from vllm_mlx.mllm_scheduler import (
+            MLLMRequest,
+            MLLMScheduler,
+            MLLMSchedulerConfig,
+        )
+        from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
+        from vllm_mlx.request import SamplingParams
+
+        # Create scheduler with mocks
+        mock_model = MagicMock()
+        mock_processor = MagicMock()
+        mock_tokenizer = MagicMock()
+        mock_processor.tokenizer = mock_tokenizer
+
+        # Simulate tokenizer decoding:
+        # Token 10 -> "Hello", Token 20 -> " world", Token 30 -> "###end"
+        mock_tokenizer.decode.side_effect = lambda ids: {
+            (10,): "Hello",
+            (20,): " world",
+            (30,): "###end",
+            (10, 20): "Hello world",
+            (10, 20, 30): "Hello world###end",
+        }.get(tuple(ids), "")
+
+        config = MLLMSchedulerConfig()
+        scheduler = MLLMScheduler(mock_model, mock_processor, config)
+
+        # Create a request with stop sequences
+        request = MLLMRequest(
+            request_id="req-1",
+            prompt="Say hello",
+            sampling_params=SamplingParams(max_tokens=100),
+            stop=["###"],
+        )
+        request.output_tokens = [10, 20]  # Already has "Hello world"
+        request.num_output_tokens = 2
+
+        scheduler.running["req-1"] = request
+        scheduler.uid_to_request_id[0] = "req-1"
+
+        # Process a response with token 30 (contains "###")
+        response = MLLMBatchResponse(
+            uid=0,
+            request_id="req-1",
+            token=30,
+            logprobs=mx.array([0.1]),
+            finish_reason=None,  # BatchGenerator didn't detect stop
+        )
+
+        outputs, finished_ids = scheduler._process_batch_responses([response])
+
+        assert "req-1" in finished_ids
+        assert outputs[0].finished is True
+        assert outputs[0].finish_reason == "stop"
+        # Output text should be trimmed at stop string
+        assert outputs[0].output_text == "Hello world"
+
+    def test_add_request_forwards_stop(self):
+        """add_request should store stop sequences on the MLLMRequest."""
+        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+
+        mock_model = MagicMock()
+        mock_processor = MagicMock()
+        mock_processor.tokenizer = MagicMock()
+
+        scheduler = MLLMScheduler(mock_model, mock_processor, MLLMSchedulerConfig())
+
+        req_id = scheduler.add_request(
+            prompt="test",
+            stop=["<|end|>", "STOP"],
+        )
+
+        request = scheduler.requests[req_id]
+        assert request.stop == ["<|end|>", "STOP"]
+
+
+class TestDeferredAbortWaitingDeque:
+    """Regression tests for deferred abort cleaning up waiting deque (PR #21)."""
+
+    def test_do_abort_removes_waiting_when_request_none(self):
+        """_do_abort_request should remove from waiting even if request already cleaned."""
+        from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+        from vllm_mlx.request import Request, RequestStatus, SamplingParams
+
+        mock_model = MagicMock()
+        mock_tokenizer = MagicMock()
+        mock_tokenizer.encode.return_value = [1, 2, 3]
+
+        config = SchedulerConfig()
+        scheduler = Scheduler(
+            model=mock_model,
+            tokenizer=mock_tokenizer,
+            config=config,
+        )
+
+        # Manually add a request to the waiting deque
+        request = Request(
+            request_id="test-abort",
+            prompt="hello",
+            sampling_params=SamplingParams(),
+            prompt_token_ids=[1, 2, 3],
+            num_prompt_tokens=3,
+        )
+        request.status = RequestStatus.WAITING
+        scheduler.waiting.append(request)
+        # Do NOT add to scheduler.requests — simulates _cleanup_request
+        # having already popped it
+
+        assert len(scheduler.waiting) == 1
+
+        # Call _do_abort_request — request is None in self.requests
+        scheduler._do_abort_request("test-abort")
+
+        # Waiting deque should be empty now
+        assert len(scheduler.waiting) == 0
+        assert "test-abort" in scheduler.finished_req_ids
+
+
 # Integration tests (require model loading)
 @pytest.mark.slow
 @pytest.mark.skipif(not os.environ.get("RUN_SLOW_TESTS"), reason="Slow tests disabled")

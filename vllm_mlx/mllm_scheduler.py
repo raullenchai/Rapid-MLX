@@ -78,6 +78,7 @@ class MLLMRequest:
     images: list[str] | None = None
     videos: list[str] | None = None
     sampling_params: SamplingParams = field(default_factory=SamplingParams)
+    stop: list[str] = field(default_factory=list)  # Text-based stop sequences
     arrival_time: float = field(default_factory=time.time)
 
     # Batch generator UID (assigned when scheduled)
@@ -263,6 +264,7 @@ class MLLMScheduler:
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.9,
+        stop: list[str] | None = None,
         request_id: str | None = None,
         **kwargs,
     ) -> str:
@@ -276,6 +278,7 @@ class MLLMScheduler:
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             top_p: Top-p sampling
+            stop: Text-based stop sequences
             request_id: Optional custom request ID
             **kwargs: Additional generation parameters
 
@@ -297,6 +300,7 @@ class MLLMScheduler:
             images=images,
             videos=videos,
             sampling_params=sampling_params,
+            stop=stop or [],
         )
 
         self.requests[request_id] = request
@@ -460,27 +464,42 @@ class MLLMScheduler:
                 completion_tokens=request.num_output_tokens,
             )
 
+            # Check text-based stop sequences
+            finish_reason = response.finish_reason
+            if finish_reason is None and request.stop:
+                decoded_so_far = tokenizer.decode(request.output_tokens)
+                for stop_str in request.stop:
+                    if stop_str in decoded_so_far:
+                        finish_reason = "stop"
+                        # Trim output at stop string
+                        idx = decoded_so_far.index(stop_str)
+                        request.output_text = decoded_so_far[:idx]
+                        break
+
             # Check if finished
-            if response.finish_reason is not None:
-                if response.finish_reason == "stop":
+            if finish_reason is not None:
+                if finish_reason == "stop":
                     request.status = RequestStatus.FINISHED_STOPPED
-                elif response.finish_reason == "length":
+                elif finish_reason == "length":
                     request.status = RequestStatus.FINISHED_LENGTH_CAPPED
 
                 output.finished = True
-                output.finish_reason = response.finish_reason
+                output.finish_reason = finish_reason
                 finished_ids.add(request_id)
 
-                # Decode full output
-                output.output_text = tokenizer.decode(request.output_tokens)
-                request.output_text = output.output_text
-                request.finish_reason = response.finish_reason
+                # Use trimmed output if set by stop-string check, else decode
+                if not request.output_text:
+                    output.output_text = tokenizer.decode(request.output_tokens)
+                    request.output_text = output.output_text
+                else:
+                    output.output_text = request.output_text
+                request.finish_reason = finish_reason
 
                 self.total_completion_tokens += request.num_output_tokens
                 self.num_requests_processed += 1
 
                 logger.debug(
-                    f"Request {request_id} finished: {response.finish_reason}, "
+                    f"Request {request_id} finished: {finish_reason}, "
                     f"{request.num_output_tokens} tokens"
                 )
 
@@ -643,6 +662,7 @@ class MLLMScheduler:
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.9,
+        stop: list[str] | None = None,
         **kwargs,
     ) -> str:
         """
@@ -655,6 +675,7 @@ class MLLMScheduler:
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             top_p: Top-p sampling
+            stop: Text-based stop sequences
             **kwargs: Additional parameters
 
         Returns:
@@ -667,6 +688,7 @@ class MLLMScheduler:
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            stop=stop,
             **kwargs,
         )
 
