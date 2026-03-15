@@ -265,9 +265,9 @@ class TestMemoryAwarePrefixCache:
         assert small_cache.store(tokens, kv) is True
         assert len(small_cache) == 1
 
-        # Fetch exact match
+        # Fetch exact match — returns deep copy to prevent mutation corruption
         result, remaining = small_cache.fetch(tokens)
-        assert result is kv  # Same reference, no copy
+        assert result is not kv
         assert remaining == []
 
     def test_fetch_prefix_match(self, small_cache, mock_kv_cache):
@@ -280,7 +280,7 @@ class TestMemoryAwarePrefixCache:
         long_tokens = [1, 2, 3, 4, 5, 6]
         result, remaining = small_cache.fetch(long_tokens)
 
-        assert result is kv
+        assert result is not kv  # Deep copy
         assert remaining == [4, 5, 6]
 
     def test_fetch_miss(self, small_cache, mock_kv_cache):

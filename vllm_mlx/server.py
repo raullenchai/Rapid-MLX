@@ -1874,8 +1874,12 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         media_type="text/event-stream",
                     )
                 else:
-                    result = await _cloud_router.completion(
-                        cloud_messages, **cloud_kwargs
+                    result = await _wait_with_disconnect(
+                        _cloud_router.completion(
+                            cloud_messages, **cloud_kwargs
+                        ),
+                        raw_request,
+                        timeout=request.timeout or _default_timeout,
                     )
                     return Response(
                         content=json.dumps(result),

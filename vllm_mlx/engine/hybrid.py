@@ -134,12 +134,8 @@ class HybridEngine(BaseEngine):
 
         logger.info(f"HybridEngine loading shared model: {self._model_name}")
 
-        # Load model once using mlx-lm
-        self._shared_model, self._shared_tokenizer = load(
-            self._model_name, trust_remote_code=self._trust_remote_code
-        )
-
-        # Check if MLLM
+        # Check if MLLM *before* loading — MLLM models need BatchedEngine's
+        # own loader, not mlx-lm's load().
         from ..api.utils import is_mllm_model
 
         self._is_mllm = self._force_mllm or is_mllm_model(self._model_name)
@@ -159,6 +155,11 @@ class HybridEngine(BaseEngine):
             await self._batched.start()
             self._current_mode = "batched"
         else:
+            # Load model once using mlx-lm (only for non-MLLM models)
+            self._shared_model, self._shared_tokenizer = load(
+                self._model_name, trust_remote_code=self._trust_remote_code
+            )
+
             # Create SimpleEngine with draft model support
             self._simple = SimpleEngine(
                 model_name=self._model_name,
