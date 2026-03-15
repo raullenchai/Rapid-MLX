@@ -326,14 +326,13 @@ class PrefixCacheManager:
                 del parent[tok]
 
     def _can_trim_cache(self, prompt_cache: list[Any]) -> bool:
-        """Check if cache can be trimmed."""
+        """Check if all cache layers can be trimmed."""
         if not prompt_cache:
             return False
-        # Check if first cache layer has is_trimmable method
-        first_cache = prompt_cache[0]
-        if hasattr(first_cache, "is_trimmable"):
-            return first_cache.is_trimmable()
-        return hasattr(first_cache, "trim")
+        return all(
+            c.is_trimmable() if hasattr(c, "is_trimmable") else hasattr(c, "trim")
+            for c in prompt_cache
+        )
 
     def _trim_cache(self, prompt_cache: list[Any], num_tokens: int) -> list[Any]:
         """Trim cache by removing num_tokens from the end."""

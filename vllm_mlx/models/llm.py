@@ -316,6 +316,10 @@ class MLXLanguageModel:
         Peeks at the cache overlap to determine how many tokens would need
         prefilling. Used by cloud routing to decide whether to offload.
 
+        For non-trimmable caches (DeltaNet/Mamba), the cache will be
+        recreated from scratch on the next call, so new_tokens == total_tokens
+        regardless of prefix overlap.
+
         Returns:
             (total_tokens, new_tokens) tuple
         """
@@ -328,6 +332,11 @@ class MLXLanguageModel:
         full_token_ids = self.tokenizer.encode(
             prompt, add_special_tokens=add_special_tokens
         )
+
+        # Non-trimmable caches get fully recreated — no prefix reuse
+        if self._prompt_cache is not None and not self._cache_is_trimmable():
+            return len(full_token_ids), len(full_token_ids)
+
         common_len = self._find_common_prefix_len(full_token_ids)
         return len(full_token_ids), len(full_token_ids) - common_len
 
