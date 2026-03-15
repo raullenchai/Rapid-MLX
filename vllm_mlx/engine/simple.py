@@ -692,16 +692,26 @@ class SimpleEngine(BaseEngine):
             )
 
             if result is None:
-                # Fallback to regular generation
+                # Fallback to regular generation INLINE (not via self.generate()
+                # which would re-acquire _generation_lock and deadlock —
+                # asyncio.Lock is not reentrant).
                 logger.warning(
                     "Guided generation failed, falling back to regular generation"
                 )
-                return await self.generate(
+                output = await asyncio.to_thread(
+                    self._model.generate,
                     prompt=prompt,
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
                     **kwargs,
+                )
+                return GenerationOutput(
+                    text=output.text,
+                    tokens=getattr(output, "tokens", []),
+                    prompt_tokens=getattr(output, "prompt_tokens", 0),
+                    completion_tokens=len(getattr(output, "tokens", [])),
+                    finish_reason=output.finish_reason,
                 )
 
             # Tokenize for completion count
