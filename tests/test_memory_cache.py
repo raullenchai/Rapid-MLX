@@ -423,6 +423,108 @@ class TestMemoryAwarePrefixCache:
         assert len(cache) <= 3
 
 
+class TestCacheListTrimmability:
+    """Regression tests: CacheList wrappers must be recognized as trimmable."""
+
+    class TrimmableLayer:
+        """Mock layer that reports is_trimmable() = True (like CacheList(KVCache, KVCache))."""
+
+        def __init__(self, key_bytes: int, value_bytes: int, offset: int = 10):
+            self.keys = MockArray(key_bytes)
+            self.values = MockArray(value_bytes)
+            self._offset = offset
+
+        @property
+        def offset(self):
+            return self._offset
+
+        @offset.setter
+        def offset(self, val):
+            self._offset = val
+
+        def is_trimmable(self) -> bool:
+            return True
+
+    class NonTrimmableLayer:
+        """Mock layer that reports is_trimmable() = False (like ArraysCache for DeltaNet)."""
+
+        def __init__(self, nbytes: int = 100):
+            self.keys = MockArray(nbytes)
+            self.values = MockArray(nbytes)
+
+        def is_trimmable(self) -> bool:
+            return False
+
+    @pytest.fixture
+    def model(self):
+        return MagicMock()
+
+    @pytest.fixture
+    def cache(self, model):
+        config = MemoryCacheConfig(max_memory_mb=10, max_entries=10)
+        return MemoryAwarePrefixCache(model, config)
+
+    def test_supersequence_trimmable_cachelist_hits(self, cache):
+        """CacheList with is_trimmable()=True must allow supersequence trim, not skip."""
+        # Store a longer sequence
+        long_tokens = [1, 2, 3, 4, 5, 6, 7, 8]
+        kv = [self.TrimmableLayer(500, 500, offset=8)]
+        cache.store(long_tokens, kv)
+
+        # Fetch a shorter prefix — triggers supersequence path
+        short_tokens = [1, 2, 3, 4, 5]
+        result, remaining = cache.fetch(short_tokens)
+
+        # With the old attribute-sniffing bug, CacheList wrappers (no .offset/.keys
+        # on outer object) would be classified as non-trimmable and this would miss.
+        assert result is not None, (
+            "Supersequence match was skipped — CacheList misclassified as non-trimmable"
+        )
+        assert remaining == []
+
+    def test_supersequence_non_trimmable_skipped(self, cache):
+        """Non-trimmable layers (is_trimmable()=False) must still be skipped."""
+        long_tokens = [1, 2, 3, 4, 5, 6, 7, 8]
+        kv = [self.NonTrimmableLayer()]
+        cache.store(long_tokens, kv)
+
+        short_tokens = [1, 2, 3, 4, 5]
+        result, remaining = cache.fetch(short_tokens)
+
+        # Non-trimmable: should NOT return a supersequence match
+        assert result is None
+        assert remaining == short_tokens
+
+    def test_lcp_trimmable_cachelist_hits(self, cache):
+        """CacheList with is_trimmable()=True must allow LCP trim path."""
+        # Store tokens that share a prefix but diverge
+        stored = [1, 2, 3, 4, 5, 10, 11, 12]
+        kv = [self.TrimmableLayer(500, 500, offset=8)]
+        cache.store(stored, kv)
+
+        # Request tokens that share prefix [1,2,3,4,5] but diverge after
+        requested = [1, 2, 3, 4, 5, 20, 21]
+        result, remaining = cache.fetch(requested)
+
+        # LCP path should find shared prefix and trim excess
+        assert result is not None, (
+            "LCP match was skipped — CacheList misclassified as non-trimmable"
+        )
+        assert remaining == [20, 21]
+
+    def test_lcp_non_trimmable_skipped(self, cache):
+        """Non-trimmable layers must prevent LCP trim path."""
+        stored = [1, 2, 3, 4, 5, 10, 11, 12]
+        kv = [self.NonTrimmableLayer()]
+        cache.store(stored, kv)
+
+        requested = [1, 2, 3, 4, 5, 20, 21]
+        result, remaining = cache.fetch(requested)
+
+        assert result is None
+        assert remaining == requested
+
+
 class TestGetAvailableMemory:
     """Tests for _get_available_memory helper."""
 
