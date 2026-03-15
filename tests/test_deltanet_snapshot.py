@@ -48,8 +48,10 @@ def make_model():
     model._cache_lock = False
     model._rnn_state_snapshot = None
     model._snapshot_prefix_ids = []
+    model._main_cache_len = 0
     model.prefill_step_size = 2048
     model.model = None
+    model.draft_model = None
     return model
 
 
@@ -348,6 +350,16 @@ class TestEstimateNewTokensHybrid:
 
         assert total == 6
         assert new == 6  # full prefill since no snapshot
+
+    def test_estimate_exact_repeat_reports_one_new_token(self):
+        model = self._setup_model_with_snapshot()
+        # Exact same tokens as cached → common_len == len(prompt)
+        model.tokenizer.encode.return_value = [100, 200, 300, 400, 500]
+
+        total, new = model.estimate_new_tokens("dummy")
+
+        assert total == 5
+        assert new == 1  # exact-repeat caps reuse at common_len - 1
 
     def test_estimate_with_partial_prefix_below_snapshot(self):
         model = self._setup_model_with_snapshot()

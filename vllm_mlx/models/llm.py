@@ -96,6 +96,7 @@ class MLXLanguageModel:
         # DeltaNet/hybrid cache snapshot for prefix reuse
         self._rnn_state_snapshot: list | None = None  # deep-copied ArraysCache states
         self._snapshot_prefix_ids: list[int] = []     # token IDs at snapshot time
+        self._main_cache_len: int = 0  # number of main model cache layers (excl. draft)
 
     def load(self) -> None:
         """Load the model and tokenizer."""
@@ -286,14 +287,8 @@ class MLXLanguageModel:
         if prefix_len <= 0:
             return prompt_token_ids
 
-        prefix_tokens = mx.array(prompt_token_ids[:prefix_len])
-        # Process in chunks matching prefill_step_size
-        step = self.prefill_step_size
-        for start in range(0, prefix_len, step):
-            chunk = prefix_tokens[start : start + step]
-            self.model(chunk[None], cache=self._prompt_cache)
-        # Evaluate all cache states before snapshotting
-        mx.eval([c.state for c in self._prompt_cache])
+        # Prefill both main and draft model caches
+        self._prefill_cache(mx.array(prompt_token_ids[:prefix_len]))
 
         # Snapshot the RNN state at the prefix boundary
         self._cached_token_ids = list(prompt_token_ids[:prefix_len])
@@ -337,14 +332,9 @@ class MLXLanguageModel:
                     c.trim(to_trim)
 
         # If there are gap tokens between snap_len and common_len,
-        # run them through the model to advance both RNN and KV state
+        # run them through both main and draft models to advance state
         if common_len > snap_len:
-            gap_tokens = mx.array(prompt_token_ids[snap_len:common_len])
-            step = self.prefill_step_size
-            for start in range(0, len(gap_tokens), step):
-                chunk = gap_tokens[start : start + step]
-                self.model(chunk[None], cache=self._prompt_cache)
-            mx.eval([c.state for c in self._prompt_cache])
+            self._prefill_cache(mx.array(prompt_token_ids[snap_len:common_len]))
             # Update snapshot to common_len — better checkpoint for next time
             self._snapshot_rnn_layers(prompt_token_ids[:common_len])
 
@@ -356,11 +346,33 @@ class MLXLanguageModel:
         )
         return True
 
+    def _prefill_cache(self, token_ids_array) -> None:
+        """Run tokens through both main and draft models to advance cache.
+
+        When speculative decoding is enabled, the prompt cache contains
+        layers for both the main model and the draft model.  We must
+        prefill both halves so they stay in sync.
+        """
+        import mlx.core as mx
+
+        step = self.prefill_step_size
+        n = len(token_ids_array)
+        main_len = getattr(self, "_main_cache_len", len(self._prompt_cache))
+
+        for start in range(0, n, step):
+            chunk = token_ids_array[start : start + step]
+            self.model(chunk[None], cache=self._prompt_cache[:main_len])
+            if self.draft_model is not None and main_len < len(self._prompt_cache):
+                self.draft_model(chunk[None], cache=self._prompt_cache[main_len:])
+
+        mx.eval([c.state for c in self._prompt_cache])
+
     def _make_fresh_cache(self) -> list:
         """Create a fresh prompt cache from the model (and draft model)."""
         from mlx_lm.models.cache import make_prompt_cache
 
         cache = make_prompt_cache(self.model)
+        self._main_cache_len = len(cache)
         if self.draft_model is not None:
             cache.extend(make_prompt_cache(self.draft_model))
         return cache
@@ -480,7 +492,12 @@ class MLXLanguageModel:
                 snap_len = len(self._snapshot_prefix_ids)
                 common_len = self._find_common_prefix_len(full_token_ids)
                 if common_len >= snap_len:
-                    return len(full_token_ids), len(full_token_ids) - common_len
+                    # For exact-repeat, _prepare_cache_for_prompt caps reuse
+                    # at common_len - 1 so the last token is reprocessed.
+                    effective = common_len
+                    if common_len == len(full_token_ids):
+                        effective = common_len - 1
+                    return len(full_token_ids), len(full_token_ids) - effective
             return len(full_token_ids), len(full_token_ids)
 
         common_len = self._find_common_prefix_len(full_token_ids)
