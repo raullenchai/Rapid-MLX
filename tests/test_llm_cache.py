@@ -12,9 +12,6 @@ import pytest
 from vllm_mlx.models.llm import GenerationOutput, MLXLanguageModel, StreamingOutput
 
 
-from mlx_lm.models.cache import ArraysCache, CacheList, KVCache
-
-
 class MockCacheEntry:
     """Mock cache entry that mimics mlx_lm.models.cache.Cache."""
 
@@ -311,8 +308,13 @@ class TestDataclasses:
 # Real upstream cache types (P1/P2 regression tests)
 # ---------------------------------------------------------------------------
 
+mlx_lm_cache = pytest.importorskip("mlx_lm.models.cache", reason="mlx-lm not installed")
+ArraysCache = mlx_lm_cache.ArraysCache
+CacheList = mlx_lm_cache.CacheList
+KVCache = mlx_lm_cache.KVCache
 
-def _make_dirty_arrays_cache(size: int = 4) -> ArraysCache:
+
+def _make_dirty_arrays_cache(size: int = 4) -> "ArraysCache":
     """Create an ArraysCache with non-None entries (dirty state)."""
     import mlx.core as mx
 
