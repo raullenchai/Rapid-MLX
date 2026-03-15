@@ -1611,10 +1611,16 @@ class MLXMultimodalLM:
 
                 import mlx.core as mx
 
-                # Compute prompt length from tokenizer, not from streamed chunks
-                # (chunks may be empty if generation produces zero tokens).
-                token_ids = self.processor.tokenizer.encode(formatted_prompt)
-                prompt_tokens_count = len(token_ids)
+                # Use the generation engine's prompt_tokens count which includes
+                # expanded image/video tokens. Plain text tokenization undercounts
+                # for multimodal prompts and would truncate the KV cache.
+                prompt_tokens_count = getattr(chunk, "prompt_tokens", 0) if "chunk" in dir() else 0
+                if prompt_tokens_count <= 0:
+                    # Fallback: use text tokenization (may undercount for multimodal)
+                    token_ids = self.processor.tokenizer.encode(formatted_prompt)
+                    prompt_tokens_count = len(token_ids)
+                else:
+                    token_ids = self.processor.tokenizer.encode(formatted_prompt)
 
                 cache_to_store = []
                 for layer_cache in prompt_cache:
