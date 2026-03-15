@@ -1238,12 +1238,16 @@ class MLXMultimodalLM:
             # (MULTIMODAL_KV_CACHE_ENABLED in mlx_vlm/utils.py). Let it handle caching.
             # We only use vllm-mlx's cache for text-only requests (no images).
             if all_images:
-                # Let mlx-vlm's multimodal cache handle this - don't interfere
-                logger.info(
-                    "[PREFIX CACHE] Images present - delegating to mlx-vlm multimodal cache"
-                )
-                prompt_cache = None  # Fresh cache, mlx-vlm will handle prefix matching
+                # Pass cached KV state so mlx-vlm's generate can reuse it
+                # (skip_prompt_processing stays False — vision encoder must run)
+                import copy
+
+                prompt_cache = copy.deepcopy(cache_entry.kv_cache)
                 skip_prompt_processing = False
+                logger.info(
+                    f"[PREFIX CACHE] Image cache hit - passing {prefix_match_len} "
+                    f"cached KV tokens to mlx-vlm"
+                )
             else:
                 # Text-only: can use skip_prompt_processing for maximum speedup
                 logger.info(

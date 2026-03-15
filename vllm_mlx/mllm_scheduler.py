@@ -527,7 +527,31 @@ class MLLMScheduler:
 
         # Run generation step if we have running requests
         if self.batch_generator is not None and self.running:
-            responses = self.batch_generator.next()
+            try:
+                responses = self.batch_generator.next()
+            except (ValueError, RuntimeError) as e:
+                # Oversized prompt or other unrecoverable error — fail all
+                # running requests instead of retrying forever.
+                logger.error(f"Batch generation failed: {e}")
+                error_ids = set(self.running.keys())
+                for request_id in error_ids:
+                    queue = self.output_queues.get(request_id)
+                    if queue is not None:
+                        try:
+                            queue.put_nowait(
+                                RequestOutput(
+                                    request_id=request_id,
+                                    output_text="",
+                                    finished=True,
+                                    finish_reason="error",
+                                )
+                            )
+                            queue.put_nowait(None)  # Signal end
+                        except asyncio.QueueFull:
+                            pass
+                self._cleanup_finished(error_ids)
+                return output
+
             output.has_work = True
 
             if responses:

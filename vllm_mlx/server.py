@@ -1881,6 +1881,9 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         raw_request,
                         timeout=request.timeout or _default_timeout,
                     )
+                    if result is None:
+                        # Client disconnected during cloud request
+                        return Response(status_code=499, content="Client disconnected")
                     return Response(
                         content=json.dumps(result),
                         media_type="application/json",
