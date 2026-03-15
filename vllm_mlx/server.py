@@ -970,7 +970,7 @@ async def cache_stats():
 
 
 @app.delete("/v1/cache")
-async def clear_cache():
+async def clear_all_caches():
     """Clear all caches."""
     try:
         from mlx_vlm.utils import (

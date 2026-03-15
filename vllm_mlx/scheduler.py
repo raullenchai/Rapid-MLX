@@ -33,11 +33,17 @@ logger = logging.getLogger(__name__)
 # Enable MambaCache batching support for models like Nemotron
 ensure_mamba_support()
 
-# Error patterns that indicate cache corruption
+# Error patterns that indicate cache corruption.
+# Each pattern must be specific enough to avoid false positives.
+# The bare word "cache" was removed because it matched unrelated TypeErrors
+# (e.g. "unsupported operand type for cache_size"), masking real bugs and
+# triggering unnecessary cache wipes + request reschedules.
 CACHE_CORRUPTION_PATTERNS = [
     "'NoneType' object is not subscriptable",
-    "cache",
     "BatchKVCache",
+    "KVCache",
+    "cache is not subscriptable",
+    "cache has no attribute",
 ]
 
 
