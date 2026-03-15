@@ -661,12 +661,30 @@ class MLLMScheduler:
         logger.info("MLLM Scheduler stopped")
 
     async def _process_loop(self) -> None:
-        """Main async processing loop."""
+        """Main async processing loop.
+
+        Uses a thread executor for steps that involve vision encoding
+        (prefill) to prevent blocking the asyncio event loop.  Pure
+        generation steps (~1-3ms) run inline for lower latency.
+        """
+        import concurrent.futures
+
+        _executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mllm-step"
+        )
+        loop = asyncio.get_running_loop()
+
         while self._running:
             try:
                 if self.has_requests():
-                    # Run one step
-                    self.step()
+                    # Use executor when waiting requests need vision encoding
+                    # (prefill can block for seconds). Pure generation steps
+                    # are fast and can run inline.
+                    has_waiting = len(self.waiting) > 0
+                    if has_waiting:
+                        await loop.run_in_executor(_executor, self.step)
+                    else:
+                        self.step()
                     # Yield to other tasks
                     await asyncio.sleep(0)
                 else:

@@ -82,7 +82,7 @@ class MLLMBatchResponse:
     token: int  # Generated token
     logprobs: mx.array  # Log probabilities
     finish_reason: str | None = None  # "stop", "length", or None
-    prompt_cache: Callable[[], list[Any]] | None = None  # Cache extraction function
+    prompt_cache: list[Any] | None = None  # Extracted cache for finished requests
 
 
 @dataclass
@@ -754,7 +754,14 @@ class MLLMBatchGenerator:
         if requests and len(requests) == logprobs.shape[0]:
             sampled_tokens = []
             for i, req in enumerate(requests):
-                req_sampler = make_sampler(temp=req.temperature, top_p=req.top_p)
+                # Reuse cached sampler when params haven't changed
+                sampler_key = (req.temperature, req.top_p)
+                cached = getattr(req, "_cached_sampler", None)
+                if cached is None or cached[0] != sampler_key:
+                    req_sampler = make_sampler(temp=req.temperature, top_p=req.top_p)
+                    req._cached_sampler = (sampler_key, req_sampler)
+                else:
+                    req_sampler = cached[1]
                 sampled_tokens.append(req_sampler(logprobs[i : i + 1]))
             sampled = mx.concatenate(sampled_tokens, axis=0)
         else:
@@ -830,7 +837,7 @@ class MLLMBatchGenerator:
             req.output_tokens.append(token)
 
             finish_reason = None
-            cache_fn = None
+            prompt_cache = None
 
             if token in self.stop_tokens:
                 finish_reason = "stop"
@@ -842,8 +849,10 @@ class MLLMBatchGenerator:
                 keep_idx.append(i)
 
             if finish_reason is not None:
-                # Extract cache for this request
-                cache_fn = lambda idx=i: batch.extract_cache(idx)
+                # Extract cache BEFORE batch.filter() mutates the batch.
+                # A lambda capturing `batch` by reference would see the
+                # post-filter state, producing corrupt cache data.
+                prompt_cache = batch.extract_cache(i)
 
             responses.append(
                 MLLMBatchResponse(
@@ -852,7 +861,7 @@ class MLLMBatchGenerator:
                     token=token,
                     logprobs=logprobs[i],
                     finish_reason=finish_reason,
-                    prompt_cache=cache_fn,
+                    prompt_cache=prompt_cache,
                 )
             )
 
