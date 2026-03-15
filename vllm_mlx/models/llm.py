@@ -235,6 +235,22 @@ class MLXLanguageModel:
         # The cache itself is the live object — we just track what's in it
         self._cached_token_ids = list(token_ids)
 
+    def _reset_all_caches(self) -> None:
+        """Reset all cache layers to empty state.
+
+        Handles both trimmable caches (KVCache — trim to zero) and
+        non-trimmable caches (ArraysCache/DeltaNet — set entries to None).
+        """
+        for c in self._prompt_cache:
+            if c.is_trimmable():
+                current = c.offset if hasattr(c, "offset") else 0
+                if current > 0:
+                    c.trim(current)
+            elif hasattr(c, "cache"):
+                # ArraysCache: reset all entries to None
+                for i in range(len(c.cache)):
+                    c.cache[i] = None
+
     def _prepare_cache_for_prompt(self, prompt_token_ids: list[int]) -> list[int]:
         """
         Prepare the prompt cache and return only the tokens that need processing.
@@ -265,14 +281,41 @@ class MLXLanguageModel:
 
         common_len = self._find_common_prefix_len(prompt_token_ids)
 
+        # Check if any cache layers are non-trimmable (e.g. DeltaNet recurrent
+        # state in Qwen3.5).  These layers accumulate a compressed hidden state
+        # that cannot be partially rolled back — unlike KV caches which can
+        # simply drop trailing entries.
+        has_non_trimmable = any(
+            not c.is_trimmable() and not c.empty()
+            for c in self._prompt_cache
+        )
+
         if common_len == 0:
             # No overlap — reset cache entirely
-            for c in self._prompt_cache:
-                if not c.is_trimmable():
-                    continue
+            self._reset_all_caches()
+            self._cached_token_ids = []
+            return prompt_token_ids
+
+        # For non-trimmable caches (DeltaNet), check if trimming is needed.
+        # The recurrent state encodes ALL previously processed tokens.  If the
+        # new prompt diverges from what was cached (common_len < total cached),
+        # we cannot trim the recurrent state to just the prefix — we must
+        # reset it and reprocess the full prompt from scratch.
+        needs_trim = False
+        for c in self._prompt_cache:
+            if c.is_trimmable():
                 current = c.offset if hasattr(c, "offset") else 0
-                if current > 0:
-                    c.trim(current)
+                if current > common_len:
+                    needs_trim = True
+                    break
+
+        if has_non_trimmable and needs_trim:
+            logger.info(
+                "Non-trimmable cache layers detected (DeltaNet/SSM), "
+                "resetting all caches for correct recomputation "
+                f"(common_len={common_len})"
+            )
+            self._reset_all_caches()
             self._cached_token_ids = []
             return prompt_token_ids
 
