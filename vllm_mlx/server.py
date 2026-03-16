@@ -3161,7 +3161,24 @@ Examples:
     if args.mcp_config:
         os.environ["VLLM_MLX_MCP_CONFIG"] = args.mcp_config
 
-    # Initialize tool call parser if specified via CLI
+    # Auto-detect parser config from model name when not explicitly set
+    if not args.tool_call_parser or not args.reasoning_parser:
+        from .model_auto_config import detect_model_config
+
+        auto_config = detect_model_config(args.model)
+        if auto_config:
+            if not args.tool_call_parser and auto_config.tool_call_parser:
+                args.tool_call_parser = auto_config.tool_call_parser
+                logger.info(
+                    f"Auto-configured --tool-call-parser {auto_config.tool_call_parser}"
+                )
+            if not args.reasoning_parser and auto_config.reasoning_parser:
+                args.reasoning_parser = auto_config.reasoning_parser
+                logger.info(
+                    f"Auto-configured --reasoning-parser {auto_config.reasoning_parser}"
+                )
+
+    # Initialize tool call parser if specified via CLI (or auto-detected)
     if args.tool_call_parser:
         global _enable_auto_tool_choice, _tool_call_parser, _enable_tool_logits_bias
         _tool_call_parser = args.tool_call_parser
@@ -3172,7 +3189,7 @@ Examples:
     if args.enable_tool_logits_bias:
         _enable_tool_logits_bias = True
 
-    # Initialize reasoning parser if specified
+    # Initialize reasoning parser if specified (or auto-detected)
     if args.reasoning_parser:
         global _reasoning_parser, _reasoning_parser_name
         from .reasoning import get_parser
