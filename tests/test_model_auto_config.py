@@ -8,15 +8,13 @@ from vllm_mlx.model_auto_config import ModelConfig, detect_model_config
 class TestDetectModelConfig:
     """Test detect_model_config with various model paths."""
 
-    # Qwen family
+    # Qwen family (non-Coder)
     @pytest.mark.parametrize(
         "model_path",
         [
             "mlx-community/Qwen3.5-9B-4bit",
             "mlx-community/Qwen3-0.6B-MLX-4bit",
             "/Users/someone/.lmstudio/models/mlx-community/Qwen3.5-122B-A10B-8bit",
-            "Qwen3-Coder-Next-MLX-4bit",
-            "lmstudio-community/Qwen3-Coder-Next-MLX-6bit",
         ],
     )
     def test_qwen_family(self, model_path):
@@ -68,21 +66,43 @@ class TestDetectModelConfig:
         assert config.tool_call_parser == "hermes"
         assert config.reasoning_parser is None
 
+    # Qwen3-Coder (no reasoning parser)
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "Qwen3-Coder-Next-MLX-4bit",
+            "lmstudio-community/Qwen3-Coder-Next-MLX-6bit",
+        ],
+    )
+    def test_qwen_coder(self, model_path):
+        config = detect_model_config(model_path)
+        assert config is not None
+        assert config.tool_call_parser == "hermes"
+        assert config.reasoning_parser is None
+
     # DeepSeek
     def test_deepseek(self):
         config = detect_model_config("deepseek-ai/DeepSeek-R1-0528-Qwen3-8B")
         config2 = detect_model_config("deepseek-v3-0324")
         # DeepSeek should match deepseek pattern, not qwen
         assert config is not None
+        assert config.tool_call_parser == "deepseek"
         assert config.reasoning_parser == "deepseek_r1"
         assert config2 is not None
-        assert config2.tool_call_parser == "hermes"
+        assert config2.tool_call_parser == "deepseek"
 
     # Hermes fine-tuned
     def test_hermes(self):
         config = detect_model_config("mlx-community/Hermes-3-Llama-3.1-8B-4bit")
         assert config is not None
         assert config.tool_call_parser == "hermes"
+
+    # Llama
+    def test_llama(self):
+        config = detect_model_config("mlx-community/Meta-Llama-3.1-8B-Instruct-4bit")
+        assert config is not None
+        assert config.tool_call_parser == "llama"
+        assert config.reasoning_parser is None
 
     # Unknown model → None
     def test_unknown_model(self):

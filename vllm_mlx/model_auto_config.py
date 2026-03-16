@@ -24,10 +24,15 @@ class ModelConfig:
 _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # DeepSeek (R1, V3) — before Qwen because DeepSeek-R1-Qwen3 distills exist
     (re.compile(r"deepseek", re.IGNORECASE), ModelConfig(
-        tool_call_parser="hermes",
+        tool_call_parser="deepseek",
         reasoning_parser="deepseek_r1",
     )),
-    # Qwen family (Qwen3, Qwen3.5, Qwen3-Coder)
+    # Qwen3-Coder — before generic Qwen3 (non-thinking, no reasoning parser)
+    (re.compile(r"qwen3[-_]?coder", re.IGNORECASE), ModelConfig(
+        tool_call_parser="hermes",
+        reasoning_parser=None,
+    )),
+    # Qwen family (Qwen3, Qwen3.5)
     (re.compile(r"qwen3", re.IGNORECASE), ModelConfig(
         tool_call_parser="hermes",
         reasoning_parser="qwen3",
@@ -64,7 +69,7 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     )),
     # Llama
     (re.compile(r"llama", re.IGNORECASE), ModelConfig(
-        tool_call_parser="hermes",
+        tool_call_parser="llama",
         reasoning_parser=None,
     )),
     # Phi
