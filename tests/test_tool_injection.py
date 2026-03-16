@@ -198,12 +198,23 @@ class TestApplyChatTemplateToolInjection:
         assert original == MESSAGES_WITH_SYSTEM
 
 
+try:
+    from vllm_mlx.tool_parsers.mistral_tool_parser import MistralToolParser
+
+    _has_mistral_parser = True
+except ImportError:
+    _has_mistral_parser = False
+
+import pytest
+
+
+@pytest.mark.skipif(
+    not _has_mistral_parser, reason="transformers not installed"
+)
 class TestMistralArgsStripping:
     """Tests for [ARGS] suffix stripping in Mistral parser."""
 
     def test_args_suffix_stripped_extract(self):
-        from vllm_mlx.tool_parsers.mistral_tool_parser import MistralToolParser
-
         parser = MistralToolParser(tokenizer=None)
         output = '[TOOL_CALLS]get_weather[ARGS]{"location": "Paris"}'
         result = parser.extract_tool_calls(output)
@@ -211,8 +222,6 @@ class TestMistralArgsStripping:
         assert result.tool_calls[0]["name"] == "get_weather"
 
     def test_no_args_suffix_still_works(self):
-        from vllm_mlx.tool_parsers.mistral_tool_parser import MistralToolParser
-
         parser = MistralToolParser(tokenizer=None)
         output = '[TOOL_CALLS]get_weather{"location": "Paris"}'
         result = parser.extract_tool_calls(output)
@@ -220,9 +229,9 @@ class TestMistralArgsStripping:
         assert result.tool_calls[0]["name"] == "get_weather"
 
     def test_args_suffix_stripped_streaming(self):
-        from vllm_mlx.tool_parsers.mistral_tool_parser import MistralToolParser
-
         parser = MistralToolParser(tokenizer=None)
-        delta = parser._parse_streaming_tool_delta('get_weather[ARGS]{"location": "Paris"}')
+        delta = parser._parse_streaming_tool_delta(
+            'get_weather[ARGS]{"location": "Paris"}'
+        )
         assert delta is not None
         assert delta["name"] == "get_weather"
