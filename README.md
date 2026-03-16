@@ -295,7 +295,7 @@ Devstral-Small-2 24B    ⚡ Rapid-MLX   ███████▒▒▒▒▒▒�
                           Ollama      not supported
                           llama.cpp   not supported
 
-Gemma 3 27B               coming soon
+Gemma 3 27B               Ollama      ████▒▒▒▒▒▒▒▒▒▒                                            30 tok/s · 3.31s · 0%
 
 Qwen3.5-27B             ⚡ Rapid-MLX   ██████░░░░░░░░                                            39 tok/s · 1.46s · 100%
                           vllm-mlx    ██████░░░░░░░░                                            38 tok/s · 0.60s · 100%
