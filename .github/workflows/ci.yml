@@ -83,6 +83,11 @@ jobs:
             tests/test_anthropic_models.py \
             tests/test_anthropic_adapter.py \
             tests/test_harmony_parsers.py \
+            tests/test_tool_calling.py \
+            tests/test_tool_injection.py \
+            tests/test_streaming_latency.py \
+            tests/test_streaming_newlines.py \
+            tests/test_minimax_reasoning_parser.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
@@ -131,6 +136,10 @@ jobs:
             tests/test_simple_engine.py \
             tests/test_batching.py \
             tests/test_continuous_batching.py \
+            tests/test_streaming_simulator.py \
+            tests/test_deltanet_snapshot.py \
+            tests/test_streaming_detokenizer.py \
+            tests/test_tool_logits.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"
