@@ -67,7 +67,7 @@ def mlx_platform_plugin() -> str | None:
         pass
 
     logger.info("MLX platform is available on Apple Silicon")
-    return "vllm_mlx.platform.MLXPlatform"
+    return "vllm_mlx.vllm_platform.MLXPlatform"
 
 
 def is_mlx_available() -> bool:
