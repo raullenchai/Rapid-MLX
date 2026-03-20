@@ -226,6 +226,9 @@ class SimpleEngine(BaseEngine):
             prompt_tokens = 0
             completion_tokens = 0
             finished = False
+            # Cache attribute checks after first chunk
+            _has_completion_tokens = None
+            _has_text = None
 
             for chunk in self._model.stream_generate(
                 prompt=prompt,
@@ -236,12 +239,15 @@ class SimpleEngine(BaseEngine):
                 **kwargs,
             ):
                 prompt_tokens = getattr(chunk, "prompt_tokens", 0) or prompt_tokens
-                # Prefer chunk's completion count if available, else increment
-                if hasattr(chunk, "completion_tokens"):
+                # Cache hasattr checks on first iteration
+                if _has_completion_tokens is None:
+                    _has_completion_tokens = hasattr(chunk, "completion_tokens")
+                    _has_text = hasattr(chunk, "text")
+                if _has_completion_tokens:
                     completion_tokens = chunk.completion_tokens
                 else:
                     completion_tokens += 1
-                new_text = chunk.text if hasattr(chunk, "text") else str(chunk)
+                new_text = chunk.text if _has_text else str(chunk)
                 accumulated_text += new_text
 
                 finished = (
@@ -270,11 +276,12 @@ class SimpleEngine(BaseEngine):
                     logprobs=getattr(chunk, "logprobs", None),
                 )
 
-                # Yield to event loop every 5 tokens so the server can
+                # Yield to event loop periodically so the server can
                 # accept connections, detect disconnects, and process
                 # queued requests. Without this, the sync generation
                 # loop starves the event loop during decode.
-                if completion_tokens % 5 == 0:
+                # Every 8 tokens balances responsiveness vs throughput.
+                if completion_tokens % 8 == 0:
                     await asyncio.sleep(0)
 
                 if finished:

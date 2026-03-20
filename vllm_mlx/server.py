@@ -2521,6 +2521,16 @@ async def stream_chat_completion(
             )
             return ChoiceLogProbs(content=[token_lp])
 
+        # Pre-compute SSE template parts that don't change per-token.
+        # This avoids repeated f-string interpolation and time.time() syscalls.
+        _sse_created = int(time.time())
+        _sse_prefix = (
+            f'data: {{"id":"{response_id}","object":"chat.completion.chunk",'
+            f'"created":{_sse_created},"model":"{request.model}",'
+            f'"choices":[{{"index":0,"delta":{{'
+        )
+        _sse_suffix = "}}]}\n\n"
+
         def _fast_sse_chunk(
             text: str, field: str = "content", created: int | None = None
         ) -> str:
@@ -2530,26 +2540,13 @@ async def stream_chat_completion(
             no finish_reason), this avoids constructing Pydantic objects and
             calling model_dump_json().
             """
-            _created = created or int(time.time())
             escaped = json.dumps(text)  # Handles escaping
-            return (
-                f'data: {{"id":"{response_id}","object":"chat.completion.chunk",'
-                f'"created":{_created},"model":"{request.model}",'
-                f'"choices":[{{"index":0,"delta":{{"{field}":{escaped}}}}}]}}\n\n'
-            )
+            return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
-        # First chunk with role
-        first_chunk = ChatCompletionChunk(
-            id=response_id,
-            model=request.model,
-            choices=[
-                ChatCompletionChunkChoice(
-                    delta=ChatCompletionChunkDelta(role="assistant"),
-                )
-            ],
-        )
-        _first_sse = f"data: {first_chunk.model_dump_json(exclude_none=True)}\n\n"
-        logger.info(f"[SSE-ROLE] {_first_sse.strip()[:200]}")
+        # First chunk with role — use direct JSON (skip Pydantic)
+        _first_sse = f'{_sse_prefix}"role":"assistant"{_sse_suffix}'
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(f"[SSE-ROLE] {_first_sse.strip()[:200]}")
         yield _first_sse
 
         # Track if we need to add <think> prefix for thinking models (when no reasoning parser)

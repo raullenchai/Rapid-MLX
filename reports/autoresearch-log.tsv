@@ -1,0 +1,11 @@
+experiment	decode_tps	cached_ttft_ms	mt_ttft_ms	tc_latency_ms	tc_rate	long_cached_ttft_ms	composite	verdict	description
+baseline	78.8	215	231	1326	100%	425	174.0	baseline	Qwen3.5-35B-A3B-8bit on main (commit 41a27c9)
+exp1-string-list	74.0	243	253	1522	100%	444	161.6	REVERT	list+join worse than CPython optimized += (O(N) join every token)
+exp2-batch-micro	83.3	186	194	1218	100%	315	192.2	KEEP	SSE template pre-compute + fast role chunk + prefix zip + yield-8 + hasattr cache
+exp3-decoder-O1	72.8	243	245	1512	100%	440	161.3	REVERT	IncrementalDecoder single-token fast path — adds Python call overhead > savings
+exp4-yield-16	60.5	237	253	1475	100%	442	149.3	REVERT	yield every 16 tokens — event loop needs frequent yields to flush SSE
+---	---	---	---	---	---	---	---	---	Cross-model validation (all on EXP2 optimized code)
+4B-baseline	167.4	176	176	884	100%	324	282.0	---	Qwen3.5-4B-4bit baseline (main)
+4B-optimized	167.9	175	175	882	100%	323	283.0	+0.3%	Qwen3.5-4B-4bit: negligible (model too fast)
+122B-baseline	39.9	298	313	2796	100%	1181	111.9	---	Qwen3.5-122B-8bit baseline (main)
+122B-optimized	40.5	283	356	3114	100%	1286	112.2	+1.5%	Qwen3.5-122B-8bit: minimal (model forward pass dominates)

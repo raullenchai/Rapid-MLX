@@ -224,13 +224,11 @@ class MLXLanguageModel:
 
     def _find_common_prefix_len(self, new_tokens: list[int]) -> int:
         """Find the length of the common prefix between cached and new tokens."""
-        common = 0
-        limit = min(len(self._cached_token_ids), len(new_tokens))
-        for i in range(limit):
-            if self._cached_token_ids[i] != new_tokens[i]:
-                break
-            common += 1
-        return common
+        # zip + enumerate with early exit is faster than manual indexing
+        for i, (a, b) in enumerate(zip(self._cached_token_ids, new_tokens)):
+            if a != b:
+                return i
+        return min(len(self._cached_token_ids), len(new_tokens))
 
     def _save_cache_snapshot(self, token_ids: list[int]) -> None:
         """Save a deep copy of the prompt cache state for future reuse."""
