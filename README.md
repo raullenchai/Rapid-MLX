@@ -42,12 +42,7 @@ That's it — you now have an AI server on `localhost:8000`. Works with Claude C
 brew install raullenchai/rapid-mlx/rapid-mlx
 ```
 
-**pip** (if you manage your own venv):
-```bash
-pip install vllm-mlx
-```
-
-**pip** (latest from GitHub):
+**pip**:
 ```bash
 pip install git+https://github.com/raullenchai/Rapid-MLX.git
 ```
