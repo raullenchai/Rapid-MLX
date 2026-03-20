@@ -109,4 +109,5 @@ gsm8k_*.json
 # Temp reports (scan outputs)
 reports/*.json
 reports/*.md
+reports/*.tsv
 reports/scan_*
