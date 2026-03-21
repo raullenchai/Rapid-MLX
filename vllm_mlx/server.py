@@ -2849,6 +2849,26 @@ async def stream_chat_completion(
                         # Normal content from tool parser
                         content = tool_result.get("content", "")
 
+                # After tool calls are detected and emitted, suppress any
+                # remaining content (model may echo raw XML after structured
+                # tool_calls were already sent).
+                if tool_calls_detected:
+                    if output.finished:
+                        # Send final chunk with finish_reason only
+                        chunk = ChatCompletionChunk(
+                            id=response_id,
+                            model=_model_name or request.model,
+                            choices=[
+                                ChatCompletionChunkChoice(
+                                    delta=ChatCompletionChunkDelta(),
+                                    finish_reason="tool_calls",
+                                )
+                            ],
+                            usage=get_usage(output),
+                        )
+                        yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+                    continue
+
                 # Filter special tokens from reasoning parser output
                 if content:
                     content = strip_special_tokens(content)
@@ -2958,6 +2978,24 @@ async def stream_chat_completion(
 
                         # Normal content from tool parser
                         content = tool_result.get("content", "")
+
+                # After tool calls are detected and emitted, suppress any
+                # remaining content (raw XML echo after structured tool_calls).
+                if tool_calls_detected:
+                    if output.finished:
+                        chunk = ChatCompletionChunk(
+                            id=response_id,
+                            model=_model_name or request.model,
+                            choices=[
+                                ChatCompletionChunkChoice(
+                                    delta=ChatCompletionChunkDelta(),
+                                    finish_reason="tool_calls",
+                                )
+                            ],
+                            usage=get_usage(output),
+                        )
+                        yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+                    continue
 
                 # Final special-token filter — catches tokens that may have
                 # bypassed the earlier filter (e.g. via tool parser path
