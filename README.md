@@ -25,26 +25,29 @@ Drop-in OpenAI API replacement for Apple Silicon. 2-4x faster than Ollama, with 
 
 ## Quick Start
 
+**Step 1 — Install:**
 ```bash
-# 1. Install (one command, checks Apple Silicon + Python automatically)
 curl -fsSL https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/install.sh | bash
-source ~/.zshrc  # bash users: source ~/.bashrc
+```
+Then close and reopen your terminal (or run `source ~/.zshrc`).
 
-# 2. Start serving (first run downloads the model — ~5 GB, takes a few minutes)
+**Step 2 — Start the server:**
+```bash
 rapid-mlx serve qwen3.5-9b
-# Wait until you see: "Ready: http://localhost:8000/v1" — then it's running
-# To stop: press Ctrl+C
+```
+First run downloads the model (~5 GB) — you'll see a progress bar. Wait for `Ready: http://localhost:8000/v1`.
 
-# 3. Test it — open a NEW terminal and run:
+**Step 3 — Test it** (open a **second** terminal tab):
+```bash
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"default","messages":[{"role":"user","content":"Hello!"}]}'
-# "model" can be any string — "default" works, or use the actual model name
 ```
+You should get a JSON response with the AI's reply. To stop the server: Ctrl+C in the first terminal.
 
-That's it — you now have an AI server on `localhost:8000`. Works with Claude Code, Cursor, Aider, Open WebUI, or any app that speaks the OpenAI API.
+That's it — you now have an AI server on `localhost:8000`. Next: scroll down to [**Choose Your Model**](#choose-your-model) to pick the best model for your Mac, or see [**Works With**](#works-with) to connect Claude Code, Cursor, or other apps.
 
-> **Tip:** If you get "Connection refused", the server is still loading the model. Wait for the "Ready" message in the first terminal.
+> **Tip:** If you get "Connection refused", the server is still loading. Wait for the "Ready" message.
 
 <details>
 <summary>Other install methods</summary>
@@ -73,7 +76,7 @@ pip install 'rapid-mlx[vision]'
 ```
 </details>
 
-**Try it with Python** (`pip install openai` first):
+**Try it with Python** (make sure the server is running, then `pip install openai`):
 
 ```python
 from openai import OpenAI
