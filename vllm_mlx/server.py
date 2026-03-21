@@ -126,6 +126,7 @@ logger = logging.getLogger(__name__)
 # Global engine instance
 _engine: BaseEngine | None = None
 _model_name: str | None = None
+_model_alias: str | None = None  # Short alias used to start the model (if any)
 _default_max_tokens: int = 32768
 _default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes)
 _default_temperature: float | None = None  # Set via --default-temperature
@@ -436,11 +437,10 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(sec
     global _auth_warning_logged
 
     if _api_key is None:
-        # Log warning once about running without authentication
+        # Log once at debug level — local inference rarely needs auth
         if not _auth_warning_logged:
-            logger.warning(
-                "SECURITY WARNING: Server running without API key authentication. "
-                "Anyone can access the API. Use --api-key to enable authentication."
+            logger.debug(
+                "No API key configured. Use --api-key to enable authentication."
             )
             _auth_warning_logged = True
         return True  # No auth required
@@ -995,6 +995,9 @@ async def list_models() -> ModelsResponse:
     models = []
     if _model_name:
         models.append(ModelInfo(id=_model_name))
+        # Also list the alias if the model was loaded via one
+        if _model_alias and _model_alias != _model_name:
+            models.append(ModelInfo(id=_model_alias))
     return ModelsResponse(data=models)
 
 
@@ -1611,7 +1614,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     )
 
     comp_response = CompletionResponse(
-        model=request.model,
+        model=_model_name or request.model,
         choices=choices,
         usage=Usage(
             prompt_tokens=total_prompt_tokens,
@@ -2043,7 +2046,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         choice_logprobs = ChoiceLogProbs(content=token_logprobs_list)
 
     chat_response = ChatCompletionResponse(
-        model=request.model,
+        model=_model_name or request.model,
         choices=[
             ChatCompletionChoice(
                 message=AssistantMessage(
@@ -2345,7 +2348,7 @@ async def _stream_anthropic_messages(
             "id": msg_id,
             "type": "message",
             "role": "assistant",
-            "model": anthropic_request.model,
+            "model": _model_name or anthropic_request.model,
             "content": [],
             "stop_reason": None,
             "stop_sequence": None,
@@ -2473,7 +2476,7 @@ async def stream_completion(
             "id": f"cmpl-{uuid.uuid4().hex[:8]}",
             "object": "text_completion",
             "created": int(time.time()),
-            "model": request.model,
+            "model": _model_name or request.model,
             "choices": [
                 {
                     "index": 0,
@@ -2524,7 +2527,7 @@ async def stream_chat_completion(
         # Pre-compute SSE template parts that don't change per-token.
         # This avoids repeated f-string interpolation and time.time() syscalls.
         _sse_created = int(time.time())
-        _model_escaped = json.dumps(request.model)  # Properly escape quotes/newlines
+        _model_escaped = json.dumps(_model_name or request.model)
         _sse_prefix = (
             f'data: {{"id":"{response_id}","object":"chat.completion.chunk",'
             f'"created":{_sse_created},"model":{_model_escaped},'
@@ -2670,7 +2673,7 @@ async def stream_chat_completion(
                             tool_calls_detected = True
                             chunk = ChatCompletionChunk(
                                 id=response_id,
-                                model=request.model,
+                                model=_model_name or request.model,
                                 choices=[
                                     ChatCompletionChunkChoice(
                                         delta=ChatCompletionChunkDelta(
@@ -2724,7 +2727,7 @@ async def stream_chat_completion(
 
                 chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=request.model,
+                    model=_model_name or request.model,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -2780,7 +2783,7 @@ async def stream_chat_completion(
                             tool_calls_detected = True
                             chunk = ChatCompletionChunk(
                                 id=response_id,
-                                model=request.model,
+                                model=_model_name or request.model,
                                 choices=[
                                     ChatCompletionChunkChoice(
                                         delta=ChatCompletionChunkDelta(
@@ -2837,7 +2840,7 @@ async def stream_chat_completion(
 
                 chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=request.model,
+                    model=_model_name or request.model,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -2858,7 +2861,7 @@ async def stream_chat_completion(
             if correction and correction.content:
                 correction_chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=request.model,
+                    model=_model_name or request.model,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -2888,7 +2891,7 @@ async def stream_chat_completion(
             if result.tools_called:
                 tool_chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=request.model,
+                    model=_model_name or request.model,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -2924,7 +2927,7 @@ async def stream_chat_completion(
         if include_usage:
             usage_chunk = ChatCompletionChunk(
                 id=response_id,
-                model=request.model,
+                model=_model_name or request.model,
                 choices=[],  # Empty choices for usage-only chunk
                 usage=Usage(
                     prompt_tokens=prompt_tokens,

@@ -44,6 +44,9 @@ def serve_command(args):
         )
         sys.exit(1)
 
+    # Pass alias info to server (for /v1/models)
+    server._model_alias = getattr(args, "_original_alias", None)
+
     # Configure server security settings
     server._api_key = args.api_key
     server._default_timeout = args.timeout
@@ -1124,6 +1127,7 @@ Examples:
         resolved = resolve_model(args.model)
         if resolved != args.model:
             print(f"  Alias: {args.model} → {resolved}")
+            args._original_alias = args.model
             args.model = resolved
 
     if args.command == "serve":
