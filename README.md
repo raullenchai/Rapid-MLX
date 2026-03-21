@@ -1,13 +1,23 @@
-# Rapid-MLX
+<p align="center">
+  <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/logo.png" alt="Rapid-MLX" width="200">
+</p>
 
-**Run AI on your Mac. Faster than anything else.**
+<h1 align="center">Rapid-MLX</h1>
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-1900%2B-brightgreen.svg)](tests/)
-[![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple)](https://support.apple.com/en-us/HT211814)
+<p align="center">
+  <strong>Run AI on your Mac. Faster than anything else.</strong>
+</p>
 
-Drop-in OpenAI API replacement for Apple Silicon. 2-4x faster than Ollama, with full tool-calling support.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/tests-1900%2B-brightgreen.svg" alt="Tests"></a>
+  <a href="https://support.apple.com/en-us/HT211814"><img src="https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple" alt="Apple Silicon"></a>
+</p>
+
+<p align="center">
+  Drop-in OpenAI API replacement for Apple Silicon. 2-4x faster than Ollama, with full tool-calling support.
+</p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/demo.gif" alt="Rapid-MLX vs Ollama — 2.4x faster on Qwen3.5-9B" width="800">
