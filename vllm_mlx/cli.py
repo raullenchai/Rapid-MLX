@@ -16,6 +16,78 @@ import argparse
 import sys
 
 
+def _check_disk_space(model_name: str) -> None:
+    """Check if there's enough disk space to download the model.
+
+    Queries HuggingFace for model repo size and compares with available space.
+    Warns (but does not block) if disk space is insufficient.
+    Skips silently if the model is already local or if the check fails.
+    """
+    import os
+    from pathlib import Path
+
+    # Skip if model is a local path that already exists
+    if os.path.exists(model_name):
+        return
+
+    # Check if model is already cached by huggingface_hub
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        # Quick check: see if config.json is cached (implies model is downloaded)
+        cached = try_to_load_from_cache(model_name, "config.json")
+        if isinstance(cached, str) and os.path.exists(cached):
+            return
+    except Exception:
+        pass
+
+    # Query HuggingFace API for model size
+    try:
+        from huggingface_hub import model_info
+
+        info = model_info(model_name, files_metadata=True)
+        # safetensors_total or siblings file sizes
+        model_size_bytes = 0
+        if hasattr(info, "safetensors") and info.safetensors:
+            # Total size from safetensors metadata
+            params = info.safetensors
+            if hasattr(params, "total"):
+                # This is parameter count, not file size — use siblings instead
+                pass
+        # Sum file sizes from siblings
+        if hasattr(info, "siblings") and info.siblings:
+            for sibling in info.siblings:
+                if hasattr(sibling, "size") and sibling.size:
+                    model_size_bytes += sibling.size
+
+        if model_size_bytes == 0:
+            return  # Can't determine size, skip check
+
+        # Get available disk space
+        cache_dir = Path.home() / ".cache" / "huggingface"
+        stat = os.statvfs(str(cache_dir) if cache_dir.exists() else str(Path.home()))
+        available_bytes = stat.f_bavail * stat.f_frsize
+
+        model_size_gb = model_size_bytes / (1024**3)
+        available_gb = available_bytes / (1024**3)
+
+        # Need ~10% extra for temp files during download
+        required_bytes = int(model_size_bytes * 1.1)
+
+        if available_bytes < required_bytes:
+            print()
+            print(
+                f"  Warning: Model requires ~{model_size_gb:.1f} GB "
+                f"but only {available_gb:.1f} GB available on disk."
+            )
+            print(
+                "  The download may fail. Free up disk space or choose a smaller model."
+            )
+            print()
+    except Exception:
+        pass  # Non-critical — don't block startup on check failure
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -202,6 +274,9 @@ def serve_command(args):
             print(f"Prefix cache: max_entries={args.prefix_cache_size}")
     else:
         print("Mode: Simple (maximum throughput)")
+
+    # Check disk space before downloading model
+    _check_disk_space(args.model)
 
     # Load model with unified server
     load_model(

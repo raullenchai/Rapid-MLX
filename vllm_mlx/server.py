@@ -2204,10 +2204,10 @@ async def create_anthropic_message(
         output.text, openai_request
     )
 
-    # Clean output text
+    # Clean output text — strip think tags so Anthropic clients get pure content
     final_content = None
     if cleaned_text:
-        final_content = clean_output_text(cleaned_text)
+        final_content = strip_thinking_tags(clean_output_text(cleaned_text))
 
     # Determine finish reason
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
@@ -2370,9 +2370,14 @@ async def _stream_anthropic_messages(
     }
     yield f"event: content_block_start\ndata: {json.dumps(content_block_start)}\n\n"
 
-    # Stream content deltas
+    # Stream content deltas — use reasoning parser to strip think tags
     accumulated_text = ""
+    accumulated_raw = ""
     completion_tokens = 0
+
+    # Reset reasoning parser state for this stream
+    if _reasoning_parser:
+        _reasoning_parser.reset_state()
 
     async for output in engine.stream_chat(messages=messages, **chat_kwargs):
         delta_text = output.new_text
@@ -2382,8 +2387,25 @@ async def _stream_anthropic_messages(
             completion_tokens = output.completion_tokens
 
         if delta_text:
-            # Filter special tokens
-            content = strip_special_tokens(delta_text)
+            content = None
+
+            # Use reasoning parser to separate reasoning from content
+            if _reasoning_parser:
+                previous_raw = accumulated_raw
+                accumulated_raw += delta_text
+                delta_msg = _reasoning_parser.extract_reasoning_streaming(
+                    previous_raw, accumulated_raw, delta_text
+                )
+                if delta_msg is not None:
+                    # Only emit content, discard reasoning for Anthropic clients
+                    content = delta_msg.content
+            else:
+                # No reasoning parser — pass through with special token filter
+                content = strip_special_tokens(delta_text)
+
+            if content:
+                # Filter special tokens from parser output too
+                content = strip_special_tokens(content)
 
             if content:
                 accumulated_text += content
@@ -2393,6 +2415,27 @@ async def _stream_anthropic_messages(
                     "delta": {"type": "text_delta", "text": content},
                 }
                 yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
+
+    # Handle reasoning parser finalization (e.g. no-tag correction)
+    if _reasoning_parser and accumulated_raw:
+        final_msg = (
+            _reasoning_parser.finalize_streaming(accumulated_raw)
+            if hasattr(_reasoning_parser, "finalize_streaming")
+            else None
+        )
+        if final_msg and final_msg.content:
+            # Emit corrected content (model didn't use think tags at all)
+            content = strip_special_tokens(final_msg.content)
+            if content:
+                accumulated_text = content  # Replace accumulated
+                delta_event = {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": content},
+                }
+                yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
+        # Reset parser state for next request
+        _reasoning_parser.reset_state()
 
     # Check for tool calls in accumulated text
     _, tool_calls = _parse_tool_calls_with_parser(accumulated_text, openai_request)
