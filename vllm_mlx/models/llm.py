@@ -50,6 +50,7 @@ class MLXLanguageModel:
         model_name: str,
         tokenizer_name: str | None = None,
         trust_remote_code: bool = False,
+        mtp: bool = False,
     ):
         """
         Initialize the MLX language model.
@@ -58,10 +59,12 @@ class MLXLanguageModel:
             model_name: HuggingFace model name or local path
             tokenizer_name: Optional separate tokenizer name
             trust_remote_code: Whether to trust remote code
+            mtp: Enable native MTP speculative decoding (model must have MTP head)
         """
         self.model_name = model_name
         self.tokenizer_name = tokenizer_name or model_name
         self.trust_remote_code = trust_remote_code
+        self._mtp = mtp
 
         self.model = None
         self.tokenizer = None
@@ -203,12 +206,17 @@ class MLXLanguageModel:
         token_count = 0
         accumulated_text = ""
 
+        mtp_kwargs = {}
+        if self._mtp:
+            mtp_kwargs["mtp"] = True
+
         for response in stream_generate(
             self.model,
             self.tokenizer,
             prompt=prompt,
             max_tokens=max_tokens,
             sampler=sampler,
+            **mtp_kwargs,
         ):
             token_count += 1
             # response.text is the new token text (not accumulated)

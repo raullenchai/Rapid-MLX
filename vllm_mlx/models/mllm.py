@@ -746,6 +746,14 @@ class MLXMultimodalLM:
             logger.error(f"Failed to load MLLM: {e}")
             raise
 
+    def get_language_model(self):
+        """Extract the underlying language model for mlx_lm TextModel construction."""
+        return self.model.language_model
+
+    def get_tokenizer(self):
+        """Get the text tokenizer (not the multimodal processor)."""
+        return self.processor.tokenizer
+
     def _prepare_images(self, images: list) -> list[str]:
         """Process image inputs and return local file paths."""
         processed = []

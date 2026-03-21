@@ -57,8 +57,37 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
         if "TokenizersBackend" in str(e) or "Tokenizer class" in str(e):
             logger.warning(f"Standard tokenizer loading failed, using fallback: {e}")
             return _load_with_tokenizer_fallback(model_name)
-        else:
-            raise
+        # Fallback for vision-text models loaded as text-only (e.g., Qwen3.5).
+        # The weight files contain vision tower params that mlx-lm's text model
+        # doesn't define. Retry with strict=False to discard extra weights.
+        if "parameters not in model" in str(e):
+            logger.warning(
+                "Model has extra weights (likely vision tower), "
+                "retrying with strict=False to load as text-only."
+            )
+            return _load_strict_false(model_name, tokenizer_config)
+        raise
+
+
+def _load_strict_false(model_name: str, tokenizer_config: dict = None):
+    """Load model with strict=False to discard extra weights (e.g., vision tower)."""
+    from mlx_lm.utils import load_model, load_tokenizer
+
+    local_path = Path(model_name)
+    if local_path.is_dir():
+        model_path = local_path
+    else:
+        from huggingface_hub import snapshot_download
+
+        model_path = Path(snapshot_download(model_name))
+
+    model, config = load_model(model_path, strict=False)
+    tokenizer = load_tokenizer(
+        model_path,
+        tokenizer_config or {},
+        eos_token_ids=config.get("eos_token_id", None),
+    )
+    return model, tokenizer
 
 
 def _load_with_tokenizer_fallback(model_name: str):
