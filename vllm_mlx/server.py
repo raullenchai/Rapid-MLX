@@ -2214,7 +2214,7 @@ async def create_anthropic_message(
 
     # Build OpenAI response to convert
     openai_response = ChatCompletionResponse(
-        model=openai_request.model,
+        model=_model_name or openai_request.model,
         choices=[
             ChatCompletionChoice(
                 message=AssistantMessage(
@@ -2232,7 +2232,9 @@ async def create_anthropic_message(
     )
 
     # Convert to Anthropic response
-    anthropic_response = openai_to_anthropic(openai_response, anthropic_request.model)
+    anthropic_response = openai_to_anthropic(
+        openai_response, _model_name or anthropic_request.model
+    )
     return Response(
         content=anthropic_response.model_dump_json(exclude_none=True),
         media_type="application/json",
