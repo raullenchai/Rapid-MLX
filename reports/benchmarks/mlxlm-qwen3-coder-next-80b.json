@@ -1,0 +1,23 @@
+[
+  {
+    "engine": "mlx-lm",
+    "model": "/Users/raullenstudio/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-6bit",
+    "short_decode_tps": {
+      "mean": 69.23172267197987,
+      "median": 69.21097853606356,
+      "min": 68.96594628032794,
+      "max": 69.51824319954808
+    },
+    "long_decode_tps": {
+      "mean": 68.65939037123962,
+      "median": 68.72746110975723,
+      "min": 68.48082648158451,
+      "max": 68.76988352237714
+    },
+    "tool_call_rate": 0,
+    "recovery_rate": 0,
+    "leak_rate": 0,
+    "vision": false,
+    "audio": false
+  }
+]

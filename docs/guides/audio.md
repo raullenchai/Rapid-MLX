@@ -29,7 +29,7 @@ brew install espeak-ng
 Or install all audio dependencies at once:
 
 ```bash
-pip install vllm-mlx[audio]
+pip install rapid-mlx[audio]
 python -m spacy download en_core_web_sm
 brew install espeak-ng  # macOS, for non-English languages
 ```

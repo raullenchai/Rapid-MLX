@@ -1,0 +1,23 @@
+[
+  {
+    "engine": "mlx-lm",
+    "model": "/Users/raullenstudio/.lmstudio/models/mlx-community/gpt-oss-20b-MXFP4-Q8",
+    "short_decode_tps": {
+      "mean": 81.30467089258059,
+      "median": 79.07669913068572,
+      "min": 79.04899708813458,
+      "max": 85.78831645892147
+    },
+    "long_decode_tps": {
+      "mean": 69.398420826584,
+      "median": 81.62519795605107,
+      "min": 44.8392922768588,
+      "max": 81.73077224684214
+    },
+    "tool_call_rate": 0,
+    "recovery_rate": 0,
+    "leak_rate": 0,
+    "vision": false,
+    "audio": false
+  }
+]

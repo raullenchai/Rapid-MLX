@@ -5,7 +5,7 @@ set -euo pipefail
 
 INSTALL_DIR="${HOME}/.rapid-mlx"
 BIN_DIR="${HOME}/.local/bin"
-PYPI_PACKAGE="vllm-mlx"
+PYPI_PACKAGE="rapid-mlx"
 GITHUB_REPO="https://github.com/raullenchai/Rapid-MLX.git"
 MIN_PYTHON_MINOR=10
 

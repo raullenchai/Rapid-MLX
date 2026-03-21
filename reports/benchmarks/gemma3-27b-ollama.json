@@ -1,0 +1,28 @@
+[
+  {
+    "engine": "Ollama",
+    "model": "gemma3:27b",
+    "short_decode_tps": {
+      "mean": 29.79638322403507,
+      "median": 29.79976162075357,
+      "min": 29.686034379131346,
+      "max": 29.90335367222029
+    },
+    "long_decode_tps": {
+      "mean": 29.611030655410232,
+      "median": 29.60869708440858,
+      "min": 29.461422727610707,
+      "max": 29.762972154211415
+    },
+    "ttft_cold_s": 3.3124038340029074,
+    "ttft_cached_s": 0.16634629200416384,
+    "multi_turn_ttft_cold_s": 0.5996500839974033,
+    "multi_turn_ttft_cached_s": 0.1637686250032857,
+    "peak_ram_mb": 281.265625,
+    "tool_call_rate": 0.0,
+    "recovery_rate": 0.0,
+    "leak_rate": 0.0,
+    "vision": true,
+    "audio": false
+  }
+]

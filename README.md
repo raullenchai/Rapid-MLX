@@ -49,9 +49,9 @@ That's it — you now have an AI server on `localhost:8000`. Works with Claude C
 brew install raullenchai/rapid-mlx/rapid-mlx
 ```
 
-**pip** (into an existing virtualenv):
+**pip**:
 ```bash
-pip install git+https://github.com/raullenchai/Rapid-MLX.git
+pip install rapid-mlx
 ```
 
 **From source** (for development):
@@ -62,7 +62,7 @@ cd Rapid-MLX && pip install -e .
 
 **Vision models** (adds torch + torchvision, ~2.5 GB extra):
 ```bash
-pip install 'vllm-mlx[vision] @ git+https://github.com/raullenchai/Rapid-MLX.git'
+pip install 'rapid-mlx[vision] @ git+https://github.com/raullenchai/Rapid-MLX.git'
 ```
 </details>
 
@@ -191,7 +191,7 @@ rapid-mlx serve nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx --kv-bits 8 --prefil
 # Coding agent — fast MoE, great for Claude Code / Cursor
 rapid-mlx serve lmstudio-community/Qwen3-Coder-Next-MLX-4bit --prefill-step-size 8192 --port 8000
 
-# Vision — image understanding (requires: pip install 'vllm-mlx[vision]')
+# Vision — image understanding (requires: pip install 'rapid-mlx[vision]')
 rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-MLX-4bit --mllm --port 8000
 ```
 

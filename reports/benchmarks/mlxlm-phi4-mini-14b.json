@@ -1,0 +1,23 @@
+[
+  {
+    "engine": "mlx-lm",
+    "model": "/Users/raullenstudio/.lmstudio/models/lmstudio-community/Phi-4-mini-reasoning-MLX-4bit",
+    "short_decode_tps": {
+      "mean": 142.50241490905415,
+      "median": 129.26775121084623,
+      "min": 128.80306481234314,
+      "max": 169.4364287039731
+    },
+    "long_decode_tps": {
+      "mean": 93.11739516077792,
+      "median": 77.15614882909345,
+      "min": 75.9722337736962,
+      "max": 126.22380287954408
+    },
+    "tool_call_rate": 0,
+    "recovery_rate": 0,
+    "leak_rate": 0,
+    "vision": false,
+    "audio": false
+  }
+]

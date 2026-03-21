@@ -670,7 +670,7 @@ class SimpleEngine(BaseEngine):
         if not self.supports_guided_generation:
             raise RuntimeError(
                 "Guided generation not available. "
-                "Install with: pip install 'vllm-mlx[guided]'"
+                "Install with: pip install 'rapid-mlx[guided]'"
             )
 
         if not self._loaded:

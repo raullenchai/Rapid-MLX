@@ -1,0 +1,23 @@
+[
+  {
+    "engine": "mlx-lm",
+    "model": "/Users/raullenstudio/.lmstudio/models/mlx-community/gemma-3-12b-it-qat-4bit",
+    "short_decode_tps": {
+      "mean": 72.15943451176611,
+      "median": 72.45760089647311,
+      "min": 71.44090986131339,
+      "max": 72.57979277751183
+    },
+    "long_decode_tps": {
+      "mean": 65.52256060149621,
+      "median": 69.42799025186842,
+      "min": 57.481196391182316,
+      "max": 69.65849516143788
+    },
+    "tool_call_rate": 0,
+    "recovery_rate": 0,
+    "leak_rate": 0,
+    "vision": false,
+    "audio": false
+  }
+]

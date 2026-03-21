@@ -1,0 +1,23 @@
+[
+  {
+    "engine": "Rapid-MLX",
+    "model": "Qwen3.5-9B-4bit",
+    "short_decode_tps": {
+      "mean": 0.0,
+      "median": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "long_decode_tps": {
+      "mean": 0.0,
+      "median": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "ttft_cold_s": 1.9960453339990636,
+    "ttft_cached_s": 1.9538203544998396,
+    "multi_turn_ttft_cold_s": 1.0973866669992276,
+    "multi_turn_ttft_cached_s": 1.0895736670026963,
+    "peak_ram_mb": 6055.328125
+  }
+]

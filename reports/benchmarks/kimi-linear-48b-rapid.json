@@ -1,0 +1,34 @@
+[
+  {
+    "engine": "Rapid-MLX",
+    "model": "Kimi-Linear-48B-A3B",
+    "short_decode_tps": {
+      "mean": 94.4297984774465,
+      "median": 96.21079017491654,
+      "min": 90.7241751218727,
+      "max": 96.35443013555023
+    },
+    "short_prefill_tps": {
+      "median": 214.4858372259168
+    },
+    "long_decode_tps": {
+      "mean": 93.42818415860141,
+      "median": 93.54985491080986,
+      "min": 93.17267389816172,
+      "max": 93.56202366683266
+    },
+    "long_prefill_tps": {
+      "median": 550.9247422235561
+    },
+    "ttft_cold_s": 1.3486248339904705,
+    "ttft_cached_s": 0.06133893749938579,
+    "multi_turn_ttft_cold_s": 0.18464183299511205,
+    "multi_turn_ttft_cached_s": 0.11119710399361793,
+    "peak_ram_mb": 38289.828125,
+    "tool_call_rate": 0.0,
+    "recovery_rate": 1.0,
+    "leak_rate": 0.0,
+    "vision": true,
+    "audio": false
+  }
+]

@@ -1,0 +1,85 @@
+You are orchestrating a thorough, independent code review of recent changes in this repository.
+
+Use multi-agent to run the following review agents IN PARALLEL. Each agent should return its findings as structured text (not write to files). After ALL agents complete, consolidate their findings into a single deduplicated review file.
+
+IMPORTANT: Spawn one agent per review path below. Wait for all agents to finish. Then deduplicate overlapping findings and write the consolidated review to: reviews/review-20260315-103736-152fd1.md
+
+---
+AGENT 1: Diff Review (focus on uncommitted and recently committed changes ONLY)
+
+Run `git diff` and `git diff --cached` to see all uncommitted changes. Also run `git log --oneline -5` and `git diff HEAD~5` for recently committed work. Focus your review EXCLUSIVELY on this changed code.
+
+Review criteria for changed code:
+
+Code Quality:
+- Is the changed code well-organized, modular, and readable?
+- Does it follow DRY principles — no copy-pasted blocks that should be abstracted?
+- Are names (variables, functions, files) clear and consistent with the codebase?
+- Are abstractions at the right level — not over-engineered, not under-abstracted?
+- Is there unnecessary complexity that could be simplified?
+
+Test Coverage:
+- Does every new function/endpoint/component have corresponding tests?
+- Are edge cases covered: empty inputs, nulls, boundary values, error paths?
+- Are tests isolated, deterministic, and fast?
+- Do tests verify behavior (not implementation details)?
+- For bug fixes: is there a regression test that would have caught the original bug?
+
+Security:
+- Input validation: are all user inputs validated and sanitized before use?
+- Authentication/authorization: are auth checks present on all protected routes/actions?
+- Injection: any risk of SQL injection, XSS, command injection, path traversal?
+- Secrets: are any credentials, API keys, or tokens hardcoded or logged?
+- OWASP Top 10: check for broken access control, cryptographic failures, insecure design, security misconfiguration, vulnerable dependencies, SSRF
+- Are error messages safe (no stack traces or internal details leaked to users)?
+
+For each issue: return file path, line number, severity (critical/high/medium/low), category, description, and suggested fix.
+
+---
+AGENT 2: Holistic Review (evaluate overall project structure and agent readiness)
+
+Read the full project directory structure, key config files, README, and any AGENTS.md / CLAUDE.md files. This is NOT about individual line changes — it's about whether the project is well-structured for maintainability and agent-driven development.
+
+Review criteria for the whole project:
+
+Code Organization & Modularity:
+- Is the project structure logical and navigable? Can a new developer (or agent) find things?
+- Are concerns properly separated (data access, business logic, presentation, config)?
+- Are there god files/functions that do too much and should be split?
+- Is shared code properly extracted into reusable modules?
+- Are import paths clean (absolute imports, no deep relative paths)?
+
+Documentation & Agent Harness:
+- Does every major directory have an AGENTS.md with operating guidelines for agents?
+- Is there a CLAUDE.md symlinked to each AGENTS.md for Claude Code compatibility?
+- Do AGENTS.md files document: conventions, file purposes, testing patterns, common pitfalls?
+- Is there telemetry/observability instrumentation (logging, metrics, tracing)?
+- Is there a type system in use (TypeScript, Python type hints, etc.) with proper coverage?
+- Are there proper constraints and guardrails so agents working on the code are set up for success?
+- Are environment variables documented and validated at startup?
+- Are there clear boundaries between server-only and client-safe code?
+
+Architecture:
+- Is the dependency graph clean (no circular dependencies)?
+- Are external integrations properly abstracted behind interfaces?
+- Is configuration centralized rather than scattered?
+- Is error handling consistent across the codebase?
+
+For each issue: return file path (or directory), severity (critical/high/medium/low), category, description, and suggested fix.
+
+---
+CONSOLIDATION INSTRUCTIONS (after all agents complete):
+
+1. Collect all findings from all agents
+2. Deduplicate: if multiple agents flagged the same issue, keep the most detailed version
+3. Organize all findings by severity (critical first, then high, medium, low)
+4. For each finding, include:
+   - File path and line number (or directory for structural issues)
+   - Severity: critical / high / medium / low
+   - Category: which review path found it (Diff, Holistic, Next.js, UX)
+   - Description: clear explanation
+   - Suggested fix: concrete, actionable recommendation
+5. End with a summary: total issues, breakdown by severity, agents that ran, overall assessment
+6. Write the COMPLETE consolidated review to: reviews/review-20260315-103736-152fd1.md
+
+IMPORTANT: You MUST create the file reviews/review-20260315-103736-152fd1.md with the full review.

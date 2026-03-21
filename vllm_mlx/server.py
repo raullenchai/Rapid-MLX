@@ -1114,7 +1114,7 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
         raise HTTPException(
             status_code=503,
             detail=(
-                "mlx-embeddings not installed. Install with: pip install 'vllm-mlx[embeddings]'"
+                "mlx-embeddings not installed. Install with: pip install 'rapid-mlx[embeddings]'"
             ),
         )
     except HTTPException:

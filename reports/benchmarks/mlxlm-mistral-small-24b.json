@@ -1,0 +1,23 @@
+[
+  {
+    "engine": "mlx-lm",
+    "model": "/Users/raullenstudio/.lmstudio/models/lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-4bit",
+    "short_decode_tps": {
+      "mean": 114.13645485950988,
+      "median": 114.11942650393246,
+      "min": 109.71578187452616,
+      "max": 118.57415620007104
+    },
+    "long_decode_tps": {
+      "mean": 38.546724984860205,
+      "median": 40.60894452425622,
+      "min": 34.36890815656712,
+      "max": 40.66232227375726
+    },
+    "tool_call_rate": 0,
+    "recovery_rate": 0,
+    "leak_rate": 0,
+    "vision": false,
+    "audio": false
+  }
+]

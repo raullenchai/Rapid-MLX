@@ -7,7 +7,7 @@ This example demonstrates how to use MCP (Model Context Protocol) tools
 with the vllm-mlx server.
 
 Prerequisites:
-1. Install MCP support: pip install vllm-mlx[mcp]
+1. Install MCP support: pip install rapid-mlx[mcp]
 2. Create mcp.json config (see example below)
 3. Start server with MCP: vllm-mlx serve <model> --mcp-config mcp.json
 

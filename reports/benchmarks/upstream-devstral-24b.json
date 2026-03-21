@@ -1,0 +1,23 @@
+[
+  {
+    "engine": "Rapid-MLX",
+    "model": "default",
+    "short_decode_tps": {
+      "mean": 48.88300741208389,
+      "median": 48.9009541130976,
+      "min": 48.83194595781259,
+      "max": 48.91612216534148
+    },
+    "long_decode_tps": {
+      "mean": 47.8697805854725,
+      "median": 48.17110026582387,
+      "min": 47.12905107809155,
+      "max": 48.309190412502076
+    },
+    "ttft_cold_s": 0.389358791988343,
+    "ttft_cached_s": 0.20544914552010596,
+    "multi_turn_ttft_cold_s": 0.3829592919209972,
+    "multi_turn_ttft_cached_s": 0.38212564605055377,
+    "peak_ram_mb": 13228.953125
+  }
+]

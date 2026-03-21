@@ -1,0 +1,23 @@
+[
+  {
+    "engine": "mlx-lm",
+    "model": "/Users/raullenstudio/.lmstudio/models/mlx-community/MiniMax-M2.5-MLX-4bit",
+    "short_decode_tps": {
+      "mean": 51.08848521983248,
+      "median": 51.14953519095109,
+      "min": 50.85960359007859,
+      "max": 51.25631687846776
+    },
+    "long_decode_tps": {
+      "mean": 51.393482588208045,
+      "median": 51.58723408376805,
+      "min": 50.39784902149703,
+      "max": 52.19536465935905
+    },
+    "tool_call_rate": 0,
+    "recovery_rate": 0,
+    "leak_rate": 0,
+    "vision": false,
+    "audio": false
+  }
+]

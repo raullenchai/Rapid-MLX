@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vllm-mlx"
-version = "0.3.1"
+name = "rapid-mlx"
+version = "0.3.2"
 description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, 2-4x faster than Ollama."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -66,7 +66,7 @@ chat = [
 ]
 # All extras — matches pre-0.3.1 behavior
 all = [
-    "vllm-mlx[vision,chat,embeddings]",
+    "rapid-mlx[vision,chat,embeddings]",
 ]
 dev = [
     "pytest>=7.0.0",

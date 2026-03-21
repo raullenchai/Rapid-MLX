@@ -1,0 +1,34 @@
+[
+  {
+    "engine": "Rapid-MLX",
+    "model": "default",
+    "short_decode_tps": {
+      "mean": 74.3220240936322,
+      "median": 74.24199732031988,
+      "min": 74.16727090235815,
+      "max": 74.55680405821853
+    },
+    "short_prefill_tps": {
+      "median": 192.61043188355444
+    },
+    "long_decode_tps": {
+      "mean": 72.21147881619038,
+      "median": 72.08450268319284,
+      "min": 71.7555165782101,
+      "max": 72.79441718716818
+    },
+    "long_prefill_tps": {
+      "median": 1017.0609457454924
+    },
+    "ttft_cold_s": 0.4542362500214949,
+    "ttft_cached_s": 0.09853829198982567,
+    "multi_turn_ttft_cold_s": 0.22411724994890392,
+    "multi_turn_ttft_cached_s": 0.10159475053660572,
+    "peak_ram_mb": 43199.453125,
+    "tool_call_rate": 1.0,
+    "recovery_rate": 1.0,
+    "leak_rate": 0.0,
+    "vision": true,
+    "audio": false
+  }
+]

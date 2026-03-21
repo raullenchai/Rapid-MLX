@@ -1,0 +1,28 @@
+[
+  {
+    "engine": "llama.cpp",
+    "model": "default",
+    "short_decode_tps": {
+      "mean": 54.91847638450457,
+      "median": 54.874658221257114,
+      "min": 54.87231269366967,
+      "max": 55.00845823858693
+    },
+    "long_decode_tps": {
+      "mean": 53.80090992816849,
+      "median": 53.80846878644469,
+      "min": 53.68998445791361,
+      "max": 53.904276540147166
+    },
+    "ttft_cold_s": 0.20254325005225837,
+    "ttft_cached_s": 0.02628487499896437,
+    "multi_turn_ttft_cold_s": 0.21086658304557204,
+    "multi_turn_ttft_cached_s": 0.02662297897040844,
+    "peak_ram_mb": 12325.328125,
+    "tool_call_rate": 0.8,
+    "recovery_rate": 1.0,
+    "leak_rate": 0.0,
+    "vision": false,
+    "audio": false
+  }
+]

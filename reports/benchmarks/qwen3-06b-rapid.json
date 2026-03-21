@@ -1,0 +1,29 @@
+[
+  {
+    "engine": "Rapid-MLX",
+    "model": "Qwen3-0.6B-4bit",
+    "short_decode_tps": {
+      "mean": 382.2243855198961,
+      "median": 381.6809296712865,
+      "min": 381.5377988334359,
+      "max": 383.45442805496583
+    },
+    "short_prefill_tps": {
+      "median": 232.95483282200837
+    },
+    "long_decode_tps": {
+      "mean": 367.87938430184033,
+      "median": 367.88867299936044,
+      "min": 367.7540272470521,
+      "max": 367.9954526591085
+    },
+    "long_prefill_tps": {
+      "median": 1230.1658591533176
+    },
+    "ttft_cold_s": 0.10768537501280662,
+    "ttft_cached_s": 0.0805823960035923,
+    "multi_turn_ttft_cold_s": 0.19263554200006183,
+    "multi_turn_ttft_cached_s": 0.08202591649751412,
+    "peak_ram_mb": 711.3125
+  }
+]

@@ -1012,7 +1012,7 @@ def create_test_video(
     if cv2 is None:
         raise ImportError(
             "opencv-python is required for video benchmarks. "
-            "Install with: pip install 'vllm-mlx[vision]'"
+            "Install with: pip install 'rapid-mlx[vision]'"
         )
     temp_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     temp_file.close()
@@ -1088,7 +1088,7 @@ def get_video_info(video_path: str) -> dict:
     if cv2 is None:
         raise ImportError(
             "opencv-python is required for video benchmarks. "
-            "Install with: pip install 'vllm-mlx[vision]'"
+            "Install with: pip install 'rapid-mlx[vision]'"
         )
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():

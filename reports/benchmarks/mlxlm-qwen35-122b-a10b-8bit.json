@@ -1,0 +1,23 @@
+[
+  {
+    "engine": "mlx-lm",
+    "model": "/Users/raullenstudio/.lmstudio/models/mlx-community/Qwen3.5-122B-A10B-8bit",
+    "short_decode_tps": {
+      "mean": 40.899186724510464,
+      "median": 45.01656327869112,
+      "min": 32.55917319429594,
+      "max": 45.121823700544326
+    },
+    "long_decode_tps": {
+      "mean": 44.559098696259504,
+      "median": 44.56344451959812,
+      "min": 44.544155546724866,
+      "max": 44.56969602245553
+    },
+    "tool_call_rate": 0,
+    "recovery_rate": 0,
+    "leak_rate": 0,
+    "vision": false,
+    "audio": false
+  }
+]
