@@ -7,7 +7,7 @@
 [![Tests](https://img.shields.io/badge/tests-1900%2B-brightgreen.svg)](tests/)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple)](https://support.apple.com/en-us/HT211814)
 
-Drop-in OpenAI API replacement for Apple Silicon. 2-4x faster than Ollama, 100% tool-calling, sub-200ms cached TTFT.
+Drop-in OpenAI API replacement for Apple Silicon. 2-4x faster than Ollama, with full tool-calling support.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/demo.gif" alt="Rapid-MLX vs Ollama — 2.4x faster on Qwen3.5-9B" width="800">
@@ -30,16 +30,20 @@ Drop-in OpenAI API replacement for Apple Silicon. 2-4x faster than Ollama, 100% 
 curl -fsSL https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/install.sh | bash
 source ~/.zshrc  # or restart your terminal
 
-# 2. Pick a model and start serving (first run downloads ~5 GB)
+# 2. Start serving (first run downloads the model — ~5 GB, takes a few minutes)
 rapid-mlx serve mlx-community/Qwen3.5-9B-4bit --port 8000
+# Wait until you see: "Ready: http://localhost:8000/v1"
 
-# 3. Test it — in a new terminal:
+# 3. Test it — open a NEW terminal and run:
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"default","messages":[{"role":"user","content":"Hello!"}]}'
+# You should get a JSON response with the AI's reply
 ```
 
 That's it — you now have an AI server on `localhost:8000`. Works with Claude Code, Cursor, Aider, Open WebUI, or any app that speaks the OpenAI API.
+
+> **Tip:** If you get "Connection refused", the server is still loading the model. Wait for the "Ready" message in the first terminal.
 
 <details>
 <summary>Other install methods</summary>
@@ -62,7 +66,7 @@ cd Rapid-MLX && pip install -e .
 
 **Vision models** (adds torch + torchvision, ~2.5 GB extra):
 ```bash
-pip install 'rapid-mlx[vision] @ git+https://github.com/raullenchai/Rapid-MLX.git'
+pip install 'rapid-mlx[vision]'
 ```
 </details>
 
@@ -169,7 +173,7 @@ Model weights must fit in unified memory. If Activity Monitor shows red memory p
 | **32 GB** Mac Mini / Studio | [Qwen3.5-27B 4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | 15.3 GB | 39 tok/s | Solid coding model |
 | **64 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 83 tok/s | **Sweet spot** — smart + fast |
 | **96 GB** Mac Studio / Pro | [Qwen3.5-122B mxfp4](https://huggingface.co/nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx) | 65 GB | 57 tok/s | Best model, fits comfortably |
-| **96+ GB** Mac Studio / Pro | [Qwen3.5-122B 8bit](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 130 GB | 44 tok/s | Maximum quality |
+| **192 GB** Mac Studio / Pro | [Qwen3.5-122B 8bit](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 130 GB | 44 tok/s | Maximum quality |
 
 ### Copy-paste commands
 
@@ -182,6 +186,9 @@ rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit --port 8000
 # 24 GB — best small model
 rapid-mlx serve mlx-community/Qwen3.5-9B-4bit --port 8000
 
+# 32 GB — solid coding model
+rapid-mlx serve mlx-community/Qwen3.5-27B-4bit --port 8000
+
 # 64 GB — sweet spot
 rapid-mlx serve mlx-community/Qwen3.5-35B-A3B-8bit --prefill-step-size 8192 --port 8000
 
@@ -191,9 +198,12 @@ rapid-mlx serve nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx --kv-bits 8 --prefil
 # Coding agent — fast MoE, great for Claude Code / Cursor
 rapid-mlx serve lmstudio-community/Qwen3-Coder-Next-MLX-4bit --prefill-step-size 8192 --port 8000
 
-# Vision — image understanding (requires: pip install 'rapid-mlx[vision]')
+# Vision — image understanding (see note below)
 rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-MLX-4bit --mllm --port 8000
 ```
+
+> **Vision deps:** If you used `install.sh`, install into its venv: `~/.rapid-mlx/bin/pip install 'rapid-mlx[vision]'`.
+> If you used `pip install rapid-mlx`, just run `pip install 'rapid-mlx[vision]'` in the same environment.
 
 <details>
 <summary><strong>Parser auto-detection & manual overrides</strong></summary>
@@ -229,13 +239,13 @@ All 17 parsers include automatic recovery — if a quantized model outputs broke
 | Model | Rapid-MLX | Best Alternative | Speedup |
 |-------|----------|-----------------|---------|
 | **Phi-4 Mini 14B** | **180** tok/s | 77 (mlx-lm) / 56 (Ollama) | **2.3x** / **3.2x** |
-| **Qwen3.5-4B** | **168** tok/s | 155 (upstream) | **1.1x** |
-| **GPT-OSS 20B** | **127** tok/s · 100% tools | 79 (upstream) | **1.6x** |
+| **Qwen3.5-4B** | **168** tok/s | 155 (mlx-lm serve) | **1.1x** |
+| **GPT-OSS 20B** | **127** tok/s · 100% tools | 79 (mlx-lm serve) | **1.6x** |
 | **Qwen3.5-9B** | **108** tok/s | 46 (Ollama) | **2.3x** |
 | **Kimi-Linear-48B** | **94** tok/s · 100% tools | — (only engine) | — |
 | **Qwen3.5-35B-A3B** | **83** tok/s · 100% tools | 75 (oMLX) | **1.1x** |
-| **Qwen3-Coder 80B** | **74** tok/s · 100% tools | 69 (upstream) | **1.1x** |
-| **Qwen3.5-122B** | **44** tok/s · 100% tools | 43 (upstream) | ~1.0x |
+| **Qwen3-Coder 80B** | **74** tok/s · 100% tools | 69 (mlx-lm serve) | **1.1x** |
+| **Qwen3.5-122B** | **44** tok/s · 100% tools | 43 (mlx-lm serve) | ~1.0x |
 
 *Full benchmark data with all 18 models, TTFT tables, DeltaNet snapshots, and engine comparison below.*
 
@@ -246,7 +256,7 @@ Prompt cache keeps multi-turn conversations fast. For standard transformers, KV 
 
 **Pure KV cache (transformers):**
 
-| Model | Rapid-MLX (cached) | vllm-mlx (upstream) | Speedup |
+| Model | Rapid-MLX (cached) | mlx-lm serve | Speedup |
 |-------|-------------------|-------------------|---------|
 | Kimi-Linear-48B | **0.08s** | — | — |
 | Llama 3.2 3B | **0.10s** | — | — |
