@@ -2094,8 +2094,10 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         _validate_tool_call_params(tool_calls, request.tools)
 
     # Extract reasoning content FIRST (strips channel tokens before JSON extraction)
+    # Always extract reasoning regardless of tool_calls — reasoning preamble
+    # should never leak into content even when tool calls are present.
     reasoning_text = None
-    if _reasoning_parser and not tool_calls:
+    if _reasoning_parser:
         text_to_parse = cleaned_text or output.text
         reasoning_text, cleaned_text = _reasoning_parser.extract_reasoning(
             text_to_parse

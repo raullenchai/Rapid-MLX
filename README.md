@@ -115,6 +115,7 @@ print(response.choices[0].message.content)
 | [OpenClaw](https://github.com/nicepkg/openclaw) | Verified | 14 tools, multi-round, streaming |
 | [OpenCode](https://github.com/opencode-ai/opencode) | Verified | JSON config |
 | [LangChain](https://langchain.com) | Compatible | Standard OpenAI client |
+| [Anthropic SDK](https://docs.anthropic.com/en/docs/sdks) | Compatible | Via `/v1/messages` endpoint |
 | Any OpenAI SDK client | Compatible | Drop-in `base_url` swap |
 
 <details>
@@ -156,22 +157,35 @@ docker run -d -p 3000:8080 \
   ghcr.io/open-webui/open-webui:main
 ```
 
-**OpenCode** (`~/.config/opencode/opencode.json`):
+**OpenCode** (`opencode.json` in your project root):
 ```json
 {
   "provider": {
-    "openai-compatible": {
-      "apiKey": "not-needed",
+    "openai": {
+      "api": "http://localhost:8000/v1",
       "models": {
         "default": {
-          "id": "default",
           "name": "rapid-mlx local",
-          "api_base": "http://localhost:8000/v1"
+          "limit": { "context": 32768, "output": 8192 }
         }
-      }
+      },
+      "options": { "apiKey": "not-needed" }
     }
   }
 }
+```
+
+**Anthropic SDK** (`pip install anthropic`):
+```python
+from anthropic import Anthropic
+client = Anthropic(base_url="http://localhost:8000", api_key="not-needed")
+
+message = client.messages.create(
+    model="default",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Say hello"}],
+)
+print(message.content[0].text)
 ```
 
 </details>
@@ -309,8 +323,8 @@ Qwen3.5 uses Gated DeltaNet (75% RNN) + full attention (25% KV). Other engines r
 <details>
 <summary><strong>Capability Comparison</strong></summary>
 
-| Feature | Rapid-MLX | oMLX | Ollama | llama.cpp | mlx-lm |
-|---------|-----------|------|--------|-----------|--------|
+| Feature | Rapid-MLX | oMLX | Ollama | llama.cpp | mlx-lm serve |
+|---------|-----------|------|--------|-----------|-------------|
 | **Tool calling** | 100% (Qwen/GLM/GPT-OSS/Kimi) | N/A | 100% (Qwen) | 80% (Phi-4) | N/A |
 | **Tool call recovery** | 100% | N/A | 100% | 100% | N/A |
 | **Tool injection fallback** | Yes | No | No | No | No |
@@ -320,8 +334,8 @@ Qwen3.5 uses Gated DeltaNet (75% RNN) + full attention (25% KV). Other engines r
 | **Audio (STT/TTS)** | Yes | No | No | No | No |
 | **17 tool parsers** | Yes | No | No | No | No |
 | **Cloud routing** | Yes | No | No | No | No |
-| **Streaming** | Yes | Yes | Yes | Yes | No |
-| **OpenAI API** | Yes | Yes | Yes | Yes | No |
+| **Streaming** | Yes | Yes | Yes | Yes | Yes |
+| **OpenAI API** | Yes | Yes | Yes | Yes | Yes |
 
 </details>
 
@@ -383,7 +397,7 @@ Full OpenAI-compatible tool calling with 17 parser formats and **automatic recov
 
 ### Reasoning Separation
 
-Models with chain-of-thought (Qwen3, DeepSeek-R1) output reasoning in a separate `reasoning_content` field — never mixed into `content`. 0% leak rate.
+Models with chain-of-thought (Qwen3, DeepSeek-R1) output reasoning in a separate `reasoning_content` field — cleanly separated from `content` in streaming mode. Works with Qwen3, DeepSeek-R1, MiniMax, and GPT-OSS reasoning formats.
 
 ### Prompt Cache
 
@@ -398,7 +412,7 @@ Large-context requests auto-route to a cloud LLM (GPT-5, Claude, etc.) when loca
 Vision, audio (STT/TTS), video understanding, and text embeddings — all through the same OpenAI-compatible API.
 
 <details>
-<summary><strong>All features (35 total)</strong></summary>
+<summary><strong>All features (37 total)</strong></summary>
 
 **Tool Calling (15):** Text-format recovery, 17 parsers, streaming, tool logits bias (2-5x faster structured output), disconnect guard, think-tag filter, chunk-boundary leak fix, developer role normalization, logprobs API, system prompt tool injection fallback for incompatible chat templates, end-to-end agent simulation tests.
 
