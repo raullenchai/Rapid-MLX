@@ -198,9 +198,12 @@ rapid-mlx serve nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx --kv-bits 8 --prefil
 # Coding agent — fast MoE, great for Claude Code / Cursor
 rapid-mlx serve lmstudio-community/Qwen3-Coder-Next-MLX-4bit --prefill-step-size 8192 --port 8000
 
-# Vision — image understanding (requires: pip install 'rapid-mlx[vision]')
+# Vision — image understanding (see note below)
 rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-MLX-4bit --mllm --port 8000
 ```
+
+> **Vision deps:** If you used `install.sh`, install into its venv: `~/.rapid-mlx/bin/pip install 'rapid-mlx[vision]'`.
+> If you used `pip install rapid-mlx`, just run `pip install 'rapid-mlx[vision]'` in the same environment.
 
 <details>
 <summary><strong>Parser auto-detection & manual overrides</strong></summary>
@@ -253,7 +256,7 @@ Prompt cache keeps multi-turn conversations fast. For standard transformers, KV 
 
 **Pure KV cache (transformers):**
 
-| Model | Rapid-MLX (cached) | vllm-mlx (mlx-lm serve) | Speedup |
+| Model | Rapid-MLX (cached) | mlx-lm serve | Speedup |
 |-------|-------------------|-------------------|---------|
 | Kimi-Linear-48B | **0.08s** | — | — |
 | Llama 3.2 3B | **0.10s** | — | — |
