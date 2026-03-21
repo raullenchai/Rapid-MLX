@@ -222,8 +222,9 @@ def serve_command(args):
 
     # Start server
     print()
-    print(f"  Ready: http://localhost:{args.port}/v1")
-    print(f"  Docs:  http://localhost:{args.port}/docs")
+    host_display = "localhost" if args.host == "0.0.0.0" else args.host
+    print(f"  Ready: http://{host_display}:{args.port}/v1")
+    print(f"  Docs:  http://{host_display}:{args.port}/docs")
     print()
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

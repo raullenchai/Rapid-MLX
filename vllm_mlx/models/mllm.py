@@ -733,8 +733,8 @@ class MLXMultimodalLM:
 
         except ImportError:
             raise ImportError(
-                "mlx-vlm is required for multimodal inference. "
-                "Install with: pip install mlx-vlm"
+                "Vision dependencies are required for multimodal inference. "
+                "Install with: pip install 'vllm-mlx[vision]'"
             )
         except Exception as e:
             logger.error(f"Failed to load MLLM: {e}")
