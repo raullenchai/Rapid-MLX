@@ -223,6 +223,25 @@ def serve_command(args):
         cloud_api_key=args.cloud_api_key,
     )
 
+    # Warmup: generate one token to trigger Metal shader compilation
+    # This prevents the first real request from hanging for minutes
+    import time as _time
+
+    print("  Warming up (compiling Metal shaders)...", end="", flush=True)
+    _warmup_start = _time.monotonic()
+    try:
+        import mlx.core as mx
+
+        _engine = server._engine
+        if _engine is not None:
+            # Run a minimal generation to compile shaders
+            _engine.generate_warmup()
+            mx.eval(mx.zeros(1))  # Force sync
+    except Exception:
+        pass  # Non-fatal — shaders will compile on first request instead
+    _warmup_secs = _time.monotonic() - _warmup_start
+    print(f" done ({_warmup_secs:.1f}s)")
+
     # Start server
     print()
     host_display = "localhost" if args.host == "0.0.0.0" else args.host

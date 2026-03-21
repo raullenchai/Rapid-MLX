@@ -46,15 +46,27 @@ done
 
 if [ -z "$PYTHON" ]; then
     echo ""
-    echo "  Python 3.10+ not found."
+    echo "  Python 3.10+ not found. Installing automatically..."
     if command -v brew &>/dev/null; then
         echo "  Installing Python 3.12 via Homebrew..."
         brew install python@3.12
         PYTHON="python3.12"
     else
-        echo "  Please install Python 3.10+ from https://www.python.org/downloads/"
-        echo "  Or install Homebrew first: https://brew.sh"
-        exit 1
+        # Download standalone Python — no Homebrew or sudo needed
+        STANDALONE_DIR="${HOME}/.rapid-mlx-python"
+        PY_VERSION="3.12.11"
+        PY_BUILD="20250529"
+        PY_URL="https://github.com/indygreg/python-build-standalone/releases/download/${PY_BUILD}/cpython-${PY_VERSION}+${PY_BUILD}-aarch64-apple-darwin-install_only.tar.gz"
+        echo "  Downloading Python ${PY_VERSION} (standalone, no sudo needed)..."
+        mkdir -p "$STANDALONE_DIR"
+        curl -fsSL "$PY_URL" | tar xz -C "$STANDALONE_DIR" --strip-components=1
+        PYTHON="${STANDALONE_DIR}/bin/python3"
+        if ! "$PYTHON" --version &>/dev/null; then
+            echo "  Error: Failed to install standalone Python."
+            echo "  Please install Python 3.10+ from https://www.python.org/downloads/"
+            exit 1
+        fi
+        echo "  Installed Python $("$PYTHON" --version 2>&1) to $STANDALONE_DIR"
     fi
 fi
 

@@ -69,6 +69,14 @@ class BaseEngine(ABC):
     def preserve_native_tool_format(self, value: bool) -> None:
         self._preserve_native_tool_format = value
 
+    def generate_warmup(self) -> None:
+        """Run a minimal generation to compile Metal shaders.
+
+        This prevents the first real request from hanging for minutes
+        while shaders compile on-demand.
+        """
+        pass  # Subclasses may override
+
     @abstractmethod
     async def start(self) -> None:
         """Start the engine (load model if not loaded)."""

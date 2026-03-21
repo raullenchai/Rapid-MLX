@@ -101,6 +101,24 @@ class SimpleEngine(BaseEngine):
             return getattr(self._model, "processor", None)
         return self._model.tokenizer
 
+    def generate_warmup(self) -> None:
+        """Run a minimal generation to compile Metal shaders."""
+        if not self._loaded or self._model is None or self._is_mllm:
+            return
+        try:
+            import mlx.core as mx
+
+            model = self._model
+            tokenizer = model.tokenizer
+            # Encode a short prompt and generate 1 token
+            tokens = tokenizer.encode("Hi")
+            input_ids = mx.array([tokens])
+            # Run one forward pass to trigger shader compilation
+            model.model(input_ids)
+            mx.eval(mx.zeros(1))
+        except Exception:
+            pass  # Non-fatal
+
     async def start(self) -> None:
         """Start the engine (load model if not loaded)."""
         if self._loaded:
