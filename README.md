@@ -38,7 +38,7 @@ rapid-mlx serve qwen3.5-9b --port 8000
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"default","messages":[{"role":"user","content":"Hello!"}]}'
-# You should get a JSON response with the AI's reply
+# "model" can be any string — "default" works, or use the actual model name
 ```
 
 That's it — you now have an AI server on `localhost:8000`. Works with Claude Code, Cursor, Aider, Open WebUI, or any app that speaks the OpenAI API.
@@ -53,8 +53,9 @@ That's it — you now have an AI server on `localhost:8000`. Works with Claude C
 brew install raullenchai/rapid-mlx/rapid-mlx
 ```
 
-**pip**:
+**pip** (use a virtual environment on macOS Sonoma+):
 ```bash
+python3 -m venv ~/.venv/rapid-mlx && source ~/.venv/rapid-mlx/bin/activate
 pip install rapid-mlx
 ```
 
