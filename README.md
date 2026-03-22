@@ -435,7 +435,7 @@ Vision, audio (STT/TTS), video understanding, and text embeddings — all throug
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--model` | HuggingFace model name or local path | *(required)* |
+| `<model>` | HuggingFace model name, local path, or alias (positional arg) | *(required)* |
 | `--host` | Host to bind to | `0.0.0.0` |
 | `--port` | Port to bind to | `8000` |
 | `--max-tokens` | Default max tokens for generation | `32768` |

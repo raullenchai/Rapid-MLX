@@ -948,7 +948,7 @@ async def status():
     stats = _engine.get_stats()
 
     return {
-        "status": "running" if stats.get("running") else "stopped",
+        "status": "generating" if stats.get("running") else "idle",
         "model": _model_name,
         "uptime_s": round(stats.get("uptime_seconds", 0), 1),
         "steps_executed": stats.get("steps_executed", 0),
@@ -985,7 +985,11 @@ async def cache_stats():
             "pil_image_cache": get_pil_cache_stats(),
         }
     except ImportError:
-        return {"error": "Cache stats not available (mlx_vlm not loaded)"}
+        return {
+            "message": "Vision cache stats not available (text-only model loaded). "
+            "Prompt cache is managed internally by the engine.",
+            "model_type": "llm",
+        }
 
 
 @app.delete("/v1/cache")
@@ -1017,6 +1021,14 @@ async def list_models() -> ModelsResponse:
         if _model_alias and _model_alias != _model_name:
             models.append(ModelInfo(id=_model_alias))
     return ModelsResponse(data=models)
+
+
+@app.get("/v1/models/{model_id}", dependencies=[Depends(verify_api_key)])
+async def retrieve_model(model_id: str) -> ModelInfo:
+    """Retrieve a specific model by ID (OpenAI-compatible)."""
+    if model_id in (_model_name, _model_alias):
+        return ModelInfo(id=model_id)
+    raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
 
 
 # =============================================================================
@@ -1570,6 +1582,13 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
     engine = get_engine()
 
+    # Validate model name matches loaded model
+    if request.model and request.model not in (_model_name, _model_alias):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{request.model}' not found. Available: {', '.join(filter(None, [_model_alias, _model_name]))}",
+        )
+
     # Handle single prompt or list of prompts
     prompts = request.prompt if isinstance(request.prompt, list) else [request.prompt]
 
@@ -1699,6 +1718,13 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         raise HTTPException(
             status_code=400,
             detail="messages must not be empty",
+        )
+
+    # Validate model name matches loaded model
+    if request.model and request.model not in (_model_name, _model_alias):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{request.model}' not found. Available: {', '.join(filter(None, [_model_alias, _model_name]))}",
         )
 
     # Validate message roles
@@ -2241,6 +2267,16 @@ async def create_anthropic_message(
         f"tools={n_tools}"
     )
     logger.debug(f"[REQUEST] last user message preview: {last_user_preview!r}")
+
+    # Validate model name matches loaded model
+    if anthropic_request.model and anthropic_request.model not in (
+        _model_name,
+        _model_alias,
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{anthropic_request.model}' not found. Available: {', '.join(filter(None, [_model_alias, _model_name]))}",
+        )
 
     # Convert Anthropic request -> OpenAI request
     openai_request = anthropic_to_openai(anthropic_request)
