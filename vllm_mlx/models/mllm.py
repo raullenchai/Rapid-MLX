@@ -466,7 +466,7 @@ def save_base64_image(base64_string: str) -> str:
     import hashlib
 
     # Hash the base64 string to check cache
-    image_hash = hashlib.md5(base64_string[:1000].encode()).hexdigest()
+    image_hash = hashlib.md5(base64_string.encode()).hexdigest()
 
     # Return cached path if available and file still exists
     if image_hash in _base64_image_cache:
