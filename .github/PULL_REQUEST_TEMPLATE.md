@@ -4,7 +4,7 @@
 
 ## Checklist
 
-- [ ] Tests pass locally (`python3.12 -m pytest tests/ -x`)
+- [ ] Tests pass locally (`python3 -m pytest tests/ -x`)
 - [ ] Lint passes (`ruff check && ruff format --check`)
 - [ ] Updated README/docs if applicable
 - [ ] No breaking changes to existing API

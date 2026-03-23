@@ -44,12 +44,6 @@
 </details>
 
 ---
-|:---|:---:|:---:|:---:|
-| **16 GB MacBook Air** | Qwen3.5-4B | 168 tok/s | Chat, coding, tools |
-| **64 GB Mac Mini / Studio** | Qwen3.5-35B | 83 tok/s | Best balance of smart + fast |
-| **96+ GB Mac Studio / Pro** | Qwen3.5-122B | 57 tok/s | Frontier-level intelligence |
-
----
 
 ## Quick Start
 
