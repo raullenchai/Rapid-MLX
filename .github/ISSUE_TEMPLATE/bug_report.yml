@@ -1,0 +1,51 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! Please fill in the details below.
+  - type: input
+    id: version
+    attributes:
+      label: Rapid-MLX version
+      placeholder: "e.g., 0.3.12 (run: rapid-mlx --version)"
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      placeholder: "e.g., MacBook Pro M3 Max, 64GB"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: "e.g., qwen3.5-4b or mlx-community/Qwen3.5-4B-MLX-4bit"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      placeholder: Describe the bug and what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start server: `rapid-mlx serve ...`
+        2. Send request: `curl ...`
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error logs / output
+      render: shell
+      placeholder: Paste relevant logs or error messages here.

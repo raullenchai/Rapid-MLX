@@ -1,0 +1,33 @@
+name: Benchmark / Model Report
+description: Share your hardware benchmarks or model test results
+labels: ["benchmark"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing! Community benchmarks help everyone pick the right model for their hardware.
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      placeholder: "e.g., Mac Mini M4 Pro, 24GB"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: "e.g., qwen3.5-9b or mlx-community/Qwen3.5-9B-4bit"
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      placeholder: |
+        - Decode speed: XX tok/s
+        - TTFT: XX ms
+        - Memory usage: XX GB
+        - Any issues?
+    validations:
+      required: true
