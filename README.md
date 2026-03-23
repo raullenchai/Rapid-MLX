@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  Drop-in OpenAI API replacement for Apple Silicon. 2-4x faster than Ollama, with full tool-calling support.
+  Run local AI models on your Mac — no cloud, no API costs. Works with Cursor, Claude Code, and any OpenAI-compatible app.
 </p>
 
 <p align="center">
@@ -25,7 +25,25 @@
   <em>Same model (Qwen3.5-9B), same Mac, head-to-head. Rapid-MLX: 79 tok/s vs Ollama: 33 tok/s.</em>
 </p>
 
-| | Your Mac runs AI | How fast | What works |
+| | Your Mac | Model | Speed (tok/s = words/sec) | What works |
+|:---|:---:|:---:|:---:|:---:|
+| **16 GB** MacBook Air | Qwen3.5-4B | 168 tok/s | Chat, coding, tools |
+| **64 GB** Mac Mini / Studio | Qwen3.5-35B | 83 tok/s | Best balance of smart + fast |
+| **96+ GB** Mac Studio / Pro | Qwen3.5-122B | 57 tok/s | Frontier-level intelligence |
+
+<details>
+<summary><b>New to local AI? Quick glossary</b></summary>
+
+- **tok/s** (tokens per second) — roughly how many words the AI generates per second. Higher = faster.
+- **4bit / 8bit** — compression levels for models. 4bit uses less memory (recommended); 8bit is higher quality.
+- **TTFT** (Time To First Token) — how long before the AI starts responding.
+- **Tool calling** — the AI can call functions in your code. Used by Cursor, Claude Code, and coding assistants.
+- **OpenAI API compatible** — Rapid-MLX speaks the same language as ChatGPT's API, so any app that works with ChatGPT can work with Rapid-MLX by just changing the server address.
+- **Ollama / llama.cpp** — other popular tools for running local AI. Rapid-MLX is 2-4x faster on Apple Silicon.
+
+</details>
+
+---
 |:---|:---:|:---:|:---:|
 | **16 GB MacBook Air** | Qwen3.5-4B | 168 tok/s | Chat, coding, tools |
 | **64 GB Mac Mini / Studio** | Qwen3.5-35B | 83 tok/s | Best balance of smart + fast |
@@ -39,7 +57,7 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/install.sh | bash
 ```
-Then close and reopen your terminal (or run `source ~/.zshrc`).
+Then close and reopen your terminal. (This makes the `rapid-mlx` command available.)
 
 **Step 2 — Start the server:**
 ```bash
@@ -59,7 +77,7 @@ That's it — you now have an AI server on `localhost:8000`. Next: scroll down t
 
 > **Tip:** If you get "Connection refused", the server is still loading. Wait for the "Ready" message.
 >
-> **Tip:** Qwen3.5 models "think" before responding (chain-of-thought). First responses may take 10-30s — this is normal. For faster responses without thinking, add `--no-thinking`.
+> **Tip:** Qwen3.5 models reason through problems before answering — the first response may take 10-30 seconds. This is normal. For instant responses, add `--no-thinking` to the serve command.
 
 <details>
 <summary>Other install methods</summary>
@@ -196,7 +214,7 @@ print(message.content[0].text)
 
 ### What fits my Mac?
 
-Model weights must fit in unified memory. If Activity Monitor shows red memory pressure, the model is too big — switch to a smaller one or a lower quantization.
+The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monitor shows red memory pressure, pick a smaller model from the table below.
 
 | Your Mac | Best Model | RAM Used | Speed | Quality |
 |----------|-----------|---------|-------|---------|
@@ -208,6 +226,8 @@ Model weights must fit in unified memory. If Activity Monitor shows red memory p
 | **64 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 83 tok/s | Same model, more room for KV cache |
 | **96 GB** Mac Studio / Pro | [Qwen3.5-122B mxfp4](https://huggingface.co/nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx) | 65 GB | 57 tok/s | Best model, fits comfortably |
 | **192 GB** Mac Studio / Pro | [Qwen3.5-122B 8bit](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 130 GB | 44 tok/s | Maximum quality |
+
+> **4bit vs 8bit:** 4bit models are compressed to use less memory (recommended for most users). 8bit models are higher quality but need more RAM. "mxfp4" is a high-quality 4bit format.
 
 ### Copy-paste commands
 
@@ -224,13 +244,13 @@ rapid-mlx serve qwen3.5-9b --port 8000
 rapid-mlx serve qwen3.5-27b --port 8000
 
 # 64 GB — sweet spot
-rapid-mlx serve qwen3.5-35b --prefill-step-size 8192 --port 8000
+rapid-mlx serve qwen3.5-35b --prefill-step-size 8192 --port 8000  # faster first response
 
 # 96+ GB — best model
-rapid-mlx serve qwen3.5-122b --kv-bits 8 --prefill-step-size 8192 --port 8000
+rapid-mlx serve qwen3.5-122b --kv-bits 8 --prefill-step-size 8192 --port 8000  # --kv-bits 8 saves memory for long chats
 
 # Coding agent — fast MoE, great for Claude Code / Cursor
-rapid-mlx serve qwen3-coder --prefill-step-size 8192 --port 8000
+rapid-mlx serve qwen3-coder --prefill-step-size 8192 --port 8000  # MoE = only uses part of the model, so it's fast
 
 # Vision — image understanding (see note below)
 rapid-mlx serve qwen3-vl-4b --mllm --port 8000
@@ -430,6 +450,8 @@ Vision, audio (STT/TTS), video understanding, and text embeddings — all throug
 
 <details>
 <summary><strong>Server Flags Reference</strong></summary>
+
+> You don't need any flags to get started — the defaults work for most setups. These are for advanced tuning.
 
 ### Core
 
