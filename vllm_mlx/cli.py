@@ -102,6 +102,7 @@ def serve_command(args):
     from .server import RateLimiter, app, load_model
 
     logger = logging.getLogger(__name__)
+    uvicorn_log_level = server.configure_logging(args.log_level)
 
     # Validate tool calling arguments
     if args.enable_auto_tool_choice and not args.tool_call_parser:
@@ -365,7 +366,7 @@ def serve_command(args):
         app,
         host=args.host,
         port=args.port,
-        log_level="info",
+        log_level=uvicorn_log_level,
         timeout_keep_alive=30,
     )
 
@@ -798,6 +799,13 @@ Examples:
         "--host", type=str, default="0.0.0.0", help="Host to bind"
     )
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
+    serve_parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Log level for Python logging and uvicorn",
+    )
     serve_parser.add_argument(
         "--max-num-seqs", type=int, default=256, help="Max concurrent sequences"
     )

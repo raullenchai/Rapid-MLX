@@ -124,6 +124,17 @@ from .tool_parsers import ToolParserManager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def normalize_log_level(log_level: str) -> str:
+    return log_level.upper()
+
+
+def configure_logging(log_level: str) -> str:
+    normalized = normalize_log_level(log_level)
+    logging.getLogger().setLevel(getattr(logging, normalized, logging.INFO))
+    logger.setLevel(getattr(logging, normalized, logging.INFO))
+    return normalized.lower()
+
 # Global engine instance
 _engine: BaseEngine | None = None
 _model_name: str | None = None
@@ -3256,6 +3267,13 @@ Examples:
         help="Port to bind to",
     )
     parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Log level for Python logging and uvicorn",
+    )
+    parser.add_argument(
         "--mllm",
         action="store_true",
         help="Force loading as MLLM (multimodal language model)",
@@ -3413,6 +3431,7 @@ Examples:
     )
 
     args = parser.parse_args()
+    uvicorn_log_level = configure_logging(args.log_level)
 
     # Set global configuration
     global _api_key, _default_timeout, _rate_limiter
@@ -3509,7 +3528,7 @@ Examples:
     )
 
     # Start server
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, log_level=uvicorn_log_level)
 
 
 if __name__ == "__main__":
