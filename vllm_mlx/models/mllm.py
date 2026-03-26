@@ -1485,7 +1485,8 @@ class MLXMultimodalLM:
 
         from mlx_vlm.models import cache as vlm_cache
 
-        use_cache = kwargs.pop("use_cache", True)
+        # use_cache was already popped near the top of chat() — don't re-pop
+        # with a default of True, as that would overwrite a caller's False.
         cache_entry = None
         prefix_match_len = 0
         vision_embeddings = None

@@ -37,6 +37,14 @@ def build_text_model(vlm_model: Any, model_path: str | Path) -> Any | None:
 
     model_path = Path(model_path) if model_path else None
     if model_path is None or not (model_path / "config.json").exists():
+        # model_path may be a Hub repo ID — resolve to local cache
+        try:
+            from huggingface_hub import snapshot_download
+
+            model_path = Path(snapshot_download(str(model_path)))
+        except Exception:
+            pass
+    if model_path is None or not (model_path / "config.json").exists():
         return None
 
     try:

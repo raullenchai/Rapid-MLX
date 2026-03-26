@@ -485,8 +485,16 @@ def get_engine() -> BaseEngine:
 
 
 def _validate_model_name(request_model: str) -> None:
-    """Validate that the request model name matches the served model."""
-    if _model_name and request_model != _model_name:
+    """Validate that the request model name matches the served model or its alias."""
+    if not _model_name:
+        return
+    # Accept the canonical name, the alias, or the model path
+    accepted = {_model_name}
+    if _model_alias:
+        accepted.add(_model_alias)
+    if _model_path:
+        accepted.add(_model_path)
+    if request_model not in accepted:
         raise HTTPException(
             status_code=404,
             detail=f"The model `{request_model}` does not exist. "

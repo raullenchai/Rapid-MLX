@@ -520,7 +520,40 @@ class SimpleEngine(BaseEngine):
 
         async with self._generation_lock:
             if self._is_mllm:
-                # For MLLM, use the chat method which handles images/videos
+                # Text-only MTP routing (matches stream_chat path)
+                if (
+                    self._text_model is not None
+                    and not _has_media_content(messages)
+                ):
+                    logger.info("Text-only request → LLM path (MTP=True) [non-streaming]")
+                    text = ""
+                    tokens = []
+                    prompt_tokens = 0
+                    finish_reason = "stop"
+                    async for chunk in self._stream_generate_text(
+                        messages,
+                        max_tokens,
+                        temperature,
+                        top_p,
+                        tools=template_tools,
+                        **kwargs,
+                    ):
+                        text += chunk.text
+                        if chunk.tokens:
+                            tokens.extend(chunk.tokens)
+                        if chunk.prompt_tokens:
+                            prompt_tokens = chunk.prompt_tokens
+                        if chunk.finish_reason:
+                            finish_reason = chunk.finish_reason
+                    return GenerationOutput(
+                        text=text,
+                        tokens=tokens,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=len(tokens),
+                        finish_reason=finish_reason,
+                    )
+
+                # For MLLM with media, use the chat method which handles images/videos
                 # Run in thread pool to allow asyncio timeout to work
                 output = await asyncio.to_thread(
                     self._model.chat,
