@@ -110,3 +110,6 @@ gsm8k_*.json
 reports/*.json
 reports/*.md
 reports/scan_*
+.codex-review-tmp/
+.codex_tmp/
+reviews/
