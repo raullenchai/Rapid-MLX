@@ -1830,7 +1830,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         chat_kwargs["enable_thinking"] = request.enable_thinking
 
     # Pass through think_budget if set (limits reasoning tokens)
-    if request.think_budget:
+    if request.think_budget is not None:
         chat_kwargs["think_budget"] = request.think_budget
 
     # Cloud routing: offload large-context requests to cloud LLM

@@ -209,7 +209,7 @@ class ChatCompletionRequest(BaseModel):
     enable_thinking: bool | None = None
     # Maximum number of tokens the model may generate inside <think>...</think>.
     # When the budget is reached, thinking is terminated and the model proceeds
-    # to generate the answer.  None or 0 = no limit.
+    # to generate the answer.  None = no limit (default).  0 = disable thinking.
     think_budget: int | None = None
 
 

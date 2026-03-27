@@ -1,0 +1,764 @@
+=== top-level files ===
+docs/benchmarks/README.md
+evals/README.md
+pyproject.toml
+README.md
+
+=== full tree depth 3 ===
+.
+.claude
+.claude/review-loop-codex-prompt.txt
+.claude/review-loop-run-codex.sh
+.claude/review-loop.local.md
+.claude/review-loop.log
+.codex_tmp
+.codex_tmp/agent1_context.txt
+.codex_tmp/agent1_exec.log
+.codex_tmp/agent1_prompt.txt
+.codex_tmp/agent1_raw.txt
+.codex_tmp/agent2_context.txt
+.codex_tmp/agent2_exec.log
+.codex_tmp/agent2_prompt.txt
+.codex_tmp/agent2_raw.txt
+.codex-review-tmp
+.codex-review-tmp/agent1-input.txt
+.codex-review-tmp/agent2-input.txt
+.github
+.github/workflows
+.github/workflows/ci.yml
+.github/workflows/publish.yml
+.gitignore
+.pre-commit-config.yaml
+.pytest_cache
+.pytest_cache/.gitignore
+.pytest_cache/CACHEDIR.TAG
+.pytest_cache/README.md
+.pytest_cache/v
+.pytest_cache/v/cache
+docs
+docs/benchmarks
+docs/benchmarks/audio.md
+docs/benchmarks/image.md
+docs/benchmarks/llm.md
+docs/benchmarks/README.md
+docs/benchmarks/video.md
+docs/development
+docs/development/architecture.md
+docs/development/contributing.md
+docs/getting-started
+docs/getting-started/installation.md
+docs/getting-started/quickstart.md
+docs/guides
+docs/guides/audio.md
+docs/guides/continuous-batching.md
+docs/guides/embeddings.md
+docs/guides/mcp-tools.md
+docs/guides/multimodal.md
+docs/guides/python-api.md
+docs/guides/reasoning.md
+docs/guides/server.md
+docs/guides/tool-calling.md
+docs/index.md
+docs/inference-efficiency-papers-2025.md
+docs/plans
+docs/plans/tier0-pinned-prefix-cache.md
+docs/reference
+docs/reference/cli.md
+docs/reference/configuration.md
+docs/reference/models.md
+evals
+evals/EVAL_CONFIGS.md
+evals/generate_scorecard.py
+evals/prompts
+evals/prompts/coding.json
+evals/prompts/general.json
+evals/prompts/reasoning.json
+evals/prompts/tool_calling.json
+evals/README.md
+evals/results
+evals/results/.gitkeep
+evals/results/baseline_benchmark.json
+evals/results/devstral-small-2-4bit.json
+evals/results/glm-4.5-air-4bit.json
+evals/results/glm-4.7-flash-8bit.json
+evals/results/gpt-oss-20b-mxfp4-q8.json
+evals/results/hermes-3-llama-3.1-8b-4bit.json
+evals/results/minimax-m2.5-4bit.json
+evals/results/mistral-small-3.2-4bit.json
+evals/results/qwen3-0.6b-4bit.json
+evals/results/qwen3-coder-next-4bit.json
+evals/results/qwen3-coder-next-6bit.json
+evals/results/qwen3.5-122b-a10b-8bit.json
+evals/results/qwen3.5-122b-a10b-mxfp4.json
+evals/results/qwen3.5-27b-4bit.json
+evals/results/qwen3.5-35b-a3b-4bit.json
+evals/results/qwen3.5-35b-a3b-8bit.json
+evals/results/qwen3.5-4b-4bit.json
+evals/results/qwen3.5-9b-4bit.json
+evals/results/tier1_benchmark.json
+evals/results/tier1b_benchmark.json
+evals/results/vlm_benchmark_results.json
+evals/run_all_models.sh
+evals/run_eval.py
+evals/SCORECARD.md
+evals/TOOL_CALLING_TESTS.md
+examples
+examples/assistant_bank_en.wav
+examples/assistant_callcenter_fr.wav
+examples/assistant_service_es.wav
+examples/assistant_support_zh.wav
+examples/audio_separation_example.py
+examples/benchmark_all_models.py
+examples/benchmark_audio.py
+examples/benchmark_detokenizer.py
+examples/closed_captions.py
+examples/demo_curl_image.sh
+examples/demo_curl_text.sh
+examples/demo_curl_video.sh
+examples/demo_openai_image.py
+examples/demo_openai_text.py
+examples/demo_openai_video.py
+examples/drums_isolated.wav
+examples/mcp_chat.py
+examples/mcp_tool_use.py
+examples/mcp.example.json
+examples/mic_live.py
+examples/mic_realtime.py
+examples/mic_transcribe.py
+examples/mllm_benchmark.py
+examples/mllm_example.py
+examples/rock_get_ready.mp3
+examples/rock_no_drums.wav
+examples/simple_generate.py
+examples/test_batch_sync.py
+examples/test_batching.py
+examples/test_openai_compatibility.py
+examples/test_video.py
+examples/tts_example.py
+examples/tts_multilingual.py
+examples/video_benchmark.py
+gsm8k_qwen3_0.6b_results.json
+install.sh
+mise.toml
+pyproject.toml
+pytest.ini
+README.md
+reviews
+reviews/review-20260315-122112-b9ec9e.md
+ROADMAP.md
+scripts
+scripts/add_mtp_weights.py
+scripts/benchmark_engines.py
+scripts/benchmark_minmax.py
+scripts/benchmark_prompt_lookup.py
+tests
+tests/__init__.py
+tests/__pycache__
+tests/__pycache__/__init__.cpython-314.pyc
+tests/__pycache__/conftest.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_anthropic_adapter.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_anthropic_models.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_api_models.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_api_utils.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_audio.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_batching.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_hybrid.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_memory_cache.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_mllm_cache.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_mllm_continuous_batching.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_mllm_stream_lock.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_mllm.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_prefix_cache.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_request.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_server_utils.cpython-314-pytest-9.0.2.pyc
+tests/__pycache__/test_streaming_json_encoder.cpython-314-pytest-9.0.2.pyc
+tests/conftest.py
+tests/evals
+tests/evals/gsm8k
+tests/golden_prompts.py
+tests/test_anthropic_adapter.py
+tests/test_anthropic_models.py
+tests/test_api_models.py
+tests/test_api_utils.py
+tests/test_audio.py
+tests/test_batching_deterministic.py
+tests/test_batching.py
+tests/test_cloud_router.py
+tests/test_continuous_batching.py
+tests/test_deltanet_cache.py
+tests/test_embeddings.py
+tests/test_engine_parity.py
+tests/test_event_loop.py
+tests/test_guided.py
+tests/test_harmony_parsers.py
+tests/test_hybrid.py
+tests/test_kv_cache_quantization.py
+tests/test_llm_cache.py
+tests/test_llm.py
+tests/test_mcp_security.py
+tests/test_memory_cache.py
+tests/test_memory_stability.py
+tests/test_minimax_reasoning_parser.py
+tests/test_minimax_tool_parser.py
+tests/test_mllm_cache.py
+tests/test_mllm_continuous_batching.py
+tests/test_mllm_stream_lock.py
+tests/test_mllm.py
+tests/test_model_registry.py
+tests/test_native_tool_format.py
+tests/test_optimizations.py
+tests/test_paged_cache_benefits.py
+tests/test_paged_cache_real_inference.py
+tests/test_paged_cache_real_model.py
+tests/test_paged_cache.py
+tests/test_platform.py
+tests/test_prefix_cache.py
+tests/test_prompt_lookup.py
+tests/test_reasoning_parser.py
+tests/test_reasoning_parsers.py
+tests/test_request.py
+tests/test_server_utils.py
+tests/test_server.py
+tests/test_simple_engine_unit.py
+tests/test_simple_engine.py
+tests/test_smoke_matrix.sh
+tests/test_streaming_detokenizer.py
+tests/test_streaming_json_encoder.py
+tests/test_streaming_latency.py
+tests/test_streaming_newlines.py
+tests/test_streaming_simulator.py
+tests/test_streaming.py
+tests/test_structured_output.py
+tests/test_tool_call_e2e.py
+tests/test_tool_calling.py
+tests/test_tool_logits.py
+tests/test_tool_parsers.py
+tests/test_upstream_regression.py
+vllm_mlx
+vllm_mlx/__init__.py
+vllm_mlx/__pycache__
+vllm_mlx/__pycache__/__init__.cpython-314.pyc
+vllm_mlx/__pycache__/engine_core.cpython-314.pyc
+vllm_mlx/__pycache__/memory_cache.cpython-314.pyc
+vllm_mlx/__pycache__/mllm_cache.cpython-314.pyc
+vllm_mlx/__pycache__/model_registry.cpython-314.pyc
+vllm_mlx/__pycache__/output_collector.cpython-314.pyc
+vllm_mlx/__pycache__/paged_cache.cpython-314.pyc
+vllm_mlx/__pycache__/prefix_cache.cpython-314.pyc
+vllm_mlx/__pycache__/request.cpython-314.pyc
+vllm_mlx/__pycache__/scheduler.cpython-314.pyc
+vllm_mlx/api
+vllm_mlx/api/__init__.py
+vllm_mlx/api/__pycache__
+vllm_mlx/api/anthropic_adapter.py
+vllm_mlx/api/anthropic_models.py
+vllm_mlx/api/guided.py
+vllm_mlx/api/harmony_tools.py
+vllm_mlx/api/models.py
+vllm_mlx/api/streaming.py
+vllm_mlx/api/tool_calling.py
+vllm_mlx/api/tool_logits.py
+vllm_mlx/api/utils.py
+vllm_mlx/attention.py
+vllm_mlx/audio
+vllm_mlx/audio/__init__.py
+vllm_mlx/audio/processor.py
+vllm_mlx/audio/stt.py
+vllm_mlx/audio/tts.py
+vllm_mlx/benchmark.py
+vllm_mlx/cli.py
+vllm_mlx/cloud_router.py
+vllm_mlx/embedding.py
+vllm_mlx/engine
+vllm_mlx/engine_core.py
+vllm_mlx/engine/__init__.py
+vllm_mlx/engine/__pycache__
+vllm_mlx/engine/base.py
+vllm_mlx/engine/batched.py
+vllm_mlx/engine/hybrid.py
+vllm_mlx/engine/simple.py
+vllm_mlx/gradio_app.py
+vllm_mlx/gradio_text_app.py
+vllm_mlx/mcp
+vllm_mlx/mcp/__init__.py
+vllm_mlx/mcp/client.py
+vllm_mlx/mcp/config.py
+vllm_mlx/mcp/executor.py
+vllm_mlx/mcp/manager.py
+vllm_mlx/mcp/security.py
+vllm_mlx/mcp/tools.py
+vllm_mlx/mcp/types.py
+vllm_mlx/memory_cache.py
+vllm_mlx/mllm_batch_generator.py
+vllm_mlx/mllm_cache.py
+vllm_mlx/mllm_scheduler.py
+vllm_mlx/model_registry.py
+vllm_mlx/model_runner.py
+vllm_mlx/models
+vllm_mlx/models/__init__.py
+vllm_mlx/models/llm.py
+vllm_mlx/models/mllm.py
+vllm_mlx/multimodal_processor.py
+vllm_mlx/optimizations.py
+vllm_mlx/output_collector.py
+vllm_mlx/paged_cache.py
+vllm_mlx/patches
+vllm_mlx/patches/__init__.py
+vllm_mlx/patches/qwen3_next_mtp.py
+vllm_mlx/platform.py
+vllm_mlx/plugin.py
+vllm_mlx/prefix_cache.py
+vllm_mlx/reasoning
+vllm_mlx/reasoning/__init__.py
+vllm_mlx/reasoning/base.py
+vllm_mlx/reasoning/deepseek_r1_parser.py
+vllm_mlx/reasoning/gpt_oss_parser.py
+vllm_mlx/reasoning/harmony_parser.py
+vllm_mlx/reasoning/minimax_parser.py
+vllm_mlx/reasoning/qwen3_parser.py
+vllm_mlx/reasoning/think_parser.py
+vllm_mlx/request.py
+vllm_mlx/scheduler.py
+vllm_mlx/server.py
+vllm_mlx/speculative
+vllm_mlx/speculative/__init__.py
+vllm_mlx/speculative/prompt_lookup.py
+vllm_mlx/tool_parsers
+vllm_mlx/tool_parsers/__init__.py
+vllm_mlx/tool_parsers/abstract_tool_parser.py
+vllm_mlx/tool_parsers/auto_tool_parser.py
+vllm_mlx/tool_parsers/deepseek_tool_parser.py
+vllm_mlx/tool_parsers/deepseekv31_tool_parser.py
+vllm_mlx/tool_parsers/functionary_tool_parser.py
+vllm_mlx/tool_parsers/glm47_tool_parser.py
+vllm_mlx/tool_parsers/granite_tool_parser.py
+vllm_mlx/tool_parsers/harmony_tool_parser.py
+vllm_mlx/tool_parsers/hermes_tool_parser.py
+vllm_mlx/tool_parsers/kimi_tool_parser.py
+vllm_mlx/tool_parsers/llama_tool_parser.py
+vllm_mlx/tool_parsers/minimax_tool_parser.py
+vllm_mlx/tool_parsers/mistral_tool_parser.py
+vllm_mlx/tool_parsers/nemotron_tool_parser.py
+vllm_mlx/tool_parsers/qwen_tool_parser.py
+vllm_mlx/tool_parsers/qwen3coder_tool_parser.py
+vllm_mlx/tool_parsers/seed_oss_tool_parser.py
+vllm_mlx/tool_parsers/xlam_tool_parser.py
+vllm_mlx/utils
+vllm_mlx/utils/__init__.py
+vllm_mlx/utils/chat_template.py
+vllm_mlx/utils/chat_templates.py
+vllm_mlx/utils/decode.py
+vllm_mlx/utils/mamba_cache.py
+vllm_mlx/utils/tokenizer.py
+vllm_mlx/vision_embedding_cache.py
+vllm_mlx/worker.py
+
+=== FILE: README.md ===
+# Rapid-MLX
+
+**Run AI on your Mac. Faster than anything else.**
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://img.shields.io/badge/tests-1500%2B-brightgreen.svg)](tests/)
+[![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple)](https://support.apple.com/en-us/HT211814)
+
+Drop-in OpenAI API replacement for Apple Silicon. Built for AI agents and developer tools — with 100% tool-calling reliability, sub-100ms prompt caching, and 2-4x faster inference than Ollama.
+
+| | Your Mac runs AI | How fast | What works |
+|:---|:---:|:---:|:---:|
+| **16 GB MacBook Air** | Qwen3.5-4B | 158 tok/s | Chat, coding, tools |
+| **64 GB Mac Mini / Studio** | Qwen3.5-35B | 80 tok/s | Best balance of smart + fast |
+| **128+ GB Mac Studio / Pro** | Qwen3.5-122B | 57 tok/s | Frontier-level intelligence |
+
+---
+
+## Why Rapid-MLX
+
+**Instant multi-turn context** — Prompt cache keeps prior turns alive. 0.08s cached TTFT vs re-prefilling the full context every turn.
+
+**Bulletproof tool calling** — 17 parser formats with automatic recovery. Even 4-bit quantized models achieve 100% function call success rate.
+
+**Zero code changes** — Full OpenAI API compatibility. Change one env var and your existing tools just work.
+
+---
+
+## Quick Start
+
+```bash
+# 1. Install (one command, checks Apple Silicon + Python automatically)
+curl -fsSL https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/install.sh | bash
+
+# 2. Pick a model and start serving
+rapid-mlx serve mlx-community/Qwen3.5-9B-4bit --tool-call-parser hermes --port 8000
+
+# 3. Use with any OpenAI-compatible app
+OPENAI_BASE_URL=http://localhost:8000/v1 claude
+```
+
+That's it — you now have an AI server on `localhost:8000`. Works with Claude Code, Cursor, Aider, Open WebUI, or any app that speaks the OpenAI API.
+
+<details>
+<summary>Alternative install methods</summary>
+
+**pip** (if you manage your own venv):
+```bash
+pip install git+https://github.com/raullenchai/Rapid-MLX.git
+```
+
+**From source** (for development):
+```bash
+git clone https://github.com/raullenchai/Rapid-MLX.git
+cd rapid-mlx && pip install -e .
+```
+</details>
+
+**Try it with Python:**
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+response = client.chat.completions.create(
+    model="default",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(response.choices[0].message.content)
+```
+
+---
+
+## Works With
+
+| Client | Status | Notes |
+|--------|--------|-------|
+| [Claude Code](https://claude.ai/claude-code) | Verified | Env var config, streaming tools |
+| [Cursor](https://cursor.com) | Verified | Settings UI config |
+| [Aider](https://aider.chat) | Verified | Code editing agent |
+| [Open WebUI](https://github.com/open-webui/open-webui) | Verified | Self-hosted ChatGPT UI, Docker one-liner |
+| [Continue.dev](https://continue.dev) | Verified | YAML config, VS Code + JetBrains |
+| [OpenClaw](https://github.com/nicepkg/openclaw) | Verified | 14 tools, multi-round, streaming |
+| [OpenCode](https://github.com/opencode-ai/opencode) | Verified | JSON config |
+| [LangChain](https://langchain.com) | Compatible | Standard OpenAI client |
+| Any OpenAI SDK client | Compatible | Drop-in `base_url` swap |
+
+<details>
+<summary><strong>Client setup instructions</strong></summary>
+
+**Claude Code:**
+```bash
+OPENAI_BASE_URL=http://localhost:8000/v1 claude
+# Or add to ~/.claude/settings.json:
+# { "env": { "OPENAI_BASE_URL": "http://localhost:8000/v1" } }
+```
+
+**Cursor:** Settings > Models > OpenAI API Base → `http://localhost:8000/v1`
+
+**Continue.dev** (`~/.continue/config.yaml`):
+```yaml
+models:
+  - name: rapid-mlx
+    provider: openai
+    model: default
+    apiBase: http://localhost:8000/v1
+    apiKey: not-needed
+```
+
+**Aider:**
+```bash
+aider --openai-api-base http://localhost:8000/v1 --openai-api-key not-needed
+```
+
+**Open WebUI** (Docker one-liner):
+```bash
+docker run -d -p 3000:8080 \
+  --add-host=host.docker.internal:host-gateway \
+  -e ENABLE_OLLAMA_API=False \
+  -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 \
+  -e OPENAI_API_KEY=not-needed \
+  -v open-webui:/app/backend/data \
+  --name open-webui \
+  ghcr.io/open-webui/open-webui:main
+```
+
+**OpenCode** (`~/.config/opencode/opencode.json`):
+```json
+{
+  "provider": {
+    "openai-compatible": {
+      "apiKey": "not-needed",
+      "models": {
+        "default": {
+          "id": "default",
+          "name": "rapid-mlx local",
+          "api_base": "http://localhost:8000/v1"
+        }
+      }
+    }
+  }
+}
+```
+
+</details>
+
+---
+
+## Choose Your Model
+
+### What fits my Mac?
+
+Model weights must fit in unified memory. If Activity Monitor shows red memory pressure, the model is too big — switch to a smaller one or a lower quantization.
+
+| Your Mac | Best Model | RAM Used | Speed | Quality |
+|----------|-----------|---------|-------|---------|
+| **16 GB** MacBook Air/Pro | [Qwen3.5-4B 4bit](https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit) | 2.4 GB | 158 tok/s | Good for chat and simple tasks |
+| **24 GB** MacBook Pro | [Qwen3.5-9B 4bit](https://huggingface.co/mlx-community/Qwen3.5-9B-4bit) | 5.1 GB | 106 tok/s | Great all-rounder |
+| **32 GB** Mac Mini / Studio | [Qwen3.5-27B 4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | 15.3 GB | 38 tok/s | Solid coding model |
+| **64 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 80 tok/s | **Sweet spot** — smart + fast |
+| **96 GB** Mac Studio / Pro | [Qwen3.5-122B mxfp4](https://huggingface.co/nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx) | 65 GB | 57 tok/s | Best model, fits comfortably |
+| **128+ GB** Mac Studio / Pro | [Qwen3.5-122B 8bit](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 130 GB | 43 tok/s | Maximum quality |
+
+### Copy-paste commands
+
+Pick the one that matches your Mac:
+
+```bash
+# 16 GB — lightweight, fast
+rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit --tool-call-parser hermes --port 8000
+
+# 24 GB — best small model
+rapid-mlx serve mlx-community/Qwen3.5-9B-4bit --tool-call-parser hermes --port 8000
+
+# 64 GB — sweet spot
+rapid-mlx serve mlx-community/Qwen3.5-35B-A3B-8bit --tool-call-parser hermes --prefill-step-size 8192 --port 8000
+
+# 96+ GB — best model
+rapid-mlx serve nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx --tool-call-parser hermes --kv-bits 8 --prefill-step-size 8192 --port 8000
+
+# Coding agent — fast MoE, great for Claude Code / Cursor
+rapid-mlx serve lmstudio-community/Qwen3-Coder-Next-MLX-4bit --tool-call-parser hermes --prefill-step-size 8192 --port 8000
+
+# Vision — image understanding
+rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-MLX-4bit --mllm --port 8000
+```
+
+<details>
+<summary><strong>Other model families (DeepSeek, Mistral, GLM, Llama)</strong></summary>
+
+| Model Family | `--tool-call-parser` | `--reasoning-parser` | Notes |
+|-------------|---------------------|---------------------|-------|
+| Qwen3.5 (all sizes) | `hermes` | `qwen3` | **Recommended** — 100% tool calling |
+| Qwen3-Coder-Next | `hermes` | *(none)* | Fast coding, non-thinking mode |
+| GLM-4.7 | `glm47` | *(none)* | 100% tool calling |
+| MiniMax-M2.5 | `minimax` | `minimax` | XML tool format |
+| GPT-OSS | `seed_oss` | `gpt_oss` | Native format |
+| DeepSeek-R1 | `deepseek` | `deepseek_r1` | With reasoning |
+| Llama 3.x | `llama` | *(none)* | JSON tool format |
+| Mistral | `hermes` | *(none)* | Hermes-compatible |
+
+All 17 parsers include automatic recovery — if a quantized model outputs broken tool calls as text, they're auto-converted back to structured format.
+
+</details>
+
+---
+
+## Benchmarks
+
+*This section is for ML engineers who want the numbers. If you just want to run models, see [Quick Start](#quick-start) and [Choose Your Model](#choose-your-model) above.*
+
+### Performance — 21 models, 6 engines
+
+All benchmarks on Mac Studio M3 Ultra (256GB). Sorted by model size. Engines ranked by total bar length per model. **Rapid-MLX is #1 on 15 of 17 benchmarked models.**
+
+```
+█ = decode speed (tok/s)  ▒ = TTFT responsiveness  ░ = tool calling
+
+Llama 3.2 3B            ⚡ Rapid-MLX   █████████████████████████████████▒▒▒▒▒▒▒▒▒▒               225 tok/s · 0.07s · 0%
+                          mlx-lm      ███████████████████████████████████                       238 tok/s
+                          oMLX        █████████████████████████████                             196 tok/s
+                          vllm-mlx    not supported
+                          Ollama      not supported
+                          llama.cpp   not supported
+
+Qwen3.5-4B                vllm-mlx    ███████████████████████▒▒▒▒▒▒▒░░░░░░░░                    155 tok/s · 0.19s · 100%
+                          Rapid-MLX   ███████████████████████░░░░░░░░                           158 tok/s · 0.76s · 100%
+                          mlx-lm      █████████████████████████                                 168 tok/s
+                          oMLX        ██████████████████████                                    149 tok/s
+                          Ollama      not supported
+                          llama.cpp   not supported
+
+Hermes-3-Llama 8B       ⚡ Rapid-MLX   ██████████████████▒▒▒▒▒▒▒▒▒▒                              123 tok/s · 0.08s · 0%
+                          vllm-mlx    ██████████████████▒▒▒▒▒▒▒▒                                122 tok/s · 0.18s · 0%
+                          mlx-lm      ███████████████████                                       127 tok/s
+                          oMLX        █████████████████                                         113 tok/s
+                          Ollama      not supported
+                          llama.cpp   not supported
+
+
+=== FILE: pyproject.toml ===
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-mlx"
+version = "0.2.6"
+description = "vLLM-like inference for Apple Silicon - GPU-accelerated Text, Image, Video & Audio on Mac"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "vllm-mlx contributors"}
+]
+keywords = ["llm", "mlx", "apple-silicon", "vllm", "inference", "transformers"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "mlx>=0.29.0",
+    "mlx-lm>=0.30.5",  # GLM-4 models require 0.30.5+ (new attention layers)
+    "mlx-vlm>=0.1.0",  # VLM support
+    "transformers>=5.0.0",  # mlx-lm 0.30.5+ requires transformers 5.0 (rc3 bug fixed in stable)
+    "tokenizers>=0.19.0",
+    "huggingface-hub>=0.23.0",
+    "numpy>=1.24.0",
+    "pillow>=10.0.0",
+    "tqdm>=4.66.0",
+    "pyyaml>=6.0",
+    "gradio>=4.0.0",
+    "requests>=2.28.0",
+    "tabulate>=0.9.0",
+    # Video processing for VLM
+    "opencv-python>=4.8.0",
+    # Vision processor (required for transformers AutoProcessor)
+    "torchvision>=0.18.0",
+    # Resource monitoring
+    "psutil>=5.9.0",
+    # Server
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    # MCP (Model Context Protocol) support
+    "mcp>=1.0.0",
+    # JSON Schema validation for structured output
+    "jsonschema>=4.0.0",
+    # pytz is required by gradio but not declared as a dependency
+    # See: https://github.com/waybarrios/vllm-mlx/issues/23
+    "pytz>=2024.1",
+    # Note: mlx-audio moved to optional [audio] deps due to mlx-lm version conflict
+    # See: https://github.com/waybarrios/vllm-mlx/issues/19
+    "mlx-embeddings>=0.0.5"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+vllm = [
+    "vllm>=0.4.0",
+]
+vision = [
+    "torch>=2.3.0",
+    "torchvision>=0.18.0",
+]
+# Guided decoding with outlines for structured JSON output
+guided = [
+    "outlines[mlxlm]>=1.0.0",
+]
+# Audio dependencies for TTS/STT (mlx-audio)
+audio = [
+    "mlx-audio>=0.2.9",
+    "sounddevice>=0.4.0",
+    "soundfile>=0.12.0",
+    "scipy>=1.10.0",
+    "numba>=0.57.0",
+    "tiktoken>=0.5.0",
+    "misaki[zh,ja]>=0.5.0",  # Chinese (zh) and Japanese (ja) support
+    "spacy>=3.7.0",
+    "num2words>=0.5.0",
+    "loguru>=0.7.0",
+    "phonemizer>=3.2.0",
+    # Additional multilingual dependencies
+    "ordered_set>=4.1.0",    # Required for Chinese TTS
+    "cn2an>=0.5.0",          # Chinese number conversion
+    "fugashi>=1.3.0",        # Japanese tokenizer
+    "unidic-lite>=1.0.0",    # Japanese dictionary for fugashi
+    "jieba>=0.42.0",         # Chinese word segmentation
+]
+
+[project.urls]
+Homepage = "https://github.com/vllm-mlx/vllm-mlx"
+Documentation = "https://github.com/vllm-mlx/vllm-mlx#readme"
+Repository = "https://github.com/vllm-mlx/vllm-mlx"
+
+[project.entry-points."vllm.platform_plugins"]
+mlx = "vllm_mlx.plugin:mlx_platform_plugin"
+
+[project.scripts]
+vllm-mlx = "vllm_mlx.cli:main"
+vllm-mlx-chat = "vllm_mlx.gradio_app:main"
+vllm-mlx-bench = "vllm_mlx.benchmark:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vllm_mlx*"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310", "py311", "py312", "py313"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = [
+    "E402",   # module-level import not at top
+    "E501",   # line too long
+    "E731",   # lambda assignment
+    "F811",   # redefined unused
+    "F841",   # unused variable
+    "B004",   # unreliable callable check
+    "B007",   # unused loop variable
+    "B008",   # function call in default arg
+    "B011",   # assert false
+    "B017",   # assert raises exception
+    "B905",   # zip without strict
+    "N801",   # class name casing
+    "N806",   # variable in function casing
+    "SIM103", # needless bool
+    "SIM108", # ternary instead of if-else
+    "SIM110", # reimplemented builtin
+    "SIM222", # expr or true
+    "UP028",  # yield in for loop
+    "SIM102", # collapsible if
+    "SIM105", # suppressible exception
+    "SIM115", # open file with context handler
+    "B904",   # raise without from inside except
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+

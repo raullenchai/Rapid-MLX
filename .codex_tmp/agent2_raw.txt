@@ -1,0 +1,35 @@
+- File: `/Users/rc/work/Rapid-MLX/README.md:1`
+- Severity: high
+- Category: Holistic
+- Description: The repository is in a partial rename state. Public docs advertise `Rapid-MLX` and the `rapid-mlx` CLI, but package metadata, entry points, installer paths, and most secondary docs still publish and reference `vllm-mlx` (`pyproject.toml`, `install.sh`, `docs/`). That creates two competing identities for the same project, which is a structural problem for onboarding, automation, packaging, and agent-driven edits because the canonical command/package surface is ambiguous.
+- Suggested fix: Choose one canonical product/package/CLI identity and update README, installer, docs, `pyproject.toml`, URLs, entry points, and examples together. If backwards-compatible aliases are required, document them explicitly as compatibility shims and test both paths.
+
+- File: `/Users/rc/work/Rapid-MLX/`
+- Severity: high
+- Category: Holistic
+- Description: The project has no checked-in `AGENTS.md` or `CLAUDE.md` guidance at the repo root or in major subtrees, even though the repo markets itself as “built for AI agents.” The only agent-related material is a local `.claude` review loop, which is not a shared harness for contributors. That means a new agent has no authoritative instructions for entry points, safe commands, test strategy, file ownership, or common pitfalls.
+- Suggested fix: Add a root `AGENTS.md` and matching `CLAUDE.md`, then add directory-level agent docs for `vllm_mlx/`, `tests/`, `docs/`, and `scripts/` covering architecture boundaries, required test commands, environment assumptions, and local safety constraints.
+
+- File: `/Users/rc/work/Rapid-MLX/vllm_mlx/server.py`
+- Severity: high
+- Category: Holistic
+- Description: Core runtime responsibilities are concentrated in a few oversized modules instead of clear service boundaries. `server.py` is ~3200 lines, while `scheduler.py`, `benchmark.py`, and `cli.py` are also very large. In practice, API routing, auth, model lifecycle, embedding setup, MCP wiring, tool parsing, cloud routing, temp-file handling, and config globals are all entangled across these top-level files. That makes the architecture hard to navigate and raises the cost and risk of any cross-cutting change.
+- Suggested fix: Split runtime code by responsibility: FastAPI routers, request/response adapters, model lifecycle services, feature services (MCP/tools/reasoning/embeddings), and typed configuration objects. Reduce module-global state and move feature-specific logic into subpackages with narrower interfaces.
+
+- File: `/Users/rc/work/Rapid-MLX/docs/development/architecture.md:111`
+- Severity: medium
+- Category: Holistic
+- Description: The architecture documentation is stale enough to mislead maintainers and agents. It references modules that do not exist (`reasoning_parsers/`, `vllm_mlx.hardware`), understates current parser coverage, and omits current structure such as `engine/hybrid.py`. The docs index and installation docs also still describe the project as `vLLM-MLX`, so the documented architecture no longer matches the repository a reviewer actually sees.
+- Suggested fix: Treat architecture docs as code: update them to mirror the real package tree, document current feature modules and command surface, and add a CI check or generated inventory so module names, feature counts, and docs cannot drift silently.
+
+- File: `/Users/rc/work/Rapid-MLX/docs/development/contributing.md:35`
+- Severity: medium
+- Category: Holistic
+- Description: The development and release process is not single-sourced. Contributor docs still tell users to run `black` and `isort`, while CI enforces `ruff check` and `ruff format`, and the package version in `vllm_mlx/__init__.py` (`0.2.5`) disagrees with `pyproject.toml` (`0.2.6`). That kind of tooling and metadata drift is a maintainability issue because humans and agents cannot infer the authoritative workflow from one place.
+- Suggested fix: Make `pyproject.toml` the single source of truth for tooling and versioning, derive `__version__` from package metadata, and rewrite contributor docs to match the exact commands enforced in CI.
+
+- File: `/Users/rc/work/Rapid-MLX/gsm8k_qwen3_0.6b_results.json`
+- Severity: low
+- Category: Holistic
+- Description: A generated evaluation artifact is committed at the repository root even though the repo already has `evals/results/` and `.gitignore` excludes `gsm8k_*.json`. This weakens top-level project hygiene by mixing source/docs with one-off outputs and makes the root directory noisier than necessary for maintainers and agents.
+- Suggested fix: Move evaluation outputs under `evals/results/` (or another dedicated artifacts directory), remove root-level generated files, and document/enforce output locations in scripts and contribution guidance.

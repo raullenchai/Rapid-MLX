@@ -1,0 +1,449 @@
+=== git status ===
+?? .claude/
+?? .codex-review-tmp/
+?? .codex_tmp/
+?? reviews/
+
+=== git diff ===
+
+=== git diff --cached ===
+
+=== git log --oneline -5 ===
+74e3243 fix: overly broad cache corruption pattern, duplicate clear_cache function name
+b250d0f fix: MLLM abort races shared state with executor, zero-token cache corruption
+c7054fe fix: MLLM streaming cache uses generation prompt_tokens instead of text tokenization
+10a4c3f fix: MLLM scheduler thread safety, stop-sequence streaming, empty-string edge case
+2ce7496 fix: MLLM event loop blocking, per-token sampler overhead, cache extraction race
+
+=== git diff HEAD~5 ===
+diff --git a/vllm_mlx/mllm_batch_generator.py b/vllm_mlx/mllm_batch_generator.py
+index 30da33e..73dfab8 100644
+--- a/vllm_mlx/mllm_batch_generator.py
++++ b/vllm_mlx/mllm_batch_generator.py
+@@ -82,7 +82,7 @@ class MLLMBatchResponse:
+     token: int  # Generated token
+     logprobs: mx.array  # Log probabilities
+     finish_reason: str | None = None  # "stop", "length", or None
+-    prompt_cache: Callable[[], list[Any]] | None = None  # Cache extraction function
++    prompt_cache: list[Any] | None = None  # Extracted cache for finished requests
+ 
+ 
+ @dataclass
+@@ -754,7 +754,14 @@ class MLLMBatchGenerator:
+         if requests and len(requests) == logprobs.shape[0]:
+             sampled_tokens = []
+             for i, req in enumerate(requests):
+-                req_sampler = make_sampler(temp=req.temperature, top_p=req.top_p)
++                # Reuse cached sampler when params haven't changed
++                sampler_key = (req.temperature, req.top_p)
++                cached = getattr(req, "_cached_sampler", None)
++                if cached is None or cached[0] != sampler_key:
++                    req_sampler = make_sampler(temp=req.temperature, top_p=req.top_p)
++                    req._cached_sampler = (sampler_key, req_sampler)
++                else:
++                    req_sampler = cached[1]
+                 sampled_tokens.append(req_sampler(logprobs[i : i + 1]))
+             sampled = mx.concatenate(sampled_tokens, axis=0)
+         else:
+@@ -830,7 +837,7 @@ class MLLMBatchGenerator:
+             req.output_tokens.append(token)
+ 
+             finish_reason = None
+-            cache_fn = None
++            prompt_cache = None
+ 
+             if token in self.stop_tokens:
+                 finish_reason = "stop"
+@@ -842,8 +849,10 @@ class MLLMBatchGenerator:
+                 keep_idx.append(i)
+ 
+             if finish_reason is not None:
+-                # Extract cache for this request
+-                cache_fn = lambda idx=i: batch.extract_cache(idx)
++                # Extract cache BEFORE batch.filter() mutates the batch.
++                # A lambda capturing `batch` by reference would see the
++                # post-filter state, producing corrupt cache data.
++                prompt_cache = batch.extract_cache(i)
+ 
+             responses.append(
+                 MLLMBatchResponse(
+@@ -852,7 +861,7 @@ class MLLMBatchGenerator:
+                     token=token,
+                     logprobs=logprobs[i],
+                     finish_reason=finish_reason,
+-                    prompt_cache=cache_fn,
++                    prompt_cache=prompt_cache,
+                 )
+             )
+ 
+diff --git a/vllm_mlx/mllm_scheduler.py b/vllm_mlx/mllm_scheduler.py
+index b4b7677..21fe5ef 100644
+--- a/vllm_mlx/mllm_scheduler.py
++++ b/vllm_mlx/mllm_scheduler.py
+@@ -204,6 +204,12 @@ class MLLMScheduler:
+         # Output queues for async streaming
+         self.output_queues: dict[str, asyncio.Queue] = {}
+ 
++        # Thread-safe set for deferred aborts (event loop → executor thread).
++        # CPython GIL guarantees set.add() and set.pop() are atomic.
++        self._pending_abort_ids: set[str] = set()
++        # Aborted request IDs that need queue signaling (executor → event loop).
++        self._aborted_queue_ids: set[str] = set()
++
+         # Async processing control
+         self._running = False
+         self._processing_task: asyncio.Task | None = None
+@@ -323,20 +329,37 @@ class MLLMScheduler:
+ 
+     def abort_request(self, request_id: str) -> bool:
+         """
+-        Abort a request.
++        Queue request for abort.  Thread-safe (called from event loop).
++
++        The actual abort is deferred to the executor thread (inside
++        ``_step_no_queue``) to avoid racing with in-flight GPU work
++        and shared scheduler state mutations.
+ 
+         Args:
+             request_id: The request ID to abort
+ 
+         Returns:
+-            True if request was found and aborted
++            True (abort is always enqueued)
++        """
++        self._pending_abort_ids.add(request_id)
++        logger.debug(f"Enqueued abort for request {request_id}")
++        return True
++
++    def _process_pending_aborts(self) -> None:
++        """Drain and execute pending abort requests.
++
++        Must be called from the executor / step thread only.
+         """
++        while self._pending_abort_ids:
++            request_id = self._pending_abort_ids.pop()
++            self._do_abort_request(request_id)
++
++    def _do_abort_request(self, request_id: str) -> None:
++        """Actually abort a request.  Must run on the step thread."""
+         request = self.requests.get(request_id)
+-        if request is None:
+-            return False
+ 
+         # Remove from waiting queue
+-        if request.status == RequestStatus.WAITING:
++        if request is not None and request.status == RequestStatus.WAITING:
+             try:
+                 self.waiting.remove(request)
+             except ValueError:
+@@ -354,19 +377,18 @@ class MLLMScheduler:
+             del self.running[request_id]
+ 
+         # Mark as aborted
+-        request.status = RequestStatus.FINISHED_ABORTED
++        if request is not None:
++            request.status = RequestStatus.FINISHED_ABORTED
+         self.finished_req_ids.add(request_id)
+         self.requests.pop(request_id, None)
+ 
+-        # Signal output queue
+-        if request_id in self.output_queues:
+-            try:
+-                self.output_queues[request_id].put_nowait(None)
+-            except asyncio.QueueFull:
+-                pass
++        # Do NOT write to output_queues here — this may run on the
++        # executor thread where asyncio.Queue is not safe.  Mark for
++        # signaling on the event loop thread via _distribute_outputs.
++        self._aborted_queue_ids.add(request_id)
+ 
+         logger.debug(f"Aborted request {request_id}")
+-        return True
++        mx.clear_cache()
+ 
+     def has_requests(self) -> bool:
+         """Check if there are any pending or running requests."""
+@@ -476,6 +498,7 @@ class MLLMScheduler:
+ 
+             # Check text-based stop sequences
+             finish_reason = response.finish_reason
++            stop_trimmed = False
+             if finish_reason is None and request.stop:
+                 decoded_so_far = tokenizer.decode(request.output_tokens)
+                 for stop_str in request.stop:
+@@ -484,9 +507,16 @@ class MLLMScheduler:
+                         # Trim output at stop string
+                         idx = decoded_so_far.index(stop_str)
+                         request.output_text = decoded_so_far[:idx]
+-                        # Trim new_text so the stop string isn't streamed
+-                        # to the client in the final chunk.
+-                        output.new_text = ""
++                        stop_trimmed = True
++                        # Emit only the valid prefix before the stop marker
++                        # in new_text so streaming clients don't lose content.
++                        # Compute what was already streamed vs the trimmed total.
++                        prev_text = tokenizer.decode(request.output_tokens[:-1])
++                        trimmed_total = decoded_so_far[:idx]
++                        if len(trimmed_total) > len(prev_text):
++                            output.new_text = trimmed_total[len(prev_text):]
++                        else:
++                            output.new_text = ""
+                         break
+ 
+             # Check if finished
+@@ -500,12 +530,14 @@ class MLLMScheduler:
+                 output.finish_reason = finish_reason
+                 finished_ids.add(request_id)
+ 
+-                # Use trimmed output if set by stop-string check, else decode
+-                if not request.output_text:
++                # Use trimmed output if set by stop-string check, else decode.
++                # Use explicit flag instead of string truthiness — empty string
++                # is a valid trimmed result (stop at position 0).
++                if stop_trimmed:
++                    output.output_text = request.output_text
++                else:
+                     output.output_text = tokenizer.decode(request.output_tokens)
+                     request.output_text = output.output_text
+-                else:
+-                    output.output_text = request.output_text
+                 request.finish_reason = finish_reason
+ 
+                 self.total_completion_tokens += request.num_output_tokens
+@@ -538,18 +570,24 @@ class MLLMScheduler:
+             self.finished_req_ids.add(request_id)
+             self.requests.pop(request_id, None)
+ 
+-    def step(self) -> MLLMSchedulerOutput:
+-        """
+-        Execute one scheduling step.
++    def _step_no_queue(self) -> MLLMSchedulerOutput:
++        """Execute one scheduling step WITHOUT queue distribution.
++
++        This is the thread-safe core of ``step()``.  It performs all
++        GPU/CPU-heavy work (scheduling, vision encoding, generation)
++        but does NOT touch ``self.output_queues`` (which are
++        ``asyncio.Queue`` instances and not thread-safe).
+ 
+-        This method:
+-        1. Schedules waiting requests into the batch
+-        2. Runs one generation step via MLLMBatchGenerator
+-        3. Processes outputs and handles finished requests
++        Abort requests are deferred from the event loop thread and
++        processed here at the start of each step, ensuring all shared
++        state mutations happen on a single thread.
+ 
+         Returns:
+-            MLLMSchedulerOutput with results of this step
++            MLLMSchedulerOutput with results of this step.
+         """
++        # Process deferred aborts FIRST (same thread as all other mutations)
++        self._process_pending_aborts()
++
+         output = MLLMSchedulerOutput()
+ 
+         # Schedule waiting requests
+@@ -578,21 +616,17 @@ class MLLMScheduler:
+                     if uids_to_remove:
+                         self.batch_generator.remove(uids_to_remove)
+ 
++                # Create error outputs (queue delivery deferred to caller)
+                 for request_id in error_ids:
+-                    queue = self.output_queues.get(request_id)
+-                    if queue is not None:
+-                        try:
+-                            queue.put_nowait(
+-                                RequestOutput(
+-                                    request_id=request_id,
+-                                    output_text="",
+-                                    finished=True,
+-                                    finish_reason="error",
+-                                )
+-                            )
+-                            queue.put_nowait(None)  # Signal end
+-                        except asyncio.QueueFull:
+-                            pass
++                    output.outputs.append(
++                        RequestOutput(
++                            request_id=request_id,
++                            output_text="",
++                            finished=True,
++                            finish_reason="error",
++                        )
++                    )
++                output.finished_request_ids = error_ids
+                 self._cleanup_finished(error_ids)
+                 return output
+ 
+@@ -603,17 +637,6 @@ class MLLMScheduler:
+                 output.outputs = outputs
+                 output.finished_request_ids = finished_ids
+ 
+-                # Push to async queues
+-                for req_output in outputs:
+-                    queue = self.output_queues.get(req_output.request_id)
+-                    if queue is not None:
+-                        try:
+-                            queue.put_nowait(req_output)
+-                            if req_output.finished:
+-                                queue.put_nowait(None)  # Signal end
+-                        except asyncio.QueueFull:
+-                            pass
+-
+                 self._cleanup_finished(finished_ids)
+                 if finished_ids:
+                     mx.clear_cache()
+@@ -623,6 +646,47 @@ class MLLMScheduler:
+ 
+         return output
+ 
++    def _distribute_outputs(self, output: MLLMSchedulerOutput) -> None:
++        """Push step outputs and abort signals to async queues.
++
++        MUST be called on the event loop thread (asyncio.Queue is not
++        thread-safe).
++        """
++        for req_output in output.outputs:
++            queue = self.output_queues.get(req_output.request_id)
++            if queue is not None:
++                try:
++                    queue.put_nowait(req_output)
++                    if req_output.finished:
++                        queue.put_nowait(None)  # Signal end
++                except asyncio.QueueFull:
++                    pass
++
++        # Signal queues for requests aborted during this step
++        while self._aborted_queue_ids:
++            request_id = self._aborted_queue_ids.pop()
++            queue = self.output_queues.get(request_id)
++            if queue is not None:
++                try:
++                    queue.put_nowait(None)
++                except asyncio.QueueFull:
++                    pass
++
++    def step(self) -> MLLMSchedulerOutput:
++        """
++        Execute one scheduling step (includes queue distribution).
++
++        Convenience wrapper that calls ``_step_no_queue`` followed by
++        ``_distribute_outputs``.  Safe to call from the event loop
++        thread (the original sync API).
++
++        Returns:
++            MLLMSchedulerOutput with results of this step
++        """
++        output = self._step_no_queue()
++        self._distribute_outputs(output)
++        return output
++
+     def get_request(self, request_id: str) -> MLLMRequest | None:
+         """Get a request by ID."""
+         return self.requests.get(request_id)
+@@ -661,12 +725,41 @@ class MLLMScheduler:
+         logger.info("MLLM Scheduler stopped")
+ 
+     async def _process_loop(self) -> None:
+-        """Main async processing loop."""
++        """Main async processing loop.
++
++        Uses a thread executor for steps that involve vision encoding
++        (prefill) to prevent blocking the asyncio event loop.  Pure
++        generation steps (~1-3ms) run inline for lower latency.
++
++        Queue distribution always happens on the event loop thread to
++        avoid thread-safety issues with asyncio.Queue.
++        """
++        import concurrent.futures
++
++        _executor = concurrent.futures.ThreadPoolExecutor(
++            max_workers=1, thread_name_prefix="mllm-step"
++        )
++        loop = asyncio.get_running_loop()
++
+         while self._running:
+             try:
+                 if self.has_requests():
+-                    # Run one step
+-                    self.step()
++                    # Use executor when waiting requests need vision encoding
++                    # (prefill can block for seconds). Pure generation steps
++                    # are fast and can run inline.
++                    has_waiting = len(self.waiting) > 0
++                    if has_waiting:
++                        output = await loop.run_in_executor(
++                            _executor, self._step_no_queue
++                        )
++                    else:
++                        output = self._step_no_queue()
++
++                    # Distribute outputs to queues ON the event loop thread
++                    # (asyncio.Queue is not thread-safe).
++                    if output is not None:
++                        self._distribute_outputs(output)
++
+                     # Yield to other tasks
+                     await asyncio.sleep(0)
+                 else:
+diff --git a/vllm_mlx/models/mllm.py b/vllm_mlx/models/mllm.py
+index 2f087de..d27601b 100644
+--- a/vllm_mlx/models/mllm.py
++++ b/vllm_mlx/models/mllm.py
+@@ -1611,10 +1611,16 @@ class MLXMultimodalLM:
+ 
+                 import mlx.core as mx
+ 
+-                # Compute prompt length from tokenizer, not from streamed chunks
+-                # (chunks may be empty if generation produces zero tokens).
++                # Use the generation engine's prompt_tokens count which includes
++                # expanded image/video tokens. Plain text tokenization undercounts
++                # for multimodal prompts and would truncate the KV cache.
++                prompt_tokens_count = getattr(chunk, "prompt_tokens", 0) if "chunk" in dir() else 0
++                if prompt_tokens_count <= 0:
++                    # Zero-token streams have no reliable prompt length —
++                    # skip cache storage to avoid truncating KV with a
++                    # text-only token count that undercounts multimodal prompts.
++                    raise ValueError("No prompt_tokens from generation, skipping cache store")
+                 token_ids = self.processor.tokenizer.encode(formatted_prompt)
+-                prompt_tokens_count = len(token_ids)
+ 
+                 cache_to_store = []
+                 for layer_cache in prompt_cache:
+diff --git a/vllm_mlx/scheduler.py b/vllm_mlx/scheduler.py
+index 0440105..fc1be3f 100644
+--- a/vllm_mlx/scheduler.py
++++ b/vllm_mlx/scheduler.py
+@@ -33,11 +33,17 @@ logger = logging.getLogger(__name__)
+ # Enable MambaCache batching support for models like Nemotron
+ ensure_mamba_support()
+ 
+-# Error patterns that indicate cache corruption
++# Error patterns that indicate cache corruption.
++# Each pattern must be specific enough to avoid false positives.
++# The bare word "cache" was removed because it matched unrelated TypeErrors
++# (e.g. "unsupported operand type for cache_size"), masking real bugs and
++# triggering unnecessary cache wipes + request reschedules.
+ CACHE_CORRUPTION_PATTERNS = [
+     "'NoneType' object is not subscriptable",
+-    "cache",
+     "BatchKVCache",
++    "KVCache",
++    "cache is not subscriptable",
++    "cache has no attribute",
+ ]
+ 
+ 
+diff --git a/vllm_mlx/server.py b/vllm_mlx/server.py
+index 1556a38..9552cb2 100644
+--- a/vllm_mlx/server.py
++++ b/vllm_mlx/server.py
+@@ -970,7 +970,7 @@ async def cache_stats():
+ 
+ 
+ @app.delete("/v1/cache")
+-async def clear_cache():
++async def clear_all_caches():
+     """Clear all caches."""
+     try:
+         from mlx_vlm.utils import (
