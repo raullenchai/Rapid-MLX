@@ -693,18 +693,17 @@ class MLXLanguageModel:
                     if _in_think:
                         _think_tokens += 1
                         if _think_tokens >= _think_budget:
-                            # Budget exceeded — stop generation entirely.
-                            # We cannot reliably inject </think> without
-                            # feeding it back into the model's decoding state,
-                            # so we terminate and let the caller handle it.
+                            # Budget exceeded — append </think> so reasoning
+                            # parsers see a clean boundary, then stop.
                             _think_budget_hit = True
                             _in_think = False
+                            close_tag = "</think>"
                             logger.info(
                                 f"Think budget reached ({_think_budget} tokens), "
                                 f"stopping generation"
                             )
                             yield StreamingOutput(
-                                text=new_text,
+                                text=new_text + close_tag,
                                 token=token_id,
                                 finished=True,
                                 finish_reason="think_budget",

@@ -348,6 +348,7 @@ class BatchedEngine(BaseEngine):
         tools: list[dict] | None = None,
         num_images: int = 0,
         enable_thinking: bool | None = None,
+        think_budget: int | None = None,
     ) -> str:
         """Apply chat template to messages.
 
@@ -360,6 +361,7 @@ class BatchedEngine(BaseEngine):
             tools: Converted tool definitions for template.
             num_images: Number of images (triggers MLLM message preparation).
             enable_thinking: Whether to enable thinking mode (None = auto).
+            think_budget: Max tokens inside <think>; None = no limit.
         """
         # Choose the best template applicator.
         # For MLLM models, the processor handles special vision tokens.
@@ -389,6 +391,7 @@ class BatchedEngine(BaseEngine):
             tools=tools,
             enable_thinking=enable_thinking,
             model_name=self._model_name,
+            think_budget=think_budget,
         )
 
     @staticmethod
@@ -487,6 +490,7 @@ class BatchedEngine(BaseEngine):
             temperature=temperature,
             top_p=top_p,
             stop=stop or [],
+            think_budget=kwargs.pop("think_budget", 0),
         )
 
         output = await self._engine.generate(
@@ -566,6 +570,7 @@ class BatchedEngine(BaseEngine):
             temperature=temperature,
             top_p=top_p,
             stop=stop or [],
+            think_budget=kwargs.pop("think_budget", 0),
         )
 
         prefix_boundary = kwargs.pop("prefix_boundary", 0)

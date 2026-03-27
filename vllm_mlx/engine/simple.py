@@ -375,6 +375,7 @@ class SimpleEngine(BaseEngine):
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
+                    think_budget=think_budget_val or 0,
                     **kwargs_copy,
                 )
                 # Return raw text — server handles cleaning after
