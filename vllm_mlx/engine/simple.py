@@ -350,6 +350,11 @@ class SimpleEngine(BaseEngine):
                 # then generate directly.
                 enable_thinking_val = kwargs.get("enable_thinking")
                 think_budget_val = kwargs.get("think_budget")
+
+                # think_budget=0 explicitly disables thinking (TTC baseline)
+                if think_budget_val is not None and think_budget_val == 0:
+                    enable_thinking_val = False
+
                 kwargs_copy = kwargs.copy()
                 kwargs_copy.pop("enable_thinking", None)
                 kwargs_copy.pop("think_budget", None)
@@ -430,6 +435,10 @@ class SimpleEngine(BaseEngine):
         template_tools = convert_tools_for_template(tools) if tools else None
         enable_thinking = kwargs.get("enable_thinking")
         think_budget = kwargs.get("think_budget")
+
+        # think_budget=0 explicitly disables thinking (TTC baseline)
+        if think_budget is not None and think_budget == 0:
+            enable_thinking = False
 
         return shared_apply_chat_template(
             self._model.tokenizer,
@@ -522,6 +531,11 @@ class SimpleEngine(BaseEngine):
         # For LLM, apply chat template and stream
         enable_thinking = kwargs.get("enable_thinking")
         think_budget = kwargs.get("think_budget")
+
+        # think_budget=0 explicitly disables thinking (TTC baseline)
+        if think_budget is not None and think_budget == 0:
+            enable_thinking = False
+
         prompt = shared_apply_chat_template(
             self._model.tokenizer,
             messages,
