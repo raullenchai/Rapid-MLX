@@ -49,11 +49,13 @@ import tempfile
 import threading
 import time
 import uuid
+import datetime
 from collections import defaultdict
 from collections.abc import AsyncIterator
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -186,6 +188,8 @@ _no_thinking: bool = False  # --no-thinking: force enable_thinking=False in chat
 # Pinned prefix cache (Tier 0 optimization)
 _pin_system_prompt: bool = False  # Auto-pin system prompt prefix cache blocks
 _pinned_system_prompt_hash: str | None = None  # Hash of pinned system prompt
+
+_server_start_time: datetime.datetime = datetime.datetime.now(datetime.timezone.utc)
 
 # Tool-use system prompt (auto-injected when tools are provided and parser is active)
 _TOOL_USE_SYSTEM_SUFFIX = (
@@ -375,6 +379,20 @@ app = FastAPI(
     version="0.3.7",
     lifespan=lifespan,
 )
+
+# CORS configuration — configurable via --cors-origins CLI flag
+_cors_origins: list[str] = ["*"]
+
+
+def configure_cors(origins: list[str]) -> None:
+    """Configure CORS middleware with the given allowed origins."""
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 security = HTTPBearer(auto_error=False)
 
@@ -914,13 +932,15 @@ async def health():
         }
 
     engine_stats = _engine.get_stats() if _engine else {}
-
+    uptime_seconds = (datetime.datetime.now(datetime.timezone.utc) - _server_start_time).total_seconds()
     return {
         "status": "healthy",
         "model_loaded": _engine is not None,
         "model_name": _model_name,
         "model_type": "mllm" if (_engine and _engine.is_mllm) else "llm",
         "engine_type": engine_stats.get("engine_type", "unknown"),
+        "uptime_seconds": round(uptime_seconds, 2),
+        "uptime_human": str(datetime.timedelta(seconds=int(uptime_seconds))),
         "mcp": mcp_info,
     }
 

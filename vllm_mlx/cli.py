@@ -147,6 +147,9 @@ def serve_command(args):
     # Configure server security settings
     server._api_key = args.api_key
     server._default_timeout = args.timeout
+    # Configure CORS
+    cors_origins = args.cors_origins if args.cors_origins else ["*"]
+    server.configure_cors(cors_origins)
     if args.rate_limit > 0:
         server._rate_limiter = RateLimiter(
             requests_per_minute=args.rate_limit, enabled=True
@@ -226,9 +229,10 @@ def serve_command(args):
         features.append("gc-control")
     if args.pin_system_prompt:
         features.append("pin-system-prompt")
+    if args.cors_origins:
+        features.append(f"cors: {', '.join(args.cors_origins)}")
     if features:
         print(f"  Features: {', '.join(features)}")
-
     print(f"  Model: {args.model}")
     if args.draft_model:
         print(f"  Speculative: {args.draft_model} ({args.num_draft_tokens} draft tokens)")
@@ -948,6 +952,17 @@ Examples:
         type=str,
         default=None,
         help="API key for authentication (if not set, no auth required)",
+    )
+    serve_parser.add_argument(
+    "--cors-origins",
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="ORIGIN",
+        help=(
+            "Allowed CORS origins (default: * for all origins). "
+            "Example: --cors-origins http://localhost:3000 https://myapp.com"
+            ),
     )
     serve_parser.add_argument(
         "--rate-limit",
