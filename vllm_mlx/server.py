@@ -1795,6 +1795,7 @@ async def _stream_anthropic_messages(
         _chat_template = _tokenizer.chat_template or ""
     _starts_thinking = "<think>" in _chat_template and "add_generation_prompt" in _chat_template
     think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
+    prompt_tokens = 0
     completion_tokens = 0
 
     # Track which content blocks we've started
@@ -1805,6 +1806,8 @@ async def _stream_anthropic_messages(
         delta_text = output.new_text
 
         # Track token counts
+        if hasattr(output, "prompt_tokens") and output.prompt_tokens:
+            prompt_tokens = output.prompt_tokens
         if hasattr(output, "completion_tokens") and output.completion_tokens:
             completion_tokens = output.completion_tokens
 
@@ -1921,7 +1924,7 @@ async def _stream_anthropic_messages(
     message_delta = {
         "type": "message_delta",
         "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-        "usage": {"output_tokens": completion_tokens},
+        "usage": {"input_tokens": prompt_tokens, "output_tokens": completion_tokens},
     }
     yield f"event: message_delta\ndata: {json.dumps(message_delta)}\n\n"
 
@@ -1929,7 +1932,7 @@ async def _stream_anthropic_messages(
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = completion_tokens / elapsed if elapsed > 0 else 0
     logger.info(
-        f"Anthropic messages (stream): {completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
+        f"Anthropic messages (stream): prompt={prompt_tokens} + completion={completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
     )
 
     # Emit message_stop
