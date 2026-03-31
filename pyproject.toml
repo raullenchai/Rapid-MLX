@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vllm-mlx"
-version = "0.2.6"
+version = "0.2.7"
 description = "vLLM-like inference for Apple Silicon - GPU-accelerated Text, Image, Video & Audio on Mac"
 readme = "README.md"
 license = {text = "Apache-2.0"}
