@@ -31,6 +31,7 @@ Community contributors: see evals/README.md for how to submit results.
 
 import argparse
 import json
+import logging
 import os
 import platform
 import re

@@ -17,6 +17,7 @@ No server needed. Runs at the model layer directly.
 
 import argparse
 import gc
+import logging
 import time
 from dataclasses import dataclass
 

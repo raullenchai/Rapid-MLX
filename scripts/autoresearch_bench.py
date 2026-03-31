@@ -17,6 +17,7 @@ Usage:
 """
 import argparse
 import json
+import logging
 import statistics
 import sys
 import time
