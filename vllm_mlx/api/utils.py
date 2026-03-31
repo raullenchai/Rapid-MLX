@@ -171,9 +171,9 @@ def _content_to_text(content) -> str:
         parts = []
         for item in content:
             if hasattr(item, "model_dump"):
-                item = item.model_dump()
+                item = item.model_dump(exclude_none=True)
             elif hasattr(item, "dict"):
-                item = item.dict()
+                item = {k: v for k, v in item.dict().items() if v is not None}
             if isinstance(item, dict) and item.get("type") == "text":
                 parts.append(item.get("text", ""))
         return "\n".join(parts)
@@ -316,9 +316,9 @@ def extract_multimodal_content(
             for item in content:
                 # Handle both Pydantic models and dicts
                 if hasattr(item, "model_dump"):
-                    item = item.model_dump()
+                    item = item.model_dump(exclude_none=True)
                 elif hasattr(item, "dict"):
-                    item = item.dict()
+                    item = {k: v for k, v in item.dict().items() if v is not None}
 
                 item_type = item.get("type", "")
 
