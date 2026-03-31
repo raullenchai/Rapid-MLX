@@ -382,9 +382,6 @@ class SimpleEngine(BaseEngine):
                 finish_reason = None
                 if finished:
                     finish_reason = getattr(chunk, "finish_reason", "stop")
-                    # Ensure prompt_tokens is populated before final yield
-                    if prompt_tokens == 0:
-                        prompt_tokens = len(self._model.tokenizer.encode(prompt))
 
                 yield GenerationOutput(
                     text=accumulated_text,
@@ -476,23 +473,15 @@ class SimpleEngine(BaseEngine):
                 )
                 text = clean_output_text(output.text)
                 # Count prompt tokens from the full templated prompt
-                prompt_token_count = 0
-                if hasattr(self._model, "tokenizer"):
-                    tokenizer = self._model.tokenizer
-                    if hasattr(tokenizer, "apply_chat_template"):
-                        try:
-                            template_kwargs = {
-                                "tokenize": True,
-                                "add_generation_prompt": True,
-                            }
-                            if template_tools:
-                                template_kwargs["tools"] = template_tools
-                            prompt_ids = tokenizer.apply_chat_template(
-                                messages, **template_kwargs
-                            )
-                            prompt_token_count = len(prompt_ids)
-                        except (TypeError, Exception):
-                            pass
+                tokenizer = self._model.tokenizer
+                template_kwargs = {
+                    "tokenize": True,
+                    "add_generation_prompt": True,
+                }
+                if template_tools:
+                    template_kwargs["tools"] = template_tools
+                prompt_ids = tokenizer.apply_chat_template(messages, **template_kwargs)
+                prompt_token_count = len(prompt_ids)
                 return GenerationOutput(
                     text=text,
                     tokens=output.tokens,
