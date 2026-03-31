@@ -769,7 +769,11 @@ def _install_mtp(
                         # (both P and D) for all cache types, then
                         # re-advance with just P for a consistent state.
                         for c in prompt_cache:
-                            if hasattr(c, "is_trimmable") and c.is_trimmable() and hasattr(c, "trim"):
+                            if (
+                                hasattr(c, "is_trimmable")
+                                and c.is_trimmable()
+                                and hasattr(c, "trim")
+                            ):
                                 c.trim(2)
                         for _ci, _snap in _rnn_snapshots.items():
                             prompt_cache[_ci].state = _snap
@@ -799,7 +803,11 @@ def _install_mtp(
                     else:
                         # Pure attention model: simple trim(1) is enough.
                         for c in prompt_cache:
-                            if hasattr(c, "is_trimmable") and c.is_trimmable() and hasattr(c, "trim"):
+                            if (
+                                hasattr(c, "is_trimmable")
+                                and c.is_trimmable()
+                                and hasattr(c, "trim")
+                            ):
                                 c.trim(1)
                         if verify_hidden is not None:
                             _skip_state[0] = {
