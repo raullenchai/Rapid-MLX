@@ -369,7 +369,7 @@ class SimpleEngine(BaseEngine):
             ):
                 prompt_tokens = (
                     chunk.prompt_tokens
-                    if hasattr(chunk, "prompt_tokens")
+                    if hasattr(chunk, "prompt_tokens") and chunk.prompt_tokens
                     else prompt_tokens
                 )
                 completion_tokens += 1
@@ -472,9 +472,20 @@ class SimpleEngine(BaseEngine):
                     **kwargs,
                 )
                 text = clean_output_text(output.text)
+                # Count prompt tokens from the full templated prompt
+                tokenizer = self._model.tokenizer
+                template_kwargs = {
+                    "tokenize": True,
+                    "add_generation_prompt": True,
+                }
+                if template_tools:
+                    template_kwargs["tools"] = template_tools
+                prompt_ids = tokenizer.apply_chat_template(messages, **template_kwargs)
+                prompt_token_count = len(prompt_ids)
                 return GenerationOutput(
                     text=text,
                     tokens=output.tokens,
+                    prompt_tokens=prompt_token_count,
                     completion_tokens=len(output.tokens),
                     finish_reason=output.finish_reason,
                 )
