@@ -724,6 +724,11 @@ class MLXMultimodalLM:
             from mlx_vlm import load
             from mlx_vlm.utils import load_config
 
+            # Apply Gemma 4 sanitize fix before loading (mlx-vlm#912)
+            from ..patches.gemma4_sanitize import apply_gemma4_sanitize_patch
+
+            apply_gemma4_sanitize_patch()
+
             logger.info(f"Loading MLLM: {self.model_name}")
 
             self.model, self.processor = load(self.model_name)
