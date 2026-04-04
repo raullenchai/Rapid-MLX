@@ -2060,7 +2060,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     if request.stream:
         # Validate chat template eagerly so template errors return 400,
         # not a broken SSE stream.  build_prompt is cheap (no generation).
-        if hasattr(engine, "build_prompt"):
+        if hasattr(engine, "build_prompt") and not engine.is_mllm:
             try:
                 engine.build_prompt(
                     messages,
