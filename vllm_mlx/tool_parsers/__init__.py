@@ -51,6 +51,7 @@ from .auto_tool_parser import AutoToolParser
 from .deepseek_tool_parser import DeepSeekToolParser
 from .deepseekv31_tool_parser import DeepSeekV31ToolParser
 from .functionary_tool_parser import FunctionaryToolParser
+from .gemma4_tool_parser import Gemma4ToolParser
 from .glm47_tool_parser import Glm47ToolParser
 from .granite_tool_parser import GraniteToolParser
 from .harmony_tool_parser import HarmonyToolParser
@@ -82,6 +83,7 @@ __all__ = [
     "NemotronToolParser",
     "xLAMToolParser",
     "FunctionaryToolParser",
+    "Gemma4ToolParser",
     "Glm47ToolParser",
     "HarmonyToolParser",
     "MiniMaxToolParser",

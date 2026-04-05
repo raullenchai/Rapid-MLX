@@ -72,7 +72,12 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         tool_call_parser="hermes",
         reasoning_parser=None,
     )),
-    # Gemma
+    # Gemma 4 (native tool format)
+    (re.compile(r"gemma[-_]?4", re.IGNORECASE), ModelConfig(
+        tool_call_parser="gemma4",
+        reasoning_parser=None,
+    )),
+    # Gemma 2/3 (hermes format)
     (re.compile(r"gemma", re.IGNORECASE), ModelConfig(
         tool_call_parser="hermes",
         reasoning_parser=None,
