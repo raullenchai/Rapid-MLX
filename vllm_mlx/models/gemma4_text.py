@@ -147,9 +147,10 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
         overrides = {}
         for k, v in quant_config.items():
             if isinstance(v, dict) and "bits" in v:
-                # Strip "language_model." prefix to match wrapper param paths
-                param_path = k if not k.startswith("language_model.") else k
-                overrides[param_path] = v
+                overrides[k] = {
+                    kk: vv for kk, vv in v.items()
+                    if kk in ("bits", "group_size", "mode")
+                }
 
         if overrides:
             logger.info(
@@ -166,7 +167,7 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
                 for override_path, override_cfg in overrides.items():
                     # Strip common prefixes for matching
                     suffix = override_path.split("language_model.model.")[-1]
-                    if suffix in path:
+                    if path.endswith(suffix):
                         return override_cfg
                 return {"bits": default_bits, "group_size": default_gs}
 
