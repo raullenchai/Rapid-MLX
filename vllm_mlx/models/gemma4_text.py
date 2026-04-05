@@ -139,10 +139,41 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
     # Apply quantization config if present (converts Linear → QuantizedLinear)
     quant_config = config.get("quantization", config.get("quantization_config"))
     if quant_config:
-        bits = quant_config.get("bits", 4)
-        group_size = quant_config.get("group_size", 64)
-        logger.info("[gemma4] Applying %d-bit quantization (group_size=%d)", bits, group_size)
-        nn.quantize(model, bits=bits, group_size=group_size)
+        default_bits = quant_config.get("bits", 4)
+        default_gs = quant_config.get("group_size", 64)
+
+        # Build per-layer override map from config (mixed quantization)
+        # Keys like "language_model.model.layers.0.mlp.gate_proj" → {bits:8, group_size:64}
+        overrides = {}
+        for k, v in quant_config.items():
+            if isinstance(v, dict) and "bits" in v:
+                # Strip "language_model." prefix to match wrapper param paths
+                param_path = k if not k.startswith("language_model.") else k
+                overrides[param_path] = v
+
+        if overrides:
+            logger.info(
+                "[gemma4] Mixed quantization: %d-bit default, %d overrides (8-bit MLP)",
+                default_bits, len(overrides),
+            )
+
+            def _class_predicate(path, module):
+                if not hasattr(module, "to_quantized"):
+                    return False
+                # Check per-layer overrides
+                # Override keys use "language_model.model.layers..." but nn.quantize
+                # sees "model.layers..." (relative to wrapper). Match by suffix.
+                for override_path, override_cfg in overrides.items():
+                    # Strip common prefixes for matching
+                    suffix = override_path.split("language_model.model.")[-1]
+                    if suffix in path:
+                        return override_cfg
+                return {"bits": default_bits, "group_size": default_gs}
+
+            nn.quantize(model, class_predicate=_class_predicate)
+        else:
+            logger.info("[gemma4] Applying %d-bit quantization (group_size=%d)", default_bits, default_gs)
+            nn.quantize(model, bits=default_bits, group_size=default_gs)
 
     # Load weights
     weight_files = sorted(
