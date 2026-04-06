@@ -78,9 +78,11 @@ def _register_builtin_parsers():
     from .deepseek_r1_parser import DeepSeekR1ReasoningParser
     from .gpt_oss_parser import GptOssReasoningParser
     from .harmony_parser import HarmonyReasoningParser
+    from .gemma4_parser import Gemma4ReasoningParser
     from .minimax_parser import MiniMaxReasoningParser
     from .qwen3_parser import Qwen3ReasoningParser
 
+    register_parser("gemma4", Gemma4ReasoningParser)
     register_parser("qwen3", Qwen3ReasoningParser)
     register_parser("deepseek_r1", DeepSeekR1ReasoningParser)
     register_parser("gpt_oss", GptOssReasoningParser)
