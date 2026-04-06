@@ -35,6 +35,7 @@ class StreamingOutput:
     token: int
     finished: bool = False
     finish_reason: str | None = None
+    channel: str | None = None  # "content", "reasoning", "tool_call", or None (unrouted)
     logprobs: Any = None  # mx.array of shape [vocab_size] from mlx-lm
     prompt_tokens: int = 0
 
@@ -151,6 +152,13 @@ class MLXLanguageModel:
 
             self._loaded = True
             logger.info(f"Model loaded successfully: {self.model_name}")
+
+            # Initialize token-level output router (if model supports it)
+            from ..output_router import OutputRouter
+
+            self._output_router = OutputRouter.from_tokenizer(self.tokenizer)
+            if self._output_router:
+                logger.info("Token-level OutputRouter enabled")
 
         except ImportError:
             raise ImportError(
@@ -594,6 +602,9 @@ class MLXLanguageModel:
 
         token_count = 0
         accumulated_text = ""
+        # Reset output router for new request
+        if self._output_router:
+            self._output_router.reset()
         # Use IncrementalDecoder with skip_special_tokens=False to preserve
         # control tokens (e.g. Harmony's <|channel|>, <|call|>) that tool
         # parsers need. Also handles multi-byte chars (emoji, CJK) safely.
@@ -681,7 +692,19 @@ class MLXLanguageModel:
                         f"prefilled={len(prompt_to_send)} tokens)"
                     )
                 token_id = response.token if hasattr(response, "token") else 0
-                new_text = decoder.add_token(token_id)
+
+                # Token-level routing (if router available)
+                channel = None
+                if self._output_router:
+                    event = self._output_router.feed(token_id)
+                    if event is None:
+                        # Control token — suppress entirely
+                        continue
+                    new_text = event.text
+                    channel = event.channel.name.lower()  # "content", "reasoning", "tool_call"
+                else:
+                    new_text = decoder.add_token(token_id)
+
                 accumulated_text += new_text
 
                 # Check for stop sequences — truncate at the stop point
@@ -693,7 +716,6 @@ class MLXLanguageModel:
                         idx = accumulated_text.find(stop_seq)
                         if idx != -1:
                             should_stop = True
-                            # Truncate new_text so accumulated ends just before the stop seq
                             stop_truncate_text = new_text[: len(new_text) - (len(accumulated_text) - idx)]
                             accumulated_text = accumulated_text[:idx]
                             break
@@ -710,10 +732,6 @@ class MLXLanguageModel:
                         finish_reason = getattr(response, "finish_reason", "stop")
                     else:
                         finish_reason = "length"
-                    # Save cache BEFORE yielding the finished chunk.
-                    # The caller may break/abandon this generator after
-                    # receiving the finished chunk, so code after yield
-                    # would never execute.
                     self._save_cache_snapshot(full_token_ids)
                     cache_saved = True
 
@@ -724,6 +742,7 @@ class MLXLanguageModel:
                     finish_reason=finish_reason,
                     logprobs=getattr(response, "logprobs", None),
                     prompt_tokens=len(full_token_ids),
+                    channel=channel,
                 )
 
                 if finished:

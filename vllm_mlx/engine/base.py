@@ -27,6 +27,8 @@ class GenerationOutput:
     finished: bool = True
     # Per-token logprobs (mx.array of shape [vocab_size] for current token)
     logprobs: Any = None
+    # Semantic channel: "content", "reasoning", "tool_call", or None
+    channel: str | None = None
 
 
 class BaseEngine(ABC):

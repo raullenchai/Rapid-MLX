@@ -460,6 +460,7 @@ class SimpleEngine(BaseEngine):
                     finished=finished,
                     finish_reason=finish_reason,
                     logprobs=getattr(chunk, "logprobs", None),
+                    channel=getattr(chunk, "channel", None),
                 )
 
                 # Yield to event loop periodically so the server can

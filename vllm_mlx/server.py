@@ -2981,7 +2981,108 @@ async def stream_chat_completion(
             if hasattr(output, "completion_tokens") and output.completion_tokens:
                 completion_tokens = output.completion_tokens
 
-            # Use reasoning parser if enabled
+            # Token-level routing (OutputRouter): if channel is set, use it directly
+            # instead of text-based reasoning parser. This is the new architecture
+            # for models like Gemma 4 that have token-level channel markers.
+            if output.channel and delta_text:
+                if output.channel == "reasoning":
+                    content = None
+                    reasoning = delta_text
+                elif output.channel == "tool_call":
+                    # Tool call handled by tool parser below
+                    content = delta_text
+                    reasoning = None
+                else:  # "content"
+                    content = delta_text
+                    reasoning = None
+
+                # Tool call parsing on content
+                if tool_parser and content:
+                    if not tool_markup_possible and "<" not in content:
+                        tool_accumulated_text += content
+                    else:
+                        if not tool_markup_possible:
+                            tool_markup_possible = True
+                        tool_previous = tool_accumulated_text
+                        tool_accumulated_text += content
+                        tool_result = tool_parser.extract_tool_calls_streaming(
+                            tool_previous, tool_accumulated_text, content
+                        )
+                        if tool_result is None:
+                            continue
+                        if "tool_calls" in tool_result:
+                            tool_calls_detected = True
+                            chunk = ChatCompletionChunk(
+                                id=response_id,
+                                model=_model_name or request.model,
+                                choices=[ChatCompletionChunkChoice(
+                                    delta=ChatCompletionChunkDelta(
+                                        tool_calls=tool_result["tool_calls"]
+                                    ),
+                                    finish_reason="tool_calls" if output.finished else None,
+                                )],
+                                usage=get_usage(output) if output.finished else None,
+                            )
+                            yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+                            continue
+                        content = tool_result.get("content", "")
+
+                if tool_calls_detected:
+                    if output.finished:
+                        chunk = ChatCompletionChunk(
+                            id=response_id,
+                            model=_model_name or request.model,
+                            choices=[ChatCompletionChunkChoice(
+                                delta=ChatCompletionChunkDelta(),
+                                finish_reason="tool_calls",
+                            )],
+                            usage=get_usage(output),
+                        )
+                        yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+                    continue
+
+                # Filter special tokens
+                if content:
+                    content = strip_special_tokens(content)
+                if reasoning:
+                    reasoning = strip_special_tokens(reasoning)
+
+                # Skip empty deltas
+                finish_reason = (
+                    "tool_calls" if (output.finished and tool_calls_detected)
+                    else (output.finish_reason if output.finished else None)
+                )
+                if not content and not reasoning and not finish_reason:
+                    continue
+
+                # Fast SSE path
+                if not finish_reason and not want_logprobs and not output.finished:
+                    if content and not reasoning:
+                        yield _fast_sse_chunk(content, "content")
+                        continue
+                    if reasoning and not content:
+                        yield _fast_sse_chunk(reasoning, "reasoning")
+                        continue
+
+                chunk = ChatCompletionChunk(
+                    id=response_id,
+                    model=_model_name or request.model,
+                    choices=[ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(
+                            content=content if content else None,
+                            reasoning=reasoning if reasoning else None,
+                        ),
+                        finish_reason=finish_reason,
+                    )],
+                    usage=get_usage(output) if output.finished else None,
+                )
+                sse_line = f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"[SSE] {sse_line.strip()[:300]}")
+                yield sse_line
+                continue
+
+            # Legacy text-based reasoning parser (for non-router models)
             if _reasoning_parser and delta_text:
                 previous_text = accumulated_text
                 accumulated_text += delta_text
