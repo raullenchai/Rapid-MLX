@@ -54,6 +54,7 @@ from collections.abc import AsyncIterator
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -384,6 +385,20 @@ app = FastAPI(
     version="0.3.7",
     lifespan=lifespan,
 )
+
+# CORS configuration — configurable via --cors-origins CLI flag
+_cors_origins: list[str] = ["*"]
+
+
+def configure_cors(origins: list[str]) -> None:
+    """Configure CORS middleware with the given allowed origins."""
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 security = HTTPBearer(auto_error=False)
 
