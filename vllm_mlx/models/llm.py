@@ -99,6 +99,9 @@ class MLXLanguageModel:
         self._cached_token_ids: list[int] = []
         self._cache_lock = False  # Simple guard against concurrent use
 
+        # Token-level output router (set in load() if model supports it)
+        self._output_router = None
+
         # DeltaNet/hybrid cache snapshot for prefix reuse
         self._rnn_state_snapshot: list | None = None  # deep-copied ArraysCache states
         self._snapshot_prefix_ids: list[int] = []     # token IDs at snapshot time
@@ -681,6 +684,29 @@ class MLXLanguageModel:
                     raise
 
             for response in itertools.chain([first_response], gen):
+                token_id = response.token if hasattr(response, "token") else 0
+
+                # Token-level routing (if router available)
+                channel = None
+                if self._output_router:
+                    try:
+                        event = self._output_router.feed(token_id)
+                    except Exception as router_err:
+                        logger.warning("OutputRouter.feed failed (%s), disabling", router_err)
+                        self._output_router = None
+                        event = None
+                    if self._output_router and event is None:
+                        # Control token — suppress entirely, don't count
+                        continue
+                    if event:
+                        new_text = event.text
+                        channel = event.channel.name.lower()
+                    else:
+                        new_text = decoder.add_token(token_id)
+                else:
+                    new_text = decoder.add_token(token_id)
+
+                # Count only visible (non-suppressed) tokens
                 token_count += 1
                 if token_count == 1:
                     t_first_token = _time.perf_counter()
@@ -691,19 +717,6 @@ class MLXLanguageModel:
                         f"(prompt={len(full_token_ids)} tokens, "
                         f"prefilled={len(prompt_to_send)} tokens)"
                     )
-                token_id = response.token if hasattr(response, "token") else 0
-
-                # Token-level routing (if router available)
-                channel = None
-                if self._output_router:
-                    event = self._output_router.feed(token_id)
-                    if event is None:
-                        # Control token — suppress entirely
-                        continue
-                    new_text = event.text
-                    channel = event.channel.name.lower()  # "content", "reasoning", "tool_call"
-                else:
-                    new_text = decoder.add_token(token_id)
 
                 accumulated_text += new_text
 

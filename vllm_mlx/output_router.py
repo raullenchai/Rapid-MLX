@@ -80,17 +80,6 @@ class TokenMap:
     eos: int | None = None
     pad: int | None = None
 
-    # Set of all control token IDs (suppress from output)
-    @property
-    def control_ids(self) -> set[int]:
-        ids = set()
-        for fld in [self.channel_start, self.channel_end,
-                     self.turn_start, self.turn_end,
-                     self.tool_call_start, self.tool_call_end,
-                     self.bos, self.eos, self.pad]:
-            if fld is not None:
-                ids.add(fld)
-        return ids
 
 
 class RouterState(Enum):
@@ -128,10 +117,9 @@ class OutputRouter:
         Returns RouterEvent with the channel assignment, or None if the
         token should be suppressed entirely (control tokens).
         """
-        text = self.tokenizer.decode([token_id])
         m = self.map
 
-        # === Control tokens: always suppress ===
+        # === Control tokens: always suppress (no decode needed) ===
         if token_id in (m.bos, m.eos, m.pad):
             return None
         if token_id == m.turn_start or token_id == m.turn_end:
@@ -153,12 +141,12 @@ class OutputRouter:
             else:
                 # Unknown channel type — treat as content
                 self.state = RouterState.CONTENT
+                text = self.tokenizer.decode([token_id])
                 return RouterEvent(Channel.CONTENT, token_id, text)
 
         # === Channel end: transition back ===
         if token_id == m.channel_end:
             if self.state == RouterState.THINKING:
-                # After thought ends, next content is actual content
                 self.state = RouterState.CONTENT
             return None  # suppress <channel|>
 
@@ -166,30 +154,23 @@ class OutputRouter:
         if token_id == m.tool_call_start:
             self.state = RouterState.TOOL_CALL
             self._tool_tokens = [token_id]
-            return None  # suppress, accumulate
+            return None
 
-        # === Inside tool call: accumulate ===
+        # === Inside tool call: accumulate (no per-token decode) ===
         if self.state == RouterState.TOOL_CALL:
             self._tool_tokens.append(token_id)
             if token_id == m.tool_call_end:
-                # Tool call complete — return the full tool call text
                 full_text = self.tokenizer.decode(self._tool_tokens)
                 self.state = RouterState.CONTENT
                 self._tool_tokens = []
                 return RouterEvent(Channel.TOOL_CALL, token_id, full_text)
-            return None  # accumulating, suppress individual tokens
+            return None
 
-        # === Newline right after channel type word: suppress ===
-        if token_id == 107 and self.state in (RouterState.THINKING, RouterState.CONTENT):
-            # First \n after "thought\n" or "content\n" — skip
-            # (only if it's the very first token in the channel)
-            pass  # let it through, it's just whitespace
-
-        # === Default: route based on current state ===
+        # === Default: decode and route based on current state ===
+        text = self.tokenizer.decode([token_id])
         if self.state == RouterState.THINKING:
             return RouterEvent(Channel.REASONING, token_id, text)
         else:
-            # CONTENT, INIT, or any other state → content
             return RouterEvent(Channel.CONTENT, token_id, text)
 
     def feed_sequence(self, token_ids: list[int]) -> dict[str, str]:
@@ -233,8 +214,8 @@ class OutputRouter:
         # Gemma 4 detection: look for <|channel> and <|tool_call>
         if "<|channel>" in vocab and "<|tool_call>" in vocab:
             token_map = TokenMap(
-                channel_start=vocab["<|channel>"],
-                channel_end=vocab["<channel|>"],
+                channel_start=vocab.get("<|channel>"),
+                channel_end=vocab.get("<channel|>"),
                 thought_word=vocab.get("thought"),
                 content_word=vocab.get("content"),
                 final_word=vocab.get("final"),
