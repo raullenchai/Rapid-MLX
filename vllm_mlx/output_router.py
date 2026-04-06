@@ -70,6 +70,10 @@ class TokenMap:
     tool_call_start: int | None = None    # <|tool_call> = 48
     tool_call_end: int | None = None      # <tool_call|> = 49
     tool_quote: int | None = None         # <|"|> = 52
+    tool_start: int | None = None         # <|tool> = 46
+    tool_end: int | None = None           # <tool|> = 47
+    tool_response_start: int | None = None  # <|tool_response> = 50
+    tool_response_end: int | None = None    # <tool_response|> = 51
 
     # Think tags (Qwen/DeepSeek style) — for future migration
     think_start: int | None = None        # <think> token ID
@@ -124,6 +128,10 @@ class OutputRouter:
             return None
         if token_id == m.turn_start or token_id == m.turn_end:
             return None
+        # Suppress tool-related markers that may appear without proper nesting
+        if token_id in (m.tool_response_start, m.tool_response_end,
+                         m.tool_start, m.tool_end):
+            return None
 
         # === Channel start: transition to AWAITING_CHANNEL_TYPE ===
         if token_id == m.channel_start:
@@ -149,6 +157,10 @@ class OutputRouter:
             if self.state == RouterState.THINKING:
                 self.state = RouterState.CONTENT
             return None  # suppress <channel|>
+
+        # === Orphan tool call end (no matching start): suppress ===
+        if token_id == m.tool_call_end and self.state != RouterState.TOOL_CALL:
+            return None
 
         # === Tool call start ===
         if token_id == m.tool_call_start:
@@ -221,9 +233,13 @@ class OutputRouter:
                 final_word=vocab.get("final"),
                 turn_start=vocab.get("<|turn>"),
                 turn_end=vocab.get("<turn|>"),
-                tool_call_start=vocab["<|tool_call>"],
+                tool_call_start=vocab.get("<|tool_call>"),
                 tool_call_end=vocab.get("<tool_call|>"),
                 tool_quote=vocab.get('<|"|>'),
+                tool_start=vocab.get("<|tool>"),
+                tool_end=vocab.get("<tool|>"),
+                tool_response_start=vocab.get("<|tool_response>"),
+                tool_response_end=vocab.get("<tool_response|>"),
                 bos=vocab.get("<bos>"),
                 eos=vocab.get("<eos>"),
                 pad=vocab.get("<pad>"),

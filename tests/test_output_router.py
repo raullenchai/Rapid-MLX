@@ -23,6 +23,10 @@ GEMMA4_MAP = TokenMap(
     tool_call_start=48,  # <|tool_call>
     tool_call_end=49,    # <tool_call|>
     tool_quote=52,       # <|"|>
+    tool_start=46,       # <|tool>
+    tool_end=47,         # <tool|>
+    tool_response_start=50,  # <|tool_response>
+    tool_response_end=51,    # <tool_response|>
     bos=2,
     eos=1,
     pad=0,
@@ -46,7 +50,9 @@ class FakeTokenizer:
 # Gemma 4 vocabulary (subset for testing)
 VOCAB = {
     "<pad>": 0, "<eos>": 1, "<bos>": 2,
+    "<|tool>": 46, "<tool|>": 47,
     "<|tool_call>": 48, "<tool_call|>": 49,
+    "<|tool_response>": 50, "<tool_response|>": 51,
     '<|"|>': 52,
     "<|channel>": 100, "<channel|>": 101,
     "<|turn>": 105, "<turn|>": 106,
@@ -184,6 +190,32 @@ class TestToolCallRouting:
         router.feed(49)   # <tool_call|>
 
         event = router.feed(9259)  # "Hello"
+        assert event.channel == Channel.CONTENT
+
+
+class TestOrphanTokens:
+    """Test handling of orphaned/leaked special tokens."""
+
+    def test_orphan_tool_call_end_suppressed(self, router):
+        """<tool_call|> without <|tool_call> should be suppressed."""
+        assert router.feed(49) is None  # <tool_call|> orphan
+
+    def test_orphan_tool_response_suppressed(self, router):
+        """Tool response markers should always be suppressed."""
+        assert router.feed(50) is None  # <|tool_response>
+        assert router.feed(51) is None  # <tool_response|>
+
+    def test_orphan_tool_markers_suppressed(self, router):
+        """<|tool> and <tool|> should be suppressed."""
+        assert router.feed(46) is None  # <|tool>
+        assert router.feed(47) is None  # <tool|>
+
+    def test_content_after_orphan_tokens(self, router):
+        """Content after orphan tokens routes correctly."""
+        router.feed(49)   # orphan <tool_call|>
+        router.feed(51)   # orphan <tool_response|>
+        event = router.feed(9259)  # "Hello"
+        assert event is not None
         assert event.channel == Channel.CONTENT
 
 
