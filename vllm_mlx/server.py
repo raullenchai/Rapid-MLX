@@ -3064,7 +3064,9 @@ async def stream_chat_completion(
                 # Fast SSE path
                 if not finish_reason and not want_logprobs and not output.finished:
                     if content and not reasoning:
-                        yield _fast_sse_chunk(content, "content")
+                        _sse = _fast_sse_chunk(content, "content")
+                        if _sse:
+                            yield _sse
                         continue
                     if reasoning and not content:
                         yield _fast_sse_chunk(reasoning, "reasoning")
@@ -3209,7 +3211,9 @@ async def stream_chat_completion(
                     and not output.finished
                 ):
                     if content and not reasoning:
-                        yield _fast_sse_chunk(content, "content")
+                        _sse = _fast_sse_chunk(content, "content")
+                        if _sse:
+                            yield _sse
                         continue
                     if reasoning and not content:
                         yield _fast_sse_chunk(reasoning, "reasoning")
@@ -3252,7 +3256,7 @@ async def stream_chat_completion(
                     # Fast path: skip full parsing until '<' is seen in the stream,
                     # which could start tool markup (e.g. <tool_call>). This avoids
                     # per-token string scanning on the growing accumulated text.
-                    if not tool_markup_possible and "<" not in delta_text:
+                    if not tool_markup_possible and "<" not in delta_text and "[" not in delta_text:
                         tool_accumulated_text += delta_text
                         # No tool markup yet, fall through to normal chunk emission
                     else:
@@ -3343,7 +3347,9 @@ async def stream_chat_completion(
                     and not want_logprobs
                     and not output.finished
                 ):
-                    yield _fast_sse_chunk(content, "content")
+                    _sse = _fast_sse_chunk(content, "content")
+                    if _sse:
+                        yield _sse
                     continue
 
                 chunk = ChatCompletionChunk(
@@ -3352,7 +3358,7 @@ async def stream_chat_completion(
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
-                                content=content if content else None
+                                content=sanitize_output(content) if content else None
                             ),
                             finish_reason=finish_reason,
                             logprobs=_build_chunk_logprobs(output),

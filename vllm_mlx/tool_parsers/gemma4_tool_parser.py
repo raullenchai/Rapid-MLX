@@ -148,24 +148,25 @@ class Gemma4ToolParser(ToolParser):
 
         if TEXT_TOOL_CALL_ANY.search(current_text):
             # Check if we have a complete text tool call
-            match = TEXT_TOOL_CALL_FN_PATTERN.search(current_text)
-            if match:
-                func_name = match.group(1)
-                args_str = match.group(2)
+            matches = list(TEXT_TOOL_CALL_FN_PATTERN.finditer(current_text))
+            new_matches = matches[self._emitted_tool_count:]
+            if new_matches:
+                self._emitted_tool_count = len(matches)
                 return {
                     "tool_calls": [
                         {
-                            "index": 0,
+                            "index": self._emitted_tool_count - len(new_matches) + i,
                             "id": _generate_tool_id(),
                             "type": "function",
                             "function": {
-                                "name": func_name,
-                                "arguments": args_str,
+                                "name": m.group(1),
+                                "arguments": m.group(2),
                             },
                         }
+                        for i, m in enumerate(new_matches)
                     ]
                 }
-            # Partial — suppress while accumulating
+            # Already emitted or partial — suppress
             return None
 
         # No tool call markup — pass through as content
