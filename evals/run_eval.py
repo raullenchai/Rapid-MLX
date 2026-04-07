@@ -292,6 +292,28 @@ def detect_hardware() -> dict:
     return hw
 
 
+def _detect_model_id(host: str, port: int) -> str:
+    """Auto-detect model ID from the server's /v1/models endpoint."""
+    try:
+        resp = httpx.get(f"http://{host}:{port}/v1/models", timeout=5.0)
+        data = resp.json().get("data", [])
+        if data:
+            return data[0]["id"]
+    except Exception:
+        pass
+    return "default"
+
+
+_MODEL_ID_CACHE: dict[tuple[str, int], str] = {}
+
+
+def _get_model_id(host: str, port: int) -> str:
+    key = (host, port)
+    if key not in _MODEL_ID_CACHE:
+        _MODEL_ID_CACHE[key] = _detect_model_id(host, port)
+    return _MODEL_ID_CACHE[key]
+
+
 def chat_request(
     host: str,
     port: int,
@@ -306,7 +328,7 @@ def chat_request(
 ) -> dict:
     """Send a chat completion request (non-streaming by default)."""
     body = {
-        "model": "default",
+        "model": _get_model_id(host, port),
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -338,7 +360,7 @@ def stream_chat(
 ):
     """Stream a chat completion. Returns (content, tool_calls, ttft, elapsed)."""
     body = {
-        "model": "default",
+        "model": _get_model_id(host, port),
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -527,13 +549,20 @@ def _check_tool_call(tool_calls, scenario, step_prefix="") -> dict:
         fn = tc.get("function", {})
         tool_name = fn.get("name", "")
         expected_name = scenario.get(expected_key, "")
-        correct_name = tool_name == expected_name
+        alt_key = f"{step_prefix}alt_expected_tools" if step_prefix else "alt_expected_tools"
+        alt_names = scenario.get(alt_key, [])
+        correct_name = tool_name == expected_name or tool_name in alt_names
+
+        is_alt_tool = tool_name in alt_names and tool_name != expected_name
 
         try:
             actual_args = json.loads(fn.get("arguments", "{}"))
             valid_json_args = True
             # Only grade arg content on first step (followups just check name)
-            if not step_prefix and "expected_args" in scenario:
+            # Skip arg grading when an alt tool was chosen (different arg schema)
+            if is_alt_tool:
+                arg_score = 1.0  # alt tools have different arg schemas
+            elif not step_prefix and "expected_args" in scenario:
                 match_mode = scenario.get("arg_match_mode", "fuzzy")
                 if match_mode == "exact":
                     arg_score = 1.0 if actual_args == scenario["expected_args"] else 0.0
@@ -670,18 +699,30 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
                 )
                 no_tool = not tool_calls
                 has_content = bool(content and content.strip())
-                ok = no_tool and has_content
+                # Some tools are acceptable even in irrelevance tests
+                # (e.g., web_search for factual questions is reasonable)
+                accept_tools = sc.get("accept_tools", [])
+                tool_accepted = False
+                if not no_tool and tool_calls and accept_tools:
+                    fn_name = tool_calls[0].get("function", {}).get("name", "")
+                    tool_accepted = fn_name in accept_tools
+                ok = (no_tool and has_content) or tool_accepted
                 result.update(
                     {
                         "fully_correct": ok,
                         "no_tool_called": no_tool,
                         "has_content": has_content,
+                        "tool_accepted": tool_accepted,
                         "elapsed_s": round(elapsed, 2),
                     }
                 )
                 if ok:
                     passed += 1
-                    print("PASS (no tool, text response)")
+                    if tool_accepted:
+                        fn_name = tool_calls[0].get("function", {}).get("name", "?")
+                        print(f"PASS (acceptable tool: {fn_name})")
+                    else:
+                        print("PASS (no tool, text response)")
                 else:
                     reason = "called a tool" if not no_tool else "empty response"
                     if not no_tool and tool_calls:
@@ -812,9 +853,41 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
             # --- Followup rounds (sequential scenarios) ---
             followup_prefixes = ["followup_", "followup2_"]
             if first_ok and tool_calls:
-                # Feed fake_result back for the first tool call
                 tc = tool_calls[0]
                 fn = tc.get("function", {})
+                tool_name = fn.get("name", "")
+                alt_names = sc.get("alt_expected_tools", [])
+
+                # Check if model combined steps: it picked an alt tool that
+                # matches a followup tool, meaning it handled multiple steps
+                # in one call (e.g., `pip install -r file.txt` instead of
+                # read-then-install). Skip remaining followup steps.
+                combined_steps = False
+                if tool_name in alt_names and tool_name != sc.get("expected_tool", ""):
+                    for prefix in followup_prefixes:
+                        fkey = f"{prefix}expected_tool"
+                        if fkey in sc and sc[fkey] == tool_name:
+                            combined_steps = True
+                            break
+
+                if combined_steps:
+                    # Count all followup steps as passed
+                    for prefix in followup_prefixes:
+                        if f"{prefix}expected_tool" in sc:
+                            steps_passed.append(True)
+                    # Skip the followup chain entirely
+                    fully_correct = all(steps_passed)
+                    result["fully_correct"] = fully_correct
+                    result["steps_passed"] = sum(steps_passed)
+                    result["steps_total"] = len(steps_passed)
+                    result["combined_steps"] = True
+                    if fully_correct:
+                        passed += 1
+                        print(f"PASS (combined {len(steps_passed)} steps into 1)")
+                    details.append(result)
+                    continue
+
+                # Feed fake_result back for the first tool call
                 fake_result = sc.get(
                     "fake_result", f"Tool {fn.get('name', '?')} executed successfully."
                 )

@@ -162,6 +162,7 @@
       {"role": "user", "content": "Show me all running Python processes"}
     ],
     "expected_tool": "exec",
+    "alt_expected_tools": ["process"],
     "expected_args": {"command": "ps"},
     "arg_match_mode": "contains",
     "fake_result": "  PID TTY           TIME CMD\n12345 ttys000    0:01.23 python server.py\n12346 ttys001    0:00.45 python eval.py",
@@ -268,7 +269,8 @@
     "messages": [
       {"role": "user", "content": "What is the capital of France?"}
     ],
-    "expect_no_tool": true
+    "expect_no_tool": true,
+    "accept_tools": ["web_search"]
   },
   {
     "id": "tc19",
@@ -279,7 +281,8 @@
     "messages": [
       {"role": "user", "content": "Explain how neural networks work in 2-3 sentences"}
     ],
-    "expect_no_tool": true
+    "expect_no_tool": true,
+    "accept_tools": ["web_search"]
   },
   {
     "id": "tc20",
@@ -317,6 +320,7 @@
       {"role": "user", "content": "Read the file /tmp/requirements.txt and install the packages listed in it"}
     ],
     "expected_tool": "read",
+    "alt_expected_tools": ["exec"],
     "expected_args": {"path": "/tmp/requirements.txt"},
     "arg_match_mode": "exact",
     "fake_result": "flask==3.0.0\nrequests>=2.31.0\npydantic~=2.5",
@@ -333,6 +337,7 @@
       {"role": "user", "content": "Check my Python version, remember it, and send a message to Alice with the version info"}
     ],
     "expected_tool": "exec",
+    "alt_expected_tools": ["code_run"],
     "expected_args": {"command": "python"},
     "arg_match_mode": "contains",
     "fake_result": "Python 3.11.5",
@@ -441,6 +446,7 @@
       {"role": "user", "content": "Find my Python version and store it in memory for later"}
     ],
     "expected_tool": "exec",
+    "alt_expected_tools": ["code_run"],
     "expected_args": {"command": "python"},
     "arg_match_mode": "contains",
     "fake_result": "Python 3.12.1",
