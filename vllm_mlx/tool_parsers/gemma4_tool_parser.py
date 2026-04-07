@@ -91,6 +91,10 @@ class Gemma4ToolParser(ToolParser):
         super().reset()
         self._emitted_tool_count = 0
 
+    def has_pending_tool_call(self, text: str) -> bool:
+        """Gemma 4 uses <|tool_call> (with pipe), not <tool_call>."""
+        return "<|tool_call>" in text or self.has_text_format_tool_call(text)
+
     def extract_tool_calls(
         self, model_output: str, request: Any = None
     ) -> ExtractedToolCallInformation:
