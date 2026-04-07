@@ -1095,12 +1095,6 @@ Examples:
         help="Number of tokens to generate speculatively per step (default: 4)",
     )
     serve_parser.add_argument(
-        "--prefill-step-size",
-        type=int,
-        default=2048,
-        help="Tokens to process per prefill chunk in simple mode (default: 2048)",
-    )
-    serve_parser.add_argument(
         "--kv-bits",
         type=int,
         default=None,
