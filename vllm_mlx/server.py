@@ -134,7 +134,7 @@ _model_alias: str | None = None  # Short alias used to start the model (if any)
 _model_path: str | None = (
     None  # Actual model path (for cache dir, not affected by --served-model-name)
 )
-_default_max_tokens: int = 32768
+_default_max_tokens: int = 4096
 _default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes)
 _default_temperature: float | None = None  # Set via --default-temperature
 _default_top_p: float | None = None  # Set via --default-top-p
@@ -2765,16 +2765,26 @@ async def _stream_anthropic_messages(
             else None
         )
         if final_msg and final_msg.content:
-            # Emit corrected content (model didn't use think tags at all)
+            # Emit corrected content (model didn't use think tags at all).
+            # At this point all previous blocks are closed (line above),
+            # so we must open a new text block before sending the delta.
             content = strip_special_tokens(final_msg.content)
             if content:
                 accumulated_text = content  # Replace accumulated
+                # Open a text block at current block_index
+                yield (
+                    f"event: content_block_start\ndata: "
+                    f"{json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                )
                 delta_event = {
                     "type": "content_block_delta",
-                    "index": 0,
+                    "index": block_index,
                     "delta": {"type": "text_delta", "text": content},
                 }
                 yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
+                # Close the block
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                block_index += 1
         # Reset parser state for next request
         _reasoning_parser.reset_state()
 
@@ -3565,8 +3575,8 @@ Examples:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=32768,
-        help="Default max tokens for generation",
+        default=4096,
+        help="Default max tokens for generation (caps when client sends None)",
     )
     parser.add_argument(
         "--api-key",
