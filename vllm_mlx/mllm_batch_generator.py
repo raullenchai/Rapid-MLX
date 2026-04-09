@@ -681,11 +681,12 @@ class MLLMBatchGenerator:
         from mlx_lm.models.cache import KVCache
 
         sample_cache = per_request_caches[0][0]
-        if not isinstance(sample_cache, KVCache):
+        if not isinstance(sample_cache, (KVCache, RotatingKVCache)):
             raise ValueError(
-                f"MLLM continuous batching requires standard KVCache but got "
-                f"{type(sample_cache).__name__}. Disable --kv-cache-quantization "
-                f"when using multimodal models with --continuous-batching."
+                f"MLLM continuous batching requires KVCache or RotatingKVCache "
+                f"but got {type(sample_cache).__name__}. Disable "
+                f"--kv-cache-quantization when using multimodal models with "
+                f"--continuous-batching."
             )
 
         try:

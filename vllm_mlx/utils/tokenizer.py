@@ -166,6 +166,8 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
         else:
             raise
 
+    return model, tokenizer
+
 
 def _load_strict_false(model_name: str, tokenizer_config: dict = None):
     """Load model with strict=False to discard extra weights (e.g., vision tower, MTP)."""
