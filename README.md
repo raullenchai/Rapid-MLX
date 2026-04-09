@@ -123,6 +123,7 @@ print(response.choices[0].message.content)
 | [Anthropic SDK](https://docs.anthropic.com/en/docs/sdks) | Tested | Native `/v1/messages` endpoint ([test](tests/integrations/test_anthropic_sdk.py)) |
 | [Aider](https://aider.chat) | Tested | CLI edit-and-commit workflow ([test](tests/integrations/test_aider.sh)) |
 | [OpenCode](https://github.com/sst/opencode) | Compatible (manual) | `opencode.json` provider config; agent loop behavior is model-sensitive |
+| [Claw Code](https://github.com/ultraworkers/claw-code) | Tested | Prompt, code gen, tool calling (read_file) — both OpenAI & Anthropic endpoints |
 | [OpenClaw](https://github.com/nicepkg/openclaw) | Compatible (manual) | 14 tools, multi-round, streaming; setup wizard required |
 | [Open WebUI](https://github.com/open-webui/open-webui) | Tested | Docker E2E (register, login, model fetch, streaming chat) ([test](tests/integrations/test_openwebui.py)) |
 | [Claude Code](https://claude.ai/claude-code) | Compatible (manual) | `OPENAI_BASE_URL=...` env var; not in automated suite |
@@ -139,6 +140,13 @@ API Key:          not-needed
 Model name:       default          (or qwen3.5-9b — either works)
 ```
 Cursor's agent/composer mode uses tool calls automatically — Rapid-MLX handles them natively with Qwen3.5 models, no extra flags needed.
+
+**Claw Code:**
+```bash
+export OPENAI_BASE_URL=http://localhost:8000/v1
+export OPENAI_API_KEY=not-needed
+claw --model "openai/default" prompt "summarize this repo"
+```
 
 **Claude Code:**
 ```bash
@@ -333,16 +341,16 @@ All 17 parsers include automatic recovery — if a quantized model outputs broke
 
 ## Benchmarks
 
-22 models tested across 6 engines on **Mac Studio M3 Ultra (256GB)**. Rapid-MLX uses Apple's [MLX framework](https://github.com/ml-explore/mlx) — purpose-built for unified memory with native Metal compute kernels — which is why it beats C++-based engines (Ollama, llama.cpp) on most models. **#1 on 16 of 18 benchmarked models.**
+22 models tested across 6 engines on **Mac Studio M3 Ultra (256GB)**. Rapid-MLX uses Apple's [MLX framework](https://github.com/ml-explore/mlx) — purpose-built for unified memory with native Metal compute kernels — which is why it beats C++-based engines (Ollama, llama.cpp) on most models. **#1 on 16 of 18 benchmarked models.** Ollama numbers tested with **v0.20.4** (latest, with MLX backend).
 
 | Model | Rapid-MLX | Best Alternative | Speedup |
 |-------|----------|-----------------|---------|
 | **Phi-4 Mini 14B** | **180** tok/s | 77 (mlx-lm) / 56 (Ollama) | **2.3x** / **3.2x** |
 | **Qwen3.5-4B** | **168** tok/s | 155 (mlx-lm serve) | **1.1x** |
 | **GPT-OSS 20B** | **127** tok/s · 100% tools | 79 (mlx-lm serve) | **1.6x** |
-| **Qwen3.5-9B** | **108** tok/s | 46 (Ollama) | **2.3x** |
+| **Qwen3.5-9B** | **108** tok/s | 41 (Ollama) | **2.6x** |
 | **Kimi-Linear-48B** | **94** tok/s · 100% tools | — (only engine) | — |
-| 🆕 **Gemma 4 26B-A4B** | **85** tok/s · 100% tools | 75 (Ollama) | **1.1x** |
+| 🆕 **Gemma 4 26B-A4B** | **85** tok/s · 100% tools | 68 (Ollama) | **1.3x** |
 | 🆕 **Gemma 4 E4B** | **83** tok/s · 100% tools | — | — |
 | **Qwen3.5-35B-A3B** | **83** tok/s · 100% tools | 75 (oMLX) | **1.1x** |
 | **Qwen3-Coder 80B** | **74** tok/s · 100% tools | 69 (mlx-lm serve) | **1.1x** |
@@ -428,13 +436,14 @@ Qwen3.5 uses Gated DeltaNet (75% RNN) + full attention (25% KV). Other engines r
 <details>
 <summary><strong>Eval benchmarks (17 models, 4 suites)</strong></summary>
 
-19 models across tool calling (30 scenarios), coding (HumanEval+), reasoning (MATH-500), and general knowledge (MMLU-Pro). All with `enable_thinking: false` on M3 Ultra. 🆕 = Gemma 4 (day-0 support).
+20 models across tool calling (30 scenarios), coding (HumanEval+), reasoning (MATH-500), and general knowledge (MMLU-Pro). All with `enable_thinking: false` on M3 Ultra. 🆕 = Gemma 4 (day-0 support).
 
 | Model | Quant | RAM | Decode | Tools | Code | Reason | General | Avg |
 |-------|-------|-----|--------|-------|------|--------|---------|-----|
 | 🆕 Gemma 4 26B-A4B | 4bit | 14.4 GB | 94 t/s | **100%** | — | — | — | — |
 | 🆕 Gemma 4 E4B | 4bit | 6.4 GB | 83 t/s | **100%** | — | — | — | — |
 | 🆕 Gemma 4 31B | 4bit | 17.0 GB | 31 t/s | **100%** | — | — | — | — |
+| Qwopus 3.5-27B | 4bit | 14.8 GB | 39 t/s | **100%** | — | — | — | — |
 | Qwen3.5-122B-A10B | 8bit | 129.8 GB | 44 t/s | 87% | **90%** | **90%** | **90%** | **89%** |
 | Qwen3.5-122B-A10B | mxfp4 | 65.0 GB | 57 t/s | **90%** | **90%** | 80% | **90%** | 88% |
 | Qwen3.5-35B-A3B | 8bit | 36.9 GB | 83 t/s | **90%** | **90%** | 80% | 80% | 85% |

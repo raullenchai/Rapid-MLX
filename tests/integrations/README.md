@@ -49,17 +49,18 @@ python3 tests/integrations/test_librechat_docker.py
 
 ## Verified model matrix
 
-All tests verified against two models:
+All tests verified against three models:
 
-| Suite | Gemma 4 26B (4bit) | Qwen3.5 122B-A10B (mxfp4) |
-|---|---|---|
-| PydanticAI (6 tests) | 6/6 | 6/6 |
-| LangChain (4 tests) | 4/4 | 3/4 (*) |
-| Anthropic SDK (3 tests) | 3/3 | 2/3 (*) |
-| smolagents (4 tests) | 4/4 | 2/2 |
-| Aider CLI | PASS | PASS |
-| LibreChat Docker (4 tests) | 4/4 | 4/4 |
-| Open WebUI Docker (4 tests) | — | 3/4 (*) |
+| Suite | Gemma 4 26B (4bit) | Qwen3.5 122B-A10B (mxfp4) | Qwopus 3.5-27B (4bit) |
+|---|---|---|---|
+| PydanticAI (6 tests) | 6/6 | 6/6 | 6/6 |
+| LangChain (6 tests) | 6/6 | 3/4 (*) | 6/6 |
+| Anthropic SDK (5 tests) | 5/5 | 2/3 (*) | 4/5 (*) |
+| smolagents (4 tests) | 4/4 | 2/2 | 3/4 |
+| Claw Code (3 tests) | 3/3 | — | 3/3 |
+| Aider CLI | PASS | PASS | — |
+| LibreChat Docker (4 tests) | 4/4 | 4/4 | — |
+| Open WebUI Docker (4 tests) | — | 3/4 (*) | — |
 
 (*) Known Qwen3.5 thinking mode edge cases:
 - LangChain `with_structured_output()` overrides max_tokens to None; thinking

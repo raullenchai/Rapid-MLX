@@ -37,6 +37,11 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         tool_call_parser="deepseek",
         reasoning_parser=None,
     )),
+    # Qwopus (Qwen3.5 distilled with Claude Opus reasoning)
+    (re.compile(r"qwopus", re.IGNORECASE), ModelConfig(
+        tool_call_parser="hermes",
+        reasoning_parser="qwen3",
+    )),
     # Qwen3-Coder — before generic Qwen3 (non-thinking, no reasoning parser)
     (re.compile(r"qwen3[-_]?coder", re.IGNORECASE), ModelConfig(
         tool_call_parser="hermes",
