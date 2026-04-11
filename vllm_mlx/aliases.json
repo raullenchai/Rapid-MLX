@@ -13,6 +13,7 @@
   "gemma-4-31b": "mlx-community/gemma-4-31b-it-4bit",
   "gemma3-12b": "mlx-community/gemma-3-12b-it-qat-4bit",
   "phi4-14b": "mlx-community/phi-4-mini-instruct-4bit",
+  "ministral-3b": "mlx-community/Ministral-3-3B-Instruct-2512-4bit",
   "mistral-24b": "mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit",
   "devstral-24b": "mlx-community/Devstral-Small-2503-MLX-4bit",
   "glm4.7-9b": "mlx-community/GLM-4.7-4bit",
