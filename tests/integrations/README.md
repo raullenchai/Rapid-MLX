@@ -46,6 +46,7 @@ python3 tests/integrations/test_librechat_docker.py
 | `test_openwebui.py` | — | x | — | — | — | Docker: register, login, models, chat |
 | `test_aider.sh` | — | — | — | — | — | CLI edit-and-write workflow |
 | `test_librechat_docker.py` | — | — | — | — | — | Docker: register, login, endpoints, models |
+| `test_hermes.py` | x | x | x | x | — | 62-tool Hermes Agent E2E + API stress test |
 
 ## Verified model matrix
 
@@ -61,6 +62,15 @@ All tests verified against three models:
 | Aider CLI | PASS | PASS | — |
 | LibreChat Docker (4 tests) | 4/4 | 4/4 | — |
 | Open WebUI Docker (4 tests) | — | 3/4 (*) | — |
+| Hermes Agent (15 tests) | — | — | — |
+
+Hermes Agent tested separately on Qwen3.5 family (Hermes community models):
+
+| Model | Tests | Result |
+|---|---|---|
+| Qwen3.5-4B (4bit) | 14/14 | PASS |
+| Qwen3.5-9B (4bit) | 15/15 | PASS |
+| Qwen3.5-35B-A3B MoE (4bit) | 15/15 | PASS |
 
 (*) Known Qwen3.5 thinking mode edge cases:
 - LangChain `with_structured_output()` overrides max_tokens to None; thinking
