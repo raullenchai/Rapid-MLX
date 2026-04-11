@@ -1302,6 +1302,23 @@ class TestHarmonyCLIIntegration:
             ToolParserManager.get_tool_parser("nonexistent_parser")
 
 
+class TestServeLogLevelFlags:
+    def test_cli_serve_has_log_level_flag(self):
+        import importlib
+        import inspect
+
+        source = inspect.getsource(importlib.import_module("vllm_mlx.cli").main)
+        assert '"--log-level"' in source
+        assert 'choices=["DEBUG", "INFO", "WARNING", "ERROR"]' in source
+
+    def test_module_server_has_log_level_flag(self):
+        from pathlib import Path
+
+        source = Path("vllm_mlx/server.py").read_text()
+        assert '"--log-level"' in source
+        assert 'choices=["DEBUG", "INFO", "WARNING", "ERROR"]' in source
+
+
 # ============================================================================
 # SUPPORTS_NATIVE_TOOL_FORMAT Tests
 # ============================================================================
