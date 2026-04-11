@@ -20,5 +20,6 @@
   "gpt-oss-20b": "mlx-community/GPT-OSS-20B-4bit",
   "minimax-m2.5": "lmstudio-community/MiniMax-M2.5-MLX-4bit",
   "deepseek-r1-8b": "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit",
+  "kimi-k2.5": "mlx-community/Kimi-K2.5",
   "kimi-48b": "mlx-community/Kimi-K2-Instruct-Q4_0-MLX"
 }
