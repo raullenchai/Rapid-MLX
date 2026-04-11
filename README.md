@@ -125,6 +125,7 @@ print(response.choices[0].message.content)
 | [OpenCode](https://github.com/sst/opencode) | Compatible (manual) | `opencode.json` provider config; agent loop behavior is model-sensitive |
 | [Claw Code](https://github.com/ultraworkers/claw-code) | Tested | Prompt, code gen, tool calling (read_file) — both OpenAI & Anthropic endpoints |
 | [OpenClaude](https://github.com/Gitlawb/openclaude) | Tested | `CLAUDE_CODE_USE_OPENAI=1` + `OPENAI_BASE_URL`; prompt, tool calling |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Tested | `provider: custom` + `base_url`; 62 tools, tool calling, multi-turn |
 | [Goose](https://github.com/block/goose) | Tested | Ollama provider via `OLLAMA_HOST`; prompt, shell tool use |
 | [OpenClaw](https://github.com/nicepkg/openclaw) | Compatible (manual) | 14 tools, multi-round, streaming; setup wizard required |
 | [Open WebUI](https://github.com/open-webui/open-webui) | Tested | Docker E2E (register, login, model fetch, streaming chat) ([test](tests/integrations/test_openwebui.py)) |
@@ -154,6 +155,15 @@ claw --model "openai/default" prompt "summarize this repo"
 ```bash
 CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=http://localhost:8000/v1 \
 OPENAI_API_KEY=not-needed OPENAI_MODEL=default openclaude -p "hello"
+```
+
+**Hermes Agent** (`~/.hermes/config.yaml`):
+```yaml
+model:
+  provider: "custom"
+  default: "default"
+  base_url: "http://localhost:8000/v1"
+  context_length: 32768
 ```
 
 **Goose:**
