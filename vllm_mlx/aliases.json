@@ -14,7 +14,7 @@
   "gemma3-12b": "mlx-community/gemma-3-12b-it-qat-4bit",
   "phi4-14b": "mlx-community/phi-4-mini-instruct-4bit",
   "mistral-24b": "mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit",
-  "devstral-24b": "mlx-community/Devstral-Small-2503-MLX-4bit",
+  "devstral-24b": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
   "glm4.7-9b": "mlx-community/GLM-4.7-4bit",
   "glm4.5-air": "mlx-community/GLM-4.5-Air-0111-4bit",
   "gpt-oss-20b": "mlx-community/GPT-OSS-20B-4bit",
