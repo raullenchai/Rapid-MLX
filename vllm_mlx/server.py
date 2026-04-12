@@ -1719,10 +1719,7 @@ async def _wait_with_disconnect(
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
     _validate_model_name(request.model)
-    engine = get_engine()
-
-    # Validate model name matches loaded model
-    _validate_model_name(request.model)
+    engine = get_engine(request.model)
 
     # Handle single prompt or list of prompts
     prompts = request.prompt if isinstance(request.prompt, list) else [request.prompt]
@@ -1786,7 +1783,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     )
 
     comp_response = CompletionResponse(
-        model=_model_name or request.model,
+        model=request.model or _model_name,
         choices=choices,
         usage=Usage(
             prompt_tokens=total_prompt_tokens,
@@ -1847,7 +1844,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     ```
     """
     _validate_model_name(request.model)
-    engine = get_engine()
+    engine = get_engine(request.model)
 
     # Validate messages is non-empty
     if not request.messages:
@@ -2324,7 +2321,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         choice_logprobs = ChoiceLogProbs(content=token_logprobs_list)
 
     chat_response = ChatCompletionResponse(
-        model=_model_name or request.model,
+        model=request.model or _model_name,
         choices=[
             ChatCompletionChoice(
                 message=AssistantMessage(
@@ -2402,13 +2399,12 @@ async def create_anthropic_message(
 
     Supports both streaming and non-streaming modes.
     """
-    engine = get_engine()
-
     # Parse the raw body to handle Anthropic request format
     body = await request.json()
     anthropic_request = AnthropicRequest(**body)
 
     _validate_model_name(anthropic_request.model)
+    engine = get_engine(anthropic_request.model)
 
     # --- Detailed request logging ---
     n_msgs = len(anthropic_request.messages)
@@ -2920,7 +2916,7 @@ async def stream_completion(
             "id": f"cmpl-{uuid.uuid4().hex[:8]}",
             "object": "text_completion",
             "created": int(time.time()),
-            "model": _model_name or request.model,
+            "model": request.model or _model_name,
             "choices": [
                 {
                     "index": 0,
@@ -2971,7 +2967,7 @@ async def stream_chat_completion(
         # Pre-compute SSE template parts that don't change per-token.
         # This avoids repeated f-string interpolation and time.time() syscalls.
         _sse_created = int(time.time())
-        _model_escaped = json.dumps(_model_name or request.model)
+        _model_escaped = json.dumps(request.model or _model_name)
         _sse_prefix = (
             f'data: {{"id":"{response_id}","object":"chat.completion.chunk",'
             f'"created":{_sse_created},"model":{_model_escaped},'
@@ -3100,7 +3096,7 @@ async def stream_chat_completion(
                             tool_calls_detected = True
                             chunk = ChatCompletionChunk(
                                 id=response_id,
-                                model=_model_name or request.model,
+                                model=request.model or _model_name,
                                 choices=[ChatCompletionChunkChoice(
                                     delta=ChatCompletionChunkDelta(
                                         tool_calls=tool_result["tool_calls"]
@@ -3117,7 +3113,7 @@ async def stream_chat_completion(
                     if output.finished:
                         chunk = ChatCompletionChunk(
                             id=response_id,
-                            model=_model_name or request.model,
+                            model=request.model or _model_name,
                             choices=[ChatCompletionChunkChoice(
                                 delta=ChatCompletionChunkDelta(),
                                 finish_reason="tool_calls",
@@ -3154,7 +3150,7 @@ async def stream_chat_completion(
 
                 chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=_model_name or request.model,
+                    model=request.model or _model_name,
                     choices=[ChatCompletionChunkChoice(
                         delta=ChatCompletionChunkDelta(
                             content=sanitize_output(content) if content else None,
@@ -3225,7 +3221,7 @@ async def stream_chat_completion(
                             tool_calls_detected = True
                             chunk = ChatCompletionChunk(
                                 id=response_id,
-                                model=_model_name or request.model,
+                                model=request.model or _model_name,
                                 choices=[
                                     ChatCompletionChunkChoice(
                                         delta=ChatCompletionChunkDelta(
@@ -3256,7 +3252,7 @@ async def stream_chat_completion(
                         # Send final chunk with finish_reason only
                         chunk = ChatCompletionChunk(
                             id=response_id,
-                            model=_model_name or request.model,
+                            model=request.model or _model_name,
                             choices=[
                                 ChatCompletionChunkChoice(
                                     delta=ChatCompletionChunkDelta(),
@@ -3301,7 +3297,7 @@ async def stream_chat_completion(
 
                 chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=_model_name or request.model,
+                    model=request.model or _model_name,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -3357,7 +3353,7 @@ async def stream_chat_completion(
                             tool_calls_detected = True
                             chunk = ChatCompletionChunk(
                                 id=response_id,
-                                model=_model_name or request.model,
+                                model=request.model or _model_name,
                                 choices=[
                                     ChatCompletionChunkChoice(
                                         delta=ChatCompletionChunkDelta(
@@ -3386,7 +3382,7 @@ async def stream_chat_completion(
                     if output.finished:
                         chunk = ChatCompletionChunk(
                             id=response_id,
-                            model=_model_name or request.model,
+                            model=request.model or _model_name,
                             choices=[
                                 ChatCompletionChunkChoice(
                                     delta=ChatCompletionChunkDelta(),
@@ -3434,7 +3430,7 @@ async def stream_chat_completion(
 
                 chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=_model_name or request.model,
+                    model=request.model or _model_name,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -3455,7 +3451,7 @@ async def stream_chat_completion(
             if correction and correction.content:
                 correction_chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=_model_name or request.model,
+                    model=request.model or _model_name,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -3485,7 +3481,7 @@ async def stream_chat_completion(
             if result.tools_called:
                 tool_chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=_model_name or request.model,
+                    model=request.model or _model_name,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -3521,7 +3517,7 @@ async def stream_chat_completion(
         if include_usage:
             usage_chunk = ChatCompletionChunk(
                 id=response_id,
-                model=_model_name or request.model,
+                model=request.model or _model_name,
                 choices=[],  # Empty choices for usage-only chunk
                 usage=Usage(
                     prompt_tokens=prompt_tokens,

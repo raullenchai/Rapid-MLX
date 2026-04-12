@@ -514,10 +514,18 @@ def _test_tag_suppression(base_url: str, model_id: str,
 def _agent_query(binary: str, query_cmd: str, query: str,
                  timeout: int = 120) -> tuple[str | None, str | None]:
     """Run a single agent query. Returns (output, error)."""
+    import shlex
+
     if not os.path.exists(os.path.expanduser(binary)):
         return None, f"Binary not found: {binary}"
 
-    cmd_parts = query_cmd.replace("'{query}'", f"'{query}'").split()
+    # Substitute {query} placeholder and parse with shlex to respect quotes
+    cmd_str = query_cmd.replace("{query}", query)
+    try:
+        cmd_parts = shlex.split(cmd_str)
+    except ValueError:
+        # Fallback: simple split if shlex can't parse
+        cmd_parts = cmd_str.split()
     # Replace first part with full binary path
     cmd_parts[0] = os.path.expanduser(binary)
 
@@ -770,21 +778,42 @@ class AgentTestRunner:
             )
             mod = importlib.util.module_from_spec(spec)
 
-            # Suppress sys.exit (test modules call exit() at the end)
+            # Set base URL env var so specific test modules use the right server
             import sys
+            os.environ["RAPID_MLX_BASE_URL"] = self.base_url
+
+            # Suppress sys.exit (test modules call exit() at the end)
             original_exit = sys.exit
+            exec_error = None
             sys.exit = lambda *a: None
             try:
                 spec.loader.exec_module(mod)
             except SystemExit:
-                pass
-            except Exception:
-                pass  # errors captured via results dict
+                pass  # expected — test modules call exit()
+            except Exception as e:
+                exec_error = e
             finally:
                 sys.exit = original_exit
 
+            # If module failed to execute, report it as an error
+            if exec_error is not None:
+                return [TestResult(
+                    f"specific:{test_module_name}", TestStatus.ERROR,
+                    duration_ms=(time.time() - t0) * 1000,
+                    message=f"Module execution failed: {exec_error!s:.120}",
+                    category="specific",
+                )]
+
             # Extract results dict
             results_dict = getattr(mod, "results", {})
+            if not results_dict:
+                return [TestResult(
+                    f"specific:{test_module_name}", TestStatus.ERROR,
+                    duration_ms=(time.time() - t0) * 1000,
+                    message="No test results found (missing 'results' dict or all tests skipped)",
+                    category="specific",
+                )]
+
             test_results = []
             for name, status in results_dict.items():
                 if status == "PASS":

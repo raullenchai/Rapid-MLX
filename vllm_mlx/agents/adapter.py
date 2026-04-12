@@ -31,9 +31,12 @@ def setup_agent_config(
     if cfg.type == "env":
         lines = []
         for key, val in rendered.items():
-            os.environ[key] = val
             lines.append(f"  export {key}={val}")
-        summary = f"Set {len(lines)} environment variables:\n" + "\n".join(lines)
+        summary = (
+            "Run these commands in your shell:\n"
+            + "\n".join(lines)
+            + "\n\n  (env vars are not persistent — add to your .zshrc/.bashrc for permanent setup)"
+        )
         return summary
 
     if cfg.path:

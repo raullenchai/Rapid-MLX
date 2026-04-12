@@ -1,12 +1,12 @@
 """Thorough PydanticAI test suite against local rapid-mlx server."""
 import asyncio
+import os
+
+import httpx as _httpx
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
-
-import os
-import httpx as _httpx
 
 _BASE = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
 try:
@@ -17,7 +17,7 @@ except Exception:
 model = OpenAIChatModel(
     model_name=MODEL_ID,
     provider=OpenAIProvider(
-        base_url="http://localhost:8000/v1",
+        base_url=_BASE,
         api_key="not-needed",
     ),
 )

@@ -1,8 +1,8 @@
 """Anthropic SDK against rapid-mlx /v1/messages endpoint."""
-from anthropic import Anthropic
-
 import os
+
 import httpx as _httpx
+from anthropic import Anthropic
 
 _BASE = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
 try:
@@ -10,8 +10,10 @@ try:
 except Exception:
     MODEL_ID = "default"
 
+_BASE_NO_V1 = _BASE.rstrip("/").removesuffix("/v1")
+
 client = Anthropic(
-    base_url="http://localhost:8000",
+    base_url=_BASE_NO_V1,
     api_key="not-needed",
 )
 
