@@ -62,8 +62,8 @@ _FINAL_SANITIZER = re.compile(
     r"|<\|[a-z_\"]+>|<[a-z_\"]+\|>"
     # Any <|...|> token (symmetric: <|im_end|>, <|channel|>, etc.)
     r"|<\|[a-z_]+\|>"
-    # [Calling tool:...] or [Calling tool="..."]
-    r"|\[Calling\s+tool[=:][^\]]*\]"
+    # [Calling tool:...] or [Calling tool="..."] or bare "[Calling tool" (Gemma 4 mimicry)
+    r"|\[Calling\s+tool[^\]]*\]?"
     # Stray closing tags
     r"|</think>|</tool_call>",
     re.DOTALL,
@@ -272,7 +272,7 @@ _TOOL_CALL_TAGS = [
     ("<tool_call>", "</tool_call>"),
     ("<function=", "</function>"),
     ("[TOOL_CALL]", "[/TOOL_CALL]"),
-    ("[Calling tool", "]\n"),  # Qwen3 bracket-style: [Calling tool: func({...})]\n
+    ("[Calling tool", "\n"),  # Bracket-style tool calls: suppress until newline (covers both ]\n and bare \n)
 ]
 
 
