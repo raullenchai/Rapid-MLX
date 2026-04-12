@@ -422,6 +422,99 @@ def test_hermes_multi_step():
 
 
 # =============================================================================
+# Deep agentic tests (requires hermes binary, tests real workflows)
+# =============================================================================
+
+def test_hermes_write_and_run():
+    """Hermes writes a Python script and executes it (full agent loop)."""
+    out, err = hermes_query(
+        "Create a Python script at /tmp/hermes_test_fib.py that prints the first "
+        "10 fibonacci numbers as a comma-separated list, then run it and show output",
+        timeout_sec=120,
+    )
+    if err:
+        assert False, err
+    # Verify via Hermes output or by checking the file directly
+    import subprocess
+    result = subprocess.run(
+        ["python3", "/tmp/hermes_test_fib.py"],
+        capture_output=True, text=True, timeout=10,
+    )
+    fib_out = result.stdout + out
+    assert any(str(n) in fib_out for n in [8, 13, 21, 34]), f"Fibonacci missing: {fib_out[:200]}"
+    print(f"  Write+run: fibonacci script works")
+
+
+def test_hermes_code_with_tests():
+    """Hermes writes code + tests and runs them (complex agentic workflow)."""
+    out, err = hermes_query(
+        "Create /tmp/hermes_calc.py with add and multiply functions. "
+        "Create /tmp/hermes_test_calc.py with pytest tests for both. "
+        "Then run the tests.",
+        timeout_sec=180,
+    )
+    if err:
+        assert False, err
+    # Verify the files exist and tests pass
+    import subprocess
+    result = subprocess.run(
+        ["python3", "-m", "pytest", "/tmp/hermes_test_calc.py", "-v"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert "passed" in result.stdout.lower(), f"Tests failed: {result.stdout[:200]}{result.stderr[:200]}"
+    print(f"  Code+tests: pytest passing")
+
+
+def test_hermes_code_review():
+    """Hermes reads a file and gives a code review suggestion."""
+    out, err = hermes_query(
+        "Read vllm_mlx/model_auto_config.py and suggest one specific improvement. Be concise.",
+        timeout_sec=120,
+    )
+    if err:
+        assert False, err
+    # Should mention something about the code (patterns, config, etc.)
+    assert len(out) > 50, f"Response too short for a code review: {out[:100]}"
+    assert "model" in out.lower() or "pattern" in out.lower() or "config" in out.lower(), \
+        f"Doesn't look like a code review: {out[:100]}"
+    print(f"  Code review: {out.strip()[:80]}")
+
+
+def test_hermes_git_analysis():
+    """Hermes analyzes git history."""
+    out, err = hermes_query(
+        "Check the git log of this repo and tell me the last 3 commit messages",
+        timeout_sec=120,
+    )
+    if err:
+        assert False, err
+    assert "commit" in out.lower() or "hermes" in out.lower() or "feat" in out.lower() or "fix" in out.lower(), \
+        f"No git info: {out[:200]}"
+    print(f"  Git analysis: OK")
+
+
+def test_hermes_patch_file():
+    """Hermes edits a file using the patch tool."""
+    # Create a test file first
+    test_file = "/tmp/hermes_patch_test.py"
+    with open(test_file, "w") as f:
+        f.write("def hello():\n    return 'hello'\n")
+
+    out, err = hermes_query(
+        f"Add a docstring 'Say hello.' to the hello function in {test_file}",
+        timeout_sec=120,
+    )
+    if err:
+        assert False, err
+    # Verify the file was modified
+    with open(test_file) as f:
+        content = f.read()
+    assert "docstring" in content.lower() or "say hello" in content.lower() or '"""' in content, \
+        f"Patch not applied: {content[:200]}"
+    print(f"  Patch: file edited successfully")
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -454,6 +547,13 @@ if __name__ == "__main__":
         run_test("hermes_terminal", test_hermes_terminal)
         run_test("hermes_search", test_hermes_search)
         run_test("hermes_multi_step", test_hermes_multi_step)
+
+        # Deep agentic tests
+        run_test("hermes_write_and_run", test_hermes_write_and_run)
+        run_test("hermes_code_with_tests", test_hermes_code_with_tests)
+        run_test("hermes_code_review", test_hermes_code_review)
+        run_test("hermes_git_analysis", test_hermes_git_analysis)
+        run_test("hermes_patch_file", test_hermes_patch_file)
     else:
         print(f"\n⚠️ Skipping Hermes E2E tests: {HERMES_BIN} not found")
 
