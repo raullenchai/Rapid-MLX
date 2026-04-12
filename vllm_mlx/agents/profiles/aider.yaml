@@ -1,0 +1,40 @@
+name: aider
+display_name: "Aider"
+repo: "Aider-AI/aider"
+stars: 43000
+
+config:
+  type: env
+  env_vars:
+    OPENAI_API_BASE: "{base_url}"
+    OPENAI_API_KEY: "not-needed"
+
+models:
+  recommended:
+    - "qwen3.5-9b"
+    - "qwen3.5-4b"
+    - "deepseek-r1-8b"
+  parser_override: null
+
+streaming:
+  extra_tool_tags: []
+  suppress_patterns: []
+  max_tools: 0  # Aider does NOT use function calling
+
+testing:
+  binary: null  # aider is a pip package
+  query_cmd: "aider --message '{query}' --yes --no-git"
+  query_timeout: 180
+  install_cmd: "pip install aider-chat"
+
+capabilities:
+  function_calling: false  # uses text edit formats, not FC
+  streaming: true
+  vision: true  # supports images/URLs
+  reasoning: false
+
+known_issues:
+  - "Does NOT use function calling — uses text edit formats (unified diff, search/replace)"
+  - "Best local model support of any agent — works with virtually any model"
+  - "Architect mode: dual model (one plans, one edits) — use --architect flag"
+  - "Voice-to-code via Whisper"

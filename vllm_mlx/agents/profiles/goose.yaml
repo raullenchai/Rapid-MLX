@@ -1,0 +1,38 @@
+name: goose
+display_name: "Goose"
+repo: "block/goose"
+stars: 41000
+
+config:
+  type: env
+  env_vars:
+    GOOSE_PROVIDER: "ollama"
+    OLLAMA_HOST: "{base_url_no_v1}"
+
+models:
+  recommended:
+    - "qwen3.5-9b"
+    - "qwen3.5-4b"
+  parser_override: null
+
+streaming:
+  extra_tool_tags: []
+  suppress_patterns: []
+  max_tools: 20
+
+testing:
+  binary: null  # Goose uses cargo install
+  query_cmd: "goose run '{query}'"
+  query_timeout: 180
+  install_cmd: "cargo install goose-cli"
+
+capabilities:
+  function_calling: true
+  streaming: true
+  vision: false
+  reasoning: false
+
+known_issues:
+  - "30s timeout on complex multi-step tasks — increase with GOOSE_TIMEOUT"
+  - "Goose has 600s model loading timeout with exponential backoff for Ollama"
+  - "MCP-first architecture: most tools come from MCP extensions"

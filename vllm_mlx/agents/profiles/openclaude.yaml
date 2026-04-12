@@ -1,0 +1,41 @@
+name: openclaude
+display_name: "OpenClaude"
+repo: "Gitlawb/openclaude"
+stars: 21000
+
+config:
+  type: env
+  env_vars:
+    CLAUDE_CODE_USE_OPENAI: "1"
+    OPENAI_BASE_URL: "{base_url}"
+    OPENAI_API_KEY: "not-needed"
+    OPENAI_MODEL: "{model_id}"
+
+models:
+  recommended:
+    - "qwen3.5-9b"
+    - "qwen3.5-4b"
+    - "gemma-4-26b"
+  parser_override: null
+
+streaming:
+  extra_tool_tags: []
+  suppress_patterns: []
+  max_tools: 25  # Claude Code ~20 tools
+
+testing:
+  binary: null
+  query_cmd: null  # OpenClaude is interactive, no single-query mode
+  query_timeout: 120
+  install_cmd: "npm install -g openclaude"
+
+capabilities:
+  function_calling: true
+  streaming: true
+  vision: false
+  reasoning: true  # supports thinking blocks
+
+known_issues:
+  - "Requires CLAUDE_CODE_USE_OPENAI=1 to enable OpenAI-compatible mode"
+  - "Agent routing: different agents can use different models via agentModels in settings.json"
+  - "DuckDuckGo web search fallback for non-Claude models"

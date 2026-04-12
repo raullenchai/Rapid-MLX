@@ -104,7 +104,7 @@ from .api.tool_calling import (
     parse_tool_calls,
 )
 from .api.utils import (
-    SPECIAL_TOKENS_PATTERN,
+    SPECIAL_TOKENS_PATTERN,  # noqa: F401
     StreamingThinkRouter,
     StreamingToolCallFilter,
     clean_output_text,
@@ -122,6 +122,7 @@ from .engine import (
     HybridEngine,
     SimpleEngine,
 )
+from .runtime.model_registry import ModelEntry, ModelRegistry
 from .tool_parsers import ToolParserManager
 
 logging.basicConfig(level=logging.INFO)
@@ -138,7 +139,12 @@ def configure_logging(log_level: str) -> str:
     logger.setLevel(getattr(logging, normalized, logging.INFO))
     return normalized.lower()
 
-# Global engine instance
+# Multi-model registry — supports loading 2+ models simultaneously.
+# When populated, get_engine() routes by request model name.
+# Backward-compatible: single-model mode still uses _engine global as before.
+_model_registry = ModelRegistry()
+
+# Global engine instance (single-model legacy path, also primary model in multi-model)
 _engine: BaseEngine | None = None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
@@ -518,28 +524,52 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(sec
     return True
 
 
-def get_engine() -> BaseEngine:
-    """Get the loaded engine, raising error if not loaded."""
+def get_engine(model_name: str | None = None) -> BaseEngine:
+    """Get the engine for a model, routing by name in multi-model mode.
+
+    Args:
+        model_name: Model name from request. None uses the default model.
+                    In single-model mode, this is ignored and the global
+                    _engine is returned.
+    """
+    # Multi-model path: registry has entries → route by name
+    if _model_registry:
+        try:
+            return _model_registry.get_engine(model_name)
+        except KeyError:
+            pass  # fall through to legacy path
+
+    # Single-model legacy path
     if _engine is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
     return _engine
 
 
 def _validate_model_name(request_model: str) -> None:
-    """Validate that the request model name matches the served model or its alias."""
+    """Validate that the request model name matches a served model."""
+    if not request_model:
+        return
+
+    # Multi-model: check registry
+    if _model_registry and request_model in _model_registry:
+        return
+    if _model_registry and request_model == "default":
+        return
+
+    # Single-model legacy: check globals
     if not _model_name:
         return
-    # Accept the canonical name, the alias, or the model path
     accepted = {_model_name}
     if _model_alias:
         accepted.add(_model_alias)
     if _model_path:
         accepted.add(_model_path)
     if request_model not in accepted:
+        available = ", ".join(_model_registry.list_model_names()) if _model_registry else _model_name
         raise HTTPException(
             status_code=404,
             detail=f"The model `{request_model}` does not exist. "
-            f"Available model: `{_model_name}`",
+            f"Available: {available}",
         )
 
 
@@ -911,6 +941,22 @@ def load_model(
 
     logger.info(f"Default max tokens: {_default_max_tokens}")
 
+    # Register in multi-model registry
+    aliases = set()
+    if _model_alias and _model_alias != _model_name:
+        aliases.add(_model_alias)
+    entry = ModelEntry(
+        engine=_engine,
+        model_name=_model_name,
+        model_path=_model_path or model_name,
+        aliases=aliases,
+        tool_call_parser=_tool_call_parser,
+        reasoning_parser=_reasoning_parser_name,
+        is_mllm=getattr(_engine, "is_mllm", False),
+        max_tokens=_default_max_tokens,
+    )
+    _model_registry.add(entry, is_default=True)
+
 
 def _extract_token_logprob(
     logprobs_array, token_id: int, tokenizer, top_k: int
@@ -1096,11 +1142,18 @@ async def clear_all_caches():
 
 @app.get("/v1/models", dependencies=[Depends(verify_api_key)])
 async def list_models() -> ModelsResponse:
-    """List available models."""
+    """List available models (supports multi-model)."""
     models = []
-    if _model_name:
+    # Multi-model: list all registered models
+    if _model_registry:
+        for entry in _model_registry.list_entries():
+            models.append(ModelInfo(id=entry.model_name))
+            for alias in sorted(entry.aliases):
+                if alias != entry.model_name:
+                    models.append(ModelInfo(id=alias))
+    elif _model_name:
+        # Legacy single-model fallback
         models.append(ModelInfo(id=_model_name))
-        # Also list the alias if the model was loaded via one
         if _model_alias and _model_alias != _model_name:
             models.append(ModelInfo(id=_model_alias))
     return ModelsResponse(data=models)
@@ -1109,6 +1162,8 @@ async def list_models() -> ModelsResponse:
 @app.get("/v1/models/{model_id}", dependencies=[Depends(verify_api_key)])
 async def retrieve_model(model_id: str) -> ModelInfo:
     """Retrieve a specific model by ID (OpenAI-compatible)."""
+    if _model_registry and model_id in _model_registry:
+        return ModelInfo(id=model_id)
     if model_id in (_model_name, _model_alias):
         return ModelInfo(id=model_id)
     raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
@@ -1664,14 +1719,7 @@ async def _wait_with_disconnect(
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
     _validate_model_name(request.model)
-    engine = get_engine()
-
-    # Validate model name matches loaded model
-    if request.model and request.model not in (_model_name, _model_alias):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Model '{request.model}' not found. Available: {', '.join(filter(None, [_model_alias, _model_name]))}",
-        )
+    engine = get_engine(request.model)
 
     # Handle single prompt or list of prompts
     prompts = request.prompt if isinstance(request.prompt, list) else [request.prompt]
@@ -1735,7 +1783,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     )
 
     comp_response = CompletionResponse(
-        model=_model_name or request.model,
+        model=request.model or _model_name,
         choices=choices,
         usage=Usage(
             prompt_tokens=total_prompt_tokens,
@@ -1796,7 +1844,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     ```
     """
     _validate_model_name(request.model)
-    engine = get_engine()
+    engine = get_engine(request.model)
 
     # Validate messages is non-empty
     if not request.messages:
@@ -1806,11 +1854,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         )
 
     # Validate model name matches loaded model
-    if request.model and request.model not in (_model_name, _model_alias):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Model '{request.model}' not found. Available: {', '.join(filter(None, [_model_alias, _model_name]))}",
-        )
+    _validate_model_name(request.model)
 
     # Validate message roles
     _valid_roles = {"system", "user", "assistant", "tool", "developer"}
@@ -2277,7 +2321,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         choice_logprobs = ChoiceLogProbs(content=token_logprobs_list)
 
     chat_response = ChatCompletionResponse(
-        model=_model_name or request.model,
+        model=request.model or _model_name,
         choices=[
             ChatCompletionChoice(
                 message=AssistantMessage(
@@ -2355,13 +2399,12 @@ async def create_anthropic_message(
 
     Supports both streaming and non-streaming modes.
     """
-    engine = get_engine()
-
     # Parse the raw body to handle Anthropic request format
     body = await request.json()
     anthropic_request = AnthropicRequest(**body)
 
     _validate_model_name(anthropic_request.model)
+    engine = get_engine(anthropic_request.model)
 
     # --- Detailed request logging ---
     n_msgs = len(anthropic_request.messages)
@@ -2383,14 +2426,7 @@ async def create_anthropic_message(
     logger.debug(f"[REQUEST] last user message preview: {last_user_preview!r}")
 
     # Validate model name matches loaded model
-    if anthropic_request.model and anthropic_request.model not in (
-        _model_name,
-        _model_alias,
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Model '{anthropic_request.model}' not found. Available: {', '.join(filter(None, [_model_alias, _model_name]))}",
-        )
+    _validate_model_name(anthropic_request.model)
 
     # Convert Anthropic request -> OpenAI request
     openai_request = anthropic_to_openai(anthropic_request)
@@ -2880,7 +2916,7 @@ async def stream_completion(
             "id": f"cmpl-{uuid.uuid4().hex[:8]}",
             "object": "text_completion",
             "created": int(time.time()),
-            "model": _model_name or request.model,
+            "model": request.model or _model_name,
             "choices": [
                 {
                     "index": 0,
@@ -2931,7 +2967,7 @@ async def stream_chat_completion(
         # Pre-compute SSE template parts that don't change per-token.
         # This avoids repeated f-string interpolation and time.time() syscalls.
         _sse_created = int(time.time())
-        _model_escaped = json.dumps(_model_name or request.model)
+        _model_escaped = json.dumps(request.model or _model_name)
         _sse_prefix = (
             f'data: {{"id":"{response_id}","object":"chat.completion.chunk",'
             f'"created":{_sse_created},"model":{_model_escaped},'
@@ -3060,7 +3096,7 @@ async def stream_chat_completion(
                             tool_calls_detected = True
                             chunk = ChatCompletionChunk(
                                 id=response_id,
-                                model=_model_name or request.model,
+                                model=request.model or _model_name,
                                 choices=[ChatCompletionChunkChoice(
                                     delta=ChatCompletionChunkDelta(
                                         tool_calls=tool_result["tool_calls"]
@@ -3077,7 +3113,7 @@ async def stream_chat_completion(
                     if output.finished:
                         chunk = ChatCompletionChunk(
                             id=response_id,
-                            model=_model_name or request.model,
+                            model=request.model or _model_name,
                             choices=[ChatCompletionChunkChoice(
                                 delta=ChatCompletionChunkDelta(),
                                 finish_reason="tool_calls",
@@ -3114,7 +3150,7 @@ async def stream_chat_completion(
 
                 chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=_model_name or request.model,
+                    model=request.model or _model_name,
                     choices=[ChatCompletionChunkChoice(
                         delta=ChatCompletionChunkDelta(
                             content=sanitize_output(content) if content else None,
@@ -3185,7 +3221,7 @@ async def stream_chat_completion(
                             tool_calls_detected = True
                             chunk = ChatCompletionChunk(
                                 id=response_id,
-                                model=_model_name or request.model,
+                                model=request.model or _model_name,
                                 choices=[
                                     ChatCompletionChunkChoice(
                                         delta=ChatCompletionChunkDelta(
@@ -3216,7 +3252,7 @@ async def stream_chat_completion(
                         # Send final chunk with finish_reason only
                         chunk = ChatCompletionChunk(
                             id=response_id,
-                            model=_model_name or request.model,
+                            model=request.model or _model_name,
                             choices=[
                                 ChatCompletionChunkChoice(
                                     delta=ChatCompletionChunkDelta(),
@@ -3261,7 +3297,7 @@ async def stream_chat_completion(
 
                 chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=_model_name or request.model,
+                    model=request.model or _model_name,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -3317,7 +3353,7 @@ async def stream_chat_completion(
                             tool_calls_detected = True
                             chunk = ChatCompletionChunk(
                                 id=response_id,
-                                model=_model_name or request.model,
+                                model=request.model or _model_name,
                                 choices=[
                                     ChatCompletionChunkChoice(
                                         delta=ChatCompletionChunkDelta(
@@ -3346,7 +3382,7 @@ async def stream_chat_completion(
                     if output.finished:
                         chunk = ChatCompletionChunk(
                             id=response_id,
-                            model=_model_name or request.model,
+                            model=request.model or _model_name,
                             choices=[
                                 ChatCompletionChunkChoice(
                                     delta=ChatCompletionChunkDelta(),
@@ -3394,7 +3430,7 @@ async def stream_chat_completion(
 
                 chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=_model_name or request.model,
+                    model=request.model or _model_name,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -3415,7 +3451,7 @@ async def stream_chat_completion(
             if correction and correction.content:
                 correction_chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=_model_name or request.model,
+                    model=request.model or _model_name,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -3445,7 +3481,7 @@ async def stream_chat_completion(
             if result.tools_called:
                 tool_chunk = ChatCompletionChunk(
                     id=response_id,
-                    model=_model_name or request.model,
+                    model=request.model or _model_name,
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
@@ -3481,7 +3517,7 @@ async def stream_chat_completion(
         if include_usage:
             usage_chunk = ChatCompletionChunk(
                 id=response_id,
-                model=_model_name or request.model,
+                model=request.model or _model_name,
                 choices=[],  # Empty choices for usage-only chunk
                 usage=Usage(
                     prompt_tokens=prompt_tokens,

@@ -1,0 +1,46 @@
+name: codex
+display_name: "Codex CLI"
+repo: "openai/codex"
+stars: 75000
+
+config:
+  type: toml
+  path: "~/.codex/config.toml"
+  template: |
+    [profiles.rapid-mlx]
+    model = "{model_id}"
+    provider = "openai"
+
+    [providers.openai]
+    openai_base_url = "{base_url}"
+    api_key = "not-needed"
+
+models:
+  recommended:
+    - "qwen3.5-9b"
+    - "qwen3.5-4b"
+  parser_override: null
+
+streaming:
+  extra_tool_tags: []
+  suppress_patterns: []
+  max_tools: 10
+
+testing:
+  binary: null  # Rust binary, cargo install
+  query_cmd: "codex '{query}'"
+  query_timeout: 120
+  install_cmd: "cargo install codex-cli"
+
+capabilities:
+  function_calling: true
+  streaming: true
+  vision: false
+  reasoning: true  # supports reasoning tokens
+
+known_issues:
+  - "Uses OpenAI Responses API (/v1/responses), not Chat Completions — partial compatibility"
+  - "openai_base_url exists in config but has bugs with non-OpenAI backends (issue #7152, #8240)"
+  - "Sandbox execution via Landlock (Linux) or Seatbelt (macOS)"
+  - "apply_patch tool for file edits"
+  - "Model switching for local models requested (issue #8319, #17261)"

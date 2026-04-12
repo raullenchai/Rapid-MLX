@@ -1,14 +1,21 @@
 """Thorough LangChain test suite against local rapid-mlx server."""
-from langchain_openai import ChatOpenAI
+import os
+
+import httpx as _httpx
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-MODEL_ID = "/Volumes/Extreme SSD/mlx-models/gemma-4-26b-a4b-it-4bit"
+_BASE = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
+try:
+    MODEL_ID = _httpx.get(f"{_BASE}/models", timeout=5).json()["data"][0]["id"]
+except Exception:
+    MODEL_ID = "default"
 
 llm = ChatOpenAI(
     model=MODEL_ID,
-    base_url="http://localhost:8000/v1",
+    base_url=_BASE,
     api_key="not-needed",
     temperature=0.0,
 )

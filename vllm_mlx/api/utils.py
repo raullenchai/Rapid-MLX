@@ -198,12 +198,17 @@ def strip_thinking_tags(text: str) -> str:
 
 def extract_json_from_response(text: str) -> str:
     """
-    Extract JSON object/array from model response that may contain reasoning text.
+    Extract JSON object/array from model response, handling common wrapping.
 
-    Qwen3 and other reasoning models often output:
-    "Let me think... reasoning text... {\"result\": 123}"
+    Models often wrap JSON in various ways:
+    - Reasoning prefix: "Let me think... {json}"  (Qwen3)
+    - Markdown code block: ```json\n{json}\n```    (Gemma 4, Llama)
+    - Mixed: "Here's the result:\n```json\n{}\n```\nDone."
+    - Plain JSON: {json}
 
-    This function extracts just the JSON part when present.
+    This is part of the output compensation layer — normalizes model
+    output variations so downstream frameworks (PydanticAI, LangChain)
+    see clean JSON regardless of model quirks.
 
     Args:
         text: Model output that may contain text before/after JSON
@@ -222,36 +227,62 @@ def extract_json_from_response(text: str) -> str:
     ):
         return text
 
+    # Strip markdown code blocks: ```json\n{...}\n``` or ```\n{...}\n```
+    # This is the most common wrapping pattern (Gemma 4, Llama 3.x)
+    stripped = _strip_markdown_code_block(text)
+    if stripped != text:
+        return stripped
+
     # Try to find JSON object at the end of the response
     # Find the last { and match to the end
     last_brace = text.rfind("{")
     if last_brace != -1 and text.endswith("}"):
         potential_json = text[last_brace:]
-        # Validate it's balanced
-        depth = 0
-        for char in potential_json:
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-        if depth == 0:
+        if _is_balanced(potential_json, "{", "}"):
             return potential_json
 
     # Try to find JSON array at the end
     last_bracket = text.rfind("[")
     if last_bracket != -1 and text.endswith("]"):
         potential_json = text[last_bracket:]
-        depth = 0
-        for char in potential_json:
-            if char == "[":
-                depth += 1
-            elif char == "]":
-                depth -= 1
-        if depth == 0:
+        if _is_balanced(potential_json, "[", "]"):
             return potential_json
 
     # No JSON found, return original
     return text
+
+
+def _strip_markdown_code_block(text: str) -> str:
+    """Strip markdown code block wrapping from text.
+
+    Handles:
+        ```json\n{...}\n```
+        ```\n{...}\n```
+        Text before ```json\n{...}\n``` text after
+    """
+    import re
+    # Match ```json or ``` followed by content and closing ```
+    pattern = re.compile(
+        r"```(?:json|JSON)?\s*\n([\s\S]*?)\n\s*```",
+    )
+    match = pattern.search(text)
+    if match:
+        inner = match.group(1).strip()
+        # Verify it looks like JSON
+        if inner and (inner[0] in "{["):
+            return inner
+    return text
+
+
+def _is_balanced(text: str, open_char: str, close_char: str) -> bool:
+    """Check if brackets/braces are balanced."""
+    depth = 0
+    for char in text:
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+    return depth == 0
 
 
 # =============================================================================
@@ -267,13 +298,41 @@ _MAX_TOOL_BUFFER_BYTES = 1_048_576  # 1 MB
 # Tags that delimit tool call blocks in streaming output.
 # Content inside these tags should be suppressed during streaming because
 # it will be re-emitted as structured tool_use blocks after parsing.
-_TOOL_CALL_TAGS = [
+#
+# This list is extensible — agent profiles can inject additional tags via
+# register_tool_call_tag() or by passing extra_tags to StreamingToolCallFilter.
+_TOOL_CALL_TAGS: list[tuple[str, str]] = [
     ("<minimax:tool_call>", "</minimax:tool_call>"),
     ("<tool_call>", "</tool_call>"),
     ("<function=", "</function>"),
     ("[TOOL_CALL]", "[/TOOL_CALL]"),
     ("[Calling tool", "\n"),  # Bracket-style tool calls: suppress until newline (covers both ]\n and bare \n)
 ]
+
+
+def register_tool_call_tag(open_tag: str, close_tag: str) -> bool:
+    """Register an additional tool call tag pair for streaming suppression.
+
+    Use this to extend the filter with agent-specific or model-specific
+    markup patterns that should be suppressed during streaming.
+
+    Args:
+        open_tag: Opening tag (e.g. "<my_tool>")
+        close_tag: Closing tag (e.g. "</my_tool>")
+
+    Returns:
+        True if the tag was added, False if it was already registered.
+    """
+    pair = (open_tag, close_tag)
+    if pair not in _TOOL_CALL_TAGS:
+        _TOOL_CALL_TAGS.append(pair)
+        return True
+    return False
+
+
+def get_tool_call_tags() -> list[tuple[str, str]]:
+    """Get the current list of tool call tag pairs (read-only copy)."""
+    return list(_TOOL_CALL_TAGS)
 
 
 class StreamingToolCallFilter:
@@ -286,14 +345,25 @@ class StreamingToolCallFilter:
 
     The full unfiltered text is still accumulated separately for tool call
     parsing at stream end.
+
+    Args:
+        extra_tags: Additional (open, close) tag pairs to suppress, beyond
+                    the global _TOOL_CALL_TAGS. Useful for per-request or
+                    per-agent customization without mutating global state.
     """
 
-    def __init__(self):
+    def __init__(self, extra_tags: list[tuple[str, str]] | None = None):
         self._buffer = ""
         self._in_block = False
         self._close_tag = ""
+        # Merge global tags with per-instance extras
+        self._tags = _TOOL_CALL_TAGS
+        if extra_tags:
+            self._tags = _TOOL_CALL_TAGS + [
+                t for t in extra_tags if t not in _TOOL_CALL_TAGS
+            ]
         # Longest open tag - used to determine how much buffer to hold back
-        self._max_open_len = max(len(t[0]) for t in _TOOL_CALL_TAGS)
+        self._max_open_len = max(len(t[0]) for t in self._tags)
 
     def process(self, delta: str) -> str:
         """Process a streaming delta. Returns text to emit (may be empty)."""
@@ -307,7 +377,7 @@ class StreamingToolCallFilter:
     def _scan_for_open(self) -> str:
         """Scan buffer for tool call open tags. Emit safe text."""
         # Check for complete open tags
-        for open_tag, close_tag in _TOOL_CALL_TAGS:
+        for open_tag, close_tag in self._tags:
             idx = self._buffer.find(open_tag)
             if idx >= 0:
                 # Found an open tag - emit text before it, enter block mode
@@ -322,7 +392,7 @@ class StreamingToolCallFilter:
         # No complete open tag found. Check if buffer ends with a partial
         # match of any open tag - hold that back to avoid emitting a fragment.
         hold_back = 0
-        for open_tag, _ in _TOOL_CALL_TAGS:
+        for open_tag, _ in self._tags:
             for prefix_len in range(min(len(open_tag), len(self._buffer)), 0, -1):
                 if self._buffer.endswith(open_tag[:prefix_len]):
                     hold_back = max(hold_back, prefix_len)

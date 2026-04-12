@@ -1,0 +1,32 @@
+name: pydanticai
+display_name: "PydanticAI"
+repo: "pydantic/pydantic-ai"
+stars: 15000
+
+config:
+  type: env
+  env_vars:
+    OPENAI_BASE_URL: "{base_url}"
+    OPENAI_API_KEY: "not-needed"
+
+models:
+  recommended:
+    - "qwen3.5-9b"
+    - "qwen3.5-4b"
+
+streaming:
+  max_tools: 10
+
+testing:
+  install_cmd: "pip install pydantic-ai"
+  specific_tests: "test_pydantic_ai_full.py"
+
+capabilities:
+  function_calling: true
+  streaming: true
+  vision: false
+  reasoning: false
+
+known_issues:
+  - "Structured output with thinking models: token budget consumed by reasoning before JSON output"
+  - "Multi-tool chain (3+4)*5: some models fail sequential tool calls"

@@ -1,0 +1,30 @@
+name: generic
+display_name: "Generic OpenAI Agent"
+
+config:
+  type: env
+  env_vars:
+    OPENAI_BASE_URL: "{base_url}"
+    OPENAI_API_KEY: "not-needed"
+    OPENAI_MODEL: "{model_id}"
+
+models:
+  recommended:
+    - "qwen3.5-4b"
+    - "qwen3.5-9b"
+
+streaming:
+  extra_tool_tags: []
+  suppress_patterns: []
+  max_tools: 10
+
+testing:
+  query_timeout: 120
+
+capabilities:
+  function_calling: true
+  streaming: true
+  vision: false
+  reasoning: false
+
+known_issues: []

@@ -69,8 +69,10 @@ from .utils import (
     StreamingToolCallFilter,
     clean_output_text,
     extract_multimodal_content,
+    get_tool_call_tags,
     is_mllm_model,
     is_vlm_model,
+    register_tool_call_tag,
     sanitize_output,
     strip_special_tokens,
 )
@@ -124,6 +126,8 @@ __all__ = [
     "strip_special_tokens",
     "StreamingToolCallFilter",
     "StreamingThinkRouter",
+    "register_tool_call_tag",
+    "get_tool_call_tags",
     # Tool calling
     "parse_tool_calls",
     "convert_tools_for_template",

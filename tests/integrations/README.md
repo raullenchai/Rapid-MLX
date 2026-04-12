@@ -80,5 +80,17 @@ Hermes Agent tested separately on Qwen3.5 family (Hermes community models):
 - Open WebUI non-streaming chat with `max_tokens=50`: thinking exhausts the
   budget. Increase max_tokens.
 
-The model path is hard-coded in each test's `MODEL_ID` constant. Edit it to
-match your local model path.
+Model is auto-detected from the running server (`/v1/models` endpoint).
+
+Hermes Agent with Gemma 4 26B MoE:
+
+| Model | Tests | Result |
+|---|---|---|
+| Gemma 4 26B MoE (4bit) | 20/20 | PASS (API + E2E + deep agentic) |
+
+Run all agent tests automatically via:
+
+```bash
+rapid-mlx agents hermes --test
+rapid-mlx agents                    # list all supported agents
+```

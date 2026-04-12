@@ -1,0 +1,65 @@
+name: hermes
+display_name: "Hermes Agent"
+repo: "NousResearch/hermes-agent"
+stars: 64000
+
+config:
+  type: yaml
+  path: "~/.hermes/config.yaml"
+  template: |
+    model:
+      provider: "custom"
+      default: "{model_id}"
+      base_url: "{base_url}"
+      context_length: 32768
+      max_tokens: 4096
+    platform_toolsets:
+      cli: [terminal, file, code_execution, web, browser, skills]
+
+models:
+  recommended:
+    - "qwen3.5-4b"
+    - "qwen3.5-9b"
+    - "gemma-4-26b"
+    - "qwen3.5-35b-a3b"
+  parser_override: null  # use auto-detect per model
+
+streaming:
+  extra_tool_tags:
+    - ["[Calling tool", "\n"]  # Gemma 4 mimicry pattern
+  suppress_patterns: []
+  max_tools: 62  # Hermes injects 62 tools per request
+
+testing:
+  binary: "~/.hermes/venv/bin/hermes"
+  query_cmd: "hermes chat -q '{query}' -Q"
+  query_timeout: 120
+  install_cmd: "pip install hermes-agent"
+  specific_tests: "test_hermes.py"
+
+capabilities:
+  function_calling: true
+  streaming: true
+  vision: false
+  reasoning: true  # works with thinking models
+
+known_issues:
+  - "todo tool conflict: Hermes injects a 'todo' tool that causes errors with Gemma 4. Fix: exclude from platform_toolsets or use -t flag"
+  - "Gemma 4 [Calling tool mimicry: after many tool turns, Gemma 4 parrots Hermes UI text. Fixed in Rapid-MLX v0.4.3"
+  - "pip install hermes-agent may not work on all systems — clone and install from source in a venv"
+
+# Hermes has dual-model routing (smart_model_routing.py)
+# When using with Rapid-MLX multi-model, set the cheap model as secondary
+versions:
+  - range: ">=0.9"
+    notes: "v0.9+ added MCP support and new tool formats"
+  - range: ">=0.8,<0.9"
+    notes: "v0.8 uses older config format without platform_toolsets"
+    config:
+      type: yaml
+      path: "~/.hermes/config.yaml"
+      template: |
+        model:
+          provider: "custom"
+          default: "{model_id}"
+          base_url: "{base_url}"

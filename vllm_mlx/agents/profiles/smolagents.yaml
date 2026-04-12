@@ -1,0 +1,30 @@
+name: smolagents
+display_name: "smolagents"
+repo: "huggingface/smolagents"
+stars: 15000
+
+config:
+  type: env
+  env_vars:
+    OPENAI_BASE_URL: "{base_url}"
+    OPENAI_API_KEY: "not-needed"
+
+models:
+  recommended:
+    - "qwen3.5-9b"
+    - "qwen3.5-4b"
+
+streaming:
+  max_tools: 10
+
+testing:
+  install_cmd: "pip install smolagents"
+  specific_tests: "test_smolagents_full.py"
+
+capabilities:
+  function_calling: true
+  streaming: false  # smolagents doesn't use streaming
+  vision: false
+  reasoning: false
+
+known_issues: []

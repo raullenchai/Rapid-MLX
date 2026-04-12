@@ -116,23 +116,42 @@ print(response.choices[0].message.content)
 
 | Client | Status | Notes |
 |--------|--------|-------|
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Tested | 62 tools, tool calling, multi-turn, 20-test suite ([test](tests/integrations/test_hermes.py)) |
+| [OpenClaude](https://github.com/Gitlawb/openclaude) (Anthropic SDK) | Tested | `CLAUDE_CODE_USE_OPENAI=1`; prompt, tool calling ([test](tests/integrations/test_anthropic_sdk.py)) |
 | [PydanticAI](https://ai.pydantic.dev) | Tested | Typed agents, streaming, structured output, multi-tool ([test](tests/integrations/test_pydantic_ai_full.py)) |
+| [LangChain](https://langchain.com) | Tested | `ChatOpenAI`, tools, streaming, structured output ([test](tests/integrations/test_langchain.py)) |
 | [smolagents](https://github.com/huggingface/smolagents) | Tested | CodeAgent + ToolCallingAgent + multi-tool ([test](tests/integrations/test_smolagents_full.py)) |
-| [LibreChat](https://librechat.ai) | Tested | Docker E2E (register, login, fetch models) ([test](tests/integrations/test_librechat_docker.py)) |
-| [LangChain](https://langchain.com) | Tested | `ChatOpenAI`, tools, streaming ([test](tests/integrations/test_langchain.py)) |
-| [Anthropic SDK](https://docs.anthropic.com/en/docs/sdks) | Tested | Native `/v1/messages` endpoint ([test](tests/integrations/test_anthropic_sdk.py)) |
-| [Aider](https://aider.chat) | Tested | CLI edit-and-commit workflow ([test](tests/integrations/test_aider.sh)) |
-| [OpenCode](https://github.com/sst/opencode) | Compatible (manual) | `opencode.json` provider config; agent loop behavior is model-sensitive |
-| [Claw Code](https://github.com/ultraworkers/claw-code) | Tested | Prompt, code gen, tool calling (read_file) — both OpenAI & Anthropic endpoints |
-| [OpenClaude](https://github.com/Gitlawb/openclaude) | Tested | `CLAUDE_CODE_USE_OPENAI=1` + `OPENAI_BASE_URL`; prompt, tool calling |
-| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Tested | `provider: custom` + `base_url`; 62 tools, tool calling, multi-turn |
+| [Aider](https://aider.chat) | Tested | CLI edit-and-commit, architect mode ([test](tests/integrations/test_aider.sh)) |
 | [Goose](https://github.com/block/goose) | Tested | Ollama provider via `OLLAMA_HOST`; prompt, shell tool use |
-| [OpenClaw](https://github.com/nicepkg/openclaw) | Compatible (manual) | 14 tools, multi-round, streaming; setup wizard required |
-| [Open WebUI](https://github.com/open-webui/open-webui) | Tested | Docker E2E (register, login, model fetch, streaming chat) ([test](tests/integrations/test_openwebui.py)) |
-| [Claude Code](https://claude.ai/claude-code) | Compatible (manual) | `OPENAI_BASE_URL=...` env var; not in automated suite |
-| [Cursor](https://cursor.com) | Compatible (manual) | Settings UI config; closed-source GUI, not automatable |
-| [Continue.dev](https://continue.dev) | Compatible (manual) | VS Code/JetBrains extension; no automation harness |
+| [Claw Code](https://github.com/ultraworkers/claw-code) | Tested | Prompt, code gen, tool calling — both OpenAI & Anthropic endpoints |
+| [LibreChat](https://librechat.ai) | Tested | Docker E2E ([test](tests/integrations/test_librechat_docker.py)) |
+| [Open WebUI](https://github.com/open-webui/open-webui) | Tested | Docker E2E ([test](tests/integrations/test_openwebui.py)) |
+| [Cursor](https://cursor.com) | Compatible | Settings UI config |
+| [Continue.dev](https://continue.dev) | Compatible | VS Code/JetBrains extension |
 | Any OpenAI-compatible app | Compatible | Point at `http://localhost:8000/v1` |
+
+### Agent × Model Compatibility Matrix
+
+Tested with `rapid-mlx agents <name> --test`. Format: `base/total + specific/total`.
+
+| | Qwen3.5 4B | Qwen3.5 9B | Qwen3.5 27B | Qwen3.5 35B-A3B | Qwopus 27B | Gemma 4 26B | DeepSeek-R1 32B |
+|---|---|---|---|---|---|---|---|
+| **Hermes Agent** | 9/9 + 15/15 | 9/9 + 15/15 | — | 9/9 + 15/15 | 9/9 + 15/15 | 11/11 + 20/20 | — |
+| **PydanticAI** | 9/9 + 6/6 | 9/9 + 6/6 | 9/9 + 6/6 | 9/9 + 6/6 | 9/9 + 6/6 | 9/9 + 4/6 ⚠️ | — |
+| **LangChain** | 9/9 + 6/6 | 9/9 + 6/6 | 9/9 + 6/6 | 9/9 + 6/6 | 9/9 + 6/6 | 9/9 + 4/6 ⚠️ | — |
+| **smolagents** | 5/5 + 4/4 | 5/5 + 4/4 | 5/5 + 4/4 | 5/5 + 4/4 | 5/5 + 4/4 | 5/5 + 4/4 | — |
+| **OpenClaude** (Anthropic SDK) | 9/9 + 5/5 | 9/9 + 5/5 | 9/9 + 5/5 | 9/9 + 5/5 | 9/9 + 5/5 | 9/9 + 4/5 ⚠️ | — |
+
+<details>
+<summary>How to read this table</summary>
+
+- **Format**: `base/total + specific/total` — base tests are our standard API test suite (tool calling, streaming, no-leak stress test); specific tests are framework-native tests (e.g. PydanticAI structured output, LangChain `with_structured_output`)
+- **⚠️** = mostly works, minor edge cases. Gemma 4's ⚠️ is due to structured output limitations (model wraps JSON in markdown) and multi-tool chaining — the model works well for single tool calls and streaming
+- **—** = not yet tested
+- Run `rapid-mlx agents <name> --test` to reproduce these results on your machine
+</details>
+
+> **Qwen3.5 family** has the best tool calling across all sizes (73-90% on our 30-scenario eval). **Qwopus** (Claude Opus-distilled Qwen3.5) is excellent for reasoning + tools. **Gemma 4** works great with Hermes — we are the only backend with native Gemma 4 tool calling. Run `rapid-mlx agents` to see all supported agents and setup guides.
 
 **Quick setup for popular apps:**
 

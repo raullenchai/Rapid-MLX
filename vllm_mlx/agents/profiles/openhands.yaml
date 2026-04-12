@@ -1,0 +1,41 @@
+name: openhands
+display_name: "OpenHands"
+repo: "All-Hands-AI/OpenHands"
+stars: 71000
+
+config:
+  type: env
+  env_vars:
+    LLM_BASE_URL: "{base_url}"
+    LLM_API_KEY: "not-needed"
+    LLM_MODEL: "{model_id}"
+
+models:
+  recommended:
+    - "qwen3.5-9b"
+    - "qwen3.5-4b"
+  parser_override: null
+
+streaming:
+  extra_tool_tags: []
+  suppress_patterns: []
+  max_tools: 0  # uses text action format, not FC
+
+testing:
+  binary: null
+  query_cmd: null  # requires Docker, not simple CLI
+  query_timeout: 300
+  install_cmd: "pip install openhands"
+
+capabilities:
+  function_calling: false  # text action format
+  streaming: true
+  vision: true  # browser screenshots
+  reasoning: false
+
+known_issues:
+  - "Requires Docker for sandbox execution"
+  - "Uses text-based action format, not OpenAI function calling"
+  - "Uses LiteLLM under the hood — supports LLM_BASE_URL"
+  - "Small local models struggle with the complex action format"
+  - "SWE-bench score 77.6% — research-grade agent"

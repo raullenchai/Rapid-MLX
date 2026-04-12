@@ -785,6 +785,86 @@ def models_command(_args):
     print()
 
 
+def agents_command(args):
+    """List, configure, and test agent integrations."""
+    from vllm_mlx.agents import get_profile, list_profiles
+    from vllm_mlx.agents.adapter import get_setup_instructions, setup_agent_config
+
+    agent_name = args.agent_name
+    base_url = args.base_url
+
+    # No agent specified → list all profiles
+    if not agent_name:
+        profiles = list_profiles()
+        print()
+        print("  Supported AI Agents")
+        print("  " + "─" * 56)
+        for p in profiles:
+            fc = "FC" if p.needs_function_calling else "  "
+            stars = f"{p.stars // 1000}K" if p.stars and p.stars >= 1000 else ""
+            models = ", ".join(p.recommended_models[:2]) if p.recommended_models else ""
+            print(f"  {p.name:<15} {p.display_name:<20} {stars:>5}  [{fc}]  {models}")
+        print()
+        print(f"  {len(profiles)} agents supported")
+        print("  Usage: rapid-mlx agents <name>          Show setup guide")
+        print("         rapid-mlx agents <name> --setup   Auto-configure")
+        print("         rapid-mlx agents <name> --test    Run integration tests")
+        print()
+        return
+
+    # Get profile
+    profile = get_profile(agent_name)
+    if not profile:
+        print(f"  Unknown agent: {agent_name}")
+        print("  Run 'rapid-mlx agents' to see available agents.")
+        sys.exit(1)
+
+    # --test: run integration tests
+    if args.test:
+        from vllm_mlx.agents.testing import AgentTestRunner
+
+        model_id = args.model or None
+        runner = AgentTestRunner(profile, base_url=base_url,
+                                 model_id=model_id,
+                                 agent_version=args.agent_version)
+        if not runner._server_available():
+            print(f"\n  Server not running at {base_url}")
+            print("  Start it first: rapid-mlx serve <model>")
+            sys.exit(1)
+
+        report = runner.run()
+        success = report.print_summary()
+        sys.exit(0 if success else 1)
+
+    # --setup: auto-configure agent
+    if args.setup:
+        # Detect model from running server
+        model_id = args.model or "default"
+        if model_id == "default":
+            try:
+                import httpx
+                resp = httpx.get(f"{base_url}/models", timeout=3)
+                model_id = resp.json()["data"][0]["id"]
+            except Exception:
+                pass
+
+        summary = setup_agent_config(profile, base_url, model_id,
+                                      agent_version=args.agent_version)
+        print(f"\n  {profile.display_name} configured!")
+        print(f"  {summary}")
+        print()
+        return
+
+    # Default: show setup instructions
+    model_id = args.model or (profile.recommended_models[0]
+                               if profile.recommended_models else "<MODEL>")
+    instructions = get_setup_instructions(profile, base_url, model_id,
+                                          agent_version=args.agent_version)
+    print()
+    print(instructions)
+    print()
+
+
 def main():
     from importlib.metadata import version as pkg_version
 
@@ -1350,6 +1430,35 @@ Examples:
     # Models command
     subparsers.add_parser("models", help="List available model aliases")
 
+    # Agents command
+    agents_parser = subparsers.add_parser(
+        "agents", help="List, configure, and test agent integrations"
+    )
+    agents_parser.add_argument(
+        "agent_name", nargs="?", default=None,
+        help="Agent name (e.g. hermes, goose, aider). Omit to list all.",
+    )
+    agents_parser.add_argument(
+        "--setup", action="store_true",
+        help="Auto-configure the agent to point at this server",
+    )
+    agents_parser.add_argument(
+        "--test", action="store_true",
+        help="Run integration tests for this agent",
+    )
+    agents_parser.add_argument(
+        "--model", type=str, default=None,
+        help="Model to use (default: auto-detect from running server)",
+    )
+    agents_parser.add_argument(
+        "--base-url", type=str, default="http://localhost:8000/v1",
+        help="Rapid-MLX server URL (default: http://localhost:8000/v1)",
+    )
+    agents_parser.add_argument(
+        "--agent-version", type=str, default=None,
+        help="Agent version for version-specific config (e.g. 0.8.5)",
+    )
+
     args = parser.parse_args()
 
     # Resolve model aliases before dispatch
@@ -1372,6 +1481,8 @@ Examples:
         bench_kv_cache_command(args)
     elif args.command == "models":
         models_command(args)
+    elif args.command == "agents":
+        agents_command(args)
     else:
         parser.print_help()
         sys.exit(1)

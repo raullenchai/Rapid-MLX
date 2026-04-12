@@ -1,0 +1,42 @@
+name: cline
+display_name: "Cline"
+repo: "cline/cline"
+stars: 60000
+
+config:
+  type: env
+  env_vars:
+    # Cline uses VS Code settings, not env vars
+    # User must set in VS Code: API Provider = "OpenAI Compatible"
+    OPENAI_BASE_URL: "{base_url}"
+    OPENAI_API_KEY: "not-needed"
+
+models:
+  recommended:
+    - "qwen3.5-9b"
+    - "gemma-4-26b"
+  parser_override: null
+
+streaming:
+  extra_tool_tags: []
+  suppress_patterns: []
+  max_tools: 15
+
+testing:
+  binary: null  # VS Code extension, no CLI
+  query_cmd: null
+  query_timeout: 120
+  install_cmd: "code --install-extension saoudrizwan.claude-dev"
+
+capabilities:
+  function_calling: false  # uses XML text parsing, not OpenAI FC
+  streaming: true
+  vision: true  # sends screenshots
+  reasoning: false
+
+known_issues:
+  - "VS Code extension — no CLI mode for automated testing"
+  - "Uses XML text parsing for tools, not OpenAI function calling"
+  - "Multimodal: sends screenshots as images for browser interaction"
+  - "Ollama SSH tunnel disconnects (issue #10147)"
+  - "Small models struggle with the XML tool format"

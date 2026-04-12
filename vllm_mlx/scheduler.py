@@ -1164,15 +1164,6 @@ class Scheduler:
         if sampling_params.stop_token_ids:
             stop_tokens.update(sampling_params.stop_token_ids)
 
-        def _prefill_progress(progress_list):
-            """Log prefill progress for each uid chunk."""
-            for uid, processed, total in progress_list:
-                rid = self.uid_to_request_id.get(uid, "?")
-                logger.info(
-                    f"[prefill] request={rid[:12] if isinstance(rid, str) else rid} "
-                    f"tokens={processed}/{total}"
-                )
-
         bg = BatchGenerator(
             model=self.model,
             max_tokens=sampling_params.max_tokens,
@@ -1181,7 +1172,6 @@ class Scheduler:
             prefill_batch_size=self.config.prefill_batch_size,
             completion_batch_size=self.config.completion_batch_size,
             prefill_step_size=self.config.prefill_step_size,
-            prompt_progress_callback=_prefill_progress,
         )
 
         # Install chunked prefill when explicitly configured OR when
