@@ -112,8 +112,8 @@ class TestApplyChatTemplate:
         assert "tools" not in kwargs
 
     def test_fallback_on_type_error(self, mock_tokenizer, simple_messages):
-        """Should fall back gracefully when template doesn't support extras."""
-        # First call raises TypeError, second succeeds
+        """Should retry without enable_thinking first, preserving tools."""
+        # First call raises TypeError (both kwargs), second succeeds (without enable_thinking)
         mock_tokenizer.apply_chat_template.side_effect = [
             TypeError("unsupported keyword argument 'enable_thinking'"),
             "<fallback prompt>",
@@ -126,7 +126,27 @@ class TestApplyChatTemplate:
             model_name="test",
         )
         assert result == "<fallback prompt>"
-        # Second call should NOT have tools or enable_thinking
+        # Second call should keep tools but drop enable_thinking
+        _, fallback_kwargs = mock_tokenizer.apply_chat_template.call_args
+        assert "tools" in fallback_kwargs
+        assert "enable_thinking" not in fallback_kwargs
+
+    def test_fallback_strips_tools_when_both_fail(self, mock_tokenizer, simple_messages):
+        """Should fall back to prompt injection when template rejects both."""
+        mock_tokenizer.apply_chat_template.side_effect = [
+            TypeError("unsupported keyword argument 'enable_thinking'"),
+            TypeError("unsupported keyword argument 'tools'"),
+            "<injected prompt>",
+        ]
+        result = apply_chat_template(
+            mock_tokenizer,
+            simple_messages,
+            tools=[{"type": "function", "function": {"name": "f", "parameters": {}}}],
+            enable_thinking=True,
+            model_name="test",
+        )
+        assert result == "<injected prompt>"
+        # Third call should have neither tools nor enable_thinking
         _, fallback_kwargs = mock_tokenizer.apply_chat_template.call_args
         assert "tools" not in fallback_kwargs
         assert "enable_thinking" not in fallback_kwargs

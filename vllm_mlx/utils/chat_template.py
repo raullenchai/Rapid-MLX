@@ -136,15 +136,17 @@ def apply_chat_template(
     try:
         return template_applicator.apply_chat_template(messages, **template_kwargs)
     except TypeError as e:
-        # Template doesn't support tools/enable_thinking params.
-        logger.debug("Chat template TypeError, retrying without extras: %s", e)
-        for key in ["tools", "enable_thinking"]:
-            template_kwargs.pop(key, None)
+        # Step 1: retry without enable_thinking (many templates don't support it)
+        logger.debug("Chat template TypeError, retrying without enable_thinking: %s", e)
+        template_kwargs.pop("enable_thinking", None)
+        try:
+            return template_applicator.apply_chat_template(messages, **template_kwargs)
+        except TypeError:
+            pass
 
+        # Step 2: template also rejects tools — fall back to prompt injection
+        template_kwargs.pop("tools", None)
         if tools:
-            # Inject tool definitions into system message so the model
-            # can still see them even though the template rejects the
-            # tools parameter.
             logger.info(
                 "Chat template doesn't support tools param — "
                 "injecting %d tool definitions into system prompt",
