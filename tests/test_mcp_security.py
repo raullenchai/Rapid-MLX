@@ -701,27 +701,25 @@ class TestToolSandboxAuditLogging:
 class TestToolSandboxHighRiskTools:
     """Tests for high-risk tool detection."""
 
-    def test_high_risk_tool_warning(self, caplog):
-        """Test that high-risk tools trigger warning."""
-        import logging
-
+    def test_high_risk_tool_blocked_by_default(self):
+        """High-risk tools should be blocked unless explicitly allowlisted."""
         sandbox = ToolSandbox()
 
-        with caplog.at_level(logging.WARNING):
+        with pytest.raises(MCPSecurityError) as exc_info:
             sandbox.validate_tool_execution(
                 tool_name="execute_command",
                 server_name="test",
                 arguments={"cmd": "ls"},
             )
 
-        assert "High-risk tool detected" in caplog.text
-        assert "execute" in caplog.text
+        assert "High-risk tool 'execute_command' is blocked" in str(exc_info.value)
+        assert "allowed_high_risk_tools" in str(exc_info.value)
 
-    def test_high_risk_shell_tool(self, caplog):
-        """Test that shell tools trigger warning."""
+    def test_high_risk_tool_allowed_by_short_name(self, caplog):
+        """Short-name allowlist entries should permit trusted high-risk tools."""
         import logging
 
-        sandbox = ToolSandbox()
+        sandbox = ToolSandbox(allowed_high_risk_tools={"run_shell"})
 
         with caplog.at_level(logging.WARNING):
             sandbox.validate_tool_execution(
@@ -730,7 +728,22 @@ class TestToolSandboxHighRiskTools:
                 arguments={},
             )
 
-        assert "High-risk tool detected" in caplog.text
+        assert "Allowing high-risk tool 'test__run_shell'" in caplog.text
+
+    def test_high_risk_tool_allowed_by_full_name(self, caplog):
+        """Full-name allowlist entries should permit trusted high-risk tools."""
+        import logging
+
+        sandbox = ToolSandbox(allowed_high_risk_tools={"trusted__execute_command"})
+
+        with caplog.at_level(logging.WARNING):
+            sandbox.validate_tool_execution(
+                tool_name="execute_command",
+                server_name="trusted",
+                arguments={"cmd": "ls"},
+            )
+
+        assert "Allowing high-risk tool 'trusted__execute_command'" in caplog.text
 
 
 class TestCustomBlockedPatterns:

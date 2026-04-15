@@ -38,6 +38,8 @@ class Glm47ToolParser(ToolParser):
     Used when --enable-auto-tool-choice --tool-call-parser glm47 are set.
     """
 
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
     # Match entire tool call block
     TOOL_CALL_PATTERN = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
