@@ -5,7 +5,7 @@ Type definitions for MCP client support.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Set
 
 
 class MCPTransport(str, Enum):
@@ -97,6 +97,7 @@ class MCPConfig:
     servers: dict[str, MCPServerConfig] = field(default_factory=dict)
     max_tool_calls: int = 10
     default_timeout: float = 30.0
+    allowed_high_risk_tools: Set[str] = field(default_factory=set)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MCPConfig":
@@ -110,6 +111,7 @@ class MCPConfig:
             servers=servers,
             max_tool_calls=data.get("max_tool_calls", 10),
             default_timeout=data.get("default_timeout", 30.0),
+            allowed_high_risk_tools=set(data.get("allowed_high_risk_tools", [])),
         )
 
 

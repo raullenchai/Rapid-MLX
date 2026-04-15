@@ -401,6 +401,7 @@ class ToolSandbox:
         self,
         allowed_tools: set[str] | None = None,
         blocked_tools: set[str] | None = None,
+        allowed_high_risk_tools: set[str] | None = None,
         blocked_arg_patterns: list[re.Pattern] | None = None,
         max_calls_per_minute: int = 60,
         audit_callback: Callable[[ToolExecutionAudit], None] | None = None,
@@ -412,6 +413,7 @@ class ToolSandbox:
         Args:
             allowed_tools: If set, only these tools can be executed (whitelist mode).
             blocked_tools: Tools that are always blocked (blacklist mode).
+            allowed_high_risk_tools: High-risk tools that are explicitly allowed.
             blocked_arg_patterns: Patterns to block in tool arguments.
             max_calls_per_minute: Rate limit for tool calls (0 = unlimited).
             audit_callback: Optional callback for audit events.
@@ -419,6 +421,9 @@ class ToolSandbox:
         """
         self.allowed_tools = allowed_tools
         self.blocked_tools = blocked_tools or set()
+        self.allowed_high_risk_tools = {
+            tool.lower() for tool in (allowed_high_risk_tools or set())
+        }
         self.blocked_arg_patterns = (
             blocked_arg_patterns or DANGEROUS_TOOL_ARG_PATTERNS.copy()
         )
@@ -479,7 +484,7 @@ class ToolSandbox:
                 )
 
         # Check for high-risk tool patterns
-        self._check_high_risk_tool(tool_name)
+        self._check_high_risk_tool(tool_name, full_name)
 
         # Validate arguments
         self._validate_arguments(tool_name, arguments)
@@ -497,16 +502,26 @@ class ToolSandbox:
             or tool_name.lower() in self.blocked_tools
         )
 
-    def _check_high_risk_tool(self, tool_name: str) -> None:
+    def _check_high_risk_tool(self, tool_name: str, full_name: str) -> None:
         """Check if tool matches high-risk patterns."""
         tool_lower = tool_name.lower()
+        full_lower = full_name.lower()
         for pattern in HIGH_RISK_TOOL_PATTERNS:
             if pattern in tool_lower:
-                logger.warning(
-                    f"High-risk tool detected: '{tool_name}' matches pattern '{pattern}'. "
-                    f"Ensure this tool is from a trusted MCP server."
+                if (
+                    tool_lower in self.allowed_high_risk_tools
+                    or full_lower in self.allowed_high_risk_tools
+                ):
+                    logger.warning(
+                        "Allowing high-risk tool '%s' due to explicit allowlist entry",
+                        full_name,
+                    )
+                    return
+                raise MCPSecurityError(
+                    f"High-risk tool '{tool_name}' is blocked by security policy. "
+                    f"Add '{full_name}' or '{tool_name}' to allowed_high_risk_tools "
+                    f"to allow it explicitly."
                 )
-                break
 
     def _validate_arguments(self, tool_name: str, arguments: dict[str, Any]) -> None:
         """Validate tool arguments for dangerous patterns."""
