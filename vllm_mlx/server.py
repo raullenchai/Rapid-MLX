@@ -367,11 +367,20 @@ async def lifespan(app: FastAPI):
 
             # Skip warmup for hybrid models (GatedDeltaNet) to avoid
             # contaminating compiled kernel state that interferes with
-            # batched inference.  Reuse the flag set by EngineCore if
-            # available; fall back to direct detection for SimpleEngine.
+            # batched inference.  Check multiple engine wrappers:
+            # BatchedEngine sets _hybrid_throttle via EngineCore,
+            # HybridEngine wraps model in _shared_model,
+            # SimpleEngine wraps in MLXLanguageModel._model.
             _is_hybrid = getattr(_engine, "_hybrid_throttle", False)
             if not _is_hybrid and not getattr(_engine, "_is_mllm", False):
-                _model = getattr(_engine, "_model", None)
+                # Try to find the raw model through wrapper layers
+                _model = (
+                    getattr(_engine, "_model", None)
+                    or getattr(_engine, "_shared_model", None)
+                )
+                # Unwrap MLXLanguageModel if needed
+                if _model and hasattr(_model, "model") and not hasattr(_model, "make_cache"):
+                    _model = _model.model
                 if _model and hasattr(_model, "make_cache"):
                     try:
                         from mlx_lm.models.cache import ArraysCache

@@ -317,13 +317,6 @@ class EngineCore:
             prefix_boundary=prefix_boundary,
         )
 
-        # Setup output collector with stream_interval from config
-        self._output_collectors[request_id] = RequestOutputCollector(aggregate=True)
-        self._stream_states[request_id] = RequestStreamState(
-            stream_interval=self.config.stream_interval
-        )
-        self._finished_events[request_id] = asyncio.Event()
-
         # Throttle requests for hybrid models (GatedDeltaNet + Transformer).
         # Simultaneous batch formation with ArraysCache causes corruption
         # (all outputs become token 0).  A 200ms gap between inserts lets
@@ -341,6 +334,14 @@ class EngineCore:
                 if elapsed < gap:
                     await asyncio.sleep(gap - elapsed)
                 self._last_request_time = loop.time()
+
+        # Setup output collector AFTER throttle so a cancelled sleep
+        # doesn't leak per-request state.
+        self._output_collectors[request_id] = RequestOutputCollector(aggregate=True)
+        self._stream_states[request_id] = RequestStreamState(
+            stream_interval=self.config.stream_interval
+        )
+        self._finished_events[request_id] = asyncio.Event()
 
         # Add to scheduler
         self.scheduler.add_request(request)
