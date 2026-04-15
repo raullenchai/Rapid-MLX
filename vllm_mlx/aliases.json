@@ -24,5 +24,15 @@
   "qwopus-9b": "Jackrong/MLX-Qwopus3.5-9B-v3-4bit",
   "qwopus-27b": "Jackrong/MLX-Qwopus3.5-27B-v3-4bit",
   "qwopus-27b-8bit": "Jackrong/MLX-Qwopus3.5-27B-v3-8bit",
-  "kimi-48b": "mlx-community/Kimi-K2-Instruct-Q4_0-MLX"
+  "kimi-48b": "mlx-community/Kimi-K2-Instruct-Q4_0-MLX",
+  "kimi-k2.5": "mlx-community/Kimi-K2.5-3bit",
+  "ministral-3b": "mlx-community/Ministral-3-3B-Instruct-2512-4bit",
+  "hermes4-70b": "lmstudio-community/Hermes-4-70B-MLX-4bit",
+  "qwen3-vl-8b": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
+  "qwen3-vl-30b": "mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit",
+  "devstral-v2-24b": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
+  "qwen3-coder-30b": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+  "gemma-3n-e4b": "mlx-community/gemma-3n-E4B-it-4bit",
+  "gemma3-1b": "mlx-community/gemma-3-1b-it-4bit",
+  "gemma3-27b": "mlx-community/gemma-3-27b-it-4bit"
 }
