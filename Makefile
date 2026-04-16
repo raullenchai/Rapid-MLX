@@ -1,13 +1,22 @@
 .PHONY: help smoke check full benchmark update-baselines lint test clean
 
-# Pick the active interpreter, then fall back to common names.
-# Override with: make smoke PY=python3.13
-PY ?= $(shell command -v python3.12 2>/dev/null \
-              || command -v python3.13 2>/dev/null \
-              || command -v python3.11 2>/dev/null \
-              || command -v python3.10 2>/dev/null \
-              || command -v python3 2>/dev/null \
-              || echo python)
+# Pick the interpreter:
+#   1. Active venv (VIRTUAL_ENV/bin/python) — wins so contributors using
+#      a 3.10/3.11/3.13 venv get their venv's python regardless of PATH
+#   2. Versioned binaries — only if no venv is active.  Skips 'python' /
+#      'python3' here because on macOS those can be system Python 3.9,
+#      which is below our minimum (project requires-python = >=3.10).
+# Override explicitly with: make smoke PY=python3.13
+PY ?= $(shell \
+  if [ -n "$$VIRTUAL_ENV" ] && [ -x "$$VIRTUAL_ENV/bin/python" ]; then \
+    echo "$$VIRTUAL_ENV/bin/python"; \
+  else \
+    command -v python3.13 2>/dev/null \
+    || command -v python3.12 2>/dev/null \
+    || command -v python3.11 2>/dev/null \
+    || command -v python3.10 2>/dev/null \
+    || echo python3; \
+  fi)
 HF_HUB_CACHE ?= $(shell echo $$HF_HUB_CACHE)
 DOCTOR := $(PY) -m vllm_mlx.cli doctor
 
