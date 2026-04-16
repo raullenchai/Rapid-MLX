@@ -2079,6 +2079,20 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             last_user_preview = content[:300]
     has_tools = bool(request.tools)
     n_tools = len(request.tools) if request.tools else 0
+
+    # Trigger FSM precompile on first request with tools (lazy, cached)
+    if has_tools and _enable_tool_logits_bias:
+        try:
+            from .api.fsm_tool_call import get_fsm_cache
+
+            tools_dicts = [
+                t.model_dump(exclude_none=True) if hasattr(t, "model_dump") else t
+                for t in request.tools
+            ]
+            get_fsm_cache().precompile(tools_dicts)
+        except Exception:
+            pass  # FSM is optional enhancement, never block requests
+
     logger.info(
         f"[REQUEST] POST /v1/chat/completions stream={request.stream} "
         f"model={request.model!r} max_tokens={request.max_tokens} "
