@@ -365,8 +365,51 @@ async def lifespan(app: FastAPI):
         try:
             import mlx.core as mx
 
-            _engine.generate_warmup()
-            mx.eval(mx.zeros(1))  # Force sync
+            # Skip warmup for hybrid models (GatedDeltaNet) to avoid
+            # contaminating compiled kernel state that interferes with
+            # batched inference.  Check multiple engine wrappers:
+            # BatchedEngine sets _hybrid_throttle via EngineCore,
+            # HybridEngine wraps model in _shared_model,
+            # SimpleEngine wraps in MLXLanguageModel._model.
+            _is_hybrid = getattr(_engine, "_hybrid_throttle", False)
+            if not _is_hybrid and not getattr(_engine, "_is_mllm", False):
+                # Try to find the raw model through wrapper layers
+                _model = (
+                    getattr(_engine, "_model", None)
+                    or getattr(_engine, "_shared_model", None)
+                )
+                # Unwrap MLXLanguageModel if needed
+                if _model and hasattr(_model, "model") and not hasattr(_model, "make_cache"):
+                    _model = _model.model
+                if _model and hasattr(_model, "make_cache"):
+                    try:
+                        from mlx_lm.models.cache import ArraysCache
+                        _test_cache = _model.make_cache()
+                        _is_hybrid = any(
+                            isinstance(c, ArraysCache) for c in _test_cache
+                        )
+                    except Exception:
+                        pass
+            if not _is_hybrid:
+                _engine.generate_warmup()
+                mx.eval(mx.zeros(1))  # Force sync
+            else:
+                # Hybrid models need a full request warmup to compile
+                # Metal shaders and prime the BatchGenerator, preventing
+                # corruption on the first concurrent batch.
+                logger.info(
+                    "Hybrid model: running full request warmup "
+                    "(compiling GatedDeltaNet kernels)"
+                )
+                try:
+                    async for _ in _engine.stream_chat(
+                        messages=[{"role": "user", "content": "Hi"}],
+                        max_tokens=2,
+                        temperature=0.0,
+                    ):
+                        pass
+                except Exception as _e:
+                    logger.debug(f"Hybrid warmup error (non-fatal): {_e}")
         except Exception as e:
             logger.debug(f"Warmup failed (non-fatal): {e}")
         _warmup_secs = _time.monotonic() - _warmup_start

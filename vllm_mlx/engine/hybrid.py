@@ -34,9 +34,8 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-from mlx_lm import load
-
 from ..model_registry import get_registry
+from ..utils.tokenizer import load_model_with_fallback as load
 from .base import BaseEngine, GenerationOutput
 from .batched import BatchedEngine
 from .simple import SimpleEngine
@@ -106,6 +105,7 @@ class HybridEngine(BaseEngine):
         self._active_requests = 0
         self._lock = asyncio.Lock()
         self._switch_lock = asyncio.Lock()
+        self._simple_in_flight = 0  # Track in-flight simple requests
 
         # State
         self._loaded = False
@@ -164,9 +164,11 @@ class HybridEngine(BaseEngine):
             await self._batched.start()
             self._current_mode = "batched"
         else:
-            # Load model once using mlx-lm (only for non-MLLM models)
+            # Load model once, using our wrapper that handles Qwen3 EOS
+            # token fix, non-standard tokenizer fallbacks, and MTP injection.
+            tokenizer_config = {"trust_remote_code": self._trust_remote_code}
             self._shared_model, self._shared_tokenizer = load(
-                self._model_name, trust_remote_code=self._trust_remote_code
+                self._model_name, tokenizer_config=tokenizer_config
             )
 
             # Create SimpleEngine with draft model support
@@ -263,6 +265,17 @@ class HybridEngine(BaseEngine):
             old_mode = self._current_mode
 
             if target_mode == "batched":
+                # Wait for in-flight simple requests to finish before
+                # stealing model ownership (fixes #107).
+                for _ in range(600):  # 60s max wait
+                    if self._simple_in_flight <= 0:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    logger.warning(
+                        "HybridEngine: timed out waiting for simple requests"
+                    )
+
                 # Switching to batched mode
                 if self._batched and self._batched._engine:
                     # Start BatchedEngine's engine loop if not started yet (lazy start)
@@ -304,6 +317,10 @@ class HybridEngine(BaseEngine):
         """
         Decide which mode to use and switch if necessary.
 
+        When entering=True, also increments _simple_in_flight atomically
+        with the mode decision so the switch-to-batched path can see the
+        counter before ownership transfer.
+
         Args:
             active: Current active request count (must be passed from caller)
             entering: True when entering a request, False when exiting
@@ -314,32 +331,27 @@ class HybridEngine(BaseEngine):
         if self._is_mllm:
             return "batched"
 
-        # Decide based on active request count
-        # When entering: count includes this request
-        # When exiting: count excludes this request
-        # active is passed in to avoid race conditions
-
         if active >= self._switch_threshold:
             target_mode = "batched"
         else:
             target_mode = "simple"
 
-        # Only switch when safe (no active requests in the other engine)
-        # This is a simplified heuristic - we switch when crossing the threshold
         if target_mode != self._current_mode:
-            # Log the decision
             logger.debug(
                 f"HybridEngine: active_requests={active}, "
                 f"threshold={self._switch_threshold}, "
                 f"current={self._current_mode}, target={target_mode}"
             )
 
-            # Only switch to batched immediately, switch to simple when quiet
             if target_mode == "batched":
                 await self._switch_to_mode("batched")
             elif active == 0:
-                # Switch back to simple only when completely idle
                 await self._switch_to_mode("simple")
+
+        # Mark simple in-flight AFTER mode decision but inside the same
+        # async context, so _switch_to_mode can see the counter.
+        if entering and self._current_mode == "simple":
+            self._simple_in_flight += 1
 
         return self._current_mode
 
@@ -359,8 +371,8 @@ class HybridEngine(BaseEngine):
         async with self._lock:
             self._active_requests += 1
 
+        mode = None
         try:
-            # Decide mode and switch if needed
             mode = await self._decide_and_switch_mode(
                 self._active_requests, entering=True
             )
@@ -375,9 +387,10 @@ class HybridEngine(BaseEngine):
                 **kwargs,
             )
         finally:
+            if mode == "simple":
+                self._simple_in_flight -= 1
             async with self._lock:
                 self._active_requests -= 1
-            # Check if we should switch back to simple mode
             await self._decide_and_switch_mode(self._active_requests, entering=False)
 
     async def stream_generate(
@@ -396,8 +409,8 @@ class HybridEngine(BaseEngine):
         async with self._lock:
             self._active_requests += 1
 
+        mode = None
         try:
-            # Decide mode and switch if needed
             mode = await self._decide_and_switch_mode(
                 self._active_requests, entering=True
             )
@@ -413,9 +426,10 @@ class HybridEngine(BaseEngine):
             ):
                 yield output
         finally:
+            if mode == "simple":
+                self._simple_in_flight -= 1
             async with self._lock:
                 self._active_requests -= 1
-            # Check if we should switch back to simple mode
             await self._decide_and_switch_mode(self._active_requests, entering=False)
 
     async def chat(
@@ -436,8 +450,8 @@ class HybridEngine(BaseEngine):
         async with self._lock:
             self._active_requests += 1
 
+        mode = None
         try:
-            # Decide mode and switch if needed
             mode = await self._decide_and_switch_mode(
                 self._active_requests, entering=True
             )
@@ -454,9 +468,10 @@ class HybridEngine(BaseEngine):
                 **kwargs,
             )
         finally:
+            if mode == "simple":
+                self._simple_in_flight -= 1
             async with self._lock:
                 self._active_requests -= 1
-            # Check if we should switch back to simple mode
             await self._decide_and_switch_mode(self._active_requests, entering=False)
 
     async def stream_chat(
@@ -477,8 +492,8 @@ class HybridEngine(BaseEngine):
         async with self._lock:
             self._active_requests += 1
 
+        mode = None
         try:
-            # Decide mode and switch if needed
             mode = await self._decide_and_switch_mode(
                 self._active_requests, entering=True
             )
@@ -496,9 +511,10 @@ class HybridEngine(BaseEngine):
             ):
                 yield output
         finally:
+            if mode == "simple":
+                self._simple_in_flight -= 1
             async with self._lock:
                 self._active_requests -= 1
-            # Check if we should switch back to simple mode
             await self._decide_and_switch_mode(self._active_requests, entering=False)
 
     def get_stats(self) -> dict[str, Any]:

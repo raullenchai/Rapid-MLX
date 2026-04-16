@@ -174,7 +174,7 @@ class TestStart:
             await engine.start()
 
             mock_load.assert_called_once_with(
-                "test_model", trust_remote_code=True
+                "test_model", tokenizer_config={"trust_remote_code": True}
             )
 
     @pytest.mark.asyncio
@@ -198,7 +198,7 @@ class TestStart:
             await engine.start()
 
             mock_load.assert_called_once_with(
-                "test_model", trust_remote_code=False
+                "test_model", tokenizer_config={"trust_remote_code": False}
             )
 
     @pytest.mark.asyncio

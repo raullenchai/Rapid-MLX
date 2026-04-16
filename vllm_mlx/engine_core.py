@@ -106,6 +106,24 @@ class EngineCore:
         self._start_time: float | None = None
         self._steps_executed = 0
 
+        # Detect hybrid models (GatedDeltaNet) that need request throttling
+        self._hybrid_throttle = False
+        self._hybrid_lock: asyncio.Lock | None = None  # lazy-init in event loop
+        self._last_request_time = 0.0
+        try:
+            if hasattr(model, "make_cache"):
+                from mlx_lm.models.cache import ArraysCache
+
+                test_cache = model.make_cache()
+                if any(isinstance(c, ArraysCache) for c in test_cache):
+                    self._hybrid_throttle = True
+                    logger.info(
+                        "Hybrid model detected (GatedDeltaNet) — "
+                        "enabling 200ms request throttle for batch safety"
+                    )
+        except Exception:
+            pass
+
         logger.debug(f"Engine {self._engine_id} initialized")
 
     async def start(self) -> None:
@@ -299,7 +317,26 @@ class EngineCore:
             prefix_boundary=prefix_boundary,
         )
 
-        # Setup output collector with stream_interval from config
+        # Throttle requests for hybrid models (GatedDeltaNet + Transformer).
+        # Simultaneous batch formation with ArraysCache causes corruption
+        # (all outputs become token 0).  A 200ms gap between inserts lets
+        # the BatchGenerator fully absorb each request before the next arrives.
+        # The first request needs a longer gap (500ms) to allow BatchGenerator
+        # creation and Metal shader compilation to complete.
+        if self._hybrid_throttle:
+            if self._hybrid_lock is None:
+                self._hybrid_lock = asyncio.Lock()
+            loop = asyncio.get_running_loop()
+            async with self._hybrid_lock:
+                now = loop.time()
+                elapsed = now - self._last_request_time
+                gap = 0.5 if self._last_request_time == 0.0 else 0.2
+                if elapsed < gap:
+                    await asyncio.sleep(gap - elapsed)
+                self._last_request_time = loop.time()
+
+        # Setup output collector AFTER throttle so a cancelled sleep
+        # doesn't leak per-request state.
         self._output_collectors[request_id] = RequestOutputCollector(aggregate=True)
         self._stream_states[request_id] = RequestStreamState(
             stream_interval=self.config.stream_interval

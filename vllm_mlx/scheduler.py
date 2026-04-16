@@ -2371,12 +2371,14 @@ class Scheduler:
         self._step_count += 1
         if self._step_count % effective_interval == 0:
             # Evaluate batch tokens to collapse lazy concatenation chains
-            if (
-                self.batch_generator is not None
-                and self.batch_generator.active_batch is not None
-                and hasattr(self.batch_generator.active_batch, "tokens")
-            ):
-                tokens = self.batch_generator.active_batch.tokens
+            # mlx-lm 0.31+ renamed active_batch to _generation_batch
+            _active = None
+            if self.batch_generator is not None:
+                _active = getattr(
+                    self.batch_generator, "active_batch", None
+                ) or getattr(self.batch_generator, "_generation_batch", None)
+            if _active is not None and hasattr(_active, "tokens"):
+                tokens = _active.tokens
                 if tokens:
                     mx.eval(*tokens)
             mx.clear_cache()
