@@ -68,8 +68,18 @@ def load_thresholds(path: Path | None = None) -> dict[str, dict[str, float]]:
 # ---------------------------------------------------------------------
 
 def _safe_model_slug(model: str) -> str:
-    """File-system-safe slug for use in baseline filenames."""
-    return model.replace("/", "__").replace(" ", "_")
+    """File-system-safe, *injective* slug for baseline filenames.
+
+    Uses URL percent-encoding so the mapping is one-to-one — i.e.
+    ``foo/bar``, ``foo__bar`` and ``foo bar`` all produce distinct
+    files.  A simple ``replace('/', '__')`` would collide on names
+    that legitimately contain ``__``.
+    """
+    import urllib.parse
+
+    # safe='' so '/' (and '%') are quoted; '-' and '.' kept for
+    # readability since they appear in nearly every model id.
+    return urllib.parse.quote(model, safe="-.")
 
 
 def baseline_path(tier: str, model: str | None = None) -> Path:
@@ -138,19 +148,25 @@ class MetricDelta:
 
 
 # Metrics where SMALLER values are better (latency, memory).
+# Keep this set in sync with what scripts/autoresearch_bench.py emits.
 _LOWER_IS_BETTER = {
-    "ttft_cold_ms",
-    "ttft_cached_ms",
-    "multiturn_ttft_ms",
-    "long_prompt_ttft_ms",
-    "long_cached_ttft_ms",
-    "tool_latency_s",
-    "tool_latency_ms",
-    "peak_ram_mb",
+    # autoresearch metric names (canonical)
     "cold_ttft_ms",
     "cached_ttft_ms",
     "mt_ttft_ms",
     "long_ttft_ms",
+    "long_cached_ttft_ms",
+    "tc_latency_ms",          # tool-call latency: lower = better
+    "peak_ram_mb",
+    # legacy / alternate names retained so older baselines and
+    # external bench scripts using *ttft_cold_ms* style keys also
+    # diff with the correct sign.
+    "ttft_cold_ms",
+    "ttft_cached_ms",
+    "multiturn_ttft_ms",
+    "long_prompt_ttft_ms",
+    "tool_latency_s",
+    "tool_latency_ms",
 }
 
 
