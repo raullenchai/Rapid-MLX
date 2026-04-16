@@ -95,13 +95,31 @@ def baseline_path(tier: str, model: str | None = None) -> Path:
     return base / f"{tier}-{_safe_model_slug(model)}.json"
 
 
+def _legacy_slug(model: str) -> str:
+    """Old slug scheme (replace-based).  Kept for migration only."""
+    return model.replace("/", "__").replace(" ", "_")
+
+
 def load_baseline(tier: str, model: str | None = None) -> dict | None:
-    """Return the baseline dict, or None if absent."""
+    """Return the baseline dict, or None if absent.
+
+    Falls back to the legacy slug scheme so baselines recorded by
+    earlier versions of the doctor are still discoverable after the
+    upgrade.  When found via the legacy path, the file is left in
+    place — ``--update-baselines`` will write the new path on next
+    run, naturally migrating it.
+    """
     p = baseline_path(tier, model)
-    if not p.exists():
-        return None
-    with open(p) as f:
-        return json.load(f)
+    if p.exists():
+        with open(p) as f:
+            return json.load(f)
+    # Legacy fallback for models whose new slug differs from the old.
+    if model is not None:
+        legacy = HARNESS_DIR / "baselines" / f"{tier}-{_legacy_slug(model)}.json"
+        if legacy != p and legacy.exists():
+            with open(legacy) as f:
+                return json.load(f)
+    return None
 
 
 def save_baseline(tier: str, model: str, metrics: dict[str, float]) -> Path:
