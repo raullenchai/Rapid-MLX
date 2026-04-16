@@ -1,0 +1,47 @@
+# Doctor regression thresholds.
+#
+# Each metric lists:
+#   regression_pct  — drop > this % triggers a Status.REGRESSION
+#   improvement_pct — gain > this % suggests --update-baselines
+#
+# We err on the strict side: catching a 5% perf regression early is
+# cheaper than chasing a 20% one after several merges have piled up.
+# Adjust per-metric, not globally — different signals tolerate different
+# noise levels.
+
+# Performance
+decode_tps:
+  regression_pct: 5
+  improvement_pct: 10
+prefill_tps:
+  regression_pct: 5
+  improvement_pct: 10
+ttft_cold_ms:
+  regression_pct: 10        # higher noise floor; cold startup is variable
+  improvement_pct: 15
+ttft_cached_ms:
+  regression_pct: 10
+  improvement_pct: 15
+multiturn_ttft_ms:
+  regression_pct: 10
+  improvement_pct: 15
+long_prompt_ttft_ms:
+  regression_pct: 10
+  improvement_pct: 15
+tool_latency_s:
+  regression_pct: 10
+  improvement_pct: 15
+peak_ram_mb:
+  regression_pct: 10        # memory growth is treated as a regression
+  improvement_pct: 10
+
+# Functional / accuracy — zero tolerance: any drop is a regression
+tool_call_accuracy:
+  regression_pct: 0
+  improvement_pct: 5
+reasoning_accuracy:
+  regression_pct: 0
+  improvement_pct: 5
+coding_accuracy:
+  regression_pct: 0
+  improvement_pct: 5

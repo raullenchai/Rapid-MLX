@@ -111,3 +111,7 @@ reports/*.json
 reports/*.md
 reports/*.tsv
 reports/scan_*
+
+# Doctor harness — per-run artefacts (baselines/ ARE checked in)
+harness/runs/*
+!harness/runs/.gitkeep

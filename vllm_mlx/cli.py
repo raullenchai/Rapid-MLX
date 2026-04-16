@@ -1459,6 +1459,19 @@ Examples:
         help="Agent version for version-specific config (e.g. 0.8.5)",
     )
 
+    # Doctor command — regression harness
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Run regression harness (smoke / check / full / benchmark)",
+    )
+    doctor_parser.add_argument(
+        "tier",
+        nargs="?",
+        default="smoke",
+        choices=["smoke", "check", "full", "benchmark"],
+        help="Which tier to run (default: smoke)",
+    )
+
     args = parser.parse_args()
 
     # Resolve model aliases before dispatch
@@ -1483,6 +1496,10 @@ Examples:
         models_command(args)
     elif args.command == "agents":
         agents_command(args)
+    elif args.command == "doctor":
+        from vllm_mlx.doctor.cli import doctor_command
+
+        doctor_command(args)
     else:
         parser.print_help()
         sys.exit(1)
