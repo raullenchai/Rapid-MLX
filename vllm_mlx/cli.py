@@ -1471,6 +1471,17 @@ Examples:
         choices=["smoke", "check", "full", "benchmark"],
         help="Which tier to run (default: smoke)",
     )
+    doctor_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Model alias for check tier (default: qwen3.5-4b)",
+    )
+    doctor_parser.add_argument(
+        "--update-baselines",
+        action="store_true",
+        help="Record current run as the new baseline (after human review)",
+    )
 
     args = parser.parse_args()
 

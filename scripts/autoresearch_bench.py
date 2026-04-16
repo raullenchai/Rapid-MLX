@@ -17,12 +17,16 @@ Usage:
 """
 import argparse
 import json
+import os
 import statistics
 import sys
 import time
 import urllib.request
 
-BASE_URL = "http://127.0.0.1:8000/v1/chat/completions"
+# Allow the doctor harness to point this at a non-default port.
+BASE_URL = os.environ.get(
+    "AUTORESEARCH_BASE", "http://127.0.0.1:8000/v1/chat/completions"
+)
 HEADERS = {"Content-Type": "application/json"}
 
 SYSTEM_MSG = "You are a helpful assistant. Answer concisely."
@@ -71,7 +75,7 @@ LONG_PROMPT_MESSAGES.append({"role": "user", "content": "/no_think Summarize all
 def stream_request(messages, max_tokens=300, tools=None, timeout=60):
     """Send streaming request, return metrics dict."""
     body = {
-        "model": "any",
+        "model": "default",
         "messages": messages,
         "max_tokens": max_tokens,
         "stream": True,
@@ -304,12 +308,13 @@ if __name__ == "__main__":
     parser.add_argument("--label", type=str, default="", help="Label for this run")
     args = parser.parse_args()
 
-    # Quick server health check
+    # Quick server health check — derive /v1/models from BASE_URL so the
+    # doctor harness's port override applies here too.
+    _models_url = BASE_URL.replace("/chat/completions", "/models")
     try:
-        req = urllib.request.Request("http://127.0.0.1:8000/v1/models")
-        urllib.request.urlopen(req, timeout=5)
+        urllib.request.urlopen(_models_url, timeout=5)
     except Exception as e:
-        print(f"ERROR: Server not reachable at port 8000: {e}", file=sys.stderr)
+        print(f"ERROR: Server not reachable at {_models_url}: {e}", file=sys.stderr)
         sys.exit(1)
 
     results = run_suite(n_runs=args.runs, verbose=not args.json)

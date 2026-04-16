@@ -2,10 +2,13 @@
 """Comprehensive regression and edge case test suite for Rapid-MLX."""
 
 import json
+import os
 import urllib.error
 import urllib.request
 
-BASE = "http://localhost:8777"
+# Port can be overridden by the doctor harness (which picks a free port).
+_PORT = os.environ.get("RAPID_MLX_PORT", "8777")
+BASE = f"http://localhost:{_PORT}"
 
 def api_call(path, body=None, method="GET"):
     """Make an API call, return (status_code, parsed_json_or_None)."""

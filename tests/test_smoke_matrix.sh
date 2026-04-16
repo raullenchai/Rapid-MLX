@@ -101,7 +101,7 @@ check() {
 # ---------------------------------------------------------------
 echo "[1/5] Emoji decode (streaming)"
 EMOJI_RESULT=$(stream_chat '{
-    "model": "x",
+    "model": "default",
     "messages": [{"role": "user", "content": "Reply with ONLY these 3 emoji, nothing else: 🎉🚀😊"}],
     "max_tokens": 50,
     "temperature": 0,
@@ -118,7 +118,7 @@ echo ""
 # ---------------------------------------------------------------
 echo "[2/5] CJK decode (streaming)"
 CJK_RESULT=$(stream_chat '{
-    "model": "x",
+    "model": "default",
     "messages": [{"role": "user", "content": "只回复四个字：你好世界"}],
     "max_tokens": 50,
     "temperature": 0,
@@ -135,7 +135,7 @@ echo ""
 # ---------------------------------------------------------------
 echo "[3/5] enable_thinking=false"
 NOTHINK_RESULT=$(chat '{
-    "model": "x",
+    "model": "default",
     "messages": [{"role": "user", "content": "What is 2+2? Answer with just the number."}],
     "max_tokens": 50,
     "temperature": 0,
@@ -160,7 +160,7 @@ echo ""
 # ---------------------------------------------------------------
 echo "[4/5] enable_thinking=true vs false (streaming)"
 THINK_STREAM=$(stream_chat '{
-    "model": "x",
+    "model": "default",
     "messages": [{"role": "user", "content": "What is 17 * 23?"}],
     "max_tokens": 500,
     "temperature": 0,
@@ -171,7 +171,7 @@ echo "    thinking=default (first 120): ${THINK_STREAM:0:120}"
 # contains thinking markers. The key test: default response is
 # LONGER than no-think response (thinking adds tokens).
 NOTHINK_STREAM=$(stream_chat '{
-    "model": "x",
+    "model": "default",
     "messages": [{"role": "user", "content": "What is 17 * 23?"}],
     "max_tokens": 500,
     "temperature": 0,
@@ -201,7 +201,7 @@ echo ""
 # ---------------------------------------------------------------
 echo "[5/5] Special token leak (streaming)"
 CLEAN_RESULT=$(stream_chat '{
-    "model": "x",
+    "model": "default",
     "messages": [{"role": "user", "content": "Say hello in one sentence."}],
     "max_tokens": 50,
     "temperature": 0,
