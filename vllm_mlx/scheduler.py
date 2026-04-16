@@ -2171,23 +2171,27 @@ class Scheduler:
                         except Exception as e:
                             logger.debug(f"Failed to store cache for {request_id}: {e}")
 
-            # Evaluate stored cache tensors incrementally (per-layer) to prevent
-            # a deferred batch evaluation spike when all lazy ops resolve at once.
-            # This spreads the VRAM cost across smaller per-layer evaluations.
+            # Kick off async evaluation of stored cache tensors so the GPU
+            # processes them in the background while Python continues with
+            # scheduling and response handling.  The periodic mx.clear_cache()
+            # in step() ensures these are fully materialized before memory
+            # pressure builds.
             if (
                 request is not None
                 and hasattr(request, "_extracted_cache")
                 and request._extracted_cache
             ):
+                _eval_arrays = []
                 for layer in request._extracted_cache:
                     if isinstance(layer, dict) and "state" in layer:
-                        keys, values = layer["state"]
-                        mx.eval(keys, values)
+                        _eval_arrays.extend(layer["state"])
                     elif hasattr(layer, "keys") and hasattr(layer, "values"):
                         keys_attr = layer.keys
                         values_attr = layer.values
                         if not callable(keys_attr) and not callable(values_attr):
-                            mx.eval(keys_attr, values_attr)
+                            _eval_arrays.extend([keys_attr, values_attr])
+                if _eval_arrays:
+                    mx.async_eval(*_eval_arrays)
 
             # Remove from running
             if request_id in self.running:
@@ -2202,10 +2206,6 @@ class Scheduler:
 
             # Track as finished
             self.finished_req_ids.add(request_id)
-
-        # Free Metal command buffers after cleanup (prevents end-of-generation spike)
-        if finished_ids:
-            mx.clear_cache()
 
     def _is_cache_corruption_error(self, error: Exception) -> bool:
         """Check if an error indicates cache corruption."""
@@ -2311,14 +2311,21 @@ class Scheduler:
 
         for attempt in range(max_retries + 1):
             try:
-                # Schedule waiting requests
+                # Schedule requests that were waiting from the previous step.
+                # On the first call this picks up requests queued via add_request().
                 scheduled = self._schedule_waiting()
                 output.scheduled_request_ids = [r.request_id for r in scheduled]
                 output.num_scheduled_tokens = sum(
                     r.num_prompt_tokens for r in scheduled
                 )
 
-                # Run generation step if we have running requests
+                # Run generation step if we have running requests.
+                # batch_generator.next() internally calls mx.async_eval() to
+                # kick off the *next* forward pass, then blocks only long
+                # enough to read *this* step's tokens.  All Python work after
+                # this call (response processing, cleanup, scheduling for the
+                # next step) runs while the GPU evaluates the next forward
+                # pass — this is the core overlap optimisation.
                 if self.batch_generator is not None and self.running:
                     raw_next = self.batch_generator.next()
                     output.has_work = True
@@ -2334,6 +2341,7 @@ class Scheduler:
                         outputs, finished_ids = self._process_batch_responses(responses)
                         output.outputs = outputs
                         output.finished_request_ids = finished_ids
+                        # Cleanup uses async_eval for cache tensors — no GPU sync
                         self._cleanup_finished(finished_ids)
 
                 # Success - break out of retry loop
