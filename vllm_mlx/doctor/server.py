@@ -45,8 +45,18 @@ def serve(
     log_path: Path | None = None,
     extra_args: list[str] | None = None,
     boot_timeout_s: int = 180,
+    model_path: str | Path | None = None,
 ):
     """Boot ``rapid-mlx serve <model>`` and yield the live base URL.
+
+    Args:
+        model: alias or HF repo id used for logging/display.
+        model_path: optional local path to use *instead* of resolving
+            the alias.  When provided, the server loads from this exact
+            location and never reaches Hugging Face.  This honors the
+            benchmark tier's "no auto-download" contract for models
+            installed in non-HF layouts (e.g. LM Studio's
+            ~/.lmstudio/models/{org}/{repo}/).
 
     On exit, send SIGTERM and wait up to 10s; escalate to SIGKILL if the
     process is still alive.  ``log_path`` if provided receives the
@@ -59,9 +69,13 @@ def serve(
     health_url = f"{base_url}/health"
     v1_url = f"{base_url}/v1"
 
+    # serve_target is what we pass to the CLI: the explicit local path
+    # takes precedence over the alias so the server never tries to
+    # download a model that discovery confirmed is on disk.
+    serve_target = str(model_path) if model_path else model
     cmd = [
         python_executable(),
-        "-m", "vllm_mlx.cli", "serve", model,
+        "-m", "vllm_mlx.cli", "serve", serve_target,
         "--host", "127.0.0.1",
         "--port", str(port),
     ]

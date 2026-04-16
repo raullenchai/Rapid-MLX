@@ -331,8 +331,23 @@ def run_benchmark_tier(models: list[str] | None = None):
     for model in run_list:
         print(f"\n  ── model: {model} ──")
         server_log = runner.run_dir / f"server-{_safe_model_slug(model)}.log"
+        # Pass the discovered local path so LM Studio / non-HF layouts
+        # don't trigger a re-download via mlx_lm.load(alias).
+        local_path = (
+            discovery[model].path
+            if model in discovery and discovery[model].available
+            else None
+        )
         try:
-            with serve(model=model, log_path=server_log) as info:
+            # Cold load of a 27B+ model can take several minutes when
+            # the OS has to page weights from a slow disk; default
+            # 180s timeout is too tight for an overnight sweep.
+            with serve(
+                model=model,
+                model_path=local_path,
+                log_path=server_log,
+                boot_timeout_s=600,
+            ) as info:
                 port = info["port"]
                 print(f"  [server] {model} up on port {port}")
                 result = runner.run_check(
