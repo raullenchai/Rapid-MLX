@@ -358,6 +358,12 @@ async def lifespan(app: FastAPI):
     if _engine is not None and hasattr(_engine, "_loaded") and not _engine._loaded:
         await _engine.start()
 
+    # Retry tool logits bias setup now that the engine is fully started
+    # and the tokenizer is available.  The initial attempt in
+    # _setup_model_and_tools() may have failed because BatchedEngine's
+    # tokenizer is only populated after start().
+    _retry_tool_logits_setup()
+
     # Warmup: generate one token to trigger Metal shader compilation.
     # Runs here (not in CLI) so all engine types are fully started first.
     if _engine is not None:
@@ -976,10 +982,15 @@ def load_model(
             from .api.tool_logits import create_tool_logits_processor
 
             tokenizer = None
-            if hasattr(_engine, "_tokenizer"):
+            # Try the public property first (handles MLLM processor wrapping),
+            # then fall back to the private attribute.
+            if hasattr(_engine, "tokenizer"):
+                try:
+                    tokenizer = _engine.tokenizer
+                except Exception:
+                    pass
+            if tokenizer is None and hasattr(_engine, "_tokenizer"):
                 tokenizer = _engine._tokenizer
-            elif hasattr(_engine, "tokenizer"):
-                tokenizer = _engine.tokenizer
             if tokenizer is not None:
                 # Create factory that produces fresh processors per request
                 # Accepts optional tools for parameter value schema constraint
@@ -1002,6 +1013,52 @@ def load_model(
             logger.warning(f"Failed to set up tool logits bias: {e}")
 
     logger.info(f"Default max tokens: {_default_max_tokens}")
+
+
+def _retry_tool_logits_setup() -> None:
+    """Retry tool logits bias setup after engine.start().
+
+    BatchedEngine's tokenizer is only populated after start(), so the
+    initial attempt in _setup_model_and_tools() fails for batched mode.
+    This function is called from the lifespan handler after start().
+    """
+    global _engine
+
+    if not _enable_tool_logits_bias or not _enable_auto_tool_choice or not _tool_call_parser:
+        return
+    # Skip if already set up successfully
+    if (
+        hasattr(_engine, "_tool_logits_processor_factory")
+        and _engine._tool_logits_processor_factory is not None
+    ):
+        return
+
+    try:
+        from .api.tool_logits import create_tool_logits_processor
+
+        tokenizer = None
+        if hasattr(_engine, "tokenizer"):
+            try:
+                tokenizer = _engine.tokenizer
+            except Exception:
+                pass
+        if tokenizer is None:
+            return
+
+        def _make_factory(parser_name, tok):
+            def factory(tools=None):
+                return create_tool_logits_processor(parser_name, tok, tools=tools)
+
+            return factory
+
+        factory = _make_factory(_tool_call_parser, tokenizer)
+        _engine._tool_logits_processor_factory = factory
+        logger.info(
+            f"Tool logits bias enabled for parser: {_tool_call_parser} "
+            "(deferred setup after engine.start)"
+        )
+    except Exception as e:
+        logger.warning(f"Deferred tool logits bias setup failed: {e}")
 
     # Register in multi-model registry
     aliases = set()
