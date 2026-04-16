@@ -239,10 +239,12 @@ class BatchedEngine(BaseEngine):
         completion_batch_size = getattr(
             self._scheduler_config, "completion_batch_size", 16
         )
-        # Honor user's --prefill-step-size if set (default 1024 for MLLM safety)
-        prefill_step_size = getattr(
-            self._scheduler_config, "prefill_step_size", 1024
-        )
+        # Honor user's --prefill-step-size if explicitly set; else keep MLLM
+        # default of 1024 (safer for vision/multimodal memory profiles).
+        # SchedulerConfig.prefill_step_size is None when the CLI flag was
+        # not passed, so we leave MLLM untouched in that case.
+        user_prefill_step = getattr(self._scheduler_config, "prefill_step_size", None)
+        prefill_step_size = user_prefill_step if user_prefill_step is not None else 1024
 
         mllm_config = MLLMSchedulerConfig(
             max_num_seqs=max_num_seqs,

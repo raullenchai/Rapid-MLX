@@ -68,7 +68,9 @@ class SchedulerConfig:
     # BatchGenerator settings
     prefill_batch_size: int = 8
     completion_batch_size: int = 32
-    prefill_step_size: int = 2048
+    # None = engine-specific default (2048 for LLM, 1024 for MLLM).
+    # Set explicitly to override both.
+    prefill_step_size: int | None = None
 
     # Prefix cache settings
     enable_prefix_cache: bool = True
@@ -1197,7 +1199,9 @@ class Scheduler:
             sampler=sampler,
             prefill_batch_size=self.config.prefill_batch_size,
             completion_batch_size=self.config.completion_batch_size,
-            prefill_step_size=self.config.prefill_step_size,
+            # Fall back to BatchGenerator's own default (2048) when caller
+            # did not pin a value via --prefill-step-size.
+            prefill_step_size=self.config.prefill_step_size or 2048,
         )
 
         # Install chunked prefill when explicitly configured OR when
@@ -1238,7 +1242,7 @@ class Scheduler:
                 "[chunked_prefill] Skipped — mlx-lm 0.31+ removed the internal "
                 "Batch API. Using native prefill_step_size=%d instead. "
                 "Memory-aware cache and mid-prefill snapshots are unavailable.",
-                self.config.prefill_step_size,
+                self.config.prefill_step_size or 2048,
             )
 
         # Install MTP if the model supports it

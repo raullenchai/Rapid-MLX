@@ -347,7 +347,9 @@ def serve_command(args):
             gpu_memory_utilization=args.gpu_memory_utilization,
             draft_model=args.draft_model,
             num_draft_tokens=args.num_draft_tokens,
-            prefill_step_size=args.prefill_step_size,
+            # SimpleEngine expects an int — substitute LLM default when unset.
+            # MLLM/Batch paths read from scheduler_config (None handled there).
+            prefill_step_size=args.prefill_step_size if args.prefill_step_size is not None else 2048,
             kv_bits=args.kv_bits,
             kv_group_size=args.kv_group_size,
             cloud_model=args.cloud_model,
@@ -1055,9 +1057,10 @@ Examples:
     serve_parser.add_argument(
         "--prefill-step-size",
         type=int,
-        default=2048,
+        default=None,
         help="Chunk size for prompt prefill processing. Larger values use more memory "
-        "but can improve prefill throughput. (default: 2048)",
+        "but can improve prefill throughput. "
+        "(default: 2048 for LLM, 1024 for MLLM/vision; lower to reduce memory)",
     )
     # SpecPrefill (attention-based sparse prefill using draft model)
     serve_parser.add_argument(
