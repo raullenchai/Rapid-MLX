@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 
 from .baseline import (
@@ -166,9 +167,10 @@ def run_full_tier(models: list[str], update_baselines: bool = False):
             tier="full",
             update_baselines=update_baselines,
             agent_profiles=profile_names,
-            # 27B+ models in the full sweep may need >180s on a slow
-            # disk; check tier (smaller default model) keeps fast-fail.
-            boot_timeout_s=600,
+            # boot_timeout_s=None → _suggested_boot_timeout picks 600s for
+            # the 27B+ models (qwen3.5-35b, gemma-4-26b) and 180s for
+            # smaller ones, so the same logic applies regardless of which
+            # tier called us.
         )
 
     return runner.finalize()
@@ -200,13 +202,34 @@ def _resolve_agent_profiles(explicit: list[str] | None) -> list[str]:
 # Shared per-model block (used by check + full)
 # ---------------------------------------------------------------------
 
+# Boot timeout buckets keyed on the model alias's parameter-count hint.
+# The check tier defaults to qwen3.5-4b (small) which boots in <30s; bumping
+# everything to 600s would steal the tier's fast-fail property. Conversely,
+# 'doctor check --model qwen3.5-35b' is a supported workflow and 27B+ cold
+# loads on a slow disk routinely exceed 180s. Pattern-match the alias for a
+# size hint instead of asking the user to think about timeouts.
+_LARGE_MODEL_RE = re.compile(
+    r"\b(?:[2-9]\d|\d{3,})b\b", re.IGNORECASE,
+)  # matches '20b', '27b', '35b', '70b', '122b', '405b', ...
+
+
+def _suggested_boot_timeout(model: str) -> int:
+    """Pick a boot timeout based on a parameter-count hint in the alias.
+
+    Returns 600s for ≥20B-shaped aliases, 180s otherwise.  Errs on the
+    side of fast-fail: if the regex doesn't match, you get the short
+    timeout (which surfaces broken-server issues faster).
+    """
+    return 600 if _LARGE_MODEL_RE.search(model) else 180
+
+
 def _run_per_model_block(
     runner: DoctorRunner,
     model: str,
     tier: str,
     update_baselines: bool,
     agent_profiles: list[str],
-    boot_timeout_s: int = 180,
+    boot_timeout_s: int | None = None,
 ) -> None:
     """Boot a server for one model and run all model-bound checks against it.
 
@@ -214,13 +237,15 @@ def _run_per_model_block(
     records the failure and moves on, so a single broken model in the
     full sweep still yields a complete report.
 
-    ``boot_timeout_s`` is per-tier: the check tier passes 180s (small
-    qwen3.5-4b should boot in <30s; we want fast-fail when something
-    breaks), full tier overrides to 600s because it covers 27B+ models
-    whose cold load can exceed 180s when paging from a slow disk.
+    ``boot_timeout_s=None`` (default) auto-picks based on the model's
+    parameter-count hint via _suggested_boot_timeout().  Callers can
+    pass an explicit value to force a specific budget.
     """
     from .checks import agent, api, perf
     from .server import ServerStartFailed, serve
+
+    if boot_timeout_s is None:
+        boot_timeout_s = _suggested_boot_timeout(model)
 
     server_log = runner.run_dir / f"server-{safe_model_slug(model)}.log"
     try:

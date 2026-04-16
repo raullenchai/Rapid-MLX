@@ -199,3 +199,38 @@ class TestReportRendering:
                 break
         else:
             pytest.fail("could not find the weird-check row in report")
+
+
+# ----------------------------------------------------------------------
+# Boot-timeout heuristic
+# ----------------------------------------------------------------------
+
+class TestSuggestedBootTimeout:
+    """Picks 600s for ≥20B-shaped aliases, 180s for smaller / unknown.
+
+    Codex round 3 P2: scoping the timeout purely by tier (180s for
+    'check', 600s for 'full') broke the supported 'doctor check
+    --model qwen3.5-35b' workflow.  Per-model heuristic restores it.
+    """
+
+    def test_small_models_get_short_timeout(self):
+        from vllm_mlx.doctor.cli import _suggested_boot_timeout
+        for alias in ("qwen3.5-4b", "qwen3-0.6b", "llama3-3b", "gemma3-1b",
+                      "phi4-14b", "ministral-3b", "qwen3-vl-8b"):
+            assert _suggested_boot_timeout(alias) == 180, alias
+
+    def test_large_models_get_long_timeout(self):
+        from vllm_mlx.doctor.cli import _suggested_boot_timeout
+        for alias in ("qwen3.5-27b", "qwen3.5-35b", "qwopus-27b",
+                      "deepseek-r1-32b", "gemma-4-26b", "hermes4-70b",
+                      "qwen3.5-122b", "kimi-48b", "gpt-oss-20b"):
+            assert _suggested_boot_timeout(alias) == 600, alias
+
+    def test_unknown_alias_defaults_to_short(self):
+        """Fast-fail when the heuristic doesn't know — better to time
+        out a legitimately huge model and ask the user to retry with
+        an explicit override than to make 'doctor check' feel sluggish
+        for everyone else."""
+        from vllm_mlx.doctor.cli import _suggested_boot_timeout
+        assert _suggested_boot_timeout("some-random-model") == 180
+        assert _suggested_boot_timeout("model-1.2") == 180  # 1.2B → not matched
