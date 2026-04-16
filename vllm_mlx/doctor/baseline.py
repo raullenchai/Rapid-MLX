@@ -114,11 +114,18 @@ def load_baseline(tier: str, model: str | None = None) -> dict | None:
         with open(p) as f:
             return json.load(f)
     # Legacy fallback for models whose new slug differs from the old.
+    # Verify the loaded file's recorded model matches what we asked for —
+    # the old slug scheme was non-injective (e.g. 'foo/bar' and 'foo__bar'
+    # collided), so a hit on the legacy path could belong to a different
+    # model.  In that case we'd rather return None (clean "no baseline")
+    # than hand back another model's data and trigger a hard mismatch.
     if model is not None:
         legacy = HARNESS_DIR / "baselines" / f"{tier}-{_legacy_slug(model)}.json"
         if legacy != p and legacy.exists():
             with open(legacy) as f:
-                return json.load(f)
+                data = json.load(f)
+            if data.get("model") == model:
+                return data
     return None
 
 
