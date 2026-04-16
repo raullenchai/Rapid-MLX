@@ -1,18 +1,18 @@
 # Rapid-MLX Benchmark Scorecard
 
-_Generated: 2026-04-15T23:00:26_
+_Generated: 2026-04-16T07:10:38_
 
 | Model | Decode TPS | Cold TTFT | Cached TTFT | Tool % | Score | Status |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| deepseek-r1-32b | 34.1 | 593ms | 175ms | 0% | 135.5 | OK |
-| llama3-3b | 234.9 | 122ms | 113ms | 0% | 393.4 | OK |
-| qwen3-vl-8b | 76.4 | 267ms | 182ms | 100% | 171.5 | OK |
-| qwen3.5-27b | — | — | — | — | — | FAIL — server boot failed: server did not respond at http://127.0.0.1:53414/health with |
-| qwen3.5-35b | — | — | — | — | — | FAIL — server boot failed: server did not respond at http://127.0.0.1:53829/health with |
-| qwen3.5-4b | 167.1 | 168ms | 217ms | 100% | 258.1 | OK |
-| qwen3.5-9b | 112.0 | 208ms | 267ms | 100% | 187.5 | OK |
-| qwopus-27b | 38.8 | 452ms | 487ms | 100% | 88.7 | OK |
-| qwopus-27b-8bit | — | — | — | — | — | FAIL — server boot failed: server did not respond at http://127.0.0.1:54350/health with |
+| deepseek-r1-32b | 8.6 | 1111ms | 418ms | 0% | 51.8 | OK |
+| llama3-3b | 34.9 | 258ms | 189ms | 0% | 130.1 | OK |
+| qwen3-vl-8b | 12.2 | 456ms | 505ms | 100% | 59.3 | OK |
+| qwen3.5-27b | — | — | — | — | — | FAIL — server boot failed: server exited with code 1 before becoming healthy |
+| qwen3.5-35b | 10.9 | 1091ms | 1063ms | 0% | 26.5 | OK |
+| qwen3.5-4b | 25.1 | 448ms | 460ms | 100% | 78.5 | OK |
+| qwen3.5-9b | 20.7 | 539ms | 563ms | 100% | 68.1 | OK |
+| qwopus-27b | 8.8 | 1165ms | 1145ms | 100% | 41.9 | OK |
+| qwopus-27b-8bit | — | — | — | — | — | FAIL — server boot failed: server exited with code 1 before becoming healthy |
 
 ## Skipped
 
