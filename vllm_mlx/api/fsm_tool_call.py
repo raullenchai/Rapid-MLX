@@ -160,24 +160,54 @@ class FSMToolCallCache:
         self._cache: dict[str, tuple[Any, Any]] = {}  # hash → (Index, Guide template)
 
     def set_vocabulary(self, tokenizer: Any) -> None:
-        """Build vocabulary from a HuggingFace tokenizer."""
+        """Build vocabulary from a HuggingFace tokenizer.
+
+        ``Vocabulary.from_pretrained`` requires a HuggingFace model ID
+        (not a local path) because it downloads ``tokenizer.json``
+        internally.  If ``name_or_path`` looks like a local path, we
+        resolve the original model ID from the HF cache metadata.
+        """
         if not HAS_OUTLINES_CORE:
             return
         try:
-            # Try from_pretrained first (handles special tokens correctly)
-            model_name = getattr(tokenizer, "name_or_path", None)
-            if model_name:
-                self._vocabulary = Vocabulary.from_pretrained(model_name)
-            else:
-                # Build from vocab dict
-                vocab_dict = tokenizer.get_vocab()
-                eos_ids = [tokenizer.eos_token_id] if tokenizer.eos_token_id else []
-                self._vocabulary = Vocabulary.from_pretrained(
-                    tokenizer.name_or_path
-                )
+            import os
+
+            model_id = getattr(tokenizer, "name_or_path", "") or ""
+
+            # If name_or_path is a local path, try to resolve the HF model ID
+            if os.sep in model_id or model_id.startswith("/"):
+                resolved_id = self._resolve_hf_model_id(model_id)
+                if resolved_id:
+                    model_id = resolved_id
+                else:
+                    logger.warning(
+                        f"[FSM] Cannot resolve HF model ID from local path: "
+                        f"{model_id}. FSM constrained decoding unavailable."
+                    )
+                    return
+
+            self._vocabulary = Vocabulary.from_pretrained(model_id)
+            logger.info(
+                f"[FSM] Vocabulary built: {len(self._vocabulary)} tokens "
+                f"(model={model_id})"
+            )
         except Exception as e:
-            logger.warning(f"Failed to build FSM vocabulary: {e}")
+            logger.warning(f"[FSM] Failed to build vocabulary: {e}")
             self._vocabulary = None
+
+    @staticmethod
+    def _resolve_hf_model_id(local_path: str) -> str | None:
+        """Try to extract HF model ID from a local snapshot path.
+
+        HF cache layout: .../models--{org}--{repo}/snapshots/{hash}/
+        """
+        import re
+
+        match = re.search(r"models--([^/]+)--([^/]+)", local_path)
+        if match:
+            org, repo = match.group(1), match.group(2)
+            return f"{org}/{repo}"
+        return None
 
     def precompile(self, tools: list[dict]) -> bool:
         """Precompile FSM for a tool set.  Returns True on success."""

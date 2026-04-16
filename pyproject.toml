@@ -93,6 +93,7 @@ vllm = [
 # Guided decoding with outlines for structured JSON output
 guided = [
     "outlines[mlxlm]>=1.0.0",
+    "outlines-core>=0.2.0",  # FSM engine for tool call constrained decoding
 ]
 # Audio dependencies for TTS/STT (mlx-audio)
 audio = [
