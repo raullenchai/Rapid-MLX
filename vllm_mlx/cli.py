@@ -347,9 +347,9 @@ def serve_command(args):
             gpu_memory_utilization=args.gpu_memory_utilization,
             draft_model=args.draft_model,
             num_draft_tokens=args.num_draft_tokens,
-            # SimpleEngine expects an int — substitute LLM default when unset.
-            # MLLM/Batch paths read from scheduler_config (None handled there).
-            prefill_step_size=args.prefill_step_size if args.prefill_step_size is not None else 2048,
+            # None passes through; SimpleEngine resolves to 2048 (LLM) or
+            # 1024 (MLLM/vision) based on auto-detected model type.
+            prefill_step_size=args.prefill_step_size,
             kv_bits=args.kv_bits,
             kv_group_size=args.kv_group_size,
             cloud_model=args.cloud_model,

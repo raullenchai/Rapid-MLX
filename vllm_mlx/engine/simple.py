@@ -68,7 +68,7 @@ class SimpleEngine(BaseEngine):
         draft_model: str | None = None,
         num_draft_tokens: int = 4,
         mtp: bool = False,
-        prefill_step_size: int = 2048,
+        prefill_step_size: int | None = None,
         kv_bits: int | None = None,
         kv_group_size: int = 64,
         specprefill_enabled: bool = False,
@@ -87,7 +87,8 @@ class SimpleEngine(BaseEngine):
             draft_model: Optional draft model path for speculative decoding
             num_draft_tokens: Number of tokens to generate speculatively per step
             mtp: Enable native MTP speculative decoding (model must have MTP head)
-            prefill_step_size: Tokens to process per prefill chunk (default: 2048)
+            prefill_step_size: Tokens to process per prefill chunk.
+                None = engine default (2048 for LLM, 1024 for MLLM/vision).
             kv_bits: KV cache quantization bits (None=no quantization, 4 or 8)
             kv_group_size: Group size for KV cache quantization (default: 64)
             specprefill_enabled: Enable SpecPrefill (attention-based sparse prefill)
@@ -102,6 +103,10 @@ class SimpleEngine(BaseEngine):
         self._draft_model_name = draft_model
         self._num_draft_tokens = num_draft_tokens
         self._mtp = mtp
+        # Resolve None to engine-specific default: MLLM gets the safer 1024
+        # to keep vision/multimodal memory profiles in check.
+        if prefill_step_size is None:
+            prefill_step_size = 1024 if self._is_mllm else 2048
         self._prefill_step_size = prefill_step_size
         self._kv_bits = kv_bits
         self._kv_group_size = kv_group_size
