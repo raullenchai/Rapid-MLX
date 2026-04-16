@@ -279,43 +279,42 @@ def _install_chunked_prefill(
                 jump_tokens = _jump_proc.get_jump_forward_tokens()
 
         if jump_tokens and _jump_proc is not None:
-            # Wait for batch.y — this is the first pattern token
-            # (already biased by the processor in _step above)
-            first_tok = batch.y.tolist()[0]
-            all_inject = [first_tok] + list(jump_tokens)
+            # batch.y already contains the first pattern token (biased by
+            # the processor inside _step above) and the KV cache already
+            # has it.  jump_tokens are the REMAINING deterministic tokens.
+            # Feed them through the model in one prefill pass to update
+            # the KV cache, then sample the next free token.
 
-            # Feed all deterministic tokens through the model in one
-            # prefill pass to update the KV cache.
-            inject_arr = mx.array([all_inject])  # (1, N)
+            # Append jump_tokens (NOT first_tok — already in cache)
+            inject_arr = mx.array([jump_tokens])  # (1, N)
             inject_logits = self.model(inject_arr, cache=batch.cache)
 
-            # Append injected tokens to the sequence
+            # Extend the token sequence with the injected tokens
             batch.tokens[0] = mx.concatenate(
-                (batch.tokens[0], mx.array(all_inject))
+                (batch.tokens[0], mx.array(jump_tokens))
             )
 
-            # Sample next token from the last position's logits
-            # (this is the first non-deterministic token after the pattern)
+            # Sample the next non-deterministic token from last position
             batch.y = batch.samplers[0](inject_logits[:, -1, :])
             batch.logprobs = inject_logits[:, -1, :] - mx.logsumexp(
                 inject_logits[:, -1, :], axis=-1, keepdims=True
             )
             mx.async_eval(batch.y, batch.logprobs)
 
-            # Update processor state to reflect the completed pattern
-            _jump_proc.complete_jump_forward(all_inject)
+            # Update processor state (pattern complete)
+            _jump_proc.complete_jump_forward(jump_tokens)
 
-            # Build responses: original token y + all injected tokens
+            # Build responses: original token y[0] + all jump tokens
+            # y[0] is the previous step's token; jump_tokens are the
+            # deterministic tokens whose KV cache was just updated.
             uid = batch.uids[0]
             num_tok = batch.num_tokens[0]
             max_tok = batch.max_tokens[0]
             responses = []
-
-            # Original token from this step
-            num_tok += 1
-            batch.num_tokens[0] = num_tok
             _finished = False
-            for tok in [y[0]] + all_inject:
+
+            for tok in [y[0]] + list(jump_tokens):
+                num_tok += 1
                 finish_reason = None
                 cache_out = None
                 if tok in self.stop_tokens:
@@ -329,10 +328,10 @@ def _install_chunked_prefill(
                 responses.append(
                     self.Response(uid, tok, mx.array(0.0), finish_reason, cache_out)
                 )
-                num_tok += 1
-                batch.num_tokens[0] = num_tok
                 if _finished:
                     break
+
+            batch.num_tokens[0] = num_tok
 
             if _finished:
                 self.active_batch = None
@@ -340,8 +339,8 @@ def _install_chunked_prefill(
             self._stats.generation_time += _time.perf_counter() - tic_gen
             self._stats.generation_tokens += len(responses)
             logger.debug(
-                f"[jump-forward] injected {len(all_inject)} deterministic "
-                f"tokens (saved {len(all_inject) - 1} decode steps)"
+                f"[jump-forward] injected {len(jump_tokens)} deterministic "
+                f"tokens (saved {len(jump_tokens) - 1} decode steps)"
             )
             return responses
 

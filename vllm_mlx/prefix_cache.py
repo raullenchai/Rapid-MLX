@@ -97,10 +97,11 @@ class PrefixCacheStats:
 
 class PrefixCacheManager:
     """
-    Manages prefix caching for vllm-mlx using a trie-based LRU cache.
+    Manages prefix caching for vllm-mlx using a radix-tree LRU cache.
 
-    This implementation is inspired by mlx-lm's LRUPromptCache but adapted
-    for vllm-mlx's batching architecture.
+    Uses a radix tree (compressed trie) where single-child chains are
+    merged into nodes with token-array edges, reducing traversal from
+    O(num_tokens) to O(num_branches).
 
     The cache stores KV states keyed by token sequences, allowing:
     - Exact match: Full prompt found in cache

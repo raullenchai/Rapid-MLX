@@ -191,6 +191,10 @@ class MiniMaxToolLogitsProcessor:
         self._active_pattern = None
         self._pattern_pos = 0
         self._consecutive_bias_count = 0
+        # Update _last_param_close_pos so </invoke> dedup logic stays correct
+        param_close_pos = self._recent_text.rfind("</parameter>")
+        if param_close_pos > self._last_param_close_pos:
+            self._last_param_close_pos = param_close_pos
         # Update parameter state in case jumped text contains markers
         self._update_param_state()
 
