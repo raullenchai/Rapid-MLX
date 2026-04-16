@@ -44,8 +44,13 @@ logger = logging.getLogger(__name__)
 
 PARSER_PATTERNS: dict[str, list[tuple[str, str | None]]] = {
     # --- Hermes / Qwen / NousResearch ---
+    # Hermes format: <tool_call>\n{"name": "FUNC", "arguments": {ARGS}}\n</tool_call>
+    # </tool_call> is a single special token in Qwen — not jumpable.
+    # The real wins are in the JSON structural prefixes:
     "hermes": [
-        ("</tool_call>", "}"),  # after JSON closing brace
+        ('\n{"name": "', "<tool_call>"),  # 6 tok, jump 5 after <tool_call>
+        ('", "arguments": ', None),  # 5 tok, jump 4 after function name closing "
+        ('}\n</tool_call>', "}"),  # 3 tok, jump 2 after args JSON closing }
     ],
     # --- MiniMax ---
     "minimax": [
@@ -63,16 +68,20 @@ PARSER_PATTERNS: dict[str, list[tuple[str, str | None]]] = {
         ("</function>", "}"),
     ],
     # --- GLM-4 ---
+    # GLM uses <tool_call>\nfunc_name\n<arg>... — </tool_call> is 1 token
     "glm47": [
-        ("</tool_call>", "}"),
+        ('}\n</tool_call>', "}"),  # 3 tok, jump 2
     ],
     # --- Qwen bracket style ---
+    # Qwen uses <tool_call>\n{"name": ...}\n</tool_call> — same as hermes
     "qwen": [
-        ("</tool_call>", "}"),
+        ('\n{"name": "', "<tool_call>"),
+        ('", "arguments": ', None),
+        ('}\n</tool_call>', "}"),
     ],
     # --- Granite ---
     "granite": [
-        ("</tool_call>", "}"),
+        ('}\n</tool_call>', "}"),  # 3 tok, jump 2
     ],
     # --- Nemotron ---
     "nemotron": [
