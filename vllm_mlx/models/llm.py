@@ -228,7 +228,7 @@ class MLXLanguageModel:
             stop=stop,
         ):
             output_text += chunk.text
-            if hasattr(chunk, "token") and chunk.token:
+            if hasattr(chunk, "token") and chunk.token is not None:
                 token_ids.append(chunk.token)
             if chunk.prompt_tokens:
                 prompt_tokens = chunk.prompt_tokens

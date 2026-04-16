@@ -61,6 +61,11 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
 
     try:
         model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
+        # mlx_lm.load() succeeds but sanitize() may have silently
+        # stripped mtp.* weights.  Check if the config declares MTP
+        # layers and the model came back without a .mtp attribute;
+        # if so, re-inject from the safetensors on disk.
+        _try_inject_mtp_post_load(model, model_name)
         return model, tokenizer
     except ValueError as e:
         # Fallback for models with non-standard tokenizers
