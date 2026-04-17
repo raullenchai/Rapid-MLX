@@ -153,12 +153,25 @@ _model_path: str | None = (
     None  # Actual model path (for cache dir, not affected by --served-model-name)
 )
 _default_max_tokens: int = 4096
+_thinking_token_budget: int = 1024  # Extra tokens added for thinking models
 _default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes)
 _default_temperature: float | None = None  # Set via --default-temperature
 _default_top_p: float | None = None  # Set via --default-top-p
 
 _FALLBACK_TEMPERATURE = 0.7
 _FALLBACK_TOP_P = 0.9
+
+
+def _resolve_max_tokens(request_value: int | None) -> int:
+    """Resolve max_tokens with thinking budget for reasoning models.
+
+    When a reasoning parser is active and the user requests a small max_tokens,
+    add extra headroom so <think>...</think> tokens don't eat into the content budget.
+    """
+    base = request_value or _default_max_tokens
+    if _reasoning_parser_name and request_value and request_value < 2048:
+        return request_value + _thinking_token_budget
+    return base
 
 
 def _resolve_temperature(request_value: float | None) -> float:
@@ -1815,7 +1828,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         output = await _wait_with_disconnect(
             engine.generate(
                 prompt=prompt,
-                max_tokens=request.max_tokens or _default_max_tokens,
+                max_tokens=_resolve_max_tokens(request.max_tokens),
                 temperature=_resolve_temperature(request.temperature),
                 top_p=_resolve_top_p(request.top_p),
                 stop=request.stop,
@@ -2101,7 +2114,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
     # Prepare kwargs
     chat_kwargs = {
-        "max_tokens": request.max_tokens or _default_max_tokens,
+        "max_tokens": _resolve_max_tokens(request.max_tokens),
         "temperature": _resolve_temperature(request.temperature),
         "top_p": _resolve_top_p(request.top_p),
         "stop": request.stop,
@@ -2517,7 +2530,7 @@ async def create_anthropic_message(
     )
 
     chat_kwargs = {
-        "max_tokens": openai_request.max_tokens or _default_max_tokens,
+        "max_tokens": _resolve_max_tokens(openai_request.max_tokens),
         "temperature": openai_request.temperature,
         "top_p": openai_request.top_p,
     }
@@ -2748,7 +2761,7 @@ async def _stream_anthropic_messages(
     )
 
     chat_kwargs = {
-        "max_tokens": openai_request.max_tokens or _default_max_tokens,
+        "max_tokens": _resolve_max_tokens(openai_request.max_tokens),
         "temperature": openai_request.temperature,
         "top_p": openai_request.top_p,
     }
@@ -2977,7 +2990,7 @@ async def stream_completion(
     """Stream completion response."""
     async for output in engine.stream_generate(
         prompt=prompt,
-        max_tokens=request.max_tokens or _default_max_tokens,
+        max_tokens=_resolve_max_tokens(request.max_tokens),
         temperature=_resolve_temperature(request.temperature),
         top_p=_resolve_top_p(request.top_p),
         stop=request.stop,

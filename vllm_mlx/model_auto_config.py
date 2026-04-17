@@ -17,6 +17,7 @@ class ModelConfig:
 
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
+    default_max_tokens: int | None = None  # Per-model default when user omits max_tokens
 
 
 # Model family patterns → optimal config.
