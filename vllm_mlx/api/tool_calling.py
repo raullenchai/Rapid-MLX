@@ -595,13 +595,16 @@ def build_json_system_prompt(
     if format_type == "json_object":
         return (
             "⚠️ JSON OUTPUT REQUIRED ⚠️\n\n"
-            "You MUST respond with ONLY a valid JSON object.\n\n"
+            "You MUST respond with ONLY valid JSON.\n\n"
             "RULES:\n"
             "- Start response with { or [\n"
             "- NO text before or after JSON\n"
             "- NO thinking or explanations\n"
-            "- NO markdown code blocks (```\n"
-            "- ONLY the raw JSON object"
+            "- NO markdown code blocks (```)\n"
+            "- ONLY the raw JSON\n"
+            "- If the user asks for a list/array, respond with a JSON array []\n"
+            "- If the user asks for multiple items, include ALL requested items\n"
+            "- Follow the exact structure/keys the user specifies"
         )
 
     if format_type == "json_schema":

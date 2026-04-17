@@ -57,8 +57,15 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         Returns:
             (reasoning, content) tuple.
         """
-        # If no end token at all, treat as pure content
+        # If no end token at all:
         if self.end_token not in model_output:
+            # If start token is present, model started thinking but never finished
+            # (truncated by max_tokens or garbled by high temperature).
+            # Treat everything after <think> as reasoning, content is None.
+            if self.start_token in model_output:
+                _, _, reasoning = model_output.partition(self.start_token)
+                return reasoning.strip() or None, None
+            # No think tags at all — pure content
             return None, model_output
 
         # Use base class implementation (handles both explicit and implicit)
