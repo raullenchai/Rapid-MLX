@@ -13,6 +13,7 @@ config:
 models:
   recommended:
     - "qwen3.5-9b"
+    - "qwen3.6-35b"
     - "qwen3.5-4b"
   parser_override: null
 

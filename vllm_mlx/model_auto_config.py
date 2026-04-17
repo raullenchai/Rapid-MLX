@@ -54,6 +54,14 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="qwen3",
         ),
     ),
+    # Qwen3.6 — XML tool format, before generic Qwen3
+    (
+        re.compile(r"qwen3\.6", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="qwen3_coder_xml",
+            reasoning_parser="qwen3",
+        ),
+    ),
     # Qwen3-Coder — before generic Qwen3 (non-thinking, no reasoning parser)
     (
         re.compile(r"qwen3[-_]?coder", re.IGNORECASE),

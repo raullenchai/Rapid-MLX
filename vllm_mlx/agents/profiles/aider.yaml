@@ -12,6 +12,7 @@ config:
 models:
   recommended:
     - "qwen3.5-9b"
+    - "qwen3.6-35b"
     - "qwen3.5-4b"
     - "deepseek-r1-8b"
   parser_override: null

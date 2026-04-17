@@ -23,7 +23,7 @@ DEFAULT_CHECK_MODEL = "qwen3.5-4b"
 # Model list for the full tier: small/medium/large + a non-Qwen template
 # path so we cover both Hermes-style (Qwen) and Gemma's distinct chat
 # template + tool-call format.
-DEFAULT_FULL_MODELS = ["qwen3.5-4b", "qwen3.5-35b", "gemma-4-26b"]
+DEFAULT_FULL_MODELS = ["qwen3.5-4b", "qwen3.5-35b", "qwen3.6-35b", "gemma-4-26b"]
 
 # Agent profiles to exercise per-model in the full tier.  None ⇒ all
 # loaded profiles.  Limit here if a particular profile is too slow to

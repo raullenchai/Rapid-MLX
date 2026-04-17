@@ -22,6 +22,7 @@ models:
     - "qwen3.5-9b"
     - "gemma-4-26b"
     - "qwen3.5-35b-a3b"
+    - "qwen3.6-35b"
   parser_override: null  # use auto-detect per model
 
 streaming:
