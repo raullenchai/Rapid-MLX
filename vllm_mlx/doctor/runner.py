@@ -277,7 +277,14 @@ def run_subprocess(
             env=env,
         )
     except subprocess.TimeoutExpired as e:
-        return 124, e.stdout or "", f"TIMEOUT after {timeout}s\n{e.stderr or ''}"
+        stdout = e.stdout or ""
+        stderr = e.stderr or ""
+        # TimeoutExpired may return bytes even with text=True
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        return 124, stdout, f"TIMEOUT after {timeout}s\n{stderr}"
     return proc.returncode, proc.stdout, proc.stderr
 
 

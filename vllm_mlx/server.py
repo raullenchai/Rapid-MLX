@@ -3581,13 +3581,27 @@ async def stream_chat_completion(
                         yield _sse
                     continue
 
+                # On the final chunk, check for reasoning correction
+                # BEFORE emitting finish_reason so clients see it.
+                final_content = sanitize_output(content) if content else None
+                if finish_reason and _reasoning_parser and accumulated_text:
+                    correction = _reasoning_parser.finalize_streaming(
+                        accumulated_text
+                    )
+                    if correction and correction.content:
+                        # Merge correction into the final chunk's content
+                        if final_content:
+                            final_content = final_content + correction.content
+                        else:
+                            final_content = correction.content
+
                 chunk = ChatCompletionChunk(
                     id=response_id,
                     model=_resolve_model_name(request.model),
                     choices=[
                         ChatCompletionChunkChoice(
                             delta=ChatCompletionChunkDelta(
-                                content=sanitize_output(content) if content else None
+                                content=final_content
                             ),
                             finish_reason=finish_reason,
                             logprobs=_build_chunk_logprobs(output),
@@ -3596,26 +3610,6 @@ async def stream_chat_completion(
                     usage=get_usage(output) if output.finished else None,
                 )
                 yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
-
-        # Finalize reasoning parser: emit correction if short no-tag output
-        # was misclassified as reasoning during streaming.
-        if _reasoning_parser and accumulated_text:
-            correction = _reasoning_parser.finalize_streaming(accumulated_text)
-            if correction and correction.content:
-                correction_chunk = ChatCompletionChunk(
-                    id=response_id,
-                    model=_resolve_model_name(request.model),
-                    choices=[
-                        ChatCompletionChunkChoice(
-                            delta=ChatCompletionChunkDelta(
-                                content=correction.content,
-                            ),
-                            finish_reason=None,
-                        )
-                    ],
-                    usage=None,
-                )
-                yield f"data: {correction_chunk.model_dump_json(exclude_none=True)}\n\n"
 
         # Fallback: if tool parser accumulated text but never emitted tool_calls
         # (e.g., closing tag never arrived - incomplete tool call).
