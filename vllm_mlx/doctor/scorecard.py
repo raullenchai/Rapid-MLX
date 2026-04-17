@@ -19,8 +19,7 @@ SCORECARD_DIR = HARNESS_DIR / "scorecard"
 # are unreadable in markdown.  Ordered by importance.
 SCORECARD_COLUMNS: list[tuple[str, str, str]] = [
     # (metric_key, header, format)
-    ("nothink_decode_tps", "Pure TPS", "{:.1f}"),
-    ("decode_tps", "Think TPS", "{:.1f}"),
+    ("decode_tps", "Decode TPS", "{:.1f}"),
     ("cold_ttft_ms", "Cold TTFT", "{:.0f}ms"),
     ("cached_ttft_ms", "Cached TTFT", "{:.0f}ms"),
     ("tc_success_rate", "Tool %", "{:.0%}"),
