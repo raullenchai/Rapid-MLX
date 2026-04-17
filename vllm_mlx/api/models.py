@@ -241,12 +241,19 @@ class ChatCompletionChoice(BaseModel):
     logprobs: ChoiceLogProbs | None = None
 
 
+class CompletionTokensDetails(BaseModel):
+    """Breakdown of completion token usage (OpenAI-compatible)."""
+
+    reasoning_tokens: int = 0
+
+
 class Usage(BaseModel):
     """Token usage statistics."""
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    completion_tokens_details: CompletionTokensDetails | None = None
 
 
 class ChatCompletionResponse(BaseModel):

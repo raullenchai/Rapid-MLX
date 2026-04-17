@@ -74,6 +74,7 @@ from .api.models import (
     CompletionChoice,  # noqa: F401
     CompletionRequest,
     CompletionResponse,
+    CompletionTokensDetails,  # noqa: F401
     ContentPart,  # noqa: F401
     EmbeddingData,
     EmbeddingRequest,
@@ -172,6 +173,28 @@ def _resolve_max_tokens(request_value: int | None) -> int:
     if _reasoning_parser_name and request_value and request_value < 2048:
         return request_value + _thinking_token_budget
     return base
+
+
+def _build_usage(output: "GenerationOutput", reasoning_text: str | None) -> Usage:
+    """Build Usage with reasoning token breakdown when applicable."""
+    total_completion = output.completion_tokens
+    if reasoning_text and _reasoning_parser_name:
+        # Estimate reasoning tokens (~4 chars/token for English/Chinese mix)
+        reasoning_tokens = max(1, len(reasoning_text) // 4)
+        reasoning_tokens = min(reasoning_tokens, total_completion)
+        return Usage(
+            prompt_tokens=output.prompt_tokens,
+            completion_tokens=total_completion,
+            total_tokens=output.prompt_tokens + total_completion,
+            completion_tokens_details=CompletionTokensDetails(
+                reasoning_tokens=reasoning_tokens,
+            ),
+        )
+    return Usage(
+        prompt_tokens=output.prompt_tokens,
+        completion_tokens=total_completion,
+        total_tokens=output.prompt_tokens + total_completion,
+    )
 
 
 def _resolve_temperature(request_value: float | None) -> float:
@@ -2412,11 +2435,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                 logprobs=choice_logprobs,
             )
         ],
-        usage=Usage(
-            prompt_tokens=output.prompt_tokens,
-            completion_tokens=output.completion_tokens,
-            total_tokens=output.prompt_tokens + output.completion_tokens,
-        ),
+        usage=_build_usage(output, reasoning_text),
     )
     return Response(
         content=chat_response.model_dump_json(exclude_none=True),
@@ -2599,11 +2618,7 @@ async def create_anthropic_message(
                 finish_reason=finish_reason,
             )
         ],
-        usage=Usage(
-            prompt_tokens=output.prompt_tokens,
-            completion_tokens=output.completion_tokens,
-            total_tokens=output.prompt_tokens + output.completion_tokens,
-        ),
+        usage=_build_usage(output, None),
     )
 
     # Convert to Anthropic response

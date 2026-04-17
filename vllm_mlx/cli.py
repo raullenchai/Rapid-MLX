@@ -895,9 +895,8 @@ def agents_command(args):
         return
 
     # Default: show setup instructions
-    model_id = args.model or (
-        profile.recommended_models[0] if profile.recommended_models else "<MODEL>"
-    )
+    # Pass "default" to trigger auto-detection of running model
+    model_id = args.model or "default"
     instructions = get_setup_instructions(
         profile, base_url, model_id, agent_version=args.agent_version
     )

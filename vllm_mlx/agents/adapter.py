@@ -49,6 +49,29 @@ def setup_agent_config(
     return "No config to write (template not specified)"
 
 
+def _detect_running_model(base_url: str) -> str | None:
+    """Try to detect the model running on the server."""
+    import urllib.request
+
+    try:
+        url = base_url.rstrip("/") + "/models"
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            import json
+
+            data = json.loads(resp.read())
+            models = data.get("data", [])
+            # Prefer short alias over full HF path
+            for m in models:
+                mid = m.get("id", "")
+                if "/" not in mid and mid != "default":
+                    return mid
+            if models:
+                return models[0].get("id", "default")
+    except Exception:
+        pass
+    return None
+
+
 def get_setup_instructions(
     profile: AgentProfile,
     base_url: str = "http://localhost:8000/v1",
@@ -56,6 +79,12 @@ def get_setup_instructions(
     agent_version: str | None = None,
 ) -> str:
     """Get human-readable setup instructions for an agent."""
+    # Auto-detect running model if not explicitly set
+    if model_id == "default":
+        detected = _detect_running_model(base_url)
+        if detected:
+            model_id = detected
+
     cfg = profile.get_config_for_version(agent_version)
     rendered = profile.render_config(base_url, model_id, agent_version)
     testing = profile.get_testing_for_version(agent_version)
@@ -67,9 +96,12 @@ def get_setup_instructions(
         "",
     ]
 
+    serve_model = model_id if model_id != "default" else (
+        profile.recommended_models[0] if profile.recommended_models else "<MODEL>"
+    )
     if profile.recommended_models:
         lines.append("```bash")
-        cmd = f"rapid-mlx serve {profile.recommended_models[0]}"
+        cmd = f"rapid-mlx serve {serve_model}"
         if len(profile.recommended_models) > 1:
             cmd += "  # or any model below"
         lines.append(cmd)
