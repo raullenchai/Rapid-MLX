@@ -148,6 +148,8 @@ _model_registry = ModelRegistry()
 
 # Global engine instance (single-model legacy path, also primary model in multi-model)
 _engine: BaseEngine | None = None
+# Serialize requests in SimpleEngine to prevent Metal/cache corruption from concurrent use
+_inference_lock: asyncio.Lock | None = None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
 _model_path: str | None = (
@@ -509,6 +511,20 @@ def configure_cors(origins: list[str]) -> None:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+@app.middleware("http")
+async def serialize_inference(request: Request, call_next):
+    """Serialize inference requests in SimpleEngine to prevent Metal crashes.
+
+    SimpleEngine uses a single prompt cache and Metal command buffer — concurrent
+    requests cause memory corruption. This middleware queues requests so only one
+    runs at a time. BatchedEngine handles concurrency natively via its Scheduler.
+    """
+    if _inference_lock is None or not request.url.path.startswith("/v1/chat"):
+        return await call_next(request)
+    async with _inference_lock:
+        return await call_next(request)
 
 
 security = HTTPBearer(auto_error=False)
@@ -924,8 +940,10 @@ def load_model(
         _model_path, \
         _default_max_tokens, \
         _tool_parser_instance, \
-        _cloud_router
+        _cloud_router, \
+        _inference_lock
 
+    _inference_lock = asyncio.Lock()
     _default_max_tokens = max_tokens
     _model_path = model_name
     _model_name = served_model_name or model_name
