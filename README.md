@@ -28,7 +28,7 @@
 | | Your Mac | Model | Speed (tok/s = words/sec) | What works |
 |:---|:---:|:---:|:---:|:---:|
 | **16 GB** MacBook Air | Qwen3.5-4B | 168 tok/s | Chat, coding, tools |
-| **32+ GB** Mac Mini / Studio | Qwen3.6-35B | 94 tok/s | 🆕 256 experts, 262K context |
+| **32+ GB** Mac Mini / Studio | Qwen3.6-35B | 95 tok/s | 🆕 256 experts, 262K context |
 | **64 GB** Mac Mini / Studio | Qwen3.5-35B | 83 tok/s | Best balance of smart + fast |
 | **96+ GB** Mac Studio / Pro | Qwen3.5-122B | 57 tok/s | Frontier-level intelligence |
 
@@ -348,7 +348,7 @@ The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monit
 | **16 GB** MacBook Air/Pro | [Qwen3.5-4B 4bit](https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit) | 2.4 GB | 168 tok/s | Good for chat and simple tasks |
 | **24 GB** MacBook Pro | [Qwen3.5-9B 4bit](https://huggingface.co/mlx-community/Qwen3.5-9B-4bit) | 5.1 GB | 108 tok/s | Great all-rounder |
 | **32 GB** Mac Mini / Studio | [Qwen3.5-27B 4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | 15.3 GB | 39 tok/s | Solid coding model |
-| **32 GB** Mac Mini / Studio | 🆕 [Qwen3.6-35B-A3B 4bit](https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-4bit) | 20 GB | 94 tok/s | 256 MoE experts, 262K context |
+| **32 GB** Mac Mini / Studio | 🆕 [Qwen3.6-35B-A3B 4bit](https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-4bit) | 20 GB | 95 tok/s | 256 MoE experts, 262K context |
 | **36 GB** MacBook Pro M3/M4 Pro | [Qwen3.5-27B 4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | 15.3 GB | 39 tok/s | Same as 32 GB — extra headroom for long contexts |
 | **48 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 83 tok/s | **Sweet spot** — smart + fast |
 | **64 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 83 tok/s | Same model, more room for KV cache |
@@ -430,10 +430,10 @@ All 17 parsers include automatic recovery — if a quantized model outputs broke
 | **Qwen3.5-4B** | **168** tok/s | 155 (mlx-lm serve) | **1.1x** |
 | **GPT-OSS 20B** | **127** tok/s · 100% tools | 79 (mlx-lm serve) | **1.6x** |
 | **Qwen3.5-9B** | **108** tok/s | 41 (Ollama) | **2.6x** |
+| 🆕 **Qwen3.6-35B-A3B** | **95** tok/s · 100% tools | — (day-0) | — |
 | **Kimi-Linear-48B** | **94** tok/s · 100% tools | — (only engine) | — |
 | 🆕 **Gemma 4 26B-A4B** | **85** tok/s · 100% tools | 68 (Ollama) | **1.3x** |
 | 🆕 **Gemma 4 E4B** | **83** tok/s · 100% tools | — | — |
-| 🆕 **Qwen3.6-35B-A3B** | **94** tok/s · 100% tools | — (day-0) | — |
 | **Qwen3.5-35B-A3B** | **83** tok/s · 100% tools | 75 (oMLX) | **1.1x** |
 | **Qwen3-Coder 80B** | **74** tok/s · 100% tools | 69 (mlx-lm serve) | **1.1x** |
 | **Qwen3.5-122B** | **44** tok/s · 100% tools | 43 (mlx-lm serve) | ~1.0x |
