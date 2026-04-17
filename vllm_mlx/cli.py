@@ -830,7 +830,13 @@ def agents_command(args):
         for p in profiles:
             fc = "FC" if p.needs_function_calling else "  "
             stars = f"{p.stars // 1000}K" if p.stars and p.stars >= 1000 else ""
-            models = ", ".join(p.recommended_models[:2]) if p.recommended_models else ""
+            if p.recommended_models:
+                shown = p.recommended_models[:3]
+                models = ", ".join(shown)
+                if len(p.recommended_models) > 3:
+                    models += f" +{len(p.recommended_models) - 3}"
+            else:
+                models = ""
             print(f"  {p.name:<15} {p.display_name:<20} {stars:>5}  [{fc}]  {models}")
         print()
         print(f"  {len(profiles)} agents supported")
