@@ -22,6 +22,15 @@ from .base import BaseEngine, GenerationOutput
 
 logger = logging.getLogger(__name__)
 
+# Check for guided generation availability
+try:
+    from ..api.guided import GuidedGenerator, is_guided_available
+
+    HAS_GUIDED = is_guided_available()
+except ImportError:
+    HAS_GUIDED = False
+    GuidedGenerator = None
+
 
 def _extract_media_from_messages(messages: list[dict[str, Any]]) -> tuple:
     """
@@ -831,6 +840,103 @@ class BatchedEngine(BaseEngine):
         if self._engine:
             return self._engine.load_cache_from_disk(cache_dir)
         return 0
+
+    # ------------------------------------------------------------------
+    # Guided generation (JSON schema constrained decoding via outlines)
+    # ------------------------------------------------------------------
+
+    @property
+    def supports_guided_generation(self) -> bool:
+        """Check if guided generation is available."""
+        return HAS_GUIDED and not self._is_mllm
+
+    async def generate_with_schema(
+        self,
+        messages: list[dict[str, Any]],
+        json_schema: dict[str, Any],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        **kwargs,
+    ) -> GenerationOutput:
+        """Generate JSON output constrained to a schema using guided decoding.
+
+        Uses outlines for constrained generation to guarantee the output is
+        valid JSON matching the specified schema.  Runs synchronously in a
+        thread pool to avoid blocking the event loop.
+        """
+        import asyncio
+
+        if not self.supports_guided_generation:
+            raise RuntimeError(
+                "Guided generation not available. "
+                "Install with: pip install 'rapid-mlx[guided]'"
+            )
+
+        if not self._loaded:
+            await self.start()
+
+        # Build prompt from messages
+        tokenizer = self.tokenizer
+        if hasattr(tokenizer, "apply_chat_template"):
+            prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        else:
+            prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+            prompt += "\nassistant:"
+
+        # Run guided generation in thread pool (outlines is synchronous)
+        result = await asyncio.to_thread(
+            self._run_guided_generation,
+            prompt=prompt,
+            json_schema=json_schema,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+        if result is None:
+            # Fallback to standard generation
+            logger.warning(
+                "Guided generation failed, falling back to regular generation"
+            )
+            return await self.chat(messages=messages, max_tokens=max_tokens, **kwargs)
+
+        # Tokenize for completion count
+        tokens = tokenizer.encode(result)
+        return GenerationOutput(
+            text=result,
+            tokens=tokens,
+            prompt_tokens=len(tokenizer.encode(prompt)),
+            completion_tokens=len(tokens),
+            finish_reason="stop",
+        )
+
+    def _run_guided_generation(
+        self,
+        prompt: str,
+        json_schema: dict[str, Any],
+        max_tokens: int,
+        temperature: float,
+    ) -> str | None:
+        """Run guided generation synchronously (called from thread pool)."""
+        try:
+            model = self._model
+            tokenizer = self._tokenizer
+            if self._is_mllm:
+                return None
+            generator = GuidedGenerator(model, tokenizer)
+            return generator.generate_json(
+                prompt=prompt,
+                json_schema=json_schema,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception as e:
+            logger.error(f"Guided generation error: {e}")
+            return None
 
     async def _inject_shared_model(
         self,

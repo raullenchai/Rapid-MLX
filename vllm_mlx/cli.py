@@ -250,9 +250,12 @@ def serve_command(args):
         server.load_embedding_model(args.embedding_model, lock=True)
         print(f"Embedding model loaded: {args.embedding_model}")
 
+    # Resolve engine mode: BatchedEngine is default, --simple-engine overrides
+    use_batching = args.continuous_batching and not getattr(args, "simple_engine", False)
+
     # Build scheduler config for batched mode
     scheduler_config = None
-    if args.continuous_batching:
+    if use_batching:
         # Handle prefix cache flags
         enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
 
@@ -341,9 +344,9 @@ def serve_command(args):
     try:
         load_model(
             args.model,
-            use_batching=args.continuous_batching,
+            use_batching=use_batching,
             scheduler_config=scheduler_config,
-            stream_interval=args.stream_interval if args.continuous_batching else 1,
+            stream_interval=args.stream_interval if use_batching else 1,
             max_tokens=args.max_tokens,
             force_mllm=args.mllm,
             gpu_memory_utilization=args.gpu_memory_utilization,
@@ -1032,7 +1035,13 @@ Examples:
     serve_parser.add_argument(
         "--continuous-batching",
         action="store_true",
-        help="Enable continuous batching for multiple concurrent users (slower for single user)",
+        default=True,
+        help="Enable continuous batching (default: on). Use --simple-engine to disable.",
+    )
+    serve_parser.add_argument(
+        "--simple-engine",
+        action="store_true",
+        help="Use legacy SimpleEngine instead of BatchedEngine (single-user, no batching)",
     )
     serve_parser.add_argument(
         "--gpu-memory-utilization",

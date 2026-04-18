@@ -3765,7 +3765,13 @@ Examples:
     parser.add_argument(
         "--continuous-batching",
         action="store_true",
-        help="Enable continuous batching for multiple concurrent users",
+        default=True,
+        help="Enable continuous batching (default: on). Use --simple-engine to disable.",
+    )
+    parser.add_argument(
+        "--simple-engine",
+        action="store_true",
+        help="Use legacy SimpleEngine instead of BatchedEngine (single-user, no batching)",
     )
     parser.add_argument(
         "--mcp-config",
@@ -3997,7 +4003,7 @@ Examples:
     # Load model before starting server
     load_model(
         args.model,
-        use_batching=args.continuous_batching,
+        use_batching=args.continuous_batching and not getattr(args, "simple_engine", False),
         max_tokens=args.max_tokens,
         force_mllm=args.mllm,
         draft_model=args.draft_model,
