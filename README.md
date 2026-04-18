@@ -614,7 +614,7 @@ Vision, audio (STT/TTS), video understanding, and text embeddings — all throug
 | `--host` | Host to bind to | `0.0.0.0` |
 | `--port` | Port to bind to | `8000` |
 | `--max-tokens` | Default max tokens for generation | `32768` |
-| `--continuous-batching` | Multi-user mode with scheduler | off |
+| `--simple-engine` | Legacy single-user mode (no batching) | off |
 
 ### Tool Calling & Reasoning
 
