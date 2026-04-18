@@ -676,13 +676,6 @@ Vision, audio (STT/TTS), video understanding, and text embeddings — all throug
 
 | Technique | Expected Gain | Status |
 |-----------|---------------|--------|
-| **BatchedEngine default** — continuous batching for all users | Multi-user + same perf | **Done** |
-| **DeltaNet state snapshots** — hybrid RNN cache reuse for Qwen3.5/3.6 | 1.5-4.3x TTFT | **Done** |
-| **SSE streaming optimization** — pre-computed templates, micro-opts | +10.5% composite | **Done** |
-| **Tool injection fallback** — system prompt injection for broken templates | 0→100% tools | **Done** |
-| **MTP decode loop** — shared multi-token prediction for both engines | 1.4x decode | **Done** |
-| **Agent profile system** — 11 agent frameworks, `rapid-mlx agents` CLI | Plug-and-play agents | **Done** |
-| **Doctor harness** — 4-tier regression testing, per-model baselines | CI-ready quality gate | **Done** |
 | [Standard Speculative Decode](https://arxiv.org/abs/2302.01318) — draft model acceleration | 1.5-2.3x decode | Not started |
 | [EAGLE-3](https://arxiv.org/abs/2503.01840) — feature-level draft on Metal | 3-6.5x decode | Not started |
 | [ReDrafter](https://arxiv.org/abs/2403.09919) — Apple's RNN draft head | 1.4-1.5x decode | Not started |
