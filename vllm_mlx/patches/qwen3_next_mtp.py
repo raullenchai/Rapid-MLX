@@ -85,21 +85,53 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
     mtp = _MTPModule(args, num_mtp_layers)
 
     # --- Step 2: Quantize MTP module to match base model ---
+    # nn.quantize handles Linear → QuantizedLinear but NOT SwitchLinear →
+    # QuantizedSwitchLinear.  We must replace SwitchLinear BEFORE load_weights
+    # so the parameter names (weight, scales, biases) match the saved file.
     quant_config = config.get("quantization", {})
     if quant_config:
         bits = quant_config.get("bits", 6)
         group_size = quant_config.get("group_size", 64)
+        mode = quant_config.get("mode", "affine")
 
+        # 2a: Replace SwitchLinear → QuantizedSwitchLinear in MoE blocks
+        try:
+            from mlx_lm.models.switch_layers import (
+                QuantizedSwitchLinear,
+                SwitchLinear,
+            )
+
+            for layer in mtp.layers:
+                if hasattr(layer, "mlp") and hasattr(layer.mlp, "switch_mlp"):
+                    sm = layer.mlp.switch_mlp
+                    for proj_name in ["up_proj", "down_proj", "gate_proj"]:
+                        proj = getattr(sm, proj_name, None)
+                        if proj is not None and isinstance(proj, SwitchLinear):
+                            ne = proj.weight.shape[0]   # num_experts
+                            od = proj.weight.shape[1]    # output_dims
+                            id_ = proj.weight.shape[2]   # input_dims
+                            q = QuantizedSwitchLinear(
+                                id_, od, ne,
+                                bias=False,
+                                group_size=group_size,
+                                bits=bits,
+                                mode=mode,
+                            )
+                            setattr(sm, proj_name, q)
+                    logger.info("[MTP inject] Replaced SwitchLinear → QuantizedSwitchLinear")
+        except ImportError:
+            logger.warning("[MTP inject] Could not import QuantizedSwitchLinear")
+
+        # 2b: Quantize remaining Linear layers (attention, shared_expert, gate)
         def _mtp_quant_pred(path, module):
-            # Only quantize Linear layers
             if not isinstance(module, nn.Linear):
                 return False
             # fc kept as FP (concat projection)
             if path == "fc":
                 return False
-            # Gate layers at 8-bit (matching base model)
-            if path.endswith("mlp.gate") or path.endswith("shared_expert_gate"):
-                return {"group_size": 64, "bits": 8}
+            # shared_expert_gate kept as FP (small, stored unquantized)
+            if path.endswith("shared_expert_gate"):
+                return False
             return True
 
         nn.quantize(
