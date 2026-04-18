@@ -630,8 +630,8 @@ Vision, audio (STT/TTS), video understanding, and text embeddings — all throug
 |------|-------------|---------|
 | `--prefill-step-size` | Tokens per prefill chunk | `2048` |
 | `--kv-bits` | KV cache quantization: `4` or `8` bit | *(full precision)* |
-| `--draft-model` | Draft model for speculative decoding | *(none)* |
-| `--num-draft-tokens` | Speculative tokens per step | `4` |
+| `--enable-prefix-cache` | Cache common prefixes across requests | off |
+| `--gpu-memory-utilization` | Fraction of device memory to use (0.0-1.0) | `0.90` |
 
 ### Cloud Routing
 
@@ -676,14 +676,16 @@ Vision, audio (STT/TTS), video understanding, and text embeddings — all throug
 
 | Technique | Expected Gain | Status |
 |-----------|---------------|--------|
-| **DeltaNet state snapshots** — hybrid RNN cache reuse for Qwen3.5 | 1.5-4.3x TTFT | **Done** |
+| **BatchedEngine default** — continuous batching for all users | Multi-user + same perf | **Done** |
+| **DeltaNet state snapshots** — hybrid RNN cache reuse for Qwen3.5/3.6 | 1.5-4.3x TTFT | **Done** |
 | **SSE streaming optimization** — pre-computed templates, micro-opts | +10.5% composite | **Done** |
 | **Tool injection fallback** — system prompt injection for broken templates | 0→100% tools | **Done** |
-| [MTP in SimpleEngine](https://arxiv.org/abs/2404.19737) — multi-token prediction | 1.4x decode | **Done** |
+| **MTP decode loop** — shared multi-token prediction for both engines | 1.4x decode | **Done** |
+| **Agent profile system** — 11 agent frameworks, `rapid-mlx agents` CLI | Plug-and-play agents | **Done** |
+| **Doctor harness** — 4-tier regression testing, per-model baselines | CI-ready quality gate | **Done** |
 | [Standard Speculative Decode](https://arxiv.org/abs/2302.01318) — draft model acceleration | 1.5-2.3x decode | Not started |
 | [EAGLE-3](https://arxiv.org/abs/2503.01840) — feature-level draft on Metal | 3-6.5x decode | Not started |
 | [ReDrafter](https://arxiv.org/abs/2403.09919) — Apple's RNN draft head | 1.4-1.5x decode | Not started |
-| Auto-optimization per model — zero-config best settings | N/A | Not started |
 
 ---
 
