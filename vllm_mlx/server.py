@@ -525,7 +525,7 @@ from .middleware.auth import (  # noqa: E402
     verify_api_key,
 )
 from .middleware.auth import (
-    rate_limiter as _rate_limiter,  # noqa: F401 — used in main()
+    rate_limiter as _rate_limiter,  # noqa: F401 — configured in main()
 )
 
 
