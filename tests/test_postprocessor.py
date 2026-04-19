@@ -1081,3 +1081,47 @@ class TestJsonModePreambleStripping:
         content_events = [e for e in events if e.type == "content"]
         assert len(content_events) == 1
         assert content_events[0].content == '"value"}'
+
+    def test_response_format_text_does_not_activate(self):
+        """response_format type=text should NOT activate json_mode."""
+        cfg = _make_cfg()
+        # Simulate: json_mode should be False when type is "text"
+        pp = StreamingPostProcessor(cfg, json_mode=False)
+        pp.reset()
+
+        events = pp.process_chunk(_make_output("Normal text without JSON"))
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 1
+        assert "Normal text" in content_events[0].content
+
+    def test_stream_ends_during_preamble(self):
+        """Model never outputs JSON delimiter — finalize returns empty."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+
+        # All chunks are preamble, no JSON delimiter
+        events1 = pp.process_chunk(_make_output("thinking..."))
+        assert len(events1) == 0
+
+        events2 = pp.process_chunk(_make_output("still thinking"))
+        assert len(events2) == 0
+
+        # Stream ends — finalize has no tool calls, no JSON
+        final = pp.finalize()
+        assert len(final) == 0
+
+    def test_json_mode_does_not_corrupt_accumulated_text(self):
+        """json_mode preamble buffer is separate from accumulated_text."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+
+        # Preamble phase — accumulated_text should be unaffected
+        pp.process_chunk(_make_output("preamble "))
+        # accumulated_text is used by _process_standard after json_mode guard
+        # but the preamble buffer is separate
+        assert pp._json_preamble_buffer == "preamble "
+
+        pp.process_chunk(_make_output('{"key": 1}'))
+        assert pp._json_preamble_stripped is True

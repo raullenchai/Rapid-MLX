@@ -88,6 +88,7 @@ class StreamingPostProcessor:
         # When json_mode=True and no reasoning parser, buffer content until
         # the first JSON delimiter ({ or [) is seen, then emit from there.
         self._json_preamble_stripped = False
+        self._json_preamble_buffer = ""
 
     @staticmethod
     def _create_reasoning_parser(cfg: ServerConfig):
@@ -151,6 +152,7 @@ class StreamingPostProcessor:
         self.tool_markup_possible = False
         self._think_prefix_sent = False
         self._json_preamble_stripped = False
+        self._json_preamble_buffer = ""
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
@@ -324,18 +326,17 @@ class StreamingPostProcessor:
         # everything before the first JSON delimiter.
         if self.json_mode and not self.reasoning_parser and not self._json_preamble_stripped:
             if content:
-                self.accumulated_text += content
-                # Look for JSON start in accumulated text
+                self._json_preamble_buffer += content
+                # Look for JSON start in buffer
                 json_start = -1
                 for delim in ("{", "["):
-                    pos = self.accumulated_text.find(delim)
+                    pos = self._json_preamble_buffer.find(delim)
                     if pos >= 0 and (json_start < 0 or pos < json_start):
                         json_start = pos
                 if json_start >= 0:
                     # Found JSON start — emit from there, discard preamble
                     self._json_preamble_stripped = True
-                    content = self.accumulated_text[json_start:]
-                    self.accumulated_text = content
+                    content = self._json_preamble_buffer[json_start:]
                 else:
                     # Still in preamble — suppress
                     return []
