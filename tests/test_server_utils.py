@@ -23,27 +23,51 @@ class TestResolveTemperature:
 
     def test_request_value_takes_priority(self):
         from vllm_mlx import server
+        from vllm_mlx.config import get_config
 
-        with patch.object(server, "_default_temperature", 0.8):
+        cfg = get_config()
+        old = cfg.default_temperature
+        try:
+            cfg.default_temperature = 0.8
             assert server._resolve_temperature(0.3) == 0.3
+        finally:
+            cfg.default_temperature = old
 
     def test_cli_default_over_fallback(self):
         from vllm_mlx import server
+        from vllm_mlx.config import get_config
 
-        with patch.object(server, "_default_temperature", 0.8):
+        cfg = get_config()
+        old = cfg.default_temperature
+        try:
+            cfg.default_temperature = 0.8
             assert server._resolve_temperature(None) == 0.8
+        finally:
+            cfg.default_temperature = old
 
     def test_fallback_when_nothing_set(self):
         from vllm_mlx import server
+        from vllm_mlx.config import get_config
 
-        with patch.object(server, "_default_temperature", None):
+        cfg = get_config()
+        old = cfg.default_temperature
+        try:
+            cfg.default_temperature = None
             assert server._resolve_temperature(None) == server._FALLBACK_TEMPERATURE
+        finally:
+            cfg.default_temperature = old
 
     def test_zero_is_valid_request_value(self):
         from vllm_mlx import server
+        from vllm_mlx.config import get_config
 
-        with patch.object(server, "_default_temperature", 0.8):
+        cfg = get_config()
+        old = cfg.default_temperature
+        try:
+            cfg.default_temperature = 0.8
             assert server._resolve_temperature(0.0) == 0.0
+        finally:
+            cfg.default_temperature = old
 
 
 class TestResolveTopP:
@@ -51,21 +75,39 @@ class TestResolveTopP:
 
     def test_request_value_takes_priority(self):
         from vllm_mlx import server
+        from vllm_mlx.config import get_config
 
-        with patch.object(server, "_default_top_p", 0.95):
+        cfg = get_config()
+        old = cfg.default_top_p
+        try:
+            cfg.default_top_p = 0.95
             assert server._resolve_top_p(0.7) == 0.7
+        finally:
+            cfg.default_top_p = old
 
     def test_cli_default_over_fallback(self):
         from vllm_mlx import server
+        from vllm_mlx.config import get_config
 
-        with patch.object(server, "_default_top_p", 0.95):
+        cfg = get_config()
+        old = cfg.default_top_p
+        try:
+            cfg.default_top_p = 0.95
             assert server._resolve_top_p(None) == 0.95
+        finally:
+            cfg.default_top_p = old
 
     def test_fallback_when_nothing_set(self):
         from vllm_mlx import server
+        from vllm_mlx.config import get_config
 
-        with patch.object(server, "_default_top_p", None):
+        cfg = get_config()
+        old = cfg.default_top_p
+        try:
+            cfg.default_top_p = None
             assert server._resolve_top_p(None) == server._FALLBACK_TOP_P
+        finally:
+            cfg.default_top_p = old
 
 
 # ---------------------------------------------------------------------------

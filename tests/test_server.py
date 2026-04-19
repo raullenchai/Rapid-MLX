@@ -583,14 +583,15 @@ class TestAPIKeyVerification:
         from fastapi import HTTPException
         from fastapi.security import HTTPAuthorizationCredentials
 
-        # Import and set up the module
         import vllm_mlx.server as server
+        from vllm_mlx.config import get_config
 
-        original_key = server._api_key
+        cfg = get_config()
+        original_key = cfg.api_key
 
         try:
-            # Set a known API key
-            server._api_key = "valid-secret-key"
+            # Set a known API key on config (where verify_api_key reads from)
+            cfg.api_key = "valid-secret-key"
 
             # Create mock credentials with invalid key
             credentials = HTTPAuthorizationCredentials(
@@ -606,7 +607,7 @@ class TestAPIKeyVerification:
             assert exc_info.value.status_code == 401
             assert "Invalid API key" in str(exc_info.value.detail)
         finally:
-            server._api_key = original_key
+            cfg.api_key = original_key
 
     def test_verify_api_key_accepts_valid(self):
         """Test that valid API key is accepted."""
@@ -615,12 +616,14 @@ class TestAPIKeyVerification:
         from fastapi.security import HTTPAuthorizationCredentials
 
         import vllm_mlx.server as server
+        from vllm_mlx.config import get_config
 
-        original_key = server._api_key
+        cfg = get_config()
+        original_key = cfg.api_key
 
         try:
-            # Set a known API key
-            server._api_key = "valid-secret-key"
+            # Set a known API key on config
+            cfg.api_key = "valid-secret-key"
 
             # Create mock credentials with valid key
             credentials = HTTPAuthorizationCredentials(
@@ -634,7 +637,7 @@ class TestAPIKeyVerification:
             # verify_api_key returns True on success (no exception raised)
             assert result is True or result is None
         finally:
-            server._api_key = original_key
+            cfg.api_key = original_key
 
 
 class TestRateLimiterHTTPResponse:

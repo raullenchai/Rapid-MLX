@@ -102,6 +102,7 @@ from .api.utils import (
     strip_special_tokens,
     strip_thinking_tags,
 )
+from .config import get_config
 from .engine import (
     BaseEngine,
     BatchedEngine,
@@ -153,8 +154,9 @@ _FALLBACK_TOP_P = 0.9
 
 def _resolve_model_name(request_model: str | None) -> str:
     """Resolve the model name for responses — never return literal 'default'."""
+    cfg = get_config()
     if not request_model or request_model == "default":
-        return _model_name or "default"
+        return cfg.model_name or "default"
     return request_model
 
 
@@ -167,18 +169,20 @@ def _resolve_max_tokens(
     add extra headroom so <think>...</think> tokens don't eat into the content budget.
     Skips the budget when the request explicitly disables thinking.
     """
-    base = request_value if request_value is not None else _default_max_tokens
+    cfg = get_config()
+    base = request_value if request_value is not None else cfg.default_max_tokens
     if enable_thinking is False:
         return base  # User explicitly disabled thinking — no budget needed
-    if _reasoning_parser_name and base > 0 and base < 4096:
-        return base + _thinking_token_budget
+    if cfg.reasoning_parser_name and base > 0 and base < 4096:
+        return base + cfg.thinking_token_budget
     return base
 
 
 def _build_usage(output: "GenerationOutput", reasoning_text: str | None) -> Usage:
     """Build Usage with reasoning token breakdown when applicable."""
+    cfg = get_config()
     total_completion = output.completion_tokens
-    if reasoning_text and _reasoning_parser_name:
+    if reasoning_text and cfg.reasoning_parser_name:
         # Estimate reasoning tokens (~4 chars/token for English/Chinese mix)
         reasoning_tokens = max(1, len(reasoning_text) // 4)
         reasoning_tokens = min(reasoning_tokens, total_completion)
@@ -201,8 +205,9 @@ def _resolve_temperature(request_value: float | None) -> float:
     """Resolve temperature: request > CLI default > fallback."""
     if request_value is not None:
         return request_value
-    if _default_temperature is not None:
-        return _default_temperature
+    cfg = get_config()
+    if cfg.default_temperature is not None:
+        return cfg.default_temperature
     return _FALLBACK_TEMPERATURE
 
 
@@ -210,8 +215,9 @@ def _resolve_top_p(request_value: float | None) -> float:
     """Resolve top_p: request > CLI default > fallback."""
     if request_value is not None:
         return request_value
-    if _default_top_p is not None:
-        return _default_top_p
+    cfg = get_config()
+    if cfg.default_top_p is not None:
+        return cfg.default_top_p
     return _FALLBACK_TOP_P
 
 
@@ -263,9 +269,9 @@ _TOOL_USE_SYSTEM_SUFFIX = (
 
 def _maybe_pin_system_prompt(messages: list) -> None:
     """Auto-pin system prompt prefix cache blocks on first request."""
-    global _pinned_system_prompt_hash
+    cfg = get_config()
 
-    if not _pin_system_prompt or _engine is None:
+    if not cfg.pin_system_prompt or cfg.engine is None:
         return
 
     # Extract system message content
@@ -287,17 +293,17 @@ def _maybe_pin_system_prompt(messages: list) -> None:
 
     # Check if this system prompt is already pinned
     prompt_hash = hashlib.sha256(system_content.encode()).hexdigest()[:16]
-    if prompt_hash == _pinned_system_prompt_hash:
+    if prompt_hash == cfg.pinned_system_prompt_hash:
         return  # Already pinned
 
     # Try to pin via engine's cache manager
     try:
         # Get the tokenizer to encode the system prompt
         tokenizer = None
-        if hasattr(_engine, "_tokenizer"):
-            tokenizer = _engine._tokenizer
-        elif hasattr(_engine, "_model") and hasattr(_engine._model, "tokenizer"):
-            tokenizer = _engine._model.tokenizer
+        if hasattr(cfg.engine, "_tokenizer"):
+            tokenizer = cfg.engine._tokenizer
+        elif hasattr(cfg.engine, "_model") and hasattr(cfg.engine._model, "tokenizer"):
+            tokenizer = cfg.engine._model.tokenizer
 
         if tokenizer is None:
             return
@@ -307,11 +313,11 @@ def _maybe_pin_system_prompt(messages: list) -> None:
             return  # Too short to pin
 
         # Try BlockAwarePrefixCache (paged cache mode)
-        if hasattr(_engine, "_prefix_cache") and _engine._prefix_cache is not None:
-            cache = _engine._prefix_cache
+        if hasattr(cfg.engine, "_prefix_cache") and cfg.engine._prefix_cache is not None:
+            cache = cfg.engine._prefix_cache
             if hasattr(cache, "pin_prefix"):
                 if cache.pin_prefix(system_tokens):
-                    _pinned_system_prompt_hash = prompt_hash
+                    cfg.pinned_system_prompt_hash = prompt_hash
                     logger.info(
                         f"Auto-pinned system prompt: {len(system_tokens)} tokens, "
                         f"hash={prompt_hash}"
@@ -319,11 +325,11 @@ def _maybe_pin_system_prompt(messages: list) -> None:
                     return
 
         # Try PrefixCacheManager (trie-based cache mode)
-        if hasattr(_engine, "_cache_manager") and _engine._cache_manager is not None:
-            cache = _engine._cache_manager
+        if hasattr(cfg.engine, "_cache_manager") and cfg.engine._cache_manager is not None:
+            cache = cfg.engine._cache_manager
             if hasattr(cache, "pin_prefix"):
                 if cache.pin_prefix(system_tokens):
-                    _pinned_system_prompt_hash = prompt_hash
+                    cfg.pinned_system_prompt_hash = prompt_hash
                     logger.info(
                         f"Auto-pinned system prompt (trie): {len(system_tokens)} tokens, "
                         f"hash={prompt_hash}"
@@ -553,20 +559,21 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
 
     Args:
         model_name: Model name from request. None uses the default model.
-                    In single-model mode, this is ignored and the global
-                    _engine is returned.
+                    In single-model mode, this is ignored and the config
+                    engine is returned.
     """
+    cfg = get_config()
     # Multi-model path: registry has entries → route by name
-    if _model_registry:
+    if cfg.model_registry:
         try:
-            return _model_registry.get_engine(model_name)
+            return cfg.model_registry.get_engine(model_name)
         except KeyError:
             pass  # fall through to legacy path
 
     # Single-model legacy path
-    if _engine is None:
+    if cfg.engine is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    return _engine
+    return cfg.engine
 
 
 def _validate_model_name(request_model: str) -> None:
@@ -574,25 +581,26 @@ def _validate_model_name(request_model: str) -> None:
     if not request_model:
         return
 
+    cfg = get_config()
     # Multi-model: check registry
-    if _model_registry and request_model in _model_registry:
+    if cfg.model_registry and request_model in cfg.model_registry:
         return
-    if _model_registry and request_model == "default":
+    if cfg.model_registry and request_model == "default":
         return
 
-    # Single-model legacy: check globals
-    if not _model_name:
+    # Single-model: check config
+    if not cfg.model_name:
         return
-    accepted = {_model_name}
-    if _model_alias:
-        accepted.add(_model_alias)
-    if _model_path:
-        accepted.add(_model_path)
+    accepted = {cfg.model_name}
+    if cfg.model_alias:
+        accepted.add(cfg.model_alias)
+    if cfg.model_path:
+        accepted.add(cfg.model_path)
     if request_model not in accepted:
         available = (
-            ", ".join(_model_registry.list_model_names())
-            if _model_registry
-            else _model_name
+            ", ".join(cfg.model_registry.list_model_names())
+            if cfg.model_registry
+            else cfg.model_name
         )
         raise HTTPException(
             status_code=404,
@@ -617,19 +625,19 @@ def _parse_tool_calls_with_parser(
     Returns:
         Tuple of (cleaned_text, tool_calls)
     """
-    global _tool_parser_instance
+    cfg = get_config()
 
     request_dict = request.model_dump() if request else None
 
     # If auto tool choice is not enabled, try inferred parser from reasoning parser
-    if not _enable_auto_tool_choice or not _tool_call_parser:
-        if _reasoning_parser_name and request and request.tools:
+    if not cfg.enable_auto_tool_choice or not cfg.tool_call_parser:
+        if cfg.reasoning_parser_name and request and request.tools:
             _PARSER_MAP = {"minimax": "minimax"}
-            inferred = _PARSER_MAP.get(_reasoning_parser_name)
+            inferred = _PARSER_MAP.get(cfg.reasoning_parser_name)
             if inferred:
                 try:
                     parser_cls = ToolParserManager.get_tool_parser(inferred)
-                    tokenizer = getattr(_engine, "_tokenizer", None)
+                    tokenizer = getattr(cfg.engine, "_tokenizer", None)
                     parser = parser_cls(tokenizer)
                     parser.reset()
                     result = parser.extract_tool_calls(output_text, request_dict)
@@ -651,18 +659,18 @@ def _parse_tool_calls_with_parser(
         return parse_tool_calls(output_text, request_dict)
 
     # Initialize parser if needed
-    if _tool_parser_instance is None:
+    if cfg.tool_parser_instance is None:
         try:
-            parser_cls = ToolParserManager.get_tool_parser(_tool_call_parser)
+            parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
             # Get tokenizer from engine if available
             tokenizer = None
-            if _engine is not None and hasattr(_engine, "_tokenizer"):
-                tokenizer = _engine._tokenizer
-            _tool_parser_instance = parser_cls(tokenizer)
-            logger.info(f"Initialized tool call parser: {_tool_call_parser}")
+            if cfg.engine is not None and hasattr(cfg.engine, "_tokenizer"):
+                tokenizer = cfg.engine._tokenizer
+            cfg.tool_parser_instance = parser_cls(tokenizer)
+            logger.info(f"Initialized tool call parser: {cfg.tool_call_parser}")
         except Exception as e:
             logger.warning(
-                f"Failed to initialize tool parser '{_tool_call_parser}': {e}"
+                f"Failed to initialize tool parser '{cfg.tool_call_parser}': {e}"
             )
             logger.warning("Falling back to generic parser")
             return parse_tool_calls(output_text, request_dict)
@@ -670,8 +678,8 @@ def _parse_tool_calls_with_parser(
     # Use the configured parser
     try:
         # Reset parser state between requests
-        _tool_parser_instance.reset()
-        result = _tool_parser_instance.extract_tool_calls(output_text, request_dict)
+        cfg.tool_parser_instance.reset()
+        result = cfg.tool_parser_instance.extract_tool_calls(output_text, request_dict)
         if result.tools_called:
             tool_calls = [
                 ToolCall(
@@ -747,16 +755,17 @@ def _detect_native_tool_support() -> bool:
     Returns:
         True if native format should be preserved
     """
-    if not _enable_auto_tool_choice or not _tool_call_parser:
+    cfg = get_config()
+    if not cfg.enable_auto_tool_choice or not cfg.tool_call_parser:
         return False
 
     try:
-        parser_cls = ToolParserManager.get_tool_parser(_tool_call_parser)
+        parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
         return parser_cls.supports_native_format()
     except KeyError:
         # Parser not found - this is a configuration error, log as error
         logger.error(
-            f"Tool parser '{_tool_call_parser}' not found. "
+            f"Tool parser '{cfg.tool_call_parser}' not found. "
             f"Available parsers: {ToolParserManager.list_registered()}"
         )
         return False
@@ -794,8 +803,6 @@ def load_embedding_model(
     _embedding_engine.load()
 
     # Sync into config for route modules
-    from .config import get_config
-
     cfg = get_config()
     cfg.embedding_engine = _embedding_engine
     cfg.embedding_model_locked = _embedding_model_locked
@@ -1006,8 +1013,6 @@ def _sync_config() -> None:
     Called after load_model() and whenever globals change.
     Bridges the old global-variable pattern with the new config object.
     """
-    from .config import get_config
-
     cfg = get_config()
     cfg.engine = _engine
     cfg.model_name = _model_name
@@ -1356,7 +1361,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
     # Non-streaming response with timing and timeout
     start_time = time.perf_counter()
-    timeout = request.timeout or _default_timeout
+    timeout = request.timeout or get_config().default_timeout
     choices = []
     total_completion_tokens = 0
     total_prompt_tokens = 0
@@ -1530,10 +1535,12 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     )
     logger.debug(f"[REQUEST] last user message preview: {last_user_preview!r}")
 
+    cfg = get_config()
+
     # Save original messages (clean dicts) for cloud routing BEFORE
     # local mutations (extract_multimodal_content, developer→system, suffix injection).
     # Cloud APIs expect standard OpenAI-format messages.
-    if _cloud_router:
+    if cfg.cloud_router:
         _cloud_original_messages = [
             msg.model_dump(exclude_none=True)
             if hasattr(msg, "model_dump")
@@ -1599,9 +1606,9 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
     # Auto-inject system prompt suffix for tool use and/or reasoning control
     _inject_suffix = None
-    if request.tools and _tool_call_parser:
+    if request.tools and cfg.tool_call_parser:
         _inject_suffix = _TOOL_USE_SYSTEM_SUFFIX
-    elif _reasoning_parser_name == "minimax":
+    elif cfg.reasoning_parser_name == "minimax":
         # MiniMax reasoning parser active — inject conciseness instruction
         _inject_suffix = (
             "\n\nDo NOT think out loud or show your reasoning process. "
@@ -1631,7 +1638,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             messages = [system_msg] + list(messages)
 
     # Auto-pin system prompt prefix cache blocks (non-blocking, first request only)
-    if _pin_system_prompt:
+    if cfg.pin_system_prompt:
         _maybe_pin_system_prompt(messages)
 
     # Handle response_format - inject system prompt if needed
@@ -1679,19 +1686,19 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     # Pass through enable_thinking if explicitly set by the client
     if request.enable_thinking is not None:
         chat_kwargs["enable_thinking"] = request.enable_thinking
-    elif _no_thinking:
+    elif cfg.no_thinking:
         chat_kwargs["enable_thinking"] = False
 
     # Cloud routing: offload large-context requests to cloud LLM
-    if _cloud_router and not engine.is_mllm and hasattr(engine, "build_prompt"):
+    if cfg.cloud_router and not engine.is_mllm and hasattr(engine, "build_prompt"):
         try:
             prompt = engine.build_prompt(messages, tools=request.tools)
             total_tokens, new_tokens = engine.model.estimate_new_tokens(prompt)
-            if _cloud_router.should_route_to_cloud(new_tokens):
+            if cfg.cloud_router.should_route_to_cloud(new_tokens):
                 logger.info(
                     f"[CLOUD ROUTE] {new_tokens} new tokens (total {total_tokens}) "
-                    f"> threshold {_cloud_router.threshold}, "
-                    f"routing to {_cloud_router.cloud_model}"
+                    f"> threshold {cfg.cloud_router.threshold}, "
+                    f"routing to {cfg.cloud_router.cloud_model}"
                 )
                 # Use pre-mutation messages for cloud (standard OpenAI format)
                 cloud_messages = _cloud_original_messages
@@ -1718,9 +1725,9 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                 if request.stream:
                     return StreamingResponse(
                         _disconnect_guard(
-                            _cloud_router.stream_completion(
+                            cfg.cloud_router.stream_completion(
                                 cloud_messages,
-                                model_name=_model_name or "cloud",
+                                model_name=cfg.model_name or "cloud",
                                 **cloud_kwargs,
                             ),
                             raw_request,
@@ -1729,9 +1736,9 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                     )
                 else:
                     result = await _wait_with_disconnect(
-                        _cloud_router.completion(cloud_messages, **cloud_kwargs),
+                        cfg.cloud_router.completion(cloud_messages, **cloud_kwargs),
                         raw_request,
-                        timeout=request.timeout or _default_timeout,
+                        timeout=request.timeout or cfg.default_timeout,
                     )
                     if result is None:
                         # Client disconnected during cloud request
@@ -1743,7 +1750,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             else:
                 logger.info(
                     f"[LOCAL] {new_tokens} new tokens (total {total_tokens}) "
-                    f"<= threshold {_cloud_router.threshold}, using local inference"
+                    f"<= threshold {cfg.cloud_router.threshold}, using local inference"
                 )
         except Exception as e:
             logger.warning(
@@ -1783,11 +1790,11 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
     # Non-streaming response with timing and timeout
     start_time = time.perf_counter()
-    timeout = request.timeout or _default_timeout
+    timeout = request.timeout or cfg.default_timeout
 
     # Disable GC during generation to avoid latency spikes
     gc_was_enabled = gc.isenabled()
-    if _gc_control and gc_was_enabled:
+    if cfg.gc_control and gc_was_enabled:
         gc.disable()
 
     # Determine if we need per-token logprobs
@@ -1867,7 +1874,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             )
         raise  # Re-raise non-template errors
     finally:
-        if _gc_control and gc_was_enabled:
+        if cfg.gc_control and gc_was_enabled:
             gc.enable()
             gc.collect()
 
@@ -1891,9 +1898,9 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     # Always extract reasoning regardless of tool_calls — reasoning preamble
     # should never leak into content even when tool calls are present.
     reasoning_text = None
-    if _reasoning_parser:
+    if cfg.reasoning_parser:
         text_to_parse = cleaned_text or output.text
-        reasoning_text, cleaned_text = _reasoning_parser.extract_reasoning(
+        reasoning_text, cleaned_text = cfg.reasoning_parser.extract_reasoning(
             text_to_parse
         )
 
@@ -2073,13 +2080,14 @@ async def create_anthropic_message(
 
     if openai_request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
+    cfg = get_config()
     if openai_request.enable_thinking is not None:
         chat_kwargs["enable_thinking"] = openai_request.enable_thinking
-    elif _no_thinking:
+    elif cfg.no_thinking:
         chat_kwargs["enable_thinking"] = False
 
     start_time = time.perf_counter()
-    timeout = _default_timeout
+    timeout = cfg.default_timeout
 
     try:
         output = await _wait_with_disconnect(
@@ -2125,7 +2133,7 @@ async def create_anthropic_message(
 
     # Build OpenAI response to convert
     openai_response = ChatCompletionResponse(
-        model=_model_name or openai_request.model,
+        model=cfg.model_name or openai_request.model,
         choices=[
             ChatCompletionChoice(
                 message=AssistantMessage(
@@ -2140,7 +2148,7 @@ async def create_anthropic_message(
 
     # Convert to Anthropic response
     anthropic_response = openai_to_anthropic(
-        openai_response, _model_name or anthropic_request.model
+        openai_response, cfg.model_name or anthropic_request.model
     )
     return Response(
         content=anthropic_response.model_dump_json(exclude_none=True),
@@ -2303,9 +2311,10 @@ async def _stream_anthropic_messages(
 
     if openai_request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
+    cfg = get_config()
     if openai_request.enable_thinking is not None:
         chat_kwargs["enable_thinking"] = openai_request.enable_thinking
-    elif _no_thinking:
+    elif cfg.no_thinking:
         chat_kwargs["enable_thinking"] = False
 
     # Emit message_start
@@ -2315,7 +2324,7 @@ async def _stream_anthropic_messages(
             "id": msg_id,
             "type": "message",
             "role": "assistant",
-            "model": _model_name or anthropic_request.model,
+            "model": cfg.model_name or anthropic_request.model,
             "content": [],
             "stop_reason": None,
             "stop_sequence": None,
@@ -2352,8 +2361,8 @@ async def _stream_anthropic_messages(
     block_index = 0
 
     # Reset reasoning parser state for this stream
-    if _reasoning_parser:
-        _reasoning_parser.reset_state()
+    if cfg.reasoning_parser:
+        cfg.reasoning_parser.reset_state()
 
     async for output in engine.stream_chat(messages=messages, **chat_kwargs):
         delta_text = output.new_text
@@ -2370,10 +2379,10 @@ async def _stream_anthropic_messages(
             content = None
 
             # Use reasoning parser to separate reasoning from content
-            if _reasoning_parser:
+            if cfg.reasoning_parser:
                 previous_raw = accumulated_raw
                 accumulated_raw += delta_text
-                delta_msg = _reasoning_parser.extract_reasoning_streaming(
+                delta_msg = cfg.reasoning_parser.extract_reasoning_streaming(
                     previous_raw, accumulated_raw, delta_text
                 )
                 if delta_msg is not None:
@@ -2423,10 +2432,10 @@ async def _stream_anthropic_messages(
         block_index += 1
 
     # Handle reasoning parser finalization (e.g. no-tag correction)
-    if _reasoning_parser and accumulated_raw:
+    if cfg.reasoning_parser and accumulated_raw:
         final_msg = (
-            _reasoning_parser.finalize_streaming(accumulated_raw)
-            if hasattr(_reasoning_parser, "finalize_streaming")
+            cfg.reasoning_parser.finalize_streaming(accumulated_raw)
+            if hasattr(cfg.reasoning_parser, "finalize_streaming")
             else None
         )
         if final_msg and final_msg.content:
@@ -2451,7 +2460,7 @@ async def _stream_anthropic_messages(
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                 block_index += 1
         # Reset parser state for next request
-        _reasoning_parser.reset_state()
+        cfg.reasoning_parser.reset_state()
 
     # Check for tool calls in accumulated text
     _, tool_calls = _parse_tool_calls_with_parser(accumulated_text, openai_request)
@@ -2557,8 +2566,9 @@ async def stream_chat_completion(
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response."""
+    cfg = get_config()
     gc_was_enabled = gc.isenabled()
-    if _gc_control and gc_was_enabled:
+    if cfg.gc_control and gc_was_enabled:
         gc.disable()
 
     try:
@@ -2619,13 +2629,13 @@ async def stream_chat_completion(
         # Track if we need to add <think> prefix for thinking models (when no reasoning parser)
         # The template adds <think> to the prompt, so the model output starts inside the think block
         is_thinking_model = (
-            "nemotron" in request.model.lower() and not _reasoning_parser
+            "nemotron" in request.model.lower() and not cfg.reasoning_parser
         )
         think_prefix_sent = False
 
         # Reset reasoning parser state for this stream
-        if _reasoning_parser:
-            _reasoning_parser.reset_state()
+        if cfg.reasoning_parser:
+            cfg.reasoning_parser.reset_state()
 
         # Track accumulated text for reasoning parser
         accumulated_text = ""
@@ -2636,35 +2646,34 @@ async def stream_chat_completion(
         last_output = None
 
         # Tool call streaming state
-        global _tool_parser_instance
         tool_parser = None
         tool_accumulated_text = ""
         tool_calls_detected = False
         tool_markup_possible = False  # Fast path: skip parsing until '<' seen
-        if _enable_auto_tool_choice and _tool_call_parser:
+        if cfg.enable_auto_tool_choice and cfg.tool_call_parser:
             # Initialize parser if needed (same as _parse_tool_calls_with_parser)
-            if _tool_parser_instance is None:
+            if cfg.tool_parser_instance is None:
                 try:
-                    parser_cls = ToolParserManager.get_tool_parser(_tool_call_parser)
+                    parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
                     tokenizer = None
-                    if _engine is not None and hasattr(_engine, "_tokenizer"):
-                        tokenizer = _engine._tokenizer
-                    _tool_parser_instance = parser_cls(tokenizer)
-                    logger.info(f"Initialized tool call parser: {_tool_call_parser}")
+                    if cfg.engine is not None and hasattr(cfg.engine, "_tokenizer"):
+                        tokenizer = cfg.engine._tokenizer
+                    cfg.tool_parser_instance = parser_cls(tokenizer)
+                    logger.info(f"Initialized tool call parser: {cfg.tool_call_parser}")
                 except Exception as e:
                     logger.warning(f"Failed to init tool parser for streaming: {e}")
-            if _tool_parser_instance is not None:
-                tool_parser = _tool_parser_instance
+            if cfg.tool_parser_instance is not None:
+                tool_parser = cfg.tool_parser_instance
                 tool_parser.reset()
 
         # Fallback: auto-infer tool parser when tools requested + reasoning parser set
-        if tool_parser is None and request.tools and _reasoning_parser_name:
+        if tool_parser is None and request.tools and cfg.reasoning_parser_name:
             _PARSER_MAP = {"minimax": "minimax"}
-            inferred = _PARSER_MAP.get(_reasoning_parser_name)
+            inferred = _PARSER_MAP.get(cfg.reasoning_parser_name)
             if inferred:
                 try:
                     parser_cls = ToolParserManager.get_tool_parser(inferred)
-                    tokenizer = getattr(_engine, "_tokenizer", None)
+                    tokenizer = getattr(cfg.engine, "_tokenizer", None)
                     tool_parser = parser_cls(tokenizer)
                     tool_parser.reset()
                 except Exception as e:
@@ -2798,10 +2807,10 @@ async def stream_chat_completion(
                 continue
 
             # Legacy text-based reasoning parser (for non-router models)
-            if _reasoning_parser and delta_text:
+            if cfg.reasoning_parser and delta_text:
                 previous_text = accumulated_text
                 accumulated_text += delta_text
-                delta_msg = _reasoning_parser.extract_reasoning_streaming(
+                delta_msg = cfg.reasoning_parser.extract_reasoning_streaming(
                     previous_text, accumulated_text, delta_text
                 )
 
@@ -3066,8 +3075,8 @@ async def stream_chat_completion(
                 # On the final chunk, check for reasoning correction
                 # BEFORE emitting finish_reason so clients see it.
                 final_content = sanitize_output(content) if content else None
-                if finish_reason and _reasoning_parser and accumulated_text:
-                    correction = _reasoning_parser.finalize_streaming(
+                if finish_reason and cfg.reasoning_parser and accumulated_text:
+                    correction = cfg.reasoning_parser.finalize_streaming(
                         accumulated_text
                     )
                     if correction and correction.content:
@@ -3159,7 +3168,7 @@ async def stream_chat_completion(
         yield "data: [DONE]\n\n"
     finally:
         # Re-enable GC even if generator is abandoned (client disconnect)
-        if _gc_control and gc_was_enabled:
+        if cfg.gc_control and gc_was_enabled:
             gc.enable()
             gc.collect()
 
