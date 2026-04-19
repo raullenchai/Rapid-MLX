@@ -206,6 +206,8 @@ class RequestOutput:
     # Timing
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Per-token log-probabilities (mx.array of shape [vocab_size] for current token)
+    logprobs: Any = None
 
     @property
     def usage(self) -> dict[str, int]:

@@ -1999,6 +1999,7 @@ class Scheduler:
                 output_token_ids=list(request.output_token_ids),
                 prompt_tokens=request.num_prompt_tokens,
                 completion_tokens=request.num_output_tokens,
+                logprobs=response.logprobs,
             )
 
             # Check if finished
