@@ -64,8 +64,8 @@ class TestStreamingPostProcessorBasic:
         # Should have content + finish
         content_events = [e for e in events if e.type == "content"]
         finish_events = [e for e in events if e.type == "finish"]
-        assert len(content_events) >= 0  # may or may not have content
-        assert any(e.finish_reason == "stop" for e in events)
+        assert len(finish_events) == 1
+        assert finish_events[0].finish_reason == "stop"
 
     def test_special_tokens_stripped(self):
         cfg = _make_cfg()
@@ -154,7 +154,6 @@ class TestStreamingPostProcessorToolCalls:
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -173,7 +172,6 @@ class TestStreamingPostProcessorToolCalls:
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -195,7 +193,6 @@ class TestStreamingPostProcessorToolCalls:
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -221,7 +218,6 @@ class TestStreamingPostProcessorToolCalls:
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -339,7 +335,6 @@ class TestStreamingPostProcessorMiniMaxRedirect:
         cfg = _make_cfg(
             reasoning_parser=parser,
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -364,7 +359,6 @@ class TestStreamingPostProcessorToolCallChannel:
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -398,17 +392,19 @@ class TestStreamingPostProcessorToolCallChannel:
 class TestToolParserInit:
     """Tests for _init_tool_parser paths (lines 72-99)."""
 
-    def test_init_uses_existing_parser_instance(self):
-        """Tool parser uses cfg.tool_parser_instance when already set."""
-        mock_parser = MagicMock()
+    def test_init_creates_fresh_parser_not_singleton(self):
+        """Tool parser is a fresh per-request instance, NOT cfg singleton."""
+        singleton = MagicMock()
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
             tool_call_parser="hermes",
-            tool_parser_instance=mock_parser,
+            tool_parser_instance=singleton,
         )
         pp = StreamingPostProcessor(cfg, tools_requested=True)
-        assert pp.tool_parser is mock_parser
+        # Must NOT be the singleton — should be a fresh HermesToolParser
+        assert pp.tool_parser is not singleton
+        assert pp.tool_parser is not None
 
     def test_init_parser_failure_returns_none(self):
         """Failed tool parser init returns None gracefully."""
@@ -428,9 +424,8 @@ class TestToolParserInit:
             engine=MagicMock(_tokenizer=MagicMock()),
         )
         pp = StreamingPostProcessor(cfg, tools_requested=True)
-        # Should attempt to create a minimax parser
-        # May succeed or fail depending on parser registry
-        # The key is it doesn't crash
+        # MiniMax parser should be auto-inferred from reasoning_parser_name
+        assert pp.tool_parser is not None
 
 
 class TestChannelRoutedEdgeCases:
@@ -443,7 +438,6 @@ class TestChannelRoutedEdgeCases:
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -492,7 +486,6 @@ class TestChannelRoutedEdgeCases:
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -516,7 +509,6 @@ class TestChannelRoutedEdgeCases:
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -550,7 +542,6 @@ class TestReasoningPathEdgeCases:
         cfg = _make_cfg(
             reasoning_parser=parser,
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -576,7 +567,6 @@ class TestReasoningPathEdgeCases:
         cfg = _make_cfg(
             reasoning_parser=parser,
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -623,7 +613,6 @@ class TestReasoningPathEdgeCases:
         cfg = _make_cfg(
             reasoning_parser=parser,
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -645,7 +634,6 @@ class TestStandardPathEdgeCases:
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -665,7 +653,6 @@ class TestStandardPathEdgeCases:
 
         cfg = _make_cfg(
             enable_auto_tool_choice=True,
-            tool_call_parser="hermes",
             tool_parser_instance=tool_parser,
         )
         pp = StreamingPostProcessor(cfg)
@@ -673,3 +660,303 @@ class TestStandardPathEdgeCases:
 
         events = pp.process_chunk(_make_output("before <tag>"))
         assert tool_parser.extract_tool_calls_streaming.called
+
+
+# =====================================================================
+# Per-request parser isolation (P1 singleton fix)
+# =====================================================================
+
+
+class TestPerRequestParserIsolation:
+    """Verify that each PostProcessor gets its own parser instances,
+    not references to the global singleton from ServerConfig."""
+
+    def test_reasoning_parser_is_per_request(self):
+        """Two PostProcessors must have different reasoning parser instances."""
+        cfg = _make_cfg(reasoning_parser_name="qwen3")
+        # cfg.reasoning_parser is the singleton — should NOT be used
+        cfg.reasoning_parser = MagicMock()
+
+        pp1 = StreamingPostProcessor(cfg)
+        pp2 = StreamingPostProcessor(cfg)
+
+        # Each must have its OWN parser, not the singleton
+        assert pp1.reasoning_parser is not cfg.reasoning_parser
+        assert pp2.reasoning_parser is not cfg.reasoning_parser
+        assert pp1.reasoning_parser is not pp2.reasoning_parser
+
+    def test_reasoning_parser_none_when_no_name(self):
+        """No parser created when reasoning_parser_name is not set."""
+        cfg = _make_cfg(reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg)
+        assert pp.reasoning_parser is None
+
+    def test_tool_parser_is_per_request(self):
+        """Two PostProcessors must have different tool parser instances."""
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="hermes",
+        )
+        # cfg.tool_parser_instance is the singleton — should NOT be used
+        cfg.tool_parser_instance = MagicMock()
+
+        pp1 = StreamingPostProcessor(cfg, tools_requested=True)
+        pp2 = StreamingPostProcessor(cfg, tools_requested=True)
+
+        assert pp1.tool_parser is not cfg.tool_parser_instance
+        assert pp2.tool_parser is not cfg.tool_parser_instance
+        assert pp1.tool_parser is not pp2.tool_parser
+
+    def test_tool_parser_auto_infer_is_per_request(self):
+        """Auto-inferred tool parsers are also per-request."""
+        cfg = _make_cfg(reasoning_parser_name="minimax")
+        pp1 = StreamingPostProcessor(cfg, tools_requested=True)
+        pp2 = StreamingPostProcessor(cfg, tools_requested=True)
+
+        if pp1.tool_parser is not None:
+            assert pp1.tool_parser is not pp2.tool_parser
+
+    def test_concurrent_reset_does_not_corrupt(self):
+        """Simulating concurrent usage: reset on one doesn't affect other."""
+        cfg = _make_cfg(reasoning_parser_name="qwen3")
+
+        pp1 = StreamingPostProcessor(cfg)
+        pp2 = StreamingPostProcessor(cfg)
+
+        # Simulate pp1 accumulating state
+        pp1.reset()
+        pp1.process_chunk(_make_output("Hello"))
+        assert pp1.accumulated_text == "Hello"
+
+        # pp2 resets independently
+        pp2.reset()
+        pp2.process_chunk(_make_output("World"))
+
+        # pp1's state should be untouched
+        assert pp1.accumulated_text == "Hello"
+        assert pp2.accumulated_text == "World"
+
+    def test_reasoning_parser_state_isolated(self):
+        """Reasoning parser internal state is isolated between instances."""
+        cfg = _make_cfg(reasoning_parser_name="qwen3")
+
+        pp1 = StreamingPostProcessor(cfg)
+        pp2 = StreamingPostProcessor(cfg)
+
+        pp1.reset()
+        pp2.reset()
+
+        # Process a thinking chunk on pp1 — mutates pp1's parser state
+        pp1.process_chunk(_make_output("<think>reasoning"))
+
+        # pp2's parser should NOT have any accumulated state from pp1
+        assert pp2.reasoning_parser is not pp1.reasoning_parser
+        # Verify pp2's parser has clean internal state
+        if hasattr(pp2.reasoning_parser, "_buffer"):
+            assert pp2.reasoning_parser._buffer == ""
+
+    def test_graceful_fallback_on_bad_parser_name(self):
+        """Invalid parser name results in None, not crash."""
+        cfg = _make_cfg(reasoning_parser_name="nonexistent_parser_xyz")
+        pp = StreamingPostProcessor(cfg)
+        assert pp.reasoning_parser is None
+
+    def test_graceful_fallback_on_bad_tool_parser(self):
+        """Invalid tool parser name results in None, not crash."""
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="nonexistent_parser_xyz",
+        )
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
+        assert pp.tool_parser is None
+
+
+# =====================================================================
+# Coverage gap tests — edge cases in processing paths
+# =====================================================================
+
+
+class TestCoverageGaps:
+    """Tests targeting specific uncovered lines for 100% coverage."""
+
+    def test_create_reasoning_parser_name_not_set(self):
+        """Line 89: _create_reasoning_parser returns None when no name."""
+        result = StreamingPostProcessor._create_reasoning_parser(
+            _make_cfg(reasoning_parser_name=None)
+        )
+        assert result is None
+
+    def test_auto_infer_tool_parser_failure(self):
+        """Lines 124-125: auto-infer tool parser exception path."""
+        from unittest.mock import patch
+
+        cfg = _make_cfg(reasoning_parser_name="minimax")
+        # Make ToolParserManager.get_tool_parser raise for "minimax"
+        with patch(
+            "vllm_mlx.tool_parsers.ToolParserManager.get_tool_parser",
+            side_effect=KeyError("minimax not found"),
+        ):
+            pp = StreamingPostProcessor(cfg, tools_requested=True)
+            assert pp.tool_parser is None  # graceful fallback
+
+    def test_channel_routed_tool_detected_then_finish(self):
+        """Lines 199, 276-279: tool_calls_detected + finish in channel mode."""
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.return_value = {
+            "tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                           "function": {"name": "f", "arguments": "{}"}}]
+        }
+        cfg = _make_cfg(tool_parser_instance=tool_parser)
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        # First chunk: tool detected via channel routing (needs "<" to trigger parsing)
+        out1 = _make_output("<tool_call>test", channel="content")
+        events1 = pp.process_chunk(out1)
+        assert any(e.type == "tool_call" for e in events1)
+        assert pp.tool_calls_detected
+
+        # After tool detected, content with text should be suppressed (line 197-201)
+        # Return content (not None/suppressed) so we reach the tool_calls_detected check
+        tool_parser.extract_tool_calls_streaming.return_value = {"content": "trailing"}
+        out2 = _make_output("<more>text", channel="content")
+        events2 = pp.process_chunk(out2)
+        assert len(events2) == 0  # suppressed by tool_calls_detected
+
+        # Finish chunk with text after tool detected (line 199)
+        out3 = _make_output("<final>", finished=True, channel="content")
+        events3 = pp.process_chunk(out3)
+        assert any(e.type == "finish" and e.finish_reason == "tool_calls" for e in events3)
+
+    def test_channel_routed_sanitize_empty(self):
+        """Line 216: content becomes None after sanitize_output."""
+        from unittest.mock import patch
+
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        # sanitize_output returns empty → content becomes None
+        with patch("vllm_mlx.service.postprocessor.sanitize_output", return_value=""):
+            out = _make_output("some text", channel="content")
+            events = pp.process_chunk(out)
+            content_events = [e for e in events if e.type == "content"]
+            assert len(content_events) == 0
+
+    def test_reasoning_path_tool_detected_then_finish(self):
+        """Lines 276-279: tool_calls_detected then finish in reasoning path."""
+        parser = MagicMock()
+        delta_msg = MagicMock()
+        delta_msg.content = "<tool_call>test"
+        delta_msg.reasoning = None
+        parser.extract_reasoning_streaming.return_value = delta_msg
+
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.return_value = {
+            "tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                           "function": {"name": "f", "arguments": "{}"}}]
+        }
+
+        cfg = _make_cfg(reasoning_parser=parser, tool_parser_instance=tool_parser)
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        # Detect tool calls (content has "<" to trigger full parsing)
+        events1 = pp.process_chunk(_make_output("<tool_call>test"))
+        assert any(e.type == "tool_call" for e in events1)
+
+        # After tool detected, content should be suppressed (lines 276-279)
+        tool_parser.extract_tool_calls_streaming.return_value = {"content": "trailing"}
+        events2 = pp.process_chunk(_make_output("<more>text"))
+        assert len(events2) == 0
+
+        # Finish with text after tool detection (line 276-277)
+        out = _make_output("<final>", finished=True)
+        events3 = pp.process_chunk(out)
+        assert any(e.finish_reason == "tool_calls" for e in events3)
+
+    def test_reasoning_path_sanitize_to_none(self):
+        """Line 294: content sanitizes to empty in reasoning path."""
+        from unittest.mock import patch
+
+        parser = MagicMock()
+        delta_msg = MagicMock()
+        delta_msg.content = "text that sanitizes away"
+        delta_msg.reasoning = None
+        parser.extract_reasoning_streaming.return_value = delta_msg
+
+        cfg = _make_cfg(reasoning_parser=parser)
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        with patch("vllm_mlx.service.postprocessor.sanitize_output", return_value=""):
+            events = pp.process_chunk(_make_output("text"))
+            content_events = [e for e in events if e.type == "content"]
+            assert len(content_events) == 0
+
+    def test_standard_path_sanitize_to_none(self):
+        """Line 350: content sanitizes to empty in standard path."""
+        from unittest.mock import patch
+
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        with patch("vllm_mlx.service.postprocessor.sanitize_output", return_value=""):
+            events = pp.process_chunk(_make_output("text"))
+            content_events = [e for e in events if e.type == "content"]
+            assert len(content_events) == 0
+
+    def test_standard_path_tool_detected_then_finish(self):
+        """Lines 334-335: tool_calls_detected + finish in standard path."""
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.return_value = {
+            "tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                           "function": {"name": "f", "arguments": "{}"}}]
+        }
+
+        cfg = _make_cfg(tool_parser_instance=tool_parser)
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        # Detect tool call (needs "<" to trigger full parsing)
+        events1 = pp.process_chunk(_make_output("<tool_call>test"))
+        assert pp.tool_calls_detected
+        assert any(e.type == "tool_call" for e in events1)
+
+        # After detection, content suppressed (line 332-336)
+        tool_parser.extract_tool_calls_streaming.return_value = {"content": "trailing"}
+        events2 = pp.process_chunk(_make_output("<more>text"))
+        assert len(events2) == 0
+
+        # Finish with text after tool detection (line 334)
+        out = _make_output("<final>", finished=True)
+        events3 = pp.process_chunk(out)
+        assert any(e.type == "finish" and e.finish_reason == "tool_calls" for e in events3)
+
+    def test_standard_path_empty_content_filtered(self):
+        """Lines 340, 345: empty string content filtered out."""
+        from unittest.mock import patch
+
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        # strip_special_tokens returns empty string → content=None, no finish → []
+        with patch("vllm_mlx.service.postprocessor.strip_special_tokens", return_value=""):
+            events = pp.process_chunk(_make_output("some_special_token"))
+            assert len(events) == 0
+
+    def test_standard_path_content_then_empty_return(self):
+        """Line 361: return [] when no content and no finish."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        # Text that sanitizes to nothing
+        from unittest.mock import patch
+        with patch("vllm_mlx.service.postprocessor.sanitize_output", return_value=""):
+            events = pp.process_chunk(_make_output("some text"))
+            # sanitize returned empty, no finish → empty list
+            content_events = [e for e in events if e.type == "content"]
+            assert len(content_events) == 0

@@ -48,11 +48,29 @@ class StreamingPostProcessor:
         enable_thinking: bool | None = None,
     ):
         self.cfg = cfg
-        self.reasoning_parser = cfg.reasoning_parser
         self.tools_requested = tools_requested
 
-        # Tool parser setup
-        self.tool_parser = self._init_tool_parser(cfg, tools_requested)
+        # Per-request parser instances — each streaming request gets its
+        # own parser to avoid state corruption under concurrent
+        # BatchedEngine requests.
+        #
+        # Production path: reasoning_parser_name / tool_call_parser are set
+        # at startup → _create_*() builds a fresh instance per request.
+        #
+        # Legacy/test path: cfg.reasoning_parser / cfg.tool_parser_instance
+        # may be pre-built (mocks in tests, or singleton from server.py).
+        # When reasoning_parser_name is set, always create fresh.
+        if cfg.reasoning_parser_name:
+            self.reasoning_parser = self._create_reasoning_parser(cfg)
+        else:
+            self.reasoning_parser = cfg.reasoning_parser  # None or injected mock
+
+        if cfg.tool_call_parser:
+            self.tool_parser = self._create_tool_parser(cfg, tools_requested)
+        elif cfg.tool_parser_instance:
+            self.tool_parser = cfg.tool_parser_instance  # injected mock
+        else:
+            self.tool_parser = self._create_tool_parser(cfg, tools_requested)
 
         # State
         self.accumulated_text = ""
@@ -64,24 +82,36 @@ class StreamingPostProcessor:
         self._is_thinking_model = False
         self._think_prefix_sent = False
 
-    def _init_tool_parser(self, cfg: ServerConfig, tools_requested: bool):
-        """Initialize tool parser from config."""
+    @staticmethod
+    def _create_reasoning_parser(cfg: ServerConfig):
+        """Create a per-request reasoning parser instance."""
+        if not cfg.reasoning_parser_name:
+            return None
+        try:
+            from ..reasoning import get_parser
+
+            parser_cls = get_parser(cfg.reasoning_parser_name)
+            return parser_cls()
+        except Exception as e:
+            logger.warning(f"Failed to create reasoning parser: {e}")
+            return None
+
+    @staticmethod
+    def _create_tool_parser(cfg: ServerConfig, tools_requested: bool):
+        """Create a per-request tool parser instance."""
         from ..tool_parsers import ToolParserManager
+
+        tokenizer = None
+        if cfg.engine is not None and hasattr(cfg.engine, "_tokenizer"):
+            tokenizer = cfg.engine._tokenizer
 
         # Primary: explicit tool parser configured
         if cfg.enable_auto_tool_choice and cfg.tool_call_parser:
-            if cfg.tool_parser_instance is None:
-                try:
-                    parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
-                    tokenizer = None
-                    if cfg.engine is not None and hasattr(cfg.engine, "_tokenizer"):
-                        tokenizer = cfg.engine._tokenizer
-                    cfg.tool_parser_instance = parser_cls(tokenizer)
-                    logger.info(f"Initialized tool call parser: {cfg.tool_call_parser}")
-                except Exception as e:
-                    logger.warning(f"Failed to init tool parser for streaming: {e}")
-            if cfg.tool_parser_instance is not None:
-                return cfg.tool_parser_instance
+            try:
+                parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
+                return parser_cls(tokenizer)
+            except Exception as e:
+                logger.warning(f"Failed to create tool parser for streaming: {e}")
 
         # Fallback: auto-infer from reasoning parser
         if tools_requested and cfg.reasoning_parser_name:
@@ -90,9 +120,7 @@ class StreamingPostProcessor:
             if inferred:
                 try:
                     parser_cls = ToolParserManager.get_tool_parser(inferred)
-                    tokenizer = getattr(cfg.engine, "_tokenizer", None)
-                    parser = parser_cls(tokenizer)
-                    return parser
+                    return parser_cls(tokenizer)
                 except Exception as e:
                     logger.debug(f"Auto-infer tool parser for streaming failed: {e}")
 
@@ -107,10 +135,8 @@ class StreamingPostProcessor:
     def reset(self):
         """Reset all parser states for a new stream.
 
-        FIXME(#P1): tool_parser and reasoning_parser are global singletons
-        (cfg.tool_parser_instance, cfg.reasoning_parser). Concurrent requests
-        in BatchedEngine will corrupt each other's state via reset(). Safe only
-        in single-request mode. Fix: per-request parser instances.
+        Safe for concurrent BatchedEngine requests — each PostProcessor
+        instance holds its own parser instances (created in __init__).
         """
         self.accumulated_text = ""
         self.tool_accumulated_text = ""
