@@ -604,10 +604,12 @@ class BatchedEngine(BaseEngine):
             yield GenerationOutput(
                 text=text,
                 new_text=output.new_text,
+                tokens=output.new_token_ids,
                 prompt_tokens=output.prompt_tokens,
                 completion_tokens=output.completion_tokens,
                 finished=output.finished,
                 finish_reason=output.finish_reason,
+                logprobs=output.logprobs,
             )
 
     async def chat(

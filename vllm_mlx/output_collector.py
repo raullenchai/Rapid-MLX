@@ -148,6 +148,7 @@ class RequestOutputCollector:
             finish_reason=new.finish_reason,
             prompt_tokens=new.prompt_tokens,
             completion_tokens=new.completion_tokens,
+            logprobs=new.logprobs,  # Use latest token's logprobs
         )
 
     def clear(self) -> None:
