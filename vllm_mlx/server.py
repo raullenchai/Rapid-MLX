@@ -201,7 +201,6 @@ _pinned_system_prompt_hash: str | None = None  # Hash of pinned system prompt
 
 
 
-# Cache persistence — moved to runtime/cache.py
 from .runtime.cache import (  # noqa: E402
     get_cache_dir as _get_cache_dir,  # noqa: F401
 )

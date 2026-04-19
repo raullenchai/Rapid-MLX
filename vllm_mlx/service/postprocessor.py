@@ -21,6 +21,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _find_json_start(text: str) -> int:
+    """Find the first `{` or `[` that is NOT inside `<think>...</think>` tags.
+
+    Returns the index in ``text``, or -1 if no JSON delimiter found outside
+    think blocks.  Handles unclosed `<think>` (still accumulating) by
+    treating everything after it as inside the block.
+    """
+    in_think = False
+    i = 0
+    while i < len(text):
+        # Check for <think> open tag
+        if text[i:i + 7] == "<think>":
+            in_think = True
+            i += 7
+            continue
+        # Check for </think> close tag
+        if text[i:i + 8] == "</think>":
+            in_think = False
+            i += 8
+            continue
+        # Outside think block — check for JSON delimiter
+        if not in_think and text[i] in ("{", "["):
+            return i
+        i += 1
+    return -1
+
+
 class StreamingPostProcessor:
     """Processes streaming engine output into StreamEvents.
 
@@ -327,18 +354,11 @@ class StreamingPostProcessor:
         if self.json_mode and not self.reasoning_parser and not self._json_preamble_stripped:
             if content:
                 self._json_preamble_buffer += content
-                # Look for JSON start in buffer
-                json_start = -1
-                for delim in ("{", "["):
-                    pos = self._json_preamble_buffer.find(delim)
-                    if pos >= 0 and (json_start < 0 or pos < json_start):
-                        json_start = pos
+                json_start = _find_json_start(self._json_preamble_buffer)
                 if json_start >= 0:
-                    # Found JSON start — emit from there, discard preamble
                     self._json_preamble_stripped = True
                     content = self._json_preamble_buffer[json_start:]
                 else:
-                    # Still in preamble — suppress
                     return []
 
         # Nemotron thinking prefix

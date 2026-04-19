@@ -1119,9 +1119,41 @@ class TestJsonModePreambleStripping:
 
         # Preamble phase — accumulated_text should be unaffected
         pp.process_chunk(_make_output("preamble "))
-        # accumulated_text is used by _process_standard after json_mode guard
-        # but the preamble buffer is separate
         assert pp._json_preamble_buffer == "preamble "
+        assert pp.accumulated_text == ""  # NOT mutated by preamble
 
         pp.process_chunk(_make_output('{"key": 1}'))
         assert pp._json_preamble_stripped is True
+
+    def test_braces_inside_think_tags_ignored(self):
+        """{ inside <think> tags should NOT trigger JSON start."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+
+        # Think block with braces inside
+        events1 = pp.process_chunk(_make_output("<think>if x > 0 { return }</think>"))
+        assert len(events1) == 0  # still in preamble, { was inside <think>
+
+        # Actual JSON after think block
+        events2 = pp.process_chunk(_make_output('{"result": true}'))
+        content_events = [e for e in events2 if e.type == "content"]
+        assert len(content_events) == 1
+        assert content_events[0].content == '{"result": true}'
+
+    def test_unclosed_think_tag_suppresses(self):
+        """Unclosed <think> should suppress until closed + JSON found."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+
+        events1 = pp.process_chunk(_make_output("<think>still thinking {"))
+        assert len(events1) == 0
+
+        events2 = pp.process_chunk(_make_output("more </think>"))
+        assert len(events2) == 0  # no JSON delimiter yet
+
+        events3 = pp.process_chunk(_make_output('{"answer": 42}'))
+        content_events = [e for e in events3 if e.type == "content"]
+        assert len(content_events) == 1
+        assert '{"answer": 42}' in content_events[0].content
