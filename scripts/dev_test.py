@@ -85,7 +85,7 @@ def run_soak(port=8000, duration=600):
          "--url", f"http://localhost:{port}/v1",
          "--duration", str(duration)],
         f"Agent soak test ({duration}s)",
-        timeout=duration + 60,
+        timeout=duration + 1200,  # generous buffer for slow models
     )
 
 
