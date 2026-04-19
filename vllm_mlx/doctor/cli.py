@@ -239,7 +239,7 @@ def _run_per_model_block(
     See the constant's docstring for why a single generous value beats
     every per-model / per-tier heuristic we tried.
     """
-    from .checks import agent, api, perf
+    from .checks import agent, api, perf, stress
     from .server import ServerStartFailed, serve
 
     if boot_timeout_s is None:
@@ -261,6 +261,10 @@ def _run_per_model_block(
             runner.run_check(
                 f"smoke_matrix[{model}]",
                 lambda: api.check_smoke_matrix(port),
+            )
+            runner.run_check(
+                f"stress[{model}]",
+                lambda: stress.check_stress(port),
             )
             perf_result = runner.run_check(
                 f"autoresearch[{model}]",
