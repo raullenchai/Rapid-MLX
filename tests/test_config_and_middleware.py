@@ -84,7 +84,7 @@ class TestRateLimiter:
         rl = RateLimiter(requests_per_minute=3, enabled=True)
         for i in range(3):
             allowed, _ = rl.is_allowed("client1")
-            assert allowed, f"Request {i+1} should be allowed"
+            assert allowed, f"Request {i + 1} should be allowed"
 
         allowed, retry_after = rl.is_allowed("client1")
         assert not allowed

@@ -488,7 +488,14 @@ def load_model(
         specprefill_keep_pct: Fraction of tokens to keep (default: 0.3)
         specprefill_draft_model: Path to small draft model for SpecPrefill scoring
     """
-    global _engine, _model_name, _model_path, _default_max_tokens, _tool_parser_instance, _cloud_router, _inference_lock
+    global \
+        _engine, \
+        _model_name, \
+        _model_path, \
+        _default_max_tokens, \
+        _tool_parser_instance, \
+        _cloud_router, \
+        _inference_lock
 
     # Only serialize requests for SimpleEngine (single prompt cache, no concurrency)
     # BatchedEngine handles concurrency natively via Scheduler

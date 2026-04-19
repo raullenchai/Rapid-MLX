@@ -81,6 +81,7 @@ class TestMTPQuantizedSwitchLinear:
                 QuantizedSwitchLinear,
                 SwitchLinear,
             )
+
             assert QuantizedSwitchLinear is not None
             assert SwitchLinear is not None
         except ImportError:
@@ -96,8 +97,12 @@ class TestMTPQuantizedSwitchLinear:
 
         # Create a small QuantizedSwitchLinear
         qsl = QuantizedSwitchLinear(
-            input_dims=64, output_dims=32, num_experts=4,
-            bias=False, group_size=64, bits=4,
+            input_dims=64,
+            output_dims=32,
+            num_experts=4,
+            bias=False,
+            group_size=64,
+            bits=4,
         )
         # Must have weight, scales, biases for load_weights to match
         assert hasattr(qsl, "weight")
@@ -119,7 +124,13 @@ class TestMTPQuantizedSwitchLinear:
         ne, od, id_ = sl.weight.shape  # (num_experts, output_dims, input_dims)
 
         qsl = QuantizedSwitchLinear(
-            id_, od, ne, bias=False, group_size=64, bits=4, mode="affine",
+            id_,
+            od,
+            ne,
+            bias=False,
+            group_size=64,
+            bits=4,
+            mode="affine",
         )
         # Dimensions should be compatible
         assert qsl.weight.shape[0] == ne  # num_experts preserved
@@ -141,7 +152,8 @@ class TestDoctorTimeoutBytes:
 
         # Mock subprocess.run to raise TimeoutExpired with bytes
         exc = subprocess.TimeoutExpired(
-            cmd=["test"], timeout=1,
+            cmd=["test"],
+            timeout=1,
             output=b"some output bytes",
             stderr=b"some error bytes",
         )
@@ -159,7 +171,8 @@ class TestDoctorTimeoutBytes:
         from vllm_mlx.doctor.runner import run_subprocess
 
         exc = subprocess.TimeoutExpired(
-            cmd=["test"], timeout=1,
+            cmd=["test"],
+            timeout=1,
             output="string output",
             stderr="string error",
         )
