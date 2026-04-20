@@ -34,21 +34,19 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{"model": "default", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-## Option 2: Direct Python API
+## Option 2: Python Client
 
 ```python
-from vllm_mlx.models import MLXLanguageModel
+from openai import OpenAI
 
-model = MLXLanguageModel("mlx-community/Llama-3.2-3B-Instruct-4bit")
-model.load()
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
 
-# Generate text
-output = model.generate("What is the capital of France?", max_tokens=100)
-print(output.text)
-
-# Streaming
-for chunk in model.stream_generate("Tell me a story"):
-    print(chunk.text, end="", flush=True)
+response = client.chat.completions.create(
+    model="default",
+    messages=[{"role": "user", "content": "What is the capital of France?"}],
+    max_tokens=100,
+)
+print(response.choices[0].message.content)
 ```
 
 ## Option 3: Gradio Chat UI

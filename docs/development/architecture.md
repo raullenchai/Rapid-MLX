@@ -123,8 +123,7 @@ vllm_mlx/
 │   └── tts.py            # Text-to-Speech
 ├── engine/
 │   ├── base.py           # BaseEngine ABC
-│   ├── simple.py         # SimpleEngine
-│   └── batched.py        # BatchedEngine
+│   └── batched.py        # BatchedEngine (continuous batching)
 ├── mcp/
 │   ├── client.py         # MCP client
 │   ├── config.py         # Config loading
@@ -133,7 +132,6 @@ vllm_mlx/
 │   ├── tools.py          # Tool sandbox
 │   └── manager.py        # Server management
 ├── models/
-│   ├── llm.py            # MLXLanguageModel
 │   └── mllm.py           # MLXMultimodalLM
 ├── tool_parsers/         # Tool call parsers (12 formats)
 ├── reasoning_parsers/    # Reasoning parsers (qwen3, deepseek_r1)

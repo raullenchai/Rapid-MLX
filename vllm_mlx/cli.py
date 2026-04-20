@@ -235,10 +235,6 @@ def serve_command(args):
     if features:
         print(f"  Features: {', '.join(features)}")
     print(f"  Model: {args.model}")
-    if args.draft_model:
-        print(
-            f"  Speculative: {args.draft_model} ({args.num_draft_tokens} draft tokens)"
-        )
     # Store MCP config path for FastAPI startup
     if args.mcp_config:
         print(f"MCP config: {args.mcp_config}")
@@ -250,80 +246,80 @@ def serve_command(args):
         server.load_embedding_model(args.embedding_model, lock=True)
         print(f"Embedding model loaded: {args.embedding_model}")
 
-    # Resolve engine mode: BatchedEngine is default, --simple-engine overrides
-    use_batching = args.continuous_batching and not getattr(
-        args, "simple_engine", False
+    # Warn about deprecated flags
+    if getattr(args, "simple_engine", False):
+        print(
+            "\n  ⚠ --simple-engine is deprecated and has no effect."
+            "\n    BatchedEngine is now the sole engine — it handles both"
+            "\n    single-user and multi-user workloads with equal performance.\n"
+        )
+    if getattr(args, "kv_bits", None) is not None:
+        print(
+            "\n  ⚠ --kv-bits is deprecated and has no effect."
+            "\n    For prefix cache quantization, use --kv-cache-quantization instead.\n"
+        )
+    if getattr(args, "draft_model", None):
+        print(
+            "\n  ⚠ --draft-model is deprecated and has no effect."
+            "\n    For speculative decoding, use --enable-mtp (requires model with MTP head).\n"
+        )
+    if getattr(args, "specprefill", False):
+        print("\n  ⚠ --specprefill is deprecated and has no effect.\n")
+
+    # Build scheduler config
+    enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
+
+    scheduler_config = SchedulerConfig(
+        max_num_seqs=args.max_num_seqs,
+        prefill_batch_size=args.prefill_batch_size,
+        completion_batch_size=args.completion_batch_size,
+        enable_prefix_cache=enable_prefix_cache,
+        prefix_cache_size=args.prefix_cache_size,
+        # Memory-aware cache options
+        use_memory_aware_cache=not args.no_memory_aware_cache,
+        cache_memory_mb=args.cache_memory_mb,
+        cache_memory_percent=args.cache_memory_percent,
+        # Paged cache options
+        use_paged_cache=args.use_paged_cache,
+        paged_cache_block_size=args.paged_cache_block_size,
+        max_cache_blocks=args.max_cache_blocks,
+        # Chunked prefill
+        chunked_prefill_tokens=args.chunked_prefill_tokens,
+        # MTP
+        enable_mtp=args.enable_mtp,
+        mtp_num_draft_tokens=args.mtp_num_draft_tokens,
+        mtp_optimistic=args.mtp_optimistic,
+        # KV cache quantization
+        kv_cache_quantization=args.kv_cache_quantization,
+        kv_cache_quantization_bits=args.kv_cache_quantization_bits,
+        kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
+        kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
     )
 
-    # Build scheduler config for batched mode
-    scheduler_config = None
-    if use_batching:
-        # Handle prefix cache flags
-        enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
-
-        scheduler_config = SchedulerConfig(
-            max_num_seqs=args.max_num_seqs,
-            prefill_batch_size=args.prefill_batch_size,
-            completion_batch_size=args.completion_batch_size,
-            enable_prefix_cache=enable_prefix_cache,
-            prefix_cache_size=args.prefix_cache_size,
-            # Memory-aware cache options
-            use_memory_aware_cache=not args.no_memory_aware_cache,
-            cache_memory_mb=args.cache_memory_mb,
-            cache_memory_percent=args.cache_memory_percent,
-            # Paged cache options
-            use_paged_cache=args.use_paged_cache,
-            paged_cache_block_size=args.paged_cache_block_size,
-            max_cache_blocks=args.max_cache_blocks,
-            # Chunked prefill
-            chunked_prefill_tokens=args.chunked_prefill_tokens,
-            # MTP
-            enable_mtp=args.enable_mtp,
-            mtp_num_draft_tokens=args.mtp_num_draft_tokens,
-            mtp_optimistic=args.mtp_optimistic,
-            # KV cache quantization
-            kv_cache_quantization=args.kv_cache_quantization,
-            kv_cache_quantization_bits=args.kv_cache_quantization_bits,
-            kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
-            kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
+    print("Mode: Continuous batching (for multiple concurrent users)")
+    if args.chunked_prefill_tokens > 0:
+        print(f"Chunked prefill: {args.chunked_prefill_tokens} tokens per step")
+    if args.enable_mtp:
+        print(f"MTP: enabled, draft_tokens={args.mtp_num_draft_tokens}")
+    print(f"Stream interval: {args.stream_interval} tokens")
+    if args.use_paged_cache:
+        print(
+            f"Paged cache: block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}"
         )
-
-        print("Mode: Continuous batching (for multiple concurrent users)")
-        if args.chunked_prefill_tokens > 0:
-            print(f"Chunked prefill: {args.chunked_prefill_tokens} tokens per step")
-        if args.enable_mtp:
-            print(f"MTP: enabled, draft_tokens={args.mtp_num_draft_tokens}")
-        print(f"Stream interval: {args.stream_interval} tokens")
-        if args.use_paged_cache:
+    elif enable_prefix_cache and not args.no_memory_aware_cache:
+        cache_info = (
+            f"{args.cache_memory_mb}MB"
+            if args.cache_memory_mb
+            else f"{args.cache_memory_percent * 100:.0f}% of RAM"
+        )
+        print(f"Memory-aware cache: {cache_info}")
+        if args.kv_cache_quantization:
             print(
-                f"Paged cache: block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}"
+                f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
+                f"group_size={args.kv_cache_quantization_group_size}"
             )
-        elif enable_prefix_cache and not args.no_memory_aware_cache:
-            cache_info = (
-                f"{args.cache_memory_mb}MB"
-                if args.cache_memory_mb
-                else f"{args.cache_memory_percent * 100:.0f}% of RAM"
-            )
-            print(f"Memory-aware cache: {cache_info}")
-            if args.kv_cache_quantization:
-                print(
-                    f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
-                    f"group_size={args.kv_cache_quantization_group_size}"
-                )
-        elif enable_prefix_cache:
-            print(f"Prefix cache: max_entries={args.prefix_cache_size}")
-    else:
-        print("Mode: Simple (maximum throughput)")
-        if args.enable_mtp:
-            print("MTP: enabled (native speculative decoding)")
-        if args.enable_mtp and getattr(args, "mllm", False):
-            print("MTP + MLLM: per-request routing (text-only → MTP, media → MLLM)")
-        if args.specprefill and args.specprefill_draft_model:
-            print(
-                f"SpecPrefill: enabled (draft={args.specprefill_draft_model}, "
-                f"threshold={args.specprefill_threshold}, "
-                f"keep={args.specprefill_keep_pct * 100:.0f}%)"
-            )
+    elif enable_prefix_cache:
+        print(f"Prefix cache: max_entries={args.prefix_cache_size}")
 
     # Check port availability before loading model (avoid wasting RAM on conflict)
     import socket
@@ -346,27 +342,18 @@ def serve_command(args):
     try:
         load_model(
             args.model,
-            use_batching=use_batching,
             scheduler_config=scheduler_config,
-            stream_interval=args.stream_interval if use_batching else 1,
+            stream_interval=args.stream_interval,
             max_tokens=args.max_tokens,
             force_mllm=args.mllm,
             gpu_memory_utilization=args.gpu_memory_utilization,
-            draft_model=args.draft_model,
-            num_draft_tokens=args.num_draft_tokens,
             prefill_step_size=args.prefill_step_size,
-            kv_bits=args.kv_bits,
-            kv_group_size=args.kv_group_size,
             cloud_model=args.cloud_model,
             cloud_threshold=args.cloud_threshold,
             cloud_api_base=args.cloud_api_base,
             cloud_api_key=args.cloud_api_key,
             served_model_name=args.served_model_name,
             mtp=args.enable_mtp,
-            specprefill_enabled=args.specprefill,
-            specprefill_threshold=args.specprefill_threshold,
-            specprefill_keep_pct=args.specprefill_keep_pct,
-            specprefill_draft_model=args.specprefill_draft_model,
         )
     except Exception as e:
         # Show clean error instead of raw traceback
@@ -383,7 +370,7 @@ def serve_command(args):
 
     # Start server
     # Note: Metal shader warmup runs in the FastAPI lifespan hook (server.py)
-    # so it works for all engine types including batched/hybrid which start later.
+    # so it works for all engine types.
     print()
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
     print(f"  Ready: http://{host_display}:{args.port}/v1")
@@ -1038,12 +1025,63 @@ Examples:
         "--continuous-batching",
         action="store_true",
         default=True,
-        help="Enable continuous batching (default: on). Use --simple-engine to disable.",
+        help="Enable continuous batching (default: on).",
     )
+    # Deprecated flags — accepted silently to avoid breaking user scripts
     serve_parser.add_argument(
         "--simple-engine",
         action="store_true",
-        help="Use legacy SimpleEngine instead of BatchedEngine (single-user, no batching)",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--kv-bits",
+        type=int,
+        default=None,
+        choices=[4, 8],
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--kv-group-size",
+        type=int,
+        default=64,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--draft-model",
+        type=str,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--num-draft-tokens",
+        type=int,
+        default=4,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--specprefill",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--specprefill-threshold",
+        type=int,
+        default=8192,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--specprefill-keep-pct",
+        type=float,
+        default=0.3,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--specprefill-draft-model",
+        type=str,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     serve_parser.add_argument(
         "--gpu-memory-utilization",
@@ -1107,36 +1145,6 @@ Examples:
         default=2048,
         help="Chunk size for prompt prefill processing. Larger values use more memory "
         "but can improve prefill throughput. (default: 2048)",
-    )
-    # SpecPrefill (attention-based sparse prefill using draft model)
-    serve_parser.add_argument(
-        "--specprefill",
-        action="store_true",
-        default=False,
-        help="Enable SpecPrefill: use a small draft model to score token importance, "
-        "then sparse-prefill only the important tokens on the target model. "
-        "Reduces TTFT on long prompts. Requires --specprefill-draft-model.",
-    )
-    serve_parser.add_argument(
-        "--specprefill-threshold",
-        type=int,
-        default=8192,
-        help="Minimum suffix tokens to trigger SpecPrefill (default: 8192). "
-        "Shorter prompts use full prefill (scoring overhead > savings).",
-    )
-    serve_parser.add_argument(
-        "--specprefill-keep-pct",
-        type=float,
-        default=0.3,
-        help="Fraction of tokens to keep during sparse prefill (default: 0.3). "
-        "Lower = faster prefill but more quality loss.",
-    )
-    serve_parser.add_argument(
-        "--specprefill-draft-model",
-        type=str,
-        default=None,
-        help="Path to small draft model for SpecPrefill importance scoring. "
-        "Must share the same tokenizer as the target model.",
     )
     # MCP options
     serve_parser.add_argument(
@@ -1221,32 +1229,6 @@ Examples:
         default=False,
         help="Bias logits toward structural tool call tokens for faster generation. "
         "Only active when --tool-call-parser is also set. Currently supports minimax.",
-    )
-    # Speculative decoding options
-    serve_parser.add_argument(
-        "--draft-model",
-        type=str,
-        default=None,
-        help="Draft model for speculative decoding (must use same tokenizer as main model)",
-    )
-    serve_parser.add_argument(
-        "--num-draft-tokens",
-        type=int,
-        default=4,
-        help="Number of tokens to generate speculatively per step (default: 4)",
-    )
-    serve_parser.add_argument(
-        "--kv-bits",
-        type=int,
-        default=None,
-        choices=[4, 8],
-        help="KV cache quantization bits for simple mode (4 or 8). Reduces memory for long contexts.",
-    )
-    serve_parser.add_argument(
-        "--kv-group-size",
-        type=int,
-        default=64,
-        help="Group size for KV cache quantization in simple mode (default: 64)",
     )
     # Reasoning parser options - choices loaded dynamically from registry
     from .reasoning import list_parsers

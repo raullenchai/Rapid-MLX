@@ -308,12 +308,6 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         if request.video_max_frames:
             chat_kwargs["video_max_frames"] = request.video_max_frames
 
-    # SpecPrefill: per-request overrides
-    if request.specprefill is not None:
-        chat_kwargs["specprefill"] = request.specprefill
-    if request.specprefill_keep_pct is not None:
-        chat_kwargs["specprefill_keep_pct"] = request.specprefill_keep_pct
-
     # Add tools if provided
     if request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(request.tools)

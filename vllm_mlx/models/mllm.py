@@ -1737,8 +1737,7 @@ class MLXMultimodalLM:
         # Use native video pipeline for supported models.
         # NOTE: Native video yields a single chunk (not incremental streaming)
         # because mlx_vlm.video_generate has no streaming API. The event loop
-        # is NOT blocked at the server level — SimpleEngine wraps this in
-        # asyncio.to_thread(). True token-level streaming requires upstream
+        # is NOT blocked at the server level. True token-level streaming requires upstream
         # mlx-vlm support for video stream_generate.
         if self._video_native and _msg_video_inputs:
             output = self._generate_native_video(

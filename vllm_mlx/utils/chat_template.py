@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Shared chat template application logic for both SimpleEngine and BatchedEngine.
+Chat template application logic for BatchedEngine.
 
-This module eliminates duplication between engines for chat template handling,
-ensuring consistent behavior for enable_thinking, tools, and fallback logic.
+Handles enable_thinking, tools, and fallback logic for chat template rendering.
 """
 
 import copy
@@ -95,8 +94,7 @@ def apply_chat_template(
 ) -> str:
     """Apply a chat template to messages with consistent fallback behavior.
 
-    This is the shared implementation used by both SimpleEngine and BatchedEngine
-    to ensure parity in template application, especially for ``enable_thinking``
+    Applies a chat template with consistent fallback for ``enable_thinking``
     and ``tools`` parameters.
 
     Args:

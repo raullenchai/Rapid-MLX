@@ -27,7 +27,7 @@
 
 | | Your Mac | Model | Speed (tok/s = words/sec) | What works |
 |:---|:---:|:---:|:---:|:---:|
-| **16 GB** MacBook Air | Qwen3.5-4B | 168 tok/s | Chat, coding, tools |
+| **16 GB** MacBook Air | Qwen3.5-4B | 160 tok/s | Chat, coding, tools |
 | **32+ GB** Mac Mini / Studio | Nemotron-Nano 30B | 141 tok/s | 🆕 Fastest 30B, 100% tools |
 | **32+ GB** Mac Mini / Studio | Qwen3.6-35B | 95 tok/s | 256 experts, 262K context |
 | **64 GB** Mac Mini / Studio | Qwen3.5-35B | 83 tok/s | Best balance of smart + fast |
@@ -339,7 +339,7 @@ The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monit
 
 | Your Mac | Best Model | RAM Used | Speed | Quality |
 |----------|-----------|---------|-------|---------|
-| **16 GB** MacBook Air/Pro | [Qwen3.5-4B 4bit](https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit) | 2.4 GB | 168 tok/s | Good for chat and simple tasks |
+| **16 GB** MacBook Air/Pro | [Qwen3.5-4B 4bit](https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit) | 2.4 GB | 160 tok/s | Good for chat and simple tasks |
 | **24 GB** MacBook Pro | [Qwen3.5-9B 4bit](https://huggingface.co/mlx-community/Qwen3.5-9B-4bit) | 5.1 GB | 108 tok/s | Great all-rounder |
 | **32 GB** Mac Mini / Studio | [Qwen3.5-27B 4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | 15.3 GB | 39 tok/s | Solid coding model |
 | **32 GB** Mac Mini / Studio | 🆕 [Nemotron-Nano 30B 4bit](https://huggingface.co/lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit) | 18 GB | 141 tok/s | Fastest 30B, 100% tool calling |
@@ -376,7 +376,7 @@ rapid-mlx serve qwen3.6-35b --port 8000
 rapid-mlx serve qwen3.5-35b --prefill-step-size 8192 --port 8000  # faster first response
 
 # 96+ GB — best model
-rapid-mlx serve qwen3.5-122b --kv-bits 8 --prefill-step-size 8192 --port 8000  # --kv-bits 8 saves memory for long chats
+rapid-mlx serve qwen3.5-122b --prefill-step-size 8192 --port 8000
 
 # Coding agent — fast MoE, great for Claude Code / Cursor
 rapid-mlx serve qwen3-coder --prefill-step-size 8192 --port 8000  # MoE = only uses part of the model, so it's fast
@@ -425,7 +425,7 @@ Tested on **Mac Studio M3 Ultra (256GB)**. Rapid-MLX uses Apple's [MLX framework
 | Model | Rapid-MLX | Best Alternative | Speedup |
 |-------|----------|-----------------|---------|
 | **Phi-4 Mini 14B** | **180** tok/s | 77 (mlx-lm) / 56 (Ollama) | **2.3x** / **3.2x** |
-| **Qwen3.5-4B** | **168** tok/s | 155 (mlx-lm serve) | **1.1x** |
+| **Qwen3.5-4B** | **160** tok/s | 155 (mlx-lm serve) | **1.0x** |
 | **Nemotron-Nano 30B** | **141** tok/s · 100% tools | — | — |
 | **GPT-OSS 20B** | **127** tok/s · 100% tools | 79 (mlx-lm serve) | **1.6x** |
 | **Qwen3.5-9B** | **108** tok/s | 41 (Ollama) | **2.6x** |
@@ -507,7 +507,7 @@ Qwen3.5 uses Gated DeltaNet (75% RNN) + full attention (25% KV). Other engines r
 | **Hybrid cache sync** | Keep trimmable KV + non-trimmable RNN layers in sync | Qwen3.5 (Gated DeltaNet + attention) |
 | **Tool logits bias** | Jump-forward decoding — bias logits toward structured tokens | All models with `--enable-tool-logits-bias` |
 | **Auto tool recovery** | Detect broken text-format tool calls, convert to structured | All 18 parser formats (incl. Gemma 4) |
-| **KV quantization** | 4/8-bit KV cache for longer contexts in less memory | All models with `--kv-bits` |
+| **KV cache quantization** | Quantize prefix cache entries to reduce memory | All models with `--kv-cache-quantization` |
 | **Prefill chunking** | Configurable step size for large-prompt throughput | All models |
 | **Cloud routing** | Offload high-token requests to cloud LLM when local is slow | All models with `--cloud-model` |
 
@@ -554,7 +554,7 @@ Large-context requests auto-route to a cloud LLM (GPT-5, Claude, etc.) when loca
 
 Vision, audio (STT/TTS), video understanding, and text embeddings — all through the same OpenAI-compatible API.
 
-Also: logprobs API, structured JSON output (`response_format`), continuous batching, KV cache quantization (`--kv-bits 4`), and [2100+ tests](tests/).
+Also: logprobs API, structured JSON output (`response_format`), continuous batching, KV cache quantization (`--kv-cache-quantization`), and [2100+ tests](tests/).
 
 ---
 
@@ -571,7 +571,6 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 | `--host` | Host to bind to | `0.0.0.0` |
 | `--port` | Port to bind to | `8000` |
 | `--max-tokens` | Default max tokens for generation | `32768` |
-| `--simple-engine` | Legacy single-user mode (no batching) | off |
 
 ### Tool Calling & Reasoning
 
@@ -586,7 +585,7 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--prefill-step-size` | Tokens per prefill chunk | `2048` |
-| `--kv-bits` | KV cache quantization: `4` or `8` bit | *(full precision)* |
+| `--kv-cache-quantization` | Quantize prefix cache entries for memory savings | off |
 | `--enable-prefix-cache` | Cache common prefixes across requests | off |
 | `--gpu-memory-utilization` | Fraction of device memory to use (0.0-1.0) | `0.90` |
 
@@ -615,7 +614,7 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 
 **"parameters not found in model" warnings at startup** — Normal for VLMs. Vision weights are auto-skipped.
 
-**Out of memory / very slow (<5 tok/s)** — Model too big. Check [What fits my Mac?](#what-fits-my-mac) Use `--kv-bits 4` for long contexts.
+**Out of memory / very slow (<5 tok/s)** — Model too big. Check [What fits my Mac?](#what-fits-my-mac) Try a smaller quantization (4bit) or smaller model.
 
 **Empty responses** — Remove `--reasoning-parser` for non-thinking models.
 
@@ -711,7 +710,7 @@ vllm_mlx/
     completions.py       # /v1/completions
     anthropic.py         # /v1/messages (Anthropic API)
     health.py, models.py, embeddings.py, audio.py, mcp_routes.py
-  engine/                # SimpleEngine, BatchedEngine, HybridEngine
+  engine/                # BatchedEngine (continuous batching)
   reasoning/             # 7 reasoning parsers (Qwen3, DeepSeek, MiniMax, ...)
   tool_parsers/          # 20+ tool call parsers
   agents/                # 11 agent profiles (YAML)

@@ -17,16 +17,16 @@
 
 | Technique | Speedup | Status | Notes |
 |-----------|---------|--------|-------|
-| **Prompt Cache** | 5-30x TTFT | Shipped (SimpleEngine) | Core advantage. Always on. |
-| **KV Cache Quantization** | 1.0-1.3x + 4x memory | Shipped | `--kv-bits 4/8`. KV4 can be faster than unquantized on Apple Silicon. |
-| **MTP (Qwen3-Next)** | 1.2-2.1x decode | Shipped (BatchedEngine only) | Need to port to SimpleEngine. |
+| **Prompt Cache** | 5-30x TTFT | Shipped | Core advantage. Always on. |
+| **KV Cache Quantization** | 1.0-1.3x + 4x memory | Shipped | `--kv-cache-quantization`. Quantizes prefix cache entries. |
+| **MTP (Qwen3-Next)** | 1.2-2.1x decode | Shipped | BatchedEngine with `--enable-mtp`. |
 | **Tool Call Recovery** | N/A (reliability) | Shipped | 17 parsers, auto-recovery. |
 
 ### To Implement
 
 | Priority | Technique | Expected Speedup | Effort | Applicable Models |
 |----------|-----------|-----------------|--------|-------------------|
-| **P0** | MTP in SimpleEngine | 1.4x decode | Low | Qwen3-Next, Qwen3.5, DeepSeek-V3, Nemotron |
+| **P1** | MTP optimistic mode | 1.4x decode | Low | Qwen3-Next, Qwen3.5, DeepSeek-V3, Nemotron |
 | **P1** | Standard Speculative Decode | 1.5-2.3x decode | Medium | Any model with small draft variant |
 | **P1** | Auto-Optimization per model | N/A | Medium | All models — auto-detect and apply best technique |
 | **P2** | EAGLE-3 on Metal | 3-6.5x decode | High | Qwen3-32B, Qwen3-8B, GPT-OSS, Llama-3 |

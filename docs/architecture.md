@@ -58,8 +58,6 @@ vllm_mlx/
 ├── engine/                    # Engine abstraction
 │   ├── base.py                # BaseEngine ABC, GenerationOutput
 │   ├── batched.py             # BatchedEngine (default, continuous batching)
-│   ├── simple.py              # SimpleEngine (legacy single-user)
-│   └── hybrid.py              # HybridEngine (spec decode + batching)
 │
 ├── engine_core.py             # AsyncEngineCore (event loop + thread executor)
 ├── scheduler.py               # Scheduler (request queue + batch management)

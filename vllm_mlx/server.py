@@ -38,7 +38,6 @@ The server provides:
 """
 
 import argparse
-import asyncio
 import gc
 import logging
 import os
@@ -102,8 +101,6 @@ from .config import get_config
 from .engine import (
     BaseEngine,
     BatchedEngine,
-    HybridEngine,
-    SimpleEngine,
 )
 from .runtime.model_registry import ModelEntry, ModelRegistry
 from .service.helpers import (  # noqa: F401 — re-export for backward compat
@@ -150,8 +147,6 @@ _model_registry = ModelRegistry()
 
 # Global engine instance (single-model legacy path, also primary model in multi-model)
 _engine: BaseEngine | None = None
-# Serialize requests in SimpleEngine to prevent Metal/cache corruption from concurrent use
-_inference_lock: asyncio.Lock | None = None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
 _model_path: str | None = (
@@ -238,15 +233,14 @@ async def lifespan(app: FastAPI):
             # contaminating compiled kernel state that interferes with
             # batched inference.  Check multiple engine wrappers:
             # BatchedEngine sets _hybrid_throttle via EngineCore,
-            # HybridEngine wraps model in _shared_model,
-            # SimpleEngine wraps in MLXLanguageModel._model.
+            # Check model for hybrid cache
             _is_hybrid = getattr(_engine, "_hybrid_throttle", False)
             if not _is_hybrid and not getattr(_engine, "_is_mllm", False):
                 # Try to find the raw model through wrapper layers
                 _model = getattr(_engine, "_model", None) or getattr(
                     _engine, "_shared_model", None
                 )
-                # Unwrap MLXLanguageModel if needed
+                # Unwrap model wrapper if needed
                 if (
                     _model
                     and hasattr(_model, "model")
@@ -332,20 +326,6 @@ def configure_cors(origins: list[str]) -> None:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-
-@app.middleware("http")
-async def serialize_inference(request: Request, call_next):
-    """Serialize inference requests in SimpleEngine to prevent Metal crashes.
-
-    SimpleEngine uses a single prompt cache and Metal command buffer — concurrent
-    requests cause memory corruption. This middleware queues requests so only one
-    runs at a time. BatchedEngine handles concurrency natively via its Scheduler.
-    """
-    if _inference_lock is None or not request.url.path.startswith("/v1/chat"):
-        return await call_next(request)
-    async with _inference_lock:
-        return await call_next(request)
 
 
 # Auth and rate limiting — moved to middleware/auth.py
@@ -443,50 +423,31 @@ def load_embedding_model(
 
 def load_model(
     model_name: str,
-    use_batching: bool = False,
     scheduler_config=None,
     stream_interval: int = 1,
     max_tokens: int = 32768,
     force_mllm: bool = False,
     gpu_memory_utilization: float = 0.90,
-    draft_model: str | None = None,
-    num_draft_tokens: int = 4,
     prefill_step_size: int = 2048,
-    kv_bits: int | None = None,
-    kv_group_size: int = 64,
     cloud_model: str | None = None,
     cloud_threshold: int = 20000,
     cloud_api_base: str | None = None,
     cloud_api_key: str | None = None,
     served_model_name: str | None = None,
     mtp: bool = False,
-    specprefill_enabled: bool = False,
-    specprefill_threshold: int = 8192,
-    specprefill_keep_pct: float = 0.3,
-    specprefill_draft_model: str = None,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
 
     Args:
         model_name: HuggingFace model name or local path
-        use_batching: Use continuous batching (BatchedEngine) vs simple mode (SimpleEngine)
-        scheduler_config: Scheduler config for batched mode
-        stream_interval: Tokens to batch before streaming (batched mode only)
+        scheduler_config: Scheduler config for BatchedEngine
+        stream_interval: Tokens to batch before streaming
         max_tokens: Default max tokens for generation
         force_mllm: Force loading as MLLM even if not auto-detected
-        gpu_memory_utilization: Fraction of device memory for Metal allocation
-            limit and emergency threshold (0.0-1.0, default 0.90)
-        draft_model: Optional draft model for speculative decoding
-        num_draft_tokens: Number of tokens to generate speculatively per step
+        gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
         prefill_step_size: Tokens to process per prefill chunk (default: 2048)
-        kv_bits: KV cache quantization bits (None=no quantization, 4 or 8)
-        kv_group_size: Group size for KV cache quantization (default: 64)
-        mtp: Enable native MTP speculative decoding (SimpleEngine only)
-        specprefill_enabled: Enable SpecPrefill (SimpleEngine only)
-        specprefill_threshold: Minimum suffix tokens to trigger SpecPrefill (default: 8192)
-        specprefill_keep_pct: Fraction of tokens to keep (default: 0.3)
-        specprefill_draft_model: Path to small draft model for SpecPrefill scoring
+        mtp: Enable native MTP speculative decoding
     """
     global \
         _engine, \
@@ -494,16 +455,11 @@ def load_model(
         _model_path, \
         _default_max_tokens, \
         _tool_parser_instance, \
-        _cloud_router, \
-        _inference_lock
+        _cloud_router
 
-    # Only serialize requests for SimpleEngine (single prompt cache, no concurrency)
-    # BatchedEngine handles concurrency natively via Scheduler
-    _inference_lock = None if use_batching else asyncio.Lock()
     _default_max_tokens = max_tokens
     _model_path = model_name
     _model_name = served_model_name or model_name
-    # Reset tool parser instance when model is reloaded (tokenizer may change)
     _tool_parser_instance = None
 
     # Initialize cloud router if --cloud-model is set
@@ -525,62 +481,15 @@ def load_model(
     if force_mllm:
         logger.info("Force MLLM mode enabled via --mllm flag")
 
-    if draft_model:
-        logger.info(f"Speculative decoding enabled with draft model: {draft_model}")
-        logger.info(f"  num_draft_tokens: {num_draft_tokens}")
-
-    if use_batching and draft_model:
-        # Hybrid mode: shared model with speculative decoding + continuous batching
-        logger.info(f"Loading model with HybridEngine: {model_name}")
-        logger.info(
-            "  Hybrid mode: speculative decoding for single user, "
-            "batching for multiple users"
-        )
-        _engine = HybridEngine(
-            model_name=model_name,
-            draft_model=draft_model,
-            num_draft_tokens=num_draft_tokens,
-            scheduler_config=scheduler_config,
-            stream_interval=stream_interval,
-            force_mllm=force_mllm,
-        )
-        # HybridEngine will be started in lifespan (uvicorn's event loop)
-        logger.info(f"Model loaded (hybrid mode): {model_name}")
-    elif use_batching:
-        logger.info(f"Loading model with BatchedEngine: {model_name}")
-        _engine = BatchedEngine(
-            model_name=model_name,
-            scheduler_config=scheduler_config,
-            stream_interval=stream_interval,
-            force_mllm=force_mllm,
-            gpu_memory_utilization=gpu_memory_utilization,
-        )
-        # BatchedEngine will be started in lifespan (uvicorn's event loop)
-        # Just log for now
-        logger.info(f"Model loaded (batched mode): {model_name}")
-    else:
-        logger.info(f"Loading model with SimpleEngine: {model_name}")
-        _engine = SimpleEngine(
-            model_name=model_name,
-            force_mllm=force_mllm,
-            draft_model=draft_model,
-            num_draft_tokens=num_draft_tokens,
-            prefill_step_size=prefill_step_size,
-            kv_bits=kv_bits,
-            kv_group_size=kv_group_size,
-            mtp=mtp,
-            specprefill_enabled=specprefill_enabled,
-            specprefill_threshold=specprefill_threshold,
-            specprefill_keep_pct=specprefill_keep_pct,
-            specprefill_draft_model=specprefill_draft_model,
-        )
-        # Start SimpleEngine synchronously (no background loop)
-        # Use new_event_loop() for Python 3.10+ compatibility (get_event_loop() is deprecated)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_engine.start())
-        model_type = "MLLM" if _engine.is_mllm else "LLM"
-        logger.info(f"{model_type} model loaded (simple mode): {model_name}")
+    logger.info(f"Loading model with BatchedEngine: {model_name}")
+    _engine = BatchedEngine(
+        model_name=model_name,
+        scheduler_config=scheduler_config,
+        stream_interval=stream_interval,
+        force_mllm=force_mllm,
+        gpu_memory_utilization=gpu_memory_utilization,
+    )
+    logger.info(f"Model loaded: {model_name}")
 
     # Set native tool format support on the engine (thread-safe via instance property)
     _engine.preserve_native_tool_format = _detect_native_tool_support()
@@ -651,7 +560,7 @@ def _sync_config() -> None:
     cfg.model_name = _model_name
     cfg.model_alias = _model_alias
     cfg.model_path = _model_path
-    cfg.inference_lock = _inference_lock
+    cfg.inference_lock = None  # legacy, unused with BatchedEngine
     cfg.default_max_tokens = _default_max_tokens
     cfg.default_timeout = _default_timeout
     cfg.default_temperature = _default_temperature
@@ -786,13 +695,20 @@ Examples:
         "--continuous-batching",
         action="store_true",
         default=True,
-        help="Enable continuous batching (default: on). Use --simple-engine to disable.",
+        help="Enable continuous batching (default: on).",
+    )
+    # Deprecated flags — accepted silently to avoid breaking user scripts
+    import argparse as _ap
+
+    parser.add_argument(
+        "--simple-engine", action="store_true", default=False, help=_ap.SUPPRESS
     )
     parser.add_argument(
-        "--simple-engine",
-        action="store_true",
-        help="Use legacy SimpleEngine instead of BatchedEngine (single-user, no batching)",
+        "--kv-bits", type=int, default=None, choices=[4, 8], help=_ap.SUPPRESS
     )
+    parser.add_argument("--kv-group-size", type=int, default=64, help=_ap.SUPPRESS)
+    parser.add_argument("--draft-model", type=str, default=None, help=_ap.SUPPRESS)
+    parser.add_argument("--num-draft-tokens", type=int, default=4, help=_ap.SUPPRESS)
     parser.add_argument(
         "--mcp-config",
         type=str,
@@ -883,36 +799,11 @@ Examples:
         help="Default top_p for generation when not specified in request",
     )
     parser.add_argument(
-        "--draft-model",
-        type=str,
-        default=None,
-        help="Draft model for speculative decoding (must use same tokenizer as main model)",
-    )
-    parser.add_argument(
-        "--num-draft-tokens",
-        type=int,
-        default=4,
-        help="Number of tokens to generate speculatively per step (default: 4)",
-    )
-    parser.add_argument(
         "--prefill-step-size",
         type=int,
         default=2048,
         help="Tokens to process per prefill chunk (default: 2048). "
         "Larger values may improve TTFT on Apple Silicon with sufficient memory.",
-    )
-    parser.add_argument(
-        "--kv-bits",
-        type=int,
-        default=None,
-        choices=[4, 8],
-        help="KV cache quantization bits (4 or 8). Reduces memory for long contexts.",
-    )
-    parser.add_argument(
-        "--kv-group-size",
-        type=int,
-        default=64,
-        help="Group size for KV cache quantization (default: 64)",
     )
     parser.add_argument(
         "--cloud-model",
@@ -1023,15 +914,9 @@ Examples:
     # Load model before starting server
     load_model(
         args.model,
-        use_batching=args.continuous_batching
-        and not getattr(args, "simple_engine", False),
         max_tokens=args.max_tokens,
         force_mllm=args.mllm,
-        draft_model=args.draft_model,
-        num_draft_tokens=args.num_draft_tokens,
         prefill_step_size=args.prefill_step_size,
-        kv_bits=args.kv_bits,
-        kv_group_size=args.kv_group_size,
         cloud_model=args.cloud_model,
         cloud_threshold=args.cloud_threshold,
         cloud_api_base=args.cloud_api_base,

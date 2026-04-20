@@ -2,14 +2,12 @@
 """
 MLX Model wrappers for vLLM.
 
-This module provides wrappers around mlx-lm and mlx-vlm for
-integration with vLLM's model execution system.
+MLXMultimodalLM wraps mlx-vlm for vision models.
+LLM models are loaded directly via mlx-lm (no wrapper needed).
 """
 
-from vllm_mlx.models.llm import MLXLanguageModel
 from vllm_mlx.models.mllm import MLXMultimodalLM
 
-# Backwards compatibility aliases
 MLXVisionLanguageModel = MLXMultimodalLM
 
-__all__ = ["MLXLanguageModel", "MLXMultimodalLM", "MLXVisionLanguageModel"]
+__all__ = ["MLXMultimodalLM", "MLXVisionLanguageModel"]
