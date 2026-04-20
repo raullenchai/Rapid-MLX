@@ -62,15 +62,20 @@ class StandardDecode(DecodeStrategy):
 
         # Track active UIDs for has_active()
         self._active_uids: set[int] = set()
-        self._uid_counter = 0
+
+        # Check if BatchGenerator.remove supports return_prompt_caches
+        import inspect
+
+        sig = inspect.signature(self._bg.remove)
+        self._supports_cache_return = "return_prompt_caches" in sig.parameters
 
     def insert(self, request: DecodeRequest) -> int:
-        """Insert a request into the batch generator."""
-        uid = request.uid if request.uid >= 0 else self._uid_counter
-        self._uid_counter = max(self._uid_counter, uid + 1)
+        """Insert a request into the batch generator.
 
+        Returns the UID assigned by BatchGenerator (use this, not request.uid).
+        """
         sampler = request.sampler or self._default_sampler
-        self._bg.insert(
+        uids = self._bg.insert(
             [request.tokens],
             max_tokens=[request.max_tokens],
             caches=[request.cache] if request.cache else None,
@@ -79,6 +84,7 @@ class StandardDecode(DecodeStrategy):
                 [request.logits_processors] if request.logits_processors else None
             ),
         )
+        uid = uids[0]
         self._active_uids.add(uid)
         return uid
 
@@ -91,13 +97,10 @@ class StandardDecode(DecodeStrategy):
         if not self._active_uids:
             return []
 
-        raw = self._bg.next()
-
-        # mlx-lm 0.31+ returns (prompt_responses, generation_responses)
-        if isinstance(raw, tuple):
-            _, gen_responses = raw
-        else:
-            gen_responses = raw
+        # BatchGenerator.next() returns (prompt_responses, generation_responses).
+        # prompt_responses carry prefill progress (silently consumed here).
+        # gen_responses carry actual tokens. Empty during prefill.
+        _, gen_responses = self._bg.next()
 
         results = []
         for r in gen_responses:
@@ -116,17 +119,16 @@ class StandardDecode(DecodeStrategy):
         return results
 
     def remove(self, uid: int) -> Any | None:
-        """Remove a sequence from the batch generator."""
+        """Remove a sequence from the batch generator.
+
+        Returns extracted prompt cache if the BatchGenerator supports it.
+        """
         self._active_uids.discard(uid)
-        try:
+        if self._supports_cache_return:
             caches = self._bg.remove([uid], return_prompt_caches=True)
             return caches[0] if caches else None
-        except Exception:
-            try:
-                self._bg.remove([uid])
-            except Exception:
-                pass
-            return None
+        self._bg.remove([uid])
+        return None
 
     def has_active(self) -> bool:
         """Whether there are sequences actively being decoded."""

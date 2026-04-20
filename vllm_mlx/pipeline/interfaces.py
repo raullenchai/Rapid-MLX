@@ -49,9 +49,13 @@ class CacheResult:
 
 @dataclass
 class DecodeRequest:
-    """Request to insert into the decode stage."""
+    """Request to insert into the decode stage.
 
-    uid: int
+    The ``uid`` field is ignored by StandardDecode — BatchGenerator
+    assigns its own UIDs.  The assigned UID is returned by
+    ``DecodeStrategy.insert()``.
+    """
+
     tokens: list[int]
     max_tokens: int
     sampler: Callable | None = None
@@ -78,6 +82,10 @@ class CacheStrategy(ABC):
     def store(self, token_ids: list[int], cache: Any) -> None:
         """Store KV state for future reuse."""
         ...
+
+    def invalidate(self, token_ids: list[int]) -> bool:
+        """Invalidate a specific cache entry. Returns True if found."""
+        return False
 
     def evict(self, n: int = 1) -> int:
         """Evict entries to free memory. Returns count evicted."""
@@ -122,6 +130,8 @@ class DecodePlugin(ABC):
     Plugins can intercept step() to add speculative tokens, modify
     sampling, or implement custom decode logic. They compose via
     wrapping: MTPPlugin(StandardDecode(...)).
+
+    Lifecycle: on_insert → wrap_step (repeated) → on_remove → on_close
     """
 
     @abstractmethod
@@ -130,3 +140,12 @@ class DecodePlugin(ABC):
     ) -> list[TokenResult]:
         """Wrap the base decode step with custom logic."""
         ...
+
+    def on_insert(self, request: DecodeRequest, uid: int) -> None:  # noqa: B027
+        """Called when a new sequence is inserted. Set up per-sequence state."""
+
+    def on_remove(self, uid: int) -> None:  # noqa: B027
+        """Called when a sequence is removed. Clean up per-sequence state."""
+
+    def on_close(self) -> None:  # noqa: B027
+        """Called when the decode strategy is closed. Release plugin resources."""
