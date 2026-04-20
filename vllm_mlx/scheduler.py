@@ -1112,6 +1112,9 @@ class Scheduler:
                     kv_bits=self.config.kv_cache_quantization_bits,
                     kv_group_size=self.config.kv_cache_quantization_group_size,
                     kv_min_quantize_tokens=self.config.kv_cache_min_quantize_tokens,
+                    kv_turboquant=self.config.kv_cache_turboquant,
+                    kv_turboquant_bits=self.config.kv_cache_turboquant_bits,
+                    kv_turboquant_group_size=self.config.kv_cache_turboquant_group_size,
                 )
                 self.memory_aware_cache = MemoryAwarePrefixCache(
                     model=model,
@@ -1284,30 +1287,7 @@ class Scheduler:
                     "(model.mtp is None). MTP will be disabled."
                 )
 
-        # Install TurboQuant KV cache if enabled
-        if self.config.kv_cache_turboquant:
-            self._install_turboquant_cache(bg)
-
         return bg
-
-    def _install_turboquant_cache(self, bg) -> None:
-        """Monkey-patch BatchGenerator to use TurboQuantKVCache for KVCache layers."""
-        from mlx_lm.models.cache import KVCache
-
-        from .patches.turboquant_cache import TurboQuantKVCache
-
-        bits = self.config.kv_cache_turboquant_bits or 4
-        original_make = bg._make_new_cache
-
-        def _make_turboquant_cache():
-            cache = original_make()
-            return [
-                TurboQuantKVCache(bits=bits) if isinstance(c, KVCache) else c
-                for c in cache
-            ]
-
-        bg._make_new_cache = _make_turboquant_cache
-        logger.info(f"TurboQuant KV cache enabled: {bits}-bit")
 
     def _make_prompt_cache_save_callback(self):
         """Create a callback that stores prompt-only KV/Mamba cache.
