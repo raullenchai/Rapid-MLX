@@ -297,6 +297,11 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any]:
             tc.group_size = layer_cache.group_size
             tc.bits = layer_cache.bits
             trimmed.append(tc)
+        elif hasattr(layer_cache, "values_compressed"):
+            # TurboQuantKVCache — use its trim method on a copy
+            tc = copy.copy(layer_cache)
+            tc.trim(trim_by)
+            trimmed.append(tc)
         elif (
             hasattr(layer_cache, "offset")
             and hasattr(layer_cache, "keys")
