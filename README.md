@@ -507,6 +507,7 @@ Qwen3.5 uses Gated DeltaNet (75% RNN) + full attention (25% KV). Other engines r
 | **Hybrid cache sync** | Keep trimmable KV + non-trimmable RNN layers in sync | Qwen3.5 (Gated DeltaNet + attention) |
 | **Tool logits bias** | Jump-forward decoding — bias logits toward structured tokens | All models with `--enable-tool-logits-bias` |
 | **Auto tool recovery** | Detect broken text-format tool calls, convert to structured | All 18 parser formats (incl. Gemma 4) |
+| **TurboQuant V-cache** | Rotate + Lloyd-Max compress V cache (86% savings on dense models) | All models with `--kv-cache-turboquant` |
 | **KV cache quantization** | Quantize prefix cache entries to reduce memory | All models with `--kv-cache-quantization` |
 | **Prefill chunking** | Configurable step size for large-prompt throughput | All models |
 | **Cloud routing** | Offload high-token requests to cloud LLM when local is slow | All models with `--cloud-model` |
@@ -585,6 +586,7 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--prefill-step-size` | Tokens per prefill chunk | `2048` |
+| `--kv-cache-turboquant` | TurboQuant V-cache compression (3-4 bit, 86% savings on dense models) | off |
 | `--kv-cache-quantization` | Quantize prefix cache entries for memory savings | off |
 | `--enable-prefix-cache` | Cache common prefixes across requests | off |
 | `--gpu-memory-utilization` | Fraction of device memory to use (0.0-1.0) | `0.90` |
