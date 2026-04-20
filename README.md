@@ -431,12 +431,12 @@ Tested on **Mac Studio M3 Ultra (256GB)**. Rapid-MLX uses Apple's [MLX framework
 | **Qwen3.5-9B** | **108** tok/s | 41 (Ollama) | **2.6x** |
 | **Qwen3.6-35B-A3B** | **95** tok/s · 100% tools | — | — |
 | **Kimi-Linear-48B** | **94** tok/s · 100% tools | — (only engine) | — |
-| 🆕 **Gemma 4 26B-A4B** | **85** tok/s · 100% tools | 68 (Ollama) | **1.3x** |
-| 🆕 **Gemma 4 E4B** | **83** tok/s · 100% tools | — | — |
+| **Gemma 4 26B-A4B** | **85** tok/s | 68 (Ollama) | **1.3x** |
+| **Gemma 4 E4B** | **83** tok/s | — | — |
 | **Qwen3.5-35B-A3B** | **83** tok/s · 100% tools | 75 (oMLX) | **1.1x** |
 | **Qwen3-Coder 80B** | **74** tok/s · 100% tools | 69 (mlx-lm serve) | **1.1x** |
 | **Qwen3.5-122B** | **44** tok/s · 100% tools | 43 (mlx-lm serve) | ~1.0x |
-| 🆕 **Gemma 4 31B** | **31** tok/s · 100% tools | — | — |
+| **Gemma 4 31B** | **31** tok/s | — | — |
 
 *Full benchmark data with all models, TTFT tables, DeltaNet snapshots, and engine comparison below.*
 
@@ -460,9 +460,9 @@ Prompt cache keeps multi-turn conversations fast. For standard transformers, KV 
 | Qwen3-Coder-Next 80B | **0.16s** | 0.27s | 1.7x |
 | GPT-OSS 20B | **0.16s** | 0.27s | 1.7x |
 | Qwen3.5-9B | **0.22s** | 0.26s | 1.2x |
-| 🆕 Gemma 4 E4B | **0.25s** | — (day-0) | — |
-| 🆕 Gemma 4 26B-A4B | **0.25s** | — (day-0) | — |
-| 🆕 Gemma 4 31B | **0.34s** | 0.57s (mlx-vlm bf16) | **1.7x** |
+| Gemma 4 E4B | **0.25s** | — (day-0) | — |
+| Gemma 4 26B-A4B | **0.25s** | — (day-0) | — |
+| Gemma 4 31B | **0.34s** | 0.57s (mlx-vlm bf16) | **1.7x** |
 
 **DeltaNet state snapshots (hybrid RNN + attention):**
 
