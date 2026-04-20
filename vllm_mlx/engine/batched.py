@@ -949,8 +949,7 @@ class BatchedEngine(BaseEngine):
         """
         Inject a pre-loaded shared model instead of loading a new one.
 
-        This is used by HybridEngine to share a single model instance
-        between SimpleEngine and BatchedEngine, saving ~44GB of RAM.
+        This is used to inject a pre-loaded model instance.
 
         Args:
             model: Pre-loaded MLX model

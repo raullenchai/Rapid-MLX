@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Shared incremental token decoder with multi-byte character safety.
+Incremental token decoder with multi-byte character safety.
 
-This module provides ``IncrementalDecoder``, used by both SimpleEngine
-(via MLXLanguageModel) and BatchedEngine (via Scheduler) to safely decode
+This module provides ``IncrementalDecoder``, used by the Scheduler to safely decode
 streaming tokens without emitting broken multi-byte characters (emoji, CJK).
 """
 

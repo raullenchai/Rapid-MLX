@@ -2,9 +2,8 @@
 """
 Shared MTP (Multi-Token Prediction) decode loop.
 
-This module provides the core MTP always-advance decode step that is
-used by BOTH SimpleEngine and BatchedEngine.  Keeping the logic in one
-place eliminates divergence between the two engine paths.
+This module provides the core MTP always-advance decode step used by
+BatchedEngine.
 
 Architecture:
   model(input, cache, return_hidden=True) -> (logits, hidden)
@@ -94,7 +93,7 @@ def mtp_generate_step(
     max_tokens: int = 256,
     optimistic: bool = False,
 ) -> Iterator[MTPOutput]:
-    """Core MTP decode generator — shared by SimpleEngine and BatchedEngine.
+    """Core MTP decode generator used by BatchedEngine.
 
     Implements the always-advance strategy:
     1. Forward pass (or use skip_state from previous step)

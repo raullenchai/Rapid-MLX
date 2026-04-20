@@ -407,7 +407,7 @@ def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
     """
     Validate a parameter value against its JSON schema (lightweight).
 
-    Used by SimpleEngine for post-generation validation of tool call parameters.
+    Lightweight validation of a parameter value against its JSON schema.
 
     Args:
         value: The parameter value string.

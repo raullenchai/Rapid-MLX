@@ -35,8 +35,7 @@ class BaseEngine(ABC):
     """
     Abstract base class for inference engines.
 
-    Both SimpleEngine and BatchedEngine implement this interface,
-    allowing the server to use either without code changes.
+    BatchedEngine implements this interface.
     """
 
     @property
@@ -77,8 +76,7 @@ class BaseEngine(ABC):
         This prevents the first real request from hanging for minutes
         while shaders compile on-demand.
 
-        The default is a no-op; engines that benefit from warmup
-        (SimpleEngine, BatchedEngine) override this.
+        The default is a no-op; BatchedEngine overrides this.
         """
         pass
 

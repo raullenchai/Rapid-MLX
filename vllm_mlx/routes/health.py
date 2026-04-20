@@ -44,7 +44,7 @@ async def health():
 
 @router.post("/v1/cache/clear")
 async def clear_cache():
-    """Clear the prompt KV cache (SimpleEngine only)."""
+    """Clear the prompt KV cache."""
     cfg = get_config()
     if cfg.engine is None:
         raise HTTPException(status_code=503, detail="Engine not loaded")

@@ -250,10 +250,8 @@ def serve_command(args):
         server.load_embedding_model(args.embedding_model, lock=True)
         print(f"Embedding model loaded: {args.embedding_model}")
 
-    # Resolve engine mode: BatchedEngine is default, --simple-engine overrides
-    use_batching = args.continuous_batching and not getattr(
-        args, "simple_engine", False
-    )
+    # BatchedEngine is always used
+    use_batching = True
 
     # Build scheduler config for batched mode
     scheduler_config = None
@@ -312,19 +310,6 @@ def serve_command(args):
                 )
         elif enable_prefix_cache:
             print(f"Prefix cache: max_entries={args.prefix_cache_size}")
-    else:
-        print("Mode: Simple (maximum throughput)")
-        if args.enable_mtp:
-            print("MTP: enabled (native speculative decoding)")
-        if args.enable_mtp and getattr(args, "mllm", False):
-            print("MTP + MLLM: per-request routing (text-only → MTP, media → MLLM)")
-        if args.specprefill and args.specprefill_draft_model:
-            print(
-                f"SpecPrefill: enabled (draft={args.specprefill_draft_model}, "
-                f"threshold={args.specprefill_threshold}, "
-                f"keep={args.specprefill_keep_pct * 100:.0f}%)"
-            )
-
     # Check port availability before loading model (avoid wasting RAM on conflict)
     import socket
 
@@ -352,21 +337,13 @@ def serve_command(args):
             max_tokens=args.max_tokens,
             force_mllm=args.mllm,
             gpu_memory_utilization=args.gpu_memory_utilization,
-            draft_model=args.draft_model,
-            num_draft_tokens=args.num_draft_tokens,
             prefill_step_size=args.prefill_step_size,
-            kv_bits=args.kv_bits,
-            kv_group_size=args.kv_group_size,
             cloud_model=args.cloud_model,
             cloud_threshold=args.cloud_threshold,
             cloud_api_base=args.cloud_api_base,
             cloud_api_key=args.cloud_api_key,
             served_model_name=args.served_model_name,
             mtp=args.enable_mtp,
-            specprefill_enabled=args.specprefill,
-            specprefill_threshold=args.specprefill_threshold,
-            specprefill_keep_pct=args.specprefill_keep_pct,
-            specprefill_draft_model=args.specprefill_draft_model,
         )
     except Exception as e:
         # Show clean error instead of raw traceback
@@ -1038,12 +1015,7 @@ Examples:
         "--continuous-batching",
         action="store_true",
         default=True,
-        help="Enable continuous batching (default: on). Use --simple-engine to disable.",
-    )
-    serve_parser.add_argument(
-        "--simple-engine",
-        action="store_true",
-        help="Use legacy SimpleEngine instead of BatchedEngine (single-user, no batching)",
+        help="Enable continuous batching (default: on).",
     )
     serve_parser.add_argument(
         "--gpu-memory-utilization",
@@ -1107,36 +1079,6 @@ Examples:
         default=2048,
         help="Chunk size for prompt prefill processing. Larger values use more memory "
         "but can improve prefill throughput. (default: 2048)",
-    )
-    # SpecPrefill (attention-based sparse prefill using draft model)
-    serve_parser.add_argument(
-        "--specprefill",
-        action="store_true",
-        default=False,
-        help="Enable SpecPrefill: use a small draft model to score token importance, "
-        "then sparse-prefill only the important tokens on the target model. "
-        "Reduces TTFT on long prompts. Requires --specprefill-draft-model.",
-    )
-    serve_parser.add_argument(
-        "--specprefill-threshold",
-        type=int,
-        default=8192,
-        help="Minimum suffix tokens to trigger SpecPrefill (default: 8192). "
-        "Shorter prompts use full prefill (scoring overhead > savings).",
-    )
-    serve_parser.add_argument(
-        "--specprefill-keep-pct",
-        type=float,
-        default=0.3,
-        help="Fraction of tokens to keep during sparse prefill (default: 0.3). "
-        "Lower = faster prefill but more quality loss.",
-    )
-    serve_parser.add_argument(
-        "--specprefill-draft-model",
-        type=str,
-        default=None,
-        help="Path to small draft model for SpecPrefill importance scoring. "
-        "Must share the same tokenizer as the target model.",
     )
     # MCP options
     serve_parser.add_argument(
@@ -1234,19 +1176,6 @@ Examples:
         type=int,
         default=4,
         help="Number of tokens to generate speculatively per step (default: 4)",
-    )
-    serve_parser.add_argument(
-        "--kv-bits",
-        type=int,
-        default=None,
-        choices=[4, 8],
-        help="KV cache quantization bits for simple mode (4 or 8). Reduces memory for long contexts.",
-    )
-    serve_parser.add_argument(
-        "--kv-group-size",
-        type=int,
-        default=64,
-        help="Group size for KV cache quantization in simple mode (default: 64)",
     )
     # Reasoning parser options - choices loaded dynamically from registry
     from .reasoning import list_parsers

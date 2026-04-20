@@ -328,7 +328,6 @@ def configure_cors(origins: list[str]) -> None:
     )
 
 
-
 # Auth and rate limiting — moved to middleware/auth.py
 from .middleware.auth import (  # noqa: E402
     RateLimiter,  # noqa: F401
@@ -696,12 +695,7 @@ Examples:
         "--continuous-batching",
         action="store_true",
         default=True,
-        help="Enable continuous batching (default: on). Use --simple-engine to disable.",
-    )
-    parser.add_argument(
-        "--simple-engine",
-        action="store_true",
-        help="Use legacy SimpleEngine instead of BatchedEngine (single-user, no batching)",
+        help="Enable continuous batching (default: on).",
     )
     parser.add_argument(
         "--mcp-config",
@@ -793,36 +787,11 @@ Examples:
         help="Default top_p for generation when not specified in request",
     )
     parser.add_argument(
-        "--draft-model",
-        type=str,
-        default=None,
-        help="Draft model for speculative decoding (must use same tokenizer as main model)",
-    )
-    parser.add_argument(
-        "--num-draft-tokens",
-        type=int,
-        default=4,
-        help="Number of tokens to generate speculatively per step (default: 4)",
-    )
-    parser.add_argument(
         "--prefill-step-size",
         type=int,
         default=2048,
         help="Tokens to process per prefill chunk (default: 2048). "
         "Larger values may improve TTFT on Apple Silicon with sufficient memory.",
-    )
-    parser.add_argument(
-        "--kv-bits",
-        type=int,
-        default=None,
-        choices=[4, 8],
-        help="KV cache quantization bits (4 or 8). Reduces memory for long contexts.",
-    )
-    parser.add_argument(
-        "--kv-group-size",
-        type=int,
-        default=64,
-        help="Group size for KV cache quantization (default: 64)",
     )
     parser.add_argument(
         "--cloud-model",
@@ -933,15 +902,9 @@ Examples:
     # Load model before starting server
     load_model(
         args.model,
-        use_batching=args.continuous_batching
-        and not getattr(args, "simple_engine", False),
         max_tokens=args.max_tokens,
         force_mllm=args.mllm,
-        draft_model=args.draft_model,
-        num_draft_tokens=args.num_draft_tokens,
         prefill_step_size=args.prefill_step_size,
-        kv_bits=args.kv_bits,
-        kv_group_size=args.kv_group_size,
         cloud_model=args.cloud_model,
         cloud_threshold=args.cloud_threshold,
         cloud_api_base=args.cloud_api_base,
