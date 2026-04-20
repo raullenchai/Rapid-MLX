@@ -109,11 +109,9 @@ def estimate_kv_cache_memory(cache: list[Any]) -> int:
     for layer_cache in cache:
         if layer_cache is None:
             continue
-        # TurboQuantKVCache: has values_compressed instead of values
-        from .turboquant import TurboQuantKVCache
-
-        if isinstance(layer_cache, TurboQuantKVCache):
-            total_bytes += layer_cache.memory_bytes
+        # TurboQuantKVCache (from patches/): has nbytes property
+        if hasattr(layer_cache, "turbo_bits"):
+            total_bytes += layer_cache.nbytes
             continue
         # Handle different cache object types
         # Check dict first since dicts have .keys() method that would match below
@@ -176,10 +174,6 @@ class MemoryCacheConfig:
     kv_bits: int = 8
     kv_group_size: int = 64
     kv_min_quantize_tokens: int = 256
-    # TurboQuant V-only compression (asymmetric: K=FP16, V=3-4bit)
-    kv_turboquant: bool = False
-    kv_turboquant_bits: int | None = None  # None = auto-select by head_dim
-    kv_turboquant_group_size: int = 32
 
     def __post_init__(self) -> None:
         if not 0.0 < self.max_memory_percent <= 1.0:
@@ -299,8 +293,8 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any]:
             tc.group_size = layer_cache.group_size
             tc.bits = layer_cache.bits
             trimmed.append(tc)
-        elif hasattr(layer_cache, "values_compressed"):
-            # TurboQuantKVCache — use its trim method on a copy
+        elif hasattr(layer_cache, "turbo_bits"):
+            # TurboQuantKVCache (from patches/) — use its trim method
             tc = copy.copy(layer_cache)
             tc.trim(trim_by)
             trimmed.append(tc)
@@ -421,53 +415,6 @@ def _dequantize_cache(cache: list[Any]) -> list[Any]:
     return result
 
 
-def _turboquant_compress_cache(
-    cache: list[Any], bits: int | None, group_size: int
-) -> list[Any]:
-    """Compress KVCache V tensors using TurboQuant (K stays FP16)."""
-    from mlx_lm.models.cache import KVCache
-
-    from .turboquant import TurboQuantConfig, TurboQuantKVCache, auto_select_bits
-
-    compressed_count = 0
-    result = []
-    for layer in cache:
-        if layer is None:
-            result.append(layer)
-            continue
-        if isinstance(layer, KVCache) and layer.keys is not None:
-            head_dim = layer.values.shape[-1] if layer.values is not None else 128
-            actual_bits = bits if bits is not None else auto_select_bits(head_dim)
-            config = TurboQuantConfig(bits=actual_bits, group_size=group_size)
-            result.append(TurboQuantKVCache.from_kv_cache(layer, config))
-            compressed_count += 1
-        else:
-            result.append(layer)
-
-    if compressed_count > 0:
-        logger.debug(
-            f"TurboQuant compressed {compressed_count}/{len(cache)} layers "
-            f"({bits or 'auto'}-bit, group_size={group_size})"
-        )
-    return result
-
-
-def _turboquant_decompress_cache(cache: list[Any]) -> list[Any]:
-    """Decompress TurboQuantKVCache layers back to regular KVCache."""
-    from .turboquant import TurboQuantKVCache
-
-    result = []
-    for layer in cache:
-        if layer is None:
-            result.append(layer)
-            continue
-        if isinstance(layer, TurboQuantKVCache) and layer.keys is not None:
-            result.append(layer.to_kv_cache())
-        else:
-            result.append(layer)
-    return result
-
-
 class MemoryAwarePrefixCache:
     """
     Prefix cache with memory-based eviction.
@@ -527,10 +474,12 @@ class MemoryAwarePrefixCache:
         )
 
     def _decompress_cache(self, cache: list[Any]) -> list[Any]:
-        """Decompress cache layers (TurboQuant or standard quantization)."""
-        if self._config.kv_turboquant:
-            return _turboquant_decompress_cache(cache)
-        elif self._config.kv_quantize:
+        """Decompress cache layers if standard quantization is enabled.
+
+        TurboQuantKVCache (from patches/) is returned as-is — the model
+        handles dequant internally via update_and_fetch().
+        """
+        if self._config.kv_quantize:
             return _dequantize_cache(cache)
         return cache
 
@@ -774,17 +723,9 @@ class MemoryAwarePrefixCache:
         # Trim oversized KV arrays to actual used size
         cache = _trim_to_offset(cache)
 
-        # Compress cache for storage (TurboQuant or standard quantization)
+        # Quantize cache for storage (standard quantization only).
+        # TurboQuantKVCache from patches/ is already compressed — stored as-is.
         if (
-            self._config.kv_turboquant
-            and len(tokens) >= self._config.kv_min_quantize_tokens
-        ):
-            cache = _turboquant_compress_cache(
-                cache,
-                self._config.kv_turboquant_bits,
-                self._config.kv_turboquant_group_size,
-            )
-        elif (
             self._config.kv_quantize
             and len(tokens) >= self._config.kv_min_quantize_tokens
         ):
