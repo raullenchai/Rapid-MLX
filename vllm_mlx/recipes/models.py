@@ -210,6 +210,83 @@ _r(ModelRecipe(
     notes="Best intelligence. 121GB model — needs 192GB+ Mac. Slow TTFT.",
 ))
 
+# ── Qwen3.6 family ─────────────────────────────────────────────
+
+_r(ModelRecipe(
+    id="qwen3.6-27b",
+    name="Qwen3.6 27B (Dense Hybrid)",
+    model_id="mlx-community/Qwen3.6-27B-4bit",
+    provider="Qwen",
+    architecture="dense",  # 64 layers: 48 DeltaNet + 16 full attention (every 4th)
+    parameter_count="27B",
+    active_parameters=None,
+    quantization="4bit",
+    model_memory_gb=14.9,  # measured: 15301 MB peak RAM
+    kv_per_1k_tokens_mb=64,  # measured: 155MB base KV — dense with 16 full attn layers
+    kv_per_1k_turbo_mb=9,
+    measured_tps=36.5,  # measured: 36.5-36.6 tok/s on M3 Ultra 256GB
+    measured_ttft_cached_s=3.16,  # measured: 3.16s cached multi-turn
+    bandwidth_efficiency=0.53,
+    tool_calling=True,
+    tool_parser="hermes",
+    reasoning=True,
+    reasoning_parser="qwen3",
+    vision=True,
+    turboquant_compatible=True,
+    base_args=["--tool-call-parser", "hermes", "--reasoning-parser", "qwen3"],
+    notes="Qwen3.6 dense 27B. 262K native context. Better reasoning than 3.5-27B.",
+))
+
+_r(ModelRecipe(
+    id="qwen3.6-35b",
+    name="Qwen3.6 35B-A3B (MoE)",
+    model_id="mlx-community/Qwen3.6-35B-A3B-4bit",
+    provider="Qwen",
+    architecture="moe-hybrid",
+    parameter_count="35B",
+    active_parameters="3B",
+    quantization="4bit",
+    model_memory_gb=19,  # measured: 19.0 GB peak RAM
+    kv_per_1k_tokens_mb=32,  # same KV heads/dims as Qwen3.5-35B
+    kv_per_1k_turbo_mb=5,
+    measured_tps=92,  # measured: 91.8-92.4 tok/s on M3 Ultra 256GB
+    measured_ttft_cached_s=1.24,  # measured: 1.235s cached multi-turn
+    bandwidth_efficiency=0.54,
+    tool_calling=True,
+    tool_parser="hermes",
+    reasoning=True,
+    reasoning_parser="qwen3",
+    vision=True,
+    turboquant_compatible=True,
+    base_args=["--tool-call-parser", "hermes", "--reasoning-parser", "qwen3"],
+    notes="Qwen3.6: 12% faster than 3.5-35B. Better reasoning + coding. 262K native context.",
+))
+
+_r(ModelRecipe(
+    id="qwen3.6-35b-6bit",
+    name="Qwen3.6 35B-A3B (6bit)",
+    model_id="mlx-community/Qwen3.6-35B-A3B-6bit",
+    provider="Qwen",
+    architecture="moe-hybrid",
+    parameter_count="35B",
+    active_parameters="3B",
+    quantization="6bit",
+    model_memory_gb=28,
+    kv_per_1k_tokens_mb=32,
+    kv_per_1k_turbo_mb=5,
+    measured_tps=72,  # estimated: slightly slower due to larger weights
+    measured_ttft_cached_s=0.22,
+    bandwidth_efficiency=0.54,
+    tool_calling=True,
+    tool_parser="hermes",
+    reasoning=True,
+    reasoning_parser="qwen3",
+    vision=True,
+    turboquant_compatible=True,
+    base_args=["--tool-call-parser", "hermes", "--reasoning-parser", "qwen3"],
+    notes="Higher quality than 4-bit. Needs 48GB+ Mac.",
+))
+
 # ── Qwen3 Coder ─────────────────────────────────────────────────
 
 _r(ModelRecipe(

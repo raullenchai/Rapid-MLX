@@ -137,6 +137,30 @@ class TestModelRecipes:
         results = search_recipes("zzz_nonexistent_zzz")
         assert len(results) == 0
 
+    def test_qwen36_27b_recipe_exists(self):
+        r = get_recipe("qwen3.6-27b")
+        assert r is not None
+        assert r.architecture == "dense"
+        assert r.parameter_count == "27B"
+        assert r.tool_calling is True
+        assert r.reasoning is True
+
+    def test_qwen36_35b_recipe_exists(self):
+        r = get_recipe("qwen3.6-35b")
+        assert r is not None
+        assert r.architecture == "moe-hybrid"
+        assert r.active_parameters == "3B"
+
+    def test_qwen36_6bit_recipe_exists(self):
+        r = get_recipe("qwen3.6-35b-6bit")
+        assert r is not None
+        assert r.quantization == "6bit"
+        assert r.model_memory_gb > get_recipe("qwen3.6-35b").model_memory_gb
+
+    def test_qwen36_search(self):
+        results = search_recipes("qwen3.6")
+        assert len(results) >= 3  # 27b, 35b-4bit, 35b-6bit
+
 
 # ── Recipe engine ────────────────────────��───────────────────────
 
