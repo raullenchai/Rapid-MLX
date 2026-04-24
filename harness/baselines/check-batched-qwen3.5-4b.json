@@ -1,0 +1,20 @@
+{
+  "captured_at": "2026-04-16T11:07:55",
+  "rapid_mlx_version": "0.5.0",
+  "model": "qwen3.5-4b",
+  "metrics": {
+    "cold_ttft_ms": 81.48550009354949,
+    "cold_tps": 112.42155950437478,
+    "cached_ttft_ms": 133.96895793266594,
+    "decode_tps": 112.32704081303969,
+    "decode_tps_stdev": 0,
+    "mt_ttft_ms": 161.22487490065396,
+    "mt_tps": 112.33515669498165,
+    "tc_latency_ms": 995.6307501997799,
+    "tc_success_rate": 1.0,
+    "long_ttft_ms": 862.5065411906689,
+    "long_tps": 110.30327980084134,
+    "long_cached_ttft_ms": 863.2712909020483,
+    "composite_score": 241.5
+  }
+}

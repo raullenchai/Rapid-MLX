@@ -123,7 +123,11 @@ def run_smoke_tier():
 
 
 def run_check_tier(model: str, update_baselines: bool = False):
-    """Boot a server with ``model`` and run API + perf + agent checks."""
+    """Boot a server with ``model`` and run API + perf checks.
+
+    Runs twice: once in SimpleEngine mode, once in BatchedEngine
+    (``--continuous-batching``) mode, with independent baselines.
+    """
     from .checks import smoke
 
     print(f"Rapid-MLX Doctor — check tier (model={model})")
@@ -135,13 +139,26 @@ def run_check_tier(model: str, update_baselines: bool = False):
     runner.run_check("repo_layout", smoke.check_repo_layout)
     runner.run_check("imports", smoke.check_imports)
 
+    # --- SimpleEngine pass ---
     _run_per_model_block(
         runner=runner,
         model=model,
         tier="check",
         update_baselines=update_baselines,
-        agent_profiles=[],  # check tier keeps it lean — agents only in full
+        agent_profiles=[],
     )
+
+    # --- BatchedEngine pass ---
+    _run_per_model_block(
+        runner=runner,
+        model=model,
+        tier="check",
+        update_baselines=update_baselines,
+        agent_profiles=[],
+        extra_args=["--continuous-batching"],
+        engine_label="batched",
+    )
+
     return runner.finalize()
 
 
@@ -167,16 +184,23 @@ def run_full_tier(models: list[str], update_baselines: bool = False):
 
     for model in models:
         print(f"\n  ── model: {model} ──")
+        # SimpleEngine pass
         _run_per_model_block(
             runner=runner,
             model=model,
             tier="full",
             update_baselines=update_baselines,
             agent_profiles=profile_names,
-            # boot_timeout_s=None → _suggested_boot_timeout picks 600s for
-            # the 27B+ models (qwen3.5-35b, gemma-4-26b) and 180s for
-            # smaller ones, so the same logic applies regardless of which
-            # tier called us.
+        )
+        # BatchedEngine pass
+        _run_per_model_block(
+            runner=runner,
+            model=model,
+            tier="full",
+            update_baselines=update_baselines,
+            agent_profiles=[],  # agents tested in simple pass already
+            extra_args=["--continuous-batching"],
+            engine_label="batched",
         )
 
     return runner.finalize()
@@ -232,6 +256,8 @@ def _run_per_model_block(
     update_baselines: bool,
     agent_profiles: list[str],
     boot_timeout_s: int | None = None,
+    extra_args: list[str] | None = None,
+    engine_label: str | None = None,
 ) -> None:
     """Boot a server for one model and run all model-bound checks against it.
 
@@ -240,8 +266,10 @@ def _run_per_model_block(
     full sweep still yields a complete report.
 
     ``boot_timeout_s`` defaults to ``DEFAULT_BOOT_TIMEOUT_S`` (600s).
-    See the constant's docstring for why a single generous value beats
-    every per-model / per-tier heuristic we tried.
+    ``extra_args`` are appended to the ``rapid-mlx serve`` command
+    (e.g. ``["--continuous-batching"]``).
+    ``engine_label`` is used to disambiguate baselines and check names
+    (e.g. ``"batched"`` → baseline key ``check-batched-qwen3.5-4b``).
     """
     from .checks import agent, api, perf, stress
     from .server import ServerStartFailed, serve
@@ -249,21 +277,30 @@ def _run_per_model_block(
     if boot_timeout_s is None:
         boot_timeout_s = DEFAULT_BOOT_TIMEOUT_S
 
-    server_log = runner.run_dir / f"server-{safe_model_slug(model)}.log"
+    tag = f"{model}" if not engine_label else f"{model}/{engine_label}"
+    slug_suffix = f"-{engine_label}" if engine_label else ""
+    server_log = (
+        runner.run_dir / f"server-{safe_model_slug(model)}{slug_suffix}.log"
+    )
+    # Baseline tier key includes engine label so simple/batched get
+    # independent baselines (e.g. "check" vs "check-batched").
+    baseline_tier = f"{tier}-{engine_label}" if engine_label else tier
+
     try:
         with serve(
             model=model,
             log_path=server_log,
+            extra_args=extra_args,
             boot_timeout_s=boot_timeout_s,
         ) as info:
             port = info["port"]
-            print(f"  [server] {model} up on port {port}, log → {server_log.name}")
+            print(f"  [server] {tag} up on port {port}, log → {server_log.name}")
             runner.run_check(
-                f"regression_suite[{model}]",
+                f"regression_suite[{tag}]",
                 lambda: api.check_regression_suite(port),
             )
             runner.run_check(
-                f"smoke_matrix[{model}]",
+                f"smoke_matrix[{tag}]",
                 lambda: api.check_smoke_matrix(port),
             )
             runner.run_check(
@@ -271,14 +308,12 @@ def _run_per_model_block(
                 lambda: stress.check_stress(port),
             )
             perf_result = runner.run_check(
-                f"autoresearch[{model}]",
+                f"autoresearch[{tag}]",
                 lambda: perf.check_autoresearch(port, runs=1),
             )
             for profile_name in agent_profiles:
-                # Bind per-iteration values so the lambda doesn't close
-                # over the loop variables.
                 runner.run_check(
-                    f"agent[{profile_name}@{model}]",
+                    f"agent[{profile_name}@{tag}]",
                     lambda p=profile_name, port=port: agent.check_agent_profile(
                         p, port, model_id=model
                     ),
@@ -286,9 +321,9 @@ def _run_per_model_block(
     except ServerStartFailed as exc:
         err_msg = f"{exc}\nlog: {server_log}"
         runner.run_check(
-            f"server_boot[{model}]",
+            f"server_boot[{tag}]",
             lambda: CheckResult(
-                name=f"server_boot[{model}]",
+                name=f"server_boot[{tag}]",
                 status=Status.FAIL,
                 duration_s=0.0,
                 detail=err_msg,
@@ -298,7 +333,14 @@ def _run_per_model_block(
 
     # Compare perf metrics against baseline (if one exists).
     if perf_result.metrics:
-        _apply_baseline(runner, tier, model, perf_result.metrics, update_baselines)
+        _apply_baseline(
+            runner,
+            baseline_tier,
+            model,
+            perf_result.metrics,
+            update_baselines,
+            display_label=tag,
+        )
 
 
 # NOTE: per-model artefact filenames (diff-{model}.md, server-{model}.log)
@@ -464,15 +506,25 @@ def _apply_baseline(
     model: str,
     metrics: dict,
     update_baselines: bool,
+    display_label: str | None = None,
 ) -> None:
     """Diff against baseline; flag regressions; optionally update baseline.
 
     Baselines are per-model — comparing decode TPS for a 4B and a 35B
     model is meaningless.  ``--update-baselines`` writes the model-
     specific file, so each model accumulates its own history.
+    ``display_label`` overrides the heading in diff.md (e.g.
+    ``"qwen3.5-4b (batched)"``).
     """
+    heading = display_label or model
+    diff_slug = safe_model_slug(heading)
+
     baseline = load_baseline(tier, model)
-    thresholds = load_thresholds()
+    # BatchedEngine tiers use wider thresholds (higher run-to-run variance)
+    if "batched" in tier:
+        thresholds = load_thresholds(REPO_ROOT / "harness" / "thresholds-batched.yaml")
+    else:
+        thresholds = load_thresholds()
 
     if update_baselines:
         path = save_baseline(tier, model, metrics)
@@ -488,18 +540,14 @@ def _apply_baseline(
         return
 
     if baseline is None:
-        # First run with no baseline — record what we saw, don't fail.
-        # Still write a diff.md (and per-model variant) so external
-        # automation that always reads run_dir/diff.md gets a stable
-        # artefact, not a missing-file error.
         notice = (
             f"_no baseline yet for model={model} — "
             "run with --update-baselines to record one_\n"
         )
-        per_model_diff = runner.run_dir / f"diff-{safe_model_slug(model)}.md"
+        per_model_diff = runner.run_dir / f"diff-{diff_slug}.md"
         per_model_diff.write_text(notice)
         combined_diff = runner.run_dir / "diff.md"
-        section = f"## {model}\n\n{notice}\n"
+        section = f"## {heading}\n\n{notice}\n"
         if combined_diff.exists():
             with open(combined_diff, "a") as f:
                 f.write(section)
@@ -543,11 +591,11 @@ def _apply_baseline(
     # shared diff.md and we'd lose all earlier models' delta tables.
     # Always write per-model files; also append to a combined diff.md
     # so single-model tiers (check) keep their existing artefact name.
-    per_model_diff = runner.run_dir / f"diff-{safe_model_slug(model)}.md"
+    per_model_diff = runner.run_dir / f"diff-{diff_slug}.md"
     per_model_diff.write_text(deltas_md)
 
     combined_diff = runner.run_dir / "diff.md"
-    section = f"## {model}\n\n{deltas_md}\n"
+    section = f"## {heading}\n\n{deltas_md}\n"
     if combined_diff.exists():
         with open(combined_diff, "a") as f:
             f.write(section)

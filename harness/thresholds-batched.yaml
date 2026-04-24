@@ -1,0 +1,47 @@
+# Thresholds for BatchedEngine (--continuous-batching) tiers.
+#
+# BatchedEngine has higher run-to-run variance than SimpleEngine due to
+# scheduling overhead, background cache evaluation, and Metal command
+# buffer contention.  Wider margins prevent false-positive regressions.
+
+decode_tps:
+  regression_pct: 10
+  improvement_pct: 15
+cold_tps:
+  regression_pct: 10
+  improvement_pct: 15
+mt_tps:
+  regression_pct: 10
+  improvement_pct: 15
+long_tps:
+  regression_pct: 10
+  improvement_pct: 15
+cold_ttft_ms:
+  regression_pct: 20
+  improvement_pct: 25
+cached_ttft_ms:
+  regression_pct: 20
+  improvement_pct: 25
+mt_ttft_ms:
+  regression_pct: 20
+  improvement_pct: 25
+long_ttft_ms:
+  regression_pct: 20
+  improvement_pct: 25
+long_cached_ttft_ms:
+  regression_pct: 20
+  improvement_pct: 25
+tc_latency_ms:
+  regression_pct: 15
+  improvement_pct: 20
+peak_ram_mb:
+  regression_pct: 15
+  improvement_pct: 15
+composite_score:
+  regression_pct: 10
+  improvement_pct: 15
+
+# Accuracy — still zero tolerance
+tc_success_rate:
+  regression_pct: 0
+  improvement_pct: 5

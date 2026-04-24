@@ -244,7 +244,7 @@ def _install_chunked_prefill(
 
         batch_gen._process_prompts = _patched_process_prompts
 
-    def _generation_step(self=batch_gen):
+    def _generation_step(self=batch_gen):  # noqa: C901
         """Run one generation step on the active batch. Returns responses."""
         batch = self.active_batch
         if batch is None or len(batch) == 0:
@@ -264,6 +264,91 @@ def _install_chunked_prefill(
         mx.async_eval(batch.y, batch.logprobs)
 
         y = y.tolist()
+
+        # ------------------------------------------------------------------
+        # Jump-forward: when the logits processor has activated a
+        # deterministic structural pattern (e.g. "</invoke>" or
+        # "</minimax:tool_call>"), inject all remaining pattern tokens
+        # in a single prefill pass instead of N separate decode steps.
+        # Only applies to single-request batches (typical agentic use).
+        # ------------------------------------------------------------------
+        jump_tokens = None
+        _jump_proc = None
+        if (
+            len(batch) == 1
+            and batch.logits_processors
+            and batch.logits_processors[0]
+        ):
+            _jump_proc = batch.logits_processors[0][0]
+            if hasattr(_jump_proc, "get_jump_forward_tokens"):
+                jump_tokens = _jump_proc.get_jump_forward_tokens()
+
+        if jump_tokens and _jump_proc is not None:
+            # batch.y already contains the first pattern token (biased by
+            # the processor inside _step above) and the KV cache already
+            # has it.  jump_tokens are the REMAINING deterministic tokens.
+            # Feed them through the model in one prefill pass to update
+            # the KV cache, then sample the next free token.
+
+            # Append jump_tokens (NOT first_tok — already in cache)
+            inject_arr = mx.array([jump_tokens])  # (1, N)
+            inject_logits = self.model(inject_arr, cache=batch.cache)
+
+            # Extend the token sequence with the injected tokens
+            batch.tokens[0] = mx.concatenate(
+                (batch.tokens[0], mx.array(jump_tokens))
+            )
+
+            # Sample the next non-deterministic token from last position
+            batch.y = batch.samplers[0](inject_logits[:, -1, :])
+            batch.logprobs = inject_logits[:, -1, :] - mx.logsumexp(
+                inject_logits[:, -1, :], axis=-1, keepdims=True
+            )
+            mx.async_eval(batch.y, batch.logprobs)
+
+            # Update processor state (pattern complete)
+            _jump_proc.complete_jump_forward(jump_tokens)
+
+            # Build responses: original token y[0] + all jump tokens
+            # y[0] is the previous step's token; jump_tokens are the
+            # deterministic tokens whose KV cache was just updated.
+            uid = batch.uids[0]
+            num_tok = batch.num_tokens[0]
+            max_tok = batch.max_tokens[0]
+            responses = []
+            _finished = False
+
+            for tok in [y[0]] + list(jump_tokens):
+                num_tok += 1
+                finish_reason = None
+                cache_out = None
+                if tok in self.stop_tokens:
+                    finish_reason = "stop"
+                    _finished = True
+                elif num_tok >= max_tok:
+                    finish_reason = "length"
+                    _finished = True
+                if finish_reason is not None:
+                    cache_out = batch.extract_cache(0)
+                responses.append(
+                    self.Response(uid, tok, mx.array(0.0), finish_reason, cache_out)
+                )
+                if _finished:
+                    break
+
+            batch.num_tokens[0] = num_tok
+
+            if _finished:
+                self.active_batch = None
+
+            self._stats.generation_time += _time.perf_counter() - tic_gen
+            self._stats.generation_tokens += len(responses)
+            logger.debug(
+                f"[jump-forward] injected {len(jump_tokens)} deterministic "
+                f"tokens (saved {len(jump_tokens) - 1} decode steps)"
+            )
+            return responses
+
         self._stats.generation_time += _time.perf_counter() - tic_gen
 
         keep_idx = []
@@ -2191,23 +2276,27 @@ class Scheduler:
                         except Exception as e:
                             logger.debug(f"Failed to store cache for {request_id}: {e}")
 
-            # Evaluate stored cache tensors incrementally (per-layer) to prevent
-            # a deferred batch evaluation spike when all lazy ops resolve at once.
-            # This spreads the VRAM cost across smaller per-layer evaluations.
+            # Kick off async evaluation of stored cache tensors so the GPU
+            # processes them in the background while Python continues with
+            # scheduling and response handling.  The periodic mx.clear_cache()
+            # in step() ensures these are fully materialized before memory
+            # pressure builds.
             if (
                 request is not None
                 and hasattr(request, "_extracted_cache")
                 and request._extracted_cache
             ):
+                _eval_arrays = []
                 for layer in request._extracted_cache:
                     if isinstance(layer, dict) and "state" in layer:
-                        keys, values = layer["state"]
-                        mx.eval(keys, values)
+                        _eval_arrays.extend(layer["state"])
                     elif hasattr(layer, "keys") and hasattr(layer, "values"):
                         keys_attr = layer.keys
                         values_attr = layer.values
                         if not callable(keys_attr) and not callable(values_attr):
-                            mx.eval(keys_attr, values_attr)
+                            _eval_arrays.extend([keys_attr, values_attr])
+                if _eval_arrays:
+                    mx.async_eval(*_eval_arrays)
 
             # Remove from running
             if request_id in self.running:
@@ -2222,10 +2311,6 @@ class Scheduler:
 
             # Track as finished
             self.finished_req_ids.add(request_id)
-
-        # Free Metal command buffers after cleanup (prevents end-of-generation spike)
-        if finished_ids:
-            mx.clear_cache()
 
     def _is_cache_corruption_error(self, error: Exception) -> bool:
         """Check if an error indicates cache corruption."""
@@ -2331,14 +2416,21 @@ class Scheduler:
 
         for attempt in range(max_retries + 1):
             try:
-                # Schedule waiting requests
+                # Schedule requests that were waiting from the previous step.
+                # On the first call this picks up requests queued via add_request().
                 scheduled = self._schedule_waiting()
                 output.scheduled_request_ids = [r.request_id for r in scheduled]
                 output.num_scheduled_tokens = sum(
                     r.num_prompt_tokens for r in scheduled
                 )
 
-                # Run generation step if we have running requests
+                # Run generation step if we have running requests.
+                # batch_generator.next() internally calls mx.async_eval() to
+                # kick off the *next* forward pass, then blocks only long
+                # enough to read *this* step's tokens.  All Python work after
+                # this call (response processing, cleanup, scheduling for the
+                # next step) runs while the GPU evaluates the next forward
+                # pass — this is the core overlap optimisation.
                 if self.batch_generator is not None and self.running:
                     raw_next = self.batch_generator.next()
                     output.has_work = True
@@ -2354,6 +2446,7 @@ class Scheduler:
                         outputs, finished_ids = self._process_batch_responses(responses)
                         output.outputs = outputs
                         output.finished_request_ids = finished_ids
+                        # Cleanup uses async_eval for cache tensors — no GPU sync
                         self._cleanup_finished(finished_ids)
 
                 # Success - break out of retry loop

@@ -37,6 +37,35 @@ class CacheEntry:
     count: int  # Reference count for sharing
 
 
+class RadixNode:
+    """Node in a radix tree for prefix caching.
+
+    Each node stores a token-array edge label and an optional cache entry.
+    Single-child chains are compressed: instead of one node per token,
+    a chain like tok1→tok2→tok3 becomes a single node with edge=(tok1,tok2,tok3).
+    This reduces traversal from O(num_tokens) to O(num_branches).
+    """
+
+    __slots__ = ("edge", "children", "cache_entry")
+
+    def __init__(
+        self,
+        edge: tuple[int, ...] = (),
+        cache_entry: CacheEntry | None = None,
+    ):
+        self.edge: tuple[int, ...] = edge
+        self.children: dict[int, RadixNode] = {}
+        self.cache_entry: CacheEntry | None = cache_entry
+
+    def _compact(self) -> None:
+        """Merge with single child if this node has no cache entry."""
+        if self.cache_entry is None and len(self.children) == 1:
+            child = next(iter(self.children.values()))
+            self.edge = self.edge + child.edge
+            self.cache_entry = child.cache_entry
+            self.children = child.children
+
+
 @dataclass
 class PrefixCacheStats:
     """Statistics for prefix cache performance."""
@@ -68,10 +97,11 @@ class PrefixCacheStats:
 
 class PrefixCacheManager:
     """
-    Manages prefix caching for vllm-mlx using a trie-based LRU cache.
+    Manages prefix caching for vllm-mlx using a radix-tree LRU cache.
 
-    This implementation is inspired by mlx-lm's LRUPromptCache but adapted
-    for vllm-mlx's batching architecture.
+    Uses a radix tree (compressed trie) where single-child chains are
+    merged into nodes with token-array edges, reducing traversal from
+    O(num_tokens) to O(num_branches).
 
     The cache stores KV states keyed by token sequences, allowing:
     - Exact match: Full prompt found in cache
@@ -103,9 +133,8 @@ class PrefixCacheManager:
         self.model_key = id(model)
         self.max_size = max_entries
 
-        # Trie-based cache: nested dicts with token keys
-        # Structure: {model_key: {token1: {token2: {..., "cache": CacheEntry}}}}
-        self._cache: dict[Any, dict] = {}
+        # Radix tree root per model (compressed trie — token-array edges)
+        self._roots: dict[Any, RadixNode] = {}
 
         # LRU tracking: (model_key, tuple(tokens)) ordered by access time
         self._lru: deque = deque()
@@ -116,11 +145,20 @@ class PrefixCacheManager:
         # Statistics
         self.stats = PrefixCacheStats()
 
+    @staticmethod
+    def _common_prefix_len(a: tuple[int, ...], b: tuple | list) -> int:
+        """Return the length of the common prefix between two sequences."""
+        n = min(len(a), len(b))
+        for i in range(n):
+            if a[i] != b[i]:
+                return i
+        return n
+
     def _search(
         self, tokens: list[int]
     ) -> tuple[list[int] | None, list[int] | None, list[int] | None, int]:
         """
-        Search for cached prefix matching tokens.
+        Search for cached prefix matching tokens using radix tree.
 
         Returns:
             Tuple of (exact, shorter, longer, common_prefix_len)
@@ -129,41 +167,83 @@ class PrefixCacheManager:
             - longer: Tokens of longer cached prefix
             - common_prefix_len: Length of common prefix with longer match
         """
-        if self.model_key not in self._cache:
+        root = self._roots.get(self.model_key)
+        if root is None:
             return None, None, None, 0
 
-        current = self._cache[self.model_key]
-        path = []
+        node = root
+        pos = 0  # position in tokens consumed so far
+        last_cached_pos = 0 if root.cache_entry else -1
 
-        # Traverse trie following token sequence
-        for i, tok in enumerate(tokens):
-            if tok not in current:
-                # No match for this token
-                # Check if we have a shorter prefix with cache
-                if "cache" in current:
-                    return None, list(path), None, 0
+        while pos < len(tokens):
+            first_tok = tokens[pos]
+            child = node.children.get(first_tok)
+            if child is None:
+                # No matching edge — return shorter prefix if any
+                if last_cached_pos > 0:
+                    return None, tokens[:last_cached_pos], None, 0
                 return None, None, None, 0
 
-            path.append(tok)
-            current = current[tok]
+            edge = child.edge
+            cpl = self._common_prefix_len(edge, tokens[pos:])
 
-        # Reached end of tokens
-        if "cache" in current:
-            # Exact match
+            if cpl < len(edge):
+                # Partial edge match — can't go further
+                if last_cached_pos > 0:
+                    return None, tokens[:last_cached_pos], None, 0
+                return None, None, None, 0
+
+            pos += len(edge)
+            node = child
+            if node.cache_entry is not None:
+                last_cached_pos = pos
+
+        # Consumed all tokens
+        if node.cache_entry is not None:
             return list(tokens), None, None, 0
 
-        # Check for longer cached prefix
-        # DFS to find shortest extension with cache
-        stack = [(current, list(path))]
+        # Exact node reached but no cache — check for shorter
+        if last_cached_pos > 0:
+            return None, tokens[:last_cached_pos], None, 0
+
+        # Check for longer cached prefix (DFS into children)
+        stack: list[tuple[RadixNode, int]] = [(node, pos)]
         while stack:
-            node, node_path = stack.pop()
-            if "cache" in node:
-                return None, None, node_path, len(tokens)
-            for tok, child in node.items():
-                if tok != "cache":
-                    stack.append((child, node_path + [tok]))
+            n, p = stack.pop()
+            if n.cache_entry is not None:
+                return None, None, self._collect_tokens(n, p, tokens), len(tokens)
+            for child in n.children.values():
+                stack.append((child, p + len(child.edge)))
 
         return None, None, None, 0
+
+    def _collect_tokens(
+        self, target: RadixNode, target_pos: int, base_tokens: list[int]
+    ) -> list[int]:
+        """Reconstruct full token path to a node found via DFS."""
+        # Walk from root to target, collecting edge tokens
+        root = self._roots[self.model_key]
+        result = list(base_tokens)
+        # We need to find the path beyond base_tokens to target
+        # DFS again from the node at len(base_tokens) position
+        node = root
+        pos = 0
+        # First, navigate to the node at base_tokens end
+        while pos < len(base_tokens):
+            child = node.children.get(base_tokens[pos])
+            if child is None:
+                break
+            pos += len(child.edge)
+            node = child
+        # Now DFS to find target, collecting edges
+        stack: list[tuple[RadixNode, list[int]]] = [(node, [])]
+        while stack:
+            n, path = stack.pop()
+            if n is target:
+                return list(base_tokens) + path
+            for child in n.children.values():
+                stack.append((child, path + list(child.edge)))
+        return result
 
     def fetch_cache(self, tokens: list[int]) -> tuple[list[Any] | None, list[int]]:
         """
@@ -235,50 +315,109 @@ class PrefixCacheManager:
             return
 
         tokens_tuple = tuple(tokens)
-
-        # Build trie path
-        if self.model_key not in self._cache:
-            self._cache[self.model_key] = {}
-
-        current = self._cache[self.model_key]
-        for tok in tokens:
-            if tok not in current:
-                current[tok] = {}
-            current = current[tok]
-
-        # Store or update cache entry
         key = (self.model_key, tokens_tuple)
-        if "cache" in current:
-            current["cache"].count += 1
-            # Update LRU position (skip if pinned)
+
+        # Ensure root exists
+        if self.model_key not in self._roots:
+            self._roots[self.model_key] = RadixNode()
+
+        root = self._roots[self.model_key]
+        node = root
+        pos = 0
+
+        while pos < len(tokens):
+            first_tok = tokens[pos]
+            child = node.children.get(first_tok)
+
+            if child is None:
+                # No matching edge — create new leaf with remaining tokens
+                leaf = RadixNode(
+                    edge=tokens_tuple[pos:],
+                    cache_entry=CacheEntry(prompt_cache, 1),
+                )
+                node.children[first_tok] = leaf
+                self._lru_add(key)
+                self._evict_if_needed()
+                return
+
+            edge = child.edge
+            cpl = self._common_prefix_len(edge, tokens[pos:])
+
+            if cpl < len(edge):
+                # Partial match — split the edge
+                # Create intermediate node with the common prefix
+                intermediate = RadixNode(edge=edge[:cpl])
+                # Old child becomes child of intermediate with remaining edge
+                child.edge = edge[cpl:]
+                intermediate.children[child.edge[0]] = child
+                node.children[first_tok] = intermediate
+
+                remaining_pos = pos + cpl
+                if remaining_pos == len(tokens):
+                    # Tokens end at split point
+                    intermediate.cache_entry = CacheEntry(prompt_cache, 1)
+                else:
+                    # Create new leaf for diverging suffix
+                    remaining = tokens_tuple[remaining_pos:]
+                    leaf = RadixNode(
+                        edge=remaining,
+                        cache_entry=CacheEntry(prompt_cache, 1),
+                    )
+                    intermediate.children[remaining[0]] = leaf
+                self._lru_add(key)
+                self._evict_if_needed()
+                return
+
+            pos += len(edge)
+            node = child
+
+        # Exact node reached — update or set cache entry
+        if node.cache_entry is not None:
+            node.cache_entry.count += 1
             if key not in self._pinned:
                 try:
                     self._lru.remove(key)
                 except ValueError:
                     pass
         else:
-            current["cache"] = CacheEntry(prompt_cache, 1)
+            node.cache_entry = CacheEntry(prompt_cache, 1)
 
-        # Only add to LRU if not pinned
+        self._lru_add(key)
+        self._evict_if_needed()
+
+    def _lru_add(self, key: tuple) -> None:
+        """Add key to LRU if not pinned."""
         if key not in self._pinned:
             self._lru.append(key)
 
-        # Evict if over capacity (count pinned entries toward total)
+    def _evict_if_needed(self) -> None:
+        """Evict LRU entries if over capacity."""
         while len(self._lru) + len(self._pinned) > self.max_size and len(self._lru) > 0:
             self._evict_lru()
 
     def _get_cache_entry(self, tokens: list[int]) -> CacheEntry | None:
-        """Get cache entry for given tokens."""
-        if self.model_key not in self._cache:
+        """Get cache entry for given tokens via radix tree traversal."""
+        root = self._roots.get(self.model_key)
+        if root is None:
             return None
 
-        current = self._cache[self.model_key]
-        for tok in tokens:
-            if tok not in current:
+        node = root
+        pos = 0
+        while pos < len(tokens):
+            child = node.children.get(tokens[pos])
+            if child is None:
                 return None
-            current = current[tok]
+            edge = child.edge
+            remaining = tokens[pos:]
+            if len(edge) > len(remaining):
+                return None
+            for i in range(len(edge)):
+                if edge[i] != remaining[i]:
+                    return None
+            pos += len(edge)
+            node = child
 
-        return current.get("cache")
+        return node.cache_entry
 
     def _touch_lru(self, tokens_tuple: tuple) -> None:
         """Move entry to end of LRU queue (most recently used)."""
@@ -301,30 +440,46 @@ class PrefixCacheManager:
         self.stats.evictions += 1
 
     def _delete_cache(self, model_key: Any, tokens: list[int]) -> None:
-        """Delete cache entry and clean up empty trie branches."""
-        if model_key not in self._cache:
+        """Delete cache entry and compact radix tree."""
+        root = self._roots.get(model_key)
+        if root is None:
             return
 
-        # Navigate to entry
-        path = [(self._cache[model_key], None)]
-        current = self._cache[model_key]
-
-        for tok in tokens:
-            if tok not in current:
+        # Navigate to the node, tracking parent chain for cleanup
+        path: list[tuple[RadixNode, RadixNode | None, int | None]] = [
+            (root, None, None)
+        ]
+        node = root
+        pos = 0
+        while pos < len(tokens):
+            child = node.children.get(tokens[pos])
+            if child is None:
                 return
-            path.append((current[tok], tok))
-            current = current[tok]
+            edge = child.edge
+            if len(edge) > len(tokens) - pos:
+                return
+            for i in range(len(edge)):
+                if edge[i] != tokens[pos + i]:
+                    return
+            path.append((child, node, tokens[pos]))
+            pos += len(edge)
+            node = child
 
-        # Delete cache entry
-        if "cache" in current:
-            del current["cache"]
+        # Remove cache entry
+        if node.cache_entry is None:
+            return
+        node.cache_entry = None
 
-        # Clean up empty branches (bottom-up)
+        # Bottom-up cleanup: remove childless nodes, compact single-child nodes
         for i in range(len(path) - 1, 0, -1):
-            node, tok = path[i]
-            parent, _ = path[i - 1]
-            if not node:  # Empty dict
-                del parent[tok]
+            current, parent, first_tok = path[i]
+            if current.cache_entry is None and not current.children:
+                # Leaf with no cache — remove from parent
+                if parent is not None and first_tok is not None:
+                    del parent.children[first_tok]
+            elif current.cache_entry is None and len(current.children) == 1:
+                # Single child, no cache — compact
+                current._compact()
 
     def _can_trim_cache(self, prompt_cache: list[Any]) -> bool:
         """Check if all cache layers can be trimmed."""
@@ -352,7 +507,7 @@ class PrefixCacheManager:
 
     def clear(self) -> None:
         """Clear all cached entries."""
-        self._cache.clear()
+        self._roots.clear()
         self._lru.clear()
         self._pinned.clear()
         self.reset_stats()

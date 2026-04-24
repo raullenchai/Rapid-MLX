@@ -175,23 +175,6 @@ def _try_inject_mtp_post_load(model, model_name):
             )
 
 
-def _load_non_strict(model_name: str, tokenizer_config: dict = None):
-    """Load model with strict=False to skip extra weights (e.g., vision tower)."""
-    from mlx_lm.utils import load_model, load_tokenizer
-
-    local_path = Path(model_name)
-    if local_path.is_dir():
-        model_path = local_path
-    else:
-        from huggingface_hub import snapshot_download
-
-        model_path = Path(snapshot_download(model_name))
-
-    model, _ = load_model(model_path, strict=False)
-    tokenizer = load_tokenizer(model_path, tokenizer_config or {})
-    return model, tokenizer
-
-
 def _load_with_tokenizer_fallback(model_name: str):
     """Load model with fallback tokenizer for non-standard models like Nemotron."""
     from mlx_lm.utils import load_model

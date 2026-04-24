@@ -1,20 +1,20 @@
 {
-  "captured_at": "2026-04-15T21:36:32",
+  "captured_at": "2026-04-16T11:07:28",
   "rapid_mlx_version": "0.5.0",
   "model": "qwen3.5-4b",
   "metrics": {
-    "cold_ttft_ms": 313.62908403389156,
-    "cold_tps": 49.2736011322839,
-    "cached_ttft_ms": 393.99170805700123,
-    "decode_tps": 49.67459517661095,
+    "cold_ttft_ms": 165.5652499757707,
+    "cold_tps": 167.86137925745996,
+    "cached_ttft_ms": 217.86791691556573,
+    "decode_tps": 167.96938880336336,
     "decode_tps_stdev": 0,
-    "mt_ttft_ms": 402.93216705322266,
-    "mt_tps": 48.32873664326039,
-    "tc_latency_ms": 2819.6406660135835,
+    "mt_ttft_ms": 230.6051659397781,
+    "mt_tps": 165.71235866213658,
+    "tc_latency_ms": 1042.3383750021458,
     "tc_success_rate": 1.0,
-    "long_ttft_ms": 1274.2738330271095,
-    "long_tps": 48.325022009001415,
-    "long_cached_ttft_ms": 1233.1054580863565,
-    "composite_score": 109.9
+    "long_ttft_ms": 958.6559170857072,
+    "long_tps": 163.59455960843,
+    "long_cached_ttft_ms": 940.2715829201043,
+    "composite_score": 258.7
   }
 }

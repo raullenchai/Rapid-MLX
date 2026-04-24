@@ -2,14 +2,20 @@
 """
 Logits processors for jump-forward decoding of tool call structural tokens.
 
-When models generate tool calls in XML format (e.g., MiniMax's
-<minimax:tool_call>), many tokens are predictable structural markup.
-By biasing logits toward the expected next token, we accelerate generation
-of these structural sequences without constraining the model's free choices
-for argument values.
+When models generate tool calls, many tokens are predictable structural
+markup (closing tags, delimiters).  By biasing logits toward the expected
+next token and injecting deterministic sequences via jump-forward prefill,
+we skip decode steps for these structural tokens.
+
+Supports ALL tool call parsers via a per-parser pattern registry:
+- hermes: <tool_call>, </tool_call>
+- minimax: <invoke name="...>, </parameter>, </invoke>, </minimax:tool_call>
+- llama: <function=...>, </function>
+- deepseek: <｜tool▁call▁begin｜>, <｜tool▁sep｜>, <｜tool▁call▁end｜>, ...
+- And 14 more parsers (see PARSER_PATTERNS below)
 
 Usage:
-    processor = create_tool_logits_processor("minimax", tokenizer)
+    processor = create_tool_logits_processor("hermes", tokenizer)
     if processor:
         # Pass to BatchGenerator via logits_processors
         ...
@@ -23,6 +29,139 @@ import re
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
+
+# =====================================================================
+# Per-parser pattern registry.
+#
+# Each entry maps a parser name → list of (pattern, trigger) tuples.
+#   pattern: deterministic string that follows the trigger
+#   trigger: text suffix that activates the pattern (None = contextual)
+#
+# When the model output ends with a trigger, the processor biases
+# toward the pattern tokens.  If the pattern has >= 2 tokens, the
+# jump-forward path injects them all in a single prefill pass.
+# =====================================================================
+
+PARSER_PATTERNS: dict[str, list[tuple[str, str | None]]] = {
+    # --- Hermes / Qwen / NousResearch ---
+    # Hermes format: <tool_call>\n{"name": "FUNC", "arguments": {ARGS}}\n</tool_call>
+    # </tool_call> is a single special token in Qwen — not jumpable.
+    # The real wins are in the JSON structural prefixes:
+    "hermes": [
+        ('\n{"name": "', "<tool_call>"),  # 6 tok, jump 5 after <tool_call>
+        ('", "arguments": ', None),  # 5 tok, jump 4 after function name closing "
+        ('}\n</tool_call>', "}"),  # 3 tok, jump 2 after args JSON closing }
+    ],
+    # --- MiniMax ---
+    "minimax": [
+        (' name="', "<invoke"),
+        ("</parameter>", None),
+        ("</invoke>", None),
+        ("</minimax:tool_call>", "</invoke>"),
+    ],
+    # --- Llama / Meta ---
+    "llama": [
+        ("</function>", "}"),
+    ],
+    # --- Functionary / MeetKai ---
+    "functionary": [
+        ("</function>", "}"),
+    ],
+    # --- GLM-4 ---
+    # GLM uses <tool_call>\nfunc_name\n<arg>... — </tool_call> is 1 token
+    "glm47": [
+        ('}\n</tool_call>', "}"),  # 3 tok, jump 2
+    ],
+    # --- Qwen bracket style ---
+    # Qwen uses <tool_call>\n{"name": ...}\n</tool_call> — same as hermes
+    "qwen": [
+        ('\n{"name": "', "<tool_call>"),
+        ('", "arguments": ', None),
+        ('}\n</tool_call>', "}"),
+    ],
+    # --- Granite ---
+    "granite": [
+        ('}\n</tool_call>', "}"),  # 3 tok, jump 2
+    ],
+    # --- Nemotron ---
+    "nemotron": [
+        ("</function>", "}"),
+        ("</tool_call>", "</function>"),
+    ],
+    # --- Qwen3 Coder XML ---
+    "qwen3_coder_xml": [
+        ("</parameter>", None),
+        ("</function>", None),
+        ("</tool_call>", "</function>"),
+    ],
+    # --- Seed OSS / GPT-OSS ---
+    "seed_oss": [
+        ("</parameter>", None),
+        ("</function>", None),
+        ("</seed:tool_call>", "</function>"),
+    ],
+    # --- DeepSeek V3 ---
+    "deepseek": [
+        ("<｜tool▁call▁end｜>", "```"),
+        ("<｜tool▁calls▁end｜>", "<｜tool▁call▁end｜>"),
+    ],
+    # --- DeepSeek V3.1 ---
+    "deepseek_v31": [
+        ("<｜tool▁call▁end｜>", "}"),
+        ("<｜tool▁calls▁end｜>", "<｜tool▁call▁end｜>"),
+    ],
+    # --- Gemma 4 ---
+    "gemma4": [
+        ("}<tool_call|>", None),
+    ],
+    # --- Kimi / Moonshot ---
+    "kimi": [
+        ("<|tool_call_end|>", "}"),
+        ("<|tool_calls_section_end|>", "<|tool_call_end|>"),
+    ],
+    # --- Mistral ---
+    "mistral": [
+        # Mistral uses [TOOL_CALLS] prefix (single token) + JSON;
+        # the JSON closing is the main jump-forward opportunity
+    ],
+    # --- xLAM ---
+    "xlam": [
+        # xLAM uses code blocks or JSON arrays; closing ``` is jumpable
+    ],
+}
+
+# Alias expansion: many parser names map to the same patterns
+_PARSER_ALIASES: dict[str, str] = {
+    "nous": "hermes",
+    "qwen3_coder": "hermes",
+    "qwen3": "qwen",
+    "llama3": "llama",
+    "llama4": "llama",
+    "deepseek_v3": "deepseek",
+    "deepseek_r1": "deepseek",
+    "deepseek_r1_0528": "deepseek_v31",
+    "glm4": "glm47",
+    "granite3": "granite",
+    "nemotron3": "nemotron",
+    "gemma_4": "gemma4",
+    "kimi_k2": "kimi",
+    "moonshot": "kimi",
+    "minimax_m2": "minimax",
+    "meetkai": "functionary",
+    "harmony": "seed_oss",
+    "gpt-oss": "seed_oss",
+    "gpt_oss": "seed_oss",
+    "seed": "seed_oss",
+    "qwen3_xml": "qwen3_coder_xml",
+    "auto": "hermes",
+    "generic": "hermes",
+}
+
+
+def _get_patterns_for_parser(parser_name: str) -> list[tuple[str, str | None]]:
+    """Resolve parser name (with aliases) and return its patterns."""
+    canonical = _PARSER_ALIASES.get(parser_name, parser_name)
+    return PARSER_PATTERNS.get(canonical, [])
 
 
 def _extract_param_schemas(tools: list[dict] | None) -> dict[str, dict]:
@@ -60,59 +199,46 @@ class ToolLogitsProcessor(Protocol):
 
 class MiniMaxToolLogitsProcessor:
     """
-    Logits processor that biases structural tokens in MiniMax tool calls.
+    Logits processor that biases and jump-forwards structural tokens
+    in tool calls.
 
-    MiniMax tool call format:
-        <minimax:tool_call>
-        <invoke name="function_name">
-        <parameter name="param">value</parameter>
-        </invoke>
-        </minimax:tool_call>
+    Works with any parser's structural patterns — the PATTERNS list is
+    injected at construction time from the PARSER_PATTERNS registry.
 
-    After detecting the start of a structural sequence, biases the logits
-    toward the expected continuation tokens. Does not constrain the model
-    for free-form content (function names, parameter names, values).
-
-    State machine:
-        idle -> after_invoke (saw "<invoke")
-        after_invoke -> idle (saw ' name="')
-        idle -> after_param_value (saw '">...something not starting with <')
-        ... etc.
-
-    The processor uses a simpler approach: it pre-tokenizes known structural
-    patterns and when the recent tokens match a pattern prefix, biases toward
-    the next token in the pattern.
+    When the model output matches a trigger suffix, the processor biases
+    logits toward the pattern's deterministic tokens.  If the pattern has
+    >= 2 remaining tokens, the generation loop can skip them all via a
+    single prefill pass (jump-forward).
     """
-
-    # Structural patterns that follow predictable sequences
-    PATTERNS = [
-        # After <invoke → expect ' name="'
-        (' name="', "<invoke"),
-        # After param value closing → expect </parameter>
-        ("</parameter>", None),  # Triggered by seeing '">' after param value
-        # After </parameter> block → could be another <parameter or </invoke>
-        ("</invoke>", None),  # Triggered contextually
-        # After </invoke> → expect </minimax:tool_call>
-        ("</minimax:tool_call>", "</invoke>"),
-    ]
 
     def __init__(
         self,
         tokenizer: Any,
         bias_strength: float = 20.0,
         tool_schemas: dict[str, dict] | None = None,
+        patterns: list[tuple[str, str | None]] | None = None,
     ):
         """
-        Initialize the MiniMax tool logits processor.
+        Initialize the tool logits processor.
 
         Args:
             tokenizer: The tokenizer to use for encoding patterns.
             bias_strength: Logits bias to add to expected tokens.
             tool_schemas: Map of "tool.param" -> JSON schema for parameter value constraint.
+            patterns: List of (pattern, trigger) tuples.  If None, falls back
+                to legacy MiniMax PATTERNS for backward compat.
         """
         self.tokenizer = tokenizer
         self.bias_strength = bias_strength
         self._tool_schemas = tool_schemas or {}
+
+        # Use injected patterns or legacy MiniMax defaults
+        self.PATTERNS = patterns if patterns is not None else [
+            (' name="', "<invoke"),
+            ("</parameter>", None),
+            ("</invoke>", None),
+            ("</minimax:tool_call>", "</invoke>"),
+        ]
 
         # Pre-tokenize structural fragments
         self._pattern_tokens: dict[str, list[int]] = {}
@@ -155,6 +281,48 @@ class MiniMaxToolLogitsProcessor:
         self._current_param_name = None
         self._in_parameter_value = False
         self._param_value_text = ""
+
+    def get_jump_forward_tokens(self) -> list[int] | None:
+        """Return remaining deterministic tokens in the active pattern.
+
+        Called by the generation loop to detect jump-forward opportunities.
+        When a structural pattern is active and has >= 2 remaining tokens,
+        those tokens can be injected in a single prefill pass instead of
+        N separate decode steps.
+
+        Returns:
+            List of deterministic token IDs, or None if no jump available.
+        """
+        if self._active_pattern is None:
+            return None
+        pattern_tokens = self._pattern_tokens.get(self._active_pattern, [])
+        remaining = pattern_tokens[self._pattern_pos :]
+        if len(remaining) >= 2:
+            return remaining
+        return None
+
+    def complete_jump_forward(self, jumped_tokens: list[int]) -> None:
+        """Update processor state after a jump-forward injection.
+
+        Called by the generation loop after it processes jump tokens via
+        a single prefill pass.  Updates recent text and resets pattern state.
+
+        Args:
+            jumped_tokens: The token IDs that were injected.
+        """
+        text = self.tokenizer.decode(jumped_tokens, skip_special_tokens=False)
+        self._recent_text += text
+        if len(self._recent_text) > 200:
+            self._recent_text = self._recent_text[-200:]
+        self._active_pattern = None
+        self._pattern_pos = 0
+        self._consecutive_bias_count = 0
+        # Update _last_param_close_pos so </invoke> dedup logic stays correct
+        param_close_pos = self._recent_text.rfind("</parameter>")
+        if param_close_pos > self._last_param_close_pos:
+            self._last_param_close_pos = param_close_pos
+        # Update parameter state in case jumped text contains markers
+        self._update_param_state()
 
     # Regex patterns for detecting tool/parameter context
     _INVOKE_RE = re.compile(r'<invoke\s+name="([^"]+)"')
@@ -381,26 +549,35 @@ def create_tool_logits_processor(
     tools: list[dict] | None = None,
 ) -> ToolLogitsProcessor | None:
     """
-    Factory function to create a tool logits processor for a given parser.
+    Factory function to create a tool logits processor for any parser.
+
+    Looks up deterministic structural patterns for the given parser from
+    the PARSER_PATTERNS registry.  Returns None only if the parser has
+    no registered patterns (e.g. raw-JSON-only parsers).
 
     Args:
-        parser_name: Name of the tool call parser (e.g., "minimax").
+        parser_name: Name of the tool call parser (e.g., "hermes", "minimax").
         tokenizer: The tokenizer instance.
         bias_strength: Logits bias strength.
         tools: Optional tool definitions for parameter value schema constraint.
 
     Returns:
-        A logits processor instance, or None if not supported for this parser.
+        A logits processor instance, or None if no patterns for this parser.
     """
-    tool_schemas = _extract_param_schemas(tools)
-    if parser_name == "minimax":
-        return MiniMaxToolLogitsProcessor(
-            tokenizer,
-            bias_strength=bias_strength,
-            tool_schemas=tool_schemas,
+    patterns = _get_patterns_for_parser(parser_name)
+    if not patterns:
+        logger.debug(
+            f"No jump-forward patterns registered for parser {parser_name!r}"
         )
-    # Future: add support for other parsers (hermes, llama, etc.)
-    return None
+        return None
+
+    tool_schemas = _extract_param_schemas(tools)
+    return MiniMaxToolLogitsProcessor(
+        tokenizer,
+        bias_strength=bias_strength,
+        tool_schemas=tool_schemas,
+        patterns=patterns,
+    )
 
 
 def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
