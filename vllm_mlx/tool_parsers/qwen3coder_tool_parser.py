@@ -53,6 +53,28 @@ def _get_arguments_config(func_name: str, tools: list[dict] | None) -> dict:
     return {}
 
 
+def _decode_json_like(value: Any) -> Any:
+    """Decode JSON-looking strings, including double-encoded values."""
+    if not isinstance(value, str):
+        return value
+
+    current: Any = value.strip()
+    for _ in range(3):
+        if not isinstance(current, str):
+            return current
+        stripped = current.strip()
+        if not stripped or stripped[0] not in '[{"':
+            return current
+        try:
+            parsed = json.loads(stripped)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return current
+        if parsed == current:
+            return parsed
+        current = parsed
+    return current
+
+
 def _convert_param_value(
     param_value: str, param_name: str, param_config: dict, func_name: str
 ) -> Any:
@@ -61,7 +83,7 @@ def _convert_param_value(
         return None
 
     if param_name not in param_config:
-        return param_value
+        return _decode_json_like(param_value)
 
     cfg = param_config[param_name]
     if isinstance(cfg, dict) and "type" in cfg:
@@ -87,10 +109,9 @@ def _convert_param_value(
         if param_type in ("object", "array", "arr") or param_type.startswith(
             ("dict", "list")
         ):
-            try:
-                return json.loads(param_value)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+            decoded = _decode_json_like(param_value)
+            if decoded is not param_value:
+                return decoded
         try:
             return ast.literal_eval(param_value)
         except (ValueError, SyntaxError):

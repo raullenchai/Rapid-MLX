@@ -1069,6 +1069,42 @@ class TestQwen3CoderUpstreamNonStreaming:
         args = json.loads(result.tool_calls[0]["arguments"])
         assert args["obj_param"] == {"key": "value"}
 
+    def test_array_parameter_double_encoded_json_string(self, qwen3coder_parser):
+        """Array parameters may arrive as double-encoded JSON strings."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "todowrite",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "todos": {
+                                    "type": "array",
+                                    "items": {"type": "object"},
+                                },
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+        output = (
+            "<tool_call>\n<function=todowrite>\n"
+            "<parameter=todos>\n"
+            '"[{\\"content\\": \\"Initialize\\", \\"status\\": \\"in_progress\\"}]"\n'
+            "</parameter>\n"
+            "</function>\n</tool_call>"
+        )
+
+        result = qwen3coder_parser.extract_tool_calls(output, request)
+
+        assert result.tools_called
+        args = json.loads(result.tool_calls[0]["arguments"])
+        assert isinstance(args["todos"], list)
+        assert args["todos"][0]["content"] == "Initialize"
+
     def test_fallback_no_tool_call_tags(self, qwen3coder_parser, qwen3coder_request):
         """Bare <function=...> without <tool_call> wrapper also works."""
         output = (

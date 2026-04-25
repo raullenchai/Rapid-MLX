@@ -642,6 +642,7 @@ async def stream_chat_completion(
                 request.response_format
                 and getattr(request.response_format, "type", "text") != "text"
             ),
+            request_dict=request.model_dump(),
         )
         processor.set_thinking_model(request.model)
         processor.reset()

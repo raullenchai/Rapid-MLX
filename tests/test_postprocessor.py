@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for StreamingPostProcessor — the unified streaming pipeline."""
 
+import json
 from unittest.mock import MagicMock
 
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
@@ -244,6 +245,53 @@ class TestStreamingPostProcessorToolCalls:
         assert len(events) == 1
         assert events[0].type == "tool_call"
         assert events[0].finish_reason == "tool_calls"
+
+    def test_bare_calling_tool_emits_tool_call_not_content(self):
+        """Bare Qwen Calling tool syntax is translated to OpenAI tool calls."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "todowrite",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "todos": {
+                                    "type": "array",
+                                    "items": {"type": "object"},
+                                },
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="qwen3_coder_xml",
+        )
+        pp = StreamingPostProcessor(
+            cfg,
+            tools_requested=True,
+            request_dict=request,
+        )
+        pp.reset()
+
+        events = pp.process_chunk(
+            _make_output(
+                'Calling tool: todowrite({"todos": '
+                '"[{\\"content\\": \\"Initialize\\", \\"status\\": \\"in_progress\\"}]"'
+                "})"
+            )
+        )
+
+        assert len(events) == 1
+        assert events[0].type == "tool_call"
+        args = json.loads(events[0].tool_calls[0]["function"]["arguments"])
+        assert isinstance(args["todos"], list)
+        assert args["todos"][0]["content"] == "Initialize"
 
 
 class TestStreamingPostProcessorNemotron:

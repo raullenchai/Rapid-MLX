@@ -24,6 +24,121 @@ from .models import FunctionCall, ResponseFormat, ToolCall
 logger = logging.getLogger(__name__)
 
 
+def _decode_json_like(value: Any) -> Any:
+    """Decode JSON-looking strings, including one level of double encoding."""
+    if not isinstance(value, str):
+        return value
+
+    current: Any = value.strip()
+    for _ in range(3):
+        if not isinstance(current, str):
+            return current
+        stripped = current.strip()
+        if not stripped or stripped[0] not in '[{"':
+            return current
+        try:
+            parsed = json.loads(stripped)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return current
+        if parsed == current:
+            return parsed
+        current = parsed
+    return current
+
+
+def _normalize_tool_arguments(arguments: Any) -> Any:
+    """Normalize parsed tool arguments before OpenAI serialization."""
+    arguments = _decode_json_like(arguments)
+    if isinstance(arguments, dict):
+        return {key: _decode_json_like(value) for key, value in arguments.items()}
+    return arguments
+
+
+def _serialize_tool_arguments(arguments: Any) -> str:
+    """Serialize tool arguments as a valid OpenAI function.arguments JSON string."""
+    arguments = _normalize_tool_arguments(arguments)
+    if isinstance(arguments, str):
+        decoded = _decode_json_like(arguments)
+        if decoded is not arguments:
+            arguments = decoded
+    if isinstance(arguments, str):
+        return arguments
+    return json.dumps(arguments, ensure_ascii=False)
+
+
+def _iter_calling_tool_calls(text: str):
+    """Yield Qwen-style `Calling tool: name({...})` spans with balanced JSON args."""
+    marker = "Calling tool:"
+    search_from = 0
+    while True:
+        marker_idx = text.find(marker, search_from)
+        if marker_idx == -1:
+            return
+
+        i = marker_idx + len(marker)
+        while i < len(text) and text[i].isspace():
+            i += 1
+
+        name_start = i
+        while i < len(text) and (text[i].isalnum() or text[i] in "_.-"):
+            i += 1
+        name = text[name_start:i].strip()
+        if not name:
+            search_from = marker_idx + len(marker)
+            continue
+
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or text[i] != "(":
+            search_from = i
+            continue
+        i += 1
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or text[i] != "{":
+            search_from = i
+            continue
+
+        args_start = i
+        depth = 0
+        in_string = False
+        escaped = False
+        while i < len(text):
+            char = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            else:
+                if char == '"':
+                    in_string = True
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        args_end = i + 1
+                        j = args_end
+                        while j < len(text) and text[j].isspace():
+                            j += 1
+                        if j < len(text) and text[j] == ")":
+                            j += 1
+                            if j < len(text) and text[j] == "]":
+                                j += 1
+                            start = marker_idx
+                            if marker_idx > 0 and text[marker_idx - 1] == "[":
+                                start = marker_idx - 1
+                            yield start, j, name, text[args_start:args_end]
+                            search_from = j
+                            break
+            i += 1
+        else:
+            return
+
+
 def _is_tool_call_json(obj: dict) -> bool:
     """
     Check if a JSON object looks like a tool call.
@@ -52,9 +167,9 @@ def _is_tool_call_json(obj: dict) -> bool:
     if not isinstance(obj["name"], str) or not obj["name"].strip():
         return False
 
-    # "arguments" must be a dict or string
+    # "arguments" must be JSON-like
     args = obj["arguments"]
-    if not isinstance(args, (dict, str)):
+    if not isinstance(args, (dict, list, str)):
         return False
 
     return True
@@ -132,7 +247,7 @@ def parse_tool_calls(
     Parse tool calls from model output.
 
     Supports multiple formats:
-    - Qwen3 bracket: [Calling tool: function_name({...})]
+    - Qwen3: [Calling tool: function_name({...})] or Calling tool: function_name({...})
     - Qwen:
     - Llama:
     - Nemotron:
@@ -149,11 +264,11 @@ def parse_tool_calls(
     tool_calls = []
     cleaned_text = text
 
-    # Pattern for Qwen3 bracket-style: [Calling tool: function_name({...})]
-    bracket_pattern = r"\[Calling tool:\s*(\w+)\((\{.*?\})\)\]"
-    bracket_matches = re.findall(bracket_pattern, text, re.DOTALL)
+    # Pattern for Qwen3 calling-tool style. Some models omit the outer brackets,
+    # and arguments can contain nested braces in strings, so use a balanced scan.
+    calling_tool_matches = list(_iter_calling_tool_calls(text))
 
-    for name, args_str in bracket_matches:
+    for _, _, name, args_str in calling_tool_matches:
         try:
             arguments = json.loads(args_str)
             tool_calls.append(
@@ -162,22 +277,18 @@ def parse_tool_calls(
                     type="function",
                     function=FunctionCall(
                         name=name.strip(),
-                        arguments=(
-                            json.dumps(arguments)
-                            if isinstance(arguments, dict)
-                            else str(arguments)
-                        ),
+                        arguments=_serialize_tool_arguments(arguments),
                     ),
                 )
             )
         except json.JSONDecodeError:
             continue
 
-    # Remove bracket tool calls from cleaned text
-    if bracket_matches:
-        cleaned_text = re.sub(
-            r"\[Calling tool:\s*\w+\(\{.*?\}\)\]", "", cleaned_text, flags=re.DOTALL
-        ).strip()
+    # Remove Qwen calling-tool spans from cleaned text
+    if calling_tool_matches:
+        for start, end, _, _ in reversed(calling_tool_matches):
+            cleaned_text = cleaned_text[:start] + cleaned_text[end:]
+        cleaned_text = cleaned_text.strip()
 
     # Pattern for Nemotron-style:
     # Format 1: <tool_call><function=name><parameter=key>val</parameter></function></tool_call>
@@ -205,7 +316,8 @@ def parse_tool_calls(
                 id=f"call_{uuid.uuid4().hex[:8]}",
                 type="function",
                 function=FunctionCall(
-                    name=name.strip(), arguments=json.dumps(arguments)
+                    name=name.strip(),
+                    arguments=_serialize_tool_arguments(arguments),
                 ),
             )
         )
@@ -241,11 +353,7 @@ def parse_tool_calls(
                     type="function",
                     function=FunctionCall(
                         name=name,
-                        arguments=(
-                            json.dumps(arguments)
-                            if isinstance(arguments, dict)
-                            else str(arguments)
-                        ),
+                        arguments=_serialize_tool_arguments(arguments),
                     ),
                 )
             )
@@ -276,11 +384,7 @@ def parse_tool_calls(
                     type="function",
                     function=FunctionCall(
                         name=name.strip(),
-                        arguments=(
-                            json.dumps(arguments)
-                            if isinstance(arguments, dict)
-                            else str(arguments)
-                        ),
+                        arguments=_serialize_tool_arguments(arguments),
                     ),
                 )
             )
@@ -317,11 +421,7 @@ def parse_tool_calls(
                         type="function",
                         function=FunctionCall(
                             name=call_data["name"],
-                            arguments=(
-                                json.dumps(call_data["arguments"])
-                                if isinstance(call_data["arguments"], dict)
-                                else str(call_data["arguments"])
-                            ),
+                            arguments=_serialize_tool_arguments(call_data["arguments"]),
                         ),
                     )
                 )

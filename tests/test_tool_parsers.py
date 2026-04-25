@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from vllm_mlx.api.tool_calling import parse_tool_calls
 from vllm_mlx.tool_parsers import (
     AutoToolParser,
     DeepSeekToolParser,
@@ -191,6 +192,39 @@ class TestQwenToolParser:
         result = parser.extract_tool_calls(text)
 
         assert not result.tools_called
+
+
+class TestGenericToolCallParsing:
+    """Test generic OpenAI tool-call translation helpers."""
+
+    def test_bare_calling_tool_is_parsed_and_removed(self):
+        text = (
+            "Thinking first.\n"
+            'Calling tool: write({"filePath": "/tmp/app.tsx", "content": "ok"})'
+        )
+
+        cleaned_text, tool_calls = parse_tool_calls(text)
+
+        assert cleaned_text == "Thinking first."
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "write"
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args == {"filePath": "/tmp/app.tsx", "content": "ok"}
+
+    def test_tool_arguments_decode_stringified_arrays(self):
+        text = (
+            'Calling tool: todowrite({"todos": '
+            '"[{\\"content\\": \\"Initialize\\", \\"status\\": \\"in_progress\\"}]"'
+            "})"
+        )
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        args = json.loads(tool_calls[0].function.arguments)
+        assert isinstance(args["todos"], list)
+        assert args["todos"][0]["content"] == "Initialize"
 
 
 class TestLlamaToolParser:
