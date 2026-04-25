@@ -10,6 +10,7 @@ from vllm_mlx.domain.events import StreamEvent
 from vllm_mlx.engine import GenerationOutput
 from vllm_mlx.routes.chat import stream_chat_completion
 from vllm_mlx.service.helpers import (
+    _TOOL_CALL_JSON_RETRY_PROMPT,
     _TOOL_CALL_REQUIRED_RETRY_PROMPT,
     _TOOL_CONTINUATION_RETRY_PROMPT,
 )
@@ -94,6 +95,97 @@ class _FakeRepetitionPostProcessor(_FakeStreamingPostProcessor):
                         "id": "call_after_retry",
                         "type": "function",
                         "function": {"name": "bash", "arguments": "{}"},
+                    }
+                ],
+                finish_reason="tool_calls",
+                tool_calls_detected=True,
+            )
+        ]
+
+
+class _EngineThatTruncatesThenCallsTool:
+    def __init__(self):
+        self.calls = 0
+        self.messages_seen = []
+        self.tokenizer = MagicMock()
+
+    async def stream_chat(self, messages, **kwargs):
+        self.calls += 1
+        self.messages_seen.append(messages)
+        if self.calls == 1:
+            yield GenerationOutput(
+                text="<tool_call><function=write>{",
+                new_text="<tool_call><function=write>{",
+                prompt_tokens=10,
+                completion_tokens=8192,
+                finished=False,
+                finish_reason=None,
+            )
+            yield GenerationOutput(
+                text="<tool_call><function=write>{",
+                new_text="",
+                prompt_tokens=10,
+                completion_tokens=8192,
+                finished=True,
+                finish_reason="length",
+            )
+            return
+
+        yield GenerationOutput(
+            text="<tool_call><function=write>{}</function></tool_call>",
+            new_text="<tool_call><function=write>{}</function></tool_call>",
+            prompt_tokens=12,
+            completion_tokens=10,
+            finished=True,
+            finish_reason="stop",
+        )
+
+
+class _FakeTruncatedToolPostProcessor(_FakeStreamingPostProcessor):
+    def process_chunk(self, output):
+        if self.index == 0:
+            if output.finished:
+                return [
+                    StreamEvent(
+                        type="finish",
+                        finish_reason="tool_calls",
+                        tool_calls_detected=True,
+                    )
+                ]
+            return [
+                StreamEvent(
+                    type="tool_call",
+                    tool_calls=[
+                        {
+                            "index": 0,
+                            "id": "call_truncated",
+                            "type": "function",
+                            "function": {"name": "write", "arguments": ""},
+                        }
+                    ],
+                    tool_calls_detected=True,
+                ),
+                StreamEvent(
+                    type="tool_call",
+                    tool_calls=[
+                        {
+                            "index": 0,
+                            "function": {"arguments": "{"},
+                        }
+                    ],
+                    tool_calls_detected=True,
+                ),
+            ]
+
+        return [
+            StreamEvent(
+                type="tool_call",
+                tool_calls=[
+                    {
+                        "index": 0,
+                        "id": "call_complete",
+                        "type": "function",
+                        "function": {"name": "write", "arguments": "{}"},
                     }
                 ],
                 finish_reason="tool_calls",
@@ -194,3 +286,48 @@ async def test_tool_request_retries_when_model_repeats_text_before_tool_call(
     assert engine.messages_seen[1][-1]["content"] == _TOOL_CALL_REQUIRED_RETRY_PROMPT
     assert not any("point point" in chunk for chunk in chunks)
     assert any('"tool_calls"' in chunk for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_tool_request_retries_when_tool_call_json_is_truncated(monkeypatch):
+    """Retry instead of streaming partial function arguments to the client."""
+    from vllm_mlx.service import postprocessor
+
+    _FakeTruncatedToolPostProcessor.instances = 0
+    monkeypatch.setattr(
+        postprocessor,
+        "StreamingPostProcessor",
+        _FakeTruncatedToolPostProcessor,
+    )
+
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "write file"}],
+        stream=True,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "write",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+    engine = _EngineThatTruncatesThenCallsTool()
+
+    chunks = [
+        chunk
+        async for chunk in stream_chat_completion(
+            engine,
+            [{"role": "user", "content": "Build app"}],
+            request,
+            tool_continuation_retry=False,
+            max_tokens=16,
+        )
+    ]
+
+    assert engine.calls == 2
+    assert engine.messages_seen[1][-1]["content"] == _TOOL_CALL_JSON_RETRY_PROMPT
+    assert not any("call_truncated" in chunk for chunk in chunks)
+    assert any("call_complete" in chunk for chunk in chunks)

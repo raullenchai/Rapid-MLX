@@ -42,6 +42,7 @@ from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
+    _TOOL_CALL_JSON_RETRY_PROMPT,
     _TOOL_CALL_REQUIRED_RETRY_PROMPT,
     _TOOL_CONTINUATION_RETRY_PROMPT,
     _TOOL_USE_SYSTEM_SUFFIX,
@@ -111,6 +112,59 @@ def _buffered_stream_text(buffered_events: list[tuple]) -> str:
         parts.append(getattr(event, "content", None) or "")
         parts.append(getattr(event, "reasoning", None) or "")
     return "".join(parts)
+
+
+def _tool_call_value(obj, key: str, default=None):
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _buffered_tool_calls_complete(buffered_events: list[tuple]) -> bool:
+    """Return True when streamed tool-call chunks assemble to valid JSON."""
+    calls: dict[int, dict[str, str | None]] = {}
+    for event, _ in buffered_events:
+        for tool_call in getattr(event, "tool_calls", None) or []:
+            index = _tool_call_value(tool_call, "index")
+            if not isinstance(index, int):
+                index = len(calls)
+            assembled = calls.setdefault(
+                index,
+                {"id": None, "name": None, "arguments": ""},
+            )
+
+            call_id = _tool_call_value(tool_call, "id")
+            if call_id:
+                assembled["id"] = str(call_id)
+
+            function = _tool_call_value(tool_call, "function", {}) or {}
+            name = _tool_call_value(function, "name")
+            if name:
+                assembled["name"] = str(name)
+
+            arguments = _tool_call_value(function, "arguments")
+            if arguments is not None:
+                assembled["arguments"] = (
+                    (assembled["arguments"] or "") + str(arguments)
+                )
+
+    if not calls:
+        return False
+
+    for assembled in calls.values():
+        if not assembled.get("name"):
+            return False
+        arguments = (assembled.get("arguments") or "").strip()
+        if not arguments:
+            return False
+        try:
+            parsed = json.loads(arguments)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(parsed, dict):
+            return False
+
+    return True
 
 
 @router.post(
@@ -791,6 +845,7 @@ async def stream_chat_completion(
             processor.reset()
 
             buffered_events: list[tuple] = []
+            buffered_tool_call_events: list[tuple] = []
             deferred_finish: tuple | None = None
             emitted_tool_call = False
             last_output = None
@@ -831,6 +886,18 @@ async def stream_chat_completion(
                         deferred_finish = (event, output)
                         continue
 
+                    if (
+                        tool_retries_enabled
+                        and event.type == "finish"
+                        and buffered_tool_call_events
+                    ):
+                        deferred_finish = (event, output)
+                        continue
+
+                    if tool_retries_enabled and event.type == "tool_call":
+                        buffered_tool_call_events.append((event, output))
+                        continue
+
                     if event.type == "tool_call":
                         emitted_tool_call = True
                         for buffered_event, buffered_output in buffered_events:
@@ -850,6 +917,10 @@ async def stream_chat_completion(
             if not retry_reason:
                 for event in processor.finalize():
                     if event.type == "tool_call":
+                        if tool_retries_enabled:
+                            buffered_tool_call_events.append((event, last_output))
+                            continue
+
                         emitted_tool_call = True
                         for buffered_event, buffered_output in buffered_events:
                             for _sse in _format_stream_event(
@@ -876,6 +947,31 @@ async def stream_chat_completion(
                         logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
                         yield _fb_sse
 
+            if not retry_reason and buffered_tool_call_events:
+                if _buffered_tool_calls_complete(buffered_tool_call_events):
+                    emitted_tool_call = True
+                    for buffered_event, buffered_output in buffered_events:
+                        for _sse in _format_stream_event(
+                            buffered_event, buffered_output
+                        ):
+                            yield _sse
+                    buffered_events.clear()
+
+                    for tool_event, tool_output in buffered_tool_call_events:
+                        if tool_output is None:
+                            continue
+                        for _sse in _format_stream_event(tool_event, tool_output):
+                            yield _sse
+                    buffered_tool_call_events.clear()
+
+                    if deferred_finish:
+                        event, output = deferred_finish
+                        for _sse in _format_stream_event(event, output):
+                            yield _sse
+                        deferred_finish = None
+                else:
+                    retry_reason = "incomplete tool call JSON"
+
             if not retry_reason and deferred_finish and not emitted_tool_call:
                 retry_reason = "text-only stop"
             elif not retry_reason and buffered_events and not emitted_tool_call:
@@ -890,18 +986,24 @@ async def stream_chat_completion(
                     retry_attempts,
                     max_tool_continuation_retries,
                 )
+                selected_retry_prompt = (
+                    _TOOL_CALL_JSON_RETRY_PROMPT
+                    if retry_reason == "incomplete tool call JSON"
+                    else retry_prompt
+                )
                 active_messages = list(messages) + [
-                    {"role": "user", "content": retry_prompt}
+                    {"role": "user", "content": selected_retry_prompt}
                 ]
                 continue
 
-            if retry_reason and buffered_events:
+            if retry_reason and (buffered_events or buffered_tool_call_events):
                 logger.warning(
                     "[tool-continuation] suppressing buffered %s after retry "
                     "budget exhausted",
                     retry_reason,
                 )
                 buffered_events.clear()
+                buffered_tool_call_events.clear()
                 deferred_finish = None
                 finish_chunk = ChatCompletionChunk(
                     id=response_id,

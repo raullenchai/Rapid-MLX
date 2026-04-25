@@ -54,6 +54,14 @@ _TOOL_CONTINUATION_USER_PROMPT = (
     "Only give a final answer when the task is complete."
 )
 
+_TOOL_CONTINUATION_REPEATED_READ_PROMPT = (
+    "You just repeated the same read-only tool call after receiving its result. "
+    "Use the tool result already present in the conversation. "
+    "Do not call the same read-only tool with the same arguments again. "
+    "Make a state-changing tool call, run a diagnostic command, or provide the "
+    "final answer if the task is complete."
+)
+
 _TOOL_CONTINUATION_RETRY_PROMPT = (
     "Your previous response was only narration/planning after a tool result. "
     "That is invalid for this tool-using client. "
@@ -64,6 +72,13 @@ _TOOL_CALL_REQUIRED_RETRY_PROMPT = (
     "Your previous response produced narration or repeated text instead of a tool call. "
     "That is invalid for this tool-using client. "
     "Call the first or next required tool now. Do not output explanatory text."
+)
+
+_TOOL_CALL_JSON_RETRY_PROMPT = (
+    "Your previous tool call was incomplete or had invalid JSON arguments. "
+    "That is invalid for this tool-using client. "
+    "Call the required tool again now with one complete, valid JSON object for "
+    "the function arguments. Do not output explanatory text."
 )
 
 
@@ -404,13 +419,91 @@ def _is_tool_result_message(message) -> bool:
     return stripped.startswith("[Tool Result") or stripped.startswith("<tool_response>")
 
 
+def _object_value(obj, key: str):
+    return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+
+def _normalize_tool_arguments(arguments) -> str:
+    if arguments is None:
+        return ""
+    if not isinstance(arguments, str):
+        try:
+            return json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return str(arguments)
+
+    stripped = arguments.strip()
+    try:
+        decoded = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return stripped
+    try:
+        return json.dumps(decoded, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return stripped
+
+
+def _assistant_tool_call_signature(message) -> tuple[str, str] | None:
+    if _message_role(message) != "assistant":
+        return None
+
+    tool_calls = _object_value(message, "tool_calls")
+    if not tool_calls:
+        return None
+
+    tool_call = tool_calls[0]
+    function = _object_value(tool_call, "function")
+    if not function:
+        return None
+
+    name = _object_value(function, "name")
+    if not name:
+        return None
+
+    arguments = _normalize_tool_arguments(_object_value(function, "arguments"))
+    return str(name), arguments
+
+
+def _has_repeated_recent_read_tool_call(messages: list) -> bool:
+    """Detect repeated read-only tool calls without a state-changing call between."""
+    last_signature = None
+    saw_last = False
+
+    for message in reversed(messages):
+        signature = _assistant_tool_call_signature(message)
+        if not signature:
+            continue
+
+        name, _arguments = signature
+        if name != "read":
+            if saw_last:
+                return False
+            continue
+
+        if not saw_last:
+            last_signature = signature
+            saw_last = True
+            continue
+
+        if signature == last_signature:
+            return True
+
+    return False
+
+
 def _append_tool_continuation_prompt(messages: list, tools_requested: bool) -> tuple[list, bool]:
     """Add a hidden continuation nudge after tool results for local tool models."""
     if not tools_requested or not messages:
         return messages, False
     if not _is_tool_result_message(messages[-1]):
         return messages, False
-    return messages + [{"role": "user", "content": _TOOL_CONTINUATION_USER_PROMPT}], True
+    prompt = (
+        _TOOL_CONTINUATION_REPEATED_READ_PROMPT
+        if _has_repeated_recent_read_tool_call(messages)
+        else _TOOL_CONTINUATION_USER_PROMPT
+    )
+    return messages + [{"role": "user", "content": prompt}], True
+
 
 
 def _maybe_pin_system_prompt(messages: list) -> None:
