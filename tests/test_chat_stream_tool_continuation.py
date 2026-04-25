@@ -9,7 +9,10 @@ from vllm_mlx.api.models import ChatCompletionRequest
 from vllm_mlx.domain.events import StreamEvent
 from vllm_mlx.engine import GenerationOutput
 from vllm_mlx.routes.chat import stream_chat_completion
-from vllm_mlx.service.helpers import _TOOL_CONTINUATION_RETRY_PROMPT
+from vllm_mlx.service.helpers import (
+    _TOOL_CALL_REQUIRED_RETRY_PROMPT,
+    _TOOL_CONTINUATION_RETRY_PROMPT,
+)
 
 
 class _EngineThatExhaustsThenCallsTool:
@@ -78,6 +81,27 @@ class _FakeStreamingPostProcessor:
         return []
 
 
+class _FakeRepetitionPostProcessor(_FakeStreamingPostProcessor):
+    def process_chunk(self, output):
+        if self.index == 0:
+            return [StreamEvent(type="content", content="point " * 40)]
+        return [
+            StreamEvent(
+                type="tool_call",
+                tool_calls=[
+                    {
+                        "index": 0,
+                        "id": "call_after_retry",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": "{}"},
+                    }
+                ],
+                finish_reason="tool_calls",
+                tool_calls_detected=True,
+            )
+        ]
+
+
 @pytest.mark.asyncio
 async def test_tool_continuation_retries_when_stream_exhausts_without_finish(
     monkeypatch,
@@ -124,3 +148,49 @@ async def test_tool_continuation_retries_when_stream_exhausts_without_finish(
     assert not any("Thinking only." in chunk for chunk in chunks)
     assert any('"tool_calls"' in chunk for chunk in chunks)
 
+
+@pytest.mark.asyncio
+async def test_tool_request_retries_when_model_repeats_text_before_tool_call(
+    monkeypatch,
+):
+    """Retry first tool turn when model enters repeated-text loop."""
+    from vllm_mlx.service import postprocessor
+
+    _FakeStreamingPostProcessor.instances = 0
+    monkeypatch.setattr(
+        postprocessor,
+        "StreamingPostProcessor",
+        _FakeRepetitionPostProcessor,
+    )
+
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "do work"}],
+        stream=True,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+    engine = _EngineThatExhaustsThenCallsTool()
+
+    chunks = [
+        chunk
+        async for chunk in stream_chat_completion(
+            engine,
+            [{"role": "user", "content": "Build app"}],
+            request,
+            tool_continuation_retry=False,
+            max_tokens=16,
+        )
+    ]
+
+    assert engine.calls == 2
+    assert engine.messages_seen[1][-1]["content"] == _TOOL_CALL_REQUIRED_RETRY_PROMPT
+    assert not any("point point" in chunk for chunk in chunks)
+    assert any('"tool_calls"' in chunk for chunk in chunks)

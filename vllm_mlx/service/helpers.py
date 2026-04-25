@@ -60,6 +60,12 @@ _TOOL_CONTINUATION_RETRY_PROMPT = (
     "Call the next required tool now. Do not output any explanatory text."
 )
 
+_TOOL_CALL_REQUIRED_RETRY_PROMPT = (
+    "Your previous response produced narration or repeated text instead of a tool call. "
+    "That is invalid for this tool-using client. "
+    "Call the first or next required tool now. Do not output explanatory text."
+)
+
 
 # ── Resolution helpers ─────────────────────────────────────────────
 

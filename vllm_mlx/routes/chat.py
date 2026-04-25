@@ -4,8 +4,10 @@
 import gc
 import json
 import logging
+import re
 import time
 import uuid
+from collections import Counter
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -40,6 +42,7 @@ from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
+    _TOOL_CALL_REQUIRED_RETRY_PROMPT,
     _TOOL_CONTINUATION_RETRY_PROMPT,
     _TOOL_USE_SYSTEM_SUFFIX,
     _append_tool_continuation_prompt,
@@ -63,6 +66,51 @@ from ..service.helpers import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_REPETITION_WORD_RE = re.compile(r"[A-Za-z0-9_'-]+")
+_TOOL_TEXT_REPETITION_MIN_WORDS = 32
+_TOOL_TEXT_REPETITION_MIN_COUNT = 24
+_TOOL_TEXT_REPETITION_RATIO = 0.60
+
+
+def _tool_choice_allows_tool_calls(tool_choice) -> bool:
+    if tool_choice == "none":
+        return False
+    if isinstance(tool_choice, dict) and tool_choice.get("type") == "none":
+        return False
+    return True
+
+
+def _is_repetitive_tool_text(text: str) -> bool:
+    words = _REPETITION_WORD_RE.findall(text.lower())
+    if len(words) < _TOOL_TEXT_REPETITION_MIN_WORDS:
+        return False
+
+    tail = words[-96:]
+    most_common_count = Counter(tail).most_common(1)[0][1]
+    if (
+        most_common_count >= _TOOL_TEXT_REPETITION_MIN_COUNT
+        and most_common_count / len(tail) >= _TOOL_TEXT_REPETITION_RATIO
+    ):
+        return True
+
+    for size in (2, 3, 4):
+        if len(tail) < size * 8:
+            continue
+        ngrams = [" ".join(tail[i : i + size]) for i in range(len(tail) - size + 1)]
+        ngram_count = Counter(ngrams).most_common(1)[0][1]
+        if ngram_count >= 8 and (ngram_count * size) / len(tail) >= 0.50:
+            return True
+
+    return False
+
+
+def _buffered_stream_text(buffered_events: list[tuple]) -> str:
+    parts = []
+    for event, _ in buffered_events:
+        parts.append(getattr(event, "content", None) or "")
+        parts.append(getattr(event, "reasoning", None) or "")
+    return "".join(parts)
 
 
 @router.post(
@@ -716,7 +764,17 @@ async def stream_chat_completion(
 
         retry_attempts = 0
         active_messages = messages
-        max_tool_continuation_retries = 2 if tool_continuation_retry else 0
+        tool_retries_enabled = bool(request.tools) and _tool_choice_allows_tool_calls(
+            request.tool_choice
+        )
+        max_tool_continuation_retries = (
+            2 if (tool_continuation_retry or tool_retries_enabled) else 0
+        )
+        retry_prompt = (
+            _TOOL_CONTINUATION_RETRY_PROMPT
+            if tool_continuation_retry
+            else _TOOL_CALL_REQUIRED_RETRY_PROMPT
+        )
 
         while True:
             # Initialize post-processor
@@ -735,9 +793,12 @@ async def stream_chat_completion(
             buffered_events: list[tuple] = []
             deferred_finish: tuple | None = None
             emitted_tool_call = False
+            last_output = None
+            retry_reason = None
 
             # Stream content — PostProcessor handles reasoning/tool/sanitize
             async for output in engine.stream_chat(messages=active_messages, **kwargs):
+                last_output = output
                 if hasattr(output, "prompt_tokens") and output.prompt_tokens:
                     prompt_tokens = output.prompt_tokens
                 if hasattr(output, "completion_tokens") and output.completion_tokens:
@@ -751,6 +812,15 @@ async def stream_chat_completion(
                 for event in processor.process_chunk(output):
                     if retry_window and event.type in ("content", "reasoning"):
                         buffered_events.append((event, output))
+                        if _is_repetitive_tool_text(
+                            _buffered_stream_text(buffered_events)
+                        ):
+                            retry_reason = "repetitive text before tool call"
+                            logger.info(
+                                "[tool-continuation] detected repetitive text "
+                                "before tool call; aborting current stream"
+                            )
+                            break
                         continue
 
                     if (
@@ -773,39 +843,42 @@ async def stream_chat_completion(
                     for _sse in _format_stream_event(event, output):
                         yield _sse
 
+                if retry_reason:
+                    break
+
             # Fallback tool call detection
-            for event in processor.finalize():
-                if event.type == "tool_call":
-                    emitted_tool_call = True
-                    for buffered_event, buffered_output in buffered_events:
-                        for _sse in _format_stream_event(
-                            buffered_event, buffered_output
-                        ):
-                            yield _sse
-                    buffered_events.clear()
+            if not retry_reason:
+                for event in processor.finalize():
+                    if event.type == "tool_call":
+                        emitted_tool_call = True
+                        for buffered_event, buffered_output in buffered_events:
+                            for _sse in _format_stream_event(
+                                buffered_event, buffered_output
+                            ):
+                                yield _sse
+                        buffered_events.clear()
 
-                    tool_chunk = ChatCompletionChunk(
-                        id=response_id,
-                        model=_resolve_model_name(request.model),
-                        choices=[
-                            ChatCompletionChunkChoice(
-                                delta=ChatCompletionChunkDelta(
-                                    tool_calls=event.tool_calls,
-                                ),
-                                finish_reason="tool_calls",
-                            )
-                        ],
-                    )
-                    _fb_sse = (
-                        f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
-                    )
-                    logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
-                    yield _fb_sse
+                        tool_chunk = ChatCompletionChunk(
+                            id=response_id,
+                            model=_resolve_model_name(request.model),
+                            choices=[
+                                ChatCompletionChunkChoice(
+                                    delta=ChatCompletionChunkDelta(
+                                        tool_calls=event.tool_calls,
+                                    ),
+                                    finish_reason="tool_calls",
+                                )
+                            ],
+                        )
+                        _fb_sse = (
+                            f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
+                        )
+                        logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
+                        yield _fb_sse
 
-            retry_reason = None
-            if deferred_finish and not emitted_tool_call:
+            if not retry_reason and deferred_finish and not emitted_tool_call:
                 retry_reason = "text-only stop"
-            elif buffered_events and not emitted_tool_call:
+            elif not retry_reason and buffered_events and not emitted_tool_call:
                 retry_reason = "stream exhausted without tool call"
 
             if retry_reason and retry_attempts < max_tool_continuation_retries:
@@ -818,9 +891,33 @@ async def stream_chat_completion(
                     max_tool_continuation_retries,
                 )
                 active_messages = list(messages) + [
-                    {"role": "user", "content": _TOOL_CONTINUATION_RETRY_PROMPT}
+                    {"role": "user", "content": retry_prompt}
                 ]
                 continue
+
+            if retry_reason and buffered_events:
+                logger.warning(
+                    "[tool-continuation] suppressing buffered %s after retry "
+                    "budget exhausted",
+                    retry_reason,
+                )
+                buffered_events.clear()
+                deferred_finish = None
+                finish_chunk = ChatCompletionChunk(
+                    id=response_id,
+                    model=_resolve_model_name(request.model),
+                    choices=[
+                        ChatCompletionChunkChoice(
+                            delta=ChatCompletionChunkDelta(),
+                            finish_reason=(
+                                last_output.finish_reason if last_output else "stop"
+                            )
+                            or "stop",
+                        )
+                    ],
+                    usage=get_usage(last_output) if last_output else None,
+                )
+                yield f"data: {finish_chunk.model_dump_json(exclude_none=True)}\n\n"
 
             for buffered_event, buffered_output in buffered_events:
                 for _sse in _format_stream_event(buffered_event, buffered_output):
