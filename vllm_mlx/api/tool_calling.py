@@ -46,17 +46,100 @@ def _decode_json_like(value: Any) -> Any:
     return current
 
 
-def _normalize_tool_arguments(arguments: Any) -> Any:
+def _get_tool_param_config(
+    tool_name: str | None, request: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Return JSON schema properties for a requested tool."""
+    if not tool_name or not isinstance(request, dict):
+        return {}
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return {}
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict) or function.get("name") != tool_name:
+            continue
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            return {}
+        properties = parameters.get("properties")
+        if isinstance(properties, dict):
+            return properties
+        return parameters
+    return {}
+
+
+def _schema_type(schema: Any) -> str | None:
+    if not isinstance(schema, dict):
+        return None
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        schema_type = next((item for item in schema_type if item != "null"), None)
+    if isinstance(schema_type, str):
+        return schema_type.strip().lower()
+    for key in ("anyOf", "oneOf", "allOf"):
+        options = schema.get(key)
+        if isinstance(options, list):
+            for option in options:
+                option_type = _schema_type(option)
+                if option_type and option_type != "null":
+                    return option_type
+    return None
+
+
+def _coerce_schema_value(value: Any, schema: Any) -> Any:
+    value = _decode_json_like(value)
+    schema_type = _schema_type(schema)
+    if schema_type is None:
+        return value
+    if value is None:
+        return None
+    if schema_type in ("array", "object"):
+        return value
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    try:
+        if schema_type in ("integer", "int"):
+            return int(stripped)
+        if schema_type in ("number", "float"):
+            return float(stripped)
+    except (TypeError, ValueError):
+        return value
+    if schema_type in ("boolean", "bool"):
+        if stripped.lower() == "true":
+            return True
+        if stripped.lower() == "false":
+            return False
+    return value
+
+
+def _normalize_tool_arguments(
+    arguments: Any,
+    tool_name: str | None = None,
+    request: dict[str, Any] | None = None,
+) -> Any:
     """Normalize parsed tool arguments before OpenAI serialization."""
     arguments = _decode_json_like(arguments)
     if isinstance(arguments, dict):
-        return {key: _decode_json_like(value) for key, value in arguments.items()}
+        param_config = _get_tool_param_config(tool_name, request)
+        return {
+            key: _coerce_schema_value(value, param_config.get(key))
+            for key, value in arguments.items()
+        }
     return arguments
 
 
-def _serialize_tool_arguments(arguments: Any) -> str:
+def _serialize_tool_arguments(
+    arguments: Any,
+    tool_name: str | None = None,
+    request: dict[str, Any] | None = None,
+) -> str:
     """Serialize tool arguments as a valid OpenAI function.arguments JSON string."""
-    arguments = _normalize_tool_arguments(arguments)
+    arguments = _normalize_tool_arguments(arguments, tool_name, request)
     if isinstance(arguments, str):
         decoded = _decode_json_like(arguments)
         if decoded is not arguments:
@@ -277,7 +360,9 @@ def parse_tool_calls(
                     type="function",
                     function=FunctionCall(
                         name=name.strip(),
-                        arguments=_serialize_tool_arguments(arguments),
+                        arguments=_serialize_tool_arguments(
+                            arguments, name.strip(), request
+                        ),
                     ),
                 )
             )
@@ -317,7 +402,9 @@ def parse_tool_calls(
                 type="function",
                 function=FunctionCall(
                     name=name.strip(),
-                    arguments=_serialize_tool_arguments(arguments),
+                    arguments=_serialize_tool_arguments(
+                        arguments, name.strip(), request
+                    ),
                 ),
             )
         )
@@ -353,7 +440,7 @@ def parse_tool_calls(
                     type="function",
                     function=FunctionCall(
                         name=name,
-                        arguments=_serialize_tool_arguments(arguments),
+                        arguments=_serialize_tool_arguments(arguments, name, request),
                     ),
                 )
             )
@@ -384,7 +471,9 @@ def parse_tool_calls(
                     type="function",
                     function=FunctionCall(
                         name=name.strip(),
-                        arguments=_serialize_tool_arguments(arguments),
+                        arguments=_serialize_tool_arguments(
+                            arguments, name.strip(), request
+                        ),
                     ),
                 )
             )
@@ -421,7 +510,9 @@ def parse_tool_calls(
                         type="function",
                         function=FunctionCall(
                             name=call_data["name"],
-                            arguments=_serialize_tool_arguments(call_data["arguments"]),
+                            arguments=_serialize_tool_arguments(
+                                call_data["arguments"], call_data["name"], request
+                            ),
                         ),
                     )
                 )

@@ -226,6 +226,33 @@ class TestGenericToolCallParsing:
         assert isinstance(args["todos"], list)
         assert args["todos"][0]["content"] == "Initialize"
 
+    def test_tool_arguments_coerce_schema_numbers(self):
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "command": {"type": "string"},
+                                "timeout": {"type": "number"},
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+        text = 'Calling tool: bash({"command": "npm test", "timeout": "60000"})'
+
+        _, tool_calls = parse_tool_calls(text, request)
+
+        assert tool_calls is not None
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["command"] == "npm test"
+        assert args["timeout"] == 60000.0
+
 
 class TestLlamaToolParser:
     """Test the Llama tool parser."""
