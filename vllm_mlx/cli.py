@@ -117,6 +117,15 @@ def serve_command(args):
         )
         sys.exit(1)
 
+    # Validate DFlash mode incompatibilities up-front
+    if getattr(args, "drafter", None):
+        if getattr(args, "enable_mtp", False):
+            print("Error: --drafter (DFlash) and --enable-mtp are mutually exclusive.")
+            sys.exit(1)
+        if getattr(args, "mllm", False):
+            print("Error: --drafter (DFlash) is text-only; remove --mllm.")
+            sys.exit(1)
+
     # Auto-detect parser config from model name when not explicitly set
     if not args.tool_call_parser or not args.reasoning_parser:
         try:
@@ -376,6 +385,12 @@ def serve_command(args):
             cloud_api_key=args.cloud_api_key,
             served_model_name=args.served_model_name,
             mtp=args.enable_mtp,
+            drafter_path=getattr(args, "drafter", None),
+            dflash_block_size=getattr(args, "dflash_block_size", None),
+            dflash_adaptive=not getattr(args, "dflash_no_adaptive", False),
+            dflash_block_min=getattr(args, "dflash_block_min", 8),
+            dflash_block_max=getattr(args, "dflash_block_max", 22),
+            dflash_turboquant_bits=getattr(args, "dflash_turboquant_bits", None),
         )
     except Exception as e:
         # Show clean error instead of raw traceback
@@ -1426,6 +1441,51 @@ Examples:
         "--tui",
         action="store_true",
         help="Run a live full-screen monitor TUI alongside the server (q to quit).",
+    )
+    # DFlash speculative decoding (separate drafter model)
+    serve_parser.add_argument(
+        "--drafter",
+        type=str,
+        default=None,
+        help=(
+            "Path or HF id of a DFlash drafter checkpoint. Triggers DFlash "
+            "speculative decoding (block-based draft+verify with cross-attention "
+            "to selected target hidden states). Mutually exclusive with --enable-mtp "
+            "and --mllm. Single-request only (continuous batching is disabled in "
+            "DFlash mode)."
+        ),
+    )
+    serve_parser.add_argument(
+        "--dflash-block-size",
+        type=int,
+        default=None,
+        help="Override the drafter's default block size.",
+    )
+    serve_parser.add_argument(
+        "--dflash-no-adaptive",
+        action="store_true",
+        help="Disable adaptive block sizing (adaptive is ON by default).",
+    )
+    serve_parser.add_argument(
+        "--dflash-block-min",
+        type=int,
+        default=8,
+        help="Adaptive block-size lower bound (default: 8).",
+    )
+    serve_parser.add_argument(
+        "--dflash-block-max",
+        type=int,
+        default=22,
+        help="Adaptive block-size upper bound (default: 22).",
+    )
+    serve_parser.add_argument(
+        "--dflash-turboquant-bits",
+        type=float,
+        default=None,
+        help=(
+            "Optional KV-cache TurboQuant bits for the target model under "
+            "DFlash. Requires mlx-turboquant (installed via the dflash[mlx] extra)."
+        ),
     )
     # Bench command
     bench_parser = subparsers.add_parser("bench", help="Run benchmark")

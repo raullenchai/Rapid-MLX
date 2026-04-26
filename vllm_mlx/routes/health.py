@@ -83,11 +83,13 @@ async def status():
     return {
         "status": "generating" if stats.get("running") else "idle",
         "model": cfg.model_name,
+        "engine_type": stats.get("engine_type"),
         "uptime_s": round(stats.get("uptime_seconds", 0), 1),
         "steps_executed": stats.get("steps_executed", 0),
         "num_running": stats.get("num_running", 0),
         "num_waiting": stats.get("num_waiting", 0),
-        "total_requests_processed": stats.get("num_requests_processed", 0),
+        "total_requests_processed": stats.get("total_requests_processed")
+        or stats.get("num_requests_processed", 0),
         "total_prompt_tokens": stats.get("total_prompt_tokens", 0),
         "total_completion_tokens": stats.get("total_completion_tokens", 0),
         "metal": {
@@ -99,6 +101,7 @@ async def status():
         or stats.get("paged_cache")
         or stats.get("prefix_cache"),
         "requests": stats.get("requests", []),
+        "dflash": stats.get("dflash"),
     }
 
 

@@ -152,6 +152,8 @@ def _build_screen(
     cache_misses = _integer(cache_info.get("misses", 0))
     cache_entries = _integer(cache_info.get("entries", 0))
 
+    dflash_info = status.get("dflash") or {}
+
     running_requests = list(status.get("requests") or [])
     entries = list((requests_data or {}).get("entries") or [])
     active_request = (requests_data or {}).get("active") or {}
@@ -235,6 +237,32 @@ def _build_screen(
             )
             + gap
             + _row("hit rate", hit_rate, right, "white", tty_on)
+        )
+    if dflash_info:
+        lifetime_ratio = _num(dflash_info.get("lifetime_acceptance_ratio", 0.0))
+        cur_block = _integer(dflash_info.get("current_block_size", 0))
+        adaptive_on = bool(dflash_info.get("adaptive_enabled"))
+        adapt_min = _integer(dflash_info.get("adaptive_min", 0))
+        adapt_max = _integer(dflash_info.get("adaptive_max", 0))
+        obs_min = _integer(dflash_info.get("observed_block_min", 0))
+        obs_max = _integer(dflash_info.get("observed_block_max", 0))
+        adaptive_label = (
+            f"{adapt_min}-{adapt_max} (obs {obs_min}-{obs_max})"
+            if adaptive_on
+            else "off"
+        )
+        rows.append(
+            _row(
+                "dflash accept",
+                f"{lifetime_ratio:.1%} lifetime {_bar(lifetime_ratio, 1.0, 12)}",
+                left,
+                "magenta",
+                tty_on,
+            )
+            + gap
+            + _row("block size", f"{cur_block} cfg", mid, "magenta", tty_on)
+            + gap
+            + _row("adaptive", adaptive_label, right, "magenta", tty_on)
         )
     rows.append(_line(width))
 
@@ -404,9 +432,17 @@ def _build_screen(
     if running_requests:
         rows.append(_line(width))
         rows.append(_c(tty_on, "bold", f"Active requests ({len(running_requests)})"))
-        header = (
-            "  id            phase       elapsed   prompt   out   tok/s   ttft   max"
+        any_dflash = any(
+            ("acceptance_ratio" in r) or ("block_size" in r) for r in running_requests
         )
+        if any_dflash:
+            header = (
+                "  id            phase       elapsed   prompt   out   tok/s   ttft   accept  block"
+            )
+        else:
+            header = (
+                "  id            phase       elapsed   prompt   out   tok/s   ttft   max"
+            )
         rows.append(_c(tty_on, "dim", _clamp(header, width)))
         for item in running_requests[:4]:
             rid = str(item.get("request_id") or "")[-12:].ljust(12)
@@ -418,11 +454,20 @@ def _build_screen(
             tps_s = "  -  " if tps is None else f"{_num(tps):>5.1f}"
             ttft = item.get("ttft_s")
             ttft_s = "  -  " if ttft is None else f"{_num(ttft):>4.2f}"
-            mx = _integer(item.get("max_tokens", 0))
-            row = (
-                f"  {rid} {phase} {elapsed:>7} "
-                f"{ptoks:>7} {otoks:>5} {tps_s} {ttft_s} {mx:>5}"
-            )
+            if any_dflash:
+                accept = _num(item.get("acceptance_ratio", 0.0))
+                bs = _integer(item.get("block_size", 0))
+                row = (
+                    f"  {rid} {phase} {elapsed:>7} "
+                    f"{ptoks:>7} {otoks:>5} {tps_s} {ttft_s} "
+                    f"{accept:>6.2f}  {bs:>4}"
+                )
+            else:
+                mx = _integer(item.get("max_tokens", 0))
+                row = (
+                    f"  {rid} {phase} {elapsed:>7} "
+                    f"{ptoks:>7} {otoks:>5} {tps_s} {ttft_s} {mx:>5}"
+                )
             rows.append(_clamp(row, width))
 
     if errors:

@@ -443,6 +443,12 @@ def load_model(
     cloud_api_key: str | None = None,
     served_model_name: str | None = None,
     mtp: bool = False,
+    drafter_path: str | None = None,
+    dflash_block_size: int | None = None,
+    dflash_adaptive: bool = True,
+    dflash_block_min: int = 8,
+    dflash_block_max: int = 22,
+    dflash_turboquant_bits: float | None = None,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -489,14 +495,31 @@ def load_model(
     if force_mllm:
         logger.info("Force MLLM mode enabled via --mllm flag")
 
-    logger.info(f"Loading model with BatchedEngine: {model_name}")
-    _engine = BatchedEngine(
-        model_name=model_name,
-        scheduler_config=scheduler_config,
-        stream_interval=stream_interval,
-        force_mllm=force_mllm,
-        gpu_memory_utilization=gpu_memory_utilization,
-    )
+    if drafter_path:
+        from .engine import DFlashEngine
+
+        logger.info(
+            f"Loading model with DFlashEngine: target={model_name}, drafter={drafter_path}"
+        )
+        _engine = DFlashEngine(
+            model_name=model_name,
+            drafter_path=drafter_path,
+            block_size=dflash_block_size,
+            adaptive=dflash_adaptive,
+            adaptive_min=dflash_block_min,
+            adaptive_max=dflash_block_max,
+            turboquant_bits=dflash_turboquant_bits,
+            gpu_memory_utilization=gpu_memory_utilization,
+        )
+    else:
+        logger.info(f"Loading model with BatchedEngine: {model_name}")
+        _engine = BatchedEngine(
+            model_name=model_name,
+            scheduler_config=scheduler_config,
+            stream_interval=stream_interval,
+            force_mllm=force_mllm,
+            gpu_memory_utilization=gpu_memory_utilization,
+        )
     logger.info(f"Model loaded: {model_name}")
 
     # Set native tool format support on the engine (thread-safe via instance property)
