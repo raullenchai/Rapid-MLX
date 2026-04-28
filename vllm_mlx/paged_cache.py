@@ -952,7 +952,7 @@ class PagedCacheManager:
     @staticmethod
     def compute_block_hash(tokens: list[int]) -> str:
         """Compute legacy string hash for a sequence of tokens."""
-        token_bytes = bytes(t & 0xFF for t in tokens)
+        token_bytes = b"".join(t.to_bytes(4, "big") for t in tokens)
         return hashlib.sha256(token_bytes).hexdigest()[:16]
 
     def find_cached_block(self, tokens: list[int]) -> CacheBlock | None:
