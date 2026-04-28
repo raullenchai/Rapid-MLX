@@ -221,6 +221,143 @@ class TestInjectJsonInstruction:
 
 
 # ---------------------------------------------------------------------------
+# _append_tool_continuation_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestAppendToolContinuationPrompt:
+    """Tests for tool-result continuation prompt injection."""
+
+    def test_appends_after_tool_result_when_tools_requested(self):
+        from vllm_mlx.service.helpers import _append_tool_continuation_prompt
+
+        messages = [
+            {"role": "user", "content": "Build the app"},
+            {"role": "assistant", "content": "", "tool_calls": []},
+            {"role": "tool", "tool_call_id": "call_1", "content": "PASS"},
+        ]
+        result, added = _append_tool_continuation_prompt(messages, True)
+
+        assert added is True
+        assert result[-1]["role"] == "user"
+        assert "call the next tool now" in result[-1]["content"]
+        assert len(messages) == 3
+
+    def test_does_not_append_without_tools(self):
+        from vllm_mlx.service.helpers import _append_tool_continuation_prompt
+
+        messages = [{"role": "tool", "content": "PASS"}]
+        result, added = _append_tool_continuation_prompt(messages, False)
+
+        assert added is False
+        assert result is messages
+
+    def test_does_not_append_unless_last_message_is_tool(self):
+        from vllm_mlx.service.helpers import _append_tool_continuation_prompt
+
+        messages = [{"role": "user", "content": "continue"}]
+        result, added = _append_tool_continuation_prompt(messages, True)
+
+        assert added is False
+        assert result is messages
+
+    def test_appends_after_converted_tool_result_user_message(self):
+        from vllm_mlx.service.helpers import _append_tool_continuation_prompt
+
+        messages = [{"role": "user", "content": "[Tool Result (call_1)]: PASS"}]
+        result, added = _append_tool_continuation_prompt(messages, True)
+
+        assert added is True
+        assert result[-1]["role"] == "user"
+        assert "Do not stop with only reasoning" in result[-1]["content"]
+
+    def test_repeated_read_gets_anti_loop_prompt(self):
+        from vllm_mlx.service.helpers import _append_tool_continuation_prompt
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": '{"filePath":"app.ts","offset":10}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "lines"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": '{"offset":10,"filePath":"app.ts"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_2", "content": "same lines"},
+        ]
+        result, added = _append_tool_continuation_prompt(messages, True)
+
+        assert added is True
+        assert "Do not call the same read-only tool" in result[-1]["content"]
+
+    def test_repeated_read_after_mutating_tool_uses_normal_prompt(self):
+        from vllm_mlx.service.helpers import _append_tool_continuation_prompt
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": '{"filePath":"app.ts"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "old"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "edit",
+                            "arguments": '{"filePath":"app.ts"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_2", "content": "edited"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": '{"filePath":"app.ts"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_3", "content": "new"},
+        ]
+        result, added = _append_tool_continuation_prompt(messages, True)
+
+        assert added is True
+        assert "Do not stop with only reasoning" in result[-1]["content"]
+
+
+# ---------------------------------------------------------------------------
 # _extract_token_logprob
 # ---------------------------------------------------------------------------
 

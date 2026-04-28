@@ -1069,6 +1069,78 @@ class TestQwen3CoderUpstreamNonStreaming:
         args = json.loads(result.tool_calls[0]["arguments"])
         assert args["obj_param"] == {"key": "value"}
 
+    def test_array_parameter_double_encoded_json_string(self, qwen3coder_parser):
+        """Array parameters may arrive as double-encoded JSON strings."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "todowrite",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "todos": {
+                                    "type": "array",
+                                    "items": {"type": "object"},
+                                },
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+        output = (
+            "<tool_call>\n<function=todowrite>\n"
+            "<parameter=todos>\n"
+            '"[{\\"content\\": \\"Initialize\\", \\"status\\": \\"in_progress\\"}]"\n'
+            "</parameter>\n"
+            "</function>\n</tool_call>"
+        )
+
+        result = qwen3coder_parser.extract_tool_calls(output, request)
+
+        assert result.tools_called
+        args = json.loads(result.tool_calls[0]["arguments"])
+        assert isinstance(args["todos"], list)
+        assert args["todos"][0]["content"] == "Initialize"
+
+    def test_array_parameter_nullable_type_list(self, qwen3coder_parser):
+        """Schemas may encode nullable arrays as type lists."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "todowrite",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "todos": {
+                                    "type": ["array", "null"],
+                                    "items": {"type": "object"},
+                                },
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+        output = (
+            "<tool_call>\n<function=todowrite>\n"
+            "<parameter=todos>\n"
+            '"[{\\"content\\": \\"Initialize\\", \\"status\\": \\"in_progress\\"}]"\n'
+            "</parameter>\n"
+            "</function>\n</tool_call>"
+        )
+
+        result = qwen3coder_parser.extract_tool_calls(output, request)
+
+        assert result.tools_called
+        args = json.loads(result.tool_calls[0]["arguments"])
+        assert isinstance(args["todos"], list)
+        assert args["todos"][0]["content"] == "Initialize"
+
     def test_fallback_no_tool_call_tags(self, qwen3coder_parser, qwen3coder_request):
         """Bare <function=...> without <tool_call> wrapper also works."""
         output = (
@@ -1203,6 +1275,58 @@ class TestQwen3CoderUpstreamStreaming:
         assert full_args.endswith("}")
         parsed = json.loads(full_args)
         assert parsed["city"] == "Dallas"
+
+    def test_streaming_array_parameter_nullable_type_list(self, qwen3coder_parser):
+        """Streaming conversion also handles nullable array schemas."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "todowrite",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "todos": {
+                                    "type": ["array", "null"],
+                                    "items": {"type": "object"},
+                                },
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+        deltas = [
+            "<tool_call>\n<function=todowrite>\n",
+            "<parameter=todos>\n",
+            '"[{\\"content\\": \\"Initialize\\", \\"status\\": \\"in_progress\\"}]"\n'
+            "</parameter>\n",
+            "</function>\n</tool_call>",
+        ]
+        text = ""
+        collected = []
+        for delta in deltas:
+            previous = text
+            text += delta
+            result = qwen3coder_parser.extract_tool_calls_streaming(
+                previous_text=previous,
+                current_text=text,
+                delta_text=delta,
+                request=request,
+            )
+            if result:
+                collected.append(result)
+
+        arg_parts = [
+            chunk["tool_calls"][0]["function"]["arguments"]
+            for chunk in collected
+            if "tool_calls" in chunk
+            and "arguments" in chunk["tool_calls"][0].get("function", {})
+        ]
+        args = json.loads("".join(arg_parts))
+        assert isinstance(args["todos"], list)
+        assert args["todos"][0]["content"] == "Initialize"
 
     def test_streaming_coarse_deltas_complete(
         self, qwen3coder_parser, qwen3coder_request

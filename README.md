@@ -555,6 +555,36 @@ Large-context requests auto-route to a cloud LLM (GPT-5, Claude, etc.) when loca
 
 Vision, audio (STT/TTS), video understanding, and text embeddings — all through the same OpenAI-compatible API.
 
+### DFlash Speculative Decoding
+
+Run a target model alongside a small **DFlash drafter** for block-based draft+verify speculative decoding (cross-attention to selected target hidden states). Works for Qwen 3.6 family with the matching DFlash drafter checkpoint. Single-request only in this mode (continuous batching disabled). Adaptive block sizing (8–22 by default) tunes itself per-request based on observed acceptance ratio.
+
+Install the drafter runtime once (uses the `dflash[mlx]` package from the upstream repo):
+
+```bash
+pip install -e /path/to/dflash[mlx]
+```
+
+Then point `--drafter` at a DFlash drafter checkpoint:
+
+```bash
+rapid-mlx serve /path/to/Qwen3.6-35B-A3B-4bit \
+  --drafter /path/to/Qwen3.6-35B-A3B-DFlash \
+  --port 8010
+```
+
+The server exposes the same `/v1/chat/completions` API as the regular path. `/v1/status` adds a `dflash` block with the lifetime acceptance ratio, current block size, and observed bounds — also surfaced live in `--tui`.
+
+Mutually exclusive with `--enable-mtp` and `--mllm`.
+
+### Live TUI Monitor
+
+`--tui` opens a full-screen dashboard alongside the server: status, model, Metal memory, prompt/output token totals, the last completed request (gen tok/s, prefill tok/s, ttft, finish reason), per-request averages, recent requests, message previews, and (when DFlash is enabled) lifetime acceptance ratio + adaptive block-size bounds. Press `q` or Ctrl-C to exit.
+
+```bash
+rapid-mlx serve <model> --tui
+```
+
 Also: logprobs API, structured JSON output (`response_format`), continuous batching, KV cache quantization (`--kv-cache-quantization`), and [2100+ tests](tests/).
 
 ---
@@ -597,6 +627,23 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 |------|-------------|---------|
 | `--cloud-model` | litellm model string (e.g. `openai/gpt-5`) | *(disabled)* |
 | `--cloud-threshold` | New token threshold to trigger cloud routing | `20000` |
+
+### DFlash Speculative Decoding
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--drafter` | Path or HF id of a DFlash drafter checkpoint. Triggers DFlash mode. | *(disabled)* |
+| `--dflash-block-size` | Override the drafter's default block size | *(from drafter config)* |
+| `--dflash-no-adaptive` | Disable adaptive block sizing (adaptive is on by default) | off |
+| `--dflash-block-min` | Adaptive block-size lower bound | `8` |
+| `--dflash-block-max` | Adaptive block-size upper bound | `22` |
+| `--dflash-turboquant-bits` | KV-cache TurboQuant bits for the target (requires `mlx-turboquant`) | *(off)* |
+
+### Monitor TUI
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--tui` | Run a live full-screen monitor alongside the server (q quits) | off |
 
 ### Security & Other
 

@@ -7,6 +7,10 @@ for the vLLM-style continuous batching implementation.
 """
 
 import asyncio
+import sys
+import threading
+import types
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -433,6 +437,25 @@ class TestSchedulerIntegration:
         assert len(finished) == len(prompts), f"Only {len(finished)} requests finished"
 
 
+class TestEngineThreading:
+    """Threading tests for EngineCore."""
+
+    def test_mlx_step_thread_initializer_rebinds_generation_stream(self, monkeypatch):
+        """The executor thread must own mlx-lm's generation stream."""
+        from vllm_mlx import engine_core
+
+        fake_generate = types.SimpleNamespace(generation_stream="old-stream")
+        monkeypatch.setitem(sys.modules, "mlx_lm.generate", fake_generate)
+        monkeypatch.setattr(engine_core.mx, "default_device", lambda: "gpu")
+        monkeypatch.setattr(
+            engine_core.mx, "new_stream", lambda device: f"stream:{device}"
+        )
+
+        engine_core._init_mlx_step_thread()
+
+        assert fake_generate.generation_stream == "stream:gpu"
+
+
 @pytest.mark.asyncio
 class TestEngineAsync:
     """Async tests for the engine."""
@@ -447,6 +470,48 @@ class TestEngineAsync:
         tokenizer.eos_token_id = 0
         tokenizer.eos_token_ids = {0}
         return model, tokenizer
+
+    async def test_engine_loop_keeps_all_scheduler_steps_on_mlx_thread(
+        self, mock_model_and_tokenizer
+    ):
+        """Prefill and decode steps must run on the same MLX worker thread."""
+        from vllm_mlx.engine import EngineConfig, EngineCore
+
+        model, tokenizer = mock_model_and_tokenizer
+        engine = EngineCore(model, tokenizer, EngineConfig(step_interval=0.001))
+
+        class FakeScheduler:
+            batch_generator = None
+
+            def __init__(self):
+                self.calls = 0
+                self.thread_names = []
+
+            def has_requests(self):
+                return self.calls < 2
+
+            def step(self):
+                self.thread_names.append(threading.current_thread().name)
+                self.calls += 1
+                if self.calls >= 2:
+                    engine._running = False
+                return SimpleNamespace(outputs=[], finished_request_ids=[])
+
+            def deep_reset(self):
+                pass
+
+        fake_scheduler = FakeScheduler()
+        engine.scheduler = fake_scheduler
+        engine._running = True
+
+        try:
+            await asyncio.wait_for(engine._engine_loop(), timeout=2)
+        finally:
+            engine._running = False
+            engine.close()
+
+        assert fake_scheduler.thread_names
+        assert all(name.startswith("mlx-step") for name in fake_scheduler.thread_names)
 
     async def test_engine_lifecycle(self, mock_model_and_tokenizer):
         """Test engine start/stop lifecycle."""

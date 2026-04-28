@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for StreamingPostProcessor — the unified streaming pipeline."""
 
+import json
 from unittest.mock import MagicMock
 
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
@@ -244,6 +245,264 @@ class TestStreamingPostProcessorToolCalls:
         assert len(events) == 1
         assert events[0].type == "tool_call"
         assert events[0].finish_reason == "tool_calls"
+
+    def test_bare_calling_tool_emits_tool_call_not_content(self):
+        """Bare Qwen Calling tool syntax is translated to OpenAI tool calls."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "todowrite",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "todos": {
+                                    "type": "array",
+                                    "items": {"type": "object"},
+                                },
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="qwen3_coder_xml",
+        )
+        pp = StreamingPostProcessor(
+            cfg,
+            tools_requested=True,
+            request_dict=request,
+        )
+        pp.reset()
+
+        events = pp.process_chunk(
+            _make_output(
+                'Calling tool: todowrite({"todos": '
+                '"[{\\"content\\": \\"Initialize\\", \\"status\\": \\"in_progress\\"}]"'
+                "})"
+            )
+        )
+
+        assert len(events) == 1
+        assert events[0].type == "tool_call"
+        args = json.loads(events[0].tool_calls[0]["function"]["arguments"])
+        assert isinstance(args["todos"], list)
+        assert args["todos"][0]["content"] == "Initialize"
+
+    def test_bare_calling_tool_works_without_configured_parser(self):
+        """Generic Calling tool fallback works without a configured parser."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                        },
+                    },
+                }
+            ]
+        }
+
+        cfg = _make_cfg(enable_auto_tool_choice=False)
+        pp = StreamingPostProcessor(
+            cfg,
+            tools_requested=False,
+            request_dict=request,
+        )
+        pp.reset()
+
+        events = pp.process_chunk(
+            _make_output(
+                'Calling tool: bash({"command": "npx tsc --noEmit 2>&1 | '
+                'distill \\"TypeScript compilation result. Return only: PASS '
+                'or FAIL with error details.\\""})'
+            )
+        )
+
+        assert len(events) == 1
+        assert events[0].type == "tool_call"
+        assert events[0].content is None
+        assert events[0].tool_calls[0]["function"]["name"] == "bash"
+        args = json.loads(events[0].tool_calls[0]["function"]["arguments"])
+        assert args["command"].startswith("npx tsc")
+
+    def test_partial_calling_tool_marker_is_buffered(self):
+        """Do not leak partial generic tool markers as assistant text."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "command": {"type": "string"},
+                                "timeout": {"type": "number"},
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="qwen3_coder_xml",
+        )
+        pp = StreamingPostProcessor(
+            cfg,
+            tools_requested=True,
+            request_dict=request,
+        )
+        pp.reset()
+
+        heading_events = pp.process_chunk(_make_output("Next step\n\n["))
+        assert len(heading_events) == 1
+        assert heading_events[0].type == "content"
+        assert heading_events[0].content == "Next step"
+        assert pp.process_chunk(_make_output("Calling tool")) == []
+        events = pp.process_chunk(
+            _make_output(
+                ': bash({"command":"npm test", "timeout": "60000"})]',
+                finished=True,
+            )
+        )
+
+        tool_events = [event for event in events if event.type == "tool_call"]
+        assert len(tool_events) == 1
+        args = json.loads(tool_events[0].tool_calls[0]["function"]["arguments"])
+        assert args["command"] == "npm test"
+        assert args["timeout"] == 60000.0
+
+    def test_code_brackets_are_not_treated_as_partial_tool_markers(self):
+        """Do not strip normal code brackets split at chunk boundaries."""
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="qwen3_coder_xml",
+        )
+        pp = StreamingPostProcessor(
+            cfg,
+            tools_requested=True,
+            request_dict={"tools": []},
+        )
+        pp.reset()
+
+        index_events = pp.process_chunk(_make_output("const head = game.snake["))
+        array_events = pp.process_chunk(_make_output("const snake = ["))
+
+        assert len(index_events) == 1
+        assert index_events[0].type == "content"
+        assert index_events[0].content == "const head = game.snake["
+        assert len(array_events) == 1
+        assert array_events[0].type == "content"
+        assert array_events[0].content == "const snake = ["
+
+    def test_generic_tool_call_drops_missing_required_duplicate(self):
+        """Malformed duplicate calls should not reach clients for schema rejection."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "edit",
+                        "parameters": {
+                            "type": "object",
+                            "required": ["filePath", "oldString", "newString"],
+                            "properties": {
+                                "filePath": {"type": "string"},
+                                "oldString": {"type": "string"},
+                                "newString": {"type": "string"},
+                                "replaceAll": {"type": "boolean"},
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="qwen3_coder_xml",
+        )
+        pp = StreamingPostProcessor(
+            cfg,
+            tools_requested=True,
+            request_dict=request,
+        )
+        pp.reset()
+
+        events = pp.process_chunk(
+            _make_output(
+                'Calling tool: edit({"oldString":"a","newString":"b"})\n'
+                'Calling tool: edit({"filePath":"/tmp/package.json",'
+                '"oldString":"a","newString":"b"})',
+                finished=True,
+            )
+        )
+
+        tool_events = [event for event in events if event.type == "tool_call"]
+        assert len(tool_events) == 1
+        assert len(tool_events[0].tool_calls) == 1
+        args = json.loads(tool_events[0].tool_calls[0]["function"]["arguments"])
+        assert args["filePath"] == "/tmp/package.json"
+
+    def test_qwen_xml_tool_uses_schema_after_content_prefix(self):
+        """Schema conversion still works if text appears before tool markup."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "todowrite",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "todos": {
+                                    "type": "array",
+                                    "items": {"type": "object"},
+                                },
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="qwen3_coder_xml",
+        )
+        pp = StreamingPostProcessor(
+            cfg,
+            tools_requested=True,
+            request_dict=request,
+        )
+        pp.reset()
+
+        assert pp.process_chunk(_make_output("Thinking first.\n"))[0].type == "content"
+        events = pp.process_chunk(
+            _make_output(
+                "<tool_call>\n<function=todowrite>\n"
+                "<parameter=todos>\n"
+                '"[{\\"content\\": \\"Install tests\\", \\"status\\": \\"in_progress\\"}]"\n'
+                "</parameter>\n"
+                "</function>\n</tool_call>"
+            )
+        )
+
+        assert len(events) == 1
+        assert events[0].type == "tool_call"
+        args = json.loads(events[0].tool_calls[0]["function"]["arguments"])
+        assert isinstance(args["todos"], list)
+        assert args["todos"][0]["content"] == "Install tests"
 
 
 class TestStreamingPostProcessorNemotron:
