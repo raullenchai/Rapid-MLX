@@ -475,6 +475,7 @@ class TestEngineAsync:
         self, mock_model_and_tokenizer
     ):
         """Prefill and decode steps must run on the same MLX worker thread."""
+        from vllm_mlx import engine_core
         from vllm_mlx.engine import EngineConfig, EngineCore
 
         model, tokenizer = mock_model_and_tokenizer
@@ -502,12 +503,25 @@ class TestEngineAsync:
 
         fake_scheduler = FakeScheduler()
         engine.scheduler = fake_scheduler
+
+        # Mirror what start() does — create the mlx-step worker executor so
+        # _engine_loop() picks it up. Tests can't call start() directly here
+        # because start() spawns a task and returns immediately.
+        import concurrent.futures
+
+        engine._mlx_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="mlx-step",
+            initializer=engine_core._init_mlx_step_thread,
+        )
         engine._running = True
 
         try:
             await asyncio.wait_for(engine._engine_loop(), timeout=2)
         finally:
             engine._running = False
+            engine._mlx_executor.shutdown(wait=True)
+            engine._mlx_executor = None
             engine.close()
 
         assert fake_scheduler.thread_names

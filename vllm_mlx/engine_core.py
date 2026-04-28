@@ -118,6 +118,13 @@ class EngineCore:
         self._start_time: float | None = None
         self._steps_executed = 0
 
+        # Single MLX worker thread that owns the per-thread generation_stream
+        # (created on demand in start(); see _init_mlx_step_thread). All MLX
+        # array operations that touch cached KV state must go through this
+        # executor — the asyncio loop thread does not own a stream and will
+        # raise "There is no Stream(gpu, N) in current thread."
+        self._mlx_executor: Any = None
+
         # Detect hybrid models (GatedDeltaNet) that need request throttling
         self._hybrid_throttle = False
         self._hybrid_lock: asyncio.Lock | None = None  # lazy-init in event loop
@@ -143,6 +150,13 @@ class EngineCore:
         if self._running:
             return
 
+        import concurrent.futures
+
+        self._mlx_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="mlx-step",
+            initializer=_init_mlx_step_thread,
+        )
         self._running = True
         self._start_time = time.time()
         self._task = asyncio.create_task(self._engine_loop())
@@ -158,7 +172,36 @@ class EngineCore:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if self._mlx_executor is not None:
+            # Tear down BatchGenerator on the worker thread that owns its
+            # generation stream. Otherwise its __del__ runs at process exit
+            # in some other thread and calls mx.synchronize on a stream
+            # that no longer exists, raising
+            # "There is no Stream(gpu, N) in current thread."
+            try:
+                self._run_on_step_thread(self.scheduler._close_batch_generator)
+            except Exception as e:
+                logger.debug(f"Error closing BatchGenerator on worker: {e}")
+            self._mlx_executor.shutdown(wait=True)
+            self._mlx_executor = None
         logger.info("Engine stopped")
+
+    def _run_on_step_thread(self, func, *args, **kwargs):
+        """Run `func` on the MLX worker thread and return its result.
+
+        Use this for MLX operations called from the asyncio loop thread
+        (or any other thread) that touch arrays whose backing stream lives
+        on the worker — e.g. saving the prefix cache to disk on shutdown.
+
+        Falls back to a direct call if the executor isn't available
+        (engine not started or already stopped); the caller will see the
+        same Stream(gpu, N) error it would have seen pre-fix.
+        """
+        executor = self._mlx_executor
+        if executor is None:
+            return func(*args, **kwargs)
+        future = executor.submit(func, *args, **kwargs)
+        return future.result()
 
     def is_running(self) -> bool:
         """Check if engine is running."""
@@ -166,16 +209,12 @@ class EngineCore:
 
     async def _engine_loop(self) -> None:
         """Main engine loop."""
-        import concurrent.futures
-
-        # Keep every scheduler step on one thread. mlx-lm generation streams
-        # are thread-local, and Qwen3.x RotatingKVCache keeps arrays tagged
+        # The single mlx-step worker thread is created in start() so that
+        # _run_on_step_thread() can also reach it from non-loop callers
+        # (e.g. shutdown cache persistence). mlx-lm generation streams are
+        # thread-local, and Qwen3.x RotatingKVCache keeps arrays tagged
         # with that stream across prefill and decode.
-        _executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="mlx-step",
-            initializer=_init_mlx_step_thread,
-        )
+        _executor = self._mlx_executor
         loop = asyncio.get_running_loop()
 
         step_interval = self.config.step_interval
@@ -581,12 +620,23 @@ class EngineCore:
         return self.scheduler.get_cache_stats()
 
     def save_cache_to_disk(self, cache_dir: str) -> bool:
-        """Save prefix cache to disk."""
-        return self.scheduler.save_cache_to_disk(cache_dir)
+        """Save prefix cache to disk.
+
+        Routed through the mlx-step worker thread because the KV-cache
+        arrays are tagged with that thread's generation_stream; trying to
+        materialize them from the asyncio loop thread raises
+        "There is no Stream(gpu, N) in current thread."
+        """
+        return self._run_on_step_thread(self.scheduler.save_cache_to_disk, cache_dir)
 
     def load_cache_from_disk(self, cache_dir: str) -> int:
-        """Load prefix cache from disk."""
-        return self.scheduler.load_cache_from_disk(cache_dir)
+        """Load prefix cache from disk.
+
+        Loading also goes through the worker thread so the loaded arrays
+        end up tagged with the generation_stream that subsequent fetches
+        will run on.
+        """
+        return self._run_on_step_thread(self.scheduler.load_cache_from_disk, cache_dir)
 
     def _release_model(self) -> None:
         """Release model ownership."""
