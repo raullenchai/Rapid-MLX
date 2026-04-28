@@ -71,13 +71,17 @@ class TestPromptCacheSnapshot:
         scheduler.memory_aware_cache.store = MagicMock(return_value=True)
 
         responses = [
-            SimpleNamespace(uid=101, progress=(4, 4), end_of_segment=True, end_of_prompt=True),
+            SimpleNamespace(
+                uid=101, progress=(4, 4), end_of_segment=True, end_of_prompt=True
+            ),
         ]
         scheduler._snapshot_promoted_prompts(responses)
 
         bg.extract_cache.assert_called_once_with([101])
         scheduler.memory_aware_cache.store.assert_called_once()
-        stored_tokens, stored_cache = scheduler.memory_aware_cache.store.call_args.args[:2]
+        stored_tokens, stored_cache = scheduler.memory_aware_cache.store.call_args.args[
+            :2
+        ]
         assert stored_tokens == prompt_tokens
         assert stored_cache is fake_cache_layers
 
@@ -89,7 +93,9 @@ class TestPromptCacheSnapshot:
         scheduler.memory_aware_cache.store = MagicMock()
 
         responses = [
-            SimpleNamespace(uid=101, progress=(2, 4), end_of_segment=True, end_of_prompt=False),
+            SimpleNamespace(
+                uid=101, progress=(2, 4), end_of_segment=True, end_of_prompt=False
+            ),
         ]
         scheduler._snapshot_promoted_prompts(responses)
 
@@ -105,7 +111,9 @@ class TestPromptCacheSnapshot:
         scheduler.memory_aware_cache.store = MagicMock()
 
         responses = [
-            SimpleNamespace(uid=101, progress=(3, 3), end_of_segment=True, end_of_prompt=True),
+            SimpleNamespace(
+                uid=101, progress=(3, 3), end_of_segment=True, end_of_prompt=True
+            ),
         ]
         # Must not raise — snapshot is best-effort.
         scheduler._snapshot_promoted_prompts(responses)
@@ -123,7 +131,9 @@ class TestPromptCacheSnapshot:
         scheduler.memory_aware_cache.store = MagicMock()
 
         responses = [
-            SimpleNamespace(uid=101, progress=(3, 3), end_of_segment=True, end_of_prompt=True),
+            SimpleNamespace(
+                uid=101, progress=(3, 3), end_of_segment=True, end_of_prompt=True
+            ),
         ]
         scheduler._snapshot_promoted_prompts(responses)
         scheduler.memory_aware_cache.store.assert_not_called()
@@ -138,7 +148,9 @@ class TestPromptCacheSnapshot:
         scheduler.batch_generator = bg
 
         responses = [
-            SimpleNamespace(uid=101, progress=(3, 3), end_of_segment=True, end_of_prompt=True),
+            SimpleNamespace(
+                uid=101, progress=(3, 3), end_of_segment=True, end_of_prompt=True
+            ),
         ]
         scheduler._snapshot_promoted_prompts(responses)
         bg.extract_cache.assert_not_called()
@@ -167,9 +179,15 @@ class TestPromptCacheSnapshot:
         scheduler.memory_aware_cache.store = MagicMock(return_value=True)
 
         responses = [
-            SimpleNamespace(uid=1, progress=(2, 2), end_of_segment=True, end_of_prompt=True),
-            SimpleNamespace(uid=2, progress=(1, 2), end_of_segment=True, end_of_prompt=False),
-            SimpleNamespace(uid=3, progress=(2, 2), end_of_segment=True, end_of_prompt=True),
+            SimpleNamespace(
+                uid=1, progress=(2, 2), end_of_segment=True, end_of_prompt=True
+            ),
+            SimpleNamespace(
+                uid=2, progress=(1, 2), end_of_segment=True, end_of_prompt=False
+            ),
+            SimpleNamespace(
+                uid=3, progress=(2, 2), end_of_segment=True, end_of_prompt=True
+            ),
         ]
         scheduler._snapshot_promoted_prompts(responses)
 
