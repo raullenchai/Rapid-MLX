@@ -13,7 +13,7 @@ This module provides two implementations:
 import copy
 import logging
 import time
-from collections import deque
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -107,8 +107,9 @@ class PrefixCacheManager:
         # Structure: {model_key: {token1: {token2: {..., "cache": CacheEntry}}}}
         self._cache: dict[Any, dict] = {}
 
-        # LRU tracking: (model_key, tuple(tokens)) ordered by access time
-        self._lru: deque = deque()
+        # LRU tracking: OrderedDict keyed by (model_key, tuple(tokens)), insertion
+        # order = least-recently-used first. move_to_end() and popitem() are O(1).
+        self._lru: OrderedDict = OrderedDict()
 
         # Pinned entries: keys excluded from LRU eviction
         self._pinned: set = set()
@@ -250,18 +251,15 @@ class PrefixCacheManager:
         key = (self.model_key, tokens_tuple)
         if "cache" in current:
             current["cache"].count += 1
-            # Update LRU position (skip if pinned)
-            if key not in self._pinned:
-                try:
-                    self._lru.remove(key)
-                except ValueError:
-                    pass
         else:
             current["cache"] = CacheEntry(prompt_cache, 1)
 
-        # Only add to LRU if not pinned
+        # Only track in LRU if not pinned (move_to_end is O(1) for OrderedDict)
         if key not in self._pinned:
-            self._lru.append(key)
+            if key in self._lru:
+                self._lru.move_to_end(key)
+            else:
+                self._lru[key] = None
 
         # Evict if over capacity (count pinned entries toward total)
         while len(self._lru) + len(self._pinned) > self.max_size and len(self._lru) > 0:
@@ -281,22 +279,21 @@ class PrefixCacheManager:
         return current.get("cache")
 
     def _touch_lru(self, tokens_tuple: tuple) -> None:
-        """Move entry to end of LRU queue (most recently used)."""
+        """Move entry to most-recently-used position — O(1) with OrderedDict."""
         key = (self.model_key, tokens_tuple)
         if key in self._pinned:
             return  # Pinned entries stay out of LRU
-        try:
-            self._lru.remove(key)
-        except ValueError:
-            pass
-        self._lru.append(key)
+        if key in self._lru:
+            self._lru.move_to_end(key)
+        else:
+            self._lru[key] = None
 
     def _evict_lru(self) -> None:
-        """Evict least recently used entry."""
+        """Evict least recently used entry — O(1) popitem from OrderedDict."""
         if not self._lru:
             return
 
-        model_key, tokens_tuple = self._lru.popleft()
+        (model_key, tokens_tuple), _ = self._lru.popitem(last=False)
         self._delete_cache(model_key, list(tokens_tuple))
         self.stats.evictions += 1
 
@@ -389,10 +386,7 @@ class PrefixCacheManager:
                 f"already at capacity ({self.max_size})"
             )
             return False
-        try:
-            self._lru.remove(key)
-        except ValueError:
-            pass  # May already be removed from LRU
+        self._lru.pop(key, None)
         self._pinned.add(key)
         logger.info(f"Pinned prefix ({len(tokens)} tokens)")
         return True
@@ -414,7 +408,7 @@ class PrefixCacheManager:
         self._pinned.discard(key)
         # Re-add to LRU (at MRU end)
         if key not in self._lru:
-            self._lru.append(key)
+            self._lru[key] = None
         logger.info(f"Unpinned prefix ({len(tokens)} tokens) - added back to LRU")
         return True
 
