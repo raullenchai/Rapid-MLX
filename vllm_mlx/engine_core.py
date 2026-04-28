@@ -13,6 +13,7 @@ The design follows vLLM's engine architecture adapted for MLX.
 
 import asyncio
 import logging
+import sys
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -31,17 +32,11 @@ logger = logging.getLogger(__name__)
 
 def _init_mlx_step_thread() -> None:
     """Create mlx-lm's generation stream inside the MLX worker thread."""
-    import sys
-
     stream = mx.new_stream(mx.default_device())
 
     gen_mod = sys.modules.get("mlx_lm.generate")
     if gen_mod is not None:
         gen_mod.generation_stream = stream
-
-    sched_mod = sys.modules.get("vllm_mlx.scheduler")
-    if sched_mod is not None and hasattr(sched_mod, "generation_stream"):
-        sched_mod.generation_stream = stream
 
     logger.info("MLX step thread initialized: generation_stream=%s", stream)
 
