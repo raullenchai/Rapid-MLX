@@ -600,7 +600,7 @@ class ToolSandbox:
             logger.info(
                 f"AUDIT: Tool executed - {server_name}__{tool_name} "
                 f"(took {execution_time_ms:.1f}ms)"
-                if execution_time_ms
+                if execution_time_ms is not None
                 else f"AUDIT: Tool executed - {server_name}__{tool_name}"
             )
         else:
