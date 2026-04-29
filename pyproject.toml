@@ -143,6 +143,11 @@ target-version = ["py310", "py311", "py312", "py313"]
 [tool.ruff]
 line-length = 88
 
+[tool.ruff.format]
+# Vendored upstream files — keep formatting identical to the source PR
+# so future syncs produce a clean diff.
+exclude = ["vllm_mlx/models/deepseek_v4.py"]
+
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 ignore = [
