@@ -41,7 +41,9 @@ def _register_vendored_archs() -> None:
         try:
             from ..models import deepseek_v4 as _ds_v4
 
-            sys.modules["mlx_lm.models.deepseek_v4"] = _ds_v4
+            # setdefault is atomic under the GIL; harmless if a concurrent
+            # caller raced ahead (we'd cache the same module either way).
+            sys.modules.setdefault("mlx_lm.models.deepseek_v4", _ds_v4)
         except Exception as e:
             logger.debug(f"deepseek_v4 vendored module unavailable: {e}")
 
@@ -255,10 +257,12 @@ def _load_with_tokenizer_fallback(model_name: str):
 
         # HF convention (transformers >=4.43): chat_template.jinja sits
         # alongside tokenizer_config.json. DeepSeek V4 ships it that way.
+        # utf-8-sig strips a UTF-8 BOM if the file was saved with one —
+        # jinja2 would otherwise treat \ufeff as part of the template.
         if chat_template is None:
             chat_template_jinja = model_path / "chat_template.jinja"
             if chat_template_jinja.exists():
-                chat_template = chat_template_jinja.read_text()
+                chat_template = chat_template_jinja.read_text(encoding="utf-8-sig")
                 logger.info("Chat template loaded from chat_template.jinja")
 
         tokenizer = PreTrainedTokenizerFast(
