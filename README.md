@@ -32,6 +32,7 @@
 | **32+ GB** Mac Mini / Studio | Qwen3.6-35B | 95 tok/s | 256 experts, 262K context |
 | **64 GB** Mac Mini / Studio | Qwen3.5-35B | 83 tok/s | Best balance of smart + fast |
 | **96+ GB** Mac Studio / Pro | Qwen3.5-122B | 57 tok/s | Frontier-level intelligence |
+| **128+ GB** Mac Studio Ultra | 🆕 DeepSeek V4 Flash 158B-A13B | 31-56 tok/s | Day-0 frontier MoE, 1M context |
 
 <details>
 <summary><b>New to local AI? Quick glossary</b></summary>
@@ -348,7 +349,9 @@ The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monit
 | **48 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 83 tok/s | **Sweet spot** — smart + fast |
 | **64 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 83 tok/s | Same model, more room for KV cache |
 | **96 GB** Mac Studio / Pro | [Qwen3.5-122B mxfp4](https://huggingface.co/nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx) | 65 GB | 57 tok/s | Best model, fits comfortably |
+| **128 GB** Mac Studio / Pro | 🆕 [DeepSeek V4 Flash 2-bit DQ](https://huggingface.co/mlx-community/DeepSeek-V4-Flash-2bit-DQ) | 91 GB | 56 tok/s | 158B-A13B frontier MoE, day-0 (chat only) |
 | **192 GB** Mac Studio / Pro | [Qwen3.5-122B 8bit](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 130 GB | 44 tok/s | Maximum quality |
+| **256 GB** Mac Studio Ultra | 🆕 [DeepSeek V4 Flash 8-bit](https://huggingface.co/mlx-community/DeepSeek-V4-Flash-8bit) | 136 GB | 31 tok/s | 158B-A13B frontier MoE, 1M context (chat only) |
 
 > **4bit vs 8bit:** 4bit models are compressed to use less memory (recommended for most users). 8bit models are higher quality but need more RAM. "mxfp4" is a high-quality 4bit format.
 
@@ -427,6 +430,8 @@ Tested on **Mac Studio M3 Ultra (256GB)**. Rapid-MLX uses Apple's [MLX framework
 | **Phi-4 Mini 14B** | **180** tok/s | 77 (mlx-lm) / 56 (Ollama) | **2.3x** / **3.2x** |
 | **Qwen3.5-4B** | **160** tok/s | 155 (mlx-lm serve) | **1.0x** |
 | **Nemotron-Nano 30B** | **141** tok/s · 100% tools | — | — |
+| 🆕 **DeepSeek V4 Flash 158B-A13B** (2-bit DQ) | **56** tok/s | — (only MLX engine, day-0) | — |
+| 🆕 **DeepSeek V4 Flash 158B-A13B** (8-bit) | **31** tok/s | — (only MLX engine, day-0) | — |
 | **GPT-OSS 20B** | **127** tok/s · 100% tools | 79 (mlx-lm serve) | **1.6x** |
 | **Qwen3.5-9B** | **108** tok/s | 41 (Ollama) | **2.6x** |
 | **Qwen3.6-35B-A3B** | **95** tok/s · 100% tools | — | — |
