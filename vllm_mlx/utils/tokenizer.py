@@ -28,6 +28,24 @@ def _needs_tokenizer_fallback(model_name: str) -> bool:
     return any(pattern.lower() in model_lower for pattern in FALLBACK_MODELS)
 
 
+def _register_vendored_archs() -> None:
+    """Make vendored model architectures visible to mlx-lm's importlib lookup.
+
+    mlx-lm resolves model_type → module via `importlib.import_module(
+    f"mlx_lm.models.{model_type}")`. Pre-registering our vendored modules in
+    sys.modules under that path lets it find them transparently. Idempotent.
+    """
+    import sys
+
+    if "mlx_lm.models.deepseek_v4" not in sys.modules:
+        try:
+            from ..models import deepseek_v4 as _ds_v4
+
+            sys.modules["mlx_lm.models.deepseek_v4"] = _ds_v4
+        except Exception as e:
+            logger.debug(f"deepseek_v4 vendored module unavailable: {e}")
+
+
 def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
     """
     Load model and tokenizer with fallback for non-standard tokenizers.
@@ -41,6 +59,7 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
     """
     from mlx_lm import load
 
+    _register_vendored_archs()
     tokenizer_config = tokenizer_config or {}
 
     # Check if model needs fallback (e.g., Nemotron)
@@ -233,6 +252,14 @@ def _load_with_tokenizer_fallback(model_name: str):
                 eos_token = config.get("eos_token", eos_token)
                 unk_token = config.get("unk_token", unk_token)
                 chat_template = config.get("chat_template")
+
+        # HF convention (transformers >=4.43): chat_template.jinja sits
+        # alongside tokenizer_config.json. DeepSeek V4 ships it that way.
+        if chat_template is None:
+            chat_template_jinja = model_path / "chat_template.jinja"
+            if chat_template_jinja.exists():
+                chat_template = chat_template_jinja.read_text()
+                logger.info("Chat template loaded from chat_template.jinja")
 
         tokenizer = PreTrainedTokenizerFast(
             tokenizer_object=base_tokenizer,

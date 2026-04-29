@@ -170,6 +170,12 @@ ignore = [
     "B904",   # raise without from inside except
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Vendored from ml-explore/mlx-lm PR #1192 (Blaizzy). Keep as-is so
+# upstream syncs remain a clean diff. Drop this once mlx-lm 0.32+
+# ships native deepseek_v4 support and we delete the vendored copy.
+"vllm_mlx/models/deepseek_v4.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
