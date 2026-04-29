@@ -12,6 +12,7 @@ The design follows vLLM's engine architecture adapted for MLX.
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import sys
 import time
@@ -123,7 +124,7 @@ class EngineCore:
         # array operations that touch cached KV state must go through this
         # executor — the asyncio loop thread does not own a stream and will
         # raise "There is no Stream(gpu, N) in current thread."
-        self._mlx_executor: Any = None
+        self._mlx_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
         # Detect hybrid models (GatedDeltaNet) that need request throttling
         self._hybrid_throttle = False
@@ -149,8 +150,6 @@ class EngineCore:
         """Start the engine loop."""
         if self._running:
             return
-
-        import concurrent.futures
 
         self._mlx_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1,
@@ -199,6 +198,14 @@ class EngineCore:
         """
         executor = self._mlx_executor
         if executor is None:
+            # No worker thread: callers in test/CLI paths run sync. In
+            # production after start() this should never trigger; if it
+            # does, the call is about to hit Stream(gpu, N) again — log
+            # at debug so a future regression surfaces in diagnostics.
+            logger.debug(
+                "_run_on_step_thread: no executor, running %s inline",
+                getattr(func, "__qualname__", func),
+            )
             return func(*args, **kwargs)
         future = executor.submit(func, *args, **kwargs)
         return future.result()
