@@ -631,6 +631,63 @@ def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
     assert pair_result["comparisons"]["embeddings"]["1"]["avg_latency_speedup"] == 2.0
 
 
+def test_benchmark_ollama_pulls_after_managed_server_start_with_managed_env(
+    monkeypatch, tmp_path
+):
+    bench = load_bench_module()
+    calls = []
+
+    args = bench.CliArgs(
+        model_pairs=[],
+        runs=1,
+        warmups=0,
+        max_tokens=16,
+        concurrency=[1],
+        output_dir=tmp_path,
+        no_pull=False,
+        no_download=True,
+        startup_timeout=1.0,
+        request_timeout=2.0,
+        rapid_mlx_args=[],
+        ollama_env={"OLLAMA_KEEP_ALIVE": "0"},
+    )
+
+    class FakeManagedProcess:
+        def stop(self):
+            calls.append(("stop",))
+
+    monkeypatch.setattr(bench, "require_executable", lambda name: calls.append(("require", name)))
+    monkeypatch.setattr(bench, "find_free_port", lambda: 9124)
+
+    def fake_start_process(command, env=None):
+        calls.append(("start", command, env["OLLAMA_HOST"], env["OLLAMA_KEEP_ALIVE"]))
+        return FakeManagedProcess()
+
+    def fake_wait_for_url(url, timeout):
+        calls.append(("wait", url, timeout))
+
+    def fake_prepare_ollama_model(model, call_args, env):
+        calls.append(("pull", model, env["OLLAMA_HOST"], env["OLLAMA_KEEP_ALIVE"]))
+        return True
+
+    monkeypatch.setattr(bench, "start_process", fake_start_process)
+    monkeypatch.setattr(bench, "wait_for_url", fake_wait_for_url)
+    monkeypatch.setattr(bench, "prepare_ollama_model", fake_prepare_ollama_model)
+    monkeypatch.setattr(bench, "run_engine_suite", lambda *args, **kwargs: ({}, {}, []))
+
+    result = bench.benchmark_ollama(bench.ModelPair("rapid-a", "ollama-a"), args)
+
+    assert "error" not in result
+    assert calls == [
+        ("require", "ollama"),
+        ("start", ["ollama", "serve"], "127.0.0.1:9124", "0"),
+        ("wait", "http://127.0.0.1:9124/api/tags", 1.0),
+        ("pull", "ollama-a", "127.0.0.1:9124", "0"),
+        ("stop",),
+    ]
+    assert result["runtime"]["prepared"] is True
+
+
 def test_cli_help_smoke_lists_core_options():
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--help"],

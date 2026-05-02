@@ -1149,11 +1149,11 @@ def prepare_rapid_mlx_model(model: str, args: CliArgs) -> bool:
     return True
 
 
-def prepare_ollama_model(model: str, args: CliArgs) -> bool:
+def prepare_ollama_model(model: str, args: CliArgs, env: dict[str, str]) -> bool:
     if args.no_pull:
         return False
     print(f"Pulling Ollama model {model}...", flush=True)
-    result = subprocess.run(["ollama", "pull", model], check=False)
+    result = subprocess.run(["ollama", "pull", model], env=env, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"ollama pull failed for {model}")
     return True
@@ -1217,13 +1217,12 @@ def benchmark_ollama(pair: ModelPair, args: CliArgs) -> dict:
     prepared = False
     try:
         require_executable("ollama")
-        prepared = prepare_ollama_model(pair.ollama, args)
         port = find_free_port()
         server_url = f"http://127.0.0.1:{port}"
-        process = start_process(
-            command, env=build_ollama_environment(port, args.ollama_env)
-        )
+        env = build_ollama_environment(port, args.ollama_env)
+        process = start_process(command, env=env)
         wait_for_url(f"{server_url}/api/tags", args.startup_timeout)
+        prepared = prepare_ollama_model(pair.ollama, args, env)
         workload = build_workload(pair.ollama, args.max_tokens)
         for _ in range(args.warmups):
             run_stream_once(
