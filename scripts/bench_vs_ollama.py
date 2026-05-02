@@ -222,29 +222,60 @@ def format_number(value: float | int | None, suffix: str = "") -> str:
     return f"{value}{suffix}"
 
 
-def _concurrency_sort_key(value: str) -> int:
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _nested_dict(value: dict, key: str) -> dict:
+    return _as_dict(value.get(key))
+
+
+def _engine_summary(pair_result: dict, engine: str) -> dict:
+    return _nested_dict(_as_dict(pair_result.get(engine)), "summary")
+
+
+def _engine_error(pair_result: dict, engine: str) -> str | None:
+    error = _as_dict(pair_result.get(engine)).get("error")
+    if error is None:
+        return None
+    return str(error)
+
+
+def _concurrency_sort_key(value: object) -> tuple[int, int | str]:
     try:
-        return int(value)
-    except ValueError:
-        return 0
+        return (0, int(value))
+    except (TypeError, ValueError):
+        return (1, str(value))
 
 
 def render_model_pair_table(pair_result: dict) -> str:
-    rapid = pair_result.get("rapid-mlx", {}).get("summary", {})
-    ollama = pair_result.get("ollama", {}).get("summary", {})
-    rapid_stream = rapid.get("stream", {})
-    ollama_stream = ollama.get("stream", {})
-    rapid_mt = rapid.get("multi_turn", {})
-    ollama_mt = ollama.get("multi_turn", {})
-    rapid_conc = rapid.get("concurrency", {})
-    ollama_conc = ollama.get("concurrency", {})
+    rapid = _engine_summary(pair_result, "rapid-mlx")
+    ollama = _engine_summary(pair_result, "ollama")
+    rapid_stream = _nested_dict(rapid, "stream")
+    ollama_stream = _nested_dict(ollama, "stream")
+    rapid_mt = _nested_dict(rapid, "multi_turn")
+    ollama_mt = _nested_dict(ollama, "multi_turn")
+    rapid_conc = _nested_dict(rapid, "concurrency")
+    ollama_conc = _nested_dict(ollama, "concurrency")
 
     lines = [
         f"## {pair_result['rapid_mlx_model']} vs {pair_result['ollama_model']}",
         "",
+    ]
+    rapid_error = _engine_error(pair_result, "rapid-mlx")
+    ollama_error = _engine_error(pair_result, "ollama")
+    if rapid_error:
+        lines.append(f"**Rapid-MLX error:** {rapid_error}")
+    if ollama_error:
+        lines.append(f"**Ollama error:** {ollama_error}")
+    if rapid_error or ollama_error:
+        lines.append("")
+    lines.extend(
+        [
         "| Metric | Rapid-MLX | Ollama | Speedup |",
         "|---|---:|---:|---:|",
-    ]
+        ]
+    )
     rapid_ttft = rapid_stream.get("ttft_ms")
     ollama_ttft = ollama_stream.get("ttft_ms")
     lines.append(

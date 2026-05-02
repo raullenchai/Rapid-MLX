@@ -316,6 +316,47 @@ def test_render_markdown_includes_model_table_and_speedups():
     assert "| TTFT | 100.0 ms | 250.0 ms | 2.50x |" in markdown
 
 
+def test_render_markdown_surfaces_engine_errors():
+    bench = load_bench_module()
+    result = {
+        "metadata": {"timestamp": "2026-05-02T12:00:00", "git_commit": "abc123"},
+        "config": {"runs": 1, "concurrency": [1]},
+        "model_pairs": [
+            {
+                "rapid_mlx_model": "qwen3.5-9b",
+                "ollama_model": "qwen3.5:9b",
+                "rapid-mlx": {"error": "boom"},
+                "ollama": {"summary": {"stream": {"decode_tok_s": 40.0}}},
+            }
+        ],
+    }
+
+    markdown = bench.render_markdown(result)
+
+    assert "**Rapid-MLX error:** boom" in markdown
+
+
+def test_render_markdown_tolerates_none_engine_payloads():
+    bench = load_bench_module()
+    result = {
+        "metadata": {"timestamp": "2026-05-02T12:00:00", "git_commit": "abc123"},
+        "config": {"runs": 1, "concurrency": [1]},
+        "model_pairs": [
+            {
+                "rapid_mlx_model": "qwen3.5-9b",
+                "ollama_model": "qwen3.5:9b",
+                "rapid-mlx": None,
+                "ollama": {"error": "ollama down"},
+            }
+        ],
+    }
+
+    markdown = bench.render_markdown(result)
+
+    assert "**Ollama error:** ollama down" in markdown
+    assert "| TTFT | - | - | - |" in markdown
+
+
 def test_write_outputs_creates_json_and_markdown(tmp_path):
     bench = load_bench_module()
     result = {
