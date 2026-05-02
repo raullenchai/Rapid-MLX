@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -454,14 +455,24 @@ def test_build_engine_success_result_shape():
         command=["rapid-mlx", "serve", "qwen3.5-9b"],
         raw_runs={"stream": [{"ttft_ms": 100.0}]},
         summary={"stream": {"ttft_ms": 100.0}},
+        errors=[],
+        server_url="http://127.0.0.1:9123",
+        prepared=True,
     )
 
     assert result["engine"] == "rapid-mlx"
     assert result["model"] == "qwen3.5-9b"
     assert result["port"] == 9123
     assert result["command"] == ["rapid-mlx", "serve", "qwen3.5-9b"]
+    assert result["server"]["url"] == "http://127.0.0.1:9123"
+    assert result["runtime"]["prepared"] is True
+    assert result["metadata"]["engine"] == "rapid-mlx"
+    assert result["metadata"]["model"] == "qwen3.5-9b"
     assert result["raw_runs"]["stream"] == [{"ttft_ms": 100.0}]
     assert result["summary"]["stream"] == {"ttft_ms": 100.0}
+    assert result["errors"] == []
+    assert "started_at" in result
+    assert "finished_at" in result
     assert "error" not in result
 
 
@@ -474,8 +485,162 @@ def test_build_engine_failure_result_shape():
         port=9124,
         command=["ollama", "serve"],
         error=RuntimeError("startup failed"),
+        server_url="http://127.0.0.1:9124",
+        prepared=False,
     )
 
     assert result["engine"] == "ollama"
     assert result["model"] == "qwen3.5:9b"
+    assert result["port"] == 9124
+    assert result["command"] == ["ollama", "serve"]
     assert result["error"] == "startup failed"
+    assert result["errors"] == [{"stage": "engine", "error": "startup failed"}]
+    assert result["server"]["url"] == "http://127.0.0.1:9124"
+    assert result["runtime"]["prepared"] is False
+    assert result["summary"] == {}
+
+
+def test_run_engine_suite_records_workload_errors_and_continues(monkeypatch):
+    bench = load_bench_module()
+    calls = []
+
+    def fake_chat(engine, base_url, model, messages, max_tokens, timeout, headers=None):
+        calls.append(("chat", model, len(messages), max_tokens, timeout))
+        if len(calls) == 1:
+            raise RuntimeError("chat failed")
+        return {
+            "ttft_ms": 10.0,
+            "decode_tok_s": 20.0,
+            "completion_tokens": 2,
+            "total_ms": 50.0,
+        }
+
+    def fake_embed(engine, base_url, model, inputs, timeout, headers=None):
+        calls.append(("embedding", model, len(inputs), timeout, headers))
+        return {"latency_ms": 5.0, "embeddings": len(inputs)}
+
+    monkeypatch.setattr(bench, "run_stream_once", fake_chat)
+    monkeypatch.setattr(bench, "run_embedding_once", fake_embed)
+
+    raw_runs, summary, errors = bench.run_engine_suite(
+        "rapid-mlx",
+        "http://server",
+        {
+            "chat_model": "chat-model",
+            "embedding_model": "embed-model",
+            "chat_messages": [{"role": "user", "content": "hi"}],
+            "embedding_input": ["hello"],
+            "max_tokens": 16,
+        },
+        concurrency_levels=[1, 2],
+        runs_per_level=1,
+        timeout=30.0,
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert len(calls) == 6
+    assert raw_runs["chat"]["1"] == []
+    assert raw_runs["chat"]["2"][0]["runs"][0]["completion_tokens"] == 2
+    assert raw_runs["embeddings"]["1"][0]["embeddings"] == 1
+    assert summary["concurrency"]["2"]["requests"] == 2.0
+    assert summary["embeddings"]["1"]["avg_latency_ms"] == 5.0
+    assert errors == [
+        {
+            "workload": "chat",
+            "concurrency": 1,
+            "run": 1,
+            "error": "chat failed",
+        }
+    ]
+
+
+def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
+    monkeypatch, tmp_path
+):
+    bench = load_bench_module()
+    calls = []
+
+    args = bench.CliArgs(
+        model_pairs=[bench.ModelPair("rapid-a", "ollama-a")],
+        runs=2,
+        warmups=0,
+        max_tokens=32,
+        concurrency=[1, 2],
+        output_dir=tmp_path,
+        no_pull=True,
+        no_download=True,
+        startup_timeout=1.0,
+        request_timeout=2.0,
+        rapid_mlx_args=[],
+        ollama_env={},
+    )
+
+    monkeypatch.setattr(
+        bench,
+        "collect_metadata",
+        lambda: {"timestamp": "2026-05-02T12:00:00", "git_commit": "abc123"},
+    )
+
+    def fake_rapid(pair, call_args):
+        calls.append(("rapid", pair, call_args))
+        return {
+            "engine": "rapid-mlx",
+            "model": pair.rapid_mlx,
+            "summary": {
+                "stream": {"ttft_ms": 100.0, "decode_tok_s": 120.0},
+                "concurrency": {
+                    "1": {"aggregate_tok_s": 100.0},
+                    "2": {"aggregate_tok_s": 180.0},
+                },
+                "embeddings": {"1": {"avg_latency_ms": 10.0}},
+            },
+            "raw_runs": {},
+            "errors": [],
+        }
+
+    def fake_ollama(pair, call_args):
+        calls.append(("ollama", pair, call_args))
+        return {
+            "engine": "ollama",
+            "model": pair.ollama,
+            "summary": {
+                "stream": {"ttft_ms": 250.0, "decode_tok_s": 40.0},
+                "concurrency": {"1": {"aggregate_tok_s": 50.0}},
+                "embeddings": {"1": {"avg_latency_ms": 20.0}},
+            },
+            "raw_runs": {},
+            "errors": [],
+        }
+
+    monkeypatch.setattr(bench, "benchmark_rapid_mlx", fake_rapid)
+    monkeypatch.setattr(bench, "benchmark_ollama", fake_ollama)
+
+    result = bench.run_benchmark(args)
+
+    assert calls == [
+        ("rapid", args.model_pairs[0], args),
+        ("ollama", args.model_pairs[0], args),
+    ]
+    pair_result = result["model_pairs"][0]
+    assert pair_result["rapid-mlx"]["model"] == "rapid-a"
+    assert pair_result["ollama"]["model"] == "ollama-a"
+    assert pair_result["comparisons"]["stream_decode_tok_s_speedup"] == 3.0
+    assert pair_result["comparisons"]["stream_ttft_latency_speedup"] == 2.5
+    assert pair_result["comparisons"]["concurrency"]["1"]["aggregate_tok_s_speedup"] == 2.0
+    assert pair_result["comparisons"]["concurrency"]["2"]["aggregate_tok_s_speedup"] is None
+    assert pair_result["comparisons"]["embeddings"]["1"]["avg_latency_speedup"] == 2.0
+
+
+def test_cli_help_smoke_lists_core_options():
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "--model-pair" in result.stdout
+    assert "--runs" in result.stdout
+    assert "--no-pull" in result.stdout
+    assert "--no-download" in result.stdout
