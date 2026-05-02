@@ -13,7 +13,6 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-
 DEFAULT_OUTPUT_DIR = Path("reports/benchmarks/ollama-comparison")
 
 
