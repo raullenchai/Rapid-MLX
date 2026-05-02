@@ -2,9 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Benchmark Rapid-MLX against Ollama with self-managed server processes.
 
+The script launches one engine at a time on a temporary localhost port, runs
+identical no-thinking deterministic workloads, then writes raw JSON and
+README-ready Markdown to reports/benchmarks/ollama-comparison/.
+
 Manual usage:
     python scripts/bench_vs_ollama.py
     python scripts/bench_vs_ollama.py --model-pair qwen3.5-4b=qwen3.5:4b --runs 1
+    python scripts/bench_vs_ollama.py --no-pull --no-download --runs 1
 """
 
 from __future__ import annotations
