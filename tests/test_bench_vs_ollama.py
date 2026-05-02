@@ -179,3 +179,68 @@ def test_summarize_runs_averages_numeric_fields():
         "completion_tokens": 9.0,
         "total_ms": 400.0,
     }
+
+
+def test_build_rapid_mlx_payload_is_deterministic_no_thinking():
+    bench = load_bench_module()
+
+    payload = bench.build_rapid_mlx_payload(
+        model="qwen3.5-9b",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=32,
+        stream=True,
+    )
+
+    assert payload["model"] == "qwen3.5-9b"
+    assert payload["temperature"] == 0
+    assert payload["enable_thinking"] is False
+    assert payload["stream"] is True
+    assert payload["stream_options"] == {"include_usage": True}
+
+
+def test_build_ollama_payload_is_deterministic_no_thinking():
+    bench = load_bench_module()
+
+    payload = bench.build_ollama_payload(
+        model="qwen3.5:9b",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=32,
+        stream=True,
+    )
+
+    assert payload["model"] == "qwen3.5:9b"
+    assert payload["think"] is False
+    assert payload["stream"] is True
+    assert payload["options"] == {"temperature": 0, "num_predict": 32}
+
+
+def test_summarize_multi_turn_latency():
+    bench = load_bench_module()
+
+    summary = bench.summarize_multi_turn([100.0, 300.0, 500.0, 700.0])
+
+    assert summary == {
+        "avg_turn_ms": 400.0,
+        "turn_latencies_ms": [100.0, 300.0, 500.0, 700.0],
+    }
+
+
+def test_summarize_concurrent_batch_computes_p95_and_aggregate_tps():
+    bench = load_bench_module()
+
+    summary = bench.summarize_concurrent_batch(
+        results=[
+            {"latency_ms": 100.0, "completion_tokens": 10},
+            {"latency_ms": 300.0, "completion_tokens": 20},
+            {"latency_ms": 200.0, "completion_tokens": 30},
+        ],
+        batch_elapsed_s=2.0,
+    )
+
+    assert summary == {
+        "aggregate_tok_s": 30.0,
+        "avg_latency_ms": 200.0,
+        "p95_latency_ms": 300.0,
+        "requests": 3,
+        "completion_tokens": 60,
+    }
