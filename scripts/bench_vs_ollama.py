@@ -10,6 +10,8 @@ Manual usage:
 from __future__ import annotations
 
 import argparse
+import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +38,13 @@ class CliArgs:
     request_timeout: float
     rapid_mlx_args: list[str]
     ollama_env: dict[str, str]
+
+
+@dataclass
+class ParsedStream:
+    content_chunks: int = 0
+    completion_tokens: int = 0
+    eval_duration_ns: int | None = None
 
 
 def default_model_pairs() -> list[ModelPair]:
@@ -126,6 +135,80 @@ def latency_speedup(
 
 def format_speedup(value: float | None) -> str:
     return "-" if value is None else f"{value:.2f}x"
+
+
+def parse_rapid_mlx_stream(lines: Iterable[str]) -> ParsedStream:
+    parsed = ParsedStream()
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:]
+        if payload == "[DONE]":
+            break
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        usage = data.get("usage")
+        if usage and usage.get("completion_tokens"):
+            parsed.completion_tokens = int(usage["completion_tokens"])
+        for choice in data.get("choices") or []:
+            delta = choice.get("delta") or {}
+            if delta.get("content"):
+                parsed.content_chunks += 1
+    if parsed.completion_tokens <= 0:
+        parsed.completion_tokens = parsed.content_chunks
+    return parsed
+
+
+def parse_ollama_stream(lines: Iterable[str]) -> ParsedStream:
+    parsed = ParsedStream()
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = data.get("message") or {}
+        if message.get("content"):
+            parsed.content_chunks += 1
+        if data.get("eval_count"):
+            parsed.completion_tokens = int(data["eval_count"])
+        if data.get("eval_duration"):
+            parsed.eval_duration_ns = int(data["eval_duration"])
+    if parsed.completion_tokens <= 0:
+        parsed.completion_tokens = parsed.content_chunks
+    return parsed
+
+
+def build_stream_metric(
+    parsed: ParsedStream,
+    start_at: float,
+    first_content_at: float | None,
+    end_at: float,
+) -> dict:
+    ttft_s = (first_content_at - start_at) if first_content_at else (end_at - start_at)
+    decode_s = max(end_at - (first_content_at or start_at), 0.0)
+    decode_tok_s = parsed.completion_tokens / decode_s if decode_s > 0 else 0.0
+    return {
+        "ttft_ms": round(ttft_s * 1000, 1),
+        "decode_tok_s": round(decode_tok_s, 1),
+        "completion_tokens": parsed.completion_tokens,
+        "total_ms": round((end_at - start_at) * 1000, 1),
+    }
+
+
+def summarize_stream_runs(runs: list[dict]) -> dict:
+    keys = ["ttft_ms", "decode_tok_s", "completion_tokens", "total_ms"]
+    if not runs:
+        return {key: 0.0 for key in keys}
+    return {
+        key: round(sum(float(run.get(key, 0.0)) for run in runs) / len(runs), 1)
+        for key in keys
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

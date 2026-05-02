@@ -77,3 +77,67 @@ def test_speedup_math_for_throughput_and_latency():
     assert bench.throughput_speedup(120.0, 0.0) is None
     assert bench.format_speedup(2.345) == "2.35x"
     assert bench.format_speedup(None) == "-"
+
+
+def test_parse_rapid_mlx_sse_stream_prefers_usage_tokens():
+    bench = load_bench_module()
+    lines = [
+        'data: {"choices":[{"delta":{"content":"hello"}}]}',
+        'data: {"choices":[{"delta":{"content":" world"}}]}',
+        'data: {"choices":[],"usage":{"completion_tokens":7}}',
+        "data: [DONE]",
+    ]
+
+    parsed = bench.parse_rapid_mlx_stream(lines)
+
+    assert parsed.content_chunks == 2
+    assert parsed.completion_tokens == 7
+
+
+def test_parse_ollama_stream_prefers_eval_metadata():
+    bench = load_bench_module()
+    lines = [
+        '{"message":{"content":"hello"},"done":false}',
+        '{"message":{"content":" world"},"done":false}',
+        '{"done":true,"eval_count":9,"eval_duration":300000000}',
+    ]
+
+    parsed = bench.parse_ollama_stream(lines)
+
+    assert parsed.content_chunks == 2
+    assert parsed.completion_tokens == 9
+    assert parsed.eval_duration_ns == 300000000
+
+
+def test_build_stream_metric_uses_first_content_for_ttft_and_decode_time():
+    bench = load_bench_module()
+
+    metric = bench.build_stream_metric(
+        parsed=bench.ParsedStream(content_chunks=2, completion_tokens=9),
+        start_at=1.0,
+        first_content_at=1.2,
+        end_at=3.0,
+    )
+
+    assert metric["ttft_ms"] == 200.0
+    assert metric["decode_tok_s"] == 5.0
+    assert metric["completion_tokens"] == 9
+    assert metric["total_ms"] == 2000.0
+
+
+def test_summarize_runs_averages_numeric_fields():
+    bench = load_bench_module()
+
+    summary = bench.summarize_stream_runs(
+        [
+            {"ttft_ms": 100.0, "decode_tok_s": 40.0, "completion_tokens": 8, "total_ms": 300.0},
+            {"ttft_ms": 300.0, "decode_tok_s": 80.0, "completion_tokens": 10, "total_ms": 500.0},
+        ]
+    )
+
+    assert summary == {
+        "ttft_ms": 200.0,
+        "decode_tok_s": 60.0,
+        "completion_tokens": 9.0,
+        "total_ms": 400.0,
+    }
