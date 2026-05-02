@@ -1,7 +1,7 @@
 {
   "metadata": {
-    "timestamp": "2026-05-02T10:18:58",
-    "git_commit": "5b8d0e3",
+    "timestamp": "2026-05-02T10:32:08",
+    "git_commit": "9854d2b",
     "python": "3.11.15",
     "platform": "macOS-15.6-arm64-arm-64bit",
     "machine": "arm64",
@@ -37,7 +37,7 @@
       "rapid-mlx": {
         "engine": "rapid-mlx",
         "model": "qwen3.5-4b",
-        "port": 63986,
+        "port": 64615,
         "command": [
           "rapid-mlx",
           "serve",
@@ -45,15 +45,15 @@
           "--host",
           "127.0.0.1",
           "--port",
-          "63986",
+          "64615",
           "--no-thinking",
           "--default-temperature",
           "0"
         ],
         "server": {
           "host": "127.0.0.1",
-          "port": 63986,
-          "url": "http://127.0.0.1:63986"
+          "port": 64615,
+          "url": "http://127.0.0.1:64615"
         },
         "runtime": {
           "prepared": true,
@@ -64,7 +64,7 @@
             "--host",
             "127.0.0.1",
             "--port",
-            "63986",
+            "64615",
             "--no-thinking",
             "--default-temperature",
             "0"
@@ -75,8 +75,8 @@
           "model": "qwen3.5-4b",
           "runtime": "managed-server"
         },
-        "started_at": "2026-05-02T10:20:08",
-        "finished_at": "2026-05-02T10:20:08",
+        "started_at": "2026-05-02T10:32:33",
+        "finished_at": "2026-05-02T10:32:33",
         "errors": [
           {
             "workload": "embeddings",
@@ -136,243 +136,243 @@
         "raw_runs": {
           "stream": [
             {
-              "ttft_ms": 73.2,
-              "decode_tok_s": 168.7,
+              "ttft_ms": 20.1,
+              "decode_tok_s": 168.4,
               "completion_tokens": 185,
-              "total_ms": 1169.7
+              "total_ms": 1118.8
             },
             {
-              "ttft_ms": 20.1,
+              "ttft_ms": 21.8,
               "decode_tok_s": 169.0,
               "completion_tokens": 185,
-              "total_ms": 1114.6
+              "total_ms": 1116.6
             },
             {
-              "ttft_ms": 20.2,
-              "decode_tok_s": 168.6,
+              "ttft_ms": 19.9,
+              "decode_tok_s": 168.1,
               "completion_tokens": 185,
-              "total_ms": 1117.4
+              "total_ms": 1120.4
             }
           ],
           "multi_turn": {
-            "avg_turn_ms": 791.1,
+            "avg_turn_ms": 721.5,
             "turn_latencies_ms": [
-              837.6,
-              752.2,
-              861.7,
-              712.9
+              787.9,
+              738.9,
+              716.0,
+              643.3
             ]
           },
           "chat": {
             "1": [
               {
-                "aggregate_tok_s": 165.8,
-                "avg_latency_ms": 1115.5,
-                "p95_latency_ms": 1115.5,
+                "aggregate_tok_s": 165.2,
+                "avg_latency_ms": 1119.3,
+                "p95_latency_ms": 1119.3,
                 "requests": 1,
                 "completion_tokens": 185,
                 "runs": [
                   {
                     "ttft_ms": 20.5,
-                    "decode_tok_s": 168.9,
+                    "decode_tok_s": 168.4,
                     "completion_tokens": 185,
-                    "total_ms": 1115.5
+                    "total_ms": 1119.3
+                  }
+                ]
+              },
+              {
+                "aggregate_tok_s": 165.0,
+                "avg_latency_ms": 1120.9,
+                "p95_latency_ms": 1120.9,
+                "requests": 1,
+                "completion_tokens": 185,
+                "runs": [
+                  {
+                    "ttft_ms": 20.6,
+                    "decode_tok_s": 168.1,
+                    "completion_tokens": 185,
+                    "total_ms": 1120.9
                   }
                 ]
               },
               {
                 "aggregate_tok_s": 165.5,
-                "avg_latency_ms": 1117.7,
-                "p95_latency_ms": 1117.7,
+                "avg_latency_ms": 1117.4,
+                "p95_latency_ms": 1117.4,
                 "requests": 1,
                 "completion_tokens": 185,
                 "runs": [
                   {
-                    "ttft_ms": 19.3,
-                    "decode_tok_s": 168.4,
+                    "ttft_ms": 20.9,
+                    "decode_tok_s": 168.7,
                     "completion_tokens": 185,
-                    "total_ms": 1117.7
-                  }
-                ]
-              },
-              {
-                "aggregate_tok_s": 165.4,
-                "avg_latency_ms": 1118.1,
-                "p95_latency_ms": 1118.1,
-                "requests": 1,
-                "completion_tokens": 185,
-                "runs": [
-                  {
-                    "ttft_ms": 19.4,
-                    "decode_tok_s": 168.4,
-                    "completion_tokens": 185,
-                    "total_ms": 1118.1
+                    "total_ms": 1117.4
                   }
                 ]
               }
             ],
             "2": [
               {
-                "aggregate_tok_s": 241.7,
-                "avg_latency_ms": 1447.8,
-                "p95_latency_ms": 1588.3,
+                "aggregate_tok_s": 244.4,
+                "avg_latency_ms": 1429.7,
+                "p95_latency_ms": 1570.9,
                 "requests": 2,
                 "completion_tokens": 384,
                 "runs": [
                   {
-                    "ttft_ms": 20.3,
-                    "decode_tok_s": 143.8,
+                    "ttft_ms": 20.2,
+                    "decode_tok_s": 145.9,
                     "completion_tokens": 185,
-                    "total_ms": 1307.3
+                    "total_ms": 1288.4
                   },
                   {
-                    "ttft_ms": 250.8,
-                    "decode_tok_s": 148.8,
+                    "ttft_ms": 237.0,
+                    "decode_tok_s": 149.2,
                     "completion_tokens": 199,
-                    "total_ms": 1588.3
-                  }
-                ]
-              },
-              {
-                "aggregate_tok_s": 244.7,
-                "avg_latency_ms": 1427.8,
-                "p95_latency_ms": 1568.7,
-                "requests": 2,
-                "completion_tokens": 384,
-                "runs": [
-                  {
-                    "ttft_ms": 20.0,
-                    "decode_tok_s": 146.0,
-                    "completion_tokens": 185,
-                    "total_ms": 1286.8
-                  },
-                  {
-                    "ttft_ms": 236.7,
-                    "decode_tok_s": 149.4,
-                    "completion_tokens": 199,
-                    "total_ms": 1568.7
+                    "total_ms": 1570.9
                   }
                 ]
               },
               {
                 "aggregate_tok_s": 244.3,
                 "avg_latency_ms": 1430.1,
-                "p95_latency_ms": 1571.4,
+                "p95_latency_ms": 1571.2,
                 "requests": 2,
                 "completion_tokens": 384,
                 "runs": [
                   {
-                    "ttft_ms": 19.5,
-                    "decode_tok_s": 145.7,
+                    "ttft_ms": 20.0,
+                    "decode_tok_s": 145.8,
                     "completion_tokens": 185,
-                    "total_ms": 1288.8
+                    "total_ms": 1288.9
                   },
                   {
-                    "ttft_ms": 235.4,
-                    "decode_tok_s": 149.0,
+                    "ttft_ms": 237.2,
+                    "decode_tok_s": 149.2,
                     "completion_tokens": 199,
-                    "total_ms": 1571.4
+                    "total_ms": 1571.2
+                  }
+                ]
+              },
+              {
+                "aggregate_tok_s": 244.8,
+                "avg_latency_ms": 1427.2,
+                "p95_latency_ms": 1568.4,
+                "requests": 2,
+                "completion_tokens": 384,
+                "runs": [
+                  {
+                    "ttft_ms": 19.6,
+                    "decode_tok_s": 146.1,
+                    "completion_tokens": 185,
+                    "total_ms": 1286.0
+                  },
+                  {
+                    "ttft_ms": 235.9,
+                    "decode_tok_s": 149.3,
+                    "completion_tokens": 199,
+                    "total_ms": 1568.4
                   }
                 ]
               }
             ],
             "4": [
               {
-                "aggregate_tok_s": 323.0,
-                "avg_latency_ms": 2141.9,
-                "p95_latency_ms": 2395.7,
+                "aggregate_tok_s": 322.9,
+                "avg_latency_ms": 2130.1,
+                "p95_latency_ms": 2433.5,
                 "requests": 4,
-                "completion_tokens": 774,
+                "completion_tokens": 786,
                 "runs": [
                   {
-                    "ttft_ms": 19.9,
-                    "decode_tok_s": 109.0,
+                    "ttft_ms": 20.4,
+                    "decode_tok_s": 111.0,
                     "completion_tokens": 185,
-                    "total_ms": 1717.0
+                    "total_ms": 1687.7
                   },
                   {
-                    "ttft_ms": 235.9,
-                    "decode_tok_s": 105.7,
+                    "ttft_ms": 237.1,
+                    "decode_tok_s": 107.4,
                     "completion_tokens": 199,
-                    "total_ms": 2118.8
+                    "total_ms": 2090.5
                   },
                   {
-                    "ttft_ms": 438.1,
-                    "decode_tok_s": 106.4,
+                    "ttft_ms": 440.3,
+                    "decode_tok_s": 108.1,
                     "completion_tokens": 202,
-                    "total_ms": 2336.1
+                    "total_ms": 2308.8
                   },
                   {
-                    "ttft_ms": 651.8,
-                    "decode_tok_s": 107.8,
-                    "completion_tokens": 188,
-                    "total_ms": 2395.7
+                    "ttft_ms": 644.3,
+                    "decode_tok_s": 111.8,
+                    "completion_tokens": 200,
+                    "total_ms": 2433.5
                   }
                 ]
               },
               {
-                "aggregate_tok_s": 327.0,
-                "avg_latency_ms": 2104.4,
-                "p95_latency_ms": 2359.9,
+                "aggregate_tok_s": 323.4,
+                "avg_latency_ms": 2127.8,
+                "p95_latency_ms": 2430.1,
                 "requests": 4,
-                "completion_tokens": 772,
+                "completion_tokens": 786,
                 "runs": [
                   {
-                    "ttft_ms": 20.2,
-                    "decode_tok_s": 111.4,
+                    "ttft_ms": 20.3,
+                    "decode_tok_s": 111.0,
                     "completion_tokens": 185,
-                    "total_ms": 1680.8
+                    "total_ms": 1687.4
                   },
                   {
-                    "ttft_ms": 234.2,
-                    "decode_tok_s": 107.7,
+                    "ttft_ms": 237.0,
+                    "decode_tok_s": 107.5,
                     "completion_tokens": 199,
-                    "total_ms": 2082.7
+                    "total_ms": 2088.3
                   },
                   {
-                    "ttft_ms": 443.9,
-                    "decode_tok_s": 108.1,
+                    "ttft_ms": 440.7,
+                    "decode_tok_s": 108.3,
+                    "completion_tokens": 202,
+                    "total_ms": 2305.5
+                  },
+                  {
+                    "ttft_ms": 644.2,
+                    "decode_tok_s": 112.0,
                     "completion_tokens": 200,
-                    "total_ms": 2294.2
-                  },
-                  {
-                    "ttft_ms": 647.8,
-                    "decode_tok_s": 109.8,
-                    "completion_tokens": 188,
-                    "total_ms": 2359.9
+                    "total_ms": 2430.1
                   }
                 ]
               },
               {
                 "aggregate_tok_s": 323.2,
-                "avg_latency_ms": 2128.8,
-                "p95_latency_ms": 2430.9,
+                "avg_latency_ms": 2128.0,
+                "p95_latency_ms": 2431.4,
                 "requests": 4,
                 "completion_tokens": 786,
                 "runs": [
                   {
                     "ttft_ms": 20.0,
-                    "decode_tok_s": 110.9,
+                    "decode_tok_s": 111.1,
                     "completion_tokens": 185,
-                    "total_ms": 1687.8
+                    "total_ms": 1685.3
                   },
                   {
-                    "ttft_ms": 236.3,
-                    "decode_tok_s": 107.4,
+                    "ttft_ms": 236.8,
+                    "decode_tok_s": 107.5,
                     "completion_tokens": 199,
-                    "total_ms": 2089.7
+                    "total_ms": 2088.7
                   },
                   {
-                    "ttft_ms": 442.1,
-                    "decode_tok_s": 108.3,
+                    "ttft_ms": 439.9,
+                    "decode_tok_s": 108.2,
                     "completion_tokens": 202,
-                    "total_ms": 2307.0
+                    "total_ms": 2306.6
                   },
                   {
-                    "ttft_ms": 643.8,
+                    "ttft_ms": 643.3,
                     "decode_tok_s": 111.9,
                     "completion_tokens": 200,
-                    "total_ms": 2430.9
+                    "total_ms": 2431.4
                   }
                 ]
               }
@@ -386,40 +386,40 @@
         },
         "summary": {
           "stream": {
-            "ttft_ms": 37.8,
-            "decode_tok_s": 168.8,
+            "ttft_ms": 20.6,
+            "decode_tok_s": 168.5,
             "completion_tokens": 185.0,
-            "total_ms": 1133.9
+            "total_ms": 1118.6
           },
           "multi_turn": {
-            "avg_turn_ms": 791.1,
+            "avg_turn_ms": 721.5,
             "turn_latencies_ms": [
-              837.6,
-              752.2,
-              861.7,
-              712.9
+              787.9,
+              738.9,
+              716.0,
+              643.3
             ]
           },
           "concurrency": {
             "1": {
-              "aggregate_tok_s": 165.6,
-              "avg_latency_ms": 1117.1,
-              "p95_latency_ms": 1117.1,
+              "aggregate_tok_s": 165.2,
+              "avg_latency_ms": 1119.2,
+              "p95_latency_ms": 1119.2,
               "completion_tokens": 185.0,
               "requests": 1.0
             },
             "2": {
-              "aggregate_tok_s": 243.6,
-              "avg_latency_ms": 1435.2,
-              "p95_latency_ms": 1576.1,
+              "aggregate_tok_s": 244.5,
+              "avg_latency_ms": 1429.0,
+              "p95_latency_ms": 1570.2,
               "completion_tokens": 384.0,
               "requests": 2.0
             },
             "4": {
-              "aggregate_tok_s": 324.4,
-              "avg_latency_ms": 2125.0,
-              "p95_latency_ms": 2395.5,
-              "completion_tokens": 777.3,
+              "aggregate_tok_s": 323.2,
+              "avg_latency_ms": 2128.6,
+              "p95_latency_ms": 2431.7,
+              "completion_tokens": 786.0,
               "requests": 4.0
             }
           },
@@ -433,15 +433,15 @@
       "ollama": {
         "engine": "ollama",
         "model": "qwen3.5:4b",
-        "port": 64156,
+        "port": 64672,
         "command": [
           "ollama",
           "serve"
         ],
         "server": {
           "host": "127.0.0.1",
-          "port": 64156,
-          "url": "http://127.0.0.1:64156"
+          "port": 64672,
+          "url": "http://127.0.0.1:64672"
         },
         "runtime": {
           "prepared": true,
@@ -455,8 +455,8 @@
           "model": "qwen3.5:4b",
           "runtime": "managed-server"
         },
-        "started_at": "2026-05-02T10:22:30",
-        "finished_at": "2026-05-02T10:22:30",
+        "started_at": "2026-05-02T10:34:01",
+        "finished_at": "2026-05-02T10:34:01",
         "errors": [
           {
             "workload": "embeddings",
@@ -516,243 +516,243 @@
         "raw_runs": {
           "stream": [
             {
-              "ttft_ms": 162.0,
-              "decode_tok_s": 63.2,
+              "ttft_ms": 158.9,
+              "decode_tok_s": 61.7,
               "completion_tokens": 181,
-              "total_ms": 3089.5
+              "total_ms": 3092.7
             },
             {
-              "ttft_ms": 157.9,
-              "decode_tok_s": 63.0,
+              "ttft_ms": 161.3,
+              "decode_tok_s": 61.7,
               "completion_tokens": 181,
-              "total_ms": 3095.4
+              "total_ms": 3094.7
             },
             {
-              "ttft_ms": 155.1,
-              "decode_tok_s": 63.4,
+              "ttft_ms": 155.7,
+              "decode_tok_s": 61.7,
               "completion_tokens": 181,
-              "total_ms": 3075.6
+              "total_ms": 3088.0
             }
           ],
           "multi_turn": {
-            "avg_turn_ms": 1924.2,
+            "avg_turn_ms": 1916.7,
             "turn_latencies_ms": [
-              2237.7,
-              1910.5,
-              2020.6,
-              1528.0
+              2220.8,
+              1906.4,
+              2008.6,
+              1530.9
             ]
           },
           "chat": {
             "1": [
               {
+                "aggregate_tok_s": 58.8,
+                "avg_latency_ms": 3077.6,
+                "p95_latency_ms": 3077.6,
+                "requests": 1,
+                "completion_tokens": 181,
+                "runs": [
+                  {
+                    "ttft_ms": 154.6,
+                    "decode_tok_s": 61.9,
+                    "completion_tokens": 181,
+                    "total_ms": 3077.6
+                  }
+                ]
+              },
+              {
                 "aggregate_tok_s": 58.4,
-                "avg_latency_ms": 3100.2,
-                "p95_latency_ms": 3100.2,
+                "avg_latency_ms": 3098.6,
+                "p95_latency_ms": 3098.6,
                 "requests": 1,
                 "completion_tokens": 181,
                 "runs": [
                   {
-                    "ttft_ms": 167.6,
-                    "decode_tok_s": 63.1,
+                    "ttft_ms": 160.3,
+                    "decode_tok_s": 61.6,
                     "completion_tokens": 181,
-                    "total_ms": 3100.2
+                    "total_ms": 3098.6
                   }
                 ]
               },
               {
-                "aggregate_tok_s": 58.5,
-                "avg_latency_ms": 3091.3,
-                "p95_latency_ms": 3091.3,
+                "aggregate_tok_s": 58.9,
+                "avg_latency_ms": 3074.6,
+                "p95_latency_ms": 3074.6,
                 "requests": 1,
                 "completion_tokens": 181,
                 "runs": [
                   {
-                    "ttft_ms": 159.7,
-                    "decode_tok_s": 63.2,
+                    "ttft_ms": 153.8,
+                    "decode_tok_s": 62.0,
                     "completion_tokens": 181,
-                    "total_ms": 3091.3
-                  }
-                ]
-              },
-              {
-                "aggregate_tok_s": 58.5,
-                "avg_latency_ms": 3095.0,
-                "p95_latency_ms": 3095.0,
-                "requests": 1,
-                "completion_tokens": 181,
-                "runs": [
-                  {
-                    "ttft_ms": 158.3,
-                    "decode_tok_s": 63.0,
-                    "completion_tokens": 181,
-                    "total_ms": 3095.0
+                    "total_ms": 3074.6
                   }
                 ]
               }
             ],
             "2": [
               {
-                "aggregate_tok_s": 59.2,
-                "avg_latency_ms": 4602.6,
-                "p95_latency_ms": 6113.2,
-                "requests": 2,
-                "completion_tokens": 362,
-                "runs": [
-                  {
-                    "ttft_ms": 164.3,
-                    "decode_tok_s": 63.2,
-                    "completion_tokens": 181,
-                    "total_ms": 3091.9
-                  },
-                  {
-                    "ttft_ms": 3178.7,
-                    "decode_tok_s": 63.1,
-                    "completion_tokens": 181,
-                    "total_ms": 6113.2
-                  }
-                ]
-              },
-              {
-                "aggregate_tok_s": 59.3,
-                "avg_latency_ms": 4598.7,
-                "p95_latency_ms": 6105.4,
-                "requests": 2,
-                "completion_tokens": 362,
-                "runs": [
-                  {
-                    "ttft_ms": 164.3,
-                    "decode_tok_s": 63.2,
-                    "completion_tokens": 181,
-                    "total_ms": 3092.0
-                  },
-                  {
-                    "ttft_ms": 3178.7,
-                    "decode_tok_s": 63.3,
-                    "completion_tokens": 181,
-                    "total_ms": 6105.4
-                  }
-                ]
-              },
-              {
                 "aggregate_tok_s": 59.1,
-                "avg_latency_ms": 4611.6,
-                "p95_latency_ms": 6123.4,
+                "avg_latency_ms": 4616.1,
+                "p95_latency_ms": 6123.2,
                 "requests": 2,
                 "completion_tokens": 362,
                 "runs": [
                   {
                     "ttft_ms": 166.3,
-                    "decode_tok_s": 63.1,
+                    "decode_tok_s": 61.5,
                     "completion_tokens": 181,
-                    "total_ms": 3099.9
+                    "total_ms": 3108.9
                   },
                   {
-                    "ttft_ms": 3186.6,
-                    "decode_tok_s": 63.1,
+                    "ttft_ms": 3194.1,
+                    "decode_tok_s": 61.8,
                     "completion_tokens": 181,
-                    "total_ms": 6123.4
+                    "total_ms": 6123.2
+                  }
+                ]
+              },
+              {
+                "aggregate_tok_s": 59.1,
+                "avg_latency_ms": 4617.2,
+                "p95_latency_ms": 6129.3,
+                "requests": 2,
+                "completion_tokens": 362,
+                "runs": [
+                  {
+                    "ttft_ms": 159.9,
+                    "decode_tok_s": 61.5,
+                    "completion_tokens": 181,
+                    "total_ms": 3105.2
+                  },
+                  {
+                    "ttft_ms": 3191.4,
+                    "decode_tok_s": 61.6,
+                    "completion_tokens": 181,
+                    "total_ms": 6129.3
+                  }
+                ]
+              },
+              {
+                "aggregate_tok_s": 59.0,
+                "avg_latency_ms": 4614.3,
+                "p95_latency_ms": 6130.6,
+                "requests": 2,
+                "completion_tokens": 362,
+                "runs": [
+                  {
+                    "ttft_ms": 158.3,
+                    "decode_tok_s": 61.6,
+                    "completion_tokens": 181,
+                    "total_ms": 3098.0
+                  },
+                  {
+                    "ttft_ms": 3185.0,
+                    "decode_tok_s": 61.4,
+                    "completion_tokens": 181,
+                    "total_ms": 6130.6
                   }
                 ]
               }
             ],
             "4": [
               {
-                "aggregate_tok_s": 59.3,
-                "avg_latency_ms": 7666.3,
-                "p95_latency_ms": 12210.5,
+                "aggregate_tok_s": 59.5,
+                "avg_latency_ms": 7638.5,
+                "p95_latency_ms": 12161.8,
                 "requests": 4,
                 "completion_tokens": 724,
                 "runs": [
                   {
-                    "ttft_ms": 180.2,
-                    "decode_tok_s": 63.1,
+                    "ttft_ms": 175.1,
+                    "decode_tok_s": 61.7,
                     "completion_tokens": 181,
-                    "total_ms": 3117.4
+                    "total_ms": 3108.0
                   },
                   {
-                    "ttft_ms": 3204.3,
-                    "decode_tok_s": 62.8,
+                    "ttft_ms": 3194.7,
+                    "decode_tok_s": 61.6,
                     "completion_tokens": 181,
-                    "total_ms": 6155.1
+                    "total_ms": 6132.4
                   },
                   {
-                    "ttft_ms": 6241.5,
-                    "decode_tok_s": 63.0,
+                    "ttft_ms": 6219.0,
+                    "decode_tok_s": 61.7,
                     "completion_tokens": 181,
-                    "total_ms": 9182.3
+                    "total_ms": 9151.9
                   },
                   {
-                    "ttft_ms": 9268.9,
-                    "decode_tok_s": 62.9,
+                    "ttft_ms": 9238.7,
+                    "decode_tok_s": 61.9,
                     "completion_tokens": 181,
-                    "total_ms": 12210.5
+                    "total_ms": 12161.8
                   }
                 ]
               },
               {
                 "aggregate_tok_s": 59.4,
-                "avg_latency_ms": 7646.0,
-                "p95_latency_ms": 12190.1,
+                "avg_latency_ms": 7654.3,
+                "p95_latency_ms": 12196.0,
                 "requests": 4,
                 "completion_tokens": 724,
                 "runs": [
                   {
-                    "ttft_ms": 171.9,
-                    "decode_tok_s": 63.2,
+                    "ttft_ms": 171.1,
+                    "decode_tok_s": 61.5,
                     "completion_tokens": 181,
-                    "total_ms": 3102.8
+                    "total_ms": 3116.4
                   },
                   {
-                    "ttft_ms": 3189.3,
-                    "decode_tok_s": 63.0,
+                    "ttft_ms": 3203.3,
+                    "decode_tok_s": 61.7,
                     "completion_tokens": 181,
-                    "total_ms": 6129.1
+                    "total_ms": 6136.4
                   },
                   {
-                    "ttft_ms": 6215.9,
-                    "decode_tok_s": 62.8,
+                    "ttft_ms": 6223.2,
+                    "decode_tok_s": 61.5,
                     "completion_tokens": 181,
-                    "total_ms": 9162.1
+                    "total_ms": 9168.4
                   },
                   {
-                    "ttft_ms": 9249.4,
-                    "decode_tok_s": 63.0,
+                    "ttft_ms": 9255.0,
+                    "decode_tok_s": 61.5,
                     "completion_tokens": 181,
-                    "total_ms": 12190.1
+                    "total_ms": 12196.0
                   }
                 ]
               },
               {
                 "aggregate_tok_s": 59.5,
-                "avg_latency_ms": 7631.8,
-                "p95_latency_ms": 12163.9,
+                "avg_latency_ms": 7651.1,
+                "p95_latency_ms": 12170.9,
                 "requests": 4,
                 "completion_tokens": 724,
                 "runs": [
                   {
-                    "ttft_ms": 176.7,
-                    "decode_tok_s": 63.2,
+                    "ttft_ms": 175.3,
+                    "decode_tok_s": 61.7,
                     "completion_tokens": 181,
-                    "total_ms": 3108.4
+                    "total_ms": 3110.5
                   },
                   {
-                    "ttft_ms": 3194.3,
-                    "decode_tok_s": 63.3,
+                    "ttft_ms": 3198.5,
+                    "decode_tok_s": 61.4,
                     "completion_tokens": 181,
-                    "total_ms": 6116.7
+                    "total_ms": 6148.1
                   },
                   {
-                    "ttft_ms": 6203.9,
-                    "decode_tok_s": 63.1,
+                    "ttft_ms": 6234.7,
+                    "decode_tok_s": 61.6,
                     "completion_tokens": 181,
-                    "total_ms": 9138.2
+                    "total_ms": 9174.8
                   },
                   {
-                    "ttft_ms": 9223.1,
-                    "decode_tok_s": 62.9,
+                    "ttft_ms": 9261.2,
+                    "decode_tok_s": 62.2,
                     "completion_tokens": 181,
-                    "total_ms": 12163.9
+                    "total_ms": 12170.9
                   }
                 ]
               }
@@ -766,39 +766,39 @@
         },
         "summary": {
           "stream": {
-            "ttft_ms": 158.3,
-            "decode_tok_s": 63.2,
+            "ttft_ms": 158.6,
+            "decode_tok_s": 61.7,
             "completion_tokens": 181.0,
-            "total_ms": 3086.8
+            "total_ms": 3091.8
           },
           "multi_turn": {
-            "avg_turn_ms": 1924.2,
+            "avg_turn_ms": 1916.7,
             "turn_latencies_ms": [
-              2237.7,
-              1910.5,
-              2020.6,
-              1528.0
+              2220.8,
+              1906.4,
+              2008.6,
+              1530.9
             ]
           },
           "concurrency": {
             "1": {
-              "aggregate_tok_s": 58.5,
-              "avg_latency_ms": 3095.5,
-              "p95_latency_ms": 3095.5,
+              "aggregate_tok_s": 58.7,
+              "avg_latency_ms": 3083.6,
+              "p95_latency_ms": 3083.6,
               "completion_tokens": 181.0,
               "requests": 1.0
             },
             "2": {
-              "aggregate_tok_s": 59.2,
-              "avg_latency_ms": 4604.3,
-              "p95_latency_ms": 6114.0,
+              "aggregate_tok_s": 59.1,
+              "avg_latency_ms": 4615.9,
+              "p95_latency_ms": 6127.7,
               "completion_tokens": 362.0,
               "requests": 2.0
             },
             "4": {
-              "aggregate_tok_s": 59.4,
+              "aggregate_tok_s": 59.5,
               "avg_latency_ms": 7648.0,
-              "p95_latency_ms": 12188.2,
+              "p95_latency_ms": 12176.2,
               "completion_tokens": 724.0,
               "requests": 4.0
             }
@@ -811,18 +811,18 @@
         }
       },
       "comparisons": {
-        "stream_decode_tok_s_speedup": 2.670886075949367,
-        "stream_ttft_latency_speedup": 4.187830687830688,
-        "multi_turn_latency_speedup": 2.4323094425483505,
+        "stream_decode_tok_s_speedup": 2.7309562398703404,
+        "stream_ttft_latency_speedup": 7.699029126213591,
+        "multi_turn_latency_speedup": 2.6565488565488566,
         "concurrency": {
           "1": {
-            "aggregate_tok_s_speedup": 2.8307692307692305
+            "aggregate_tok_s_speedup": 2.814310051107325
           },
           "2": {
-            "aggregate_tok_s_speedup": 4.114864864864865
+            "aggregate_tok_s_speedup": 4.137055837563452
           },
           "4": {
-            "aggregate_tok_s_speedup": 5.461279461279461
+            "aggregate_tok_s_speedup": 5.431932773109244
           }
         },
         "embeddings": {
@@ -844,7 +844,7 @@
       "rapid-mlx": {
         "engine": "rapid-mlx",
         "model": "qwen3.5-9b",
-        "port": 64241,
+        "port": 64737,
         "command": [
           "rapid-mlx",
           "serve",
@@ -852,15 +852,15 @@
           "--host",
           "127.0.0.1",
           "--port",
-          "64241",
+          "64737",
           "--no-thinking",
           "--default-temperature",
           "0"
         ],
         "server": {
           "host": "127.0.0.1",
-          "port": 64241,
-          "url": "http://127.0.0.1:64241"
+          "port": 64737,
+          "url": "http://127.0.0.1:64737"
         },
         "runtime": {
           "prepared": true,
@@ -871,7 +871,7 @@
             "--host",
             "127.0.0.1",
             "--port",
-            "64241",
+            "64737",
             "--no-thinking",
             "--default-temperature",
             "0"
@@ -882,8 +882,8 @@
           "model": "qwen3.5-9b",
           "runtime": "managed-server"
         },
-        "started_at": "2026-05-02T10:24:23",
-        "finished_at": "2026-05-02T10:24:23",
+        "started_at": "2026-05-02T10:34:36",
+        "finished_at": "2026-05-02T10:34:36",
         "errors": [
           {
             "workload": "embeddings",
@@ -944,183 +944,150 @@
           "stream": [
             {
               "ttft_ms": 26.5,
-              "decode_tok_s": 114.1,
+              "decode_tok_s": 113.6,
               "completion_tokens": 178,
-              "total_ms": 1586.8
+              "total_ms": 1592.8
             },
             {
-              "ttft_ms": 25.9,
-              "decode_tok_s": 114.2,
+              "ttft_ms": 26.2,
+              "decode_tok_s": 112.6,
               "completion_tokens": 178,
-              "total_ms": 1584.5
+              "total_ms": 1607.2
             },
             {
-              "ttft_ms": 25.7,
-              "decode_tok_s": 114.1,
+              "ttft_ms": 26.5,
+              "decode_tok_s": 113.7,
               "completion_tokens": 178,
-              "total_ms": 1585.1
+              "total_ms": 1592.7
             }
           ],
           "multi_turn": {
-            "avg_turn_ms": 1170.3,
+            "avg_turn_ms": 1254.0,
             "turn_latencies_ms": [
-              1055.8,
-              1187.1,
-              1359.9,
-              1078.3
+              1162.1,
+              1202.5,
+              1408.5,
+              1242.9
             ]
           },
           "chat": {
             "1": [
               {
-                "aggregate_tok_s": 112.2,
-                "avg_latency_ms": 1586.0,
-                "p95_latency_ms": 1586.0,
+                "aggregate_tok_s": 111.6,
+                "avg_latency_ms": 1593.7,
+                "p95_latency_ms": 1593.7,
                 "requests": 1,
                 "completion_tokens": 178,
                 "runs": [
                   {
-                    "ttft_ms": 25.9,
-                    "decode_tok_s": 114.1,
+                    "ttft_ms": 26.0,
+                    "decode_tok_s": 113.5,
                     "completion_tokens": 178,
-                    "total_ms": 1586.0
+                    "total_ms": 1593.7
                   }
                 ]
               },
               {
-                "aggregate_tok_s": 112.6,
-                "avg_latency_ms": 1580.1,
-                "p95_latency_ms": 1580.1,
+                "aggregate_tok_s": 111.7,
+                "avg_latency_ms": 1593.4,
+                "p95_latency_ms": 1593.4,
                 "requests": 1,
                 "completion_tokens": 178,
                 "runs": [
                   {
-                    "ttft_ms": 26.3,
-                    "decode_tok_s": 114.6,
+                    "ttft_ms": 25.7,
+                    "decode_tok_s": 113.5,
                     "completion_tokens": 178,
-                    "total_ms": 1580.1
+                    "total_ms": 1593.4
                   }
                 ]
               },
               {
-                "aggregate_tok_s": 112.5,
-                "avg_latency_ms": 1582.4,
-                "p95_latency_ms": 1582.4,
+                "aggregate_tok_s": 111.5,
+                "avg_latency_ms": 1596.0,
+                "p95_latency_ms": 1596.0,
                 "requests": 1,
                 "completion_tokens": 178,
                 "runs": [
                   {
-                    "ttft_ms": 24.2,
-                    "decode_tok_s": 114.2,
+                    "ttft_ms": 26.7,
+                    "decode_tok_s": 113.4,
                     "completion_tokens": 178,
-                    "total_ms": 1582.4
+                    "total_ms": 1596.0
                   }
                 ]
               }
             ],
             "2": [
               {
-                "aggregate_tok_s": 175.7,
-                "avg_latency_ms": 1926.0,
-                "p95_latency_ms": 2025.2,
+                "aggregate_tok_s": 175.1,
+                "avg_latency_ms": 1932.1,
+                "p95_latency_ms": 2032.2,
                 "requests": 2,
                 "completion_tokens": 356,
                 "runs": [
                   {
-                    "ttft_ms": 25.9,
-                    "decode_tok_s": 98.8,
+                    "ttft_ms": 26.2,
+                    "decode_tok_s": 98.6,
                     "completion_tokens": 178,
-                    "total_ms": 1826.8
+                    "total_ms": 1832.0
                   },
                   {
-                    "ttft_ms": 247.6,
-                    "decode_tok_s": 100.1,
+                    "ttft_ms": 249.8,
+                    "decode_tok_s": 99.9,
                     "completion_tokens": 178,
-                    "total_ms": 2025.2
+                    "total_ms": 2032.2
                   }
                 ]
               },
               {
-                "aggregate_tok_s": 175.8,
-                "avg_latency_ms": 1924.9,
-                "p95_latency_ms": 2024.0,
+                "aggregate_tok_s": 175.2,
+                "avg_latency_ms": 1932.0,
+                "p95_latency_ms": 2031.5,
                 "requests": 2,
                 "completion_tokens": 356,
                 "runs": [
                   {
                     "ttft_ms": 26.3,
-                    "decode_tok_s": 98.9,
+                    "decode_tok_s": 98.6,
                     "completion_tokens": 178,
-                    "total_ms": 1825.8
+                    "total_ms": 1832.4
                   },
                   {
-                    "ttft_ms": 248.5,
-                    "decode_tok_s": 100.3,
+                    "ttft_ms": 249.8,
+                    "decode_tok_s": 99.9,
                     "completion_tokens": 178,
-                    "total_ms": 2024.0
+                    "total_ms": 2031.5
                   }
                 ]
               },
               {
-                "aggregate_tok_s": 175.8,
-                "avg_latency_ms": 1925.2,
-                "p95_latency_ms": 2024.2,
+                "aggregate_tok_s": 173.7,
+                "avg_latency_ms": 1949.0,
+                "p95_latency_ms": 2048.5,
                 "requests": 2,
                 "completion_tokens": 356,
                 "runs": [
                   {
-                    "ttft_ms": 26.5,
-                    "decode_tok_s": 98.9,
+                    "ttft_ms": 25.9,
+                    "decode_tok_s": 97.6,
                     "completion_tokens": 178,
-                    "total_ms": 1826.1
+                    "total_ms": 1849.4
                   },
                   {
-                    "ttft_ms": 249.1,
-                    "decode_tok_s": 100.3,
+                    "ttft_ms": 249.7,
+                    "decode_tok_s": 99.0,
                     "completion_tokens": 178,
-                    "total_ms": 2024.2
+                    "total_ms": 2048.5
                   }
                 ]
               }
             ],
             "4": [
               {
-                "aggregate_tok_s": 225.1,
-                "avg_latency_ms": 2931.4,
-                "p95_latency_ms": 3193.8,
-                "requests": 4,
-                "completion_tokens": 719,
-                "runs": [
-                  {
-                    "ttft_ms": 26.1,
-                    "decode_tok_s": 70.1,
-                    "completion_tokens": 178,
-                    "total_ms": 2564.6
-                  },
-                  {
-                    "ttft_ms": 248.0,
-                    "decode_tok_s": 68.4,
-                    "completion_tokens": 178,
-                    "total_ms": 2850.9
-                  },
-                  {
-                    "ttft_ms": 451.4,
-                    "decode_tok_s": 69.4,
-                    "completion_tokens": 185,
-                    "total_ms": 3116.1
-                  },
-                  {
-                    "ttft_ms": 663.5,
-                    "decode_tok_s": 70.3,
-                    "completion_tokens": 178,
-                    "total_ms": 3193.8
-                  }
-                ]
-              },
-              {
-                "aggregate_tok_s": 224.5,
-                "avg_latency_ms": 2939.1,
-                "p95_latency_ms": 3202.0,
+                "aggregate_tok_s": 224.0,
+                "avg_latency_ms": 2943.7,
+                "p95_latency_ms": 3208.4,
                 "requests": 4,
                 "completion_tokens": 719,
                 "runs": [
@@ -1128,58 +1095,91 @@
                     "ttft_ms": 26.4,
                     "decode_tok_s": 69.9,
                     "completion_tokens": 178,
-                    "total_ms": 2571.3
+                    "total_ms": 2573.3
                   },
                   {
-                    "ttft_ms": 248.1,
-                    "decode_tok_s": 68.2,
+                    "ttft_ms": 249.8,
+                    "decode_tok_s": 68.1,
                     "completion_tokens": 178,
-                    "total_ms": 2858.5
+                    "total_ms": 2863.6
                   },
                   {
-                    "ttft_ms": 455.9,
-                    "decode_tok_s": 69.3,
+                    "ttft_ms": 455.2,
+                    "decode_tok_s": 69.2,
                     "completion_tokens": 185,
-                    "total_ms": 3124.4
+                    "total_ms": 3129.6
                   },
                   {
-                    "ttft_ms": 668.7,
-                    "decode_tok_s": 70.3,
+                    "ttft_ms": 667.6,
+                    "decode_tok_s": 70.1,
                     "completion_tokens": 178,
-                    "total_ms": 3202.0
+                    "total_ms": 3208.4
                   }
                 ]
               },
               {
-                "aggregate_tok_s": 223.4,
-                "avg_latency_ms": 2954.0,
-                "p95_latency_ms": 3216.8,
+                "aggregate_tok_s": 223.9,
+                "avg_latency_ms": 2946.4,
+                "p95_latency_ms": 3210.8,
                 "requests": 4,
                 "completion_tokens": 719,
                 "runs": [
                   {
-                    "ttft_ms": 26.7,
-                    "decode_tok_s": 69.5,
+                    "ttft_ms": 27.3,
+                    "decode_tok_s": 69.8,
                     "completion_tokens": 178,
-                    "total_ms": 2586.5
+                    "total_ms": 2576.9
                   },
                   {
-                    "ttft_ms": 248.9,
+                    "ttft_ms": 251.1,
+                    "decode_tok_s": 68.1,
+                    "completion_tokens": 178,
+                    "total_ms": 2865.1
+                  },
+                  {
+                    "ttft_ms": 456.3,
+                    "decode_tok_s": 69.1,
+                    "completion_tokens": 185,
+                    "total_ms": 3132.9
+                  },
+                  {
+                    "ttft_ms": 669.8,
+                    "decode_tok_s": 70.1,
+                    "completion_tokens": 178,
+                    "total_ms": 3210.8
+                  }
+                ]
+              },
+              {
+                "aggregate_tok_s": 223.3,
+                "avg_latency_ms": 2955.2,
+                "p95_latency_ms": 3218.9,
+                "requests": 4,
+                "completion_tokens": 719,
+                "runs": [
+                  {
+                    "ttft_ms": 27.8,
+                    "decode_tok_s": 69.6,
+                    "completion_tokens": 178,
+                    "total_ms": 2586.6
+                  },
+                  {
+                    "ttft_ms": 250.9,
                     "decode_tok_s": 67.8,
                     "completion_tokens": 178,
-                    "total_ms": 2874.6
+                    "total_ms": 2875.0
                   },
                   {
-                    "ttft_ms": 452.2,
+                    "ttft_ms": 454.0,
                     "decode_tok_s": 68.9,
                     "completion_tokens": 185,
-                    "total_ms": 3138.2
+                    "total_ms": 3140.4
                   },
                   {
-                    "ttft_ms": 664.1,
-                    "decode_tok_s": 69.7,
+                    "ttft_ms": 672.1,
+                    "decode_tok_s": 69.9,
                     "completion_tokens": 178,
-                    "total_ms": 3216.8
+                    "total_ms": 3218.9
                   }
                 ]
               }
@@ -1193,39 +1193,39 @@
         },
         "summary": {
           "stream": {
-            "ttft_ms": 26.0,
-            "decode_tok_s": 114.1,
+            "ttft_ms": 26.4,
+            "decode_tok_s": 113.3,
             "completion_tokens": 178.0,
-            "total_ms": 1585.5
+            "total_ms": 1597.6
           },
           "multi_turn": {
-            "avg_turn_ms": 1170.3,
+            "avg_turn_ms": 1254.0,
             "turn_latencies_ms": [
-              1055.8,
-              1187.1,
-              1359.9,
-              1078.3
+              1162.1,
+              1202.5,
+              1408.5,
+              1242.9
             ]
           },
           "concurrency": {
             "1": {
-              "aggregate_tok_s": 112.4,
-              "avg_latency_ms": 1582.8,
-              "p95_latency_ms": 1582.8,
+              "aggregate_tok_s": 111.6,
+              "avg_latency_ms": 1594.4,
+              "p95_latency_ms": 1594.4,
               "completion_tokens": 178.0,
               "requests": 1.0
             },
             "2": {
-              "aggregate_tok_s": 175.8,
-              "avg_latency_ms": 1925.4,
-              "p95_latency_ms": 2024.5,
+              "aggregate_tok_s": 174.7,
+              "avg_latency_ms": 1937.7,
+              "p95_latency_ms": 2037.4,
               "completion_tokens": 356.0,
               "requests": 2.0
             },
             "4": {
-              "aggregate_tok_s": 224.3,
-              "avg_latency_ms": 2941.5,
-              "p95_latency_ms": 3204.2,
+              "aggregate_tok_s": 223.7,
+              "avg_latency_ms": 2948.4,
+              "p95_latency_ms": 3212.7,
               "completion_tokens": 719.0,
               "requests": 4.0
             }
@@ -1240,15 +1240,15 @@
       "ollama": {
         "engine": "ollama",
         "model": "qwen3.5:9b",
-        "port": 64522,
+        "port": 64795,
         "command": [
           "ollama",
           "serve"
         ],
         "server": {
           "host": "127.0.0.1",
-          "port": 64522,
-          "url": "http://127.0.0.1:64522"
+          "port": 64795,
+          "url": "http://127.0.0.1:64795"
         },
         "runtime": {
           "prepared": true,
@@ -1262,8 +1262,8 @@
           "model": "qwen3.5:9b",
           "runtime": "managed-server"
         },
-        "started_at": "2026-05-02T10:27:58",
-        "finished_at": "2026-05-02T10:27:58",
+        "started_at": "2026-05-02T10:36:34",
+        "finished_at": "2026-05-02T10:36:34",
         "errors": [
           {
             "workload": "embeddings",
@@ -1323,77 +1323,77 @@
         "raw_runs": {
           "stream": [
             {
-              "ttft_ms": 171.1,
-              "decode_tok_s": 52.8,
-              "completion_tokens": 213,
-              "total_ms": 4283.6
-            },
-            {
               "ttft_ms": 170.9,
-              "decode_tok_s": 52.8,
+              "decode_tok_s": 51.8,
               "completion_tokens": 213,
-              "total_ms": 4287.6
+              "total_ms": 4286.7
             },
             {
-              "ttft_ms": 175.2,
-              "decode_tok_s": 52.8,
+              "ttft_ms": 180.1,
+              "decode_tok_s": 51.8,
               "completion_tokens": 213,
-              "total_ms": 4286.6
+              "total_ms": 4293.2
+            },
+            {
+              "ttft_ms": 176.0,
+              "decode_tok_s": 51.7,
+              "completion_tokens": 213,
+              "total_ms": 4293.7
             }
           ],
           "multi_turn": {
-            "avg_turn_ms": 2117.3,
+            "avg_turn_ms": 2117.9,
             "turn_latencies_ms": [
-              2642.7,
-              2493.4,
-              1414.0,
-              1919.2
+              2652.1,
+              2497.4,
+              1402.1,
+              1920.1
             ]
           },
           "chat": {
             "1": [
               {
-                "aggregate_tok_s": 49.6,
-                "avg_latency_ms": 4294.1,
-                "p95_latency_ms": 4294.1,
+                "aggregate_tok_s": 49.7,
+                "avg_latency_ms": 4283.9,
+                "p95_latency_ms": 4283.9,
                 "requests": 1,
                 "completion_tokens": 213,
                 "runs": [
                   {
-                    "ttft_ms": 176.3,
-                    "decode_tok_s": 52.7,
+                    "ttft_ms": 176.0,
+                    "decode_tok_s": 51.9,
                     "completion_tokens": 213,
-                    "total_ms": 4294.1
+                    "total_ms": 4283.9
+                  }
+                ]
+              },
+              {
+                "aggregate_tok_s": 49.8,
+                "avg_latency_ms": 4280.5,
+                "p95_latency_ms": 4280.5,
+                "requests": 1,
+                "completion_tokens": 213,
+                "runs": [
+                  {
+                    "ttft_ms": 169.1,
+                    "decode_tok_s": 51.8,
+                    "completion_tokens": 213,
+                    "total_ms": 4280.5
                   }
                 ]
               },
               {
                 "aggregate_tok_s": 49.7,
-                "avg_latency_ms": 4284.9,
-                "p95_latency_ms": 4284.9,
+                "avg_latency_ms": 4286.7,
+                "p95_latency_ms": 4286.7,
                 "requests": 1,
                 "completion_tokens": 213,
                 "runs": [
                   {
-                    "ttft_ms": 171.7,
-                    "decode_tok_s": 52.8,
+                    "ttft_ms": 170.4,
+                    "decode_tok_s": 51.7,
                     "completion_tokens": 213,
-                    "total_ms": 4284.9
-                  }
-                ]
-              },
-              {
-                "aggregate_tok_s": 49.7,
-                "avg_latency_ms": 4284.3,
-                "p95_latency_ms": 4284.3,
-                "requests": 1,
-                "completion_tokens": 213,
-                "runs": [
-                  {
-                    "ttft_ms": 167.8,
-                    "decode_tok_s": 52.7,
-                    "completion_tokens": 213,
-                    "total_ms": 4284.3
+                    "total_ms": 4286.7
                   }
                 ]
               }
@@ -1401,64 +1401,64 @@
             "2": [
               {
                 "aggregate_tok_s": 49.9,
-                "avg_latency_ms": 6412.8,
-                "p95_latency_ms": 8529.9,
+                "avg_latency_ms": 6416.0,
+                "p95_latency_ms": 8528.6,
                 "requests": 2,
                 "completion_tokens": 426,
                 "runs": [
                   {
-                    "ttft_ms": 173.2,
-                    "decode_tok_s": 52.7,
+                    "ttft_ms": 183.6,
+                    "decode_tok_s": 51.7,
                     "completion_tokens": 213,
-                    "total_ms": 4295.6
+                    "total_ms": 4303.3
                   },
                   {
-                    "ttft_ms": 4398.5,
-                    "decode_tok_s": 52.6,
+                    "ttft_ms": 4406.0,
+                    "decode_tok_s": 51.7,
                     "completion_tokens": 213,
-                    "total_ms": 8529.9
+                    "total_ms": 8528.6
                   }
                 ]
               },
               {
-                "aggregate_tok_s": 50.1,
-                "avg_latency_ms": 6395.6,
-                "p95_latency_ms": 8506.8,
+                "aggregate_tok_s": 49.9,
+                "avg_latency_ms": 6417.9,
+                "p95_latency_ms": 8532.4,
                 "requests": 2,
                 "completion_tokens": 426,
                 "runs": [
                   {
-                    "ttft_ms": 178.1,
-                    "decode_tok_s": 52.9,
+                    "ttft_ms": 182.4,
+                    "decode_tok_s": 51.7,
                     "completion_tokens": 213,
-                    "total_ms": 4284.5
+                    "total_ms": 4303.3
                   },
                   {
-                    "ttft_ms": 4387.4,
-                    "decode_tok_s": 52.7,
+                    "ttft_ms": 4406.6,
+                    "decode_tok_s": 51.6,
                     "completion_tokens": 213,
-                    "total_ms": 8506.8
+                    "total_ms": 8532.4
                   }
                 ]
               },
               {
                 "aggregate_tok_s": 50.0,
-                "avg_latency_ms": 6403.8,
-                "p95_latency_ms": 8512.6,
+                "avg_latency_ms": 6408.5,
+                "p95_latency_ms": 8523.5,
                 "requests": 2,
                 "completion_tokens": 426,
                 "runs": [
                   {
-                    "ttft_ms": 178.8,
-                    "decode_tok_s": 52.7,
+                    "ttft_ms": 184.5,
+                    "decode_tok_s": 51.8,
                     "completion_tokens": 213,
-                    "total_ms": 4295.0
+                    "total_ms": 4293.5
                   },
                   {
-                    "ttft_ms": 4397.8,
-                    "decode_tok_s": 52.8,
+                    "ttft_ms": 4396.2,
+                    "decode_tok_s": 51.6,
                     "completion_tokens": 213,
-                    "total_ms": 8512.6
+                    "total_ms": 8523.5
                   }
                 ]
               }
@@ -1466,100 +1466,100 @@
             "4": [
               {
                 "aggregate_tok_s": 50.1,
-                "avg_latency_ms": 10651.4,
-                "p95_latency_ms": 16992.9,
+                "avg_latency_ms": 10652.5,
+                "p95_latency_ms": 16993.5,
                 "requests": 4,
                 "completion_tokens": 852,
                 "runs": [
                   {
-                    "ttft_ms": 195.1,
-                    "decode_tok_s": 52.8,
+                    "ttft_ms": 194.7,
+                    "decode_tok_s": 51.7,
                     "completion_tokens": 213,
-                    "total_ms": 4309.6
+                    "total_ms": 4314.4
                   },
                   {
-                    "ttft_ms": 4412.7,
-                    "decode_tok_s": 52.7,
+                    "ttft_ms": 4418.1,
+                    "decode_tok_s": 51.7,
                     "completion_tokens": 213,
-                    "total_ms": 8535.3
+                    "total_ms": 8535.5
                   },
                   {
-                    "ttft_ms": 8638.8,
-                    "decode_tok_s": 52.6,
+                    "ttft_ms": 8638.7,
+                    "decode_tok_s": 51.6,
                     "completion_tokens": 213,
-                    "total_ms": 12767.6
+                    "total_ms": 12766.8
                   },
                   {
-                    "ttft_ms": 12870.7,
-                    "decode_tok_s": 52.7,
+                    "ttft_ms": 12870.1,
+                    "decode_tok_s": 51.7,
                     "completion_tokens": 213,
-                    "total_ms": 16992.9
-                  }
-                ]
-              },
-              {
-                "aggregate_tok_s": 50.3,
-                "avg_latency_ms": 10627.9,
-                "p95_latency_ms": 16951.7,
-                "requests": 4,
-                "completion_tokens": 852,
-                "runs": [
-                  {
-                    "ttft_ms": 182.3,
-                    "decode_tok_s": 52.8,
-                    "completion_tokens": 213,
-                    "total_ms": 4295.4
-                  },
-                  {
-                    "ttft_ms": 4398.3,
-                    "decode_tok_s": 52.7,
-                    "completion_tokens": 213,
-                    "total_ms": 8523.4
-                  },
-                  {
-                    "ttft_ms": 8626.8,
-                    "decode_tok_s": 52.8,
-                    "completion_tokens": 213,
-                    "total_ms": 12741.2
-                  },
-                  {
-                    "ttft_ms": 12843.6,
-                    "decode_tok_s": 52.9,
-                    "completion_tokens": 213,
-                    "total_ms": 16951.7
+                    "total_ms": 16993.5
                   }
                 ]
               },
               {
                 "aggregate_tok_s": 50.2,
-                "avg_latency_ms": 10638.7,
-                "p95_latency_ms": 16971.2,
+                "avg_latency_ms": 10647.9,
+                "p95_latency_ms": 16983.9,
                 "requests": 4,
                 "completion_tokens": 852,
                 "runs": [
                   {
-                    "ttft_ms": 182.4,
-                    "decode_tok_s": 52.7,
+                    "ttft_ms": 186.1,
+                    "decode_tok_s": 51.6,
                     "completion_tokens": 213,
-                    "total_ms": 4307.4
+                    "total_ms": 4314.9
                   },
                   {
-                    "ttft_ms": 4410.0,
-                    "decode_tok_s": 52.8,
+                    "ttft_ms": 4418.2,
+                    "decode_tok_s": 51.8,
                     "completion_tokens": 213,
-                    "total_ms": 8529.4
+                    "total_ms": 8534.0
                   },
                   {
-                    "ttft_ms": 8632.9,
-                    "decode_tok_s": 52.8,
+                    "ttft_ms": 8637.1,
+                    "decode_tok_s": 51.7,
                     "completion_tokens": 213,
-                    "total_ms": 12746.8
+                    "total_ms": 12758.9
                   },
                   {
-                    "ttft_ms": 12850.7,
-                    "decode_tok_s": 52.7,
+                    "ttft_ms": 12862.1,
+                    "decode_tok_s": 51.7,
                     "completion_tokens": 213,
-                    "total_ms": 16971.2
+                    "total_ms": 16983.9
+                  }
+                ]
+              },
+              {
+                "aggregate_tok_s": 50.0,
+                "avg_latency_ms": 10675.5,
+                "p95_latency_ms": 17036.0,
+                "requests": 4,
+                "completion_tokens": 852,
+                "runs": [
+                  {
+                    "ttft_ms": 183.4,
+                    "decode_tok_s": 51.5,
+                    "completion_tokens": 213,
+                    "total_ms": 4315.7
+                  },
+                  {
+                    "ttft_ms": 4419.5,
+                    "decode_tok_s": 51.5,
+                    "completion_tokens": 213,
+                    "total_ms": 8554.1
+                  },
+                  {
+                    "ttft_ms": 8657.9,
+                    "decode_tok_s": 51.5,
+                    "completion_tokens": 213,
+                    "total_ms": 12796.3
+                  },
+                  {
+                    "ttft_ms": 12899.7,
+                    "decode_tok_s": 51.5,
+                    "completion_tokens": 213,
+                    "total_ms": 17036.0
                   }
                 ]
               }
@@ -1573,39 +1573,39 @@
         },
         "summary": {
           "stream": {
-            "ttft_ms": 172.4,
-            "decode_tok_s": 52.8,
+            "ttft_ms": 175.7,
+            "decode_tok_s": 51.8,
             "completion_tokens": 213.0,
-            "total_ms": 4285.9
+            "total_ms": 4291.2
           },
           "multi_turn": {
-            "avg_turn_ms": 2117.3,
+            "avg_turn_ms": 2117.9,
             "turn_latencies_ms": [
-              2642.7,
-              2493.4,
-              1414.0,
-              1919.2
+              2652.1,
+              2497.4,
+              1402.1,
+              1920.1
             ]
           },
           "concurrency": {
             "1": {
               "aggregate_tok_s": 49.7,
-              "avg_latency_ms": 4287.8,
-              "p95_latency_ms": 4287.8,
+              "avg_latency_ms": 4283.7,
+              "p95_latency_ms": 4283.7,
               "completion_tokens": 213.0,
               "requests": 1.0
             },
             "2": {
-              "aggregate_tok_s": 50.0,
-              "avg_latency_ms": 6404.1,
-              "p95_latency_ms": 8516.4,
+              "aggregate_tok_s": 49.9,
+              "avg_latency_ms": 6414.1,
+              "p95_latency_ms": 8528.2,
               "completion_tokens": 426.0,
               "requests": 2.0
             },
             "4": {
-              "aggregate_tok_s": 50.2,
-              "avg_latency_ms": 10639.3,
-              "p95_latency_ms": 16971.9,
+              "aggregate_tok_s": 50.1,
+              "avg_latency_ms": 10658.6,
+              "p95_latency_ms": 17004.5,
               "completion_tokens": 852.0,
               "requests": 4.0
             }
@@ -1618,18 +1618,18 @@
         }
       },
       "comparisons": {
-        "stream_decode_tok_s_speedup": 2.1609848484848486,
-        "stream_ttft_latency_speedup": 6.630769230769231,
-        "multi_turn_latency_speedup": 1.809194223703324,
+        "stream_decode_tok_s_speedup": 2.187258687258687,
+        "stream_ttft_latency_speedup": 6.65530303030303,
+        "multi_turn_latency_speedup": 1.688915470494418,
         "concurrency": {
           "1": {
-            "aggregate_tok_s_speedup": 2.261569416498994
+            "aggregate_tok_s_speedup": 2.2454728370221324
           },
           "2": {
-            "aggregate_tok_s_speedup": 3.516
+            "aggregate_tok_s_speedup": 3.501002004008016
           },
           "4": {
-            "aggregate_tok_s_speedup": 4.468127490039841
+            "aggregate_tok_s_speedup": 4.465069860279441
           }
         },
         "embeddings": {
