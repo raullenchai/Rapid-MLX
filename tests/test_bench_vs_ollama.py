@@ -442,3 +442,40 @@ def test_managed_process_stop_terminates_then_waits():
 
     assert proc.terminated is True
     assert proc.waited is True
+
+
+def test_build_engine_success_result_shape():
+    bench = load_bench_module()
+
+    result = bench.build_engine_success_result(
+        engine="rapid-mlx",
+        model="qwen3.5-9b",
+        port=9123,
+        command=["rapid-mlx", "serve", "qwen3.5-9b"],
+        raw_runs={"stream": [{"ttft_ms": 100.0}]},
+        summary={"stream": {"ttft_ms": 100.0}},
+    )
+
+    assert result["engine"] == "rapid-mlx"
+    assert result["model"] == "qwen3.5-9b"
+    assert result["port"] == 9123
+    assert result["command"] == ["rapid-mlx", "serve", "qwen3.5-9b"]
+    assert result["raw_runs"]["stream"] == [{"ttft_ms": 100.0}]
+    assert result["summary"]["stream"] == {"ttft_ms": 100.0}
+    assert "error" not in result
+
+
+def test_build_engine_failure_result_shape():
+    bench = load_bench_module()
+
+    result = bench.build_engine_failure_result(
+        engine="ollama",
+        model="qwen3.5:9b",
+        port=9124,
+        command=["ollama", "serve"],
+        error=RuntimeError("startup failed"),
+    )
+
+    assert result["engine"] == "ollama"
+    assert result["model"] == "qwen3.5:9b"
+    assert result["error"] == "startup failed"

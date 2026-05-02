@@ -16,6 +16,7 @@ import platform
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import urllib.request
 from collections.abc import Iterable
@@ -828,9 +829,192 @@ def run_concurrent_throughput(
     return summarize_concurrent_batch(results, elapsed)
 
 
+def build_engine_success_result(
+    engine: str,
+    model: str,
+    port: int,
+    command: list[str],
+    raw_runs: dict,
+    summary: dict,
+) -> dict:
+    return {
+        "engine": engine,
+        "model": model,
+        "port": port,
+        "command": command,
+        "raw_runs": raw_runs,
+        "summary": summary,
+    }
+
+
+def build_engine_failure_result(
+    engine: str,
+    model: str,
+    port: int | None,
+    command: list[str],
+    error: Exception,
+) -> dict:
+    return {
+        "engine": engine,
+        "model": model,
+        "port": port,
+        "command": command,
+        "error": str(error),
+        "raw_runs": {},
+        "summary": {},
+    }
+
+
+def run_engine_suite(
+    engine: str,
+    base_url: str,
+    model: str,
+    args: CliArgs,
+) -> tuple[dict, dict]:
+    for _ in range(args.warmups):
+        run_stream_once(
+            engine,
+            base_url,
+            model,
+            DECODE_MESSAGES,
+            min(args.max_tokens, 32),
+            args.request_timeout,
+        )
+
+    stream_runs = [
+        run_stream_once(
+            engine,
+            base_url,
+            model,
+            DECODE_MESSAGES,
+            args.max_tokens,
+            args.request_timeout,
+        )
+        for _ in range(args.runs)
+    ]
+    multi_turn = run_multi_turn(
+        engine, base_url, model, min(args.max_tokens, 128), args.request_timeout
+    )
+    concurrency = {
+        str(level): run_concurrent_throughput(
+            engine,
+            base_url,
+            model,
+            level,
+            args.max_tokens,
+            args.request_timeout,
+        )
+        for level in args.concurrency
+    }
+    raw_runs = {"stream": stream_runs}
+    summary = {
+        "stream": summarize_stream_runs(stream_runs),
+        "multi_turn": multi_turn,
+        "concurrency": concurrency,
+    }
+    return raw_runs, summary
+
+
+def benchmark_rapid_mlx(pair: ModelPair, args: CliArgs) -> dict:
+    require_executable("rapid-mlx")
+    port = find_free_port()
+    command = build_rapid_mlx_command(pair.rapid_mlx, port, args.rapid_mlx_args)
+    process: ManagedProcess | None = None
+    try:
+        process = start_process(command, env=offline_env_if_needed(args.no_download))
+        wait_for_url(f"http://127.0.0.1:{port}/health", args.startup_timeout)
+        raw_runs, summary = run_engine_suite(
+            "rapid-mlx",
+            f"http://127.0.0.1:{port}",
+            pair.rapid_mlx,
+            args,
+        )
+        return build_engine_success_result(
+            "rapid-mlx", pair.rapid_mlx, port, command, raw_runs, summary
+        )
+    except Exception as exc:
+        return build_engine_failure_result(
+            "rapid-mlx", pair.rapid_mlx, port, command, exc
+        )
+    finally:
+        if process:
+            process.stop()
+
+
+def benchmark_ollama(pair: ModelPair, args: CliArgs) -> dict:
+    require_executable("ollama")
+    port = find_free_port()
+    command = ["ollama", "serve"]
+    process: ManagedProcess | None = None
+    try:
+        process = start_process(
+            command, env=build_ollama_environment(port, args.ollama_env)
+        )
+        wait_for_url(f"http://127.0.0.1:{port}/api/tags", args.startup_timeout)
+        raw_runs, summary = run_engine_suite(
+            "ollama",
+            f"http://127.0.0.1:{port}",
+            pair.ollama,
+            args,
+        )
+        return build_engine_success_result(
+            "ollama", pair.ollama, port, command, raw_runs, summary
+        )
+    except Exception as exc:
+        return build_engine_failure_result("ollama", pair.ollama, port, command, exc)
+    finally:
+        if process:
+            process.stop()
+
+
+def run_benchmark(args: CliArgs) -> dict:
+    prepare_models(args)
+    result = {
+        "metadata": collect_metadata(),
+        "config": {
+            "runs": args.runs,
+            "warmups": args.warmups,
+            "max_tokens": args.max_tokens,
+            "concurrency": args.concurrency,
+            "output_dir": str(args.output_dir),
+            "no_pull": args.no_pull,
+            "no_download": args.no_download,
+            "rapid_mlx_args": args.rapid_mlx_args,
+            "ollama_env_keys": sorted(args.ollama_env),
+        },
+        "model_pairs": [],
+    }
+    for pair in args.model_pairs:
+        print(f"\nBenchmarking {pair.rapid_mlx} vs {pair.ollama}", flush=True)
+        rapid_result = benchmark_rapid_mlx(pair, args)
+        ollama_result = benchmark_ollama(pair, args)
+        result["model_pairs"].append(
+            {
+                "rapid_mlx_model": pair.rapid_mlx,
+                "ollama_model": pair.ollama,
+                "rapid-mlx": rapid_result,
+                "ollama": ollama_result,
+            }
+        )
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
-    parse_args(argv)
-    return 0
+    try:
+        args = parse_args(argv)
+        result = run_benchmark(args)
+        paths = write_outputs(result, args.output_dir)
+        markdown = render_markdown(result)
+        print("\n" + markdown)
+        print(f"JSON written to: {paths['json']}")
+        print(f"Markdown written to: {paths['markdown']}")
+        return 0
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
