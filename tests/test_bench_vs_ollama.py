@@ -70,6 +70,25 @@ def test_parse_args_replaces_default_model_pairs():
     assert args.runs == 2
 
 
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--runs", "0"], "--runs must be >= 1"),
+        (["--warmups", "-1"], "--warmups must be >= 0"),
+        (["--max-tokens", "0"], "--max-tokens must be >= 1"),
+        (["--concurrency", "0"], "--concurrency values must be >= 1"),
+    ],
+)
+def test_parse_args_rejects_invalid_numeric_settings(argv, message, capsys):
+    bench = load_bench_module()
+
+    with pytest.raises(SystemExit) as exc_info:
+        bench.parse_args(argv)
+
+    assert exc_info.value.code == 2
+    assert message in capsys.readouterr().err
+
+
 def test_speedup_math_for_throughput_and_latency():
     bench = load_bench_module()
 
@@ -506,7 +525,8 @@ def test_run_engine_suite_records_workload_errors_and_continues(monkeypatch):
 
     def fake_chat(engine, base_url, model, messages, max_tokens, timeout, headers=None):
         calls.append(("chat", model, len(messages), max_tokens, timeout))
-        if len(calls) == 1:
+        chat_calls = [call for call in calls if call[0] == "chat"]
+        if len(chat_calls) == 2:
             raise RuntimeError("chat failed")
         return {
             "ttft_ms": 10.0,
@@ -521,6 +541,11 @@ def test_run_engine_suite_records_workload_errors_and_continues(monkeypatch):
 
     monkeypatch.setattr(bench, "run_stream_once", fake_chat)
     monkeypatch.setattr(bench, "run_embedding_once", fake_embed)
+    monkeypatch.setattr(
+        bench,
+        "run_multi_turn",
+        lambda *args, **kwargs: {"avg_turn_ms": 10.0, "turn_latencies_ms": [10.0]},
+    )
 
     raw_runs, summary, errors = bench.run_engine_suite(
         "rapid-mlx",
@@ -538,7 +563,8 @@ def test_run_engine_suite_records_workload_errors_and_continues(monkeypatch):
         headers={"Authorization": "Bearer test"},
     )
 
-    assert len(calls) == 6
+    assert len(calls) == 7
+    assert raw_runs["stream"][0]["completion_tokens"] == 2
     assert raw_runs["chat"]["1"] == []
     assert raw_runs["chat"]["2"][0]["runs"][0]["completion_tokens"] == 2
     assert raw_runs["embeddings"]["1"][0]["embeddings"] == 1
@@ -552,6 +578,107 @@ def test_run_engine_suite_records_workload_errors_and_continues(monkeypatch):
             "error": "chat failed",
         }
     ]
+
+
+def test_run_engine_suite_populates_multi_turn_summary(monkeypatch):
+    bench = load_bench_module()
+
+    monkeypatch.setattr(
+        bench,
+        "run_stream_once",
+        lambda *args, **kwargs: {
+            "ttft_ms": 10.0,
+            "decode_tok_s": 20.0,
+            "completion_tokens": 2,
+            "total_ms": 50.0,
+        },
+    )
+    monkeypatch.setattr(
+        bench,
+        "run_embedding_once",
+        lambda *args, **kwargs: {"latency_ms": 5.0, "embeddings": 1},
+    )
+    monkeypatch.setattr(
+        bench,
+        "run_multi_turn",
+        lambda *args, **kwargs: {
+            "avg_turn_ms": 123.4,
+            "turn_latencies_ms": [100.0, 146.8],
+        },
+    )
+
+    raw_runs, summary, errors = bench.run_engine_suite(
+        "rapid-mlx",
+        "http://server",
+        {
+            "chat_model": "chat-model",
+            "embedding_model": "embed-model",
+            "chat_messages": [{"role": "user", "content": "hi"}],
+            "embedding_input": ["hello"],
+            "max_tokens": 16,
+        },
+        concurrency_levels=[1],
+        runs_per_level=1,
+        timeout=30.0,
+    )
+
+    assert raw_runs["multi_turn"]["avg_turn_ms"] == 123.4
+    assert summary["multi_turn"]["avg_turn_ms"] == 123.4
+    assert errors == []
+
+
+def test_run_engine_suite_stream_summary_does_not_require_concurrency_one(
+    monkeypatch,
+):
+    bench = load_bench_module()
+
+    monkeypatch.setattr(
+        bench,
+        "run_stream_once",
+        lambda *args, **kwargs: {
+            "ttft_ms": 11.0,
+            "decode_tok_s": 22.0,
+            "completion_tokens": 3,
+            "total_ms": 55.0,
+        },
+    )
+    monkeypatch.setattr(
+        bench,
+        "run_embedding_once",
+        lambda *args, **kwargs: {"latency_ms": 5.0, "embeddings": 1},
+    )
+    monkeypatch.setattr(
+        bench,
+        "run_multi_turn",
+        lambda *args, **kwargs: {"avg_turn_ms": 20.0, "turn_latencies_ms": [20.0]},
+    )
+
+    raw_runs, summary, errors = bench.run_engine_suite(
+        "rapid-mlx",
+        "http://server",
+        {
+            "chat_model": "chat-model",
+            "embedding_model": "embed-model",
+            "chat_messages": [{"role": "user", "content": "hi"}],
+            "embedding_input": ["hello"],
+            "max_tokens": 16,
+        },
+        concurrency_levels=[2],
+        runs_per_level=1,
+        timeout=30.0,
+    )
+
+    assert raw_runs["stream"] == [
+        {
+            "ttft_ms": 11.0,
+            "decode_tok_s": 22.0,
+            "completion_tokens": 3,
+            "total_ms": 55.0,
+        }
+    ]
+    assert summary["stream"]["ttft_ms"] == 11.0
+    assert summary["stream"]["decode_tok_s"] == 22.0
+    assert errors == []
 
 
 def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(

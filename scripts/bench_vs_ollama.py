@@ -130,7 +130,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: list[str] | None = None) -> CliArgs:
-    ns = build_parser().parse_args(argv)
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    if ns.runs < 1:
+        parser.error("--runs must be >= 1")
+    if ns.warmups < 0:
+        parser.error("--warmups must be >= 0")
+    if ns.max_tokens < 1:
+        parser.error("--max-tokens must be >= 1")
+    if any(level < 1 for level in ns.concurrency):
+        parser.error("--concurrency values must be >= 1")
     model_pairs = (
         [parse_model_pair(value) for value in ns.model_pair]
         if ns.model_pair
@@ -1066,8 +1075,39 @@ def run_engine_suite(
     timeout: float,
     headers: dict[str, str] | None = None,
 ) -> tuple[dict, dict, list[dict]]:
-    raw_runs: dict[str, dict[str, list[dict]]] = {"chat": {}, "embeddings": {}}
+    raw_runs: dict = {"stream": [], "multi_turn": {}, "chat": {}, "embeddings": {}}
     errors: list[dict] = []
+    for run_index in range(1, runs_per_level + 1):
+        try:
+            raw_runs["stream"].append(
+                run_stream_once(
+                    engine_name,
+                    base_url,
+                    workload["chat_model"],
+                    workload["chat_messages"],
+                    workload["max_tokens"],
+                    timeout,
+                    headers=headers,
+                )
+            )
+        except Exception as exc:
+            errors.append(
+                {
+                    "workload": "stream",
+                    "run": run_index,
+                    "error": str(exc),
+                }
+            )
+    try:
+        raw_runs["multi_turn"] = run_multi_turn(
+            engine_name,
+            base_url,
+            workload["chat_model"],
+            min(workload["max_tokens"], 128),
+            timeout,
+        )
+    except Exception as exc:
+        errors.append({"workload": "multi_turn", "error": str(exc)})
     for level in concurrency_levels:
         level_key = str(level)
         raw_runs["chat"][level_key] = []
@@ -1103,11 +1143,6 @@ def run_engine_suite(
                         "error": str(exc),
                     }
                 )
-    stream_runs = [
-        stream
-        for batch in raw_runs["chat"].get("1", [])
-        for stream in batch.get("runs", [])
-    ]
     concurrency = {
         level: _average_summaries(
             batches,
@@ -1129,12 +1164,11 @@ def run_engine_suite(
         for level, batches in raw_runs["embeddings"].items()
     }
     summary = {
-        "stream": summarize_stream_runs(stream_runs),
-        "multi_turn": {},
+        "stream": summarize_stream_runs(raw_runs["stream"]),
+        "multi_turn": raw_runs["multi_turn"],
         "concurrency": concurrency,
         "embeddings": embeddings,
     }
-    raw_runs["stream"] = stream_runs
     return raw_runs, summary, errors
 
 
