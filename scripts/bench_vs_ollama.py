@@ -331,6 +331,32 @@ def summarize_concurrent_batch(results: list[dict], batch_elapsed_s: float) -> d
     }
 
 
+def extract_rapid_mlx_message_content(data: object) -> str:
+    if not isinstance(data, dict):
+        return ""
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        return ""
+    message = first_choice.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    return content if isinstance(content, str) else ""
+
+
+def extract_ollama_message_content(data: object) -> str:
+    if not isinstance(data, dict):
+        return ""
+    message = data.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    return content if isinstance(content, str) else ""
+
+
 def _rapid_mlx_sse_has_content(line: str) -> bool:
     if not line.startswith("data: "):
         return False
@@ -459,15 +485,12 @@ def run_multi_turn(
             url = f"{base_url}/v1/chat/completions"
             payload = build_rapid_mlx_payload(model, messages, max_tokens, stream=False)
             data, latency_ms = post_json(url, payload, timeout)
-            content = (
-                ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
-                or ""
-            )
+            content = extract_rapid_mlx_message_content(data)
         elif engine == "ollama":
             url = f"{base_url}/api/chat"
             payload = build_ollama_payload(model, messages, max_tokens, stream=False)
             data, latency_ms = post_json(url, payload, timeout)
-            content = (data.get("message") or {}).get("content") or ""
+            content = extract_ollama_message_content(data)
         else:
             raise ValueError(f"Unknown engine: {engine}")
         latencies.append(latency_ms)

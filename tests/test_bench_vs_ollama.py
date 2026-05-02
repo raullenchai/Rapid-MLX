@@ -244,3 +244,38 @@ def test_summarize_concurrent_batch_computes_p95_and_aggregate_tps():
         "requests": 3,
         "completion_tokens": 60,
     }
+
+
+def test_extract_rapid_mlx_message_content_ignores_malformed_shapes():
+    bench = load_bench_module()
+
+    assert bench.extract_rapid_mlx_message_content([]) == ""
+    assert bench.extract_rapid_mlx_message_content({"choices": [None]}) == ""
+    assert bench.extract_rapid_mlx_message_content({"choices": {"0": {}}}) == ""
+
+
+def test_extract_rapid_mlx_message_content_returns_assistant_content():
+    bench = load_bench_module()
+
+    content = bench.extract_rapid_mlx_message_content(
+        {"choices": [{"message": {"content": "hello"}}]}
+    )
+
+    assert content == "hello"
+
+
+def test_extract_ollama_message_content_ignores_malformed_shapes():
+    bench = load_bench_module()
+
+    assert bench.extract_ollama_message_content([]) == ""
+    assert bench.extract_ollama_message_content({"message": ["bad"]}) == ""
+
+
+def test_extract_ollama_message_content_returns_assistant_content():
+    bench = load_bench_module()
+
+    content = bench.extract_ollama_message_content(
+        {"message": {"content": "hello"}}
+    )
+
+    assert content == "hello"
