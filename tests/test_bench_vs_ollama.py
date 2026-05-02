@@ -94,6 +94,25 @@ def test_parse_rapid_mlx_sse_stream_prefers_usage_tokens():
     assert parsed.completion_tokens == 7
 
 
+def test_parse_rapid_mlx_stream_ignores_malformed_shapes_and_bad_usage():
+    bench = load_bench_module()
+    lines = [
+        "data: []",
+        'data: {"usage":{"completion_tokens":"bad"}}',
+        'data: {"choices":[null,{"delta":null},{"delta":[]}]}',
+        'data: {"choices":{"delta":{"content":"ignored"}}}',
+        'data: {"choices":[{"delta":{"content":123}}]}',
+        'data: {"choices":[{"delta":{"content":"hello"}}]}',
+        'data: {"choices":[{"delta":{"content":" world"}}]}',
+        "data: [DONE]",
+    ]
+
+    parsed = bench.parse_rapid_mlx_stream(lines)
+
+    assert parsed.content_chunks == 2
+    assert parsed.completion_tokens == 2
+
+
 def test_parse_ollama_stream_prefers_eval_metadata():
     bench = load_bench_module()
     lines = [
@@ -107,6 +126,25 @@ def test_parse_ollama_stream_prefers_eval_metadata():
     assert parsed.content_chunks == 2
     assert parsed.completion_tokens == 9
     assert parsed.eval_duration_ns == 300000000
+
+
+def test_parse_ollama_stream_ignores_malformed_shapes_and_bad_metadata():
+    bench = load_bench_module()
+    lines = [
+        "[]",
+        '{"message":null}',
+        '{"message":[]}',
+        '{"message":{"content":123}}',
+        '{"eval_count":"bad","eval_duration":"bad"}',
+        '{"message":{"content":"hello"},"done":false}',
+        '{"message":{"content":" world"},"done":false}',
+    ]
+
+    parsed = bench.parse_ollama_stream(lines)
+
+    assert parsed.content_chunks == 2
+    assert parsed.completion_tokens == 2
+    assert parsed.eval_duration_ns is None
 
 
 def test_build_stream_metric_uses_first_content_for_ttft_and_decode_time():

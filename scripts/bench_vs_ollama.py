@@ -137,6 +137,15 @@ def format_speedup(value: float | None) -> str:
     return "-" if value is None else f"{value:.2f}x"
 
 
+def _safe_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_rapid_mlx_stream(lines: Iterable[str]) -> ParsedStream:
     parsed = ParsedStream()
     for raw_line in lines:
@@ -150,12 +159,24 @@ def parse_rapid_mlx_stream(lines: Iterable[str]) -> ParsedStream:
             data = json.loads(payload)
         except json.JSONDecodeError:
             continue
+        if not isinstance(data, dict):
+            continue
         usage = data.get("usage")
-        if usage and usage.get("completion_tokens"):
-            parsed.completion_tokens = int(usage["completion_tokens"])
-        for choice in data.get("choices") or []:
-            delta = choice.get("delta") or {}
-            if delta.get("content"):
+        if isinstance(usage, dict):
+            completion_tokens = _safe_int(usage.get("completion_tokens"))
+            if completion_tokens is not None:
+                parsed.completion_tokens = completion_tokens
+        choices = data.get("choices")
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            content = delta.get("content")
+            if isinstance(content, str) and content:
                 parsed.content_chunks += 1
     if parsed.completion_tokens <= 0:
         parsed.completion_tokens = parsed.content_chunks
@@ -172,13 +193,19 @@ def parse_ollama_stream(lines: Iterable[str]) -> ParsedStream:
             data = json.loads(line)
         except json.JSONDecodeError:
             continue
-        message = data.get("message") or {}
-        if message.get("content"):
-            parsed.content_chunks += 1
-        if data.get("eval_count"):
-            parsed.completion_tokens = int(data["eval_count"])
-        if data.get("eval_duration"):
-            parsed.eval_duration_ns = int(data["eval_duration"])
+        if not isinstance(data, dict):
+            continue
+        message = data.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content:
+                parsed.content_chunks += 1
+        eval_count = _safe_int(data.get("eval_count"))
+        if eval_count is not None:
+            parsed.completion_tokens = eval_count
+        eval_duration = _safe_int(data.get("eval_duration"))
+        if eval_duration is not None:
+            parsed.eval_duration_ns = eval_duration
     if parsed.completion_tokens <= 0:
         parsed.completion_tokens = parsed.content_chunks
     return parsed
