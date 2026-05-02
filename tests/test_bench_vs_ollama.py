@@ -70,6 +70,16 @@ def test_parse_args_replaces_default_model_pairs():
     assert args.runs == 2
 
 
+def test_parse_args_skips_embeddings_by_default_and_enables_opt_in():
+    bench = load_bench_module()
+
+    default_args = bench.parse_args([])
+    opt_in_args = bench.parse_args(["--include-embeddings"])
+
+    assert default_args.include_embeddings is False
+    assert opt_in_args.include_embeddings is True
+
+
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
@@ -356,6 +366,7 @@ def test_render_markdown_includes_model_table_and_speedups():
             "concurrency": [1, 2, 4],
             "startup_timeout": 30.0,
             "request_timeout": 45.0,
+            "include_embeddings": False,
         },
         "model_pairs": [
             {
@@ -389,6 +400,7 @@ def test_render_markdown_includes_model_table_and_speedups():
     assert "- Ollama: `ollama version 0.6.0`" in markdown
     assert "- Startup timeout: `30.0s`" in markdown
     assert "- Request timeout: `45.0s`" in markdown
+    assert "- Embeddings: `skipped`" in markdown
 
 
 def test_render_markdown_surfaces_engine_errors():
@@ -666,6 +678,7 @@ def test_run_engine_suite_records_workload_errors_and_continues(monkeypatch):
         runs_per_level=1,
         timeout=30.0,
         headers={"Authorization": "Bearer test"},
+        include_embeddings=True,
     )
 
     assert len(calls) == 7
@@ -683,6 +696,52 @@ def test_run_engine_suite_records_workload_errors_and_continues(monkeypatch):
             "error": "chat failed",
         }
     ]
+
+
+def test_run_engine_suite_skips_embeddings_by_default(monkeypatch):
+    bench = load_bench_module()
+
+    monkeypatch.setattr(
+        bench,
+        "run_stream_once",
+        lambda *args, **kwargs: {
+            "ttft_ms": 10.0,
+            "decode_tok_s": 20.0,
+            "completion_tokens": 2,
+            "total_ms": 50.0,
+        },
+    )
+    monkeypatch.setattr(
+        bench,
+        "run_embedding_once",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("embeddings should be skipped by default")
+        ),
+    )
+    monkeypatch.setattr(
+        bench,
+        "run_multi_turn",
+        lambda *args, **kwargs: {"avg_turn_ms": 10.0, "turn_latencies_ms": [10.0]},
+    )
+
+    raw_runs, summary, errors = bench.run_engine_suite(
+        "rapid-mlx",
+        "http://server",
+        {
+            "chat_model": "chat-model",
+            "embedding_model": "embed-model",
+            "chat_messages": [{"role": "user", "content": "hi"}],
+            "embedding_input": ["hello"],
+            "max_tokens": 16,
+        },
+        concurrency_levels=[1],
+        runs_per_level=1,
+        timeout=30.0,
+    )
+
+    assert raw_runs["embeddings"] == {}
+    assert summary["embeddings"] == {}
+    assert errors == []
 
 
 def test_run_engine_suite_populates_multi_turn_summary(monkeypatch):
@@ -934,6 +993,7 @@ def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
     assert pair_result["comparisons"]["embeddings"]["1"]["avg_latency_speedup"] == 2.0
     assert result["config"]["startup_timeout"] == 1.0
     assert result["config"]["request_timeout"] == 2.0
+    assert result["config"]["include_embeddings"] is False
 
 
 def test_benchmark_ollama_pulls_after_managed_server_start_with_managed_env(
@@ -1006,3 +1066,4 @@ def test_cli_help_smoke_lists_core_options():
     assert "--runs" in result.stdout
     assert "--no-pull" in result.stdout
     assert "--no-download" in result.stdout
+    assert "--include-embeddings" in result.stdout

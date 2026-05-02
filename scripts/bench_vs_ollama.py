@@ -79,6 +79,7 @@ class CliArgs:
     request_timeout: float
     rapid_mlx_args: list[str]
     ollama_env: dict[str, str]
+    include_embeddings: bool = False
 
 
 @dataclass
@@ -128,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--no-pull", action="store_true")
     parser.add_argument("--no-download", action="store_true")
+    parser.add_argument("--include-embeddings", action="store_true")
     parser.add_argument("--startup-timeout", type=float, default=300.0)
     parser.add_argument("--request-timeout", type=float, default=300.0)
     parser.add_argument("--rapid-mlx-arg", action="append", default=[])
@@ -171,6 +173,7 @@ def parse_args(argv: list[str] | None = None) -> CliArgs:
         request_timeout=ns.request_timeout,
         rapid_mlx_args=ns.rapid_mlx_arg,
         ollama_env=ollama_env,
+        include_embeddings=ns.include_embeddings,
     )
 
 
@@ -478,6 +481,7 @@ def render_markdown(result: dict) -> str:
         f"- Concurrency: `{config.get('concurrency', '-')}`",
         f"- Startup timeout: `{format_number(config.get('startup_timeout'), 's')}`",
         f"- Request timeout: `{format_number(config.get('request_timeout'), 's')}`",
+        f"- Embeddings: `{'included' if config.get('include_embeddings') else 'skipped'}`",
         "",
         "Engines were launched sequentially on temporary localhost ports. Requests "
         "used deterministic no-thinking settings.",
@@ -1113,6 +1117,7 @@ def run_engine_suite(
     runs_per_level: int,
     timeout: float,
     headers: dict[str, str] | None = None,
+    include_embeddings: bool = False,
 ) -> tuple[dict, dict, list[dict]]:
     raw_runs: dict = {"stream": [], "multi_turn": {}, "chat": {}, "embeddings": {}}
     errors: list[dict] = []
@@ -1151,7 +1156,8 @@ def run_engine_suite(
     for level in concurrency_levels:
         level_key = str(level)
         raw_runs["chat"][level_key] = []
-        raw_runs["embeddings"][level_key] = []
+        if include_embeddings:
+            raw_runs["embeddings"][level_key] = []
         for run_index in range(1, runs_per_level + 1):
             try:
                 raw_runs["chat"][level_key].append(
@@ -1168,21 +1174,22 @@ def run_engine_suite(
                         "error": str(exc),
                     }
                 )
-            try:
-                raw_runs["embeddings"][level_key].append(
-                    _run_concurrent_embedding_batch(
-                        engine_name, base_url, workload, level, timeout, headers
+            if include_embeddings:
+                try:
+                    raw_runs["embeddings"][level_key].append(
+                        _run_concurrent_embedding_batch(
+                            engine_name, base_url, workload, level, timeout, headers
+                        )
                     )
-                )
-            except Exception as exc:
-                errors.append(
-                    {
-                        "workload": "embeddings",
-                        "concurrency": level,
-                        "run": run_index,
-                        "error": str(exc),
-                    }
-                )
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "workload": "embeddings",
+                            "concurrency": level,
+                            "run": run_index,
+                            "error": str(exc),
+                        }
+                    )
     concurrency = {
         level: _average_summaries(
             batches,
@@ -1263,6 +1270,7 @@ def benchmark_rapid_mlx(pair: ModelPair, args: CliArgs) -> dict:
             concurrency_levels=args.concurrency,
             runs_per_level=args.runs,
             timeout=args.request_timeout,
+            include_embeddings=args.include_embeddings,
         )
         return build_engine_success_result(
             "rapid-mlx",
@@ -1314,6 +1322,7 @@ def benchmark_ollama(pair: ModelPair, args: CliArgs) -> dict:
             concurrency_levels=args.concurrency,
             runs_per_level=args.runs,
             timeout=args.request_timeout,
+            include_embeddings=args.include_embeddings,
         )
         return build_engine_success_result(
             "ollama",
@@ -1396,6 +1405,7 @@ def run_benchmark(args: CliArgs) -> dict:
             "concurrency": args.concurrency,
             "startup_timeout": args.startup_timeout,
             "request_timeout": args.request_timeout,
+            "include_embeddings": args.include_embeddings,
             "output_dir": str(args.output_dir),
             "no_pull": args.no_pull,
             "no_download": args.no_download,
