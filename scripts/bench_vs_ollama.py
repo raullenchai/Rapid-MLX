@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import shutil
@@ -140,9 +141,9 @@ def parse_args(argv: list[str] | None = None) -> CliArgs:
         parser.error("--max-tokens must be >= 1")
     if any(level < 1 for level in ns.concurrency):
         parser.error("--concurrency values must be >= 1")
-    if ns.startup_timeout <= 0:
+    if not math.isfinite(ns.startup_timeout) or ns.startup_timeout <= 0:
         parser.error("--startup-timeout must be > 0")
-    if ns.request_timeout <= 0:
+    if not math.isfinite(ns.request_timeout) or ns.request_timeout <= 0:
         parser.error("--request-timeout must be > 0")
     model_pairs = (
         [parse_model_pair(value) for value in ns.model_pair]

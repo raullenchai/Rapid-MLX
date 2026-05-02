@@ -79,6 +79,10 @@ def test_parse_args_replaces_default_model_pairs():
         (["--concurrency", "0"], "--concurrency values must be >= 1"),
         (["--startup-timeout", "0"], "--startup-timeout must be > 0"),
         (["--request-timeout", "0"], "--request-timeout must be > 0"),
+        (["--startup-timeout", "inf"], "--startup-timeout must be > 0"),
+        (["--startup-timeout", "nan"], "--startup-timeout must be > 0"),
+        (["--request-timeout", "inf"], "--request-timeout must be > 0"),
+        (["--request-timeout", "nan"], "--request-timeout must be > 0"),
     ],
 )
 def test_parse_args_rejects_invalid_numeric_settings(argv, message, capsys):
