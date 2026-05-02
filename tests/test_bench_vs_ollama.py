@@ -310,8 +310,18 @@ def test_extract_ollama_message_content_returns_assistant_content():
 def test_render_markdown_includes_model_table_and_speedups():
     bench = load_bench_module()
     result = {
-        "metadata": {"timestamp": "2026-05-02T12:00:00", "git_commit": "abc123"},
-        "config": {"runs": 3, "concurrency": [1, 2, 4]},
+        "metadata": {
+            "timestamp": "2026-05-02T12:00:00",
+            "git_commit": "abc123",
+            "rapid_mlx_version": "rapid-mlx 0.2.0",
+            "ollama_version": "ollama version 0.6.0",
+        },
+        "config": {
+            "runs": 3,
+            "concurrency": [1, 2, 4],
+            "startup_timeout": 30.0,
+            "request_timeout": 45.0,
+        },
         "model_pairs": [
             {
                 "rapid_mlx_model": "qwen3.5-9b",
@@ -340,6 +350,10 @@ def test_render_markdown_includes_model_table_and_speedups():
     assert "qwen3.5-9b vs qwen3.5:9b" in markdown
     assert "| Decode tok/s | 120.0 | 40.0 | 3.00x |" in markdown
     assert "| TTFT | 100.0 ms | 250.0 ms | 2.50x |" in markdown
+    assert "- Rapid-MLX: `rapid-mlx 0.2.0`" in markdown
+    assert "- Ollama: `ollama version 0.6.0`" in markdown
+    assert "- Startup timeout: `30.0s`" in markdown
+    assert "- Request timeout: `45.0s`" in markdown
 
 
 def test_render_markdown_surfaces_engine_errors():
@@ -830,6 +844,7 @@ def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
             "model": pair.rapid_mlx,
             "summary": {
                 "stream": {"ttft_ms": 100.0, "decode_tok_s": 120.0},
+                "multi_turn": {"avg_turn_ms": 200.0},
                 "concurrency": {
                     "1": {"aggregate_tok_s": 100.0},
                     "2": {"aggregate_tok_s": 180.0},
@@ -847,6 +862,7 @@ def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
             "model": pair.ollama,
             "summary": {
                 "stream": {"ttft_ms": 250.0, "decode_tok_s": 40.0},
+                "multi_turn": {"avg_turn_ms": 500.0},
                 "concurrency": {"1": {"aggregate_tok_s": 50.0}},
                 "embeddings": {"1": {"avg_latency_ms": 20.0}},
             },
@@ -868,9 +884,12 @@ def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
     assert pair_result["ollama"]["model"] == "ollama-a"
     assert pair_result["comparisons"]["stream_decode_tok_s_speedup"] == 3.0
     assert pair_result["comparisons"]["stream_ttft_latency_speedup"] == 2.5
+    assert pair_result["comparisons"]["multi_turn_latency_speedup"] == 2.5
     assert pair_result["comparisons"]["concurrency"]["1"]["aggregate_tok_s_speedup"] == 2.0
     assert pair_result["comparisons"]["concurrency"]["2"]["aggregate_tok_s_speedup"] is None
     assert pair_result["comparisons"]["embeddings"]["1"]["avg_latency_speedup"] == 2.0
+    assert result["config"]["startup_timeout"] == 1.0
+    assert result["config"]["request_timeout"] == 2.0
 
 
 def test_benchmark_ollama_pulls_after_managed_server_start_with_managed_env(

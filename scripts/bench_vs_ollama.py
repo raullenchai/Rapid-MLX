@@ -465,12 +465,16 @@ def render_markdown(result: dict) -> str:
         f"- Git commit: `{metadata.get('git_commit', '-')}`",
         f"- Python: `{metadata.get('python', '-')}`",
         f"- Platform: `{metadata.get('platform', '-')}`",
+        f"- Rapid-MLX: `{metadata.get('rapid_mlx_version', '-')}`",
+        f"- Ollama: `{metadata.get('ollama_version', '-')}`",
         "- Hardware: `"
         f"{hardware.get('chip_name') or '-'} "
         f"({hardware.get('total_memory_gb') or '-'} GB, "
         f"{hardware.get('gpu_cores') or '-'} GPU cores)`",
         f"- Runs: `{config.get('runs', '-')}`",
         f"- Concurrency: `{config.get('concurrency', '-')}`",
+        f"- Startup timeout: `{format_number(config.get('startup_timeout'), 's')}`",
+        f"- Request timeout: `{format_number(config.get('request_timeout'), 's')}`",
         "",
         "Engines were launched sequentially on temporary localhost ports. Requests "
         "used deterministic no-thinking settings.",
@@ -1340,6 +1344,8 @@ def build_comparisons(pair_result: dict) -> dict:
     ollama = _engine_summary(pair_result, "ollama")
     rapid_stream = _nested_dict(rapid, "stream")
     ollama_stream = _nested_dict(ollama, "stream")
+    rapid_multi_turn = _nested_dict(rapid, "multi_turn")
+    ollama_multi_turn = _nested_dict(ollama, "multi_turn")
     rapid_conc = _nested_dict(rapid, "concurrency")
     ollama_conc = _nested_dict(ollama, "concurrency")
     rapid_embeddings = _nested_dict(rapid, "embeddings")
@@ -1352,6 +1358,10 @@ def build_comparisons(pair_result: dict) -> dict:
         "stream_ttft_latency_speedup": latency_speedup(
             rapid_stream.get("ttft_ms"),
             ollama_stream.get("ttft_ms"),
+        ),
+        "multi_turn_latency_speedup": latency_speedup(
+            rapid_multi_turn.get("avg_turn_ms"),
+            ollama_multi_turn.get("avg_turn_ms"),
         ),
         "concurrency": {},
         "embeddings": {},
@@ -1388,6 +1398,8 @@ def run_benchmark(args: CliArgs) -> dict:
             "warmups": args.warmups,
             "max_tokens": args.max_tokens,
             "concurrency": args.concurrency,
+            "startup_timeout": args.startup_timeout,
+            "request_timeout": args.request_timeout,
             "output_dir": str(args.output_dir),
             "no_pull": args.no_pull,
             "no_download": args.no_download,
