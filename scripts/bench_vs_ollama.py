@@ -150,6 +150,9 @@ def parse_args(argv: list[str] | None = None) -> CliArgs:
         parser.error("--startup-timeout must be > 0")
     if not math.isfinite(ns.request_timeout) or ns.request_timeout <= 0:
         parser.error("--request-timeout must be > 0")
+    ollama_env = dict(parse_env_assignment(value) for value in ns.ollama_env)
+    if "OLLAMA_HOST" in ollama_env:
+        parser.error("--ollama-env cannot override managed OLLAMA_HOST")
     model_pairs = (
         [parse_model_pair(value) for value in ns.model_pair]
         if ns.model_pair
@@ -167,7 +170,7 @@ def parse_args(argv: list[str] | None = None) -> CliArgs:
         startup_timeout=ns.startup_timeout,
         request_timeout=ns.request_timeout,
         rapid_mlx_args=ns.rapid_mlx_arg,
-        ollama_env=dict(parse_env_assignment(value) for value in ns.ollama_env),
+        ollama_env=ollama_env,
     )
 
 
@@ -202,8 +205,8 @@ def build_rapid_mlx_command(model: str, port: int, extra_args: list[str]) -> lis
 
 def build_ollama_environment(port: int, extra_env: dict[str, str]) -> dict[str, str]:
     env = os.environ.copy()
-    env["OLLAMA_HOST"] = f"127.0.0.1:{port}"
     env.update(extra_env)
+    env["OLLAMA_HOST"] = f"127.0.0.1:{port}"
     return env
 
 
@@ -805,13 +808,6 @@ def run_stream_once(
             url, payload, timeout, headers=headers
         )
         parsed = parse_ollama_stream(lines)
-        if parsed.eval_duration_ns and parsed.completion_tokens > 0:
-            metric = build_stream_metric(parsed, start_at, first_content_at, end_at)
-            metric["decode_tok_s"] = round(
-                parsed.completion_tokens / (parsed.eval_duration_ns / 1_000_000_000),
-                1,
-            )
-            return metric
     else:
         raise ValueError(f"Unknown engine: {engine}")
     return build_stream_metric(parsed, start_at, first_content_at, end_at)

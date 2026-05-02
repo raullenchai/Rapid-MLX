@@ -83,6 +83,10 @@ def test_parse_args_replaces_default_model_pairs():
         (["--startup-timeout", "nan"], "--startup-timeout must be > 0"),
         (["--request-timeout", "inf"], "--request-timeout must be > 0"),
         (["--request-timeout", "nan"], "--request-timeout must be > 0"),
+        (
+            ["--ollama-env", "OLLAMA_HOST=127.0.0.1:11434"],
+            "--ollama-env cannot override managed OLLAMA_HOST",
+        ),
     ],
 )
 def test_parse_args_rejects_invalid_numeric_settings(argv, message, capsys):
@@ -187,6 +191,37 @@ def test_build_stream_metric_uses_first_content_for_ttft_and_decode_time():
     assert metric["decode_tok_s"] == 5.0
     assert metric["completion_tokens"] == 9
     assert metric["total_ms"] == 2000.0
+
+
+def test_run_stream_once_uses_wall_clock_decode_rate_for_ollama(monkeypatch):
+    bench = load_bench_module()
+
+    def fake_post_json_lines(url, payload, timeout, headers=None):
+        assert url == "http://127.0.0.1:11434/api/chat"
+        assert payload["stream"] is True
+        return (
+            [
+                '{"message":{"content":"hello"}}',
+                '{"done":true,"eval_count":10,"eval_duration":10000000}',
+            ],
+            1.0,
+            1.2,
+            3.2,
+        )
+
+    monkeypatch.setattr(bench, "post_json_lines", fake_post_json_lines)
+
+    metric = bench.run_stream_once(
+        "ollama",
+        "http://127.0.0.1:11434",
+        "qwen3.5:4b",
+        [{"role": "user", "content": "/no_think hi"}],
+        16,
+        30.0,
+    )
+
+    assert metric["completion_tokens"] == 10
+    assert metric["decode_tok_s"] == 5.0
 
 
 def test_summarize_runs_averages_numeric_fields():
@@ -495,6 +530,15 @@ def test_build_ollama_environment_sets_host_and_custom_values(monkeypatch):
     assert env["PATH"] == "/usr/bin"
     assert env["OLLAMA_HOST"] == "127.0.0.1:9124"
     assert env["OLLAMA_KEEP_ALIVE"] == "0"
+
+
+def test_build_ollama_environment_keeps_managed_host(monkeypatch):
+    bench = load_bench_module()
+    monkeypatch.setenv("OLLAMA_HOST", "127.0.0.1:11434")
+
+    env = bench.build_ollama_environment(9124, {"OLLAMA_HOST": "127.0.0.1:9999"})
+
+    assert env["OLLAMA_HOST"] == "127.0.0.1:9124"
 
 
 def test_managed_process_stop_terminates_then_waits():
