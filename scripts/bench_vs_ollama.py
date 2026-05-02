@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
+import subprocess
 import time
 import urllib.request
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 DEFAULT_OUTPUT_DIR = Path("reports/benchmarks/ollama-comparison")
@@ -163,6 +166,165 @@ def latency_speedup(
 
 def format_speedup(value: float | None) -> str:
     return "-" if value is None else f"{value:.2f}x"
+
+
+def run_capture(cmd: list[str], timeout: float = 10.0) -> str | None:
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    output = (result.stdout or result.stderr).strip()
+    return output or None
+
+
+def collect_hardware_summary() -> dict:
+    try:
+        from vllm_mlx.optimizations import detect_hardware
+
+        hw = detect_hardware()
+        return {
+            "chip_name": hw.chip_name,
+            "total_memory_gb": round(hw.total_memory_gb, 1),
+            "gpu_cores": hw.gpu_cores,
+        }
+    except Exception:
+        return {
+            "chip_name": None,
+            "total_memory_gb": None,
+            "gpu_cores": None,
+        }
+
+
+def collect_metadata() -> dict:
+    return {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "git_commit": run_capture(["git", "rev-parse", "--short", "HEAD"]),
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "hardware": collect_hardware_summary(),
+        "rapid_mlx_version": run_capture(["rapid-mlx", "--version"]),
+        "ollama_version": run_capture(["ollama", "--version"]),
+    }
+
+
+def format_number(value: float | int | None, suffix: str = "") -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.1f}{suffix}"
+    return f"{value}{suffix}"
+
+
+def _concurrency_sort_key(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def render_model_pair_table(pair_result: dict) -> str:
+    rapid = pair_result.get("rapid-mlx", {}).get("summary", {})
+    ollama = pair_result.get("ollama", {}).get("summary", {})
+    rapid_stream = rapid.get("stream", {})
+    ollama_stream = ollama.get("stream", {})
+    rapid_mt = rapid.get("multi_turn", {})
+    ollama_mt = ollama.get("multi_turn", {})
+    rapid_conc = rapid.get("concurrency", {})
+    ollama_conc = ollama.get("concurrency", {})
+
+    lines = [
+        f"## {pair_result['rapid_mlx_model']} vs {pair_result['ollama_model']}",
+        "",
+        "| Metric | Rapid-MLX | Ollama | Speedup |",
+        "|---|---:|---:|---:|",
+    ]
+    rapid_ttft = rapid_stream.get("ttft_ms")
+    ollama_ttft = ollama_stream.get("ttft_ms")
+    lines.append(
+        "| TTFT | "
+        f"{format_number(rapid_ttft, ' ms')} | "
+        f"{format_number(ollama_ttft, ' ms')} | "
+        f"{format_speedup(latency_speedup(rapid_ttft, ollama_ttft))} |"
+    )
+    rapid_decode = rapid_stream.get("decode_tok_s")
+    ollama_decode = ollama_stream.get("decode_tok_s")
+    lines.append(
+        "| Decode tok/s | "
+        f"{format_number(rapid_decode)} | "
+        f"{format_number(ollama_decode)} | "
+        f"{format_speedup(throughput_speedup(rapid_decode, ollama_decode))} |"
+    )
+    rapid_turn = rapid_mt.get("avg_turn_ms")
+    ollama_turn = ollama_mt.get("avg_turn_ms")
+    lines.append(
+        "| Multi-turn latency | "
+        f"{format_number(rapid_turn, ' ms')} | "
+        f"{format_number(ollama_turn, ' ms')} | "
+        f"{format_speedup(latency_speedup(rapid_turn, ollama_turn))} |"
+    )
+    concurrency_levels = sorted(
+        set(rapid_conc) | set(ollama_conc),
+        key=_concurrency_sort_key,
+    )
+    for level in concurrency_levels:
+        rapid_tps = rapid_conc.get(level, {}).get("aggregate_tok_s")
+        ollama_tps = ollama_conc.get(level, {}).get("aggregate_tok_s")
+        lines.append(
+            f"| Concurrent throughput ({level} users) | "
+            f"{format_number(rapid_tps)} | "
+            f"{format_number(ollama_tps)} | "
+            f"{format_speedup(throughput_speedup(rapid_tps, ollama_tps))} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_markdown(result: dict) -> str:
+    metadata = result.get("metadata", {})
+    hardware = metadata.get("hardware") or {}
+    config = result.get("config", {})
+    lines = [
+        "# Rapid-MLX vs Ollama Benchmark",
+        "",
+        f"- Timestamp: `{metadata.get('timestamp', '-')}`",
+        f"- Git commit: `{metadata.get('git_commit', '-')}`",
+        f"- Python: `{metadata.get('python', '-')}`",
+        f"- Platform: `{metadata.get('platform', '-')}`",
+        "- Hardware: `"
+        f"{hardware.get('chip_name') or '-'} "
+        f"({hardware.get('total_memory_gb') or '-'} GB, "
+        f"{hardware.get('gpu_cores') or '-'} GPU cores)`",
+        f"- Runs: `{config.get('runs', '-')}`",
+        f"- Concurrency: `{config.get('concurrency', '-')}`",
+        "",
+        "Engines were launched sequentially on temporary localhost ports. Requests "
+        "used deterministic no-thinking settings.",
+        "",
+    ]
+    for pair_result in result.get("model_pairs", []):
+        lines.append(render_model_pair_table(pair_result))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def safe_timestamp(timestamp: str) -> str:
+    return timestamp.replace(":", "").replace("-", "").replace("T", "_")
+
+
+def write_outputs(result: dict, output_dir: Path) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = safe_timestamp(result["metadata"]["timestamp"])
+    json_path = output_dir / f"{stamp}.json"
+    markdown_path = output_dir / f"{stamp}.md"
+    json_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    markdown_path.write_text(render_markdown(result), encoding="utf-8")
+    return {"json": json_path, "markdown": markdown_path}
 
 
 def _safe_int(value: object) -> int | None:

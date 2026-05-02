@@ -279,3 +279,54 @@ def test_extract_ollama_message_content_returns_assistant_content():
     )
 
     assert content == "hello"
+
+
+def test_render_markdown_includes_model_table_and_speedups():
+    bench = load_bench_module()
+    result = {
+        "metadata": {"timestamp": "2026-05-02T12:00:00", "git_commit": "abc123"},
+        "config": {"runs": 3, "concurrency": [1, 2, 4]},
+        "model_pairs": [
+            {
+                "rapid_mlx_model": "qwen3.5-9b",
+                "ollama_model": "qwen3.5:9b",
+                "rapid-mlx": {
+                    "summary": {
+                        "stream": {"ttft_ms": 100.0, "decode_tok_s": 120.0},
+                        "multi_turn": {"avg_turn_ms": 200.0},
+                        "concurrency": {"1": {"aggregate_tok_s": 110.0}},
+                    }
+                },
+                "ollama": {
+                    "summary": {
+                        "stream": {"ttft_ms": 250.0, "decode_tok_s": 40.0},
+                        "multi_turn": {"avg_turn_ms": 500.0},
+                        "concurrency": {"1": {"aggregate_tok_s": 35.0}},
+                    }
+                },
+            }
+        ],
+    }
+
+    markdown = bench.render_markdown(result)
+
+    assert "# Rapid-MLX vs Ollama Benchmark" in markdown
+    assert "qwen3.5-9b vs qwen3.5:9b" in markdown
+    assert "| Decode tok/s | 120.0 | 40.0 | 3.00x |" in markdown
+    assert "| TTFT | 100.0 ms | 250.0 ms | 2.50x |" in markdown
+
+
+def test_write_outputs_creates_json_and_markdown(tmp_path):
+    bench = load_bench_module()
+    result = {
+        "metadata": {"timestamp": "2026-05-02T12:00:00", "git_commit": "abc123"},
+        "config": {"runs": 1, "concurrency": [1]},
+        "model_pairs": [],
+    }
+
+    paths = bench.write_outputs(result, tmp_path)
+
+    assert paths["json"].exists()
+    assert paths["markdown"].exists()
+    assert paths["json"].name.endswith(".json")
+    assert paths["markdown"].name.endswith(".md")
