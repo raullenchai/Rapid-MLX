@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
+import shutil
+import socket
 import subprocess
 import time
 import urllib.request
@@ -146,6 +149,103 @@ def parse_args(argv: list[str] | None = None) -> CliArgs:
         rapid_mlx_args=ns.rapid_mlx_arg,
         ollama_env=dict(parse_env_assignment(value) for value in ns.ollama_env),
     )
+
+
+def require_executable(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        raise RuntimeError(f"Required executable not found on PATH: {name}")
+    return path
+
+
+def find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def build_rapid_mlx_command(model: str, port: int, extra_args: list[str]) -> list[str]:
+    return [
+        "rapid-mlx",
+        "serve",
+        model,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--no-thinking",
+        "--default-temperature",
+        "0",
+        *extra_args,
+    ]
+
+
+def build_ollama_environment(port: int, extra_env: dict[str, str]) -> dict[str, str]:
+    env = os.environ.copy()
+    env["OLLAMA_HOST"] = f"127.0.0.1:{port}"
+    env.update(extra_env)
+    return env
+
+
+@dataclass
+class ManagedProcess:
+    proc: subprocess.Popen
+    command: list[str]
+
+    def stop(self) -> None:
+        poll = getattr(self.proc, "poll", lambda: self.proc.returncode)
+        if poll() is not None:
+            return
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=20)
+
+
+def start_process(command: list[str], env: dict[str, str] | None = None) -> ManagedProcess:
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+    )
+    return ManagedProcess(proc=proc, command=command)
+
+
+def wait_for_url(url: str, timeout_s: float) -> None:
+    deadline = time.time() + timeout_s
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2):
+                return
+        except Exception as exc:
+            last_error = exc
+            time.sleep(1)
+    raise RuntimeError(f"Timed out waiting for {url}: {last_error}")
+
+
+def prepare_models(args: CliArgs) -> None:
+    if args.no_pull:
+        return
+    require_executable("ollama")
+    for pair in args.model_pairs:
+        print(f"Pulling Ollama model {pair.ollama}...", flush=True)
+        result = subprocess.run(["ollama", "pull", pair.ollama], check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"ollama pull failed for {pair.ollama}")
+
+
+def offline_env_if_needed(no_download: bool) -> dict[str, str] | None:
+    if not no_download:
+        return None
+    env = os.environ.copy()
+    env["HF_HUB_OFFLINE"] = "1"
+    env["TRANSFORMERS_OFFLINE"] = "1"
+    return env
 
 
 def throughput_speedup(

@@ -371,3 +371,74 @@ def test_write_outputs_creates_json_and_markdown(tmp_path):
     assert paths["markdown"].exists()
     assert paths["json"].name.endswith(".json")
     assert paths["markdown"].name.endswith(".md")
+
+
+def test_find_free_port_can_be_rebound():
+    import socket
+
+    bench = load_bench_module()
+
+    port = bench.find_free_port()
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", port))
+
+
+def test_build_rapid_mlx_command_includes_explicit_benchmark_settings():
+    bench = load_bench_module()
+
+    cmd = bench.build_rapid_mlx_command("qwen3.5-9b", 9123, ["--prefill-step-size", "4096"])
+
+    assert cmd == [
+        "rapid-mlx",
+        "serve",
+        "qwen3.5-9b",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "9123",
+        "--no-thinking",
+        "--default-temperature",
+        "0",
+        "--prefill-step-size",
+        "4096",
+    ]
+
+
+def test_build_ollama_environment_sets_host_and_custom_values(monkeypatch):
+    bench = load_bench_module()
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = bench.build_ollama_environment(9124, {"OLLAMA_KEEP_ALIVE": "0"})
+
+    assert env["PATH"] == "/usr/bin"
+    assert env["OLLAMA_HOST"] == "127.0.0.1:9124"
+    assert env["OLLAMA_KEEP_ALIVE"] == "0"
+
+
+def test_managed_process_stop_terminates_then_waits():
+    bench = load_bench_module()
+
+    class FakeProc:
+        def __init__(self):
+            self.terminated = False
+            self.waited = False
+            self.returncode = None
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = 0
+
+        def wait(self, timeout):
+            self.waited = True
+            return 0
+
+        def kill(self):
+            raise AssertionError("kill should not be called")
+
+    proc = FakeProc()
+    managed = bench.ManagedProcess(proc, ["cmd"])
+    managed.stop()
+
+    assert proc.terminated is True
+    assert proc.waited is True
