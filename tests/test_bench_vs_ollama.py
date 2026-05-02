@@ -77,6 +77,8 @@ def test_parse_args_replaces_default_model_pairs():
         (["--warmups", "-1"], "--warmups must be >= 0"),
         (["--max-tokens", "0"], "--max-tokens must be >= 1"),
         (["--concurrency", "0"], "--concurrency values must be >= 1"),
+        (["--startup-timeout", "0"], "--startup-timeout must be > 0"),
+        (["--request-timeout", "0"], "--request-timeout must be > 0"),
     ],
 )
 def test_parse_args_rejects_invalid_numeric_settings(argv, message, capsys):
@@ -354,6 +356,47 @@ def test_render_markdown_surfaces_engine_errors():
     markdown = bench.render_markdown(result)
 
     assert "**Rapid-MLX error:** boom" in markdown
+
+
+def test_render_markdown_surfaces_workload_errors():
+    bench = load_bench_module()
+    result = {
+        "metadata": {"timestamp": "2026-05-02T12:00:00", "git_commit": "abc123"},
+        "config": {"runs": 1, "concurrency": [1]},
+        "model_pairs": [
+            {
+                "rapid_mlx_model": "qwen3.5-9b",
+                "ollama_model": "qwen3.5:9b",
+                "rapid-mlx": {
+                    "errors": [
+                        {
+                            "workload": "multi_turn",
+                            "error": "request timed out",
+                        }
+                    ],
+                    "summary": {"stream": {"decode_tok_s": 40.0}},
+                },
+                "ollama": {
+                    "errors": [
+                        {
+                            "workload": "chat",
+                            "concurrency": 2,
+                            "run": 1,
+                            "error": "connection reset",
+                        }
+                    ],
+                    "summary": {"stream": {"decode_tok_s": 20.0}},
+                },
+            }
+        ],
+    }
+
+    markdown = bench.render_markdown(result)
+
+    assert "**Rapid-MLX workload errors:**" in markdown
+    assert "- multi_turn: request timed out" in markdown
+    assert "**Ollama workload errors:**" in markdown
+    assert "- chat concurrency=2 run=1: connection reset" in markdown
 
 
 def test_render_markdown_tolerates_none_engine_payloads():
@@ -679,6 +722,74 @@ def test_run_engine_suite_stream_summary_does_not_require_concurrency_one(
     assert summary["stream"]["ttft_ms"] == 11.0
     assert summary["stream"]["decode_tok_s"] == 22.0
     assert errors == []
+
+
+def test_run_engine_suite_passes_headers_to_multi_turn(monkeypatch):
+    bench = load_bench_module()
+    seen_headers = []
+
+    monkeypatch.setattr(
+        bench,
+        "run_stream_once",
+        lambda *args, **kwargs: {
+            "ttft_ms": 10.0,
+            "decode_tok_s": 20.0,
+            "completion_tokens": 2,
+            "total_ms": 50.0,
+        },
+    )
+    monkeypatch.setattr(
+        bench,
+        "run_embedding_once",
+        lambda *args, **kwargs: {"latency_ms": 5.0, "embeddings": 1},
+    )
+
+    def fake_multi_turn(engine, base_url, model, max_tokens, timeout, headers=None):
+        seen_headers.append(headers)
+        return {"avg_turn_ms": 20.0, "turn_latencies_ms": [20.0]}
+
+    monkeypatch.setattr(bench, "run_multi_turn", fake_multi_turn)
+
+    bench.run_engine_suite(
+        "rapid-mlx",
+        "http://server",
+        {
+            "chat_model": "chat-model",
+            "embedding_model": "embed-model",
+            "chat_messages": [{"role": "user", "content": "hi"}],
+            "embedding_input": ["hello"],
+            "max_tokens": 16,
+        },
+        concurrency_levels=[1],
+        runs_per_level=1,
+        timeout=30.0,
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert seen_headers == [{"Authorization": "Bearer test"}]
+
+
+def test_run_multi_turn_passes_headers_to_post_json(monkeypatch):
+    bench = load_bench_module()
+    seen_headers = []
+
+    def fake_post_json(url, payload, timeout, headers=None):
+        seen_headers.append(headers)
+        return {"choices": [{"message": {"content": "ok"}}]}, 10.0
+
+    monkeypatch.setattr(bench, "post_json", fake_post_json)
+
+    summary = bench.run_multi_turn(
+        "rapid-mlx",
+        "http://server",
+        "chat-model",
+        16,
+        30.0,
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert summary["avg_turn_ms"] == 10.0
+    assert seen_headers == [{"Authorization": "Bearer test"}] * 4
 
 
 def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(

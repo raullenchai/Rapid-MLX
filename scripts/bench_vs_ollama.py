@@ -140,6 +140,10 @@ def parse_args(argv: list[str] | None = None) -> CliArgs:
         parser.error("--max-tokens must be >= 1")
     if any(level < 1 for level in ns.concurrency):
         parser.error("--concurrency values must be >= 1")
+    if ns.startup_timeout <= 0:
+        parser.error("--startup-timeout must be > 0")
+    if ns.request_timeout <= 0:
+        parser.error("--request-timeout must be > 0")
     model_pairs = (
         [parse_model_pair(value) for value in ns.model_pair]
         if ns.model_pair
@@ -344,6 +348,22 @@ def _engine_error(pair_result: dict, engine: str) -> str | None:
     return str(error)
 
 
+def _engine_workload_errors(pair_result: dict, engine: str) -> list[dict]:
+    errors = _as_dict(pair_result.get(engine)).get("errors")
+    if not isinstance(errors, list):
+        return []
+    return [error for error in errors if isinstance(error, dict) and "workload" in error]
+
+
+def _format_workload_error(error: dict) -> str:
+    parts = [str(error.get("workload", "workload"))]
+    if "concurrency" in error:
+        parts.append(f"concurrency={error['concurrency']}")
+    if "run" in error:
+        parts.append(f"run={error['run']}")
+    return f"{' '.join(parts)}: {error.get('error', '-')}"
+
+
 def _concurrency_sort_key(value: object) -> tuple[int, int | str]:
     try:
         return (0, int(value))
@@ -367,11 +387,19 @@ def render_model_pair_table(pair_result: dict) -> str:
     ]
     rapid_error = _engine_error(pair_result, "rapid-mlx")
     ollama_error = _engine_error(pair_result, "ollama")
+    rapid_workload_errors = _engine_workload_errors(pair_result, "rapid-mlx")
+    ollama_workload_errors = _engine_workload_errors(pair_result, "ollama")
     if rapid_error:
         lines.append(f"**Rapid-MLX error:** {rapid_error}")
     if ollama_error:
         lines.append(f"**Ollama error:** {ollama_error}")
-    if rapid_error or ollama_error:
+    if rapid_workload_errors:
+        lines.append("**Rapid-MLX workload errors:**")
+        lines.extend(f"- {_format_workload_error(error)}" for error in rapid_workload_errors)
+    if ollama_workload_errors:
+        lines.append("**Ollama workload errors:**")
+        lines.extend(f"- {_format_workload_error(error)}" for error in ollama_workload_errors)
+    if rapid_error or ollama_error or rapid_workload_errors or ollama_workload_errors:
         lines.append("")
     lines.extend(
         [
@@ -813,7 +841,12 @@ def run_embedding_once(
 
 
 def run_multi_turn(
-    engine: str, base_url: str, model: str, max_tokens: int, timeout: float
+    engine: str,
+    base_url: str,
+    model: str,
+    max_tokens: int,
+    timeout: float,
+    headers: dict[str, str] | None = None,
 ) -> dict:
     messages = list(MULTI_TURN_START)
     latencies: list[float] = []
@@ -822,12 +855,12 @@ def run_multi_turn(
         if engine == "rapid-mlx":
             url = f"{base_url}/v1/chat/completions"
             payload = build_rapid_mlx_payload(model, messages, max_tokens, stream=False)
-            data, latency_ms = post_json(url, payload, timeout)
+            data, latency_ms = post_json(url, payload, timeout, headers=headers)
             content = extract_rapid_mlx_message_content(data)
         elif engine == "ollama":
             url = f"{base_url}/api/chat"
             payload = build_ollama_payload(model, messages, max_tokens, stream=False)
-            data, latency_ms = post_json(url, payload, timeout)
+            data, latency_ms = post_json(url, payload, timeout, headers=headers)
             content = extract_ollama_message_content(data)
         else:
             raise ValueError(f"Unknown engine: {engine}")
@@ -1105,6 +1138,7 @@ def run_engine_suite(
             workload["chat_model"],
             min(workload["max_tokens"], 128),
             timeout,
+            headers=headers,
         )
     except Exception as exc:
         errors.append({"workload": "multi_turn", "error": str(exc)})
