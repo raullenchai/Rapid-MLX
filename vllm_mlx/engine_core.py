@@ -152,6 +152,11 @@ class EngineCore:
         self._output_collectors: dict[str, RequestOutputCollector] = {}
         self._stream_states: dict[str, RequestStreamState] = {}
         self._finished_events: dict[str, asyncio.Event] = {}
+        # Per-request accumulator for stream_interval > 1: each step's
+        # new_text/new_token_ids delta is merged here regardless of
+        # should_send(); the buffer is flushed in one shot when should_send()
+        # triggers, so no token deltas are dropped between sends.
+        self._stream_buffers: dict[str, RequestOutput] = {}
 
         # Engine state
         self._running = False
@@ -340,11 +345,34 @@ class EngineCore:
                                     collector.put(req_output)
                                 else:
                                     state = states.get(rid)
+                                    # Merge this step's delta into the buffer so
+                                    # tokens that fall between should_send() hits
+                                    # are not silently discarded. new_text /
+                                    # new_token_ids accumulate; cumulative status
+                                    # fields take the latest value.
+                                    buf = self._stream_buffers.get(rid)
+                                    if buf is None:
+                                        self._stream_buffers[rid] = req_output
+                                    else:
+                                        self._stream_buffers[rid] = RequestOutput(
+                                            request_id=rid,
+                                            new_token_ids=buf.new_token_ids
+                                            + req_output.new_token_ids,
+                                            new_text=buf.new_text + req_output.new_text,
+                                            output_token_ids=req_output.output_token_ids,
+                                            output_text=req_output.output_text,
+                                            finished=req_output.finished,
+                                            finish_reason=req_output.finish_reason,
+                                            prompt_tokens=req_output.prompt_tokens,
+                                            completion_tokens=req_output.completion_tokens,
+                                            logprobs=req_output.logprobs,
+                                        )
                                     if state and state.should_send(
                                         req_output.completion_tokens,
                                         req_output.finished,
                                     ):
-                                        collector.put(req_output)
+                                        flushed = self._stream_buffers.pop(rid)
+                                        collector.put(flushed)
                                         state.mark_sent(req_output.completion_tokens)
 
                             if req_output.finished:
@@ -467,6 +495,7 @@ class EngineCore:
         if collector:
             collector.clear()
         self._stream_states.pop(request_id, None)
+        self._stream_buffers.pop(request_id, None)
         self._finished_events.pop(request_id, None)
         self.scheduler.remove_finished_request(request_id)
 
@@ -749,6 +778,7 @@ class EngineCore:
             collector.clear()
         self._output_collectors.clear()
         self._stream_states.clear()
+        self._stream_buffers.clear()
         self._finished_events.clear()
 
         logger.debug(f"Engine {self._engine_id} closed")
