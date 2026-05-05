@@ -13,6 +13,7 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="tests/"><img src="https://img.shields.io/badge/tests-2100%2B-brightgreen.svg" alt="Tests"></a>
   <a href="https://support.apple.com/en-us/HT211814"><img src="https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple" alt="Apple Silicon"></a>
+  <a href="https://github.com/raullenchai/Rapid-MLX/stargazers"><img src="https://img.shields.io/github/stars/raullenchai/Rapid-MLX?style=social" alt="GitHub stars"></a>
 </p>
 
 <p align="center">
@@ -795,6 +796,16 @@ We welcome contributions of all sizes! See [CONTRIBUTING.md](CONTRIBUTING.md) fo
 
 <a href="https://github.com/raullenchai/Rapid-MLX/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=raullenchai/Rapid-MLX" />
+</a>
+
+## Star History
+
+<a href="https://star-history.com/#raullenchai/Rapid-MLX&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=raullenchai/Rapid-MLX&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=raullenchai/Rapid-MLX&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=raullenchai/Rapid-MLX&type=Date" />
+  </picture>
 </a>
 
 ## License
