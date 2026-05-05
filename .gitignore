@@ -52,8 +52,6 @@ cover/
 # Generated benchmark reports
 reports/benchmarks/ollama-comparison/*.json
 reports/benchmarks/ollama-comparison/*.md
-!reports/benchmarks/ollama-comparison/20260502_104639.json
-!reports/benchmarks/ollama-comparison/20260502_104639.md
 
 # Translations
 *.mo
