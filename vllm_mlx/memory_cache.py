@@ -1316,9 +1316,20 @@ class MemoryAwarePrefixCache:
 
         # Write index.json LAST inside the staging dir. Its presence is the
         # signal to load_from_disk that .new contains a complete snapshot.
+        # Catch FileNotFoundError as a final guard against the recheck
+        # above missing the dir-loss window — the file or dir could still
+        # vanish in the microseconds between the recheck and the open().
         index_path = os.path.join(new_dir, "index.json")
-        with open(index_path, "w") as f:
-            json.dump(index, f, indent=2)
+        try:
+            with open(index_path, "w") as f:
+                json.dump(index, f, indent=2)
+        except FileNotFoundError:
+            shutil.rmtree(new_dir, ignore_errors=True)
+            logger.warning(
+                "[cache_persist] staging dir vanished while writing index.json, "
+                "aborting"
+            )
+            return False
 
         # Atomic-ish directory swap. If we crash between the two renames,
         # load_from_disk's recovery path (see below) handles it.

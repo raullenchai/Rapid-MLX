@@ -1063,15 +1063,22 @@ def test_save_aborts_on_post_filter_dir_loss(tmp_path, monkeypatch):
             _shutil.rmtree(new_dir, ignore_errors=True)
         return result
 
-    # Flip the flag as soon as the first entry's tokens.bin exists —
-    # that's well after the initial makedirs, so subsequent makedirs
-    # calls (in particular the post-filter one) trigger nuke.
+    # Flip the flag the *first* time we see entry_0_tokens.bin opened
+    # for write. Trigger is precise (exact path match, fires once) so
+    # no unrelated I/O can accidentally arm us. monkeypatch.setattr on
+    # builtins.open auto-unwinds at fixture teardown, so the patch
+    # never escapes this test even on assertion failure.
     import vllm_mlx.memory_cache as _mc_mod
 
+    expected_marker = os.path.join(new_dir, "entry_0_tokens.bin")
     real_open = open
 
     def _open_then_arm(file, *a, **k):
-        if isinstance(file, str) and file.endswith("_tokens.bin"):
+        if (
+            isinstance(file, str)
+            and file == expected_marker
+            and not nuke_after_call["after"]
+        ):
             nuke_after_call["after"] = True
         return real_open(file, *a, **k)
 

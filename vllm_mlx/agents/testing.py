@@ -1025,7 +1025,10 @@ class AgentTestRunner:
         # rather than a live exploit gate — but reject anything that
         # could traverse out of the bundled / source directories before
         # we resolve it.
-        if not re.fullmatch(r"[\w\-]+\.(py|sh)", test_module_name):
+        # Disallow leading hyphens — would never come from a profile YAML
+        # but downstream tooling (e.g. shell wrappers around the file
+        # path) treats `-foo` as an option flag.
+        if not re.fullmatch(r"[A-Za-z0-9_][\w\-]*\.(py|sh)", test_module_name):
             return [
                 TestResult(
                     f"specific:{test_module_name}",
