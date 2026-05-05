@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "0.6.12"
+version = "0.6.13"
 description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, 2-4x faster than Ollama."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -131,7 +131,16 @@ vllm-mlx-chat = "vllm_mlx.gradio_app:main"
 vllm-mlx-bench = "vllm_mlx.benchmark:main"
 
 [tool.setuptools.package-data]
-vllm_mlx = ["aliases.json", "agents/profiles/*.yaml"]
+vllm_mlx = [
+    "aliases.json",
+    "agents/profiles/*.yaml",
+    # Integration tests bundled inside the package so `rapid-mlx agents
+    # <name> --test` works on pip/brew installs (the source layout keeps
+    # them at tests/integrations/, mirrored here via symlinks). Without
+    # this, the test runner shows a confusing path-error skip.
+    "_integration_tests/*.py",
+    "_integration_tests/*.sh",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

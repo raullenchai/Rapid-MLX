@@ -1253,6 +1253,42 @@ class MemoryAwarePrefixCache:
             logger.warning("[cache_persist] no entries saved successfully, aborting")
             return False
 
+        # Filter index to entries whose files actually survived to disk.
+        # Defends against the staging dir being clobbered mid-save by an
+        # external process (e.g. macOS Spotlight, purgeable-cache cleanup
+        # under disk pressure) — observed in the wild during long
+        # multi-GB shutdown saves where 14GB+ of cache was being written.
+        # Without this filter, index.json may reference entry files that
+        # no longer exist, and the open() below raises FileNotFoundError
+        # because new_dir itself is gone.
+        verified = [
+            e
+            for e in index["entries"]
+            if os.path.exists(os.path.join(new_dir, f"entry_{e['index']}.safetensors"))
+            and os.path.exists(os.path.join(new_dir, f"entry_{e['index']}_tokens.bin"))
+        ]
+        if not verified:
+            shutil.rmtree(new_dir, ignore_errors=True)
+            logger.warning(
+                "[cache_persist] staging dir vanished mid-save, no entries survived "
+                f"(saved {saved}/{len(self._entries)} but 0 files remain on disk)"
+            )
+            return False
+        if len(verified) < len(index["entries"]):
+            logger.warning(
+                f"[cache_persist] {len(index['entries']) - len(verified)} of "
+                f"{len(index['entries'])} entry files vanished mid-save, "
+                f"persisting {len(verified)} that survived"
+            )
+            index["entries"] = verified
+            index["num_entries"] = len(verified)
+
+        # Defensively recreate new_dir before the index.json write — the
+        # filter above proves at least one entry's files exist, so the
+        # dir must too, but a stat-cache delay or NFS-style coherence
+        # window could still trip the open() below. Cheap insurance.
+        os.makedirs(new_dir, exist_ok=True)
+
         # Write index.json LAST inside the staging dir. Its presence is the
         # signal to load_from_disk that .new contains a complete snapshot.
         index_path = os.path.join(new_dir, "index.json")
