@@ -577,19 +577,16 @@ def load_model(
         max_tokens=_default_max_tokens,
     )
     _model_registry.add(entry, is_default=True)
-    # `_sync_config()` already ran earlier — before `_detect_native_tool_support()`.
-    # No re-sync is needed here, but only because of these invariants. If a
-    # future change violates any of them, add a second `_sync_config()` call:
-    #   1. `cfg.model_registry = _model_registry` (in `_sync_config`) is a
-    #      reference assignment, not a copy — registry mutations after sync
-    #      are visible through `get_config().model_registry` immediately.
-    #   2. Every global that `_sync_config()` mirrors is set BEFORE the
-    #      engine is constructed at line 510 (which is also before the early
-    #      sync). New mutable globals must follow the same rule.
-    #   3. State set on `_engine` between the early sync and here
-    #      (`preserve_native_tool_format`, `_tool_logits_processor_factory`)
-    #      is mutation on the same object `cfg.engine` references — route
-    #      modules see the updates without a re-sync.
+
+    # Defensive re-sync. `_sync_config()` already ran earlier (before
+    # `_detect_native_tool_support()`); under current invariants this call is
+    # redundant — `cfg.model_registry` holds a reference to `_model_registry`,
+    # every global synced is set before engine construction, and `_engine`
+    # mutations propagate via `cfg.engine`. Kept anyway because the bug this
+    # PR fixes (#225) was a silent call-ordering failure, and the cost of an
+    # idempotent re-sync is trivial against the cost of re-introducing the
+    # same failure mode if a future change violates the invariants.
+    _sync_config()
 
 
 def _sync_config() -> None:
