@@ -5,6 +5,7 @@ import pytest
 
 from vllm_mlx.reasoning.base import DeltaMessage, ReasoningParser
 from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1ReasoningParser
+from vllm_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
 from vllm_mlx.reasoning.gpt_oss_parser import (
     _CHANNEL_RE,
     _STRUCTURAL_TOKENS,
@@ -982,3 +983,120 @@ class TestHarmonyStreaming:
 
         assert "thinking" in "".join(reasoning_parts)
         assert "answer" in "".join(content_parts)
+
+
+# ---------------------------------------------------------------------------
+# Gemma4ReasoningParser
+# ---------------------------------------------------------------------------
+
+
+class TestGemma4Streaming:
+    """Streaming behavior for Gemma4's <|channel>thought / <channel|> /
+    <|channel>content channel format.
+
+    The pre-#219 implementation classified the entire delta_text into one
+    channel based on the channel state at the *end* of current_text. That
+    worked when each delta was a single token (stream_interval=1) but
+    misrouted bytes when stream_interval > 1 produced a buffered delta
+    that straddled a channel marker.
+    """
+
+    def setup_method(self):
+        self.parser = Gemma4ReasoningParser()
+        self.parser.reset_state()
+
+    def test_empty_delta_returns_none(self):
+        result = self.parser.extract_reasoning_streaming("", "", "")
+        assert result is None
+
+    def test_no_channel_seen_defaults_to_content(self):
+        delta = "hello world"
+        result = self.parser.extract_reasoning_streaming("", delta, delta)
+        assert result.content == "hello world"
+        assert result.reasoning is None
+
+    def test_thought_open_then_text_routes_to_reasoning(self):
+        d1 = "<|channel>thought\n"
+        m1 = self.parser.extract_reasoning_streaming("", d1, d1)
+        # Marker-only delta: nothing to emit after stripping.
+        assert m1 is None or (m1.reasoning is None and m1.content is None)
+
+        d2 = "thinking step 1"
+        prev = d1
+        curr = prev + d2
+        m2 = self.parser.extract_reasoning_streaming(prev, curr, d2)
+        assert m2.reasoning == "thinking step 1"
+        assert m2.content is None
+
+    def test_delta_straddles_thought_close_then_content_open(self):
+        """Regression for issue #219.
+
+        At stream_interval > 1 a single buffered delta can contain the tail of
+        the thought channel, the channel-close marker, the content-open marker,
+        and the start of the actual content. The pre-fix parser classified the
+        entire delta as content (because state at end of current_text was
+        in_content), so bytes before the close marker leaked from reasoning
+        into content. This test asserts the split.
+        """
+        prev = "<|channel>thought\nworking through it"
+        self.parser.extract_reasoning_streaming("", prev, prev)
+        assert self.parser._in_thought is True
+
+        delta = " final guess<channel|><|channel>content\nThe answer is 42."
+        curr = prev + delta
+        result = self.parser.extract_reasoning_streaming(prev, curr, delta)
+        assert result.reasoning == " final guess", (
+            f"reasoning bytes from before the close marker should stay in "
+            f"reasoning, got {result.reasoning!r}"
+        )
+        assert result.content == "The answer is 42.", (
+            f"content bytes from after the content-open marker should land in "
+            f"content, got {result.content!r}"
+        )
+        assert self.parser._in_content is True
+        assert self.parser._in_thought is False
+
+    def test_delta_straddles_implicit_close_only(self):
+        """Thought-close with no explicit content marker must still split,
+        with the post-close bytes going to content (matches the original
+        parser's implicit-content semantic)."""
+        prev = "<|channel>thought\nreasoning"
+        self.parser.extract_reasoning_streaming("", prev, prev)
+        assert self.parser._in_thought is True
+
+        delta = " done<channel|>plain answer"
+        curr = prev + delta
+        result = self.parser.extract_reasoning_streaming(prev, curr, delta)
+        assert result.reasoning == " done"
+        assert result.content == "plain answer"
+        assert self.parser._in_content is True
+
+    def test_delta_with_no_marker_routes_whole_to_current_channel(self):
+        """No marker in delta = original whole-delta dispatch (regression
+        guard so the new split branch doesn't break the common case)."""
+        prev = "<|channel>thought\nstart"
+        self.parser.extract_reasoning_streaming("", prev, prev)
+        delta = " more thinking text"
+        curr = prev + delta
+        result = self.parser.extract_reasoning_streaming(prev, curr, delta)
+        assert result.reasoning == " more thinking text"
+        assert result.content is None
+
+    def test_finished_content_phase_routes_to_content(self):
+        """Once in content phase, deltas without markers route to content."""
+        prev = "<|channel>thought\nx<channel|><|channel>content\nA"
+        self.parser.extract_reasoning_streaming("", prev, prev)
+        assert self.parser._in_content is True
+        delta = "BC"
+        result = self.parser.extract_reasoning_streaming(prev, prev + delta, delta)
+        assert result.content == "BC"
+        assert result.reasoning is None
+
+    def test_reset_state(self):
+        self.parser._in_thought = True
+        self.parser._in_content = True
+        self.parser._saw_any_channel = True
+        self.parser.reset_state()
+        assert self.parser._in_thought is False
+        assert self.parser._in_content is False
+        assert self.parser._saw_any_channel is False
