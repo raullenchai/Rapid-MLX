@@ -1028,7 +1028,11 @@ class AgentTestRunner:
         # Disallow leading hyphens — would never come from a profile YAML
         # but downstream tooling (e.g. shell wrappers around the file
         # path) treats `-foo` as an option flag.
-        if not re.fullmatch(r"[A-Za-z0-9_][\w\-]*\.(py|sh)", test_module_name):
+        # re.ASCII pins \w to [A-Za-z0-9_] — without it, Unicode letters
+        # like `tést.py` would slip through.
+        if not re.fullmatch(
+            r"[A-Za-z0-9_][\w\-]*\.(py|sh)", test_module_name, re.ASCII
+        ):
             return [
                 TestResult(
                     f"specific:{test_module_name}",

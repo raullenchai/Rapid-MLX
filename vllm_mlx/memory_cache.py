@@ -1323,11 +1323,14 @@ class MemoryAwarePrefixCache:
         try:
             with open(index_path, "w") as f:
                 json.dump(index, f, indent=2)
-        except FileNotFoundError:
+        except OSError as e:
+            # Catch the broader OSError (FileNotFoundError if dir vanished,
+            # PermissionError if cache_dir was suddenly chmod'd, ENOSPC if
+            # disk filled up mid-shutdown). All of these should log
+            # cleanly, not raise a traceback up to the lifespan handler.
             shutil.rmtree(new_dir, ignore_errors=True)
             logger.warning(
-                "[cache_persist] staging dir vanished while writing index.json, "
-                "aborting"
+                f"[cache_persist] could not write index.json ({e}), aborting"
             )
             return False
 
