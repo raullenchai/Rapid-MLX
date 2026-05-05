@@ -211,9 +211,10 @@ class TestMTPGenerateStep:
         """MTPStats should track accepted/rejected/errors."""
         from vllm_mlx.speculative.mtp_generate import MTPStats
 
-        stats = MTPStats(accepted=10, rejected=3, errors=1)
+        stats = MTPStats(accepted=10, rejected=3, errors=1, corrections=2)
         assert stats.total == 13
         assert abs(stats.acceptance_rate - 10 / 13) < 1e-6
+        assert stats.corrections == 2
 
     def test_mtp_stats_zero_division(self):
         """MTPStats with no attempts should not crash."""
@@ -305,3 +306,41 @@ class TestMTPGenerateStep:
         assert len(tokens) == 2
         assert all(t.token == 42 for t in tokens)
         assert all(t.is_draft is False for t in tokens)
+
+    def test_native_mtp_residual_distribution(self):
+        """residual_logprobs should normalize the positive (p - q)+ mass."""
+        try:
+            import mlx.core as mx
+        except ImportError:
+            pytest.skip("mlx not available")
+
+        from vllm_mlx.speculative.native_mtp import residual_logprobs
+
+        target = mx.log(mx.array([[0.7, 0.2, 0.1]]))
+        draft = mx.log(mx.array([[0.2, 0.7, 0.1]]))
+
+        residual = residual_logprobs(target, draft)
+        probs = mx.exp(residual)
+        mx.eval(probs)
+
+        assert probs[0, 0].item() > 0.99
+        assert probs[0, 1].item() < 1e-6
+        assert abs(mx.sum(probs).item() - 1.0) < 1e-5
+
+    def test_native_mtp_acceptance_mask_accepts_when_ratio_is_one(self):
+        """acceptance_mask should always accept when p >= q for draft token."""
+        try:
+            import mlx.core as mx
+        except ImportError:
+            pytest.skip("mlx not available")
+
+        from vllm_mlx.speculative.native_mtp import acceptance_mask
+
+        target = mx.log(mx.array([[0.9, 0.1]]))
+        draft = mx.log(mx.array([[0.5, 0.5]]))
+        draft_tokens = mx.array([0])
+
+        mask = acceptance_mask(target, draft, draft_tokens)
+        mx.eval(mask)
+
+        assert bool(mask.item()) is True

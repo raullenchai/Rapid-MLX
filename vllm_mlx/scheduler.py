@@ -112,6 +112,7 @@ class SchedulerConfig:
     # Uses the model's built-in MTP head to predict multiple tokens per step
     enable_mtp: bool = False
     mtp_num_draft_tokens: int = 1  # Number of draft tokens from MTP head
+    mtp_draft_temperature: float = 0.7  # Draft sampler temperature
     mtp_optimistic: bool = False  # Skip acceptance check for max speed
 
 
@@ -602,6 +603,11 @@ def _install_mtp(
     model: Any,
     num_draft_tokens: int = 1,
     optimistic: bool = False,
+    target_temperature: float = 0.7,
+    target_top_p: float = 0.9,
+    target_min_p: float = 0.0,
+    target_top_k: int = 0,
+    draft_temperature: float = 0.7,
 ) -> None:
     """
     Monkey-patch a BatchGenerator to use MTP (Multi-Token Prediction)
@@ -612,13 +618,38 @@ def _install_mtp(
     2. MTP head drafts one token after primary
     3. Verify [primary, draft] in one model call (always advances cache)
     4. Accept: skip_state from pos 1, defer draft for next step emission
-       Reject: trim KVCache by 1, skip_state from pos 0 (no cold start)
+       Reject: rollback verify pass, sample residual correction, re-advance
     5. Draft is emitted in the NEXT generation step after primary
     """
     _orig_step = batch_gen._step
 
-    # Greedy sampler for MTP draft tokens
-    _draft_sampler = make_sampler(temp=0.0)
+    from .speculative.native_mtp import (
+        MTPDistributionParams,
+        acceptance_mask,
+        distribution_logprobs,
+        residual_logprobs,
+        sample_from_logprobs,
+    )
+
+    if num_draft_tokens != 1:
+        logger.warning(
+            "[MTP] mtp_num_draft_tokens=%d requested, but current native path "
+            "supports one draft token per verify cycle. Using 1.",
+            num_draft_tokens,
+        )
+
+    _target_params = MTPDistributionParams(
+        temperature=target_temperature,
+        top_p=target_top_p,
+        min_p=target_min_p,
+        top_k=target_top_k,
+    )
+    _draft_params = MTPDistributionParams(
+        temperature=draft_temperature,
+        top_p=target_top_p,
+        min_p=target_min_p,
+        top_k=target_top_k,
+    )
 
     # Skip state: when MTP accepts, the cache already consumed [primary, draft].
     # Next _step call receives primary as input but must NOT re-feed it.
@@ -632,7 +663,7 @@ def _install_mtp(
     _deferred_drafts = {}
 
     # MTP stats
-    _mtp_stats = {"accepted": 0, "rejected": 0, "errors": 0}
+    _mtp_stats = {"accepted": 0, "rejected": 0, "corrections": 0, "errors": 0}
 
     def _mtp_step(
         input_tokens,
@@ -650,10 +681,7 @@ def _install_mtp(
         3. MTP head drafts token D
         4. Verify [P, D] in one model call (always advances cache)
         5. Accept: skip_state from position 1 (after D), defer D
-           Reject: trim KVCache by 1, skip_state from position 0 (after P)
-
-        No snapshot/restore — eliminates cold starts after rejection.
-        MambaCache layers accept minor pollution on reject (exponential decay).
+           Reject: restore cache, sample residual correction, defer correction
 
         During prefill (multi-token input), MTP is skipped entirely.
         """
@@ -742,10 +770,8 @@ def _install_mtp(
                 mtp_cache=None,
             )
             draft_logits = draft_logits[:, -1, :]
-            draft_logprobs = draft_logits - mx.logsumexp(
-                draft_logits, axis=-1, keepdims=True
-            )
-            draft_tokens = _draft_sampler(draft_logprobs)
+            draft_distribution = distribution_logprobs(draft_logits, _draft_params)
+            draft_tokens = sample_from_logprobs(draft_distribution)
 
             # Always-advance: feed [primary, draft] and let cache advance.
             #
@@ -809,12 +835,36 @@ def _install_mtp(
                     _skip_state[0] = None
                 _mtp_stats["accepted"] += 1
             else:
-                # --- VERIFIED MODE: single eval + Python comparison ---
-                verify_pred = mx.argmax(verify_logits[:, 0, :], axis=-1)
-                mx.eval(verify_pred, draft_tokens)
-                pred_list = verify_pred.tolist()
+                # --- VERIFIED MODE: probability-ratio accept/reject ---
+                verify_target_logits = verify_logits[:, 0, :]
+                if any(logits_processors):
+                    processed_verify_logits = []
+                    for e in range(batch_size):
+                        sample_logits = verify_target_logits[e : e + 1]
+                        token_history = mx.concatenate(
+                            (tokens[e], primary_tokens[e : e + 1])
+                        )
+                        for processor in logits_processors[e]:
+                            sample_logits = processor(token_history, sample_logits)
+                        processed_verify_logits.append(sample_logits)
+                    verify_target_logits = mx.concatenate(
+                        processed_verify_logits,
+                        axis=0,
+                    )
+
+                target_distribution = distribution_logprobs(
+                    verify_target_logits,
+                    _target_params,
+                )
+                accepted_mask = acceptance_mask(
+                    target_distribution,
+                    draft_distribution,
+                    draft_tokens,
+                )
+                mx.eval(accepted_mask, draft_tokens)
+                accepted_list = accepted_mask.tolist()
                 draft_list = draft_tokens.tolist()
-                all_accepted = pred_list == draft_list
+                all_accepted = all(bool(x) for x in accepted_list)
 
                 if all_accepted and verify_hidden is not None:
                     # --- ACCEPT ---
@@ -823,23 +873,32 @@ def _install_mtp(
                         "hidden": verify_hidden[:, -1:, :],
                     }
                     mx.async_eval(_skip_state[0]["logits"], _skip_state[0]["hidden"])
-                    verify_lp = verify_logits[:, 0, :] - mx.logsumexp(
-                        verify_logits[:, 0, :], axis=-1, keepdims=True
-                    )
                     for e in range(batch_size):
                         uid = current_uids[e]
                         _deferred_drafts[uid] = {
                             "token": draft_list[e],
-                            "logprobs": verify_lp[e],
+                            "logprobs": target_distribution[e],
                         }
                     _mtp_stats["accepted"] += 1
 
                 else:
-                    # --- REJECT (always-advance) ---
+                    # --- REJECT: sample residual correction token(s) ---
+                    correction_distribution = residual_logprobs(
+                        target_distribution,
+                        draft_distribution,
+                    )
+                    correction_tokens = sample_from_logprobs(correction_distribution)
+                    mx.eval(correction_tokens)
+                    correction_list = correction_tokens.tolist()
+
+                    # Current implementation keeps batch-level cache operations.
+                    # Mixed accept/reject inside one batch would require per-row
+                    # cache rollback. Treat any rejection as a correction cycle for
+                    # every row so cache state remains coherent.
                     if _rnn_snapshots:
                         # Hybrid model: undo the entire verify pass
-                        # (both P and D) for all cache types, then
-                        # re-advance with just P for a consistent state.
+                        # (both P and D) for all cache types, then re-advance
+                        # with P plus the residual correction.
                         for c in prompt_cache:
                             if (
                                 hasattr(c, "is_trimmable")
@@ -849,10 +908,12 @@ def _install_mtp(
                                 c.trim(2)
                         for _ci, _snap in _rnn_snapshots.items():
                             prompt_cache[_ci].state = _snap
-                        # Re-advance with primary only — both KV and RNN
-                        # now advance by exactly 1 (the primary token).
+                        correction_input = mx.concatenate(
+                            [primary_tokens[:, None], correction_tokens[:, None]],
+                            axis=1,
+                        )
                         rerun_out = model(
-                            primary_tokens[:, None],
+                            correction_input,
                             cache=prompt_cache,
                             return_hidden=True,
                         )
@@ -863,7 +924,7 @@ def _install_mtp(
                             rerun_hidden = None
                         if rerun_hidden is not None:
                             _skip_state[0] = {
-                                "logits": rerun_logits[:, -1, :],
+                                "logits": rerun_logits[:, 1, :],
                                 "hidden": rerun_hidden[:, -1:, :],
                             }
                             mx.async_eval(
@@ -873,18 +934,29 @@ def _install_mtp(
                         else:
                             _skip_state[0] = None
                     else:
-                        # Pure attention model: simple trim(1) is enough.
+                        # Pure attention model: trim both verify tokens, then
+                        # re-advance with P plus the residual correction.
                         for c in prompt_cache:
                             if (
                                 hasattr(c, "is_trimmable")
                                 and c.is_trimmable()
                                 and hasattr(c, "trim")
                             ):
-                                c.trim(1)
-                        if verify_hidden is not None:
+                                c.trim(2)
+                        correction_input = mx.concatenate(
+                            [primary_tokens[:, None], correction_tokens[:, None]],
+                            axis=1,
+                        )
+                        rerun_out = model(
+                            correction_input,
+                            cache=prompt_cache,
+                            return_hidden=True,
+                        )
+                        if isinstance(rerun_out, tuple):
+                            rerun_logits, rerun_hidden = rerun_out
                             _skip_state[0] = {
-                                "logits": verify_logits[:, 0, :],
-                                "hidden": verify_hidden[:, 0:1, :],
+                                "logits": rerun_logits[:, 1, :],
+                                "hidden": rerun_hidden[:, -1:, :],
                             }
                             mx.async_eval(
                                 _skip_state[0]["logits"],
@@ -892,9 +964,13 @@ def _install_mtp(
                             )
                         else:
                             _skip_state[0] = None
-                    for uid in current_uids:
-                        _deferred_drafts.pop(uid, None)
+                    for e, uid in enumerate(current_uids):
+                        _deferred_drafts[uid] = {
+                            "token": correction_list[e],
+                            "logprobs": correction_distribution[e],
+                        }
                     _mtp_stats["rejected"] += 1
+                    _mtp_stats["corrections"] += 1
 
         except Exception as e:
             logger.debug(f"[MTP] draft/verify failed: {e}")
@@ -1021,7 +1097,8 @@ def _install_mtp(
 
     mode_str = "optimistic (no verify)" if optimistic else "always-advance"
     logger.info(
-        f"[MTP] installed with num_draft_tokens={num_draft_tokens}, {mode_str} mode"
+        "[MTP] installed with native probability-ratio sampling, "
+        f"num_draft_tokens=1, draft_temp={draft_temperature}, {mode_str} mode"
     )
 
 
@@ -1224,6 +1301,7 @@ class Scheduler:
             temp=sampling_params.temperature,
             top_p=sampling_params.top_p,
             min_p=sampling_params.min_p,
+            top_k=sampling_params.top_k,
         )
 
         stop_tokens = self._get_stop_tokens()
@@ -1313,6 +1391,11 @@ class Scheduler:
                     model=self.model,
                     num_draft_tokens=self.config.mtp_num_draft_tokens,
                     optimistic=self.config.mtp_optimistic,
+                    target_temperature=sampling_params.temperature,
+                    target_top_p=sampling_params.top_p,
+                    target_min_p=sampling_params.min_p,
+                    target_top_k=sampling_params.top_k,
+                    draft_temperature=self.config.mtp_draft_temperature,
                 )
             else:
                 logger.warning(
@@ -1494,6 +1577,7 @@ class Scheduler:
             sampling_params.temperature,
             sampling_params.top_p,
             sampling_params.min_p,
+            sampling_params.top_k,
         )
 
         # Create new generator if needed or if sampling params changed

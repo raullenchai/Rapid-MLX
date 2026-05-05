@@ -25,6 +25,14 @@ from typing import Any
 
 import mlx.core as mx
 
+from .native_mtp import (
+    MTPDistributionParams,
+    acceptance_mask,
+    distribution_logprobs,
+    residual_logprobs,
+    sample_from_logprobs,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +43,7 @@ class MTPStats:
     accepted: int = 0
     rejected: int = 0
     errors: int = 0
+    corrections: int = 0
 
     @property
     def total(self) -> int:
@@ -92,6 +101,8 @@ def mtp_generate_step(
     sampler: Any,
     max_tokens: int = 256,
     optimistic: bool = False,
+    target_params: MTPDistributionParams | None = None,
+    draft_params: MTPDistributionParams | None = None,
 ) -> Iterator[MTPOutput]:
     """Core MTP decode generator used by BatchedEngine.
 
@@ -114,9 +125,8 @@ def mtp_generate_step(
     Yields:
         MTPOutput for each generated token (primary and accepted drafts)
     """
-    from mlx_lm.sample_utils import make_sampler
-
-    draft_sampler = make_sampler(temp=0.0)  # Greedy for drafts
+    target_params = target_params or MTPDistributionParams()
+    draft_params = draft_params or MTPDistributionParams(temperature=0.7)
     stats = MTPStats()
 
     # Detect hybrid cache (mix of trimmable KV + non-trimmable RNN)
@@ -178,7 +188,8 @@ def mtp_generate_step(
                 mtp_cache=None,
             )
             draft_logits = draft_logits[:, -1, :]
-            draft = draft_sampler(draft_logits)
+            draft_distribution = distribution_logprobs(draft_logits, draft_params)
+            draft = sample_from_logprobs(draft_distribution)
 
             # --- Step 4: Snapshot RNN state for hybrid models ---
             rnn_snapshots = _snapshot_rnn_state(cache) if is_hybrid else {}
@@ -210,15 +221,20 @@ def mtp_generate_step(
                 token_count += 1
                 stats.accepted += 1
             else:
-                # Verified mode
-                verify_pred = mx.argmax(verify_logits[:, 0, :], axis=-1)
-                mx.eval(verify_pred, draft)
+                # Verified mode: probability-ratio accept/reject.
+                target_distribution = distribution_logprobs(
+                    verify_logits[:, 0, :],
+                    target_params,
+                )
+                accepted = acceptance_mask(
+                    target_distribution,
+                    draft_distribution,
+                    draft,
+                )
+                mx.eval(accepted, draft)
 
-                if verify_pred.item() == draft.item():
+                if bool(accepted.item()):
                     # --- ACCEPT ---
-                    draft_lp = verify_logits[:, 0, :] - mx.logsumexp(
-                        verify_logits[:, 0, :], axis=-1, keepdims=True
-                    )
                     if verify_hidden is not None:
                         skip_state = {
                             "logits": verify_logits[:, 1, :],
@@ -226,36 +242,60 @@ def mtp_generate_step(
                         }
                         mx.async_eval(skip_state["logits"], skip_state["hidden"])
                     yield MTPOutput(
-                        token=draft.item(), logprobs=draft_lp[0], is_draft=True
+                        token=draft.item(),
+                        logprobs=target_distribution[0],
+                        is_draft=True,
                     )
                     token_count += 1
                     stats.accepted += 1
                 else:
-                    # --- REJECT ---
+                    # --- REJECT: sample mathematically-correct residual token ---
+                    correction_distribution = residual_logprobs(
+                        target_distribution,
+                        draft_distribution,
+                    )
+                    correction = sample_from_logprobs(correction_distribution)
+                    mx.eval(correction)
+
                     if rnn_snapshots:
-                        # Hybrid: undo both P and D, restore RNN, re-advance with P
+                        # Hybrid: undo both P and D, restore RNN, then re-advance
+                        # with P plus the residual correction.
                         _trim_cache(cache, 2)
                         _restore_rnn_state(cache, rnn_snapshots)
-                        rerun_out = model(
-                            primary[:, None], cache=cache, return_hidden=True
+                        correction_input = mx.concatenate(
+                            [primary[:, None], correction[:, None]], axis=1
                         )
+                        rerun_out = model(correction_input, cache=cache, return_hidden=True)
                         if isinstance(rerun_out, tuple):
                             rerun_logits, rerun_hidden = rerun_out
                             skip_state = {
-                                "logits": rerun_logits[:, -1, :],
+                                "logits": rerun_logits[:, 1, :],
                                 "hidden": rerun_hidden[:, -1:, :],
                             }
                             mx.async_eval(skip_state["logits"], skip_state["hidden"])
                     else:
-                        # Pure attention: simple trim(1)
-                        _trim_cache(cache, 1)
-                        if verify_hidden is not None:
+                        # Pure attention: trim the verify pass, then advance with
+                        # P plus the residual correction.
+                        _trim_cache(cache, 2)
+                        correction_input = mx.concatenate(
+                            [primary[:, None], correction[:, None]], axis=1
+                        )
+                        rerun_out = model(correction_input, cache=cache, return_hidden=True)
+                        if isinstance(rerun_out, tuple):
+                            rerun_logits, rerun_hidden = rerun_out
                             skip_state = {
-                                "logits": verify_logits[:, 0, :],
-                                "hidden": verify_hidden[:, 0:1, :],
+                                "logits": rerun_logits[:, 1, :],
+                                "hidden": rerun_hidden[:, -1:, :],
                             }
                             mx.async_eval(skip_state["logits"], skip_state["hidden"])
+                    yield MTPOutput(
+                        token=correction.item(),
+                        logprobs=correction_distribution[0],
+                        is_draft=True,
+                    )
+                    token_count += 1
                     stats.rejected += 1
+                    stats.corrections += 1
 
         except Exception as e:
             logger.debug(f"[MTP] draft/verify failed: {e}")
@@ -285,10 +325,11 @@ def mtp_generate_step(
             mx.eval(logits)
 
     logger.info(
-        "[MTP] decode stats: %d accepted, %d rejected, %d errors "
+        "[MTP] decode stats: %d accepted, %d rejected, %d corrections, %d errors "
         "(%.1f%% acceptance rate)",
         stats.accepted,
         stats.rejected,
+        stats.corrections,
         stats.errors,
         stats.acceptance_rate * 100,
     )

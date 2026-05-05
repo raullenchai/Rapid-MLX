@@ -296,6 +296,7 @@ def serve_command(args):
         # MTP
         enable_mtp=args.enable_mtp,
         mtp_num_draft_tokens=args.mtp_num_draft_tokens,
+        mtp_draft_temperature=args.mtp_draft_temperature,
         mtp_optimistic=args.mtp_optimistic,
         # KV cache quantization
         kv_cache_quantization=args.kv_cache_quantization,
@@ -312,7 +313,11 @@ def serve_command(args):
     if args.chunked_prefill_tokens > 0:
         print(f"Chunked prefill: {args.chunked_prefill_tokens} tokens per step")
     if args.enable_mtp:
-        print(f"MTP: enabled, draft_tokens={args.mtp_num_draft_tokens}")
+        print(
+            "MTP: enabled, "
+            f"draft_tokens={args.mtp_num_draft_tokens}, "
+            f"draft_temp={args.mtp_draft_temperature}"
+        )
     print(f"Stream interval: {args.stream_interval} tokens")
     if args.use_paged_cache:
         print(
@@ -1221,6 +1226,12 @@ Examples:
         type=int,
         default=1,
         help="Number of draft tokens per MTP step (default: 1)",
+    )
+    serve_parser.add_argument(
+        "--mtp-draft-temperature",
+        type=float,
+        default=0.7,
+        help="Draft sampler temperature for native MTP (default: 0.7)",
     )
     serve_parser.add_argument(
         "--mtp-optimistic",
