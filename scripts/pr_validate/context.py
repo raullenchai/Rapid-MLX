@@ -32,6 +32,7 @@ HIGH_BLAST_PATHS = (
     "vllm_mlx/scheduler.py",
     "vllm_mlx/server.py",
     "vllm_mlx/cli.py",
+    "vllm_mlx/engine_core.py",
     "vllm_mlx/memory_cache.py",
     "vllm_mlx/prefix_cache.py",
     "vllm_mlx/engine/",
