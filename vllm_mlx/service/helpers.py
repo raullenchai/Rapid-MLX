@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # ── Fallback defaults ──────────────────────────────────────────────
 _FALLBACK_TEMPERATURE = 0.7
 _FALLBACK_TOP_P = 0.9
-_DIRECT_JANG_DEFAULT_MAX_TOKENS = 256
+_DIRECT_JANG_DEFAULT_MAX_TOKENS = 2048
 
 # Tool-use system prompt (auto-injected when tools are provided and parser is active)
 _TOOL_USE_SYSTEM_SUFFIX = (

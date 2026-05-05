@@ -123,11 +123,15 @@ def _sanitize_direct_jang_textual_tools(
                     "You are a concise coding assistant. Answer only the latest "
                     "user request directly. When the user asks you to create, edit, "
                     "inspect, run, test, or verify files, your entire response must "
-                    "be only a DSML tool call block using the available tools. Never "
-                    "print source code fences for file creation requests; write the "
-                    "file with a tool. For a greeting, reply with one short greeting "
-                    "and ask how you can help. Do not add examples unless the user "
-                    "asks. Do not emit repeated symbols."
+                    "be tool calls using the available tools. For multi-file project "
+                    "creation, prefer one bash tool call that writes the files and "
+                    "runs validation. If you do not emit DSML, emit exactly the text "
+                    'format [Calling tool: bash({"command":"...", "timeout":120})] '
+                    'or [Calling tool: write({"path":"...", "content":"..."})]. '
+                    "Never print markdown, source code fences, explanations, or "
+                    "examples for file creation requests. For a greeting, reply with "
+                    "one short greeting and ask how you can help. Do not emit "
+                    "repeated symbols."
                     f"{suffix}"
                 )
             else:
@@ -185,6 +189,15 @@ _FILE_CREATE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _FENCED_CODE_RE = re.compile(r"```(?:[A-Za-z0-9_-]+)?\s*\n(.*?)(?:\n```|$)", re.DOTALL)
+_FENCED_CODE_BLOCK_RE = re.compile(
+    r"```(?:[A-Za-z0-9_.+/-]+)?[^\n]*\n(.*?)(?:\n```|$)", re.DOTALL
+)
+_ARTIFACT_PATH_RE = re.compile(
+    r"(?:^|[\s:`'\"])([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*"
+    r"(?:\.[A-Za-z0-9]+|package\.json|tsconfig\.json|Dockerfile|Makefile))"
+    r"(?=$|[\s:`'\",)])",
+    re.IGNORECASE,
+)
 
 
 def _tool_to_dict(tool) -> dict:
@@ -215,17 +228,83 @@ def _latest_user_text(messages: list) -> str:
     return ""
 
 
-def _synthesize_direct_jang_write_tool_call(
+def _clean_artifact_path(path: str) -> str:
+    path = path.strip().strip("`'\".,:;()[]{}")
+    while path.startswith("./"):
+        path = path[2:]
+    return path
+
+
+def _path_from_fence_context(context: str) -> str | None:
+    for line in reversed(context.splitlines()[-8:]):
+        matches = [
+            _clean_artifact_path(match.group(1))
+            for match in _ARTIFACT_PATH_RE.finditer(line)
+        ]
+        matches = [
+            match
+            for match in matches
+            if match and not match.startswith("/") and ".." not in match.split("/")
+        ]
+        if matches:
+            return matches[-1]
+    return None
+
+
+def _trim_repeated_artifact_tail(content: str) -> str:
+    lines = content.splitlines()
+    for block_size in range(1, min(8, len(lines) // 2) + 1):
+        while (
+            len(lines) >= block_size * 2
+            and lines[-block_size:] == lines[-(block_size * 2) : -block_size]
+        ):
+            del lines[-block_size:]
+    return "\n".join(lines).strip()
+
+
+def _extract_markdown_file_artifacts(text: str) -> list[tuple[str, str]]:
+    artifacts: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for match in _FENCED_CODE_BLOCK_RE.finditer(text):
+        path = _path_from_fence_context(
+            text[max(0, match.start() - 500) : match.start()]
+        )
+        content = _trim_repeated_artifact_tail(match.group(1).strip())
+        if not path or not content or path in seen:
+            continue
+        seen.add(path)
+        artifacts.append((path, content))
+    return artifacts
+
+
+def _synthesize_direct_jang_write_tool_calls(
     text: str, messages: list, request: ChatCompletionRequest
 ) -> list[dict] | None:
+    tool_names = {_tool_name(tool) for tool in (request.tools or [])}
+    if "write" not in tool_names:
+        return None
+
+    artifacts = _extract_markdown_file_artifacts(text)
+    if artifacts:
+        return [
+            {
+                "index": index,
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {
+                    "name": "write",
+                    "arguments": json.dumps(
+                        {"path": path, "content": content}, ensure_ascii=False
+                    ),
+                },
+            }
+            for index, (path, content) in enumerate(artifacts)
+        ]
+
     user_text = _latest_user_text(messages)
     file_match = _FILE_CREATE_RE.search(user_text)
     code_match = _FENCED_CODE_RE.search(text)
     if not file_match or not code_match:
-        return None
-
-    tool_names = {_tool_name(tool) for tool in (request.tools or [])}
-    if "write" not in tool_names:
         return None
 
     path = file_match.group(1).strip()
@@ -526,14 +605,6 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     prompt_progress_callback = _make_prompt_progress_callback()
     if prompt_progress_callback is not None:
         chat_kwargs["prompt_progress_callback"] = prompt_progress_callback
-    if (
-        request.max_tokens is None
-        and request.tools
-        and not has_tool_result
-        and _uses_direct_jang_generation(engine)
-    ):
-        chat_kwargs["max_tokens"] = max(chat_kwargs["max_tokens"], 1024)
-
     # Add multimodal content
     if has_media:
         chat_kwargs["images"] = images if images else None
@@ -1068,7 +1139,7 @@ async def stream_chat_completion(
                 yield _fb_sse
 
         if buffer_direct_jang_tools and not direct_jang_tool_calls_detected:
-            synthetic_tool_calls = _synthesize_direct_jang_write_tool_call(
+            synthetic_tool_calls = _synthesize_direct_jang_write_tool_calls(
                 buffered_content, messages, request
             )
             if synthetic_tool_calls:

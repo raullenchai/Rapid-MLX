@@ -392,7 +392,7 @@ def test_direct_jang_default_max_tokens_matches_mlx_lm_default():
         is_mllm = False
         tokenizer = FakeTokenizer()
 
-    assert _resolve_max_tokens(None, engine=FakeEngine()) == 256
+    assert _resolve_max_tokens(None, engine=FakeEngine()) == 2048
     assert _resolve_max_tokens(4096, engine=FakeEngine()) == 4096
 
 
@@ -454,7 +454,7 @@ def test_direct_jang_sanitizes_pi_textual_tools():
     )
 
     assert "concise coding assistant" in sanitized[0]["content"]
-    assert "DSML tool call block" in sanitized[0]["content"]
+    assert "one bash tool call" in sanitized[0]["content"]
     assert "- read:" not in sanitized[0]["content"]
     assert "Do not emit tool calls" not in sanitized[0]["content"]
 
@@ -503,9 +503,9 @@ def test_deepseek_parser_streams_dsv4_dsml_tool_call():
 
 def test_direct_jang_synthesizes_write_tool_from_code_fence():
     from vllm_mlx.api.models import ToolDefinition
-    from vllm_mlx.routes.chat import _synthesize_direct_jang_write_tool_call
+    from vllm_mlx.routes.chat import _synthesize_direct_jang_write_tool_calls
 
-    tool_calls = _synthesize_direct_jang_write_tool_call(
+    tool_calls = _synthesize_direct_jang_write_tool_calls(
         "Here it is:\n```html\n<html>ok</html>\n```",
         [{"role": "user", "content": "create a file named snake.html"}],
         type(
@@ -537,6 +537,72 @@ def test_direct_jang_synthesizes_write_tool_from_code_fence():
         "path": "snake.html",
         "content": "<html>ok</html>",
     }
+
+
+def test_direct_jang_synthesizes_multiple_markdown_file_artifacts():
+    from vllm_mlx.api.models import ToolDefinition
+    from vllm_mlx.routes.chat import _synthesize_direct_jang_write_tool_calls
+
+    tool_calls = _synthesize_direct_jang_write_tool_calls(
+        "Create these files:\n\n"
+        "package.json\n"
+        "```json\n"
+        '{"scripts":{"dev":"bun run src/index.ts"}}\n'
+        "```\n\n"
+        "src/index.ts\n"
+        "```ts\n"
+        'console.log("ok")\n'
+        "```",
+        [{"role": "user", "content": "create a REST api"}],
+        type(
+            "Request",
+            (),
+            {
+                "tools": [
+                    ToolDefinition(
+                        type="function",
+                        function={
+                            "name": "write",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "content": {"type": "string"},
+                                },
+                            },
+                        },
+                    )
+                ]
+            },
+        )(),
+    )
+
+    assert tool_calls is not None
+    assert [call["function"]["name"] for call in tool_calls] == ["write", "write"]
+    assert [json.loads(call["function"]["arguments"]) for call in tool_calls] == [
+        {
+            "path": "package.json",
+            "content": '{"scripts":{"dev":"bun run src/index.ts"}}',
+        },
+        {"path": "src/index.ts", "content": 'console.log("ok")'},
+    ]
+
+
+def test_direct_jang_trims_repeated_artifact_tail():
+    from vllm_mlx.routes.chat import _trim_repeated_artifact_tail
+
+    assert (
+        _trim_repeated_artifact_tail(
+            "const ok = true;\n"
+            "// Export the app\n"
+            "module.exports = app;\n"
+            "// Export the app\n"
+            "module.exports = app;\n"
+            "// Export the app\n"
+            "module.exports = app;"
+        )
+        == "const ok = true;\n// Export the app\nmodule.exports = app;"
+    )
 
 
 def test_jang_model_uses_standard_jang_loader(tmp_path, monkeypatch):
