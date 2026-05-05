@@ -945,6 +945,14 @@ def test_save_aborts_cleanly_when_staging_dir_vanishes_completely(
     new_dir = str(cache_dir) + ".new"
     import mlx_lm.models.cache as _mc
 
+    # Patching `mlx_lm.models.cache.save_prompt_cache` (not
+    # `vllm_mlx.memory_cache.save_prompt_cache`) is intentional and
+    # correct: memory_cache.py imports it via a function-local
+    # `from mlx_lm.models.cache import save_prompt_cache` *inside*
+    # save_to_disk (line ~1180). That `from X import Y` re-resolves
+    # the attribute on the source module on every call, so
+    # monkeypatch.setattr on _mc takes effect for the subsequent
+    # save_to_disk invocation.
     real_save = _mc.save_prompt_cache
     call_count = {"n": 0}
 
@@ -953,6 +961,9 @@ def test_save_aborts_cleanly_when_staging_dir_vanishes_completely(
         # fully completed (its safetensors + tokens.bin both on disk,
         # saved already incremented). Mimics the production sequence
         # where the dir is wiped after a successful run of N entries.
+        # The per-entry try/except in memory_cache.py:1248 swallows the
+        # subsequent FileNotFoundError so the loop continues; the bug
+        # we're guarding against fires later, at the index.json write.
         call_count["n"] += 1
         if call_count["n"] == 2:
             _shutil.rmtree(new_dir, ignore_errors=True)
@@ -1014,3 +1025,68 @@ def test_save_persists_only_surviving_entries_when_some_files_vanish(
     assert cache2.load_from_disk(str(cache_dir)) == 1
     entry = next(iter(cache2._entries.values()))
     assert entry.tokens == tuple(range(11))
+
+
+def test_save_aborts_on_post_filter_dir_loss(tmp_path, monkeypatch):
+    """TOCTOU corner: the staging dir survives the verified-filter check
+    but is then deleted before index.json is written. Pre-fix,
+    `os.makedirs(new_dir, exist_ok=True)` would silently recreate an
+    EMPTY dir and the index.json write would commit a snapshot pointing
+    to non-existent entry files (load_from_disk recovers correctly, but
+    the swap is wasted and the previous good snapshot is unnecessarily
+    promoted to .old).
+
+    This regression test pins the post-filter recheck added to defend
+    against that window. We monkeypatch ``os.makedirs`` to delete the
+    dir's contents the instant after it's recreated — simulating an
+    aggressive external cleaner that wakes up exactly between the
+    verified filter and the index.json open()."""
+    import os as _os
+    import shutil as _shutil
+
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(11))
+    cache.store(list(range(20, 31)), make_kvcache(11, fill=2.0))
+
+    new_dir = str(cache_dir) + ".new"
+    real_makedirs = _os.makedirs
+    nuke_after_call = {"after": False}
+
+    def _makedirs_then_maybe_nuke(path, *args, **kwargs):
+        result = real_makedirs(path, *args, **kwargs)
+        # The first makedirs call (top of save_to_disk) is fine; the
+        # SECOND call (the defensive recreation right before index.json)
+        # is where we want to clobber. Track via a flag flipped on first
+        # entry-files write.
+        if path == new_dir and nuke_after_call["after"]:
+            _shutil.rmtree(new_dir, ignore_errors=True)
+        return result
+
+    # Flip the flag as soon as the first entry's tokens.bin exists —
+    # that's well after the initial makedirs, so subsequent makedirs
+    # calls (in particular the post-filter one) trigger nuke.
+    import vllm_mlx.memory_cache as _mc_mod
+
+    real_open = open
+
+    def _open_then_arm(file, *a, **k):
+        if isinstance(file, str) and file.endswith("_tokens.bin"):
+            nuke_after_call["after"] = True
+        return real_open(file, *a, **k)
+
+    monkeypatch.setattr(_mc_mod, "os", _os)
+    monkeypatch.setattr(_os, "makedirs", _makedirs_then_maybe_nuke)
+    monkeypatch.setattr("builtins.open", _open_then_arm)
+
+    # Must not raise — pre-fix, the post-filter `os.makedirs` would
+    # recreate an empty dir, then `open(index_path, "w")` would succeed
+    # on the freshly-empty dir and commit a bogus snapshot. With the
+    # TOCTOU recheck, save_to_disk returns False cleanly.
+    result = cache.save_to_disk(str(cache_dir))
+    assert result is False, (
+        "post-filter dir loss must abort cleanly (not commit a snapshot "
+        "pointing to vanished entry files)"
+    )
+    # No half-baked cache_dir should have been created
+    assert not (cache_dir / "index.json").exists()

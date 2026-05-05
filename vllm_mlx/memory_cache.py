@@ -1196,6 +1196,16 @@ class MemoryAwarePrefixCache:
 
         os.makedirs(new_dir, exist_ok=True)
 
+        # Single source of truth for per-entry on-disk filenames. Used
+        # by both the save loop and the post-loop "did the files
+        # actually survive?" filter — keep them in lockstep so a future
+        # rename only has one place to edit.
+        def _entry_paths(idx: int) -> tuple[str, str]:
+            return (
+                os.path.join(new_dir, f"entry_{idx}.safetensors"),
+                os.path.join(new_dir, f"entry_{idx}_tokens.bin"),
+            )
+
         index = {
             "version": 2,
             "num_entries": len(self._entries),
@@ -1205,8 +1215,7 @@ class MemoryAwarePrefixCache:
 
         saved = 0
         for i, (tokens_key, entry) in enumerate(self._entries.items()):
-            entry_path = os.path.join(new_dir, f"entry_{i}.safetensors")
-            tokens_path = os.path.join(new_dir, f"entry_{i}_tokens.bin")
+            entry_path, tokens_path = _entry_paths(i)
             try:
                 save_prompt_cache(
                     entry_path,
@@ -1261,12 +1270,11 @@ class MemoryAwarePrefixCache:
         # Without this filter, index.json may reference entry files that
         # no longer exist, and the open() below raises FileNotFoundError
         # because new_dir itself is gone.
-        verified = [
-            e
-            for e in index["entries"]
-            if os.path.exists(os.path.join(new_dir, f"entry_{e['index']}.safetensors"))
-            and os.path.exists(os.path.join(new_dir, f"entry_{e['index']}_tokens.bin"))
-        ]
+        def _both_exist(e: dict) -> bool:
+            sf, tk = _entry_paths(e["index"])
+            return os.path.exists(sf) and os.path.exists(tk)
+
+        verified = [e for e in index["entries"] if _both_exist(e)]
         if not verified:
             shutil.rmtree(new_dir, ignore_errors=True)
             logger.warning(
@@ -1288,6 +1296,23 @@ class MemoryAwarePrefixCache:
         # dir must too, but a stat-cache delay or NFS-style coherence
         # window could still trip the open() below. Cheap insurance.
         os.makedirs(new_dir, exist_ok=True)
+
+        # TOCTOU re-check: between the filter above and the index.json
+        # write below, the same external process could clobber new_dir
+        # again. If that happens, makedirs recreates an EMPTY dir, and
+        # we'd commit an index.json pointing to entry files that no
+        # longer exist (load_from_disk's _has_valid_index() would then
+        # reject the snapshot — recoverable, but a wasted swap). Verify
+        # the first entry still exists right before we write; if not,
+        # abort cleanly.
+        first_sf, first_tk = _entry_paths(index["entries"][0]["index"])
+        if not (os.path.exists(first_sf) and os.path.exists(first_tk)):
+            shutil.rmtree(new_dir, ignore_errors=True)
+            logger.warning(
+                "[cache_persist] staging dir vanished after filter — entry "
+                "files gone before index.json could be written, aborting"
+            )
+            return False
 
         # Write index.json LAST inside the staging dir. Its presence is the
         # signal to load_from_disk that .new contains a complete snapshot.
