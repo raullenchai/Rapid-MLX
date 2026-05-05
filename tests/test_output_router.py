@@ -111,6 +111,26 @@ DEEPSEEK_R1_VOCAB = {
 
 DEEPSEEK_R1_TOKENIZER = FakeTokenizer(DEEPSEEK_R1_VOCAB)
 
+# GPT-OSS/Harmony vocabulary subset from openai/gpt-oss-20b.
+HARMONY_VOCAB = {
+    "<|return|>": 200002,
+    "<|constrain|>": 200003,
+    "<|channel|>": 200005,
+    "<|start|>": 200006,
+    "<|end|>": 200007,
+    "<|message|>": 200008,
+    "<|call|>": 200012,
+    "analysis": 35644,
+    "final": 17196,
+    " json": 1,
+    "Reason": 2,
+    "ing": 3,
+    "Answer": 4,
+    "Plain": 5,
+}
+
+HARMONY_TOKENIZER = FakeTokenizer(HARMONY_VOCAB)
+
 
 @pytest.fixture
 def router():
@@ -350,6 +370,15 @@ class TestFromTokenizer:
         assert router.map.bos == 151646
         assert router.map.eos == 151643
 
+    def test_harmony_detected(self):
+        """GPT-OSS/Harmony tokenizer auto-detected."""
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+        assert router.map.harmony_channel == 200005
+        assert router.map.harmony_message == 200008
+        assert router.map.harmony_return == 200002
+        assert router.map.harmony_call == 200012
+
 
 class TestQwen3ThinkRouting:
     """Test Qwen3 <think> routing."""
@@ -473,6 +502,101 @@ class TestDeepSeekR1ThinkRouting:
         assert result["tool_calls"] is None
 
 
+class TestHarmonyRouting:
+    """Test GPT-OSS/Harmony channel routing."""
+
+    def test_analysis_channel_routes_message_to_reasoning(self):
+        """Harmony analysis payload routes to REASONING."""
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+
+        assert router.feed(200005) is None  # <|channel|>
+        assert router.state == RouterState.AWAITING_CHANNEL_TYPE
+        assert router.feed(35644) is None  # analysis
+        assert router.state == RouterState.AWAITING_MESSAGE
+        assert router.feed(200008) is None  # <|message|>
+        assert router.state == RouterState.THINKING
+
+        event = router.feed(2)  # Reason
+        assert event is not None
+        assert event.channel == Channel.REASONING
+        assert event.text == "Reason"
+
+        assert router.feed(200007) is None  # <|end|>
+        assert router.state == RouterState.CONTENT
+
+    def test_final_channel_routes_message_to_content(self):
+        """Harmony final payload routes to CONTENT."""
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+
+        assert router.feed(200005) is None  # <|channel|>
+        assert router.feed(17196) is None  # final
+        assert router.feed(200008) is None  # <|message|>
+
+        event = router.feed(4)  # Answer
+        assert event is not None
+        assert event.channel == Channel.CONTENT
+        assert event.text == "Answer"
+
+        assert router.feed(200002) is None  # <|return|>
+        assert router.state == RouterState.CONTENT
+
+    def test_premessage_metadata_is_suppressed(self):
+        """Tokens before <|message|> in a Harmony channel do not leak."""
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+
+        router.feed(200005)  # <|channel|>
+        router.feed(17196)  # final
+        assert router.feed(200003) is None  # <|constrain|>
+        assert router.feed(1) is None  # " json"
+        assert router.feed(200008) is None  # <|message|>
+
+        event = router.feed(4)
+        assert event is not None
+        assert event.channel == Channel.CONTENT
+
+    def test_orphan_harmony_controls_are_suppressed(self):
+        """Harmony structural tokens do not leak outside a channel."""
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+
+        assert router.feed(200006) is None  # <|start|>
+        assert router.feed(200007) is None  # <|end|>
+        assert router.feed(200002) is None  # <|return|>
+        assert router.feed(200012) is None  # <|call|>
+        assert router.feed(200008) is None  # <|message|>
+
+        event = router.feed(5)
+        assert event is not None
+        assert event.channel == Channel.CONTENT
+
+    def test_feed_sequence_separates_analysis_and_final(self):
+        """Batch routing separates Harmony analysis and final channels."""
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+
+        result = router.feed_sequence(
+            [
+                200005,
+                35644,
+                200008,
+                2,
+                3,
+                200007,
+                200005,
+                17196,
+                200008,
+                4,
+                200002,
+            ]
+        )
+        assert result["reasoning"] == "Reasoning"
+        assert result["content"] == "Answer"
+        assert result["tool_calls"] is None
+
+
 class TestStateReset:
     """Test state management."""
 
@@ -485,6 +609,8 @@ class TestStateReset:
         router.reset()
         assert router.state == RouterState.INIT
         assert router._tool_tokens == []
+        assert router._pending_channel_style is None
+        assert router._pending_message_channel is None
 
     def test_multiple_requests(self, router):
         """Router works correctly across multiple reset cycles."""

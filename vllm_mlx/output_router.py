@@ -24,8 +24,9 @@ Usage:
 Designed to replace the fragile regex-based strip_special_tokens +
 reasoning_parser + tool_call_parser chain with a single unified router.
 
-Currently implements Gemma 4 plus Qwen3 / DeepSeek R1 `<think>`-tag formats.
-Other models can be added by defining their token mappings in MODEL_TOKEN_MAPS.
+Currently implements Gemma 4, Qwen3 / DeepSeek R1 `<think>`-tag, and
+GPT-OSS Harmony `<|channel|>` formats. Other models can be added by
+defining their token mappings in MODEL_TOKEN_MAPS.
 """
 
 import logging
@@ -82,6 +83,17 @@ class TokenMap:
     think_start: int | None = None  # <think> token ID
     think_end: int | None = None  # </think> token ID
 
+    # Channel control (GPT-OSS/Harmony style)
+    harmony_channel: int | None = None  # <|channel|>
+    harmony_message: int | None = None  # <|message|>
+    harmony_start: int | None = None  # <|start|>
+    harmony_end: int | None = None  # <|end|>
+    harmony_return: int | None = None  # <|return|>
+    harmony_call: int | None = None  # <|call|>
+    harmony_constrain: int | None = None  # <|constrain|>
+    harmony_analysis_word: int | None = None  # "analysis"
+    harmony_final_word: int | None = None  # "final"
+
     # Standard control
     bos: int | None = None
     eos: int | None = None
@@ -96,6 +108,7 @@ class RouterState(Enum):
     CONTENT = auto()  # inside content/final channel
     TOOL_CALL = auto()  # inside tool call
     AWAITING_CHANNEL_TYPE = auto()  # saw <|channel>, waiting for thought/content/final
+    AWAITING_MESSAGE = auto()  # saw Harmony channel name, waiting for <|message|>
 
 
 class OutputRouter:
@@ -111,11 +124,15 @@ class OutputRouter:
         self.tokenizer = tokenizer
         self.state = RouterState.INIT
         self._tool_tokens: list[int] = []  # accumulated tool call token IDs
+        self._pending_channel_style: str | None = None
+        self._pending_message_channel: Channel | None = None
 
     def reset(self):
         """Reset state for a new request."""
         self.state = RouterState.INIT
         self._tool_tokens = []
+        self._pending_channel_style = None
+        self._pending_message_channel = None
 
     def feed(self, token_id: int) -> RouterEvent | None:
         """
@@ -131,6 +148,22 @@ class OutputRouter:
             return None
         if token_id == m.turn_start or token_id == m.turn_end:
             return None
+
+        if token_id == m.harmony_channel:
+            self.state = RouterState.AWAITING_CHANNEL_TYPE
+            self._pending_channel_style = "harmony"
+            self._pending_message_channel = None
+            return None
+
+        if token_id == m.harmony_end or token_id == m.harmony_return:
+            self.state = RouterState.CONTENT
+            self._pending_channel_style = None
+            self._pending_message_channel = None
+            return None
+
+        if token_id in (m.harmony_start, m.harmony_call, m.harmony_constrain):
+            return None
+
         # Suppress tool-related markers that may appear without proper nesting
         if token_id in (
             m.tool_response_start,
@@ -147,6 +180,21 @@ class OutputRouter:
 
         # === Channel type word: set state based on which channel ===
         if self.state == RouterState.AWAITING_CHANNEL_TYPE:
+            if self._pending_channel_style == "harmony":
+                if token_id == m.harmony_analysis_word:
+                    self._pending_message_channel = Channel.REASONING
+                    self.state = RouterState.AWAITING_MESSAGE
+                    return None
+                if token_id == m.harmony_final_word:
+                    self._pending_message_channel = Channel.CONTENT
+                    self.state = RouterState.AWAITING_MESSAGE
+                    return None
+
+                self.state = RouterState.CONTENT
+                self._pending_channel_style = None
+                text = self.tokenizer.decode([token_id])
+                return RouterEvent(Channel.CONTENT, token_id, text)
+
             if token_id == m.thought_word:
                 self.state = RouterState.THINKING
                 return None  # suppress "thought"
@@ -158,6 +206,21 @@ class OutputRouter:
                 self.state = RouterState.CONTENT
                 text = self.tokenizer.decode([token_id])
                 return RouterEvent(Channel.CONTENT, token_id, text)
+
+        # === Harmony message boundary: suppress metadata before payload ===
+        if self.state == RouterState.AWAITING_MESSAGE:
+            if token_id == m.harmony_message:
+                self.state = (
+                    RouterState.THINKING
+                    if self._pending_message_channel == Channel.REASONING
+                    else RouterState.CONTENT
+                )
+                self._pending_channel_style = None
+                self._pending_message_channel = None
+            return None
+
+        if token_id == m.harmony_message:
+            return None
 
         # === Channel end: transition back ===
         if token_id == m.channel_end:
@@ -266,6 +329,29 @@ class OutputRouter:
                 token_map.channel_end,
                 token_map.tool_call_start,
                 token_map.tool_call_end,
+            )
+            return cls(token_map, tokenizer)
+
+        # GPT-OSS/Harmony detection: channel/message special tokens.
+        if "<|channel|>" in vocab and "<|message|>" in vocab:
+            token_map = TokenMap(
+                harmony_channel=vocab.get("<|channel|>"),
+                harmony_message=vocab.get("<|message|>"),
+                harmony_start=vocab.get("<|start|>"),
+                harmony_end=vocab.get("<|end|>"),
+                harmony_return=vocab.get("<|return|>"),
+                harmony_call=vocab.get("<|call|>"),
+                harmony_constrain=vocab.get("<|constrain|>"),
+                harmony_analysis_word=vocab.get("analysis"),
+                harmony_final_word=vocab.get("final"),
+                bos=vocab.get("<|endoftext|>"),
+                eos=vocab.get("<|endoftext|>"),
+                pad=vocab.get("<|endoftext|>"),
+            )
+            logger.info(
+                "[OutputRouter] Harmony format detected: channel=%d, message=%d",
+                token_map.harmony_channel,
+                token_map.harmony_message,
             )
             return cls(token_map, tokenizer)
 
