@@ -81,6 +81,10 @@ def _uses_direct_jang_generation(engine: BaseEngine | None) -> bool:
     return bool(getattr(tokenizer, "_rapid_mlx_direct_generate", False))
 
 
+def _should_pass_tools_to_template(engine: BaseEngine | None) -> bool:
+    return not _uses_direct_jang_generation(engine)
+
+
 def _resolve_max_tokens(
     request_value: int | None,
     enable_thinking: bool | None = None,

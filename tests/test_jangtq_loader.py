@@ -396,6 +396,69 @@ def test_direct_jang_default_max_tokens_matches_mlx_lm_default():
     assert _resolve_max_tokens(4096, engine=FakeEngine()) == 4096
 
 
+def test_direct_jang_ignores_tools_without_auto_tool_choice():
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.service.helpers import _should_pass_tools_to_template
+
+    cfg = reset_config()
+    cfg.enable_auto_tool_choice = False
+    cfg.tool_call_parser = None
+
+    class FakeTokenizer:
+        _rapid_mlx_direct_generate = True
+
+    class FakeEngine:
+        is_mllm = False
+        tokenizer = FakeTokenizer()
+
+    assert _should_pass_tools_to_template(FakeEngine()) is False
+
+    cfg.enable_auto_tool_choice = True
+    cfg.tool_call_parser = "deepseek"
+    assert _should_pass_tools_to_template(FakeEngine()) is False
+
+
+def test_direct_jang_sanitizes_pi_textual_tools():
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.chat import _sanitize_direct_jang_textual_tools
+
+    cfg = reset_config()
+    cfg.enable_auto_tool_choice = False
+    cfg.tool_call_parser = None
+
+    class FakeTokenizer:
+        _rapid_mlx_direct_generate = True
+
+    class FakeEngine:
+        is_mllm = False
+        tokenizer = FakeTokenizer()
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert coding assistant operating inside pi.\n\n"
+                "Available tools:\n"
+                "- read: Read files\n"
+                "- bash: Run commands\n\n"
+                "In addition to the tools above, custom tools may exist.\n\n"
+                "Guidelines:\n"
+                "- Be concise"
+            ),
+        },
+        {"role": "user", "content": "oi"},
+    ]
+
+    sanitized = _sanitize_direct_jang_textual_tools(
+        messages, FakeEngine(), has_request_tools=True
+    )
+
+    assert "concise coding assistant" in sanitized[0]["content"]
+    assert "one short greeting" in sanitized[0]["content"]
+    assert "- read:" not in sanitized[0]["content"]
+    assert "Do not emit HTML" in sanitized[0]["content"]
+
+
 def test_jang_model_uses_standard_jang_loader(tmp_path, monkeypatch):
     _install_fake_mlx_lm(monkeypatch)
     (tmp_path / "config.json").write_text('{"model_type": "qwen3_5_moe"}')

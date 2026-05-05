@@ -34,6 +34,7 @@ from ..service.helpers import (
     _disconnect_guard,
     _parse_tool_calls_with_parser,
     _resolve_max_tokens,
+    _should_pass_tools_to_template,
     _validate_model_name,
     _wait_with_disconnect,
     get_engine,
@@ -111,7 +112,7 @@ async def create_anthropic_message(
         "top_p": openai_request.top_p,
     }
 
-    if openai_request.tools:
+    if openai_request.tools and _should_pass_tools_to_template(engine):
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
     cfg = get_config()
     if openai_request.enable_thinking is not None:
@@ -308,7 +309,7 @@ async def _stream_anthropic_messages(
         "top_p": openai_request.top_p,
     }
 
-    if openai_request.tools:
+    if openai_request.tools and _should_pass_tools_to_template(engine):
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
     cfg = get_config()
     if openai_request.enable_thinking is not None:

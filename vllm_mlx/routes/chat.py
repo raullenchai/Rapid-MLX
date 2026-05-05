@@ -52,6 +52,8 @@ from ..service.helpers import (
     _resolve_model_name,
     _resolve_temperature,
     _resolve_top_p,
+    _should_pass_tools_to_template,
+    _uses_direct_jang_generation,
     _validate_model_name,
     _validate_tool_call_params,
     _wait_with_disconnect,
@@ -78,6 +80,62 @@ def _make_prompt_progress_callback():
         recorder.update(req_id, prompt_tokens=max(int(processed), int(total)))
 
     return _callback
+
+
+def _sanitize_direct_jang_textual_tools(
+    messages: list[dict], engine, has_request_tools: bool = False
+) -> list[dict]:
+    if not _uses_direct_jang_generation(engine):
+        return messages
+
+    sanitized = []
+    for message in messages:
+        if not isinstance(message, dict):
+            sanitized.append(message)
+            continue
+        content = message.get("content")
+        if message.get("role") not in {"system", "developer"} or not isinstance(
+            content, str
+        ):
+            sanitized.append(message)
+            continue
+
+        if has_request_tools or "operating inside pi" in content:
+            suffix_lines = [
+                line
+                for line in content.splitlines()
+                if line.startswith("Current date:")
+                or line.startswith("Current working directory:")
+            ]
+            suffix = ("\n" + "\n".join(suffix_lines)) if suffix_lines else ""
+            sanitized.append(
+                {
+                    **message,
+                    "content": (
+                        "You are a concise coding assistant. Answer only the latest "
+                        "user request directly. For a greeting, reply with one short "
+                        "greeting and ask how you can help. Do not add examples unless "
+                        "the user asks. Do not emit HTML, XML, tool calls, or repeated "
+                        "symbols."
+                        f"{suffix}"
+                    ),
+                }
+            )
+            continue
+
+        if "\nAvailable tools:\n" not in content or "\nGuidelines:\n" not in content:
+            sanitized.append(message)
+            continue
+
+        before, rest = content.split("\nAvailable tools:\n", 1)
+        _, after = rest.split("\nGuidelines:\n", 1)
+        sanitized.append(
+            {
+                **message,
+                "content": f"{before}\nAvailable tools:\n(none)\n\nGuidelines:\n{after}",
+            }
+        )
+    return sanitized
 
 
 _TOOL_INTENT_RE = re.compile(
@@ -349,14 +407,18 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             chat_kwargs["video_max_frames"] = request.video_max_frames
 
     # Add tools if provided
-    if request.tools:
+    if request.tools and _should_pass_tools_to_template(engine):
         chat_kwargs["tools"] = convert_tools_for_template(request.tools)
 
     # Pass through enable_thinking if explicitly set by the client
     if request.enable_thinking is not None:
         chat_kwargs["enable_thinking"] = request.enable_thinking
-    elif cfg.no_thinking:
+    elif _uses_direct_jang_generation(engine) or cfg.no_thinking:
         chat_kwargs["enable_thinking"] = False
+
+    messages = _sanitize_direct_jang_textual_tools(
+        messages, engine, has_request_tools=bool(request.tools)
+    )
 
     # Cloud routing: offload large-context requests to cloud LLM
     if cfg.cloud_router and not engine.is_mllm and hasattr(engine, "build_prompt"):
