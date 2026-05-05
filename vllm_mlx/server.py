@@ -592,8 +592,15 @@ def load_model(
 def _sync_config() -> None:
     """Copy server globals into the ServerConfig singleton.
 
-    Called after load_model() and whenever globals change.
-    Bridges the old global-variable pattern with the new config object.
+    Called after load_model() and whenever globals change. Bridges the old
+    global-variable pattern with the new config object.
+
+    **Must remain idempotent.** load_model() calls this twice (once early
+    before _detect_native_tool_support() reads cfg, once again after the
+    model registry add as a safety net for future call-site drift). All
+    assignments below MUST be straight overwrites — no counters, no
+    callback fires, no cache invalidations that depend on prior state.
+    See test_sync_config_is_idempotent in tests/test_server_load_model_order.py.
     """
     cfg = get_config()
     cfg.engine = _engine
