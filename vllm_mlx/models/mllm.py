@@ -33,6 +33,20 @@ from vllm_mlx.mllm_cache import MLLMPrefixCacheManager
 logger = logging.getLogger(__name__)
 
 
+def _require_mlx_vlm() -> None:
+    """Verify mlx-vlm is installed; raise actionable error if not."""
+    try:
+        import mlx_vlm  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            "Vision/multimodal models require the optional `mlx-vlm` dependency.\n"
+            "Install it with:\n"
+            "    pip install 'rapid-mlx[vision]'\n"
+            "or directly:\n"
+            "    pip install 'mlx-vlm>=0.4.4'"
+        ) from e
+
+
 class TempFileManager:
     """Thread-safe manager for tracking and cleaning up temporary files."""
 
@@ -719,6 +733,8 @@ class MLXMultimodalLM:
         """Load the model and processor."""
         if self._loaded:
             return
+
+        _require_mlx_vlm()
 
         try:
             from mlx_vlm import load

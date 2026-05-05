@@ -18,12 +18,18 @@ from .baseline import (
 from .runner import REPO_ROOT, CheckResult, DoctorRunner, Status
 
 # Default model used by the check tier.  Tier 3 (full) loops a wider list.
-DEFAULT_CHECK_MODEL = "qwen3.5-4b"
+# A real-capacity 8-bit model is required so eval failures can be cleanly
+# attributed to rapid-mlx bugs rather than small-model quant noise.
+DEFAULT_CHECK_MODEL = "qwen3.5-35b"
 
-# Model list for the full tier: small/medium/large + a non-Qwen template
-# path so we cover both Hermes-style (Qwen) and Gemma's distinct chat
-# template + tool-call format.
-DEFAULT_FULL_MODELS = ["qwen3.5-4b", "qwen3.5-35b", "qwen3.6-35b", "gemma-4-26b"]
+# Model list for the full tier: real-capacity Qwen lines only. No 4B
+# (small models can't separate model errors from engine errors) and no
+# Gemma 4 (PR #208 validation showed it fails multiple agent tests due
+# to instruction-following weakness — essay-instead-of-answer, tool-
+# refusal, multi-turn context drift; failures don't cleanly attribute
+# to rapid-mlx so it's noise here). Add Gemma back when a tighter
+# instruct variant ships.
+DEFAULT_FULL_MODELS = ["qwen3.5-35b", "qwen3.6-35b"]
 
 # Agent profiles to exercise per-model in the full tier.  None ⇒ all
 # loaded profiles.  Limit here if a particular profile is too slow to

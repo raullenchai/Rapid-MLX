@@ -138,6 +138,69 @@ class TestStreamingPostProcessorReasoning:
         events = pp.process_chunk(_make_output("<think>"))
         assert len(events) == 0
 
+    def test_enable_thinking_false_bypasses_reasoning_parser(self):
+        """When enable_thinking=False, the chat template suppresses the <think>
+        gen prompt and the model answers directly. Qwen3's reasoning parser
+        treats untagged tokens as reasoning (implicit-think heuristic), which
+        misroutes the answer to reasoning_content and leaves content empty.
+        Setting enable_thinking=False on the postprocessor must bypass the
+        parser entirely so the answer flows to delta.content. Repro for the
+        eval-suite irrelevance/missing-params empty-content failures.
+        """
+        parser = MagicMock()
+        # If the parser were called, it would return reasoning (the bug shape).
+        delta_msg = MagicMock()
+        delta_msg.content = ""
+        delta_msg.reasoning = "The capital of France is Paris."
+        parser.extract_reasoning_streaming.return_value = delta_msg
+
+        cfg = _make_cfg(reasoning_parser=parser)
+        pp = StreamingPostProcessor(cfg, enable_thinking=False)
+        pp.reset()
+
+        events = pp.process_chunk(_make_output("The capital of France is Paris."))
+        # Parser must NOT have been consulted.
+        parser.extract_reasoning_streaming.assert_not_called()
+        content_events = [e for e in events if e.type == "content"]
+        reasoning_events = [e for e in events if e.type == "reasoning"]
+        assert len(content_events) == 1
+        assert content_events[0].content == "The capital of France is Paris."
+        assert not reasoning_events
+
+    def test_enable_thinking_none_uses_reasoning_parser(self):
+        """Default (None) preserves the existing reasoning-parser path."""
+        parser = MagicMock()
+        delta_msg = MagicMock()
+        delta_msg.content = "answer"
+        delta_msg.reasoning = "thinking"
+        parser.extract_reasoning_streaming.return_value = delta_msg
+
+        cfg = _make_cfg(reasoning_parser=parser)
+        pp = StreamingPostProcessor(cfg)  # enable_thinking defaults to None
+        pp.reset()
+
+        events = pp.process_chunk(_make_output("<think>thinking</think>answer"))
+        parser.extract_reasoning_streaming.assert_called_once()
+        assert any(e.type == "reasoning" for e in events)
+        assert any(e.type == "content" for e in events)
+
+    def test_enable_thinking_true_uses_reasoning_parser(self):
+        """Explicit True also keeps the reasoning-parser path on."""
+        parser = MagicMock()
+        delta_msg = MagicMock()
+        delta_msg.content = "answer"
+        delta_msg.reasoning = "thinking"
+        parser.extract_reasoning_streaming.return_value = delta_msg
+
+        cfg = _make_cfg(reasoning_parser=parser)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True)
+        pp.reset()
+
+        events = pp.process_chunk(_make_output("<think>thinking</think>answer"))
+        parser.extract_reasoning_streaming.assert_called_once()
+        assert any(e.type == "reasoning" for e in events)
+        assert any(e.type == "content" for e in events)
+
 
 class TestStreamingPostProcessorToolCalls:
     """Tests for tool call detection."""

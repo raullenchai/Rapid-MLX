@@ -30,6 +30,12 @@ class ServerConfig:
     model_alias: str | None = None
     model_path: str | None = None
     inference_lock: asyncio.Lock | None = None
+    # True only after lifespan has finished engine.start(), warmup,
+    # prefix-cache load_from_disk, and MCP init. Used by /health/ready
+    # so callers (e.g. validation pipelines) can wait for a real
+    # readiness signal rather than racing the first inference against
+    # in-progress warmup. Reset to False during lifespan shutdown.
+    ready: bool = False
 
     # --- Defaults ---
     default_max_tokens: int = 4096

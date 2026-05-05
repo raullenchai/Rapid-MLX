@@ -820,8 +820,14 @@ def run_mllm_benchmark(
     Returns:
         List of MLLMBenchmarkResult
     """
-    from mlx_vlm import load
-    from mlx_vlm.utils import load_config
+    try:
+        from mlx_vlm import load
+        from mlx_vlm.utils import load_config
+    except ImportError as e:
+        raise ImportError(
+            "Vision benchmarks require the optional `mlx-vlm` dependency.\n"
+            "Install it with: pip install 'rapid-mlx[vision]'"
+        ) from e
 
     from vllm_mlx.optimizations import detect_hardware
 

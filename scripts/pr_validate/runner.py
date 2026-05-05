@@ -10,6 +10,7 @@ a step: write the module under ``steps/``, import it here, append to
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 
 from .base import Step
 from .context import Context
@@ -35,29 +36,49 @@ STEPS: list[Step] = [
     StressE2EBenchStep(),  # 5 — stress + e2e + bench (multi-model × agents)
 ]
 
-# Steps that, if they fail, stop the pipeline immediately (subsequent
-# steps would either crash or waste CPU). Fetch failures mean we have
-# nothing to validate; lint failures mean the diff doesn't even parse
-# cleanly. Most other failures still let later steps run so the
-# scorecard surfaces the FULL picture rather than only the first bug.
+# Steps that, if they fail, stop the pipeline immediately regardless of
+# the user's preference (subsequent steps would either crash or waste
+# CPU). Fetch failures mean we have nothing to validate. Most other
+# failures still let later steps run by default so the scorecard
+# surfaces the FULL picture rather than only the first bug — the user
+# opts in to the "stop at first fail" behaviour with ``--fail-fast`` /
+# ``PR_VALIDATE_FAIL_FAST=1`` (typical for CI / incoming-PR gating).
 FAIL_FAST_STEPS = {"fetch"}
 
 
-def run_pipeline(pr_number: int, *, verbose: bool = False) -> int:
+def run_pipeline(
+    pr_number: int,
+    *,
+    verbose: bool = False,
+    fail_fast: bool = False,
+    steps: Sequence[Step] | None = None,
+) -> int:
     """Execute the pipeline. Returns process exit code (0 = merge-safe).
 
     Strict scoring: ANY single ``fail`` or ``error`` blocks merge.
     ``skip`` is neutral (a step decided it didn't apply).
+
+    With ``fail_fast=True`` the pipeline stops at the first ``fail`` /
+    ``error`` after fetch — useful for CI gating where running the
+    expensive stress/bench step on a PR that already failed lint or
+    DeepSeek review is just wasted compute.
+
+    ``steps`` is an injection seam for tests; production callers leave
+    it ``None`` and the module-level ``STEPS`` list is used.
     """
+    pipeline = STEPS if steps is None else steps
+
     ctx = Context(pr_number=pr_number, verbose=verbose)
     ctx.work_dir = ctx.work_dir / f"pr-{pr_number}"
     ctx.work_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"# PR #{pr_number} validation", file=sys.stderr)
     print(f"  artifacts → {ctx.work_dir}", file=sys.stderr)
+    if fail_fast:
+        print("  fail-fast: ON", file=sys.stderr)
     print("", file=sys.stderr)
 
-    for step in STEPS:
+    for step in pipeline:
         print(f"## [{step.name}] {step.description}", file=sys.stderr)
         result = step.execute(ctx)
         ctx.results.append(result)
@@ -74,10 +95,17 @@ def run_pipeline(pr_number: int, *, verbose: bool = False) -> int:
         )
         print("", file=sys.stderr)
 
-        # Fail-fast for steps where continuing makes no sense.
-        if result.status in ("fail", "error") and step.name in FAIL_FAST_STEPS:
+        is_blocking = result.status in ("fail", "error")
+        if is_blocking and step.name in FAIL_FAST_STEPS:
             print(
                 f"  fail-fast: [{step.name}] is critical, stopping pipeline",
+                file=sys.stderr,
+            )
+            break
+        if is_blocking and fail_fast:
+            print(
+                f"  fail-fast: [{step.name}] failed and --fail-fast is on, "
+                "stopping pipeline (subsequent steps not run)",
                 file=sys.stderr,
             )
             break

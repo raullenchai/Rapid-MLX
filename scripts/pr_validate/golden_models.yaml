@@ -28,9 +28,14 @@ families:
 
   - family: qwen3.5
     candidates:
-      - id: mlx-community/Qwen3.5-4B-MLX-4bit
-        ram_gb_required: 4
-        quality_tier: small
+      # 8-bit, 35B A3B MoE — chosen so the model itself ~never errs on
+      # the eval suite. Quant noise on a 4-bit small model makes it hard
+      # to tell "model got confused" from "rapid-mlx broke something",
+      # which is the signal pr_validate exists to catch. 8-bit + a real-
+      # capacity model isolates engine bugs cleanly.
+      - id: mlx-community/Qwen3.5-35B-A3B-8bit
+        ram_gb_required: 36
+        quality_tier: golden
 
   - family: qwen3.6
     candidates:
@@ -38,9 +43,28 @@ families:
         ram_gb_required: 18
         quality_tier: golden
 
+# Gemma 4 was previously listed here for orthogonal coverage (different
+# chat template + tool-call format) but observed in PR #208 validation
+# to fail multiple agent tests due to model-side instruction-following
+# weaknesses (writes essays for "Count to 5", refuses to call tools,
+# forgets multi-turn context). Per project rule "we want models that
+# ~never err so failures cleanly attribute to rapid-mlx", gemma4 does
+# not meet the bar today and is excluded from automatic validation.
+#
+# When mlx-community ships a tighter Gemma 4 instruction-tuned variant
+# (or when our Gemma chat template ships better few-shot priming), add
+# it back as:
+#   - family: gemma4
+#     candidates:
+#       - id: mlx-community/gemma-4-<NEW_VERSION>
+#         ram_gb_required: 14
+#         quality_tier: golden
+
 # Per-model overrides: extra CLI args (e.g. parser overrides for
 # tool-calling tests). Keep small — most models don't need this.
 overrides:
+  "mlx-community/Qwen3.5-35B-A3B-8bit":
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
   "mlx-community/Qwen3.6-27B-4bit":
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
 

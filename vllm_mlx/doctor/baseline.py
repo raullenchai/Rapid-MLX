@@ -10,7 +10,7 @@ A baseline file looks like::
     {
       "captured_at": "2026-04-15T21:00:00",
       "rapid_mlx_version": "0.5.1",
-      "model": "qwen3.5-4b",
+      "model": "qwen3.5-35b",
       "metrics": {
         "decode_tps": 156.2,
         "ttft_cold_ms": 412,

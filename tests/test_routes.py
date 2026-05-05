@@ -114,6 +114,49 @@ class TestHealthRoutes:
         finally:
             self._restore_config(orig)
 
+    def test_health_includes_ready_field(self, mock_engine):
+        """Health response carries cfg.ready so callers can inspect startup
+        state without polling /health/ready separately."""
+        orig = self._patch_config(
+            engine=mock_engine, mcp_manager=None, model_name="test-model", ready=False
+        )
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+            r = client.get("/health")
+            assert r.json()["ready"] is False
+        finally:
+            self._restore_config(orig)
+
+    def test_health_ready_returns_503_until_ready(self, mock_engine):
+        """/health/ready is 503 while lifespan startup is in progress."""
+        orig = self._patch_config(
+            engine=mock_engine, mcp_manager=None, model_name="test-model", ready=False
+        )
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+            r = client.get("/health/ready")
+            assert r.status_code == 503
+        finally:
+            self._restore_config(orig)
+
+    def test_health_ready_returns_200_when_ready(self, mock_engine):
+        """/health/ready flips to 200 once cfg.ready is set."""
+        orig = self._patch_config(
+            engine=mock_engine, mcp_manager=None, model_name="test-model", ready=True
+        )
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+            r = client.get("/health/ready")
+            assert r.status_code == 200
+            data = r.json()
+            assert data["ready"] is True
+            assert data["model"] == "test-model"
+        finally:
+            self._restore_config(orig)
+
     def test_health_with_mcp(self, mock_engine):
         """Health endpoint includes MCP info."""
         mcp = MagicMock()

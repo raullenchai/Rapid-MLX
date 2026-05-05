@@ -46,7 +46,17 @@ BASELINE_DIR = Path("harness/baselines")
 BENCH_PORT = 8451
 BENCH_THRESHOLD_PCT = 5.0
 SERVER_BOOT_TIMEOUT_S = 180
-SERVER_REQUEST_TIMEOUT_S = 60
+# Per-request timeout. Sized for the worst case in the matrix: cold-start
+# of a 27B-class model (~17 GB weights to mmap) immediately after the
+# previous server's lifespan finished writing its prefix cache to disk.
+# 60s was tuned for a 4B small-model matrix; raised to 180s when the
+# golden registry moved to real-capacity 27-35B models (PR #208).
+SERVER_REQUEST_TIMEOUT_S = 180
+# How long to wait for the previous server's port to free between back-
+# to-back model boots. SIGINT triggers a lifespan shutdown that writes
+# the prefix cache to disk — for large models this can run past the old
+# 10s budget. 30s covers a 35B model's cache flush comfortably.
+PORT_FREE_TIMEOUT_S = 30
 RAM_HEADROOM_GB = 8.0  # leave this much free for the OS + model load spike
 
 
@@ -252,7 +262,7 @@ def _available_ram_gb() -> float:
         )
         try:
             page_size = os.sysconf("SC_PAGE_SIZE")
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, OSError):
             page_size = 16384  # Apple Silicon default; vm_stat fallback
         free_pages = inactive_pages = 0
         for line in proc.stdout.splitlines():
@@ -320,25 +330,32 @@ def _server(choice: ModelChoice, ctx: Context):
             )
         yield str(log_path)
     finally:
-        # Graceful first (lifespan saves prefix cache); SIGKILL fallback.
-        if proc is not None:
-            proc.send_signal(2)  # SIGINT
-            try:
-                proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        # Nested try/finally so log_f.close() runs even if the proc
+        # cleanup or _wait_for_port_free raises (e.g., _port_in_use's
+        # socket call can raise OSError under fd exhaustion).
+        try:
+            # Graceful first (lifespan saves prefix cache); SIGKILL the
+            # direct child if SIGINT timed out; lsof-based fallback for
+            # stragglers (zombies / port still held).  Keep BOTH paths:
+            # proc.kill() handles a process that survived SIGINT but isn't
+            # holding the port any more (would otherwise leak), and
+            # _force_kill_port handles a process tree where a child of the
+            # spawned proc is what's actually bound.
+            if proc is not None:
+                proc.send_signal(2)  # SIGINT
                 try:
-                    proc.wait(timeout=10)
+                    proc.wait(timeout=30)
                 except subprocess.TimeoutExpired:
-                    pass  # best-effort; log_f must close regardless
-            # Ensure port is released before returning — the OS may take
-            # a moment to free the socket after the process exits.  If
-            # the wait times out, use ``lsof`` to find and force-kill
-            # whatever is still holding the port (zombie / orphan).
-            if not _wait_for_port_free(BENCH_PORT, timeout=10):
-                _force_kill_port(BENCH_PORT)
-        if log_f is not None:
-            log_f.close()
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass  # _force_kill_port handles port-bound orphans
+                if not _wait_for_port_free(BENCH_PORT, timeout=PORT_FREE_TIMEOUT_S):
+                    _force_kill_port(BENCH_PORT)
+        finally:
+            if log_f is not None:
+                log_f.close()
 
 
 def _port_in_use(port: int) -> bool:
@@ -354,13 +371,22 @@ def _port_in_use(port: int) -> bool:
 
 
 def _wait_for_server(port: int, timeout_s: int) -> bool:
-    """Poll /v1/models until 200 or timeout. Each attempt tolerates
-    connection refused (still booting) and 5xx (still loading model)."""
+    """Poll /health/ready until 200 or timeout. Each attempt tolerates
+    connection refused (still booting) and 503 (engine loading +
+    warmup + prefix-cache load still in progress).
+
+    /health/ready returns 200 only after lifespan has finished
+    engine.start() + warmup + load_from_disk + MCP init. Polling it
+    (instead of /v1/models) means the first stress/bench request
+    isn't racing the cold-start work — what previously looked like a
+    "request timeout" was actually warmup latency leaking past the
+    moment the FastAPI app started accepting connections.
+    """
     import urllib.error
     import urllib.request
 
     deadline = time.monotonic() + timeout_s
-    url = f"http://127.0.0.1:{port}/v1/models"
+    url = f"http://127.0.0.1:{port}/health/ready"
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
@@ -440,13 +466,18 @@ def _run_agent(
         **os.environ,
         "RAPID_MLX_BASE_URL": f"http://127.0.0.1:{BENCH_PORT}/v1",
     }
+    # 1200s (20 min) per agent script. Sized for the slowest model in the
+    # matrix — Gemma 4 26B routes through MLLMModel (mlx-vlm) which has
+    # higher per-token decode overhead than the qwen3.5/qwen3.6 path. 600s
+    # was enough for 27B-class qwen models but truncated gemma4 langchain
+    # mid-suite (observed in pr_validate against PR #208).
     proc = subprocess.run(  # noqa: S603
         ["python3.12", str(script)],
         capture_output=True,
         text=True,
         env=env,
         cwd=str(ctx.repo_root),
-        timeout=600,
+        timeout=1200,
     )
     log.write_text((proc.stdout or "") + (proc.stderr or ""))
     summary = _grep_last(proc.stdout, "passed") or _grep_last(proc.stdout, "FAIL")
@@ -543,13 +574,18 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
         }
 
     baseline = json.loads(baseline_path.read_text())
-    # Accept both old (ttft) and new key names for backward compat
-    base_cold = baseline.get("cold_request_ms_median") or baseline.get(
-        "cold_ttft_ms_median", cold
-    )
-    base_warm = baseline.get("warm_request_ms_median") or baseline.get(
-        "warm_ttft_ms_median", warm
-    )
+    # Accept both old (ttft) and new key names for backward compat. Treat
+    # an explicit ``None`` (JSON ``null``) the same as a missing key so we
+    # don't end up with ``base_cold=None`` flowing into the division below.
+    # This is stricter than a plain ``or`` because we want a real ``0`` to
+    # be honoured (it's a legit value, even if the downstream guard makes
+    # it a no-op).
+    base_cold = baseline.get("cold_request_ms_median")
+    if base_cold is None:
+        base_cold = baseline.get("cold_ttft_ms_median", cold)
+    base_warm = baseline.get("warm_request_ms_median")
+    if base_warm is None:
+        base_warm = baseline.get("warm_ttft_ms_median", warm)
 
     # Slowdown = current / baseline. >5% slower on cold OR warm = fail.
     cold_slow = (cold / base_cold - 1) * 100 if base_cold else 0

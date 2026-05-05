@@ -144,6 +144,14 @@ class StreamingPostProcessor:
         # for schema-driven type conversion (#171). Without it, raw XML leaks
         # into delta.content instead of structured tool_calls deltas.
         self.request = request
+        # When the client explicitly sets enable_thinking=False, the chat
+        # template suppresses the <think> generation prompt and the model
+        # answers directly. The streaming reasoning parser's implicit-think
+        # heuristic (treat ambiguous tokens as reasoning until </think> is
+        # seen) misclassifies that direct answer as reasoning_content,
+        # leaving content empty. Track the explicit signal so process_chunk
+        # can skip the reasoning path in that case.
+        self.enable_thinking = enable_thinking
 
         # Per-request parser instances — each streaming request gets its
         # own parser to avoid state corruption under concurrent
@@ -333,7 +341,11 @@ class StreamingPostProcessor:
         # Step 1: Separate content from reasoning
         if output.channel:
             return self._process_channel_routed(delta_text, output)
-        elif self.reasoning_parser:
+        elif self.reasoning_parser and self.enable_thinking is not False:
+            # When enable_thinking is explicitly False, the model is told to
+            # skip thinking and answer directly. Bypass the reasoning parser
+            # so its implicit-think heuristic doesn't reroute the answer to
+            # reasoning_content.
             return self._process_with_reasoning(delta_text, output)
         else:
             return self._process_standard(delta_text, output)

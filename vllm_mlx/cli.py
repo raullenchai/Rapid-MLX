@@ -343,10 +343,16 @@ def serve_command(args):
     elif enable_prefix_cache:
         print(f"Prefix cache: max_entries={args.prefix_cache_size}")
 
-    # Check port availability before loading model (avoid wasting RAM on conflict)
+    # Check port availability before loading model (avoid wasting RAM on conflict).
+    # Set SO_REUSEADDR to match uvicorn's bind behavior — without it, this
+    # preflight fails on a port still in TCP TIME_WAIT (e.g. just after a
+    # previous rapid-mlx process exited), even though uvicorn would happily
+    # bind it. Caused spurious "port in use" errors for back-to-back server
+    # starts in the validation pipeline.
     import socket
 
     _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         _sock.bind((args.host, args.port))
         _sock.close()
@@ -1642,14 +1648,14 @@ Examples:
         "--model",
         type=str,
         default=None,
-        help="Model alias for check tier (default: qwen3.5-4b)",
+        help="Model alias for check tier (default: qwen3.5-35b)",
     )
     doctor_parser.add_argument(
         "--models",
         type=str,
         default=None,
         help="Comma-separated model aliases for full / benchmark tiers "
-        "(full default: qwen3.5-4b,qwen3.5-35b,qwen3.6-35b,gemma-4-26b; "
+        "(full default: qwen3.5-35b,qwen3.6-35b,gemma-4-26b; "
         "benchmark default: auto-discovered from local cache)",
     )
     doctor_parser.add_argument(

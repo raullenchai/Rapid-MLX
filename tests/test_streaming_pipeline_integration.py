@@ -9,6 +9,7 @@ import json
 import unittest
 
 from vllm_mlx.api.utils import StreamingThinkRouter, StreamingToolCallFilter
+from vllm_mlx.routes.anthropic import _should_start_in_thinking
 from vllm_mlx.server import _emit_content_pieces
 
 
@@ -58,6 +59,28 @@ class TestEmitContentPieces(unittest.TestCase):
         assert events == []
         assert block_type is None
         assert index == 0
+
+
+class TestAnthropicThinkingStartDecision(unittest.TestCase):
+    """Test when Anthropic streaming should start inside a thinking block."""
+
+    THINKING_TEMPLATE = "{% if add_generation_prompt %}<think>{% endif %}"
+
+    def test_thinking_template_starts_in_thinking_by_default(self):
+        """Thinking-capable templates keep implicit thinking support by default."""
+        assert _should_start_in_thinking(self.THINKING_TEMPLATE, None) is True
+
+    def test_thinking_template_starts_in_thinking_when_explicitly_enabled(self):
+        """Explicit thinking preserves the implicit-template routing behavior."""
+        assert _should_start_in_thinking(self.THINKING_TEMPLATE, True) is True
+
+    def test_thinking_template_does_not_start_in_thinking_when_disabled(self):
+        """No-thinking mode must emit direct answer tokens as text, not thinking."""
+        assert _should_start_in_thinking(self.THINKING_TEMPLATE, False) is False
+
+    def test_plain_template_never_starts_in_thinking(self):
+        """Templates without an implicit think marker should start as text."""
+        assert _should_start_in_thinking("{{ add_generation_prompt }}", None) is False
 
 
 class TestStreamingPipelineIntegration(unittest.TestCase):
@@ -154,6 +177,31 @@ class TestStreamingPipelineIntegration(unittest.TestCase):
         assert len(block_starts) == 2
         assert block_starts[0]["content_block"]["type"] == "thinking"
         assert block_starts[1]["content_block"]["type"] == "text"
+
+    def test_no_thinking_template_plain_answer_streams_as_text(self):
+        """Disabled thinking should not turn direct answer tokens into thinking."""
+        start_in_thinking = _should_start_in_thinking(
+            TestAnthropicThinkingStartDecision.THINKING_TEMPLATE,
+            enable_thinking=False,
+        )
+        events, _, block_index = self._run_pipeline(
+            ["Direct ", "answer"],
+            start_in_thinking=start_in_thinking,
+        )
+        parsed = self._parse_events(events)
+
+        block_starts = [p for p in parsed if p["type"] == "content_block_start"]
+        text_deltas = [
+            p["delta"]["text"]
+            for p in parsed
+            if p["type"] == "content_block_delta"
+            and p["delta"].get("type") == "text_delta"
+        ]
+
+        assert len(block_starts) == 1
+        assert block_starts[0]["content_block"]["type"] == "text"
+        assert "".join(text_deltas) == "Direct answer"
+        assert block_index == 1
 
     def test_text_then_tool_call(self):
         """Text followed by tool call - tool markup suppressed from text."""

@@ -45,6 +45,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
+    """Return whether streaming should begin in an implicit thinking block.
+
+    Some thinking-capable chat templates include ``<think>`` in the generated
+    assistant prefix instead of emitting it as a normal output token.  In that
+    case the stream router needs to start in thinking mode so tokens before
+    ``</think>`` are emitted as Anthropic thinking deltas.
+
+    When thinking is explicitly disabled, however, the template marker is only
+    stale capability metadata for routing purposes: direct answer tokens should
+    be emitted as text.  Otherwise Claude Code receives a message with only a
+    thinking block and no text result.
+    """
+    if enable_thinking is False:
+        return False
+    return "<think>" in chat_template and "add_generation_prompt" in chat_template
+
+
 @router.post("/v1/messages")
 async def create_anthropic_message(
     request: Request,
@@ -343,8 +361,8 @@ async def _stream_anthropic_messages(
     _chat_template = ""
     if _tokenizer and hasattr(_tokenizer, "chat_template"):
         _chat_template = _tokenizer.chat_template or ""
-    _starts_thinking = (
-        "<think>" in _chat_template and "add_generation_prompt" in _chat_template
+    _starts_thinking = _should_start_in_thinking(
+        _chat_template, chat_kwargs.get("enable_thinking")
     )
     think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
     prompt_tokens = 0
@@ -376,19 +394,48 @@ async def _stream_anthropic_messages(
 
         if delta_text:
             accumulated_text += delta_text
-            content = None
 
             if reasoning_parser:
+                # Closes #185: when a reasoning_parser is active it ALREADY
+                # splits content vs reasoning at every chunk; routing the
+                # parser's content through `think_router` (which detects
+                # raw `<think>` tags in the underlying stream) double-counts
+                # and silently buffers the answer as thinking_delta. Symptom
+                # was Anthropic stream test 4 returning 0 chunks for every
+                # qwen3-family model since v0.6.4. Bypass `think_router`
+                # here and emit reasoning/content as their own block types
+                # directly.
                 previous_raw = accumulated_raw
                 accumulated_raw += delta_text
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, accumulated_raw, delta_text
                 )
-                if delta_msg is not None:
-                    content = delta_msg.content
-            else:
-                content = strip_special_tokens(delta_text)
+                if delta_msg is None:
+                    continue
+                pieces: list[tuple[str, str]] = []
+                if delta_msg.reasoning:
+                    reasoning = strip_special_tokens(delta_msg.reasoning)
+                    if reasoning:
+                        pieces.append(("thinking", reasoning))
+                if delta_msg.content:
+                    content = strip_special_tokens(delta_msg.content)
+                    if content:
+                        # Tool tags only appear in the content channel —
+                        # filter still applies, but reasoning bypasses it.
+                        filtered = tool_filter.process(content)
+                        if filtered:
+                            pieces.append(("text", filtered))
+                if pieces:
+                    events, current_block_type, block_index = _emit_content_pieces(
+                        pieces, current_block_type, block_index
+                    )
+                    for event in events:
+                        yield event
+                continue
 
+            # No reasoning_parser path — keep the existing think_router
+            # heuristic that detects `<think>` tags in the raw stream.
+            content = strip_special_tokens(delta_text)
             if content:
                 content = strip_special_tokens(content)
 
@@ -406,19 +453,27 @@ async def _stream_anthropic_messages(
     # Flush remaining from both filters
     remaining = tool_filter.flush()
     if remaining:
+        # When reasoning_parser owns the split, route flushed tool-filter
+        # content straight to text — `think_router` would mis-buffer it
+        # for the same reason as above.
+        if reasoning_parser:
+            pieces_flush: list[tuple[str, str]] = [("text", remaining)]
+        else:
+            pieces_flush = think_router.process(remaining)
         events, current_block_type, block_index = _emit_content_pieces(
-            think_router.process(remaining), current_block_type, block_index
+            pieces_flush, current_block_type, block_index
         )
         for event in events:
             yield event
 
-    flush_pieces = think_router.flush()
-    if flush_pieces:
-        events, current_block_type, block_index = _emit_content_pieces(
-            flush_pieces, current_block_type, block_index
-        )
-        for event in events:
-            yield event
+    if not reasoning_parser:
+        flush_pieces = think_router.flush()
+        if flush_pieces:
+            events, current_block_type, block_index = _emit_content_pieces(
+                flush_pieces, current_block_type, block_index
+            )
+            for event in events:
+                yield event
 
     # Close final content block
     if current_block_type is not None:

@@ -66,6 +66,9 @@ jobs:
           pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil transformers requests
 
       - name: Run unit tests (no MLX required)
+        # NOTE: tests in this list MUST not import mlx / mlx_lm at module
+        # load time — Linux CI doesn't have MLX (it's Apple-Silicon only).
+        # Tests that need mlx live in the test-apple-silicon job below.
         run: |
           pytest \
             tests/test_mcp_security.py \
@@ -74,7 +77,6 @@ jobs:
             tests/test_tool_parsers.py \
             tests/test_streaming_json_encoder.py \
             tests/test_native_tool_format.py \
-            tests/test_memory_cache.py \
             tests/test_prefix_cache.py \
             tests/test_mllm_cache.py \
             tests/test_api_models.py \
@@ -88,6 +90,8 @@ jobs:
             tests/test_streaming_latency.py \
             tests/test_streaming_newlines.py \
             tests/test_minimax_reasoning_parser.py \
+            tests/test_pr_validate_runner.py \
+            tests/test_pr_validate_deepseek.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
@@ -123,6 +127,10 @@ jobs:
           python -c "import mlx.core as mx; print(f'MLX OK: {mx.default_device()}')"
 
       - name: Run MLX-dependent tests
+        # SimpleEngine was removed in PR #156 — test_simple_engine.py,
+        # test_llm.py, test_deltanet_snapshot.py went with it.
+        # test_memory_cache exercises mlx-importing code paths so it
+        # lives here, not in the Linux test-matrix job.
         run: |
           pytest \
             tests/test_platform.py \
@@ -131,6 +139,7 @@ jobs:
             tests/test_paged_cache.py \
             tests/test_mllm_continuous_batching.py \
             tests/test_mllm_cache.py \
+            tests/test_memory_cache.py \
             tests/test_optimizations.py \
             tests/test_batching.py \
             tests/test_continuous_batching.py \

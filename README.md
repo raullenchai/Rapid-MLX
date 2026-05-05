@@ -63,13 +63,17 @@ pip install rapid-mlx
 curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
 ```
 
+> **Vision/multimodal models** (Gemma 4, Qwen-VL, etc.) need extras: `pip install 'rapid-mlx[vision]'`. Text-only install is ~460 MB; vision adds ~322 MB. See [Optional Extras](#optional-extras) for the full list.
+
 > **"No matching distribution" error?** Your Python is too old. Run `python3 --version` — if it says 3.9, install a newer Python: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`
 
 **Step 2 — Serve a model:**
 ```bash
-rapid-mlx serve gemma-4-26b
+rapid-mlx serve qwen3.5-4b
 ```
-First run downloads the model (~14 GB) — you'll see a progress bar. Wait for `Ready: http://localhost:8000/v1`.
+First run downloads the model (~2.5 GB) — you'll see a progress bar. Wait for `Ready: http://localhost:8000/v1`.
+
+> Want vision? `pip install 'rapid-mlx[vision]'` then `rapid-mlx serve gemma-4-26b` (~14 GB).
 
 **Step 3 — Chat** (open a **second** terminal tab):
 ```bash
@@ -240,6 +244,19 @@ models:
 **Aider:**
 ```bash
 aider --openai-api-base http://localhost:8000/v1 --openai-api-key not-needed
+```
+
+**Swival** (`~/.swival/config.toml`):
+```toml
+[profiles.rapidmlx]
+provider = "generic"
+base_url = "http://127.0.0.1:8000"
+model = "default"
+```
+
+Run with:
+```bash
+swival --profile rapidmlx "summarize this repo"
 ```
 
 **Open WebUI** (Docker one-liner):
@@ -634,6 +651,23 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 **Server hangs after client disconnect** — Fixed in v0.3.0+. Upgrade to latest.
 
 </details>
+
+---
+
+## Optional Extras
+
+The base `pip install rapid-mlx` is ~460 MB and covers all text-only models. Vision, audio, and other features ship as opt-in extras:
+
+| Extra | Install | Adds | What it unlocks |
+|---|---|---|---|
+| `vision` | `pip install 'rapid-mlx[vision]'` | ~322 MB | Gemma 4, Qwen-VL, video understanding (mlx-vlm + opencv + torch) |
+| `audio` | `pip install 'rapid-mlx[audio]'` | ~600 MB | TTS / STT (mlx-audio + spacy + scipy) |
+| `embeddings` | `pip install 'rapid-mlx[embeddings]'` | ~50 MB | `/v1/embeddings` endpoint (mlx-embeddings) |
+| `chat` | `pip install 'rapid-mlx[chat]'` | ~150 MB | Built-in Gradio chat UI |
+| `guided` | `pip install 'rapid-mlx[guided]'` | ~80 MB | Schema-constrained JSON generation (outlines) |
+| `all` | `pip install 'rapid-mlx[all]'` | ~1.1 GB | Vision + audio + chat + embeddings |
+
+If you installed via Homebrew and want vision/audio support, use `pip install 'rapid-mlx[vision]'` (or `[audio]`) inside your own Python 3.10+ venv — that gives you the full feature set without rebuilding the brew formula.
 
 ---
 

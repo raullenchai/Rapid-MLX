@@ -23,7 +23,15 @@ async def recent_requests(limit: int = 50):
 
 @router.get("/health")
 async def health():
-    """Health check endpoint."""
+    """Health check endpoint.
+
+    `model_loaded` flips True as soon as the engine object exists
+    (mid-lifespan), but warmup + prefix-cache load can still be in
+    progress. `ready` flips True only after lifespan finishes all
+    startup work — that's the signal callers actually want to gate
+    on. Use /health/ready (returns 503 until ready) for poll-until-up
+    callers; this endpoint is the human-readable view.
+    """
     cfg = get_config()
 
     mcp_info = None
@@ -45,12 +53,30 @@ async def health():
 
     return {
         "status": "healthy",
+        "ready": cfg.ready,
         "model_loaded": cfg.engine is not None,
         "model_name": cfg.model_name,
         "model_type": "mllm" if (cfg.engine and cfg.engine.is_mllm) else "llm",
         "engine_type": engine_stats.get("engine_type", "unknown"),
         "mcp": mcp_info,
     }
+
+
+@router.get("/health/ready")
+async def health_ready():
+    """Strict readiness probe — 503 until lifespan startup is fully done.
+
+    Lifespan order is: engine.start() → warmup (Metal kernel JIT) →
+    load_from_disk (prefix cache) → MCP init → set ready=True. The
+    first inference request would otherwise compete with warmup +
+    cache load and look like a hang. Validation pipelines and
+    container orchestrators should poll this instead of /v1/models
+    (which returns 200 the moment the FastAPI app binds).
+    """
+    cfg = get_config()
+    if not cfg.ready:
+        raise HTTPException(status_code=503, detail="model loading")
+    return {"ready": True, "model": cfg.model_name}
 
 
 @router.post("/v1/cache/clear")

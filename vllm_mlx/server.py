@@ -295,7 +295,15 @@ async def lifespan(app: FastAPI):
     if mcp_config:
         await init_mcp(mcp_config)
 
+    # All slow startup work done. Flip the readiness flag so /health/ready
+    # starts returning 200. Anything that races a request before this point
+    # would otherwise hit a not-yet-warmed engine.
+    get_config().ready = True
+
     yield
+
+    # Shutdown: stop accepting "ready" before tearing things down.
+    get_config().ready = False
 
     # Shutdown: Save cache to disk BEFORE stopping engine
     if _engine is not None and hasattr(_engine, "save_cache_to_disk"):

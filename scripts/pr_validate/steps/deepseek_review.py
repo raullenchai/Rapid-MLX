@@ -47,10 +47,13 @@ MODEL = "deepseek-v4-pro"
 # truncated at a file boundary and note which files were omitted.
 MAX_DIFF_BYTES = 120_000
 
-# Token budget. Reasoning-model behavior: we observed ~6K tokens of
-# reasoning + 500-1500 tokens of visible content for a normal review.
-# 16K leaves headroom.
-MAX_TOKENS = 16_384
+# Token budget. Reasoning-model behavior is highly variable: a simple
+# diff burns ~6K reasoning tokens; a complex multi-commit one (like
+# PR #203's 22KB / 5-commit diff) burns ~16K reasoning tokens before
+# emitting any visible content. We observed the response getting cut
+# mid-finding at MAX_TOKENS=16384 because reasoning consumed the full
+# budget. 32K leaves room for ~16K reasoning + ~16K visible reply.
+MAX_TOKENS = 32_768
 
 # How long we wait for the API. DeepSeek V4 Pro reasoning takes
 # 30-90s typical, up to 5min for big diffs.
@@ -95,11 +98,9 @@ class DeepSeekReviewStep(Step):
             )
 
         diff_full = Path(ctx.diff_path).read_text()
-        diff, omitted_files = _truncate_diff_at_file_boundary(diff_full, MAX_DIFF_BYTES)
-        # truncated is True whenever *anything* was cut — including the
-        # single-big-file case where omitted_files is empty but the diff
-        # itself was raw-sliced.
-        truncated = len(diff.encode()) < len(diff_full.encode())
+        diff, omitted_files, truncated = _truncate_diff_at_file_boundary(
+            diff_full, MAX_DIFF_BYTES
+        )
 
         if not PROMPT_PATH.exists():
             return StepResult(
@@ -138,7 +139,11 @@ class DeepSeekReviewStep(Step):
                         "max_tokens": MAX_TOKENS,
                     },
                 )
-        except (httpx.TimeoutException, httpx.NetworkError) as e:
+        except httpx.RequestError as e:
+            # Catch the whole request-failure tree: TimeoutException,
+            # NetworkError (ConnectError, ReadError), and ProtocolError
+            # (RemoteProtocolError when the server cuts the connection
+            # mid-response — observed under DeepSeek API load).
             return StepResult(
                 name=self.name,
                 status="skip",
@@ -264,57 +269,71 @@ def _build_user_prompt(
     return "\n".join(lines)
 
 
-_FILE_HEADER_RE = re.compile(r"^diff --git a/(.+?) b/", re.MULTILINE)
+# Header line is one of:
+#   diff --git a/<path> b/<path>            (no spaces in path)
+#   diff --git "a/<escaped>" "b/<escaped>"  (path with spaces / specials)
+# A single byte regex handles both. group(1) wins for the quoted form,
+# group(2) for the unquoted. Operating on bytes avoids the O(N·L)
+# re-encode-the-prefix dance that string-mode would force.
+_FILE_HEADER_RE = re.compile(
+    rb'^diff --git (?:"a/((?:[^"\\]|\\.)*)"|a/(\S+)) ',
+    re.MULTILINE,
+)
 
 
-def _truncate_diff_at_file_boundary(diff: str, max_bytes: int) -> tuple[str, list[str]]:
+def _truncate_diff_at_file_boundary(
+    diff: str, max_bytes: int
+) -> tuple[str, list[str], bool]:
     """Truncate *diff* to *max_bytes* at the nearest preceding file boundary.
 
-    Returns ``(kept_diff, omitted_file_paths)``.  If the diff fits, returns
-    the original string and an empty list.  If even the first file exceeds
-    the limit we fall back to a raw byte slice (better than nothing) and
-    list all remaining files as omitted.
+    Returns ``(kept_diff, omitted_file_paths, was_truncated)``.  If the diff
+    fits, returns the original string, an empty list, and ``False``.  If
+    even the first file exceeds the limit we fall back to a raw byte slice
+    (better than nothing) and list all remaining files as omitted.
 
     Sizes are measured in UTF-8 bytes (not Python character counts) to match
     what the HTTP layer actually sends.
     """
     diff_bytes = diff.encode()
     if len(diff_bytes) <= max_bytes:
-        return diff, []
+        return diff, [], False
 
-    # Find the byte offset of every per-file header. _FILE_HEADER_RE operates
-    # on the *string* (char positions), so convert each char offset to a byte
-    # offset once using encode() slicing.
-    positions = []
-    for m in _FILE_HEADER_RE.finditer(diff):
-        byte_pos = len(diff[: m.start()].encode())
-        positions.append((byte_pos, m.group(1)))
+    # Find every per-file header — byte offset and a-side path.
+    positions: list[tuple[int, str]] = []
+    for m in _FILE_HEADER_RE.finditer(diff_bytes):
+        path_bytes = m.group(1) if m.group(1) is not None else m.group(2)
+        # Quoted form uses C-style escapes (\\, \", \t, \n, octal); we don't
+        # try to fully unescape — the path is only used for human-readable
+        # "files NOT reviewed" listings, slight visual artifact is OK.
+        path = path_bytes.decode("utf-8", errors="replace")
+        positions.append((m.start(), path))
 
     # Walk forward and find the last file whose header fits within max_bytes.
+    # If we never break, kept_end naturally lands on the last header position
+    # — which is exactly what we want: drop the last file (its content is
+    # what overflows) so we only ship complete per-file diffs.
     kept_end = 0
-    for _i, (pos, _) in enumerate(positions):
+    for pos, _ in positions:
         if pos > max_bytes:
             break
         kept_end = pos
-    else:
-        # All file headers start before the limit — the overflow is inside the
-        # last file's content. Keep everything up to (but not including) the
-        # last file so we only ship complete file diffs.
-        kept_end = positions[-1][0] if positions else 0
 
     if kept_end == 0:
-        # Even the first file overflows. Raw-slice to the byte limit and list
-        # the remaining files as omitted (first file is partially shown).
-        raw = diff_bytes[:max_bytes].decode(errors="replace")
+        # Either no headers found, or even the first file alone overflows.
+        # Raw-slice to the byte limit and list the remaining files (if any)
+        # as omitted; the first file is shown partially.  ``errors="ignore"``
+        # drops a trailing incomplete UTF-8 sequence rather than replacing
+        # it with U+FFFD — the latter would re-encode to 3 bytes and could
+        # push us *over* ``max_bytes``, defeating the cap.
+        raw = diff_bytes[:max_bytes].decode("utf-8", errors="ignore")
         omitted = [path for _, path in positions[1:]]
-        return raw, omitted
+        return raw, omitted, True
 
-    # Slice at the byte boundary, then decode — safe because we sliced at a
-    # file-header start which is always ASCII.
+    # Slice at the byte boundary, then decode — safe because the boundary
+    # is always at the start of a header line (pure ASCII).
     kept_diff = diff_bytes[:kept_end].decode()
-    # Omitted = files whose header starts at or after kept_end.
     omitted = [path for pos, path in positions if pos >= kept_end]
-    return kept_diff, omitted
+    return kept_diff, omitted, True
 
 
 # Cap on how many directories we'll list — a 50-file refactor PR
@@ -324,6 +343,32 @@ _MAX_DIRS_LISTED = 15
 # Per-directory cap. Anything more is noise; we tag the overflow with
 # a count so the model knows there's more.
 _MAX_FILES_PER_DIR = 30
+
+
+def _is_safe_listing_path(d: str) -> bool:
+    """Return True iff *d* is safe to feed into ``gh api repos/.../contents/<d>``.
+
+    We reject:
+    * ``.`` — current dir; GitHub's contents API 404s on it.
+    * ``..`` and ``../*`` — parent-traversal in the path-component sense.
+      A plain ``startswith("..")`` would also reject legitimate names like
+      ``..hidden`` or ``..env``; we only want the ``..`` *component* form.
+    * absolute paths — never come from ``gh pr diff`` and could probe
+      outside the repo's tree on a misbehaving server.
+
+    *d* is the directory part of a changed-file path (``os.path.dirname``).
+    Empty input returns False — caller should already have skipped it.
+    """
+    if not d:
+        return False
+    normalized = os.path.normpath(d)
+    if normalized in (".", ".."):
+        return False
+    if normalized.startswith("../"):
+        return False
+    if os.path.isabs(normalized):
+        return False
+    return True
 
 
 def _gather_directory_context(ctx: Context) -> str:
@@ -347,12 +392,9 @@ def _gather_directory_context(ctx: Context) -> str:
     dirs: set[str] = set()
     for path in ctx.files_changed:
         d = os.path.dirname(path)
-        if not d:
+        if not _is_safe_listing_path(d):
             continue
-        normalized = os.path.normpath(d)
-        if normalized.startswith("..") or os.path.isabs(normalized):
-            continue
-        dirs.add(normalized)
+        dirs.add(os.path.normpath(d))
 
     if not dirs:
         return ""
