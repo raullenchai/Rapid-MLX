@@ -15,6 +15,19 @@ import pytest
 TEST_MODEL = "mlx-community/Llama-3.2-1B-Instruct-4bit"
 
 
+async def _warmup_engine(engine, sampling_params) -> None:
+    """Pay the Metal kernel JIT + first-inference cost outside the timed
+    region so concurrent-request tests aren't racing against cold
+    compilation. Without this, the first 1–2 requests hit slow JIT paths
+    while later requests hit hot kernels — and on temp=0 greedy decoding
+    that scheduling skew can flip a single token, breaking determinism
+    asserts on overloaded CI runners."""
+    rid = await engine.add_request("warmup:", sampling_params)
+    async for out in engine.stream_outputs(rid, timeout=30):
+        if out.finished:
+            break
+
+
 @pytest.fixture(scope="module")
 def model_and_tokenizer():
     """Load model once for all tests in this module."""
@@ -119,6 +132,7 @@ class TestDeterministicConcurrentRequests:
 
         async with AsyncEngineCore(model, tokenizer, config) as engine:
             await asyncio.sleep(0.05)
+            await _warmup_engine(engine, params)
 
             # Send 4 identical requests
             request_ids = []
@@ -168,6 +182,7 @@ class TestDeterministicConcurrentRequests:
         for run in range(2):
             async with AsyncEngineCore(model, tokenizer, config) as engine:
                 await asyncio.sleep(0.05)
+                await _warmup_engine(engine, params)
 
                 request_ids = []
                 for p in prompts:
@@ -224,22 +239,12 @@ class TestBatchingPerformance:
         params = SamplingParams(max_tokens=10, temperature=0.0)
         prompts = [f"Count to {i}:" for i in range(1, 5)]
 
-        async def _warmup(engine):
-            """Pay the Metal kernel JIT + first-inference cost outside
-            the timed region so cold/warm asymmetry doesn't dominate
-            the measurement. ~10 tokens is enough to compile the decode
-            path."""
-            rid = await engine.add_request("warmup:", params)
-            async for out in engine.stream_outputs(rid, timeout=30):
-                if out.finished:
-                    break
-
         async def run_sequential():
             """Run requests one at a time (after warmup)."""
             total_tokens = 0
             async with AsyncEngineCore(model, tokenizer, config) as engine:
                 await asyncio.sleep(0.05)
-                await _warmup(engine)
+                await _warmup_engine(engine, params)
 
                 for prompt in prompts:
                     rid = await engine.add_request(prompt, params)
@@ -253,7 +258,7 @@ class TestBatchingPerformance:
             """Run requests concurrently (after warmup)."""
             async with AsyncEngineCore(model, tokenizer, config) as engine:
                 await asyncio.sleep(0.05)
-                await _warmup(engine)
+                await _warmup_engine(engine, params)
 
                 request_ids = []
                 for prompt in prompts:
