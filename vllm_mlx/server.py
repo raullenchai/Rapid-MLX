@@ -516,6 +516,14 @@ def load_model(
     )
     logger.info(f"Model loaded: {model_name}")
 
+    # Sync globals into ServerConfig BEFORE _detect_native_tool_support reads
+    # them via get_config(). Detection short-circuits when cfg.tool_call_parser
+    # is None or cfg.enable_auto_tool_choice is False, so an unsynced cfg
+    # silently disables native tool format and forces api/utils.py into the
+    # prose-conversion fallback ([Calling tool: ...]) — the model then mimics
+    # that format on subsequent turns. See #225.
+    _sync_config()
+
     # Set native tool format support on the engine (thread-safe via instance property)
     _engine.preserve_native_tool_format = _detect_native_tool_support()
     if _engine.preserve_native_tool_format:
@@ -570,15 +578,29 @@ def load_model(
     )
     _model_registry.add(entry, is_default=True)
 
-    # Sync globals into ServerConfig so route modules can use get_config()
+    # Defensive re-sync. `_sync_config()` already ran earlier (before
+    # `_detect_native_tool_support()`); under current invariants this call is
+    # redundant — `cfg.model_registry` holds a reference to `_model_registry`,
+    # every global synced is set before engine construction, and `_engine`
+    # mutations propagate via `cfg.engine`. Kept anyway because the bug this
+    # PR fixes (#225) was a silent call-ordering failure, and the cost of an
+    # idempotent re-sync is trivial against the cost of re-introducing the
+    # same failure mode if a future change violates the invariants.
     _sync_config()
 
 
 def _sync_config() -> None:
     """Copy server globals into the ServerConfig singleton.
 
-    Called after load_model() and whenever globals change.
-    Bridges the old global-variable pattern with the new config object.
+    Called after load_model() and whenever globals change. Bridges the old
+    global-variable pattern with the new config object.
+
+    **Must remain idempotent.** load_model() calls this twice (once early
+    before _detect_native_tool_support() reads cfg, once again after the
+    model registry add as a safety net for future call-site drift). All
+    assignments below MUST be straight overwrites — no counters, no
+    callback fires, no cache invalidations that depend on prior state.
+    See test_sync_config_is_idempotent in tests/test_server_load_model_order.py.
     """
     cfg = get_config()
     cfg.engine = _engine

@@ -101,6 +101,12 @@ def patched_cfg():
     cfg.engine = None
     cfg.model_name = "qwen3.5-test"
     cfg.cloud_router = None
+    # MagicMock attributes default to truthy MagicMock instances. The route at
+    # anthropic.py:332 reads `cfg.no_thinking`; left unset, that path forces
+    # chat_kwargs["enable_thinking"]=False, which the #223 fix at line 389
+    # then uses to null out the reasoning parser. The #185 regression below
+    # depends on the parser running, so pin no_thinking to a real False.
+    cfg.no_thinking = False
     with patch.object(anthropic_route, "get_config", return_value=cfg):
         yield cfg
 
