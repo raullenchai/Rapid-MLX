@@ -396,7 +396,7 @@ def test_direct_jang_default_max_tokens_matches_mlx_lm_default():
     assert _resolve_max_tokens(4096, engine=FakeEngine()) == 4096
 
 
-def test_direct_jang_ignores_tools_without_auto_tool_choice():
+def test_direct_jang_passes_tools_to_native_template():
     from vllm_mlx.config import reset_config
     from vllm_mlx.service.helpers import _should_pass_tools_to_template
 
@@ -411,11 +411,11 @@ def test_direct_jang_ignores_tools_without_auto_tool_choice():
         is_mllm = False
         tokenizer = FakeTokenizer()
 
-    assert _should_pass_tools_to_template(FakeEngine()) is False
+    assert _should_pass_tools_to_template(FakeEngine()) is True
 
     cfg.enable_auto_tool_choice = True
     cfg.tool_call_parser = "deepseek"
-    assert _should_pass_tools_to_template(FakeEngine()) is False
+    assert _should_pass_tools_to_template(FakeEngine()) is True
 
 
 def test_direct_jang_sanitizes_pi_textual_tools():
@@ -454,9 +454,89 @@ def test_direct_jang_sanitizes_pi_textual_tools():
     )
 
     assert "concise coding assistant" in sanitized[0]["content"]
-    assert "one short greeting" in sanitized[0]["content"]
+    assert "DSML tool call block" in sanitized[0]["content"]
     assert "- read:" not in sanitized[0]["content"]
-    assert "Do not emit HTML" in sanitized[0]["content"]
+    assert "Do not emit tool calls" not in sanitized[0]["content"]
+
+
+def test_deepseek_parser_extracts_dsv4_dsml_tool_call():
+    from vllm_mlx.tool_parsers.deepseek_tool_parser import DeepSeekToolParser
+
+    parser = DeepSeekToolParser()
+    result = parser.extract_tool_calls(
+        "<｜DSML｜tool_calls>\n"
+        '<｜DSML｜invoke name="write_file">\n'
+        '<｜DSML｜parameter name="path" string="true">index.html</｜DSML｜parameter>\n'
+        '<｜DSML｜parameter name="overwrite" string="false">true</｜DSML｜parameter>\n'
+        "</｜DSML｜invoke>\n"
+        "</｜DSML｜tool_calls>"
+    )
+
+    assert result.tools_called is True
+    assert result.tool_calls[0]["name"] == "write_file"
+    assert json.loads(result.tool_calls[0]["arguments"]) == {
+        "path": "index.html",
+        "overwrite": True,
+    }
+
+
+def test_deepseek_parser_streams_dsv4_dsml_tool_call():
+    from vllm_mlx.tool_parsers.deepseek_tool_parser import DeepSeekToolParser
+
+    parser = DeepSeekToolParser()
+    previous = (
+        "<｜DSML｜tool_calls>\n"
+        '<｜DSML｜invoke name="write_file">\n'
+        '<｜DSML｜parameter name="path" string="true">index.html</｜DSML｜parameter>\n'
+        "</｜DSML｜invoke>\n"
+    )
+    current = previous + "</｜DSML｜tool_calls>"
+
+    streamed = parser.extract_tool_calls_streaming(previous, current, current)
+
+    assert streamed is not None
+    assert streamed["tool_calls"][0]["function"]["name"] == "write_file"
+    assert json.loads(streamed["tool_calls"][0]["function"]["arguments"]) == {
+        "path": "index.html"
+    }
+
+
+def test_direct_jang_synthesizes_write_tool_from_code_fence():
+    from vllm_mlx.api.models import ToolDefinition
+    from vllm_mlx.routes.chat import _synthesize_direct_jang_write_tool_call
+
+    tool_calls = _synthesize_direct_jang_write_tool_call(
+        "Here it is:\n```html\n<html>ok</html>\n```",
+        [{"role": "user", "content": "create a file named snake.html"}],
+        type(
+            "Request",
+            (),
+            {
+                "tools": [
+                    ToolDefinition(
+                        type="function",
+                        function={
+                            "name": "write",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "content": {"type": "string"},
+                                },
+                            },
+                        },
+                    )
+                ]
+            },
+        )(),
+    )
+
+    assert tool_calls is not None
+    assert tool_calls[0]["function"]["name"] == "write"
+    assert json.loads(tool_calls[0]["function"]["arguments"]) == {
+        "path": "snake.html",
+        "content": "<html>ok</html>",
+    }
 
 
 def test_jang_model_uses_standard_jang_loader(tmp_path, monkeypatch):

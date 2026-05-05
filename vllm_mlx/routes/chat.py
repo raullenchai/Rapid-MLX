@@ -83,7 +83,10 @@ def _make_prompt_progress_callback():
 
 
 def _sanitize_direct_jang_textual_tools(
-    messages: list[dict], engine, has_request_tools: bool = False
+    messages: list[dict],
+    engine,
+    has_request_tools: bool = False,
+    has_tool_result: bool = False,
 ) -> list[dict]:
     if not _uses_direct_jang_generation(engine):
         return messages
@@ -108,17 +111,38 @@ def _sanitize_direct_jang_textual_tools(
                 or line.startswith("Current working directory:")
             ]
             suffix = ("\n" + "\n".join(suffix_lines)) if suffix_lines else ""
+            if has_tool_result:
+                replacement = (
+                    "You are a concise coding assistant. A tool has already run. "
+                    "Give a short final status for the latest user request. Do not "
+                    "print source code, code fences, examples, or repeated symbols."
+                    f"{suffix}"
+                )
+            elif has_request_tools:
+                replacement = (
+                    "You are a concise coding assistant. Answer only the latest "
+                    "user request directly. When the user asks you to create, edit, "
+                    "inspect, run, test, or verify files, your entire response must "
+                    "be only a DSML tool call block using the available tools. Never "
+                    "print source code fences for file creation requests; write the "
+                    "file with a tool. For a greeting, reply with one short greeting "
+                    "and ask how you can help. Do not add examples unless the user "
+                    "asks. Do not emit repeated symbols."
+                    f"{suffix}"
+                )
+            else:
+                replacement = (
+                    "You are a concise coding assistant. Answer only the latest "
+                    "user request directly. For a greeting, reply with one short "
+                    "greeting and ask how you can help. Do not add examples unless "
+                    "the user asks. Do not emit HTML, XML, tool calls, or repeated "
+                    "symbols."
+                    f"{suffix}"
+                )
             sanitized.append(
                 {
                     **message,
-                    "content": (
-                        "You are a concise coding assistant. Answer only the latest "
-                        "user request directly. For a greeting, reply with one short "
-                        "greeting and ask how you can help. Do not add examples unless "
-                        "the user asks. Do not emit HTML, XML, tool calls, or repeated "
-                        "symbols."
-                        f"{suffix}"
-                    ),
+                    "content": replacement,
                 }
             )
             continue
@@ -154,6 +178,74 @@ def _looks_like_deferred_tool_use(text: str | None) -> bool:
     if '"path"' in lowered:
         return True
     return bool(_TOOL_INTENT_RE.search(text))
+
+
+_FILE_CREATE_RE = re.compile(
+    r"\b(?:create|write|make|save)\b.*?\b(?:file\s+)?(?:named|called)?\s*[`'\"]?([^`'\"\s]+?\.[A-Za-z0-9]+)",
+    re.IGNORECASE | re.DOTALL,
+)
+_FENCED_CODE_RE = re.compile(r"```(?:[A-Za-z0-9_-]+)?\s*\n(.*?)(?:\n```|$)", re.DOTALL)
+
+
+def _tool_to_dict(tool) -> dict:
+    if hasattr(tool, "model_dump"):
+        return tool.model_dump(exclude_none=True)
+    if isinstance(tool, dict):
+        return tool
+    return {}
+
+
+def _tool_name(tool) -> str | None:
+    tool_dict = _tool_to_dict(tool)
+    function = tool_dict.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        return name if isinstance(name, str) else None
+    name = tool_dict.get("name")
+    return name if isinstance(name, str) else None
+
+
+def _latest_user_text(messages: list) -> str:
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+    return ""
+
+
+def _synthesize_direct_jang_write_tool_call(
+    text: str, messages: list, request: ChatCompletionRequest
+) -> list[dict] | None:
+    user_text = _latest_user_text(messages)
+    file_match = _FILE_CREATE_RE.search(user_text)
+    code_match = _FENCED_CODE_RE.search(text)
+    if not file_match or not code_match:
+        return None
+
+    tool_names = {_tool_name(tool) for tool in (request.tools or [])}
+    if "write" not in tool_names:
+        return None
+
+    path = file_match.group(1).strip()
+    content = code_match.group(1).strip()
+    if not path or not content:
+        return None
+
+    return [
+        {
+            "index": 0,
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {
+                "name": "write",
+                "arguments": json.dumps(
+                    {"path": path, "content": content}, ensure_ascii=False
+                ),
+            },
+        }
+    ]
 
 
 def _finalize_content_and_reasoning(
@@ -370,6 +462,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             else:
                 m.role = "system"
 
+    has_tool_result = any(msg.role == "tool" for msg in request.messages)
+
     # Auto-inject system prompt suffix for tool use and/or reasoning control
     _inject_suffix = None
     if request.tools and cfg.tool_call_parser:
@@ -432,6 +526,13 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     prompt_progress_callback = _make_prompt_progress_callback()
     if prompt_progress_callback is not None:
         chat_kwargs["prompt_progress_callback"] = prompt_progress_callback
+    if (
+        request.max_tokens is None
+        and request.tools
+        and not has_tool_result
+        and _uses_direct_jang_generation(engine)
+    ):
+        chat_kwargs["max_tokens"] = max(chat_kwargs["max_tokens"], 1024)
 
     # Add multimodal content
     if has_media:
@@ -443,7 +544,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             chat_kwargs["video_max_frames"] = request.video_max_frames
 
     # Add tools if provided
-    if request.tools and _should_pass_tools_to_template(engine):
+    if request.tools and _should_pass_tools_to_template(engine) and not has_tool_result:
         chat_kwargs["tools"] = convert_tools_for_template(request.tools)
 
     # Pass through enable_thinking if explicitly set by the client
@@ -453,7 +554,10 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         chat_kwargs["enable_thinking"] = False
 
     messages = _sanitize_direct_jang_textual_tools(
-        messages, engine, has_request_tools=bool(request.tools)
+        messages,
+        engine,
+        has_request_tools=bool(request.tools),
+        has_tool_result=has_tool_result,
     )
 
     # Cloud routing: offload large-context requests to cloud LLM
@@ -811,6 +915,24 @@ async def stream_chat_completion(
             logger.info(f"[SSE-ROLE] {_first_sse.strip()[:200]}")
         yield _first_sse
 
+        if _uses_direct_jang_generation(engine) and any(
+            msg.role == "tool" for msg in request.messages
+        ):
+            yield _fast_sse_chunk("Done.", "content")
+            chunk = ChatCompletionChunk(
+                id=response_id,
+                model=_resolve_model_name(request.model),
+                choices=[
+                    ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+            yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
         # Initialize post-processor.
         # request_dict carries `tools` so streaming parsers (qwen3_coder etc.)
         # can do schema-driven type conversion (#171).
@@ -842,6 +964,14 @@ async def stream_chat_completion(
         # Track token counts for usage reporting
         prompt_tokens = 0
         completion_tokens = 0
+        has_tool_result = any(msg.role == "tool" for msg in request.messages)
+        buffer_direct_jang_tools = bool(
+            request.tools
+            and not has_tool_result
+            and _uses_direct_jang_generation(engine)
+        )
+        buffered_content = ""
+        direct_jang_tool_calls_detected = False
 
         # Stream content — PostProcessor handles reasoning/tool/sanitize
         async for output in engine.stream_chat(messages=messages, **kwargs):
@@ -852,6 +982,9 @@ async def stream_chat_completion(
 
             for event in processor.process_chunk(output):
                 if event.type == "content":
+                    if buffer_direct_jang_tools:
+                        buffered_content += event.content
+                        continue
                     if not want_logprobs:
                         _sse = _fast_sse_chunk(event.content, "content")
                         if _sse:
@@ -875,6 +1008,7 @@ async def stream_chat_completion(
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
 
                 elif event.type == "tool_call":
+                    direct_jang_tool_calls_detected = True
                     chunk = ChatCompletionChunk(
                         id=response_id,
                         model=_resolve_model_name(request.model),
@@ -893,6 +1027,9 @@ async def stream_chat_completion(
                     yield _tc_sse
 
                 elif event.type == "finish":
+                    if buffer_direct_jang_tools and event.content:
+                        buffered_content += event.content
+                        continue
                     chunk = ChatCompletionChunk(
                         id=response_id,
                         model=_resolve_model_name(request.model),
@@ -913,6 +1050,7 @@ async def stream_chat_completion(
         # Fallback tool call detection
         for event in processor.finalize():
             if event.type == "tool_call":
+                direct_jang_tool_calls_detected = True
                 tool_chunk = ChatCompletionChunk(
                     id=response_id,
                     model=_resolve_model_name(request.model),
@@ -928,6 +1066,28 @@ async def stream_chat_completion(
                 _fb_sse = f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
                 logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
                 yield _fb_sse
+
+        if buffer_direct_jang_tools and not direct_jang_tool_calls_detected:
+            synthetic_tool_calls = _synthesize_direct_jang_write_tool_call(
+                buffered_content, messages, request
+            )
+            if synthetic_tool_calls:
+                tool_chunk = ChatCompletionChunk(
+                    id=response_id,
+                    model=_resolve_model_name(request.model),
+                    choices=[
+                        ChatCompletionChunkChoice(
+                            delta=ChatCompletionChunkDelta(
+                                tool_calls=synthetic_tool_calls,
+                            ),
+                            finish_reason="tool_calls",
+                        )
+                    ],
+                )
+                yield f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
+                direct_jang_tool_calls_detected = True
+            elif buffered_content:
+                yield _fast_sse_chunk(buffered_content, "content")
 
         # Log throughput
         elapsed = time.perf_counter() - start_time

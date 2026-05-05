@@ -82,7 +82,7 @@ def _uses_direct_jang_generation(engine: BaseEngine | None) -> bool:
 
 
 def _should_pass_tools_to_template(engine: BaseEngine | None) -> bool:
-    return not _uses_direct_jang_generation(engine)
+    return True
 
 
 def _resolve_max_tokens(

@@ -53,6 +53,8 @@ class DeepSeekToolParser(ToolParser):
     TOOL_CALL_START = "<｜tool▁call▁begin｜>"
     TOOL_CALL_END = "<｜tool▁call▁end｜>"
     TOOL_SEP = "<｜tool▁sep｜>"
+    DSML_TOOL_CALLS_START = "<｜DSML｜tool_calls>"
+    DSML_TOOL_CALLS_END = "</｜DSML｜tool_calls>"
 
     # Pattern to match individual tool calls
     TOOL_CALL_PATTERN = re.compile(
@@ -65,6 +67,50 @@ class DeepSeekToolParser(ToolParser):
         r"<｜tool▁call▁begin｜>(?P<name>.*?)\n```json\n(?P<args>.*?)\n```<｜tool▁call▁end｜>",
         re.DOTALL,
     )
+    DSML_BLOCK_PATTERN = re.compile(
+        r"<｜DSML｜tool_calls>(.*?)</｜DSML｜tool_calls>", re.DOTALL
+    )
+    DSML_INVOKE_PATTERN = re.compile(
+        r'<｜DSML｜invoke\s+name="([^"]+)">(.*?)</｜DSML｜invoke>',
+        re.DOTALL,
+    )
+    DSML_PARAMETER_PATTERN = re.compile(
+        r'<｜DSML｜parameter\s+name="([^"]+)"\s+string="(true|false)">(.*?)</｜DSML｜parameter>',
+        re.DOTALL,
+    )
+
+    def has_pending_tool_call(self, text: str) -> bool:
+        return (
+            self.TOOL_CALLS_START in text
+            or self.DSML_TOOL_CALLS_START in text
+            or self.has_text_format_tool_call(text)
+        )
+
+    def _extract_dsml_tool_calls(self, model_output: str) -> list[dict[str, Any]]:
+        tool_calls: list[dict[str, Any]] = []
+        blocks = self.DSML_BLOCK_PATTERN.findall(model_output)
+        for block in blocks:
+            for func_name, params_block in self.DSML_INVOKE_PATTERN.findall(block):
+                arguments: dict[str, Any] = {}
+                for p_name, is_string, p_value in self.DSML_PARAMETER_PATTERN.findall(
+                    params_block
+                ):
+                    value = p_value.strip()
+                    if is_string == "true":
+                        arguments[p_name] = value
+                        continue
+                    try:
+                        arguments[p_name] = json.loads(value)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        arguments[p_name] = value
+                tool_calls.append(
+                    {
+                        "id": generate_tool_id(),
+                        "name": func_name.strip(),
+                        "arguments": json.dumps(arguments, ensure_ascii=False),
+                    }
+                )
+        return tool_calls
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -72,6 +118,16 @@ class DeepSeekToolParser(ToolParser):
         """
         Extract tool calls from DeepSeek model output.
         """
+        if self.DSML_TOOL_CALLS_START in model_output:
+            tool_calls = self._extract_dsml_tool_calls(model_output)
+            if tool_calls:
+                content = self.DSML_BLOCK_PATTERN.sub("", model_output).strip()
+                return ExtractedToolCallInformation(
+                    tools_called=True,
+                    tool_calls=tool_calls,
+                    content=content if content else None,
+                )
+
         # Check for tool calls marker
         if self.TOOL_CALLS_START not in model_output:
             return ExtractedToolCallInformation(
@@ -145,6 +201,30 @@ class DeepSeekToolParser(ToolParser):
         """
         Extract tool calls from streaming DeepSeek model output.
         """
+        if self.DSML_TOOL_CALLS_START in current_text:
+            if current_text.count(self.DSML_TOOL_CALLS_END) > previous_text.count(
+                self.DSML_TOOL_CALLS_END
+            ):
+                result = self.extract_tool_calls(current_text)
+                if result.tools_called:
+                    prev_complete = previous_text.count(self.DSML_TOOL_CALLS_END)
+                    new_calls = result.tool_calls[prev_complete:]
+                    return {
+                        "tool_calls": [
+                            {
+                                "index": prev_complete + i,
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": tc["arguments"],
+                                },
+                            }
+                            for i, tc in enumerate(new_calls)
+                        ]
+                    }
+            return None
+
         if self.TOOL_CALLS_START not in current_text:
             return {"content": delta_text}
 
