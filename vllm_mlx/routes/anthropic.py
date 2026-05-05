@@ -378,6 +378,16 @@ async def _stream_anthropic_messages(
             reasoning_parser = get_parser(cfg.reasoning_parser_name)()
         except Exception:
             pass
+    # Closes #223: when the client explicitly opts out of thinking, bypass
+    # the reasoning parser. Parsers like qwen3 use an implicit-think
+    # heuristic (no <think> tag → all tokens treated as reasoning), so a
+    # direct answer would otherwise be misrouted to thinking_delta blocks
+    # and the text_delta block would stay empty. Mirrors the chat-route
+    # bypass at postprocessor.py:217. The think_router branch below picks
+    # up the work, and `_should_start_in_thinking` already returns False
+    # for enable_thinking=False, so the answer streams as text.
+    if chat_kwargs.get("enable_thinking") is False:
+        reasoning_parser = None
     if reasoning_parser:
         reasoning_parser.reset_state()
 

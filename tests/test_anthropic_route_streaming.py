@@ -113,3 +113,130 @@ def test_anthropic_stream_route_no_thinking_template_answers_as_text():
         and e.get("delta", {}).get("stop_reason") == "end_turn"
         for e in events
     )
+
+
+def test_anthropic_stream_route_reasoning_parser_with_no_thinking_answers_as_text():
+    """Closes #223. Server has --reasoning-parser qwen3 active AND the
+    request opts out of thinking. The qwen3 parser's implicit-think
+    heuristic routes any text without a <think> tag to ``reasoning``;
+    pre-fix that meant every direct-answer token landed in
+    ``thinking_delta`` blocks and ``text_delta`` was empty. The fix
+    bypasses the reasoning parser whenever enable_thinking=False so the
+    answer flows through the same think_router path as the
+    no-parser-configured case.
+
+    This test is the regression guard PR #213 missed: that PR added the
+    bypass for the parser-less path but left the parser-configured path
+    unchanged — surfaced by post-merge audit on 2026-05-05.
+    """
+    engine = _StreamingEngine(["Direct ", "answer"])
+
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.no_thinking = True
+    # The exact scenario #223 catches: reasoning parser configured at
+    # server start, then a per-request enable_thinking=False arrives.
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.model_registry = None
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "answer directly"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert engine.calls[0]["kwargs"]["enable_thinking"] is False
+
+    events = _parse_sse_data(response.text)
+
+    text_deltas = [
+        e["delta"]["text"]
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    ]
+    thinking_deltas = [
+        e
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "thinking_delta"
+    ]
+
+    # Pre-fix this assertion failed: thinking_deltas would have ALL the
+    # text and text_deltas would be []. Post-fix the answer streams as
+    # text and the thinking channel stays empty.
+    assert "".join(text_deltas) == "Direct answer", (
+        f"answer should stream as text_delta, got {text_deltas!r}; "
+        f"thinking_deltas={thinking_deltas!r}"
+    )
+    assert thinking_deltas == []
+
+
+def test_anthropic_stream_route_reasoning_parser_with_thinking_default_still_works():
+    """Inverse guard: when enable_thinking is NOT explicitly False (i.e.
+    default thinking-on for a reasoning model), the reasoning parser
+    must still be exercised so the existing #185 fix isn't regressed.
+    The model emits a <think>…</think> block followed by the answer;
+    the parser splits them, and the route emits thinking_delta then
+    text_delta.
+    """
+    # Model output: a thinking block + a real answer.
+    engine = _StreamingEngine(["<think>scratch</think>", "real answer"])
+
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    # Server is NOT in no_thinking mode; client doesn't override.
+    cfg.no_thinking = False
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.model_registry = None
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "what is 6*7"}],
+        },
+    )
+
+    assert response.status_code == 200
+    # No enable_thinking override on the request → kwargs absent or None.
+    assert engine.calls[0]["kwargs"].get("enable_thinking") is not False
+
+    events = _parse_sse_data(response.text)
+
+    text_deltas = [
+        e["delta"]["text"]
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    ]
+    thinking_deltas = [
+        e["delta"]["thinking"]
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "thinking_delta"
+    ]
+
+    # The reasoning parser path is engaged. The qwen3 parser splits
+    # <think>…</think> from the rest, so thinking and text both carry
+    # content. Asserting non-empty on each side guards the parser path
+    # without binding to specific token boundaries the parser chooses.
+    assert "real answer" in "".join(text_deltas), text_deltas
+    assert "scratch" in "".join(thinking_deltas), thinking_deltas
