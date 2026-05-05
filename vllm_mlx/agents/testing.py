@@ -1016,7 +1016,28 @@ class AgentTestRunner:
             List of TestResult from the specific test module.
         """
         import importlib.util
+        import re
         from pathlib import Path
+
+        # The loaded path is fed to spec_from_file_location and executed.
+        # specific_tests today comes from package-shipped YAML profiles
+        # (vllm_mlx/agents/profiles/*.yaml), so this is defense-in-depth
+        # rather than a live exploit gate — but reject anything that
+        # could traverse out of the bundled / source directories before
+        # we resolve it.
+        if not re.fullmatch(r"[\w\-]+\.(py|sh)", test_module_name):
+            return [
+                TestResult(
+                    f"specific:{test_module_name}",
+                    TestStatus.SKIP,
+                    message=(
+                        f"Invalid integration test name '{test_module_name}': "
+                        "must be a bare filename ending in .py or .sh "
+                        "(no path separators or .. components)."
+                    ),
+                    category="specific",
+                )
+            ]
 
         # Find the test file. Prefer the bundled location (ships with
         # pip/brew wheels via package_data) and fall back to the source
