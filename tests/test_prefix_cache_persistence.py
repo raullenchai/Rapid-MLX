@@ -983,7 +983,9 @@ def test_save_persists_only_surviving_entries_when_some_files_vanish(
     # Save normally, but right after the loop finishes (before the new
     # `verified` filter runs), nuke entries 1 and 2's files. The filter
     # should detect this and persist only entry 0.
-    real_save = __import__("mlx_lm.models.cache", fromlist=["save_prompt_cache"]).save_prompt_cache  # noqa: E501
+    real_save = __import__(
+        "mlx_lm.models.cache", fromlist=["save_prompt_cache"]
+    ).save_prompt_cache  # noqa: E501
     saved_paths = []
 
     def _track_saves(file_name, kv, metadata=None):

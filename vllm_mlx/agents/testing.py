@@ -1018,15 +1018,31 @@ class AgentTestRunner:
         import importlib.util
         from pathlib import Path
 
-        # Find the test file
-        test_dir = Path(__file__).parent.parent.parent / "tests" / "integrations"
-        test_path = test_dir / test_module_name
-        if not test_path.exists():
+        # Find the test file. Prefer the bundled location (ships with
+        # pip/brew wheels via package_data) and fall back to the source
+        # layout for editable / repo-clone installs.
+        bundled_dir = Path(__file__).parent.parent / "_integration_tests"
+        source_dir = Path(__file__).parent.parent.parent / "tests" / "integrations"
+        test_path = None
+        for candidate in (
+            bundled_dir / test_module_name,
+            source_dir / test_module_name,
+        ):
+            if candidate.exists():
+                test_path = candidate
+                break
+        if test_path is None:
             return [
                 TestResult(
                     f"specific:{test_module_name}",
                     TestStatus.SKIP,
-                    message=f"Test file not found: {test_path}",
+                    message=(
+                        f"Integration test '{test_module_name}' not found in "
+                        f"bundled ({bundled_dir}) or source ({source_dir}) "
+                        "locations. If you installed via pip/brew, this is a "
+                        "packaging bug — please report it. For repo clones, "
+                        "ensure tests/integrations/ exists."
+                    ),
                     category="specific",
                 )
             ]

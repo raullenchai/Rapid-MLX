@@ -1,0 +1,1 @@
+../../tests/integrations/test_aider.sh

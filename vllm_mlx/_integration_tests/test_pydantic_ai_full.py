@@ -1,0 +1,1 @@
+../../tests/integrations/test_pydantic_ai_full.py
