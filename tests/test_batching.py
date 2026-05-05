@@ -586,6 +586,191 @@ class TestEngineAsync:
         assert fake_scheduler.thread_names
         assert all(name.startswith("mlx-step") for name in fake_scheduler.thread_names)
 
+    async def test_stream_interval_buffer_merges_skipped_step_deltas(
+        self, mock_model_and_tokenizer
+    ):
+        """Regression: stream_interval > 1 must not drop step deltas.
+
+        Pre-fix, when ``RequestStreamState.should_send()`` returned False the
+        engine skipped ``collector.put()`` and that step's ``new_text`` /
+        ``new_token_ids`` / ``logprobs`` were silently lost. After PR #210 the
+        engine accumulates per-step deltas in ``_stream_buffers`` and flushes
+        the merged delta on the next ``should_send() == True`` step. This
+        test feeds 6 step outputs through the loop with stream_interval=4
+        and asserts the buffer + flush invariants on all three delta fields.
+        A finished=True step must always trigger a flush.
+        """
+        from vllm_mlx import engine_core
+        from vllm_mlx.engine import EngineConfig, EngineCore
+        from vllm_mlx.output_collector import RequestStreamState
+
+        model, tokenizer = mock_model_and_tokenizer
+        engine = EngineCore(
+            model,
+            tokenizer,
+            EngineConfig(step_interval=0.001, stream_interval=4),
+        )
+
+        rid = "stream-interval-buffer-test"
+        # Per-step deltas. completion_tokens climbs by 1 each step (matches
+        # scheduler's one-token-per-step contract). logprobs values are
+        # sentinels — the test asserts the *list* is preserved, the type
+        # of the entries is irrelevant.
+        steps = [
+            RequestOutput(
+                request_id=rid,
+                new_token_ids=[10],
+                new_text="he",
+                output_token_ids=[10],
+                output_text="he",
+                finished=False,
+                completion_tokens=1,
+                logprobs="lp1",
+            ),
+            RequestOutput(
+                request_id=rid,
+                new_token_ids=[20],
+                new_text="llo",
+                output_token_ids=[10, 20],
+                output_text="hello",
+                finished=False,
+                completion_tokens=2,
+                logprobs="lp2",
+            ),
+            RequestOutput(
+                request_id=rid,
+                new_token_ids=[30],
+                new_text=" wo",
+                output_token_ids=[10, 20, 30],
+                output_text="hello wo",
+                finished=False,
+                completion_tokens=3,
+                logprobs="lp3",
+            ),
+            RequestOutput(
+                request_id=rid,
+                new_token_ids=[40],
+                new_text="rld",
+                output_token_ids=[10, 20, 30, 40],
+                output_text="hello world",
+                finished=False,
+                completion_tokens=4,
+                logprobs="lp4",
+            ),
+            RequestOutput(
+                request_id=rid,
+                new_token_ids=[50],
+                new_text="!",
+                output_token_ids=[10, 20, 30, 40, 50],
+                output_text="hello world!",
+                finished=False,
+                completion_tokens=5,
+                logprobs="lp5",
+            ),
+            RequestOutput(
+                request_id=rid,
+                new_token_ids=[60],
+                new_text=".",
+                output_token_ids=[10, 20, 30, 40, 50, 60],
+                output_text="hello world!.",
+                finished=True,
+                finish_reason="stop",
+                completion_tokens=6,
+                logprobs="lp6",
+            ),
+        ]
+
+        class FakeScheduler:
+            batch_generator = None
+
+            def __init__(self):
+                self.calls = 0
+
+            def has_requests(self):
+                return self.calls < len(steps)
+
+            def step(self):
+                output = steps[self.calls]
+                self.calls += 1
+                if self.calls >= len(steps):
+                    engine._running = False
+                return SimpleNamespace(
+                    outputs=[output],
+                    finished_request_ids=[rid] if output.finished else [],
+                )
+
+            def deep_reset(self):
+                pass
+
+        engine.scheduler = FakeScheduler()
+
+        # Capture every collector.put rather than aggregating, so we can
+        # see exactly which deltas reached the consumer.
+        puts: list[RequestOutput] = []
+
+        class RecordingCollector:
+            def put(self, output):
+                puts.append(output)
+
+            def clear(self):
+                pass
+
+        engine._output_collectors[rid] = RecordingCollector()
+        engine._stream_states[rid] = RequestStreamState(stream_interval=4)
+        engine._finished_events[rid] = asyncio.Event()
+
+        import concurrent.futures
+
+        engine._mlx_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="mlx-step",
+            initializer=engine_core._init_mlx_step_thread,
+        )
+        engine._running = True
+
+        try:
+            await asyncio.wait_for(engine._engine_loop(), timeout=2)
+        finally:
+            engine._running = False
+            engine._mlx_executor.shutdown(wait=True)
+            engine._mlx_executor = None
+            engine.close()
+
+        # should_send() with stream_interval=4 fires at:
+        #   step 1 (sent_tokens==0 first-token rule)
+        #   step 5 (5 - 1 == 4 >= stream_interval)
+        #   step 6 (finished=True always flushes)
+        # → 3 puts, with steps 2-5 merged into the second.
+        assert len(puts) == 3, f"expected 3 puts, got {len(puts)}: {puts!r}"
+
+        # Concatenated new_text across all puts must equal sum of step deltas.
+        assert "".join(p.new_text for p in puts) == "hello world!.", (
+            f"new_text mismatch: {[p.new_text for p in puts]!r}"
+        )
+
+        # Concatenated new_token_ids across all puts must equal full token
+        # order. Pre-fix, 3 of 6 token ids were dropped.
+        flat_token_ids: list[int] = []
+        for p in puts:
+            flat_token_ids.extend(p.new_token_ids)
+        assert flat_token_ids == [10, 20, 30, 40, 50, 60]
+
+        # Concatenated logprobs across all puts must equal the full per-step
+        # list. Each put.logprobs is itself a list (the buffer normalizes
+        # mx.array → [mx.array] so subsequent merges concat). Pre-fix this
+        # field was overwritten on every merge: only 3 of 6 entries survived.
+        flat_lp: list = []
+        for p in puts:
+            flat_lp.extend(p.logprobs or [])
+        assert flat_lp == ["lp1", "lp2", "lp3", "lp4", "lp5", "lp6"], (
+            f"logprobs not preserved across stream_interval merges: {flat_lp!r}"
+        )
+
+        # finished=True must always flush, even if the buffer is otherwise
+        # empty (it is here — step 5 already drained it).
+        assert puts[-1].finished is True
+        assert puts[-1].new_token_ids == [60]
+
     async def test_engine_lifecycle(self, mock_model_and_tokenizer):
         """Test engine start/stop lifecycle."""
         from vllm_mlx.engine import AsyncEngineCore, EngineConfig

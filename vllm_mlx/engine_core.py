@@ -347,26 +347,39 @@ class EngineCore:
                                     state = states.get(rid)
                                     # Merge this step's delta into the buffer so
                                     # tokens that fall between should_send() hits
-                                    # are not silently discarded. new_text /
-                                    # new_token_ids accumulate; cumulative status
-                                    # fields take the latest value.
+                                    # are not silently discarded. new_text,
+                                    # new_token_ids, and logprobs are all
+                                    # per-step deltas (scheduler emits one
+                                    # token's worth per step) and must
+                                    # accumulate; cumulative status fields take
+                                    # the latest value.
                                     buf = self._stream_buffers.get(rid)
-                                    if buf is None:
-                                        self._stream_buffers[rid] = req_output
-                                    else:
-                                        self._stream_buffers[rid] = RequestOutput(
-                                            request_id=rid,
-                                            new_token_ids=buf.new_token_ids
-                                            + req_output.new_token_ids,
-                                            new_text=buf.new_text + req_output.new_text,
-                                            output_token_ids=req_output.output_token_ids,
-                                            output_text=req_output.output_text,
-                                            finished=req_output.finished,
-                                            finish_reason=req_output.finish_reason,
-                                            prompt_tokens=req_output.prompt_tokens,
-                                            completion_tokens=req_output.completion_tokens,
-                                            logprobs=req_output.logprobs,
-                                        )
+                                    # Wrap per-step logprobs (mx.array or None)
+                                    # into a list so subsequent merges concat
+                                    # instead of overwriting. The flushed
+                                    # RequestOutput's logprobs is therefore a
+                                    # list[mx.array] when stream_interval > 1.
+                                    new_lp = (
+                                        [req_output.logprobs]
+                                        if req_output.logprobs is not None
+                                        else []
+                                    )
+                                    prev_text = buf.new_text if buf else ""
+                                    prev_tokens = buf.new_token_ids if buf else []
+                                    prev_lp = (buf.logprobs if buf else None) or []
+                                    self._stream_buffers[rid] = RequestOutput(
+                                        request_id=rid,
+                                        new_token_ids=prev_tokens
+                                        + req_output.new_token_ids,
+                                        new_text=prev_text + req_output.new_text,
+                                        output_token_ids=req_output.output_token_ids,
+                                        output_text=req_output.output_text,
+                                        finished=req_output.finished,
+                                        finish_reason=req_output.finish_reason,
+                                        prompt_tokens=req_output.prompt_tokens,
+                                        completion_tokens=req_output.completion_tokens,
+                                        logprobs=(prev_lp + new_lp) or None,
+                                    )
                                     if state and state.should_send(
                                         req_output.completion_tokens,
                                         req_output.finished,
