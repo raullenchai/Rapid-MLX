@@ -44,9 +44,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _should_start_in_thinking(
-    chat_template: str, enable_thinking: bool | None
-) -> bool:
+def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
     """Return whether streaming should begin in an implicit thinking block.
 
     Some thinking-capable chat templates include ``<think>`` in the generated
