@@ -11,7 +11,10 @@
       "gpu_cores": 80
     },
     "rapid_mlx_version": "rapid-mlx 0.6.6",
-    "ollama_version": "Warning: could not connect to a running Ollama instance\nWarning: client version is 0.20.2"
+    "ollama_version": "client version is 0.20.2",
+    "notes": [
+      "Historical baseline generated with rapid-mlx 0.6.6 and an earlier benchmark script revision; regenerate before publishing official numbers."
+    ]
   },
   "config": {
     "runs": 3,

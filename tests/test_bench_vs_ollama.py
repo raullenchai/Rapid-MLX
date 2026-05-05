@@ -203,6 +203,25 @@ def test_build_stream_metric_uses_first_content_for_ttft_and_decode_time():
     assert metric["total_ms"] == 2000.0
 
 
+def test_build_stream_metric_marks_missing_content_incomplete():
+    bench = load_bench_module()
+
+    metric = bench.build_stream_metric(
+        parsed=bench.ParsedStream(content_chunks=0, completion_tokens=9),
+        start_at=1.0,
+        first_content_at=None,
+        end_at=3.0,
+    )
+
+    assert metric == {
+        "ttft_ms": 2000.0,
+        "decode_tok_s": 0.0,
+        "completion_tokens": 9,
+        "total_ms": 2000.0,
+        "incomplete": True,
+    }
+
+
 def test_run_stream_once_uses_wall_clock_decode_rate_for_ollama(monkeypatch):
     bench = load_bench_module()
 
@@ -239,8 +258,18 @@ def test_summarize_runs_averages_numeric_fields():
 
     summary = bench.summarize_stream_runs(
         [
-            {"ttft_ms": 100.0, "decode_tok_s": 40.0, "completion_tokens": 8, "total_ms": 300.0},
-            {"ttft_ms": 300.0, "decode_tok_s": 80.0, "completion_tokens": 10, "total_ms": 500.0},
+            {
+                "ttft_ms": 100.0,
+                "decode_tok_s": 40.0,
+                "completion_tokens": 8,
+                "total_ms": 300.0,
+            },
+            {
+                "ttft_ms": 300.0,
+                "decode_tok_s": 80.0,
+                "completion_tokens": 10,
+                "total_ms": 500.0,
+            },
         ]
     )
 
@@ -296,6 +325,23 @@ def test_summarize_multi_turn_latency():
     }
 
 
+def test_summarize_multi_turn_runs_averages_repeated_samples():
+    bench = load_bench_module()
+
+    summary = bench.summarize_multi_turn_runs(
+        [
+            {"avg_turn_ms": 100.0, "turn_latencies_ms": [80.0, 120.0]},
+            {"avg_turn_ms": 300.0, "turn_latencies_ms": [260.0, 340.0]},
+        ]
+    )
+
+    assert summary == {
+        "avg_turn_ms": 200.0,
+        "turn_latencies_ms": [170.0, 230.0],
+        "runs": 2,
+    }
+
+
 def test_summarize_concurrent_batch_computes_p95_and_aggregate_tps():
     bench = load_bench_module()
 
@@ -345,9 +391,7 @@ def test_extract_ollama_message_content_ignores_malformed_shapes():
 def test_extract_ollama_message_content_returns_assistant_content():
     bench = load_bench_module()
 
-    content = bench.extract_ollama_message_content(
-        {"message": {"content": "hello"}}
-    )
+    content = bench.extract_ollama_message_content({"message": {"content": "hello"}})
 
     assert content == "hello"
 
@@ -515,7 +559,9 @@ def test_find_free_port_can_be_rebound():
 def test_build_rapid_mlx_command_includes_explicit_benchmark_settings():
     bench = load_bench_module()
 
-    cmd = bench.build_rapid_mlx_command("qwen3.5-9b", 9123, ["--prefill-step-size", "4096"])
+    cmd = bench.build_rapid_mlx_command(
+        "qwen3.5-9b", 9123, ["--prefill-step-size", "4096"]
+    )
 
     assert cmd == [
         "rapid-mlx",
@@ -542,6 +588,16 @@ def test_build_ollama_environment_sets_host_and_custom_values(monkeypatch):
     assert env["PATH"] == "/usr/bin"
     assert env["OLLAMA_HOST"] == "127.0.0.1:9124"
     assert env["OLLAMA_KEEP_ALIVE"] == "0"
+
+
+def test_build_ollama_environment_defaults_keep_alive(monkeypatch):
+    bench = load_bench_module()
+    monkeypatch.setenv("OLLAMA_KEEP_ALIVE", "0")
+
+    env = bench.build_ollama_environment(9124, {})
+
+    assert env["OLLAMA_HOST"] == "127.0.0.1:9124"
+    assert env["OLLAMA_KEEP_ALIVE"] == "24h"
 
 
 def test_build_ollama_environment_keeps_managed_host(monkeypatch):
@@ -634,6 +690,44 @@ def test_build_engine_failure_result_shape():
     assert result["server"]["url"] == "http://127.0.0.1:9124"
     assert result["runtime"]["prepared"] is False
     assert result["summary"] == {}
+
+
+def test_normalize_ollama_version_drops_warning_lines():
+    bench = load_bench_module()
+
+    version = bench.normalize_ollama_version(
+        "Warning: could not connect to a running Ollama instance\n"
+        "Warning: client version is 0.20.2\n"
+        "ollama version is 0.21.0"
+    )
+
+    assert version == "ollama version is 0.21.0"
+
+
+def test_normalize_ollama_version_keeps_client_version_fallback():
+    bench = load_bench_module()
+
+    version = bench.normalize_ollama_version(
+        "Warning: could not connect to a running Ollama instance\n"
+        "Warning: client version is 0.20.2"
+    )
+
+    assert version == "client version is 0.20.2"
+
+
+def test_wait_for_url_raises_when_managed_process_exits():
+    bench = load_bench_module()
+
+    class FakeProc:
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+    managed = bench.ManagedProcess(FakeProc(), ["server", "--port", "9123"])
+
+    with pytest.raises(bench.ManagedProcessExitError, match="exited before"):
+        bench.wait_for_url("http://127.0.0.1:9123/health", 0.01, process=managed)
 
 
 def test_run_engine_suite_records_workload_errors_and_continues(monkeypatch):
@@ -746,6 +840,7 @@ def test_run_engine_suite_skips_embeddings_by_default(monkeypatch):
 
 def test_run_engine_suite_populates_multi_turn_summary(monkeypatch):
     bench = load_bench_module()
+    multi_turn_max_tokens = []
 
     monkeypatch.setattr(
         bench,
@@ -762,14 +857,63 @@ def test_run_engine_suite_populates_multi_turn_summary(monkeypatch):
         "run_embedding_once",
         lambda *args, **kwargs: {"latency_ms": 5.0, "embeddings": 1},
     )
+
+    def fake_multi_turn(engine, base_url, model, max_tokens, timeout, headers=None):
+        multi_turn_max_tokens.append(max_tokens)
+        return {
+            "avg_turn_ms": 100.0 + (50.0 * len(multi_turn_max_tokens)),
+            "turn_latencies_ms": [100.0, 200.0],
+        }
+
+    monkeypatch.setattr(bench, "run_multi_turn", fake_multi_turn)
+
+    raw_runs, summary, errors = bench.run_engine_suite(
+        "rapid-mlx",
+        "http://server",
+        {
+            "chat_model": "chat-model",
+            "embedding_model": "embed-model",
+            "chat_messages": [{"role": "user", "content": "hi"}],
+            "embedding_input": ["hello"],
+            "max_tokens": 256,
+        },
+        concurrency_levels=[1],
+        runs_per_level=2,
+        timeout=30.0,
+    )
+
+    assert raw_runs["multi_turn"] == [
+        {"avg_turn_ms": 150.0, "turn_latencies_ms": [100.0, 200.0]},
+        {"avg_turn_ms": 200.0, "turn_latencies_ms": [100.0, 200.0]},
+    ]
+    assert summary["multi_turn"]["avg_turn_ms"] == 175.0
+    assert summary["multi_turn"]["runs"] == 2
+    assert multi_turn_max_tokens == [256, 256]
+    assert errors == []
+
+
+def test_run_engine_suite_records_multi_turn_errors_by_run(monkeypatch):
+    bench = load_bench_module()
+    calls = []
+
     monkeypatch.setattr(
         bench,
-        "run_multi_turn",
+        "run_stream_once",
         lambda *args, **kwargs: {
-            "avg_turn_ms": 123.4,
-            "turn_latencies_ms": [100.0, 146.8],
+            "ttft_ms": 10.0,
+            "decode_tok_s": 20.0,
+            "completion_tokens": 2,
+            "total_ms": 50.0,
         },
     )
+
+    def fake_multi_turn(*args, **kwargs):
+        calls.append("multi")
+        if len(calls) == 2:
+            raise RuntimeError("empty assistant content")
+        return {"avg_turn_ms": 25.0, "turn_latencies_ms": [25.0]}
+
+    monkeypatch.setattr(bench, "run_multi_turn", fake_multi_turn)
 
     raw_runs, summary, errors = bench.run_engine_suite(
         "rapid-mlx",
@@ -781,14 +925,26 @@ def test_run_engine_suite_populates_multi_turn_summary(monkeypatch):
             "embedding_input": ["hello"],
             "max_tokens": 16,
         },
-        concurrency_levels=[1],
-        runs_per_level=1,
+        concurrency_levels=[],
+        runs_per_level=2,
         timeout=30.0,
     )
 
-    assert raw_runs["multi_turn"]["avg_turn_ms"] == 123.4
-    assert summary["multi_turn"]["avg_turn_ms"] == 123.4
-    assert errors == []
+    assert raw_runs["multi_turn"] == [
+        {"avg_turn_ms": 25.0, "turn_latencies_ms": [25.0]}
+    ]
+    assert summary["multi_turn"] == {
+        "avg_turn_ms": 25.0,
+        "turn_latencies_ms": [25.0],
+        "runs": 1,
+    }
+    assert errors == [
+        {
+            "workload": "multi_turn",
+            "run": 2,
+            "error": "empty assistant content",
+        }
+    ]
 
 
 def test_run_engine_suite_stream_summary_does_not_require_concurrency_one(
@@ -913,6 +1069,58 @@ def test_run_multi_turn_passes_headers_to_post_json(monkeypatch):
     assert seen_headers == [{"Authorization": "Bearer test"}] * 4
 
 
+def test_run_multi_turn_rejects_empty_assistant_content(monkeypatch):
+    bench = load_bench_module()
+
+    def fake_post_json(url, payload, timeout, headers=None):
+        return {"choices": [{"message": {"content": ""}}]}, 10.0
+
+    monkeypatch.setattr(bench, "post_json", fake_post_json)
+
+    with pytest.raises(RuntimeError, match="empty assistant content"):
+        bench.run_multi_turn("rapid-mlx", "http://server", "chat-model", 16, 30.0)
+
+
+def test_run_multi_turn_sends_new_user_message_for_each_turn(monkeypatch):
+    bench = load_bench_module()
+    payloads = []
+
+    def fake_post_json(url, payload, timeout, headers=None):
+        payloads.append(payload)
+        return {"choices": [{"message": {"content": f"ok {len(payloads)}"}}]}, 10.0
+
+    monkeypatch.setattr(bench, "post_json", fake_post_json)
+
+    bench.run_multi_turn("rapid-mlx", "http://server", "chat-model", 16, 30.0)
+
+    user_messages_by_turn = [
+        [
+            message["content"]
+            for message in payload["messages"]
+            if message["role"] == "user"
+        ]
+        for payload in payloads
+    ]
+    assert user_messages_by_turn == [
+        ["/no_think What is a binary search tree?"],
+        [
+            "/no_think What is a binary search tree?",
+            "/no_think Now describe insertion in one paragraph.",
+        ],
+        [
+            "/no_think What is a binary search tree?",
+            "/no_think Now describe insertion in one paragraph.",
+            "/no_think What is the average search complexity?",
+        ],
+        [
+            "/no_think What is a binary search tree?",
+            "/no_think Now describe insertion in one paragraph.",
+            "/no_think What is the average search complexity?",
+            "/no_think Give one practical use case.",
+        ],
+    ]
+
+
 def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
     monkeypatch, tmp_path
 ):
@@ -988,8 +1196,13 @@ def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
     assert pair_result["comparisons"]["stream_decode_tok_s_speedup"] == 3.0
     assert pair_result["comparisons"]["stream_ttft_latency_speedup"] == 2.5
     assert pair_result["comparisons"]["multi_turn_latency_speedup"] == 2.5
-    assert pair_result["comparisons"]["concurrency"]["1"]["aggregate_tok_s_speedup"] == 2.0
-    assert pair_result["comparisons"]["concurrency"]["2"]["aggregate_tok_s_speedup"] is None
+    assert (
+        pair_result["comparisons"]["concurrency"]["1"]["aggregate_tok_s_speedup"] == 2.0
+    )
+    assert (
+        pair_result["comparisons"]["concurrency"]["2"]["aggregate_tok_s_speedup"]
+        is None
+    )
     assert pair_result["comparisons"]["embeddings"]["1"]["avg_latency_speedup"] == 2.0
     assert result["config"]["startup_timeout"] == 1.0
     assert result["config"]["request_timeout"] == 2.0
@@ -1021,14 +1234,16 @@ def test_benchmark_ollama_pulls_after_managed_server_start_with_managed_env(
         def stop(self):
             calls.append(("stop",))
 
-    monkeypatch.setattr(bench, "require_executable", lambda name: calls.append(("require", name)))
+    monkeypatch.setattr(
+        bench, "require_executable", lambda name: calls.append(("require", name))
+    )
     monkeypatch.setattr(bench, "find_free_port", lambda: 9124)
 
     def fake_start_process(command, env=None):
         calls.append(("start", command, env["OLLAMA_HOST"], env["OLLAMA_KEEP_ALIVE"]))
         return FakeManagedProcess()
 
-    def fake_wait_for_url(url, timeout):
+    def fake_wait_for_url(url, timeout, process=None):
         calls.append(("wait", url, timeout))
 
     def fake_prepare_ollama_model(model, call_args, env):
@@ -1051,6 +1266,70 @@ def test_benchmark_ollama_pulls_after_managed_server_start_with_managed_env(
         ("stop",),
     ]
     assert result["runtime"]["prepared"] is True
+
+
+def test_benchmark_ollama_retries_when_startup_process_exits(monkeypatch, tmp_path):
+    bench = load_bench_module()
+    ports = iter([9124, 9125])
+    started = []
+
+    args = bench.CliArgs(
+        model_pairs=[],
+        runs=1,
+        warmups=0,
+        max_tokens=16,
+        concurrency=[1],
+        output_dir=tmp_path,
+        no_pull=True,
+        no_download=True,
+        startup_timeout=1.0,
+        request_timeout=2.0,
+        rapid_mlx_args=[],
+        ollama_env={},
+    )
+
+    class FakeManagedProcess:
+        def __init__(self, exits):
+            self.exits = exits
+            self.proc = self
+            self.returncode = 1 if exits else None
+
+        def poll(self):
+            return 1 if self.exits else None
+
+        def stop(self):
+            started.append(("stop", self.exits))
+
+    monkeypatch.setattr(bench, "require_executable", lambda name: None)
+    monkeypatch.setattr(bench, "find_free_port", lambda: next(ports))
+
+    def fake_start_process(command, env=None):
+        exits = len([item for item in started if item[0] == "start"]) == 0
+        started.append(("start", command, env["OLLAMA_HOST"], exits))
+        return FakeManagedProcess(exits)
+
+    def fake_wait_for_url(url, timeout, process=None):
+        assert process is not None
+        if process.poll() is not None:
+            raise bench.ManagedProcessExitError("process exited before ready")
+        started.append(("wait", url, timeout))
+
+    monkeypatch.setattr(bench, "start_process", fake_start_process)
+    monkeypatch.setattr(bench, "wait_for_url", fake_wait_for_url)
+    monkeypatch.setattr(bench, "prepare_ollama_model", lambda *args: False)
+    monkeypatch.setattr(bench, "run_engine_suite", lambda *args, **kwargs: ({}, {}, []))
+
+    result = bench.benchmark_ollama(bench.ModelPair("rapid-a", "ollama-a"), args)
+
+    assert "error" not in result
+    assert result["port"] == 9125
+    assert started == [
+        ("start", ["ollama", "serve"], "127.0.0.1:9124", True),
+        ("stop", True),
+        ("start", ["ollama", "serve"], "127.0.0.1:9125", False),
+        ("wait", "http://127.0.0.1:9125/api/tags", 1.0),
+        ("stop", False),
+    ]
 
 
 def test_cli_help_smoke_lists_core_options():
