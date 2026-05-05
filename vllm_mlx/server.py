@@ -516,6 +516,14 @@ def load_model(
     )
     logger.info(f"Model loaded: {model_name}")
 
+    # Sync globals into ServerConfig BEFORE _detect_native_tool_support reads
+    # them via get_config(). Detection short-circuits when cfg.tool_call_parser
+    # is None or cfg.enable_auto_tool_choice is False, so an unsynced cfg
+    # silently disables native tool format and forces api/utils.py into the
+    # prose-conversion fallback ([Calling tool: ...]) — the model then mimics
+    # that format on subsequent turns. See #225.
+    _sync_config()
+
     # Set native tool format support on the engine (thread-safe via instance property)
     _engine.preserve_native_tool_format = _detect_native_tool_support()
     if _engine.preserve_native_tool_format:
@@ -569,9 +577,19 @@ def load_model(
         max_tokens=_default_max_tokens,
     )
     _model_registry.add(entry, is_default=True)
-
-    # Sync globals into ServerConfig so route modules can use get_config()
-    _sync_config()
+    # `_sync_config()` already ran earlier — before `_detect_native_tool_support()`.
+    # No re-sync is needed here, but only because of these invariants. If a
+    # future change violates any of them, add a second `_sync_config()` call:
+    #   1. `cfg.model_registry = _model_registry` (in `_sync_config`) is a
+    #      reference assignment, not a copy — registry mutations after sync
+    #      are visible through `get_config().model_registry` immediately.
+    #   2. Every global that `_sync_config()` mirrors is set BEFORE the
+    #      engine is constructed at line 510 (which is also before the early
+    #      sync). New mutable globals must follow the same rule.
+    #   3. State set on `_engine` between the early sync and here
+    #      (`preserve_native_tool_format`, `_tool_logits_processor_factory`)
+    #      is mutation on the same object `cfg.engine` references — route
+    #      modules see the updates without a re-sync.
 
 
 def _sync_config() -> None:
