@@ -24,8 +24,8 @@ Usage:
 Designed to replace the fragile regex-based strip_special_tokens +
 reasoning_parser + tool_call_parser chain with a single unified router.
 
-Currently implements Gemma 4 and Qwen-style think tag formats. Other models
-can be added by defining their token mappings in MODEL_TOKEN_MAPS.
+Currently implements Gemma 4 plus Qwen3 / DeepSeek R1 `<think>`-tag formats.
+Other models can be added by defining their token mappings in MODEL_TOKEN_MAPS.
 """
 
 import logging
@@ -185,7 +185,7 @@ class OutputRouter:
                 return RouterEvent(Channel.TOOL_CALL, token_id, full_text)
             return None
 
-        # === Think tags (Qwen-style) ===
+        # === Think tags (Qwen / DeepSeek style) ===
         if token_id == m.think_start:
             self.state = RouterState.THINKING
             return None
@@ -269,13 +269,15 @@ class OutputRouter:
             )
             return cls(token_map, tokenizer)
 
-        # Qwen detection: <think>...</think> reasoning tags.
+        # Qwen3 / DeepSeek R1 detection: <think>...</think> reasoning tags.
+        # DeepSeek's BOS/EOS use unicode brackets; fall back to plain <bos>/<eos>
+        # for Qwen3 (which has neither in its vocab).
         if "<think>" in vocab and "</think>" in vocab:
             token_map = TokenMap(
                 think_start=vocab.get("<think>"),
                 think_end=vocab.get("</think>"),
-                bos=vocab.get("<bos>"),
-                eos=vocab.get("<eos>"),
+                bos=vocab.get("<｜begin▁of▁sentence｜>") or vocab.get("<bos>"),
+                eos=vocab.get("<｜end▁of▁sentence｜>") or vocab.get("<eos>"),
                 pad=vocab.get("<pad>"),
             )
             logger.info(

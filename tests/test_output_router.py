@@ -97,6 +97,20 @@ QWEN3_VOCAB = {
 
 QWEN3_TOKENIZER = FakeTokenizer(QWEN3_VOCAB)
 
+# DeepSeek R1 vocabulary subset from deepseek-ai/DeepSeek-R1-Distill-Qwen-7B.
+DEEPSEEK_R1_VOCAB = {
+    "<｜end▁of▁sentence｜>": 151643,
+    "<｜begin▁of▁sentence｜>": 151646,
+    "<think>": 151648,
+    "</think>": 151649,
+    "Step": 1,
+    " one": 2,
+    "Answer": 3,
+    "Plain": 4,
+}
+
+DEEPSEEK_R1_TOKENIZER = FakeTokenizer(DEEPSEEK_R1_VOCAB)
+
 
 @pytest.fixture
 def router():
@@ -327,6 +341,15 @@ class TestFromTokenizer:
         assert router.map.think_start == 248068
         assert router.map.think_end == 248069
 
+    def test_deepseek_r1_think_tags_detected(self):
+        """DeepSeek R1 tokenizer think tags and unicode controls are detected."""
+        router = OutputRouter.from_tokenizer(DEEPSEEK_R1_TOKENIZER)
+        assert router is not None
+        assert router.map.think_start == 151648
+        assert router.map.think_end == 151649
+        assert router.map.bos == 151646
+        assert router.map.eos == 151643
+
 
 class TestQwen3ThinkRouting:
     """Test Qwen3 <think> routing."""
@@ -381,6 +404,71 @@ class TestQwen3ThinkRouting:
 
         result = router.feed_sequence([248068, 1, 2, 248069, 3])
         assert result["reasoning"] == "Reasoning"
+        assert result["content"] == "Answer"
+        assert result["tool_calls"] is None
+
+
+class TestDeepSeekR1ThinkRouting:
+    """Test DeepSeek R1 <think> routing."""
+
+    def test_unicode_bos_eos_are_suppressed(self):
+        """DeepSeek's unicode BOS/EOS special tokens do not leak."""
+        router = OutputRouter.from_tokenizer(DEEPSEEK_R1_TOKENIZER)
+        assert router is not None
+
+        assert router.feed(151646) is None
+        assert router.feed(151643) is None
+
+    def test_think_block_routes_to_reasoning_then_content(self):
+        """<think> payload routes to reasoning until </think>."""
+        router = OutputRouter.from_tokenizer(DEEPSEEK_R1_TOKENIZER)
+        assert router is not None
+
+        assert router.feed(151648) is None  # <think>
+        assert router.state == RouterState.THINKING
+
+        reasoning = router.feed(1)  # Step
+        assert reasoning is not None
+        assert reasoning.channel == Channel.REASONING
+        assert reasoning.text == "Step"
+
+        assert router.feed(151649) is None  # </think>
+        assert router.state == RouterState.CONTENT
+
+        content = router.feed(3)  # Answer
+        assert content is not None
+        assert content.channel == Channel.CONTENT
+        assert content.text == "Answer"
+
+    def test_orphan_think_end_switches_to_content(self):
+        """A lone </think> is suppressed and following tokens are content."""
+        router = OutputRouter.from_tokenizer(DEEPSEEK_R1_TOKENIZER)
+        assert router is not None
+
+        assert router.feed(151649) is None
+        assert router.state == RouterState.CONTENT
+
+        event = router.feed(3)
+        assert event is not None
+        assert event.channel == Channel.CONTENT
+
+    def test_no_tag_output_routes_as_content(self):
+        """Plain DeepSeek output with no think tags passes through as content."""
+        router = OutputRouter.from_tokenizer(DEEPSEEK_R1_TOKENIZER)
+        assert router is not None
+
+        event = router.feed(4)
+        assert event is not None
+        assert event.channel == Channel.CONTENT
+        assert event.text == "Plain"
+
+    def test_feed_sequence_separates_reasoning_and_content(self):
+        """Batch routing separates DeepSeek reasoning and answer text."""
+        router = OutputRouter.from_tokenizer(DEEPSEEK_R1_TOKENIZER)
+        assert router is not None
+
+        result = router.feed_sequence([151648, 1, 2, 151649, 3])
+        assert result["reasoning"] == "Step one"
         assert result["content"] == "Answer"
         assert result["tool_calls"] is None
 
