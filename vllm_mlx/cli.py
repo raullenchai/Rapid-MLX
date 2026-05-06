@@ -98,6 +98,10 @@ def _apply_qwen36_mtplx_preset(
         and not _has_cli_option(raw_args, "--no-thinking", "--enable-thinking")
     ):
         args.no_thinking = True
+    if _is_qwen36_35b_a3b_request(args) and not _has_cli_option(
+        raw_args, "--log-level"
+    ):
+        args.log_level = "WARNING"
     if not _has_cli_option(raw_args, "--enable-tool-logits-bias"):
         args.enable_tool_logits_bias = True
 

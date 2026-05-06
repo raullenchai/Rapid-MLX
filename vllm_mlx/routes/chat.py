@@ -119,6 +119,11 @@ def _looks_like_invalid_tool_continuation(text: str | None) -> bool:
     }
 
 
+def _should_emit_reasoning(request: ChatCompletionRequest) -> bool:
+    """Expose reasoning only when the client explicitly asks for thinking output."""
+    return request.enable_thinking is True and not request.tools
+
+
 @router.post(
     "/v1/chat/completions",
     dependencies=[Depends(verify_api_key), Depends(check_rate_limit)],
@@ -618,6 +623,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         reasoning_text, cleaned_text = cfg.reasoning_parser.extract_reasoning(
             text_to_parse
         )
+        if not _should_emit_reasoning(request):
+            reasoning_text = None
 
     # Process response_format if specified (after reasoning parser cleaned the text)
     if response_format and not tool_calls:
@@ -852,7 +859,7 @@ async def stream_chat_completion(
                         yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
                 elif event.type == "reasoning":
-                    if request.tools:
+                    if not _should_emit_reasoning(request):
                         continue
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
 
@@ -1014,7 +1021,7 @@ async def stream_chat_completion(
                         emitted_content = True
                         yield _sse
                 elif event.type == "reasoning":
-                    if request.tools:
+                    if not _should_emit_reasoning(request):
                         continue
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
                 elif event.type == "tool_call":

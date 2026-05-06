@@ -27,6 +27,7 @@ def _serve_args(model: str, original_alias: str | None = None) -> Namespace:
         tool_call_parser=None,
         reasoning_parser=None,
         no_thinking=False,
+        log_level="INFO",
         enable_tool_logits_bias=False,
     )
 
@@ -97,6 +98,7 @@ def test_verified_local_mtplx_qwen35b_path_keeps_thinking_enabled(tmp_path):
     assert args.tool_call_parser == "qwen3_coder_xml"
     assert args.reasoning_parser == "qwen3"
     assert args.no_thinking is False
+    assert args.log_level == "WARNING"
     assert args.enable_tool_logits_bias is True
 
 
@@ -113,6 +115,21 @@ def test_verified_local_mtplx_qwen35b_path_respects_no_thinking(tmp_path):
     _apply_qwen36_mtplx_preset(args, ["serve", str(model), "--no-thinking"])
 
     assert args.no_thinking is True
+
+
+def test_verified_local_mtplx_qwen35b_path_respects_log_level(tmp_path):
+    model = tmp_path / "Qwen3.6-35B-A3B-MTPLX-Optimized-Speed"
+    model.mkdir()
+    (model / "mtp.safetensors").write_bytes(b"")
+    (model / "mtplx_runtime.json").write_text(
+        json.dumps({"arch_id": "qwen3-next-mtp"}), encoding="utf-8"
+    )
+    args = _serve_args(str(model))
+    args.log_level = "INFO"
+
+    _apply_qwen36_mtplx_preset(args, ["serve", str(model), "--log-level", "INFO"])
+
+    assert args.log_level == "INFO"
 
 
 def test_qwen36_preset_respects_explicit_overrides():
