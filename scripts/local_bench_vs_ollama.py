@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -119,18 +119,21 @@ def start_ollama(port: int) -> subprocess.Popen:
 
 
 def benchmark_rapid_mlx(url: str, model: str, max_tokens: int, warmup: bool = True) -> BenchmarkResult:
-    """Benchmark Rapid-MLX server."""
+    """Benchmark Rapid-MLX server with improved stream parsing."""
     if warmup:
-        requests.post(
-            f"{url}/v1/chat/completions",
-            json={
-                "model": "default",
-                "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 8,
-                "temperature": 0,
-            },
-            timeout=30,
-        )
+        try:
+            requests.post(
+                f"{url}/v1/chat/completions",
+                json={
+                    "model": "default",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 8,
+                    "temperature": 0,
+                },
+                timeout=30,
+            )
+        except Exception as e:
+            print(f"  Warning: warmup failed: {e}")
 
     pid = find_process_by_name("rapid-mlx")
 
@@ -142,41 +145,110 @@ def benchmark_rapid_mlx(url: str, model: str, max_tokens: int, warmup: bool = Tr
     start = time.perf_counter()
     first_token_at = None
     completion_tokens = max_tokens
+    debug_log = []
 
-    with requests.post(
-        f"{url}/v1/chat/completions",
-        json={
-            "model": "default",
-            "messages": [{"role": "user", "content": "Explain CPU in one sentence."}],
-            "max_tokens": max_tokens,
-            "temperature": 0,
-            "stream": True,
-        },
-        stream=True,
-        timeout=120,
-    ) as resp:
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            if line.startswith(b"data: "):
-                data = json.loads(line[6:])
-                if data.get("choices") and data["choices"][0].get("delta", {}).get("content"):
-                    if first_token_at is None:
-                        first_token_at = time.perf_counter()
-                        if pid:
-                            memory_gen = get_memory_mb(pid)
-                usage = data.get("usage", {})
-                if usage:
-                    completion_tokens = usage.get("completion_tokens", max_tokens)
-            if line == b"data: [DONE]":
-                break
+    try:
+        with requests.post(
+            f"{url}/v1/chat/completions",
+            json={
+                "model": "default",
+                "messages": [{"role": "user", "content": "Explain CPU in one sentence."}],
+                "max_tokens": max_tokens,
+                "temperature": 0,
+                "stream": True,
+            },
+            stream=True,
+            timeout=120,
+        ) as resp:
+            # Check for non-200 status
+            if resp.status_code != 200:
+                debug_log.append(f"Non-200 status: {resp.status_code}")
+                # Try to read error response
+                try:
+                    error_body = resp.text[:500]
+                    debug_log.append(f"Error body: {error_body}")
+                except Exception:
+                    pass
+            
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                
+                # Decode to string for checking
+                try:
+                    line_str = line.decode("utf-8")
+                except Exception:
+                    debug_log.append(f"Failed to decode line: {line[:50]}")
+                    continue
+                
+                # Skip non-SSE lines (lines that dont start with "data: ")
+                if not line_str.startswith("data: "):
+                    # Check for error responses
+                    if line_str.startswith("{") or line_str.startswith("["):
+                        try:
+                            data = json.loads(line_str)
+                            if "error" in data:
+                                debug_log.append(f"Server error: {data.get('error')}")
+                                continue
+                            # Handle other JSON responses
+                            debug_log.append(f"Non-SSE JSON: {line_str[:100]}")
+                        except json.JSONDecodeError as e:
+                            debug_log.append(f"Non-SSE parse error: {e}, content: {line_str[:100]}")
+                    continue
+                
+                # Extract the JSON data after "data: " prefix
+                data_str = line_str[6:].strip()
+                
+                # Skip empty data markers
+                if not data_str or data_str == "[DONE]":
+                    continue
+                
+                try:
+                    data = json.loads(data_str)
+                except json.JSONDecodeError as e:
+                    debug_log.append(f"JSON decode error: {e}, data: {data_str[:100]}")
+                    continue
+                
+                # Process the response
+                try:
+                    if data.get("choices") and data["choices"][0].get("delta", {}).get("content"):
+                        if first_token_at is None:
+                            first_token_at = time.perf_counter()
+                            if pid:
+                                memory_gen = get_memory_mb(pid)
+                    
+                    usage = data.get("usage", {})
+                    if usage:
+                        completion_tokens = usage.get("completion_tokens", max_tokens)
+                except (KeyError, IndexError, TypeError) as e:
+                    debug_log.append(f"Data parse error: {e}")
+                    continue
+            
+            total_time = time.perf_counter() - start
+
+    except requests.exceptions.RequestException as e:
+        debug_log.append(f"Request exception: {e}")
         total_time = time.perf_counter() - start
+    
+    except Exception as e:
+        debug_log.append(f"Unexpected error: {e}")
+        total_time = time.perf_counter() - start
+
+    # Log debug information if there were issues
+    if debug_log and not first_token_at:
+        print(f"  Debug: {debug_log[:3]}")
 
     if pid:
         memory_peak = max(memory_peak, get_memory_mb(pid))
 
-    ttft_ms = (first_token_at - start) * 1000 if first_token_at else total_time * 1000
-    decode_time = total_time - (first_token_at - start) if first_token_at else total_time
+    # Handle case where no tokens were generated
+    if not first_token_at:
+        ttft_ms = total_time * 1000
+        decode_time = total_time
+    else:
+        ttft_ms = (first_token_at - start) * 1000
+        decode_time = total_time - (first_token_at - start)
+    
     tok_s = completion_tokens / decode_time if decode_time > 0 else 0
 
     return BenchmarkResult(
@@ -262,52 +334,91 @@ def benchmark_ollama(url: str, model: str, max_tokens: int, warmup: bool = True)
     )
 
 
-def speedup(a: float, b: float) -> str:
+def speedup(a: float, b: float, format_text: str = " faster") -> str:
     """Calculate speedup ratio. a/b means b is X times faster than a."""
     if a <= 0 or b <= 0:
         return "-"
-    return f"{a / b:.2f}x"
+    ratio = a / b
+    if ratio >= 1:
+        return f"{ratio:.2f}x{format_text}"
+    else:
+        return f"{1/ratio:.2f}x slower"
 
 
 def render_table(result: ComparisonResult) -> str:
+    """Render benchmark results as a clean, terminal-friendly table."""
     rapid = result.rapid
     ollama = result.ollama
 
+    def fmt_val(val):
+        if val is None:
+            return "         -"
+        return f"{val:>10.1f}"
+
+    sep = "├" + "─" * 20 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┤"
+    header = ("╔" + "═" * 20 + "╦" + "═" * 12 + "╦" + "═" * 12 + "╦" + "═" * 12 + "╗\n"
+             "║" + "Metric".center(20) + "║" + "Rapid-MLX".center(12) + "║" + "Ollama".center(12) + "║" + "Speedup".center(12) + "║\n"
+             + sep.replace("├", "╠").replace("┤", "╣"))
+    footer = "╚" + "═" * 20 + "╩" + "═" * 12 + "╩" + "═" * 12 + "╩" + "═" * 12 + "╝"
+
     lines = [
-        f"# Benchmark Results: {result.model}",
-        "",
-        f"Timestamp: {datetime.now().isoformat(timespec='seconds')}",
-        "",
-        "| Metric | Rapid-MLX | Ollama | Speedup |",
-        "|---|---|---|---|",
+        "\n╔═╗ Benchmark Results: " + result.model + " ╔═╗",
+        "║  Timestamp: " + datetime.now().isoformat(timespec='seconds') + " ║",
+        header,
     ]
 
+    # TTFT (ms) - lower is better
     if rapid and ollama:
-        lines.append(
-            f"| TTFT (ms) | {rapid.ttft_ms} | {ollama.ttft_ms} | "
-            f"{speedup(ollama.ttft_ms, rapid.ttft_ms)} |"
-        )
-        lines.append(
-            f"| tok/s | {rapid.decode_tok_s} | {ollama.decode_tok_s} | "
-            f"{speedup(rapid.decode_tok_s, ollama.decode_tok_s)} |"
-        )
+        sp = speedup(ollama.ttft_ms, rapid.ttft_ms)
+        lines.append("║" + "TTFT (ms)".ljust(20) + "║" + fmt_val(rapid.ttft_ms) + "║" + fmt_val(ollama.ttft_ms) + "║" + sp.center(12) + "║")
     elif rapid:
-        lines.append(f"| TTFT (ms) | {rapid.ttft_ms} | - | - |")
-        lines.append(f"| tok/s | {rapid.decode_tok_s} | - | - |")
+        lines.append("║" + "TTFT (ms)".ljust(20) + "║" + fmt_val(rapid.ttft_ms) + "║" + "         -".center(12) + "║" + "         -".center(12) + "║")
     elif ollama:
-        lines.append(f"| TTFT (ms) | - | {ollama.ttft_ms} | - |")
-        lines.append(f"| tok/s | - | {ollama.decode_tok_s} | - |")
+        lines.append("║" + "TTFT (ms)".ljust(20) + "║" + "         -".center(12) + "║" + fmt_val(ollama.ttft_ms) + "║" + "         -".center(12) + "║")
 
-    for label in ["Memory - Gen (MB)", "Memory - Peak (MB)"]:
-        if rapid:
-            r_val = rapid.memory_gen_mb if label == "Memory - Gen (MB)" else rapid.memory_peak_mb
-        else:
-            r_val = 0
-        if ollama:
-            o_val = ollama.memory_gen_mb if label == "Memory - Gen (MB)" else ollama.memory_peak_mb
-        else:
-            o_val = 0
-        lines.append(f"| {label} | {r_val} | {o_val} | - |")
+    # tok/s - higher is better
+    if rapid and ollama:
+        sp = speedup(rapid.decode_tok_s, ollama.decode_tok_s)
+        lines.append("║" + "tok/s".ljust(20) + "║" + fmt_val(rapid.decode_tok_s) + "║" + fmt_val(ollama.decode_tok_s) + "║" + sp.center(12) + "║")
+    elif rapid:
+        lines.append("║" + "tok/s".ljust(20) + "║" + fmt_val(rapid.decode_tok_s) + "║" + "         -".center(12) + "║" + "         -".center(12) + "║")
+    elif ollama:
+        lines.append("║" + "tok/s".ljust(20) + "║" + "         -".center(12) + "║" + fmt_val(ollama.decode_tok_s) + "║" + "         -".center(12) + "║")
+
+    lines.append(sep)
+
+    # Memory - Gen (MB)
+    if rapid and ollama:
+        lines.append("║" + "Memory - Gen (MB)".ljust(20) + "║" + fmt_val(rapid.memory_gen_mb) + "║" + fmt_val(ollama.memory_gen_mb) + "║" + "         -".center(12) + "║")
+    elif rapid:
+        lines.append("║" + "Memory - Gen (MB)".ljust(20) + "║" + fmt_val(rapid.memory_gen_mb) + "║" + "         -".center(12) + "║" + "         -".center(12) + "║")
+    elif ollama:
+        lines.append("║" + "Memory - Gen (MB)".ljust(20) + "║" + "         -".center(12) + "║" + fmt_val(ollama.memory_gen_mb) + "║" + "         -".center(12) + "║")
+
+    # Memory - Peak (MB)
+    if rapid and ollama:
+        lines.append("║" + "Memory - Peak (MB)".ljust(20) + "║" + fmt_val(rapid.memory_peak_mb) + "║" + fmt_val(ollama.memory_peak_mb) + "║" + "         -".center(12) + "║")
+    elif rapid:
+        lines.append("║" + "Memory - Peak (MB)".ljust(20) + "║" + fmt_val(rapid.memory_peak_mb) + "║" + "         -".center(12) + "║" + "         -".center(12) + "║")
+    elif ollama:
+        lines.append("║" + "Memory - Peak (MB)".ljust(20) + "║" + "         -".center(12) + "║" + fmt_val(ollama.memory_peak_mb) + "║" + "         -".center(12) + "║")
+
+    lines.append(footer)
+
+    # Summary
+    if rapid and ollama:
+        if rapid.ttft_ms and ollama.ttft_ms:
+            ttft_ratio = ollama.ttft_ms / rapid.ttft_ms if rapid.ttft_ms > 0 else 0
+            tok_ratio = rapid.decode_tok_s / ollama.decode_tok_s if ollama.decode_tok_s > 0 else 0
+            mem_diff = rapid.memory_peak_mb - ollama.memory_peak_mb
+            mem_status = str(abs(int(mem_diff))) + "MB " + ("less" if mem_diff < 0 else ("more" if mem_diff > 0 else "same"))
+
+            lines.append("")
+            lines.append("╟─ SUMMARY ────────────────────────╢")
+            lines.append("║ TTFT:        " + f"{ttft_ratio:>8.2f}x faster    ║".format(ttft_ratio=ttft_ratio))
+            lines.append("║ Decode:      " + f"{tok_ratio:>8.2f}x faster    ║".format(tok_ratio=tok_ratio))
+            lines.append("║ Peak Memory:" + mem_status.rjust(19) + "║")
+            lines.append("╚═════════════════════════════════╝")
 
     lines.append("")
     return "\n".join(lines)
