@@ -89,9 +89,12 @@ def _extract_bearer_token(authorization: str | None) -> str | None:
 
 def _rate_limit_client_id(request: Request) -> str:
     """Resolve the default client id for rate limiting."""
-    return request.headers.get(
-        "Authorization", request.client.host if request.client else "unknown"
-    )
+    authorization = request.headers.get("Authorization")
+    if authorization:
+        bearer_key = _extract_bearer_token(authorization)
+        return bearer_key or authorization
+
+    return request.client.host if request.client else "unknown"
 
 
 def _anthropic_rate_limit_client_id(request: Request) -> str:

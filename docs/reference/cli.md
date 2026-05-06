@@ -104,7 +104,11 @@ rapid-mlx serve mlx-community/Qwen3-4B-4bit \
 
 ### Security
 
-When `--api-key` is set, all API requests require the `Authorization: Bearer <api-key>` header:
+When `--api-key` is set, protected API routes require the
+`Authorization: Bearer <api-key>` header. Anthropic-compatible routes
+(`/v1/messages` and `/v1/messages/count_tokens`) also accept
+`x-api-key: <api-key>` for SDK compatibility; if both headers are sent, both
+must match.
 
 ```python
 from openai import OpenAI

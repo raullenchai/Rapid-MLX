@@ -496,6 +496,68 @@ def test_shared_rate_limit_ignores_x_api_key_for_non_anthropic_routes(
     assert second.json()["detail"].startswith("Rate limit exceeded.")
 
 
+def test_shared_rate_limit_uses_same_bearer_identity_for_anthropic_and_standard_routes(
+    anthropic_client,
+):
+    from vllm_mlx.middleware.auth import (
+        check_rate_limit,
+        check_rate_limit_or_x_api_key,
+        verify_api_key,
+        verify_api_key_or_x_api_key,
+    )
+
+    anthropic_client.rate_limiter.enabled = True
+    anthropic_client.rate_limiter.requests_per_minute = 1
+
+    app = FastAPI()
+
+    @app.get(
+        "/standard",
+        dependencies=[Depends(verify_api_key), Depends(check_rate_limit)],
+    )
+    async def standard_endpoint():
+        return {"ok": True}
+
+    @app.get(
+        "/anthropic",
+        dependencies=[
+            Depends(verify_api_key_or_x_api_key),
+            Depends(check_rate_limit_or_x_api_key),
+        ],
+    )
+    async def anthropic_endpoint():
+        return {"ok": True}
+
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer test-secret"}
+    first = client.get("/standard", headers=headers)
+    second = client.get("/anthropic", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["detail"].startswith("Rate limit exceeded.")
+
+
+def test_shared_auth_rejects_x_api_key_for_non_anthropic_routes(
+    anthropic_client,
+):
+    from vllm_mlx.middleware.auth import verify_api_key
+
+    app = FastAPI()
+
+    @app.get("/test", dependencies=[Depends(verify_api_key)])
+    async def test_endpoint():
+        return {"ok": True}
+
+    client = TestClient(app)
+    x_api_key_only = client.get("/test", headers={"x-api-key": "test-secret"})
+    bearer = client.get("/test", headers={"Authorization": "Bearer test-secret"})
+
+    assert x_api_key_only.status_code == 401
+    assert x_api_key_only.json()["detail"] == "API key required"
+    assert bearer.status_code == 200
+
+
 def test_configure_rate_limiter_updates_shared_anthropic_dependency(
     anthropic_client,
 ):
