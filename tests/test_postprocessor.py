@@ -102,6 +102,19 @@ class TestStreamingPostProcessorChannelRouted:
         assert events[0].type == "reasoning"
         assert events[0].reasoning == "thinking..."
 
+    def test_channel_bypasses_legacy_reasoning_parser(self):
+        parser = MagicMock()
+        cfg = _make_cfg(reasoning_parser=parser)
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        events = pp.process_chunk(_make_output("Hello", channel="content"))
+
+        assert len(events) == 1
+        assert events[0].type == "content"
+        assert events[0].content == "Hello"
+        parser.extract_reasoning_streaming.assert_not_called()
+
 
 class TestStreamingPostProcessorReasoning:
     """Tests for text-based reasoning parser integration."""

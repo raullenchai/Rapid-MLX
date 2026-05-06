@@ -212,16 +212,15 @@ class StreamingPostProcessor:
             return []
 
         # Step 1: Separate content from reasoning
-        if output.channel:
+        if output.channel is not None:
             return self._process_channel_routed(delta_text, output)
-        elif self.reasoning_parser and self.enable_thinking is not False:
+        if self.reasoning_parser and self.enable_thinking is not False:
             # When enable_thinking is explicitly False, the model is told to
             # skip thinking and answer directly. Bypass the reasoning parser
             # so its implicit-think heuristic doesn't reroute the answer to
             # reasoning_content.
             return self._process_with_reasoning(delta_text, output)
-        else:
-            return self._process_standard(delta_text, output)
+        return self._process_standard(delta_text, output)
 
     def _process_channel_routed(
         self, delta_text: str, output: GenerationOutput

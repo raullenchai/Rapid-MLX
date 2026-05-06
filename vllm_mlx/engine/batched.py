@@ -18,6 +18,7 @@ from typing import Any
 
 from ..api.tool_calling import convert_tools_for_template
 from ..api.utils import clean_output_text, extract_multimodal_content, is_mllm_model
+from ..output_router import Channel, OutputRouter
 from ..utils.chat_template import apply_chat_template as shared_apply_chat_template
 from .base import BaseEngine, GenerationOutput
 
@@ -50,6 +51,11 @@ def _probe_mllm_cache_type(language_model: Any) -> str | None:
     if isinstance(sample, (KVCache, RotatingKVCache)):
         return None
     return type(sample).__name__
+
+
+def _channel_name(channel: Channel) -> str:
+    """Convert router channel enum values to GenerationOutput.channel strings."""
+    return channel.name.lower()
 
 
 def _compute_metal_cache_limit(soft_limit_bytes: int) -> int:
@@ -761,6 +767,7 @@ class BatchedEngine(BaseEngine):
                 yield GenerationOutput(
                     text=clean_output_text(output.output_text),
                     new_text=output.new_text,
+                    tokens=output.new_token_ids,
                     prompt_tokens=output.prompt_tokens,
                     completion_tokens=output.completion_tokens,
                     finished=output.finished,
@@ -927,6 +934,82 @@ class BatchedEngine(BaseEngine):
         except Exception:
             return 0
 
+    def _create_output_router(self) -> OutputRouter | None:
+        """Create a per-request token router for supported tokenizer formats."""
+        tokenizer = self.tokenizer
+        if tokenizer is None:
+            return None
+        try:
+            return OutputRouter.from_tokenizer(tokenizer)
+        except Exception as e:
+            logger.debug("OutputRouter unavailable for this request: %s", e)
+            return None
+
+    async def _stream_with_output_router(
+        self,
+        outputs: AsyncIterator[GenerationOutput],
+        router: OutputRouter | None,
+    ) -> AsyncIterator[GenerationOutput]:
+        """Attach semantic channels to streamed chat tokens when supported."""
+        if router is None:
+            async for output in outputs:
+                yield output
+            return
+
+        async for output in outputs:
+            token_ids = output.tokens
+            if not token_ids:
+                yield output
+                continue
+
+            routed_outputs: list[GenerationOutput] = []
+            try:
+                for token_id in token_ids:
+                    event = router.feed(token_id)
+                    if event is None:
+                        continue
+                    routed_outputs.append(
+                        GenerationOutput(
+                            text=output.text,
+                            new_text=event.text,
+                            tokens=[event.token_id],
+                            prompt_tokens=output.prompt_tokens,
+                            completion_tokens=output.completion_tokens,
+                            finished=False,
+                            finish_reason=None,
+                            logprobs=output.logprobs,
+                            channel=_channel_name(event.channel),
+                        )
+                    )
+            except Exception as e:
+                logger.warning(
+                    "OutputRouter failed; falling back to legacy parsers: %s", e
+                )
+                yield output
+                continue
+
+            if not routed_outputs:
+                if output.finished:
+                    yield GenerationOutput(
+                        text=output.text,
+                        new_text="",
+                        tokens=[],
+                        prompt_tokens=output.prompt_tokens,
+                        completion_tokens=output.completion_tokens,
+                        finished=True,
+                        finish_reason=output.finish_reason,
+                        logprobs=output.logprobs,
+                        channel=None,
+                    )
+                continue
+
+            if output.finished:
+                routed_outputs[-1].finished = True
+                routed_outputs[-1].finish_reason = output.finish_reason
+
+            for routed in routed_outputs:
+                yield routed
+
     async def stream_chat(
         self,
         messages: list[dict[str, Any]],
@@ -986,7 +1069,8 @@ class BatchedEngine(BaseEngine):
         if prefix_boundary > 0:
             kwargs["prefix_boundary"] = prefix_boundary
 
-        async for output in self.stream_generate(
+        router = self._create_output_router()
+        stream = self.stream_generate(
             prompt=prompt,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -994,7 +1078,8 @@ class BatchedEngine(BaseEngine):
             images=all_images if all_images else None,
             videos=all_videos if all_videos else None,
             **kwargs,
-        ):
+        )
+        async for output in self._stream_with_output_router(stream, router):
             yield output
 
     def get_stats(self) -> dict[str, Any]:
