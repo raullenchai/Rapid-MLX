@@ -179,6 +179,63 @@ class TestHealthRoutes:
         finally:
             self._restore_config(orig)
 
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("get", "/health"),
+            ("get", "/health/ready"),
+            ("post", "/v1/cache/clear"),
+            ("get", "/v1/status"),
+            ("get", "/v1/cache/stats"),
+            ("delete", "/v1/cache"),
+        ],
+    )
+    def test_health_router_requires_api_key_when_configured(self, method, path):
+        """Health, status, and cache management routes honor API auth."""
+        orig = self._patch_config(api_key="test-secret", ready=True)
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+
+            r = getattr(client, method)(path)
+
+            assert r.status_code == 401
+            assert r.json()["detail"] == "API key required"
+        finally:
+            self._restore_config(orig)
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("get", "/health"),
+            ("get", "/health/ready"),
+            ("post", "/v1/cache/clear"),
+            ("get", "/v1/status"),
+            ("get", "/v1/cache/stats"),
+            ("delete", "/v1/cache"),
+        ],
+    )
+    def test_health_router_accepts_valid_api_key(self, method, path, mock_engine):
+        """Valid Bearer token preserves access to protected management routes."""
+        orig = self._patch_config(
+            api_key="test-secret",
+            engine=mock_engine,
+            mcp_manager=None,
+            model_name="test-model",
+            ready=True,
+        )
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+
+            r = getattr(client, method)(
+                path, headers={"Authorization": "Bearer test-secret"}
+            )
+
+            assert r.status_code != 401
+        finally:
+            self._restore_config(orig)
+
     def test_status_no_engine(self):
         """Status returns not_loaded when no engine."""
         orig = self._patch_config(engine=None, model_name=None)
