@@ -9,6 +9,7 @@ Handles translation of:
 """
 
 import json
+import re
 import uuid
 
 from .anthropic_models import (
@@ -60,6 +61,10 @@ def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
             system_text = "\n".join(parts)
         else:
             system_text = str(request.system)
+        # Strip per-request billing/tracking headers injected by some
+        # clients (e.g. Claude Code).  These contain a per-request hash
+        # that prevents prefix-cache reuse across turn boundaries.
+        system_text = re.sub(r"x-anthropic-billing-header:[^\n]*\n?", "", system_text)
         messages.append(Message(role="system", content=system_text))
 
     # Convert each message
