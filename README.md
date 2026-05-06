@@ -34,6 +34,31 @@ Create the snake game using react, vite and typescript
 
 Full benchmark notes are in [`REPORT.md`](REPORT.md).
 
+## More Model Benchmarks
+
+The models below use the same benchmark positioning as upstream [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX): Mac Studio M3 Ultra, Apple MLX backend, and tok/s as decode throughput. **lightning-mlx keeps the same model coverage**, and adds the optimized **Qwen3.6 27B MTPLX** path for local coding agents.
+
+| Model | lightning-mlx | Best Alternative | Speedup |
+| --- | ---: | ---: | ---: |
+| **Qwen3.6 27B MTPLX** | **26.47 tok/s agentic all-turn** / **38.60 tok/s long-turn** / **20.40 tok/s short-turn** | 13.49 / 28.02 / 7.42 tok/s MLX baseline | **1.96x all-turn** / **2.75x short-turn** |
+| **Phi-4 Mini 14B** | **180 tok/s** | 77 tok/s mlx-lm / 56 tok/s Ollama | **2.3x** / **3.2x** |
+| **Qwen3.5 4B** | **160 tok/s** | 155 tok/s mlx-lm serve | **1.0x** |
+| **Nemotron-Nano 30B** | **141 tok/s** · 100% tools | - | - |
+| **DeepSeek V4 Flash 158B-A13B** (2-bit DQ) | **56 tok/s** | Only MLX engine, day-0 | - |
+| **DeepSeek V4 Flash 158B-A13B** (8-bit) | **31 tok/s** | Only MLX engine, day-0 | - |
+| **GPT-OSS 20B** | **127 tok/s** · 100% tools | 79 tok/s mlx-lm serve | **1.6x** |
+| **Qwen3.5 9B** | **108 tok/s** | 41 tok/s Ollama | **2.6x** |
+| **Qwen3.6 35B-A3B** | **95 tok/s** · 100% tools | - | - |
+| **Kimi-Linear 48B** | **94 tok/s** · 100% tools | Only engine | - |
+| **Gemma 4 26B-A4B** | **85 tok/s** | 68 tok/s Ollama | **1.3x** |
+| **Gemma 4 E4B** | **83 tok/s** | - | - |
+| **Qwen3.5 35B-A3B** | **83 tok/s** · 100% tools | 75 tok/s oMLX | **1.1x** |
+| **Qwen3-Coder 80B** | **74 tok/s** · 100% tools | 69 tok/s mlx-lm serve | **1.1x** |
+| **Qwen3.5 122B** | **44 tok/s** · 100% tools | 43 tok/s mlx-lm serve | ~**1.0x** |
+| **Gemma 4 31B** | **31 tok/s** | - | - |
+
+**Note:** the Qwen3.6 27B MTPLX row is an agentic benchmark, not a single raw decode pass. It measures the developer loop: tool calls, growing context, artifact generation, and build validation.
+
 ## Install
 
 ```bash
