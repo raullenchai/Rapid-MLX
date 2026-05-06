@@ -396,7 +396,10 @@ class MLLMScheduler:
 
         # Credit in-flight tokens so dashboard metrics stay accurate
         # (without this, aborted requests' tokens vanish from /v1/status).
-        if request.num_output_tokens > 0:
+        # Same ``request is not None`` guard as below — late/duplicate
+        # aborts arrive after self.requests.pop() and would otherwise
+        # raise AttributeError on the dereference.
+        if request is not None and request.num_output_tokens > 0:
             self.total_completion_tokens += request.num_output_tokens
             self.total_prompt_tokens += request.num_prompt_tokens
 

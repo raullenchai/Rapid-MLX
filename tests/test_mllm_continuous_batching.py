@@ -848,6 +848,30 @@ class TestDeferredAbortWaitingDeque:
         assert "test-abort" in scheduler.finished_req_ids
 
 
+@_skip_no_mlx_lm
+class TestMLLMAbortMissingRequest:
+    """Regression: late/duplicate abort for an id no longer in self.requests
+    must not raise on the new token-credit dereference (codex post-v0.6.14)."""
+
+    def test_do_abort_request_when_request_missing(self):
+        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+
+        mock_model = MagicMock()
+        mock_processor = MagicMock()
+        mock_processor.tokenizer = MagicMock()
+
+        scheduler = MLLMScheduler(mock_model, mock_processor, MLLMSchedulerConfig())
+
+        # No add_request call — simulate cleanup having already popped it.
+        scheduler._do_abort_request("orphan-id")
+
+        assert "orphan-id" in scheduler.finished_req_ids
+        assert "orphan-id" in scheduler._aborted_queue_ids
+        # Token counters must not move when there's no request to credit.
+        assert scheduler.total_completion_tokens == 0
+        assert scheduler.total_prompt_tokens == 0
+
+
 # Integration tests (require model loading)
 @pytest.mark.slow
 @pytest.mark.skipif(not os.environ.get("RUN_SLOW_TESTS"), reason="Slow tests disabled")
