@@ -421,3 +421,129 @@ Interpretation:
 - Full MTPLX can complete a practical agentic coding prompt with valid build and endpoint smoke proof.
 - The remaining performance issue is MTP acceptance staying at `0`; full precision avoids corruption but still pays speculative overhead.
 - This further isolates the severe degeneration to the 4-bit MTPLX path, while quality on full MTPLX is usable but slow.
+
+## Official 27B MTPLX Comparison
+
+Question:
+
+- Is zero MTP acceptance caused by our `convert-mtplx`, or does the official `Qwen3.6-27B-MTPLX-Optimized-Speed` also fail in this runtime?
+
+Model:
+
+```text
+/Users/samuelfajreldines/dev/models/Qwen3.6-27B-MTPLX-Optimized-Speed
+```
+
+Inspect:
+
+- `mtplx inspect ... --json` passed with `support_level: verified-native`.
+- Runtime contract exists.
+- Sidecar format: `prequantized-mlx-affine`.
+- MTP tensor count: `29`.
+- Contract `mtp_depth_max: 3`.
+- Contract exactness baseline: passed, `max_abs_diff: 0.0`, `sample_agreement: 1.0`, `topk_overlap_ratio: 1.0`.
+
+Serve/runtime result:
+
+- MTP injected as quantized MTP: `4-bit`, `group_size=64`.
+- Runtime then emitted repeated warnings:
+  - `[quantized_matmul] The shapes of the weight and scales are incompatible based on bits and group_size.`
+  - Example: `w.shape() == (12288,640)` and `scales.shape() == (12288,160)` with `group_size=64` and `bits=4`.
+- Pi `hi` did not degenerate:
+  - exit `0`
+  - output size `0`
+  - server generated `3` tokens
+- But MTP was not successfully providing accepted speculative tokens; it failed inside the quantized matmul path and effectively fell back to normal decode.
+
+Interpretation:
+
+- This weakens the hypothesis that the issue is only our `convert-mtplx`.
+- The official 27B MTPLX model also does not exercise a healthy accepting MTP path in the current runtime.
+- Different failure mode:
+  - official 27B quantized sidecar: runtime shape error in quantized MTP matmul;
+  - our 35B full BF16 sidecar: runs but MTP accepted remains `0`;
+  - our 35B 4-bit + BF16 sidecar: runs, accepted remains `0`, and Pi tool-heavy request can degenerate into `userThe`.
+- Next likely fix area is the runtime MTP implementation, especially quantized sidecar handling and acceptance/cache alignment, not only the conversion script.
+
+## Main Branch Comparison For Official 27B
+
+Question:
+
+- User reported `main` works perfectly with `Qwen3.6-27B-MTPLX-Optimized-Speed`.
+
+Finding:
+
+- Tested a temporary `main` worktree at `/tmp/rapid-mlx-main-mtp-check`.
+- `main` serves the 27B model successfully, but MTP does not activate.
+- Logs on `main`:
+  - `Model does not have MTP config (num_nextn_predict_layers=0).`
+  - `MTP validation failed — --enable-mtp will be ignored.`
+  - `--enable-mtp is set but model has no MTP head (model.mtp is None). MTP will be disabled.`
+- Pi `hi` on `main`:
+  - exit `0`
+  - output size `0`
+  - generated `10` tokens
+  - no `userThe`
+
+Interpretation:
+
+- `main` works because it silently falls back to normal decode for this model.
+- Current branch changed behavior by detecting `text_config.mtp_num_hidden_layers` and loading `mtp.safetensors`; that exposed runtime MTP bugs.
+
+Fix attempted:
+
+- Official 27B sidecar uses packed quantized weights whose scales imply `group_size=32`, while config says `group_size=64`.
+- Added runtime inference of quantized MTP group size from sidecar shapes.
+- After patch, 27B logs:
+  - `Quantized MTP: 4-bit, group_size=32`
+  - no more `quantized_matmul` shape error during warmup or Pi `hi`.
+- Focused tests passed: `53 passed`.
+
+Remaining issue:
+
+- Medium 27B generation still shows `MTP stats {'accepted': 0, 'rejected': 128, 'corrections': 128, 'errors': 0}`.
+- Therefore group-size was one bug, but acceptance/cache alignment remains wrong.
+
+## Benchmark Branch Comparison
+
+Question:
+
+- The benchmark highlight reports `Qwen3.6-27B-MTPLX-Optimized-Speed` with MTP acceptance around `94.30%`.
+
+Finding:
+
+- The benchmark report itself says `Branch: optimize-agentic-mtp-speed`.
+- Tested local branch `optimize-agentic-mtp-speed` at commit `4f9f442 Improve MTP agentic tool-call performance`.
+- This branch is not using the same MTP scheduler mode as current `convert-mtplx`.
+
+Observed in benchmark branch logs:
+
+- MTP injects quantized sidecar with `group_size=32`.
+- Scheduler logs:
+  - `[MTP] using default top_k=20 for native MTP sampling`
+  - `[MTP] installed for mlx-lm GenerationBatch API, num_draft_tokens=1, draft_temp=0.7, always-advance mode`
+- Medium generation:
+  - 366 completion tokens in 10.48s
+  - 34.9 tok/s
+  - no degeneration
+
+Observed in current `convert-mtplx` branch:
+
+- After group-size fix, 27B injects quantized sidecar with `group_size=32`.
+- Scheduler logs:
+  - `[MTP] installed native GenerationBatch speculative patch, num_draft_tokens=1, draft_temp=0.7, verified mode`
+- Medium generation:
+  - 356 completion tokens in 15.66s
+  - 22.7 tok/s
+  - `accepted=0`, `rejected=128`
+
+Interpretation:
+
+- The benchmark win came from the `always-advance` MTP scheduler path.
+- Current branch replaced/added a `verified mode` path for mlx-lm `GenerationBatch`, and that path rejects every MTP draft.
+- Therefore the regression is not only conversion. It is primarily scheduler behavior drift from the benchmark branch.
+
+Likely next fix:
+
+- Restore the benchmark branch's `always-advance` scheduler behavior for this Qwen3.6 MTPLX path, or expose it as the default performance profile for MTPLX models.
+- Keep `verified` mode only behind an explicit safety/debug flag until acceptance/cache alignment is fixed.

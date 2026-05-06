@@ -12,6 +12,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from vllm_mlx.patches.qwen3_next_mtp import (
+    _infer_quantized_mtp_group_size,
+    _normalize_mtp_weight_key,
+)
+
 # ======================================================================
 # Fix 1: Reasoning correction before terminal SSE
 # ======================================================================
@@ -134,6 +139,37 @@ class TestMTPQuantizedSwitchLinear:
         )
         # Dimensions should be compatible
         assert qsl.weight.shape[0] == ne  # num_experts preserved
+
+    def test_quantized_mtp_group_size_inferred_from_sidecar_shapes(self):
+        """Official MTPLX sidecars may use a smaller MTP group size than config."""
+        import mlx.core as mx
+
+        raw = {
+            "mtp.layers.0.self_attn.q_proj.weight": mx.zeros(
+                (12288, 640), dtype=mx.uint32
+            ),
+            "mtp.layers.0.self_attn.q_proj.scales": mx.zeros(
+                (12288, 160), dtype=mx.bfloat16
+            ),
+        }
+
+        assert _infer_quantized_mtp_group_size(raw, bits=4, fallback=64) == 32
+
+    def test_dense_mtp_keys_are_not_rewritten_to_switch_mlp(self):
+        key = "mtp.layers.0.mlp.down_proj.weight"
+
+        assert (
+            _normalize_mtp_weight_key(key, uses_switch_mlp=False)
+            == "layers.0.mlp.down_proj.weight"
+        )
+
+    def test_moe_mtp_keys_are_rewritten_to_switch_mlp(self):
+        key = "mtp.layers.0.mlp.down_proj.weight"
+
+        assert (
+            _normalize_mtp_weight_key(key, uses_switch_mlp=True)
+            == "layers.0.mlp.switch_mlp.down_proj.weight"
+        )
 
 
 # ======================================================================

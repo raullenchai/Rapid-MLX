@@ -24,6 +24,48 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _infer_quantized_mtp_group_size(
+    raw: dict[str, Any], bits: int, fallback: int
+) -> int:
+    """Infer MTP quant group size from packed weight/scales sidecar shapes."""
+    if bits <= 0:
+        return fallback
+    for key, weight in raw.items():
+        if not key.endswith(".weight") or not key.startswith("mtp."):
+            continue
+        scales = raw.get(key.removesuffix(".weight") + ".scales")
+        if scales is None or len(weight.shape) != 2 or len(scales.shape) != 2:
+            continue
+        packed_input_dim = int(weight.shape[1])
+        scale_groups = int(scales.shape[1])
+        if packed_input_dim <= 0 or scale_groups <= 0:
+            continue
+        input_dim = packed_input_dim * (32 // bits)
+        if input_dim % scale_groups == 0:
+            return input_dim // scale_groups
+    return fallback
+
+
+def _normalize_mtp_weight_key(key: str, *, uses_switch_mlp: bool) -> str:
+    """Map sidecar keys onto the loaded MTP module structure."""
+    local_key = key.removeprefix("mtp.")
+    if not uses_switch_mlp:
+        return local_key
+    local_key = local_key.replace(
+        "layers.0.mlp.down_proj.weight",
+        "layers.0.mlp.switch_mlp.down_proj.weight",
+    )
+    local_key = local_key.replace(
+        "layers.0.mlp.gate_proj.weight",
+        "layers.0.mlp.switch_mlp.gate_proj.weight",
+    )
+    local_key = local_key.replace(
+        "layers.0.mlp.up_proj.weight",
+        "layers.0.mlp.switch_mlp.up_proj.weight",
+    )
+    return local_key
+
+
 def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
     """Inject MTP module into a loaded Qwen3-Next model.
 
@@ -86,6 +128,11 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
             self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
 
     mtp = _MTPModule(args, num_mtp_layers)
+    uses_switch_mlp = bool(
+        mtp.layers
+        and hasattr(mtp.layers[0], "mlp")
+        and hasattr(mtp.layers[0].mlp, "switch_mlp")
+    )
 
     # --- Step 2: Load raw MTP weights and quantize only when sidecar is quantized ---
     logger.info(f"[MTP inject] Loading weights from {mtp_file.name}")
@@ -102,7 +149,9 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
     quant_config = config.get("quantization", {})
     if quant_config and has_quantized_mtp:
         bits = quant_config.get("bits", 6)
-        group_size = quant_config.get("group_size", 64)
+        group_size = _infer_quantized_mtp_group_size(
+            raw, bits, quant_config.get("group_size", 64)
+        )
         mode = quant_config.get("mode", "affine")
 
         # 2a: Replace SwitchLinear → QuantizedSwitchLinear in MoE blocks
@@ -161,19 +210,7 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
     for key, value in raw.items():
         if not key.startswith("mtp."):
             continue
-        local_key = key.removeprefix("mtp.")
-        local_key = local_key.replace(
-            "layers.0.mlp.down_proj.weight",
-            "layers.0.mlp.switch_mlp.down_proj.weight",
-        )
-        local_key = local_key.replace(
-            "layers.0.mlp.gate_proj.weight",
-            "layers.0.mlp.switch_mlp.gate_proj.weight",
-        )
-        local_key = local_key.replace(
-            "layers.0.mlp.up_proj.weight",
-            "layers.0.mlp.switch_mlp.up_proj.weight",
-        )
+        local_key = _normalize_mtp_weight_key(key, uses_switch_mlp=uses_switch_mlp)
         mtp_weights[local_key] = value
     mtp.load_weights(list(mtp_weights.items()), strict=False)
     mx.eval(mtp.parameters())
@@ -212,7 +249,7 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
             else:
                 out = self.lm_head(normed)
             if return_hidden:
-                return out, hidden_states  # pre-norm hidden states
+                return out, normed
             return out
 
         def mtp_forward(
@@ -221,20 +258,25 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
             next_token_ids,
             cache=None,
             mtp_cache=None,
+            return_hidden: bool = False,
         ):
             """Run MTP head: predict token n+2 from hidden states + token n+1."""
             input_embeds = self.model.embed_tokens(next_token_ids)
             h = self.mtp.pre_fc_norm_hidden(hidden_states)
             e = self.mtp.pre_fc_norm_embedding(input_embeds)
-            x = self.mtp.fc(mx.concatenate([h, e], axis=-1))
+            x = self.mtp.fc(mx.concatenate([e, h], axis=-1))
             layer = self.mtp.layers[0]
             c = mtp_cache[0] if mtp_cache else None
             mask = create_attention_mask(x, c)
             x = layer(x, mask=mask, cache=c)
             x = self.mtp.norm(x)
             if self.args.tie_word_embeddings:
-                return self.model.embed_tokens.as_linear(x)
-            return self.lm_head(x)
+                logits = self.model.embed_tokens.as_linear(x)
+            else:
+                logits = self.lm_head(x)
+            if return_hidden:
+                return logits, x
+            return logits
 
         def make_mtp_cache(self):
             """Create KV cache for MTP layers."""
