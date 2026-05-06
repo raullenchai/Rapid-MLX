@@ -17,7 +17,7 @@ try:
 except ImportError:
     print("Error: psutil is required. Install with: pip install psutil")
     sys.exit(1)
-
+    
 try:
     import requests
 except ImportError:
@@ -99,7 +99,7 @@ def start_rapid_mlx(model: str, port: int) -> subprocess.Popen:
         stderr=subprocess.DEVNULL,
     )
     url = f"http://127.0.0.1:{port}"
-    wait_for_url(f"{url}/health", timeout=120)
+    wait_for_url(f"{url}/health/ready", timeout=300)
     return proc
 
 
@@ -212,6 +212,10 @@ def benchmark_ollama(url: str, model: str, max_tokens: int, warmup: bool = True)
     first_token_at = None
     completion_tokens = 0
 
+    start = time.perf_counter()
+    first_token_at = None
+    completion_tokens = 0
+
     with requests.post(
         f"{url}/api/chat",
         json={
@@ -237,7 +241,6 @@ def benchmark_ollama(url: str, model: str, max_tokens: int, warmup: bool = True)
                         memory_gen = get_memory_mb(pid)
             if data.get("done"):
                 completion_tokens = data.get("eval_count", 0)
-                break
         total_time = time.perf_counter() - start
 
     if pid:
