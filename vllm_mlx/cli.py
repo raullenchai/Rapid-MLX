@@ -98,8 +98,9 @@ def serve_command(args):
 
     # Import unified server
     from . import server
+    from .middleware.auth import configure_rate_limiter
     from .scheduler import SchedulerConfig
-    from .server import RateLimiter, app, load_model
+    from .server import app, load_model
 
     logger = logging.getLogger(__name__)
     uvicorn_log_level = server.configure_logging(args.log_level)
@@ -152,9 +153,7 @@ def serve_command(args):
     cors_origins = args.cors_origins if args.cors_origins else ["*"]
     server.configure_cors(cors_origins)
     if args.rate_limit > 0:
-        server._rate_limiter = RateLimiter(
-            requests_per_minute=args.rate_limit, enabled=True
-        )
+        server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
 
     # Configure GC control
     gc_control = args.gc_control and not args.no_gc_control

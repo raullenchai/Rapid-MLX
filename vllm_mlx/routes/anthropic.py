@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from ..api.anthropic_adapter import anthropic_to_openai, openai_to_anthropic
@@ -29,6 +29,7 @@ from ..api.utils import (
 )
 from ..config import get_config
 from ..engine import BaseEngine
+from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
 from ..service.helpers import (
     _build_usage,
     _disconnect_guard,
@@ -62,7 +63,13 @@ def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) 
     return "<think>" in chat_template and "add_generation_prompt" in chat_template
 
 
-@router.post("/v1/messages")
+@router.post(
+    "/v1/messages",
+    dependencies=[
+        Depends(verify_api_key_or_x_api_key),
+        Depends(check_rate_limit_or_x_api_key),
+    ],
+)
 async def create_anthropic_message(
     request: Request,
 ):
@@ -202,7 +209,13 @@ async def create_anthropic_message(
     )
 
 
-@router.post("/v1/messages/count_tokens")
+@router.post(
+    "/v1/messages/count_tokens",
+    dependencies=[
+        Depends(verify_api_key_or_x_api_key),
+        Depends(check_rate_limit_or_x_api_key),
+    ],
+)
 async def count_anthropic_tokens(request: Request):
     """Count tokens for an Anthropic Messages API request."""
     body = await request.json()

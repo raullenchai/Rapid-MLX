@@ -351,6 +351,7 @@ def configure_cors(origins: list[str]) -> None:
 from .middleware.auth import (  # noqa: E402
     RateLimiter,  # noqa: F401
     check_rate_limit,  # noqa: F401
+    configure_rate_limiter,  # noqa: F401
     verify_api_key,  # noqa: F401
 )
 from .middleware.auth import (
@@ -901,7 +902,7 @@ Examples:
 
     # Configure rate limiter
     if args.rate_limit > 0:
-        _rate_limiter = RateLimiter(requests_per_minute=args.rate_limit, enabled=True)
+        _rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
         logger.info(
             f"Rate limiting enabled: {args.rate_limit} requests/minute per client"
         )
