@@ -288,8 +288,8 @@ def benchmark_ollama(url: str, model: str, max_tokens: int, warmup: bool = True)
 
     start = time.perf_counter()
     first_token_at = None
-    completion_tokens = 0
     generated_content = ""
+    eval_count = 0
 
     with requests.post(
         f"{url}/api/chat",
@@ -317,22 +317,23 @@ def benchmark_ollama(url: str, model: str, max_tokens: int, warmup: bool = True)
                     if pid:
                         memory_gen = get_memory_mb(pid)
             if data.get("done"):
-                completion_tokens = data.get("eval_count") or len(generated_content)
+                eval_count = data.get("eval_count") or 0
 
     total_time = time.perf_counter() - start
 
-    # Fallback: count generated tokens if eval_count was 0
-    if completion_tokens == 0:
-        completion_tokens = len(generated_content) or max_tokens
+    # Use eval_count OR generated content length as fallback
+    if eval_count > 0:
+        completion_tokens = eval_count
+    elif len(generated_content) > 0:
+        completion_tokens = len(generated_content)
+    else:
+        completion_tokens = max_tokens
 
     if pid:
         try:
             memory_peak = max(memory_peak, get_memory_mb(pid))
         except:
             pass
-
-    if completion_tokens == 0:
-        completion_tokens = max_tokens
 
     ttft_ms = (first_token_at - start) * 1000 if first_token_at else total_time * 1000
     decode_time = total_time - (first_token_at - start) if first_token_at else total_time
