@@ -6,8 +6,8 @@ We welcome contributions to rapid-mlx!
 
 ```bash
 # Clone the repository
-git clone https://github.com/waybarrios/vllm-mlx.git
-cd vllm-mlx
+git clone https://github.com/raullenchai/Rapid-MLX.git
+cd Rapid-MLX
 
 # Install with dev dependencies
 pip install -e ".[dev]"
@@ -31,12 +31,9 @@ pytest --cov=vllm_mlx tests/
 ### Code Style
 
 ```bash
-# Format code
-black vllm_mlx/
-isort vllm_mlx/
-
-# Type checking
-mypy vllm_mlx/
+# Lint and format
+ruff check .
+ruff format --check .
 ```
 
 ### Running Benchmarks
@@ -83,4 +80,4 @@ rapid-mlx-bench --model mlx-community/Qwen3-0.6B-8bit --output results_m4.json
 
 ## Questions?
 
-Open an issue at [GitHub Issues](https://github.com/waybarrios/vllm-mlx/issues).
+Open an issue at [GitHub Issues](https://github.com/raullenchai/Rapid-MLX/issues).

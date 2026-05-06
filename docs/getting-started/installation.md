@@ -8,8 +8,8 @@
 ## Install with uv (Recommended)
 
 ```bash
-git clone https://github.com/waybarrios/vllm-mlx.git
-cd vllm-mlx
+git clone https://github.com/raullenchai/Rapid-MLX.git
+cd Rapid-MLX
 
 uv pip install -e .
 ```
@@ -17,8 +17,8 @@ uv pip install -e .
 ## Install with pip
 
 ```bash
-git clone https://github.com/waybarrios/vllm-mlx.git
-cd vllm-mlx
+git clone https://github.com/raullenchai/Rapid-MLX.git
+cd Rapid-MLX
 
 pip install -e .
 ```

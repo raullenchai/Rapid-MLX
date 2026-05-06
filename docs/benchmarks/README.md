@@ -60,4 +60,4 @@ If you have a different Apple Silicon chip, please share your results:
 rapid-mlx-bench --model mlx-community/Qwen3-0.6B-8bit --output results.json
 ```
 
-Open an issue with your results at [GitHub Issues](https://github.com/waybarrios/vllm-mlx/issues).
+Open an issue with your results at [GitHub Issues](https://github.com/raullenchai/Rapid-MLX/issues).
