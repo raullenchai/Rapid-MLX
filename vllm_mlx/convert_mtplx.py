@@ -73,10 +73,13 @@ def _copy_tree_hardlink(source: Path, output: Path) -> None:
         if child.is_dir():
             shutil.copytree(child, target, copy_function=os.link)
         elif child.is_file():
-            try:
-                os.link(child, target)
-            except OSError:
+            if child.name == "config.json":
                 shutil.copy2(child, target)
+            else:
+                try:
+                    os.link(child, target)
+                except OSError:
+                    shutil.copy2(child, target)
         elif child.is_symlink():
             target.symlink_to(os.readlink(child))
 
@@ -114,6 +117,11 @@ def _normalize_qwen36_mtp(raw: dict[str, Any]) -> dict[str, Any]:
         "mtp.layers.0.input_layernorm.weight",
         "mtp.layers.0.mlp.experts.down_proj",
         "mtp.layers.0.mlp.experts.gate_up_proj",
+        "mtp.layers.0.mlp.gate.weight",
+        "mtp.layers.0.mlp.shared_expert.down_proj.weight",
+        "mtp.layers.0.mlp.shared_expert.gate_proj.weight",
+        "mtp.layers.0.mlp.shared_expert.up_proj.weight",
+        "mtp.layers.0.mlp.shared_expert_gate.weight",
         "mtp.layers.0.post_attention_layernorm.weight",
         "mtp.layers.0.self_attn.k_norm.weight",
         "mtp.layers.0.self_attn.k_proj.weight",
@@ -149,7 +157,20 @@ def _normalize_qwen36_mtp(raw: dict[str, Any]) -> dict[str, Any]:
         "mtp.layers.0.mlp.down_proj.weight": raw[
             "mtp.layers.0.mlp.experts.down_proj"
         ],
+        "mtp.layers.0.mlp.gate.weight": raw["mtp.layers.0.mlp.gate.weight"],
         "mtp.layers.0.mlp.gate_proj.weight": gate_proj,
+        "mtp.layers.0.mlp.shared_expert.down_proj.weight": raw[
+            "mtp.layers.0.mlp.shared_expert.down_proj.weight"
+        ],
+        "mtp.layers.0.mlp.shared_expert.gate_proj.weight": raw[
+            "mtp.layers.0.mlp.shared_expert.gate_proj.weight"
+        ],
+        "mtp.layers.0.mlp.shared_expert.up_proj.weight": raw[
+            "mtp.layers.0.mlp.shared_expert.up_proj.weight"
+        ],
+        "mtp.layers.0.mlp.shared_expert_gate.weight": raw[
+            "mtp.layers.0.mlp.shared_expert_gate.weight"
+        ],
         "mtp.layers.0.mlp.up_proj.weight": up_proj,
         "mtp.layers.0.post_attention_layernorm.weight": raw[
             "mtp.layers.0.post_attention_layernorm.weight"
@@ -178,7 +199,20 @@ def _normalize_qwen36_mtp(raw: dict[str, Any]) -> dict[str, Any]:
         ],
         "mtp.pre_fc_norm_hidden.weight": raw["mtp.pre_fc_norm_hidden.weight"],
     }
+    _shift_qwen36_mtp_norms(converted)
     return converted
+
+
+def _shift_qwen36_mtp_norms(tensors: dict[str, Any]) -> None:
+    norm_suffixes = (
+        ".input_layernorm.weight",
+        ".post_attention_layernorm.weight",
+        ".q_norm.weight",
+        ".k_norm.weight",
+    )
+    for key in list(tensors):
+        if key == "mtp.norm.weight" or any(key.endswith(sfx) for sfx in norm_suffixes):
+            tensors[key] = tensors[key] + 1.0
 
 
 def _write_config(output: Path, config: dict[str, Any]) -> None:

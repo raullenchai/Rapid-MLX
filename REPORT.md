@@ -547,3 +547,78 @@ Likely next fix:
 
 - Restore the benchmark branch's `always-advance` scheduler behavior for this Qwen3.6 MTPLX path, or expose it as the default performance profile for MTPLX models.
 - Keep `verified` mode only behind an explicit safety/debug flag until acceptance/cache alignment is fixed.
+
+## Qwen3.6 35B-A3B Acceptance Investigation
+
+Question:
+
+- Find whether low MTP acceptance on `Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` is caused by runtime code, `convert-mtplx`, or the 35B-A3B MTP head itself.
+
+Controls:
+
+- `Qwen3.6-27B-MTPLX-Optimized-Speed` after restoring the benchmark `always-advance` scheduler path:
+  - `accepted=236 rejected=20 acceptance=92.2%`
+  - `accepted=478 rejected=34 acceptance=93.4%`
+  - `accepted=724 rejected=44 acceptance=94.3%`
+  - 1573 completion tokens in 37.07s, 42.4 tok/s
+- This proves the restored runtime path can produce high acceptance with a known-good MTPLX model.
+
+35B results before conversion fix:
+
+- `Qwen3.6-35B-A3B-MTPLX-Optimized-Speed` full precision:
+  - `accepted=0 rejected=1280 acceptance=0.0%`
+  - 2560 completion tokens in 124.85s, 20.5 tok/s
+- `Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`:
+  - `accepted=0 rejected=1280 acceptance=0.0%`
+  - 2560 completion tokens in 37.98s, 67.4 tok/s
+
+Conversion bug found:
+
+- The embedded 35B MTP source has 19 raw `mtp.*` tensors, including:
+  - `mtp.layers.0.mlp.gate.weight`
+  - `mtp.layers.0.mlp.shared_expert.down_proj.weight`
+  - `mtp.layers.0.mlp.shared_expert.gate_proj.weight`
+  - `mtp.layers.0.mlp.shared_expert.up_proj.weight`
+  - `mtp.layers.0.mlp.shared_expert_gate.weight`
+- Old `convert-mtplx` wrote only 15 tensors and dropped the MoE router/shared-expert tensors, leaving part of the MTP block randomly initialized.
+- Old `convert-mtplx` also hardlinked `config.json` and then rewrote it in the output directory, contaminating the source model config.
+
+Fix applied:
+
+- `convert-mtplx` now preserves MoE router/shared-expert MTP tensors.
+- `convert-mtplx` now shifts MTP norm tensors by `+1.0`, matching mlx-lm sanitize behavior for Qwen3.6 MTP weights.
+- `convert-mtplx` now copies `config.json` instead of hardlinking it.
+- Regenerated:
+  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed`
+  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`
+- Both regenerated outputs now have 20 sidecar tensors.
+- Source model configs no longer contain generated MTPLX fields without a sidecar.
+
+35B results after conversion fix:
+
+- `Qwen3.6-35B-A3B-4bit-MTPLX-Fixed-Test`:
+  - `accepted=4 rejected=252 acceptance=1.6%`
+  - `accepted=4 rejected=508 acceptance=0.8%`
+  - `accepted=5 rejected=763 acceptance=0.7%`
+  - `accepted=6 rejected=1018 acceptance=0.6%`
+  - 2304 completion tokens in 26.96s, 85.5 tok/s
+- `Qwen3.6-35B-A3B-MTPLX-Fixed-Test` full precision:
+  - `accepted=3 rejected=253 acceptance=1.2%`
+  - `accepted=3 rejected=509 acceptance=0.6%`
+  - `accepted=5 rejected=763 acceptance=0.7%`
+  - `accepted=5 rejected=1019 acceptance=0.5%`
+  - 2176 completion tokens in 73.39s, 29.7 tok/s
+
+Negative tests:
+
+- FC concat order variants (`embedding,hidden` vs `hidden,embedding`) did not improve acceptance; default `embedding,hidden` was best.
+- Hidden-state variants (`normed` vs `pre_norm`) did not improve acceptance.
+- Draft temperatures `0.0`, `0.2`, and `0.5` did not materially improve acceptance.
+- `--mtp-num-draft-tokens 2` and `4` made acceptance worse (`0.0%`) and/or throughput lower.
+- A quantized-MTP sidecar experiment failed in the current loader path with `gather_qmm` expecting `uint32` but receiving `bfloat16`; this needs separate SwitchLinear quantized-save/load work and is not proven to help because the full-precision 35B acceptance is also low.
+
+Interpretation:
+
+- There was a real `convert-mtplx` bug. Fixing it changes the 35B sidecar from incomplete to structurally correct and raises 4bit acceptance from `0.0%` to roughly `0.6%`.
+- The remaining low acceptance is not caused only by 4bit quantization, because full-precision 35B with the corrected sidecar also stays around `0.5%`.
+- Current evidence points to a remaining 35B-A3B MTP architecture/semantics mismatch in the MLX runtime, or a low-quality/incompatible embedded MTP head for this checkpoint. It is not a generic MTPLX runtime failure because the official 27B path reaches `94.3%`.

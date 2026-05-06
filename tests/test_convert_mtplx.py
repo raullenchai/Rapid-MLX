@@ -80,21 +80,32 @@ def test_convert_mtplx_writes_expected_sidecar_layout(tmp_path):
     result = convert_mtplx(model)
 
     assert result.output.name == "Qwen3.6-35B-A3B-MTPLX-Optimized-Speed"
-    assert result.tensor_count == 15
+    assert result.tensor_count == 20
     assert result.mtp_file == result.output / "mtp.safetensors"
     assert result.runtime_contract_file == result.output / "mtplx_runtime.json"
 
     sidecar = mx.load(str(result.mtp_file))
     assert "mtp.layers.0.mlp.experts.gate_up_proj" not in sidecar
     assert "mtp.layers.0.mlp.down_proj.weight" in sidecar
+    assert "mtp.layers.0.mlp.gate.weight" in sidecar
     assert "mtp.layers.0.mlp.gate_proj.weight" in sidecar
+    assert "mtp.layers.0.mlp.shared_expert.down_proj.weight" in sidecar
+    assert "mtp.layers.0.mlp.shared_expert.gate_proj.weight" in sidecar
+    assert "mtp.layers.0.mlp.shared_expert.up_proj.weight" in sidecar
+    assert "mtp.layers.0.mlp.shared_expert_gate.weight" in sidecar
     assert "mtp.layers.0.mlp.up_proj.weight" in sidecar
     assert sidecar["mtp.layers.0.mlp.gate_proj.weight"].shape == (3, 2, 2)
     assert sidecar["mtp.layers.0.mlp.up_proj.weight"].shape == (3, 2, 2)
+    assert mx.all(sidecar["mtp.norm.weight"] == 2.0).item()
+    assert mx.all(sidecar["mtp.layers.0.input_layernorm.weight"] == 2.0).item()
 
     config = json.loads((result.output / "config.json").read_text())
     assert config["mlx_lm_extra_tensors"]["mtp_file"] == "mtp.safetensors"
     assert config["num_nextn_predict_layers"] == 1
+
+    source_config = json.loads((model / "config.json").read_text())
+    assert "mlx_lm_extra_tensors" not in source_config
+    assert "num_nextn_predict_layers" not in source_config
 
     contract = json.loads(result.runtime_contract_file.read_text())
     assert contract["arch_id"] == "qwen3-next-mtp"
@@ -115,7 +126,7 @@ def test_convert_mtplx_can_read_mtp_from_separate_source(tmp_path):
     assert result.source == base
     assert result.mtp_source == mtp_source
     assert result.output.name == "Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed"
-    assert result.tensor_count == 15
+    assert result.tensor_count == 20
     assert (result.output / "model-00001-of-00001.safetensors").exists()
 
     sidecar = mx.load(str(result.mtp_file))
