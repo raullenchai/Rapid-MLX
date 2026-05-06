@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+# Fix Windows console encoding for box-drawing chars
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 try:
     import psutil
 except ImportError:
@@ -283,10 +289,7 @@ def benchmark_ollama(url: str, model: str, max_tokens: int, warmup: bool = True)
     start = time.perf_counter()
     first_token_at = None
     completion_tokens = 0
-
-    start = time.perf_counter()
-    first_token_at = None
-    completion_tokens = 0
+    generated_content = ""
 
     with requests.post(
         f"{url}/api/chat",
@@ -307,16 +310,26 @@ def benchmark_ollama(url: str, model: str, max_tokens: int, warmup: bool = True)
             except json.JSONDecodeError:
                 continue
             if data.get("message", {}).get("content"):
+                content = data["message"]["content"]
+                generated_content += content
                 if first_token_at is None:
                     first_token_at = time.perf_counter()
                     if pid:
                         memory_gen = get_memory_mb(pid)
             if data.get("done"):
-                completion_tokens = data.get("eval_count", 0)
-        total_time = time.perf_counter() - start
+                completion_tokens = data.get("eval_count") or len(generated_content)
+
+    total_time = time.perf_counter() - start
+
+    # Fallback: count generated tokens if eval_count was 0
+    if completion_tokens == 0:
+        completion_tokens = len(generated_content) or max_tokens
 
     if pid:
-        memory_peak = max(memory_peak, get_memory_mb(pid))
+        try:
+            memory_peak = max(memory_peak, get_memory_mb(pid))
+        except:
+            pass
 
     if completion_tokens == 0:
         completion_tokens = max_tokens
