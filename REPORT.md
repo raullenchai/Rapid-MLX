@@ -1,461 +1,423 @@
-# Agentic MTP Speed Report
+# Qwen3.6-35B-A3B MTPLX Agentic Snake Report
 
-Branch: `optimize-agentic-mtp-speed`
+Branch/workdir: `/Users/samuelfajreldines/dev/rapid-mlx`
 
-Prompt fixture:
+Target prompt:
 
 ```text
-Create the snake game using react, vite and typescript
+create the snake game with html and typescript
 ```
 
-Rules followed:
-- Run `pi` in an empty directory.
-- Run only one server at a time.
-- Keep only changes that improve measured agentic performance.
-- Revert changes that do not improve measured performance.
-- Use generic runtime improvements only. No prompt-specific heuristics.
+Goal:
 
-Base server:
+- Plain serve command must work for `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`.
+- Pi provider `local`, model `local` must create a functional HTML + TypeScript snake game.
+- Runtime change must be generic, not prompt-specific.
+- Tool-use must be efficient: no 2048-token loops, no reasoning/prolixity in stream.
+- Final proof must include generated files plus build/check/browser smoke where applicable.
+
+## Current Baseline From Live Runs
+
+Observed before this pass:
+
+- Plain `hi` was fixed earlier: no `reasoning_content` leaked and response was short.
+- Pi snake prompt still failed.
+- Runs timed out at 60-90s.
+- Generated artifacts were incomplete:
+  - `/tmp/rapid-mlx-pi-snake-html-ts-info`: only `index.html`, no script/build.
+  - `/tmp/rapid-mlx-pi-snake-html-ts-bashhint`: `index.html` + `snake.ts`, but no package/build and HTML referenced raw `snake.ts`.
+- Server logs showed first tool request could generate 480-1102 tokens and following tool turns could hit 2048 tokens.
+- MTP acceptance for this workload was effectively 0 accepted / many rejected, so MTP added work without benefit in these tool-heavy turns.
+
+## Working Hypothesis
+
+Primary issue is not `reasoning_content` leakage anymore. The model spends too many tokens inside tool responses and often writes incomplete multi-file artifacts over several turns. Need runtime-level bounds and retry behavior for tool requests.
+
+Next candidate changes:
+
+- Cap tool request generation budget from the first request, not only after `last_role == tool`.
+- Use lower temperature for tool requests when user did not explicitly set it.
+- Add a short retry path when tool requests produce content/deferred plans instead of tool calls.
+- Consider disabling MTP for tool-heavy 35B requests if acceptance remains 0 and latency worsens.
+
+## Candidate A: Bound Tool-Turn Budgets
+
+Change under test:
+
+- Tool requests now cap generation at `1024` tokens from the first turn.
+- Tool retry turns now cap generation at `512` tokens and retry at most `3` times.
+- Tool requests default to temperature `0.2` unless the client explicitly sets temperature.
+
+Why:
+
+- Live Pi snake runs showed first request using `max_tokens=32768` and retry requests using `2048`, causing 60-90s stalls.
+- This is generic for tool-use and not specific to snake.
+
+Validation status:
+
+- Unit tests passed with Candidate A.
+- Live result: rejected.
+
+Live result:
+
+- Directory: `/tmp/rapid-mlx-pi-snake-candidate-a`.
+- `pi`: exit code `0`, but invalid artifact.
+- Files: `index.html`, `style.css`, `snake.ts`, `pi.out`.
+- Problem: `index.html` references raw `snake.ts`; browser will not execute TypeScript interfaces/enums directly.
+- Problem: final `pi.out` was malformed/incomplete: `<think>Let</think>` then `[Calling tool=read]`.
+- Server logs confirmed caps applied (`1024` first turn, `512` retry), but quality degraded and artifact was not usable.
+
+Decision:
+
+- Reverted Candidate A. It reduced budget but made the agent stop with incomplete/broken output.
+
+## Candidate B: Prompt-Level Structured Tool Thinking
+
+Change under test:
+
+- Add structured-cot-inspired instruction to tool-use system suffix.
+- This is prompt-level only, not grammar-constrained decoding, because lightning-mlx does not currently expose GBNF/logit-mask grammar support.
+- Keep budgets unchanged to avoid truncating tool-call arguments.
+
+Rationale:
+
+- `structured-cot` reports large compression by constraining `<think>` to compact fields such as `GOAL/APPROACH/EDGE`.
+- For this runtime, the nearest safe generic step is a short structured planning format for tool turns while preserving existing parser/tool behavior.
+
+Implementation:
+
+- Tool-use system suffix now says any necessary internal planning before a tool call must be compact structured `GOAL/ACTION/VERIFY`, one short line each, then immediately call the tool.
+- Added unit coverage for this suffix.
+
+Validation status:
+
+- Focused tests passed: `154 passed`.
+- Live result: rejected.
+
+Live result:
+
+- Directory: `/tmp/rapid-mlx-pi-snake-candidate-b`.
+- After 40s, no generated files except empty `pi.out`.
+- Server first request still had `max_tokens=32768`.
+- MTP stats stayed `accepted=0`, rejected increasing.
+
+Decision:
+
+- Reverted Candidate B. Prompt-level structured-cot instruction worsened live behavior. True grammar-constrained decoding may still be useful later, but prompt-only structured planning is not kept.
+
+## Candidate C: Prefer Bash In Tool Template
+
+Change under test:
+
+- Preserve OpenAI response behavior, but present `bash` first in the chat template tool list when available.
+- Augment only the `bash` tool description with a generic note: prefer it for multi-file project setup, build, test, and validation workflows.
+
+Why:
+
+- Live artifacts show the model repeatedly chooses one-file write flows (`index.html`, then `snake.ts`) and skips build/validation.
+- Pi exposes a `bash` tool that can create multi-file projects and validate them in one turn.
+- This is generic for agentic coding workflows and not snake-specific.
+
+Validation status:
+
+- Unit test added for bash ordering/description.
+- Focused tests passed: `154 passed`.
+- Live result: rejected.
+
+Live result:
+
+- Directory: `/tmp/rapid-mlx-pi-snake-candidate-c`.
+- After 35s, no generated files except empty `pi.out`.
+- Server first request still ran very long with `max_tokens=32768`.
+- MTP remained `accepted=0`.
+
+Decision:
+
+- Reverted Candidate C. Tool ordering/description did not improve live behavior.
+
+## Candidate D: Parse Bracketed Equals Tool Calls
+
+Change under test:
+
+- Add generic parser support for malformed tool text like `[Calling tool=read]`.
+- Parse `[Calling tool=name({...})]` when arguments are present.
+- Treat no-argument `[Calling tool=name]` text as deferred tool-use intent so the retry path handles it instead of streaming it as final content.
+
+Why:
+
+- Candidate A finished with `pi.out` containing `<think>Let</think>` followed by `[Calling tool=read]`.
+- That is tool intent, not final assistant content. If parser converts it into a real tool call, Pi can continue instead of stopping on malformed text.
+
+Validation status:
+
+- Unit tests added for `[Calling tool=bash({...})]` parser and `[Calling tool=read]` deferred-tool detection.
+- Focused tests passed: `155 passed`.
+- Live Pi validation pending.
+
+## Candidate E: Conservative First Tool Budget Cap
+
+Change under test:
+
+- Cap every request with tools at `2048` generated tokens, including the first tool request.
+- Keep retry count and temperature behavior unchanged.
+
+Why:
+
+- Baseline showed first tool requests using `max_tokens=32768`, which allowed long planning/prolixity before a tool call.
+- Candidate A proved aggressive caps (`1024` first request, `512` retries) reduce budget but hurt artifact quality.
+- Candidate E is the smallest conservative runtime bound: prevent runaway first turns without squeezing valid multi-file tool arguments.
+
+Validation status:
+
+- Unit test added for `_tool_turn_max_tokens`.
+- Focused tests passed: `156 passed`.
+- Live result: rejected.
+
+Live result:
+
+- Directory: `/tmp/rapid-mlx-pi-snake-candidate-e`.
+- `pi`: timeout after 120s (`EXIT:142`).
+- Files: only `index.html` plus empty `pi.out`.
+- Server confirmed first tool request was capped from `32768` to `2048`.
+- But it still generated full `2048` tokens on consecutive tool turns.
+- MTP stayed `accepted=0` while rejected count climbed.
+
+Decision:
+
+- Partially useful but incomplete. It proves first-turn cap applies, but still violates the no-2048-loop criterion.
+- Superseded by Candidate F with lower cap and generic shell-tool preference.
+
+## Candidate F: Lower Tool Cap Plus Shell Tool Preference
+
+Change under test:
+
+- Cap tool requests at `1536` tokens to avoid 2048-token loops.
+- Present shell-style tools (`bash`, `shell`, `exec`, `run_command`) first in the chat-template tool list.
+- Add a short generic shell-tool description hint for multi-file changes plus build/test/validation.
+
+Why:
+
+- Candidate E still hit repeated 2048-token tool turns.
+- Pi created one file at a time. Shell tools can create and validate a multi-file project in one turn.
+- Candidate C tested shell preference alone and failed because first request still had `32768`; Candidate F tests the combined runtime fix.
+
+Validation status:
+
+- Implemented.
+- Focused tests passed: `157 passed`.
+- Live result: rejected.
+
+Live result:
+
+- Directory: `/tmp/rapid-mlx-pi-snake-candidate-f`.
+- `pi`: timeout after 150s (`EXIT:142`).
+- Files: `index.html`, `snake.ts`, empty `pi.out`.
+- `index.html` references `snake.js`, but no `snake.js` or build/package was created.
+- Server confirmed cap lowered to `1536`.
+- Still multiple long tool turns: 1536, 1536, 92, then cancelled after 498 tokens.
+- MTP stayed `accepted=0`, rejected exceeded 4000.
+
+Decision:
+
+- Partial improvement only. More files were created, but still not functional and still too slow.
+- Keep shell preference as a candidate only if later validation passes; otherwise revert before final.
+
+## Candidate G: Explicit No-MTP Comparison
+
+Change under test:
+
+- Add explicit `--disable-mtp` override so MTPLX presets can be compared without speculative decode.
+- Run the same Candidate F runtime behavior with MTP disabled.
+
+Why:
+
+- All 35B tool-heavy runs show MTP `accepted=0`; every speculative step is rejected/corrected.
+- Need proof whether MTP is net-negative for this workload before changing defaults.
+
+Validation status:
+
+- `--disable-mtp` implemented as explicit CLI override only.
+- Focused tests passed: `158 passed`.
+- Live result: rejected.
+
+Live result:
+
+- Directory: `/tmp/rapid-mlx-pi-snake-candidate-g-nomtp`.
+- `pi`: timeout after 150s (`EXIT:142`).
+- Files: only `index.html`, `styles.css`, empty `pi.out`.
+- No MTP stats were emitted, confirming MTP was disabled.
+- Decode throughput per long turn improved versus MTP, but artifact quality/regression was worse.
+
+Decision:
+
+- Keep `--disable-mtp` as explicit diagnostic/fallback flag unless later tests show downside.
+- Do not disable MTP by default from this evidence alone.
+
+## Candidate H: Parser Change
+
+Change under test:
+
+- Considered running the 35B MTPLX model with `--tool-call-parser qwen3_xml`.
+
+Why:
+
+- Hypothesis was that parser mismatch could cause late fallback tool calls.
+- User clarified this is wrong for Qwen3.6: parser must always be `qwen3_coder_xml` with `reasoning-parser qwen3`.
+
+Validation status:
+
+- No parser change kept.
+- Added auto-config test proving Qwen3.6 resolves to `qwen3_coder_xml` + `qwen3`.
+- Existing MTPLX preset already applies `qwen3_coder_xml` + `qwen3`.
+- Focused tests passed: `187 passed`.
+
+## Conversion / Model Quality Check
+
+Question:
+
+- Could `convert-mtplx` have produced a bad model, or could the 35B-A3B architecture be a poor MTPLX fit?
+
+Evidence:
+
+- `mtplx inspect /Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed --json` passed.
+- Compatibility status: `verified-native`.
+- Runtime contract found: `mtplx_runtime.json`.
+- MTP sidecar found: `mtp.safetensors`.
+- MTP tensor gate passed: `15` expected tensors, `15` present, no missing keys, no extra keys.
+- Runtime contract exactness baseline reports `max_abs_diff: 0.0`.
+- Converted model files match expected 4-bit base layout plus `mtp.safetensors` and `mtplx_runtime.json`.
+
+Interpretation:
+
+- No current evidence of a broken conversion layout.
+- Still possible that this 35B-A3B 4-bit base plus BF16 MTP sidecar has poor speculative acceptance in this runtime.
+- Live evidence supports that concern: MTP acceptance stayed `0` in agentic tool-heavy runs.
+- Disabling MTP improved raw decode speed but worsened artifact quality, so the issue is not only MTP overhead.
+
+Decision:
+
+- Do not blame `convert-mtplx` yet.
+- Treat this as either runtime MTP acceptance mismatch for 35B-A3B, model/tool-use weakness, or both.
+
+## Pi `userThe` Degeneration Check
+
+Question:
+
+- The Pi terminal shows `userThe userThe...` for a simple `hi`. Is that MTP runtime mismatch, bad conversion, or model weakness?
+
+Matrix:
+
+- Base 4bit model, direct OpenAI curl, no MTP:
+  - Command served `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit`.
+  - Response: `Hi! How can I help you today? 😊`.
+  - No `userThe`.
+- MTPLX model, direct OpenAI curl, `--disable-mtp`:
+  - Response: `Hi! How can I help you today? 😊`.
+  - Same prompt/completion usage as base direct curl: `11` prompt, `212` completion.
+  - No `userThe`.
+- MTPLX model, direct OpenAI curl, MTP enabled:
+  - Response: `Hello! How can I help you today? 😊`.
+  - Usage: `11` prompt, `34` completion.
+  - No `userThe`.
+- MTPLX model, Pi `hi`, MTP enabled:
+  - Command wrote `/tmp/rapid-mlx-pi-hi-mtp/pi.out`.
+  - Output reproduced `The userThe userThe...`.
+  - Server request shape: stream=true, `msgs=2`, roles `['system', 'user']`, `tools=4`, total chars around `2436`, prompt tokens `1727`.
+  - MTP stats during this request: `accepted=0`, rejected climbed to `768`.
+  - Completion hit `1536` tokens.
+- MTPLX model, Pi `hi`, `--disable-mtp`:
+  - Output file size `0`, exit `0`.
+  - Server generated only `38` tokens.
+  - No `userThe`.
+- Base 4bit model, Pi `hi`:
+  - Output file size `0`, exit `0`.
+  - Server generated only `33` tokens.
+  - No `userThe`.
+
+Interpretation:
+
+- `convert-mtplx` base copy is likely fine because MTPLX with MTP disabled behaves like base.
+- Direct API with MTP enabled is also fine for the tiny no-tool request.
+- Degeneration is specific to MTP enabled under Pi's agentic request shape: long system prompt plus tools plus streaming.
+- This is now strong evidence of an MTP acceptance/runtime mismatch for tool-heavy 35B-A3B requests, not a generic tokenizer/model conversion failure.
+
+## Full-Precision MTPLX Comparison
+
+Question:
+
+- Is the `userThe` degeneration caused by Qwen3.6-35B-A3B itself, by quantization, or by MTPLX conversion?
+
+Additional matrix:
+
+- Full source model `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B` served with `--enable-mtp`:
+  - Runtime warning: no `model-mtp.safetensors` / `mtp.safetensors`; MTP validation failed and was disabled.
+  - Pi `hi`: exit `0`, output size `0`.
+  - Server generated `36` tokens.
+  - No `userThe`.
+- Full converted MTPLX model `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed` served with MTP enabled:
+  - MTP injected and validated.
+  - Pi `hi`: exit `0`, output size `0`.
+  - Server generated `34` tokens.
+  - No `userThe`.
+- Earlier 4-bit converted MTPLX model `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` with MTP enabled:
+  - Pi `hi` reproduced `The userThe userThe...`.
+  - Server generated `1536` tokens and MTP accepted `0`.
+
+Interpretation:
+
+- Qwen3.6-35B-A3B full MTPLX can run Pi `hi` with MTP enabled without degeneration.
+- The bug is not explained by Qwen3.6-35B-A3B architecture alone.
+- Current strongest culprit is the 4-bit converted model path: 4-bit base plus BF16 MTP sidecar or quantized-base/MTP acceptance mismatch.
+- The full source model is not a true MTP comparison because MTP did not activate there.
+
+## Full MTPLX Express/Bun/TypeScript Pi Run
+
+Prompt:
+
+```text
+create a REST api using express and bun and typescript.
+```
+
+Model:
+
+```text
+/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed
+```
+
+Serve:
 
 ```bash
-.venv/bin/rapid-mlx serve /Users/samuelfajreldines/dev/models/Qwen3.6-27B-MTPLX-Optimized-Speed \
-  --enable-mtp \
-  --served-model-name local \
-  --port 8010 \
-  --default-temperature 0.6 \
-  --default-top-p 0.95 \
-  --disable-prefix-cache \
-  --max-num-seqs 1 \
-  --prefill-batch-size 1 \
-  --completion-batch-size 1 \
-  --stream-interval 1 \
-  --enable-auto-tool-choice \
-  --tool-call-parser qwen3_coder_xml \
-  --reasoning-parser qwen3 \
-  --no-thinking \
-  --enable-tool-logits-bias
-```
-
-## Baseline
-
-Directory:
-
-```text
-/tmp/rapid-agentic-snake-baseline-1778038946
+uv run lightning-mlx serve /Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed --enable-mtp --disable-prefix-cache --log-level INFO
 ```
 
 Result:
 
-- `pi`: `TIMEOUT`, exit code `124` after 10 minutes.
-- Artifact: substantial Vite/React/TypeScript snake game created.
-- Non-`node_modules` files: `28`.
-- Tool-call SSE events: `23`.
-- Turn count: `24`.
-- All-turn average: `13.49 tok/s`.
-- Long-turn average (`>=500` generated tokens): `28.02 tok/s` (`n=6`).
-- Short-turn average (`<150` generated tokens): `7.42 tok/s` (`n=16`).
-- MTP acceptance: avg `92.02%`, min `78.1%`, max `94.7%` (`n=18`).
-
-Observation:
-
-- Raw long-turn decode was acceptable, but repeated short long-context tool turns collapsed to `3-7 tok/s` near the end.
-
-## Candidate 6: Prefix Cache Flag
-
-Directory:
-
-```text
-/tmp/rapid-agentic-snake-prefixcache-1778039607
-```
-
-Change tested:
-
-- Used `--enable-prefix-cache`.
-- No code change.
-
-Result:
-
-- `pi`: `DONE`, exit code `0`.
-- Build: passed.
-- Non-`node_modules` files: `25`.
-- Tool-call SSE events: `12`.
-- Turn count: `13`.
-- All-turn average: `16.95 tok/s`.
-- Long-turn average: `37.70 tok/s`.
-- Short-turn average: `10.79 tok/s`.
-- MTP acceptance: avg `91.59%`, min `84.4%`, max `94.0%`.
-- Prefix cache evidence: `0` hits, `14` misses.
-
-Decision:
-
-- Not kept as code/default. Run improved, but no real prefix-cache hits happened, so safe agentic prefix caching was not proven.
-
-## Candidate 4: Earlier Tool-Call Streaming From Reasoning
-
-Directory:
-
-```text
-/tmp/rapid-agentic-snake-earlyreasoning-1778040034
-```
-
-Change tested:
-
-- Routed complete tool markup found in reasoning channel through incremental tool detector immediately.
-- Left incomplete `[Calling tool: name]` on keepalive path.
-
-Validation:
-
-- Initial focused tests passed: `53 passed`.
-
-Benchmark result:
-
-- `pi`: `DONE`, exit code `0`.
-- Build: failed with TypeScript type-only import errors.
-- Turn count: `19`.
-- All-turn average: `16.43 tok/s`.
-- Long-turn average: `25.04 tok/s`.
-- Short-turn average: `10.53 tok/s`.
-- MTP acceptance: avg `91.51%`, min `84.0%`, max `93.4%`.
-- `SSE-TC`: `0`.
-- `SSE-FALLBACK-TC`: `18`.
-
-Decision:
-
-- Reverted. It did not reduce fallback tool-call usage, worsened long-turn throughput, and artifact build failed.
-
-## Candidate 5: Fast Tool-Call SSE Serialization
-
-Directory:
-
-```text
-/tmp/rapid-agentic-snake-fasttoolsse-1778040656
-```
-
-Change kept:
-
-- Added direct JSON serializer for streaming tool-call chunks in `vllm_mlx/routes/chat.py`.
-- Replaced Pydantic `ChatCompletionChunk(...).model_dump_json(...)` on `SSE-TC` and `SSE-FALLBACK-TC` paths.
-- Generic OpenAI-compatible output serialization. No prompt-specific behavior.
-
-Validation:
-
-- `tests/test_postprocessor.py`
-- `tests/test_tool_calling.py`
-- `tests/test_api_models.py`
-- Result: `211 passed`.
-
-Benchmark result:
-
-- `pi`: `DONE`, exit code `0`.
-- Build: passed.
-- Turn count: `9`.
-- All-turn average: `15.34 tok/s`.
-- Long-turn average: `33.55 tok/s`.
-- Short-turn average: `10.30 tok/s`.
-- MTP acceptance: avg `93.84%`, min `87.9%`, max `95.3%`.
-- `SSE-TC`: `0`.
-- `SSE-FALLBACK-TC`: `8`.
-
-Decision:
-
-- Kept. It improved end-to-end completion, long-turn speed, and short-turn speed vs baseline.
-
-## Candidate 1: Existing `--mtp-num-draft-tokens 2`
-
-Directory:
-
-```text
-/tmp/rapid-agentic-snake-draft2-1778040932
-```
-
-Change tested:
-
-- Added `--mtp-num-draft-tokens 2`.
-- No code change.
-
-Result:
-
-- `pi`: `DONE`, exit code `0`.
-- Build: passed.
-- Turn count: `5`.
-- All-turn average: `20.70 tok/s`.
-- Short-turn average: `15.67 tok/s` (`n=3`).
-- No turns reached `500` generated tokens, so long-turn evidence is weak.
-- MTP acceptance: `66.8%`.
-
-Decision:
-
-- Not kept as default. It completed fast in this run, but acceptance collapsed and long-turn evidence was missing. Needs stronger adaptive/multi-draft implementation before enabling.
-
-## Candidate 5b: Cheaper SSE Logging
-
-Directory:
-
-```text
-/tmp/rapid-agentic-snake-fastlog-1778041075
-```
-
-Change kept:
-
-- Downgraded per-chunk SSE role/tool-call logs from `INFO` to `DEBUG`.
-- Kept `Chat completion (stream)` throughput logs at `INFO`.
-- Reduces hot-path logging/I/O during agentic tool loops.
-
-Validation:
-
-- `tests/test_postprocessor.py`
-- `tests/test_tool_calling.py`
-- `tests/test_api_models.py`
-- Result: `211 passed`.
-
-Benchmark result:
-
-- `pi`: `DONE`, exit code `0`.
-- Build: passed.
-- Turn count: `3`.
-- All-turn average: `26.47 tok/s`.
-- Long-turn average: `38.60 tok/s`.
-- Short-turn average: `20.40 tok/s`.
-- MTP acceptance: avg `94.30%`, min `91.0%`, max `96.1%`.
-- `SSE` info log count: `0`.
-
-Decision:
-
-- Kept. This was the best measured run and kept artifact build passing.
-
-## Candidate 10: Disable Tool Logits Bias
-
-Directory:
-
-```text
-/tmp/rapid-agentic-snake-notoolbias-1778041220
-```
-
-Change tested:
-
-- Omitted `--enable-tool-logits-bias`.
-- No code change.
-
-Result:
-
-- `pi`: `DONE`, exit code `0`.
-- Build: failed with TypeScript errors.
-- Turn count: `18`.
-- All-turn average: `17.23 tok/s`.
-- Long-turn average: `31.40 tok/s`.
-- Short-turn average: `10.17 tok/s`.
-- MTP acceptance: avg `88.18%`, min `84.0%`, max `90.7%`.
-
-Decision:
-
-- Not kept. It did not improve the kept fast-log run and generated artifact failed build.
-
-## Candidate 9: Tool-Call Warmup
-
-Change under test:
-
-- Added startup warmup for chat+tools path when auto tool choice and a tool parser are enabled.
-- Warmup uses a generic no-op tool schema and `max_tokens=8`.
-- Goal: compile tool-call/chat/MTP kernels before `/health` returns so the first agentic turns pay less startup cost.
-
-Validation before benchmark:
-
-- `tests/test_config_and_middleware.py`
-- `tests/test_server_utils.py`
-- `tests/test_postprocessor.py`
-- `tests/test_api_models.py`
-- Result: `204 passed`.
-
-Benchmark result:
-
-- Directory: `/tmp/rapid-agentic-snake-toolwarmup-1778041762`.
-- `pi`: `DONE`, exit code `0`.
-- Build: passed.
-- Warmup evidence: server logged `Tool-call warmup: compiling chat+tools path` and `Warmup complete (0.9s)`.
-- Turn count: `27`.
-- All-turn average: `12.33 tok/s`.
-- Long-turn average: `31.95 tok/s`.
-- Short-turn average: `7.68 tok/s`.
-- MTP acceptance: avg `90.87%`, min `84.8%`, max `93.1%`.
-
-Decision:
-
-- Reverted. It was slower than the kept fast-log run across all-turn, long-turn, and short-turn averages, and it increased turn count from `3` to `27`.
-
-## Candidate 7: Lower Draft Temperature
-
-Change tested:
-
-- Used `--mtp-draft-temperature 0.5`.
-- No code change.
-- Goal: reduce speculative rejection and rollback cost with a generic less-aggressive draft policy.
-
-Benchmark result:
-
-- Directory: `/tmp/rapid-agentic-snake-drafttemp05-1778042580`.
-- `pi`: `DONE`, exit code `0`.
-- Build: passed from generated `snake-game` subdirectory.
-- Turn count: `23`.
-- All-turn average: `13.49 tok/s`.
-- Long-turn average: `33.47 tok/s`.
-- Short-turn average: `9.18 tok/s`.
-- MTP acceptance: avg `91.09%`, min `88.7%`, max `94.0%`.
-
-Decision:
-
-- Not kept. It was slower than the kept fast-log run across all-turn, long-turn, and short-turn averages, despite completing and building successfully.
-
-## Candidate 8: Adaptive Draft Depth
-
-Change under test:
-
-- Added generic adaptive MTP depth when `--mtp-num-draft-tokens > 1`.
-- The policy started at depth `1`, raised depth only after high live acceptance, and lowered it after weak live acceptance.
-- No prompt-specific logic.
-
-Validation before benchmark:
-
-- `tests/test_batching.py`
-- `tests/test_config_and_middleware.py`
-- `tests/test_server_utils.py`
-- Result: `73 passed`, `2 deselected`.
-
-Benchmark result:
-
-- Directory: `/tmp/rapid-agentic-snake-adaptive-draft2-1778043139`.
-- `pi`: exit code `0`, but invalid fixture result.
-- Build: not run.
-- Generated files: `0`.
-- Turn count: `2`.
-- All-turn average: `16.25 tok/s`.
-- Adaptive events: `0`.
-
-Decision:
-
-- Reverted. The benchmark did not produce the requested snake-game artifact, so it cannot be counted as an improvement.
-
-## Candidate 3: Batch-Size-1 Logits Processor Fast Path
-
-Change under test:
-
-- Added a specialized `batch_size == 1` path in the GenerationBatch MTP logits-processor flow.
-- Avoided per-row list building and `mx.concatenate` for primary and verify logits processing when agentic serving runs with `--max-num-seqs 1`.
-
-Validation before benchmark:
-
-- `tests/test_batching.py`
-- `tests/test_tool_calling.py`
-- `tests/test_config_and_middleware.py`
-- Result: `94 passed`, `2 deselected`.
-
-Benchmark result:
-
-- Directory: `/tmp/rapid-agentic-snake-batch1-fastpath-1778043270`.
-- `pi`: `DONE`, exit code `0`.
-- Build: failed with TypeScript type-only import errors in the generated app.
-- Turn count: `15`.
-- All-turn average: `17.83 tok/s`.
-- Long-turn average: `26.30 tok/s`.
-- Short-turn average: `13.04 tok/s`.
-- MTP acceptance: avg `89.77%`, min `82.0%`, max `91.9%`.
-
-Decision:
-
-- Reverted. It was slower than the kept fast-log run and the generated artifact failed build.
-
-## Candidate 2: Defer Current Logprobs Sync
-
-Change under test:
-
-- Changed the GenerationBatch MTP step to `mx.async_eval(gen_self._current_logprobs)` and synchronously evaluate only `input_tokens` before `tolist()`.
-- Goal: reduce CPU/GPU synchronization in the hot path without changing emitted tokens.
-
-Validation before benchmark:
-
-- `tests/test_batching.py`
-- `tests/test_tool_calling.py`
-- `tests/test_api_models.py`
-- Result: `152 passed`, `2 deselected`.
-
-Benchmark result:
-
-- Directory: `/tmp/rapid-agentic-snake-sync-defer-logprobs-1778043653`.
-- `pi`: `DONE`, exit code `0`.
-- Build: passed.
-- Turn count: `16`.
-- All-turn average: `13.96 tok/s`.
-- Long-turn average: `31.07 tok/s`.
-- Short-turn average: `9.93 tok/s`.
-- MTP acceptance: avg `91.04%`, min `83.6%`, max `93.1%`.
-
-Decision:
-
-- Reverted. It was slower than the kept fast-log run across all-turn, long-turn, and short-turn averages.
-
-## Current Kept Changes
-
-- `vllm_mlx/routes/chat.py`: direct JSON serializer for tool-call SSE chunks.
-- `vllm_mlx/routes/chat.py`: per-SSE role/tool-call logs downgraded to `DEBUG`.
-
-## Current Best Measurement
-
-- Directory: `/tmp/rapid-agentic-snake-fastlog-1778041075`.
-- `pi`: `DONE`.
-- Build: passed.
-- All-turn average: `26.47 tok/s`.
-- Long-turn average: `38.60 tok/s`.
-- Short-turn average: `20.40 tok/s`.
-- MTP acceptance average: `94.30%`.
-
-## Requested Item Checklist
-
-1. MTP multi-draft stronger:
-   - Tested existing `--mtp-num-draft-tokens 2`.
-   - Result: build passed and run was short, but acceptance fell to `66.8%` and no long-turn evidence existed.
-   - Decision: not kept as default; needs a real adaptive/multi-draft redesign before enabling.
-
-2. Reduce CPU/GPU sync in scheduler:
-   - Existing branch base already includes deferred MTP `token_array` sync reduction from previous work.
-   - Implemented/tested deferring `gen_self._current_logprobs` sync and synchronizing only `input_tokens` before `tolist()`.
-   - Result: build passed, all-turn avg `13.96 tok/s`, long-turn avg `31.07 tok/s`, short-turn avg `9.93 tok/s`.
-   - Decision: reverted.
-
-3. Fast path for `batch_size=1`:
-   - Implemented/tested specialized logits-processor path for `batch_size == 1`.
-   - Result: build failed, all-turn avg `17.83 tok/s`, long-turn avg `26.30 tok/s`, short-turn avg `13.04 tok/s`.
-   - Decision: reverted.
-
-4. Tool-call streaming earlier:
-   - Implemented/tested candidate for reasoning-channel tool markup.
-   - Result: did not reduce fallback tool-call usage and build failed.
-   - Decision: reverted.
-
-5. Cheaper token counting/logging/serialization:
-   - Implemented and kept fast tool-call SSE serialization.
-   - Implemented and kept DEBUG-level per-SSE logs.
-   - Result: best run improved from baseline timeout to `DONE`, build passed, all-turn avg `26.47 tok/s`, short-turn avg `20.40 tok/s`.
-
-6. Prefix cache safe for agentic:
-   - Tested `--enable-prefix-cache`.
-   - Result: run improved, but observed `0` prefix-cache hits and `14` misses.
-   - Decision: not kept as code/default until real repeated-turn hits are proven.
-
-7. Speculative acceptance without expensive rollback:
-   - Tested lower draft temperature with `--mtp-draft-temperature 0.5`.
-   - Result: build passed, all-turn avg `13.49 tok/s`, long-turn avg `33.47 tok/s`, short-turn avg `9.18 tok/s`, acceptance avg `91.09%`.
-   - Decision: not kept; slower than kept fast-log run.
-
-8. Adaptive MTP:
-   - Implemented/tested generic adaptive draft depth for `--mtp-num-draft-tokens > 1`.
-   - Result: invalid benchmark; `pi` exited `0` but generated `0` files and build could not run.
-   - Decision: reverted; no artifact/performance proof.
-
-9. Better compile/warmup:
-   - Implemented/tested tool-call warmup with generic no-op tool schema.
-   - Result: build passed, all-turn avg `12.33 tok/s`, long-turn avg `31.95 tok/s`, short-turn avg `7.68 tok/s`.
-   - Decision: reverted; slower than kept fast-log run and increased turn count to `27`.
-
-10. Less overhead in tool logits bias:
-   - Tested by omitting `--enable-tool-logits-bias`.
-   - Result: build failed, all-turn avg `17.23 tok/s`, long-turn avg `31.40 tok/s`, worse than kept fast-log run.
-   - Decision: not kept.
+- Directory: `/tmp/rapid-mlx-pi-express-bun-full-mtplx`.
+- Pi exit: `0`.
+- No `userThe` output; `pi.out` size `0`.
+- Generated files:
+  - `package.json`
+  - `tsconfig.json`
+  - `src/index.ts`
+  - `src/routes/userRoutes.ts`
+  - `src/services/userService.ts`
+  - `src/types/index.ts`
+- `bun install` passed.
+- `bun run build` passed and created `dist/index.js`.
+- Smoke:
+  - Server started with `bun run start`.
+  - `GET /api/users` returned `200`.
+  - `GET /` returned `404` with JSON `{ success: false, error: "Route not found" }`, which matches generated catch-all behavior.
+
+Runtime evidence:
+
+- MTP injected and validated.
+- MTP acceptance remained `0` during long agentic turns.
+- Despite `accepted=0`, full MTPLX avoided the `userThe` degeneration seen on the 4-bit MTPLX model.
+- Some turns were still slow: examples include 73 tokens in 74s and 1036 tokens in 108s.
+
+Interpretation:
+
+- Full MTPLX can complete a practical agentic coding prompt with valid build and endpoint smoke proof.
+- The remaining performance issue is MTP acceptance staying at `0`; full precision avoids corruption but still pays speculative overhead.
+- This further isolates the severe degeneration to the 4-bit MTPLX path, while quality on full MTPLX is usable but slow.

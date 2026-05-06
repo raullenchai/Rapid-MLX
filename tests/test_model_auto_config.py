@@ -23,6 +23,20 @@ class TestDetectModelConfig:
         assert config.tool_call_parser == "hermes"
         assert config.reasoning_parser == "qwen3"
 
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+            "mlx-community/Qwen3.6-35B-A3B-4bit",
+            "/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+        ],
+    )
+    def test_qwen36_uses_coder_xml_tools_and_qwen3_reasoning(self, model_path):
+        config = detect_model_config(model_path)
+        assert config is not None
+        assert config.tool_call_parser == "qwen3_coder_xml"
+        assert config.reasoning_parser == "qwen3"
+
     # GLM family
     @pytest.mark.parametrize(
         "model_path",

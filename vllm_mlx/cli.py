@@ -67,7 +67,9 @@ def _apply_qwen36_mtplx_preset(
     if getattr(args, "command", None) != "serve" or not _is_qwen36_mtplx_request(args):
         return
 
-    if not _has_cli_option(raw_args, "--enable-mtp"):
+    if _has_cli_option(raw_args, "--disable-mtp"):
+        args.enable_mtp = False
+    elif not _has_cli_option(raw_args, "--enable-mtp"):
         args.enable_mtp = True
     if not _has_cli_option(raw_args, "--served-model-name"):
         args.served_model_name = "local"
@@ -1335,6 +1337,12 @@ Examples:
         default=False,
         help="Enable MTP (Multi-Token Prediction) for models with built-in MTP heads. "
         "Uses cache snapshot/restore for speculative generation.",
+    )
+    serve_parser.add_argument(
+        "--disable-mtp",
+        action="store_true",
+        default=False,
+        help="Disable auto-enabled MTP presets for comparison or fallback.",
     )
     serve_parser.add_argument(
         "--mtp-num-draft-tokens",

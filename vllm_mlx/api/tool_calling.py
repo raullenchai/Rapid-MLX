@@ -320,6 +320,76 @@ def _iter_calling_tool_calls(text: str):
             return
 
 
+def _iter_calling_equals_tool_calls(text: str):
+    """Yield malformed `[Calling tool=name({...})]` spans."""
+    marker = "Calling tool="
+    search_from = 0
+    while True:
+        marker_idx = text.find(marker, search_from)
+        if marker_idx == -1:
+            return
+
+        i = marker_idx + len(marker)
+        name_start = i
+        while i < len(text) and (text[i].isalnum() or text[i] in "_.-"):
+            i += 1
+        name = text[name_start:i].strip()
+        if not name:
+            search_from = marker_idx + len(marker)
+            continue
+
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or text[i] != "(":
+            search_from = i
+            continue
+        i += 1
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or text[i] != "{":
+            search_from = i
+            continue
+
+        args_start = i
+        depth = 0
+        in_string = False
+        escaped = False
+        while i < len(text):
+            char = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            else:
+                if char == '"':
+                    in_string = True
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        args_end = i + 1
+                        j = args_end
+                        while j < len(text) and text[j].isspace():
+                            j += 1
+                        if j < len(text) and text[j] == ")":
+                            j += 1
+                            if j < len(text) and text[j] == "]":
+                                j += 1
+                            start = marker_idx
+                            if marker_idx > 0 and text[marker_idx - 1] == "[":
+                                start = marker_idx - 1
+                            yield start, j, name, text[args_start:args_end]
+                            search_from = j
+                            break
+            i += 1
+        else:
+            return
+
+
 def _iter_function_equals_tool_calls(text: str):
     """Yield malformed `<tool_call>function=name({...})` spans."""
     if "<tool_call>" not in text and "function=" not in text:
@@ -653,6 +723,7 @@ def parse_tool_calls(
     # Pattern for Qwen3 calling-tool style. Some models omit the outer brackets,
     # and arguments can contain nested braces in strings, so use a balanced scan.
     calling_tool_matches = list(_iter_calling_tool_calls(text))
+    calling_tool_matches.extend(_iter_calling_equals_tool_calls(text) or [])
     calling_tool_matches.extend(_iter_function_equals_tool_calls(text) or [])
     calling_tool_matches.extend(_iter_prefixed_tool_calls(text) or [])
 
@@ -1126,6 +1197,11 @@ def convert_tools_for_template(tools: list | None) -> list[dict] | None:
     if not tools:
         return None
 
+    shell_tool_names = {"bash", "shell", "exec", "run_command"}
+    shell_tool_hint = (
+        " Prefer this tool for multi-file changes, project setup, build, test, "
+        "and validation workflows."
+    )
     converted = []
     for tool in tools:
         # Handle both Pydantic models and dicts
@@ -1156,12 +1232,23 @@ def convert_tools_for_template(tools: list | None) -> list[dict] | None:
                     "type": "function",
                     "function": {
                         "name": func_name,
-                        "description": func_desc,
+                        "description": (
+                            func_desc + shell_tool_hint
+                            if func_name in shell_tool_names
+                            and shell_tool_hint not in func_desc
+                            else func_desc
+                        ),
                         "parameters": func_params,
                     },
                 }
             )
 
+    converted.sort(
+        key=lambda tool: (
+            tool["function"]["name"] not in shell_tool_names,
+            tool["function"]["name"],
+        )
+    )
     return converted if converted else None
 
 

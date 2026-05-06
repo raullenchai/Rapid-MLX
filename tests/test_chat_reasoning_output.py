@@ -2,7 +2,11 @@
 """Tests for chat reasoning exposure defaults."""
 
 from vllm_mlx.api.models import ChatCompletionRequest, ToolDefinition
-from vllm_mlx.routes.chat import _should_emit_reasoning
+from vllm_mlx.routes.chat import (
+    _looks_like_deferred_tool_use,
+    _should_emit_reasoning,
+    _tool_turn_max_tokens,
+)
 
 
 def _request(**kwargs) -> ChatCompletionRequest:
@@ -31,3 +35,13 @@ def test_reasoning_stays_hidden_for_tool_requests():
     )
 
     assert _should_emit_reasoning(_request(enable_thinking=True, tools=[tool])) is False
+
+
+def test_calling_tool_equals_text_is_deferred_tool_use():
+    assert _looks_like_deferred_tool_use("[Calling tool=read]") is True
+
+
+def test_tool_turn_max_tokens_are_bounded_without_over_truncating():
+    assert _tool_turn_max_tokens(None) == 1536
+    assert _tool_turn_max_tokens(32768) == 1536
+    assert _tool_turn_max_tokens(512) == 512

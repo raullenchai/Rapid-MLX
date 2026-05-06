@@ -79,6 +79,8 @@ def _looks_like_deferred_tool_use(text: str | None) -> bool:
     if (
         '"path"' in lowered
         or "calling tool:" in lowered
+        or "calling tool=" in lowered
+        or "[calling tool" in lowered
         or "_tool:" in lowered
         or "<tool_call>" in lowered
         or "<parameter=" in lowered
@@ -122,6 +124,11 @@ def _looks_like_invalid_tool_continuation(text: str | None) -> bool:
 def _should_emit_reasoning(request: ChatCompletionRequest) -> bool:
     """Expose reasoning only when the client explicitly asks for thinking output."""
     return request.enable_thinking is True and not request.tools
+
+
+def _tool_turn_max_tokens(max_tokens: int | None) -> int:
+    """Bound tool turns enough to avoid runaway planning without truncating files."""
+    return min(int(max_tokens or 1536), 1536)
 
 
 @router.post(
@@ -360,8 +367,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         "top_p": _resolve_top_p(request.top_p),
         "stop": request.stop,
     }
-    if request.tools and request_last_role == "tool":
-        chat_kwargs["max_tokens"] = min(int(chat_kwargs["max_tokens"] or 2048), 2048)
+    if request.tools:
+        chat_kwargs["max_tokens"] = _tool_turn_max_tokens(chat_kwargs["max_tokens"])
 
     # Add multimodal content
     if has_media:

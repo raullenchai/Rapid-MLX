@@ -292,6 +292,17 @@ class TestParseToolCalls:
         assert tool_calls[0].function.name == "bash"
         assert "bun init" in tool_calls[0].function.arguments
 
+    def test_calling_tool_equals_variant(self):
+        """Malformed [Calling tool=name({...})] calls are still parsed."""
+        text = '[Calling tool=bash({"command":"ls -la"})]'
+
+        cleaned, tool_calls = parse_tool_calls(text)
+
+        assert cleaned == ""
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+        assert json.loads(tool_calls[0].function.arguments) == {"command": "ls -la"}
+
     def test_function_equals_line_command_variant(self):
         """Malformed line-based function calls are still parsed."""
         text = "<tool_call>function=bash\nparameter=bash\ncommand=bun --version\n</parameter>"
@@ -655,6 +666,33 @@ class TestConvertToolsForTemplate:
 
         assert result is not None
         assert len(result) == 2
+
+    def test_shell_tool_is_preferred_for_template(self):
+        """Shell-style tools are shown first for multi-step coding workflows."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "write",
+                    "description": "Write a file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "description": "Run a shell command",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+
+        result = convert_tools_for_template(tools)
+
+        assert result is not None
+        assert result[0]["function"]["name"] == "bash"
+        assert "multi-file changes" in result[0]["function"]["description"]
 
     def test_non_function_type_filtered(self):
         """Test that non-function types are filtered out."""

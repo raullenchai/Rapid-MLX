@@ -13,6 +13,7 @@ def _serve_args(model: str, original_alias: str | None = None) -> Namespace:
         model=model,
         _original_alias=original_alias,
         enable_mtp=False,
+        disable_mtp=False,
         served_model_name=None,
         port=8000,
         default_temperature=None,
@@ -158,3 +159,14 @@ def test_qwen36_preset_respects_explicit_overrides():
     assert args.served_model_name == "custom"
     assert args.disable_prefix_cache is False
     assert args.enable_mtp is True
+
+
+def test_qwen36_preset_respects_disable_mtp():
+    args = _serve_args(
+        "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+        original_alias="qwen3.6-27b",
+    )
+
+    _apply_qwen36_mtplx_preset(args, ["serve", "qwen3.6-27b", "--disable-mtp"])
+
+    assert args.enable_mtp is False
