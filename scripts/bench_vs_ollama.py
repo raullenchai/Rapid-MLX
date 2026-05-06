@@ -187,6 +187,14 @@ def require_executable(name: str) -> str:
 
 
 def find_free_port() -> int:
+    """Return an ephemeral local port.
+
+    The socket is closed before this returns, so the port is technically
+    racy — another process on the same host could grab it before our
+    subprocess binds. Callers must therefore wrap the port handoff in a
+    bind-retry loop (see ``PORT_BIND_ATTEMPTS``); we surface ``EADDRINUSE``
+    as a ``ManagedProcessExitError`` and retry with a fresh port.
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
