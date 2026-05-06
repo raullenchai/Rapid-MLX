@@ -678,7 +678,7 @@ class MLLMBatchGenerator:
         # KVCache.merge() creates a BatchKVCache with proper left-padding
         # alignment, so all requests share a single batched cache for
         # subsequent generation steps.
-        from mlx_lm.models.cache import KVCache
+        from mlx_lm.models.cache import KVCache, RotatingKVCache
 
         sample_cache = per_request_caches[0][0]
         if not isinstance(sample_cache, (KVCache, RotatingKVCache)):
