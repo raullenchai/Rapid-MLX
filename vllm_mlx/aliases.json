@@ -44,5 +44,8 @@
   "gemma3-1b": "mlx-community/gemma-3-1b-it-4bit",
   "gemma3-27b": "mlx-community/gemma-3-27b-it-4bit",
   "nemotron-30b": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
-  "nemotron-nano": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit"
+  "nemotron-nano": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
+  "bonsai-1.7b": "prism-ml/Bonsai-1.7B-unpacked",
+  "bonsai-4b": "prism-ml/Bonsai-4B-unpacked",
+  "bonsai-8b": "prism-ml/Bonsai-8B-unpacked"
 }
