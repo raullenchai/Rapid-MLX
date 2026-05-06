@@ -76,9 +76,9 @@ def cache():
 
 def test_dense_growing_conversation_hits_prefix(cache):
     """Sanity: dense models hit the prefix path on growing conversations."""
-    prompt = list(range(1000, 1100))           # turn 1 prompt
-    response_1 = [9001, 9002]                  # model output
-    new_msg = list(range(2000, 2050))          # turn 2 user message
+    prompt = list(range(1000, 1100))  # turn 1 prompt
+    response_1 = [9001, 9002]  # model output
+    new_msg = list(range(2000, 2050))  # turn 2 user message
 
     # Turn 1: prompt-snapshot store, then full prompt+output store
     cache.store(prompt, _hybrid_cache(n_trimmable=10, n_non_trimmable=0))
