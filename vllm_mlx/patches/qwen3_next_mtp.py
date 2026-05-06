@@ -52,15 +52,17 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
     model_path = Path(model_path)
     mtp_file = model_path / "model-mtp.safetensors"
     if not mtp_file.exists():
+        mtp_file = model_path / "mtp.safetensors"
+    if not mtp_file.exists():
         logger.warning(f"[MTP inject] model-mtp.safetensors not found in {model_path}")
         return False
 
-    args = model.args
+    text_model = getattr(model, "language_model", model)
+    args = text_model.args
 
     # Import model components
     from mlx_lm.models.base import create_attention_mask, create_ssm_mask
     from mlx_lm.models.cache import KVCache
-    from mlx_lm.models.qwen3_next import Qwen3NextDecoderLayer
 
     # --- Step 1: Create MTP module ---
     logger.info(f"[MTP inject] Creating MTP module ({num_mtp_layers} layers)")
@@ -77,19 +79,28 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
             self.fc = nn.Linear(args.hidden_size * 2, args.hidden_size, bias=False)
             # MTP decoder uses full attention (not linear/delta-net)
             fa_idx = args.full_attention_interval - 1
+            decoder_layer_cls = type(text_model.model.layers[fa_idx])
             self.layers = [
-                Qwen3NextDecoderLayer(args, layer_idx=fa_idx) for _ in range(n_layers)
+                decoder_layer_cls(args, layer_idx=fa_idx) for _ in range(n_layers)
             ]
             self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
 
     mtp = _MTPModule(args, num_mtp_layers)
 
-    # --- Step 2: Quantize MTP module to match base model ---
+    # --- Step 2: Load raw MTP weights and quantize only when sidecar is quantized ---
+    logger.info(f"[MTP inject] Loading weights from {mtp_file.name}")
+    raw = mx.load(str(mtp_file))
+    has_quantized_mtp = any(
+        key.startswith("mtp.")
+        and (key.endswith(".scales") or key.endswith(".biases") or str(value.dtype) == "uint32")
+        for key, value in raw.items()
+    )
+
     # nn.quantize handles Linear → QuantizedLinear but NOT SwitchLinear →
     # QuantizedSwitchLinear.  We must replace SwitchLinear BEFORE load_weights
     # so the parameter names (weight, scales, biases) match the saved file.
     quant_config = config.get("quantization", {})
-    if quant_config:
+    if quant_config and has_quantized_mtp:
         bits = quant_config.get("bits", 6)
         group_size = quant_config.get("group_size", 64)
         mode = quant_config.get("mode", "affine")
@@ -142,21 +153,37 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
             mtp, group_size=group_size, bits=bits, class_predicate=_mtp_quant_pred
         )
         logger.info(f"[MTP inject] Quantized MTP: {bits}-bit, group_size={group_size}")
+    elif quant_config:
+        logger.info("[MTP inject] Keeping MTP BF16 sidecar unquantized")
 
     # --- Step 3: Load MTP weights ---
-    logger.info(f"[MTP inject] Loading weights from {mtp_file.name}")
-    raw = mx.load(str(mtp_file))
-    mtp_weights = {
-        k.removeprefix("mtp."): v for k, v in raw.items() if k.startswith("mtp.")
-    }
+    mtp_weights = {}
+    for key, value in raw.items():
+        if not key.startswith("mtp."):
+            continue
+        local_key = key.removeprefix("mtp.")
+        local_key = local_key.replace(
+            "layers.0.mlp.down_proj.weight",
+            "layers.0.mlp.switch_mlp.down_proj.weight",
+        )
+        local_key = local_key.replace(
+            "layers.0.mlp.gate_proj.weight",
+            "layers.0.mlp.switch_mlp.gate_proj.weight",
+        )
+        local_key = local_key.replace(
+            "layers.0.mlp.up_proj.weight",
+            "layers.0.mlp.switch_mlp.up_proj.weight",
+        )
+        mtp_weights[local_key] = value
     mtp.load_weights(list(mtp_weights.items()), strict=False)
     mx.eval(mtp.parameters())
     logger.info(f"[MTP inject] Loaded {len(mtp_weights)} MTP weight tensors")
 
     # --- Step 4: Attach MTP and monkey-patch model class ---
+    text_model.mtp = mtp
     model.mtp = mtp
 
-    original_class = model.__class__
+    original_class = text_model.__class__
 
     class _Qwen3NextMTP(original_class):
         """Qwen3-Next with MTP support (injected at runtime)."""
@@ -166,9 +193,12 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
             inputs,
             cache=None,
             return_hidden: bool = False,
+            input_embeddings=None,
         ):
             inner = self.model
-            hidden_states = inner.embed_tokens(inputs)
+            hidden_states = (
+                input_embeddings if input_embeddings is not None else inner.embed_tokens(inputs)
+            )
             if cache is None:
                 cache = [None] * len(inner.layers)
             fa_mask = create_attention_mask(hidden_states, cache[inner.fa_idx])
@@ -212,7 +242,34 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
                 return None
             return [KVCache() for _ in self.mtp.layers]
 
-    model.__class__ = _Qwen3NextMTP
+    text_model.__class__ = _Qwen3NextMTP
+    if text_model is not model:
+        original_outer_class = model.__class__
+
+        class _Qwen3NextOuterMTP(original_outer_class):
+            """Qwen3.6 wrapper delegating MTP calls to language_model."""
+
+            def __call__(
+                self,
+                inputs,
+                cache=None,
+                input_embeddings=None,
+                return_hidden: bool = False,
+            ):
+                return self.language_model(
+                    inputs,
+                    cache=cache,
+                    input_embeddings=input_embeddings,
+                    return_hidden=return_hidden,
+                )
+
+            def mtp_forward(self, *args, **kwargs):
+                return self.language_model.mtp_forward(*args, **kwargs)
+
+            def make_mtp_cache(self):
+                return self.language_model.make_mtp_cache()
+
+        model.__class__ = _Qwen3NextOuterMTP
     logger.info("[MTP inject] Model class patched with MTP support")
     return True
 

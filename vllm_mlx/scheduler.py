@@ -621,6 +621,287 @@ def _install_mtp(
        Reject: rollback verify pass, sample residual correction, re-advance
     5. Draft is emitted in the NEXT generation step after primary
     """
+    if not hasattr(batch_gen, "_step"):
+        from mlx_lm.generate import GenerationBatch
+
+        if getattr(GenerationBatch, "_vllm_mlx_mtp_patched", False):
+            logger.info("[MTP] native GenerationBatch speculative patch already installed")
+            return
+
+        _orig_generation_step = GenerationBatch._step
+
+        from .speculative.native_mtp import (
+            MTPDistributionParams,
+            acceptance_mask,
+            distribution_logprobs,
+            residual_logprobs,
+            sample_from_logprobs,
+        )
+
+        if num_draft_tokens != 1:
+            logger.warning(
+                "[MTP] mtp_num_draft_tokens=%d requested, but current native path "
+                "supports one draft token per verify cycle. Using 1.",
+                num_draft_tokens,
+            )
+
+        _target_params = MTPDistributionParams(
+            temperature=target_temperature,
+            top_p=target_top_p,
+            min_p=target_min_p,
+            top_k=target_top_k,
+        )
+        _draft_params = MTPDistributionParams(
+            temperature=draft_temperature,
+            top_p=target_top_p,
+            min_p=target_min_p,
+            top_k=target_top_k,
+        )
+        _mtp_stats = {"accepted": 0, "rejected": 0, "corrections": 0, "errors": 0}
+
+        def _copy_cache_state(value):
+            if value is None:
+                return None
+            if isinstance(value, tuple):
+                return tuple(_copy_cache_state(item) for item in value)
+            if isinstance(value, list):
+                return [_copy_cache_state(item) for item in value]
+            if isinstance(value, dict):
+                return {key: _copy_cache_state(item) for key, item in value.items()}
+            try:
+                return mx.array(value)
+            except Exception:
+                return value
+
+        def _snapshot_recurrent_cache(prompt_cache):
+            snapshots = {}
+            for ci, cache_obj in enumerate(prompt_cache):
+                if hasattr(cache_obj, "is_trimmable") and cache_obj.is_trimmable():
+                    continue
+                if not hasattr(cache_obj, "state"):
+                    continue
+                state = cache_obj.state
+                snapshots[ci] = _copy_cache_state(state)
+            return snapshots
+
+        def _restore_recurrent_cache(prompt_cache, snapshots):
+            for ci, snapshot in snapshots.items():
+                prompt_cache[ci].state = snapshot
+
+        def _trim_trimmable_cache(prompt_cache, amount: int):
+            for cache_obj in prompt_cache:
+                if (
+                    hasattr(cache_obj, "is_trimmable")
+                    and cache_obj.is_trimmable()
+                    and hasattr(cache_obj, "trim")
+                ):
+                    cache_obj.trim(amount)
+
+        def _sample_from_logits(logits, samplers, fallback_sampler):
+            logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+            if any(samplers):
+                samples = []
+                for row in range(logits.shape[0]):
+                    sampler = samplers[row] or fallback_sampler
+                    samples.append(sampler(logprobs[row : row + 1]))
+                sampled = mx.concatenate(samples, axis=0)
+            else:
+                sampled = fallback_sampler(logprobs)
+            return sampled, logprobs
+
+        def _mtp_generation_step(self):
+            self._current_tokens = self._next_tokens
+            self._current_logprobs = self._next_logprobs
+            inputs = self._current_tokens
+            if inputs is None or inputs.shape[0] == 0:
+                return _orig_generation_step(self)
+
+            skip = getattr(self, "_vllm_mlx_mtp_skip", None)
+            if skip is not None and skip["logits"].shape[0] != inputs.shape[0]:
+                skip = None
+                self._vllm_mlx_mtp_skip = None
+
+            try:
+                if skip is not None and skip.get("phase") == "emit_deferred":
+                    deferred_tokens = skip["tokens"]
+                    deferred_logprobs = skip["logprobs"]
+                    self._vllm_mlx_mtp_skip = {
+                        "phase": "sample_after_deferred",
+                        "logits": skip["logits"],
+                        "hidden": skip["hidden"],
+                    }
+                    self._next_tokens = deferred_tokens
+                    self._next_logprobs = list(deferred_logprobs)
+                    mx.async_eval(self._next_tokens, self._next_logprobs)
+                    mx.eval(inputs, self._current_logprobs)
+                    current = inputs.tolist()
+                    for seq_tokens, token in zip(self.tokens, current):
+                        seq_tokens.append(token)
+                    return current, self._current_logprobs
+
+                if skip is not None:
+                    logits = skip["logits"]
+                    hidden_states = skip["hidden"]
+                    self._vllm_mlx_mtp_skip = None
+                else:
+                    out = model(inputs[:, None], cache=self.prompt_cache, return_hidden=True)
+                    if not isinstance(out, tuple):
+                        return _orig_generation_step(self)
+                    logits, hidden_states = out
+                    logits = logits[:, -1, :]
+
+                token_context = []
+                if any(self.logits_processors):
+                    token_context = [
+                        tc.update_and_fetch(inputs[i : i + 1])
+                        for i, tc in enumerate(self._token_context)
+                    ]
+                    processed = []
+                    for row in range(len(self.uids)):
+                        sample_logits = logits[row : row + 1]
+                        for processor in self.logits_processors[row]:
+                            sample_logits = processor(token_context[row], sample_logits)
+                        processed.append(sample_logits)
+                    logits = mx.concatenate(processed, axis=0)
+
+                primary_tokens, primary_logprobs = _sample_from_logits(
+                    logits,
+                    self.samplers,
+                    self.fallback_sampler,
+                )
+
+                draft_logits = model.mtp_forward(
+                    hidden_states[:, -1:, :],
+                    primary_tokens[:, None],
+                    mtp_cache=None,
+                )[:, -1, :]
+                draft_distribution = distribution_logprobs(draft_logits, _draft_params)
+                draft_tokens = sample_from_logprobs(draft_distribution)
+
+                snapshots = _snapshot_recurrent_cache(self.prompt_cache)
+                verify_input = mx.concatenate(
+                    [primary_tokens[:, None], draft_tokens[:, None]], axis=1
+                )
+                verify_out = model(
+                    verify_input,
+                    cache=self.prompt_cache,
+                    return_hidden=True,
+                )
+                if not isinstance(verify_out, tuple):
+                    raise RuntimeError("MTP verify did not return hidden states")
+                verify_logits, verify_hidden = verify_out
+
+                if optimistic:
+                    deferred_tokens = draft_tokens
+                    deferred_logprobs = verify_logits[:, 0, :] - mx.logsumexp(
+                        verify_logits[:, 0, :], axis=-1, keepdims=True
+                    )
+                    self._vllm_mlx_mtp_skip = {
+                        "phase": "emit_deferred",
+                        "tokens": deferred_tokens,
+                        "logprobs": deferred_logprobs,
+                        "logits": verify_logits[:, 1, :],
+                        "hidden": verify_hidden[:, -1:, :],
+                    }
+                    _mtp_stats["accepted"] += int(inputs.shape[0])
+                else:
+                    target_logits = verify_logits[:, 0, :]
+                    if any(self.logits_processors):
+                        processed_verify = []
+                        for row in range(len(self.uids)):
+                            sample_logits = target_logits[row : row + 1]
+                            history = token_context[row] if token_context else mx.array(self.tokens[row])
+                            history = mx.concatenate(
+                                [history, primary_tokens[row : row + 1]]
+                            )
+                            for processor in self.logits_processors[row]:
+                                sample_logits = processor(history, sample_logits)
+                            processed_verify.append(sample_logits)
+                        target_logits = mx.concatenate(processed_verify, axis=0)
+
+                    target_distribution = distribution_logprobs(
+                        target_logits,
+                        _target_params,
+                    )
+                    accepted = acceptance_mask(
+                        target_distribution,
+                        draft_distribution,
+                        draft_tokens,
+                    )
+                    mx.eval(accepted, draft_tokens)
+                    if all(bool(v) for v in accepted.tolist()):
+                        deferred_tokens = draft_tokens
+                        deferred_logprobs = target_distribution
+                        self._vllm_mlx_mtp_skip = {
+                            "phase": "emit_deferred",
+                            "tokens": deferred_tokens,
+                            "logprobs": deferred_logprobs,
+                            "logits": verify_logits[:, 1, :],
+                            "hidden": verify_hidden[:, -1:, :],
+                        }
+                        _mtp_stats["accepted"] += int(inputs.shape[0])
+                    else:
+                        correction_distribution = residual_logprobs(
+                            target_distribution,
+                            draft_distribution,
+                        )
+                        correction_tokens = sample_from_logprobs(correction_distribution)
+                        mx.eval(correction_tokens)
+
+                        _trim_trimmable_cache(self.prompt_cache, 2)
+                        _restore_recurrent_cache(self.prompt_cache, snapshots)
+                        correction_input = mx.concatenate(
+                            [primary_tokens[:, None], correction_tokens[:, None]],
+                            axis=1,
+                        )
+                        rerun_out = model(
+                            correction_input,
+                            cache=self.prompt_cache,
+                            return_hidden=True,
+                        )
+                        if not isinstance(rerun_out, tuple):
+                            raise RuntimeError("MTP correction did not return hidden states")
+                        rerun_logits, rerun_hidden = rerun_out
+                        deferred_tokens = correction_tokens
+                        deferred_logprobs = correction_distribution
+                        self._vllm_mlx_mtp_skip = {
+                            "phase": "emit_deferred",
+                            "tokens": deferred_tokens,
+                            "logprobs": deferred_logprobs,
+                            "logits": rerun_logits[:, 1, :],
+                            "hidden": rerun_hidden[:, -1:, :],
+                        }
+                        _mtp_stats["rejected"] += int(inputs.shape[0])
+                        _mtp_stats["corrections"] += int(inputs.shape[0])
+
+                self._next_tokens = primary_tokens
+                self._next_logprobs = list(primary_logprobs)
+                mx.async_eval(self._next_tokens, self._next_logprobs, token_context)
+
+                mx.eval(inputs, self._current_logprobs)
+                current = inputs.tolist()
+                for seq_tokens, token in zip(self.tokens, current):
+                    seq_tokens.append(token)
+                if (_mtp_stats["accepted"] + _mtp_stats["rejected"]) % 128 == 0:
+                    logger.info("[MTP] stats %s", _mtp_stats)
+                return current, self._current_logprobs
+            except Exception as exc:
+                logger.warning("[MTP] speculative GenerationBatch step failed: %s", exc)
+                _mtp_stats["errors"] += 1
+                self._vllm_mlx_mtp_skip = None
+                return _orig_generation_step(self)
+
+        GenerationBatch._step = _mtp_generation_step
+        GenerationBatch._vllm_mlx_mtp_patched = True
+        mode_str = "optimistic (no verify)" if optimistic else "verified"
+        logger.info(
+            "[MTP] installed native GenerationBatch speculative patch, "
+            "num_draft_tokens=1, draft_temp=%s, %s mode",
+            draft_temperature,
+            mode_str,
+        )
+        return
+
     _orig_step = batch_gen._step
 
     from .speculative.native_mtp import (

@@ -109,6 +109,68 @@ def _strip_trailing_calling_tool_prefix(text: str) -> str | None:
     return None
 
 
+def _has_degraded_tool_marker(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "Calling tool:",
+            "_tool:",
+            "<tool_call>",
+            "function=",
+            "<parameter_name>",
+            "<parameter=commands>",
+            "<parameter=name>",
+            "<parameter=command>",
+            '<parameter name="',
+        )
+    )
+
+
+def _has_partial_degraded_tool_marker(text: str) -> bool:
+    tail = text.rstrip()
+    markers = ("_tool:", "<parameter=")
+    for marker in markers:
+        for i in range(1, len(marker)):
+            partial = marker[:i]
+            if tail.endswith(partial):
+                start = len(tail) - len(partial)
+                if _starts_current_line(tail, start):
+                    return True
+            if tail.endswith(f"[{partial}"):
+                start = len(tail) - len(partial) - 1
+                if _starts_current_line(tail, start):
+                    return True
+    return False
+
+
+def _is_role_echo_content(text: str | None) -> bool:
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return False
+    lowered = stripped.lower()
+    return lowered in {
+        "user",
+        "user:",
+        'user: "',
+        "assistant",
+        "assistant:",
+        'assistant: "',
+        "system",
+        "system:",
+    }
+
+
+def _sanitize_content(content: str | None) -> str | None:
+    if not content:
+        return None
+    content = sanitize_output(content)
+    if not content or _is_role_echo_content(content):
+        return None
+    return content
+
+
 class StreamingPostProcessor:
     """Processes streaming engine output into StreamEvents.
 
@@ -155,10 +217,12 @@ class StreamingPostProcessor:
         # Legacy/test path: cfg.reasoning_parser / cfg.tool_parser_instance
         # may be pre-built (mocks in tests, or singleton from server.py).
         # When reasoning_parser_name is set, always create fresh.
-        if cfg.reasoning_parser_name:
+        if cfg.reasoning_parser_name and not cfg.no_thinking:
             self.reasoning_parser = self._create_reasoning_parser(cfg)
         else:
-            self.reasoning_parser = cfg.reasoning_parser  # None or injected mock
+            self.reasoning_parser = (
+                None if cfg.no_thinking else cfg.reasoning_parser
+            )  # None or injected mock
 
         if cfg.tool_call_parser:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
@@ -355,10 +419,13 @@ class StreamingPostProcessor:
             if result is None:
                 return []  # suppressed (inside tool markup)
             if result.get("tool_calls"):
+                chunks = self._tool_calls_to_stream_chunks(result["tool_calls"])
+                if not chunks:
+                    return []
                 return [
                     StreamEvent(
                         type="tool_call",
-                        tool_calls=result["tool_calls"],
+                        tool_calls=chunks,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
@@ -387,9 +454,7 @@ class StreamingPostProcessor:
             return []
 
         if content:
-            content = sanitize_output(content)
-            if not content:
-                content = None
+            content = _sanitize_content(content)
 
         # When finish_reason is set, emit ONE finish event with content/reasoning
         # merged in to avoid double-emission.
@@ -446,10 +511,13 @@ class StreamingPostProcessor:
             if result is None:
                 return []
             if result.get("tool_calls"):
+                chunks = self._tool_calls_to_stream_chunks(result["tool_calls"])
+                if not chunks:
+                    return []
                 return [
                     StreamEvent(
                         type="tool_call",
-                        tool_calls=result["tool_calls"],
+                        tool_calls=chunks,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
@@ -478,9 +546,7 @@ class StreamingPostProcessor:
             return []
 
         if content:
-            content = sanitize_output(content)
-            if not content:
-                content = None
+            content = _sanitize_content(content)
 
         if finish_reason:
             return [
@@ -534,10 +600,13 @@ class StreamingPostProcessor:
             if result is None:
                 return []
             if result.get("tool_calls"):
+                chunks = self._tool_calls_to_stream_chunks(result["tool_calls"])
+                if not chunks:
+                    return []
                 return [
                     StreamEvent(
                         type="tool_call",
-                        tool_calls=result["tool_calls"],
+                        tool_calls=chunks,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
@@ -565,9 +634,7 @@ class StreamingPostProcessor:
             return []
 
         if content:
-            content = sanitize_output(content)
-            if not content:
-                content = None
+            content = _sanitize_content(content)
 
         # When finish_reason is set, emit ONE finish event with content merged in.
         # Never emit separate content + finish events — that would cause
@@ -627,7 +694,20 @@ class StreamingPostProcessor:
                 )
                 self.tool_calls_detected = True
 
-        if "Calling tool:" in _fallback_text and not self.tool_calls_detected:
+        if (
+            not self.tool_calls_detected
+            and (
+                "Calling tool:" in _fallback_text
+                or "<tool_call>" in _fallback_text
+                or "function=" in _fallback_text
+                or '"command"' in _fallback_text
+                or "<parameter_name>" in _fallback_text
+                or "<parameter=commands>" in _fallback_text
+                or "<parameter=command>" in _fallback_text
+                or '<parameter name="' in _fallback_text
+                or "_tool:" in _fallback_text
+            )
+        ):
             _, tool_calls = parse_tool_calls(_fallback_text, self.request)
             if tool_calls:
                 chunks = self._tool_calls_to_stream_chunks(tool_calls)
@@ -643,6 +723,26 @@ class StreamingPostProcessor:
                 )
                 self.tool_calls_detected = True
 
+        if (
+            self.reasoning_parser
+            and hasattr(self.reasoning_parser, "finalize_streaming")
+            and not self.tool_calls_detected
+        ):
+            delta_msg = self.reasoning_parser.finalize_streaming(self.accumulated_text)
+            if delta_msg is not None:
+                content = delta_msg.content
+                reasoning = delta_msg.reasoning
+                if content:
+                    content = sanitize_output(strip_special_tokens(content))
+                    if content:
+                        events.append(StreamEvent(type="content", content=content))
+                if reasoning:
+                    reasoning = strip_special_tokens(reasoning)
+                    if reasoning:
+                        events.append(
+                            StreamEvent(type="reasoning", reasoning=reasoning)
+                        )
+
         return events
 
     def _detect_tool_calls(self, content: str) -> dict | None:
@@ -652,11 +752,18 @@ class StreamingPostProcessor:
         Returns {"tool_calls": [...]} if tool calls detected.
         Returns {"content": "..."} for normal content pass-through.
         """
+        if self.tool_calls_detected:
+            return {"content": ""}
+
         if (
             not self.tool_markup_possible
             and "<" not in content
             and "[" not in content
             and "Calling tool:" not in content
+            and "_tool:" not in content
+            and not _has_partial_degraded_tool_marker(
+                self.tool_accumulated_text + content
+            )
         ):
             self.tool_accumulated_text += content
             return {"content": content}
@@ -674,7 +781,7 @@ class StreamingPostProcessor:
         )
 
         if tool_result is None:
-            if "Calling tool:" in self.tool_accumulated_text:
+            if _has_degraded_tool_marker(self.tool_accumulated_text):
                 _, tool_calls = parse_tool_calls(
                     self.tool_accumulated_text, self.request
                 )
@@ -684,13 +791,15 @@ class StreamingPostProcessor:
                         return None
                     self.tool_calls_detected = True
                     return {"tool_calls": chunks}
+            if _has_partial_degraded_tool_marker(self.tool_accumulated_text):
+                return None
             return None  # inside tool markup
 
         if "tool_calls" in tool_result:
             self.tool_calls_detected = True
             return tool_result
 
-        if "Calling tool:" in self.tool_accumulated_text:
+        if _has_degraded_tool_marker(self.tool_accumulated_text):
             _, tool_calls = parse_tool_calls(self.tool_accumulated_text, self.request)
             if tool_calls:
                 chunks = self._tool_calls_to_stream_chunks(tool_calls)
@@ -700,7 +809,9 @@ class StreamingPostProcessor:
                 return {"tool_calls": chunks}
             return None
 
-        if _has_partial_calling_tool_marker(self.tool_accumulated_text):
+        if _has_partial_calling_tool_marker(
+            self.tool_accumulated_text
+        ) or _has_partial_degraded_tool_marker(self.tool_accumulated_text):
             content = tool_result.get("content", "")
             stripped = _strip_trailing_calling_tool_prefix(content)
             if stripped:

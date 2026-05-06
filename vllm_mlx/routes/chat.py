@@ -66,7 +66,7 @@ router = APIRouter()
 _TOOL_INTENT_RE = re.compile(
     r"\b("
     r"let me|now let me|i'?ll|i will|starting with|"
-    r"create|write|edit|run|test|verify|fix|repair"
+    r"continue|create|write|edit|run|test|verify|fix|repair"
     r")\b",
     re.IGNORECASE,
 )
@@ -76,9 +76,47 @@ def _looks_like_deferred_tool_use(text: str | None) -> bool:
     if not text:
         return False
     lowered = text.lower()
-    if '"path"' in lowered:
+    if (
+        '"path"' in lowered
+        or "calling tool:" in lowered
+        or "_tool:" in lowered
+        or "<tool_call>" in lowered
+        or "<parameter=" in lowered
+        or "</parameter" in lowered
+        or "</function" in lowered
+    ):
         return True
     return bool(_TOOL_INTENT_RE.search(text))
+
+
+def _looks_like_invalid_tool_continuation(text: str | None) -> bool:
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return True
+    lowered = stripped.lower()
+    if len(stripped) <= 32 and (
+        lowered.startswith("_") or lowered.endswith("_name")
+    ):
+        return True
+    if len(stripped) <= 16:
+        return True
+    return lowered in {
+        "i",
+        "i'm",
+        "i’ll",
+        "i'll",
+        "i will",
+        "now",
+        "now,",
+        "user",
+        "user:",
+        'user: "',
+        "assistant",
+        "assistant:",
+        'assistant: "',
+    }
 
 
 @router.post(
@@ -145,6 +183,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                 status_code=400,
                 detail=f"Invalid role '{msg.role}'. Must be one of: {', '.join(sorted(_valid_roles))}",
             )
+    request_last_role = request.messages[-1].role
 
     # Validate n parameter (only n=1 supported)
     if request.n is not None and request.n > 1:
@@ -316,6 +355,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         "top_p": _resolve_top_p(request.top_p),
         "stop": request.stop,
     }
+    if request.tools and request_last_role == "tool":
+        chat_kwargs["max_tokens"] = min(int(chat_kwargs["max_tokens"] or 2048), 2048)
 
     # Add multimodal content
     if has_media:
@@ -640,6 +681,7 @@ async def stream_chat_completion(
     Uses StreamingPostProcessor for reasoning/tool/sanitization pipeline.
     SSE formatting stays inline for performance (fast path bypasses Pydantic).
     """
+    from ..domain.events import StreamEvent
     from ..service.postprocessor import StreamingPostProcessor
 
     cfg = get_config()
@@ -648,6 +690,7 @@ async def stream_chat_completion(
         gc.disable()
 
     try:
+        request_last_role = request.messages[-1].role
         response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
         start_time = time.perf_counter()
 
@@ -685,7 +728,38 @@ async def stream_chat_completion(
 
         def _fast_tool_call_sse(tool_calls: list[dict]) -> str:
             """Build tool-call SSE chunk directly, bypassing Pydantic serialization."""
-            tool_calls_json = json.dumps(tool_calls, separators=(",", ":"))
+            normalized_tool_calls = []
+            for index, tool_call in enumerate(tool_calls):
+                if hasattr(tool_call, "function"):
+                    logger.debug(
+                        "Streaming tool call emitted name=%s args=%r",
+                        tool_call.function.name,
+                        tool_call.function.arguments[:200],
+                    )
+                    normalized_tool_calls.append(
+                        {
+                            "index": index,
+                            "id": tool_call.id,
+                            "type": tool_call.type,
+                            "function": {
+                                "name": tool_call.function.name,
+                                "arguments": tool_call.function.arguments,
+                            },
+                        }
+                    )
+                else:
+                    normalized = dict(tool_call)
+                    normalized.setdefault("index", index)
+                    function = normalized.get("function") or {}
+                    logger.debug(
+                        "Streaming tool call emitted name=%s args=%r",
+                        function.get("name"),
+                        str(function.get("arguments", ""))[:200],
+                    )
+                    normalized_tool_calls.append(normalized)
+            tool_calls_json = json.dumps(
+                normalized_tool_calls, separators=(",", ":")
+            )
             return (
                 f'data: {{"id":"{response_id}",'
                 f'"object":"chat.completion.chunk",'
@@ -726,6 +800,7 @@ async def stream_chat_completion(
         prompt_tokens = 0
         completion_tokens = 0
         stop_after_tool_call = False
+        emitted_content = False
 
         # Stream content — PostProcessor handles reasoning/tool/sanitize
         async for output in engine.stream_chat(messages=messages, **kwargs):
@@ -736,9 +811,30 @@ async def stream_chat_completion(
 
             for event in processor.process_chunk(output):
                 if event.type == "content":
+                    last_role = request_last_role
+                    if request.tools:
+                        logger.debug(
+                            "Streaming content candidate last_role=%s preview=%r",
+                            last_role,
+                            (event.content or "")[:120],
+                        )
+                    if request.tools and (
+                        _looks_like_invalid_tool_continuation(event.content)
+                        or (
+                            last_role == "tool"
+                            and _looks_like_deferred_tool_use(event.content)
+                        )
+                    ):
+                        continue
+                    if request.tools and last_role == "tool":
+                        logger.debug(
+                            "Streaming tool continuation content preview=%r",
+                            (event.content or "")[:120],
+                        )
                     if not want_logprobs:
                         _sse = _fast_sse_chunk(event.content, "content")
                         if _sse:
+                            emitted_content = True
                             yield _sse
                     else:
                         chunk = ChatCompletionChunk(
@@ -756,6 +852,8 @@ async def stream_chat_completion(
                         yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
                 elif event.type == "reasoning":
+                    if request.tools:
+                        continue
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
 
                 elif event.type == "tool_call":
@@ -766,6 +864,17 @@ async def stream_chat_completion(
                     break
 
                 elif event.type == "finish":
+                    last_role = request_last_role
+                    if (
+                        request.tools
+                        and last_role == "tool"
+                        and (
+                            not event.content
+                            or _looks_like_invalid_tool_continuation(event.content)
+                            or _looks_like_deferred_tool_use(event.content)
+                        )
+                    ):
+                        continue
                     chunk = ChatCompletionChunk(
                         id=response_id,
                         model=_resolve_model_name(request.model),
@@ -785,8 +894,130 @@ async def stream_chat_completion(
 
         # Fallback tool call detection
         if not stop_after_tool_call:
-            for event in processor.finalize():
-                if event.type == "tool_call":
+            finalize_events = processor.finalize()
+            if request.tools:
+                logger.debug(
+                    "Streaming fallback state emitted_content=%s finalize_types=%s",
+                    emitted_content,
+                    [event.type for event in finalize_events],
+                )
+            if (
+                request.tools
+                and not emitted_content
+                and not any(event.type == "tool_call" for event in finalize_events)
+            ):
+                finalize_text = "".join(
+                    event.content or ""
+                    for event in finalize_events
+                    if event.type == "content"
+                )
+                if not finalize_text:
+                    finalize_text = (
+                        processor.tool_accumulated_text or processor.accumulated_text
+                    )
+                last_role = request_last_role
+                invalid_tool_continuation = _looks_like_invalid_tool_continuation(
+                    finalize_text
+                )
+                should_retry = (
+                    _looks_like_deferred_tool_use(finalize_text)
+                    or last_role == "tool"
+                )
+                if should_retry:
+                    logger.debug(
+                        "Streaming tool intent without tool call detected; retrying"
+                    )
+                    retry_messages = list(messages)
+                    if finalize_text and not invalid_tool_continuation:
+                        retry_messages.append(
+                            {"role": "assistant", "content": finalize_text}
+                        )
+                    tool_names = []
+                    for tool in request.tools or []:
+                        function = tool.function if hasattr(tool, "function") else None
+                        name = getattr(function, "name", None)
+                        if name:
+                            tool_names.append(name)
+                    tool_hint = (
+                        f" Available tools: {', '.join(tool_names)}."
+                        if tool_names
+                        else ""
+                    )
+                    retry_instruction = (
+                        "Continue the task. Call the appropriate tool now "
+                        "if work remains."
+                        f"{tool_hint} Do not explain, "
+                        "do not describe what you will do, and do not output "
+                        "raw JSON as text. Use concrete tool arguments. "
+                        "If files must change, call write, edit, or bash. "
+                        "If the previous tool failed, repair it by calling "
+                        "another tool."
+                    )
+                    retry_kwargs = dict(kwargs)
+                    retry_kwargs["max_tokens"] = min(
+                        int(retry_kwargs.get("max_tokens") or 2048), 2048
+                    )
+                    retry_kwargs["temperature"] = min(
+                        float(retry_kwargs.get("temperature") or 0.2), 0.2
+                    )
+                    finalize_events = []
+                    for retry_attempt in range(6):
+                        retry_attempt_messages = retry_messages + [
+                            {"role": "user", "content": retry_instruction}
+                        ]
+                        retry_output = await engine.chat(
+                            messages=retry_attempt_messages,
+                            **retry_kwargs,
+                        )
+                        retry_cleaned, retry_tool_calls = (
+                            _parse_tool_calls_with_parser(retry_output.text, request)
+                        )
+                        if retry_tool_calls:
+                            _validate_tool_call_params(
+                                retry_tool_calls, request.tools
+                            )
+                            finalize_events = [
+                                StreamEvent(
+                                    type="tool_call", tool_calls=retry_tool_calls
+                                )
+                            ]
+                            break
+                        retry_invalid = _looks_like_invalid_tool_continuation(
+                            retry_cleaned
+                        )
+                        retry_deferred = _looks_like_deferred_tool_use(retry_cleaned)
+                        if retry_cleaned and not retry_invalid and not retry_deferred:
+                            finalize_events = [
+                                StreamEvent(type="content", content=retry_cleaned)
+                            ]
+                            break
+                        logger.debug(
+                            "Streaming retry %s produced malformed tool text; "
+                            "retrying preview=%r",
+                            retry_attempt + 1,
+                            (retry_cleaned or retry_output.text)[:120],
+                        )
+                        retry_instruction = (
+                            "Your previous response was not a valid tool call. "
+                            f"{tool_hint} Call exactly one available tool now "
+                            "with concrete arguments. Do not write plain text."
+                        )
+
+            for event in finalize_events:
+                if event.type == "content":
+                    if request.tools and _looks_like_invalid_tool_continuation(
+                        event.content
+                    ):
+                        continue
+                    _sse = _fast_sse_chunk(event.content, "content")
+                    if _sse:
+                        emitted_content = True
+                        yield _sse
+                elif event.type == "reasoning":
+                    if request.tools:
+                        continue
+                    yield _fast_sse_chunk(event.reasoning, "reasoning_content")
+                elif event.type == "tool_call":
                     _fb_sse = _fast_tool_call_sse(event.tool_calls)
                     logger.debug(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
                     yield _fb_sse

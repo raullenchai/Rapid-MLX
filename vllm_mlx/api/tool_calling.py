@@ -71,6 +71,57 @@ def _get_tool_param_config(
     return {}
 
 
+def _get_tool_parameters_schema(
+    tool_name: str | None, request: dict[str, Any] | None
+) -> dict[str, Any]:
+    if not tool_name or not isinstance(request, dict):
+        return {}
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return {}
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict) or function.get("name") != tool_name:
+            continue
+        parameters = function.get("parameters")
+        return parameters if isinstance(parameters, dict) else {}
+    return {}
+
+
+def _tool_available(tool_name: str, request: dict[str, Any] | None) -> bool:
+    if not isinstance(request, dict):
+        return False
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return False
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict) and function.get("name") == tool_name:
+            return True
+    return False
+
+
+def _coerce_degraded_tool_name(
+    tool_name: str, arguments: dict[str, Any], request: dict[str, Any] | None
+) -> str:
+    if tool_name.startswith("call_"):
+        suffix = tool_name[len("call_") :]
+        if suffix and _tool_available(suffix, request):
+            tool_name = suffix
+    if (
+        tool_name == "edit"
+        and "content" in arguments
+        and "edits" not in arguments
+        and _tool_available("write", request)
+    ):
+        return "write"
+    return tool_name
+
+
 def _schema_type(schema: Any) -> str | None:
     if isinstance(schema, str):
         return schema.strip().lower()
@@ -129,6 +180,38 @@ def _coerce_schema_value(value: Any, schema: Any) -> Any:
     return value
 
 
+def _normalize_schema_value(value: Any, schema: Any) -> Any:
+    value = _decode_json_like(value)
+    if not isinstance(schema, dict):
+        return value
+
+    schema_type = _schema_type(schema)
+    if schema_type == "object" and isinstance(value, dict):
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return value
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            item_schema = properties.get(key)
+            if item_schema is None:
+                additional = schema.get("additionalProperties")
+                if isinstance(additional, dict):
+                    normalized[key] = _normalize_schema_value(item, additional)
+                elif additional is True:
+                    normalized[key] = item
+                continue
+            normalized[key] = _normalize_schema_value(item, item_schema)
+        return normalized
+
+    if schema_type == "array" and isinstance(value, list):
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            return [_normalize_schema_value(item, item_schema) for item in value]
+        return value
+
+    return _coerce_schema_value(value, schema)
+
+
 def _normalize_tool_arguments(
     arguments: Any,
     tool_name: str | None = None,
@@ -137,6 +220,9 @@ def _normalize_tool_arguments(
     """Normalize parsed tool arguments before OpenAI serialization."""
     arguments = _decode_json_like(arguments)
     if isinstance(arguments, dict):
+        schema = _get_tool_parameters_schema(tool_name, request)
+        if schema:
+            return _normalize_schema_value(arguments, schema)
         param_config = _get_tool_param_config(tool_name, request)
         return {
             key: _coerce_schema_value(value, param_config.get(key))
@@ -234,6 +320,151 @@ def _iter_calling_tool_calls(text: str):
             return
 
 
+def _iter_function_equals_tool_calls(text: str):
+    """Yield malformed `<tool_call>function=name({...})` spans."""
+    if "<tool_call>" not in text and "function=" not in text:
+        return
+
+    search_from = 0
+    marker = "function="
+    while True:
+        marker_idx = text.find(marker, search_from)
+        if marker_idx == -1:
+            return
+
+        i = marker_idx + len(marker)
+        name_start = i
+        while i < len(text) and (text[i].isalnum() or text[i] in "_.-"):
+            i += 1
+        name = text[name_start:i].strip()
+        if not name:
+            search_from = marker_idx + len(marker)
+            continue
+
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or text[i] != "(":
+            search_from = i
+            continue
+        i += 1
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or text[i] != "{":
+            search_from = i
+            continue
+
+        args_start = i
+        depth = 0
+        in_string = False
+        escaped = False
+        while i < len(text):
+            char = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            else:
+                if char == '"':
+                    in_string = True
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        args_end = i + 1
+                        j = args_end
+                        while j < len(text) and text[j].isspace():
+                            j += 1
+                        if j < len(text) and text[j] == ")":
+                            j += 1
+                        if j < len(text) and text[j] == "]":
+                            j += 1
+                        start = text.rfind("<tool_call>", 0, marker_idx)
+                        if start == -1:
+                            start = marker_idx
+                        yield start, j, name, text[args_start:args_end]
+                        search_from = j
+                        break
+            i += 1
+        else:
+            return
+
+
+def _iter_prefixed_tool_calls(text: str):
+    """Yield degraded `_tool: name({...})` spans with balanced JSON args."""
+    markers = ("_tool:",)
+    search_from = 0
+    while True:
+        found = [(text.find(marker, search_from), marker) for marker in markers]
+        found = [(idx, marker) for idx, marker in found if idx != -1]
+        if not found:
+            return
+        marker_idx, marker = min(found, key=lambda item: item[0])
+
+        i = marker_idx + len(marker)
+        while i < len(text) and text[i].isspace():
+            i += 1
+
+        name_start = i
+        while i < len(text) and (text[i].isalnum() or text[i] in "_.-"):
+            i += 1
+        name = text[name_start:i].strip()
+        if not name:
+            search_from = marker_idx + len(marker)
+            continue
+
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or text[i] != "(":
+            search_from = i
+            continue
+        i += 1
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or text[i] != "{":
+            search_from = i
+            continue
+
+        args_start = i
+        depth = 0
+        in_string = False
+        escaped = False
+        while i < len(text):
+            char = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            else:
+                if char == '"':
+                    in_string = True
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        args_end = i + 1
+                        j = args_end
+                        while j < len(text) and text[j].isspace():
+                            j += 1
+                        if j < len(text) and text[j] == ")":
+                            j += 1
+                        if j < len(text) and text[j] == "]":
+                            j += 1
+                        yield marker_idx, j, name, text[args_start:args_end]
+                        search_from = j
+                        break
+            i += 1
+        else:
+            return
+
+
 def _is_tool_call_json(obj: dict) -> bool:
     """
     Check if a JSON object looks like a tool call.
@@ -270,7 +501,51 @@ def _is_tool_call_json(obj: dict) -> bool:
     return True
 
 
-def _parse_raw_json_tool_calls(text: str) -> list[dict] | None:
+def _infer_tool_name_for_arguments(
+    arguments: dict[str, Any], request: dict[str, Any] | None
+) -> str | None:
+    if not arguments or not isinstance(request, dict):
+        return None
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return None
+
+    matches: list[str] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        parameters = function.get("parameters")
+        props = parameters.get("properties") if isinstance(parameters, dict) else None
+        if isinstance(name, str) and isinstance(props, dict):
+            if all(key in props for key in arguments):
+                matches.append(name)
+
+    if len(matches) == 1:
+        return matches[0]
+    for preferred in ("bash", "shell", "exec", "run_command"):
+        if preferred in matches:
+            return preferred
+    return None
+
+
+def _raw_json_tool_call(obj: Any, request: dict[str, Any] | None) -> dict | None:
+    if not isinstance(obj, dict):
+        return None
+    if _is_tool_call_json(obj):
+        return {"name": obj["name"], "arguments": obj.get("arguments", {})}
+    inferred = _infer_tool_name_for_arguments(obj, request)
+    if inferred:
+        return {"name": inferred, "arguments": obj}
+    return None
+
+
+def _parse_raw_json_tool_calls(
+    text: str, request: dict[str, Any] | None = None
+) -> list[dict] | None:
     """
     Parse raw JSON tool calls from model output.
 
@@ -297,13 +572,10 @@ def _parse_raw_json_tool_calls(text: str) -> list[dict] | None:
     if text.startswith("["):
         try:
             parsed = json.loads(text)
-            if isinstance(parsed, list) and all(
-                _is_tool_call_json(item) for item in parsed
-            ):
-                return [
-                    {"name": item["name"], "arguments": item.get("arguments", {})}
-                    for item in parsed
-                ]
+            if isinstance(parsed, list):
+                calls = [_raw_json_tool_call(item, request) for item in parsed]
+                if calls and all(call is not None for call in calls):
+                    return [call for call in calls if call is not None]
         except json.JSONDecodeError:
             pass
 
@@ -337,14 +609,19 @@ def _parse_raw_json_tool_calls(text: str) -> list[dict] | None:
                 json_str = text[start : i + 1]
                 try:
                     obj = json.loads(json_str)
-                    # Only consider as tool call if it has both "name" AND "arguments"
-                    if _is_tool_call_json(obj):
-                        tool_calls.append(
-                            {"name": obj["name"], "arguments": obj.get("arguments", {})}
-                        )
+                    call = _raw_json_tool_call(obj, request)
+                    if call:
+                        tool_calls.append(call)
                 except json.JSONDecodeError:
                     pass
                 start = None
+
+    if not tool_calls and '"command"' in text:
+        for command in re.findall(r'"command"\s*:\s*"((?:\\.|[^"\\])*)"', text):
+            arguments = {"command": command.encode().decode("unicode_escape")}
+            inferred = _infer_tool_name_for_arguments(arguments, request)
+            if inferred:
+                tool_calls.append({"name": inferred, "arguments": arguments})
 
     return tool_calls if tool_calls else None
 
@@ -376,6 +653,8 @@ def parse_tool_calls(
     # Pattern for Qwen3 calling-tool style. Some models omit the outer brackets,
     # and arguments can contain nested braces in strings, so use a balanced scan.
     calling_tool_matches = list(_iter_calling_tool_calls(text))
+    calling_tool_matches.extend(_iter_function_equals_tool_calls(text) or [])
+    calling_tool_matches.extend(_iter_prefixed_tool_calls(text) or [])
 
     for _, _, name, args_str in calling_tool_matches:
         try:
@@ -524,10 +803,281 @@ def parse_tool_calls(
     # Note: We keep  tags for reasoning models
     # The user may want to see the model's reasoning process
 
+    # Degraded line format:
+    # <tool_call>function=bash
+    # parameter=bash
+    # command=bun --version
+    if not tool_calls and "function=" in cleaned_text and "command=" in cleaned_text:
+        line_match = re.search(
+            r"function=([A-Za-z0-9_.-]+).*?command=([^\n<]+)",
+            cleaned_text,
+            re.DOTALL,
+        )
+        if line_match:
+            name = line_match.group(1).strip()
+            command = line_match.group(2).strip()
+            tool_calls.append(
+                ToolCall(
+                    id=f"call_{uuid.uuid4().hex[:8]}",
+                    type="function",
+                    function=FunctionCall(
+                        name=name,
+                        arguments=_serialize_tool_arguments(
+                            {"command": command}, name, request
+                        ),
+                    ),
+                )
+            )
+            cleaned_text = ""
+
+    # Degraded XML-ish format:
+    # <tool_call>function=bash>
+    # <parameter=command>
+    # ls -la
+    # </parameter>
+    if (
+        not tool_calls
+        and "<tool_call>" in cleaned_text
+        and "function=" in cleaned_text
+        and "<parameter=command>" in cleaned_text
+    ):
+        name_match = re.search(
+            r"function=([A-Za-z0-9_.-]+)\s*>?",
+            cleaned_text,
+            re.DOTALL,
+        )
+        command_match = re.search(
+            r"<parameter=command>\s*(.*?)\s*</parameter>",
+            cleaned_text,
+            re.DOTALL,
+        )
+        if name_match and command_match:
+            name = name_match.group(1).strip()
+            command = command_match.group(1).strip()
+            tool_calls.append(
+                ToolCall(
+                    id=f"call_{uuid.uuid4().hex[:8]}",
+                    type="function",
+                    function=FunctionCall(
+                        name=name,
+                        arguments=_serialize_tool_arguments(
+                            {"command": command}, name, request
+                        ),
+                    ),
+                )
+            )
+            cleaned_text = ""
+
+    # Degraded XML-ish generic parameters with missing tag terminators:
+    # <tool_call>function=write
+    # <parameter=path
+    # /tmp/index.ts
+    # </parameter
+    # <parameter=content>
+    # ...
+    if (
+        not tool_calls
+        and ("<tool_call>" in cleaned_text or "Calling tool:" in cleaned_text)
+        and "<parameter=" in cleaned_text
+    ):
+        name_match = re.search(
+            r"function=([A-Za-z0-9_.-]+)\s*>?",
+            cleaned_text,
+            re.DOTALL,
+        )
+        if not name_match:
+            name_match = re.search(
+                r"Calling tool:\s*([A-Za-z0-9_.-]+)",
+                cleaned_text,
+                re.DOTALL,
+            )
+        if not name_match:
+            name_match = re.search(
+                r"<tool_call>\s*([A-Za-z0-9_.-]+)\s*$",
+                cleaned_text,
+                re.MULTILINE,
+            )
+        arguments = {
+            key.strip(): value.strip()
+            for key, value in re.findall(
+                r"<parameter=([A-Za-z0-9_.-]+)>?\s*(.*?)(?=</parameter>?|<parameter=|</tool_call>|$)",
+                cleaned_text,
+                re.DOTALL,
+            )
+            if key.strip() and value.strip()
+        }
+        if not name_match and {"path", "content"}.issubset(arguments):
+            inferred_name = "write"
+        else:
+            inferred_name = name_match.group(1).strip() if name_match else ""
+        if inferred_name and arguments:
+            tool_calls.append(
+                ToolCall(
+                    id=f"call_{uuid.uuid4().hex[:8]}",
+                    type="function",
+                    function=FunctionCall(
+                        name=inferred_name,
+                        arguments=_serialize_tool_arguments(
+                            arguments, inferred_name, request
+                        ),
+                    ),
+                )
+            )
+            cleaned_text = ""
+
+    # Degraded parameter-name format:
+    # <parameter_name>bash</parameter_name>
+    # <parameter=commands>
+    # ["bun add express @types/express"]
+    # </parameter>
+    if (
+        not tool_calls
+        and "<parameter_name>" in cleaned_text
+        and "<parameter=commands>" in cleaned_text
+    ):
+        name_match = re.search(
+            r"<parameter_name>\s*([^<\s]+)\s*</parameter_name>",
+            cleaned_text,
+            re.DOTALL,
+        )
+        commands_match = re.search(
+            r"<parameter=commands>\s*(.*?)\s*</parameter>",
+            cleaned_text,
+            re.DOTALL,
+        )
+        if name_match and commands_match:
+            name = name_match.group(1).strip()
+            raw_commands = commands_match.group(1).strip()
+            command = raw_commands
+            try:
+                parsed_commands = json.loads(raw_commands)
+                if isinstance(parsed_commands, list):
+                    command = " && ".join(str(item) for item in parsed_commands)
+                elif isinstance(parsed_commands, str):
+                    command = parsed_commands
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+            tool_calls.append(
+                ToolCall(
+                    id=f"call_{uuid.uuid4().hex[:8]}",
+                    type="function",
+                    function=FunctionCall(
+                        name=name,
+                        arguments=_serialize_tool_arguments(
+                            {"command": command}, name, request
+                        ),
+                    ),
+                )
+            )
+            cleaned_text = ""
+
+    # Degraded parameter format:
+    # <parameter=name>bash</parameter>
+    # <parameter=command>
+    # bun add express
+    # </parameter>
+    if (
+        not tool_calls
+        and "<parameter=name>" in cleaned_text
+        and "<parameter=command>" in cleaned_text
+    ):
+        name_match = re.search(
+            r"<parameter=name>\s*([^<\s]+)\s*</parameter>",
+            cleaned_text,
+            re.DOTALL,
+        )
+        command_match = re.search(
+            r"<parameter=command>\s*(.*?)\s*</parameter>",
+            cleaned_text,
+            re.DOTALL,
+        )
+        if name_match and command_match:
+            name = name_match.group(1).strip()
+            command = command_match.group(1).strip()
+            tool_calls.append(
+                ToolCall(
+                    id=f"call_{uuid.uuid4().hex[:8]}",
+                    type="function",
+                    function=FunctionCall(
+                        name=name,
+                        arguments=_serialize_tool_arguments(
+                            {"command": command}, name, request
+                        ),
+                    ),
+                )
+            )
+            cleaned_text = ""
+
+    # Degraded parameter attribute format:
+    # <parameter name="bash">
+    # <parameter name="command">
+    # bun init --yes
+    # </parameter>
+    if (
+        not tool_calls
+        and '<parameter name="' in cleaned_text
+        and ('name="command"' in cleaned_text or "<parameter=" in cleaned_text)
+    ):
+        param_names = re.findall(r'<parameter name="([^"]+)">', cleaned_text)
+        if param_names:
+            name = next(
+                (
+                    item
+                    for item in param_names
+                    if item
+                    not in {
+                        "command",
+                        "path",
+                        "content",
+                        "oldText",
+                        "newText",
+                        "old_string",
+                        "new_string",
+                    }
+                ),
+                "",
+            )
+            arguments: dict[str, Any] = {}
+            command_match = re.search(
+                r'<parameter name="command">\s*(.*?)\s*</parameter>',
+                cleaned_text,
+                re.DOTALL,
+            )
+            if command_match:
+                arguments["command"] = command_match.group(1).strip()
+            for key, value in re.findall(
+                r"<parameter=([A-Za-z0-9_.-]+)>\s*(.*?)\s*</parameter>",
+                cleaned_text,
+                re.DOTALL,
+            ):
+                arguments[key.strip()] = value.strip()
+            if "old_string" in arguments or "new_string" in arguments:
+                arguments["edits"] = [
+                    {
+                        "oldText": arguments.pop("old_string", ""),
+                        "newText": arguments.pop("new_string", ""),
+                    }
+                ]
+            if name and arguments:
+                name = _coerce_degraded_tool_name(name, arguments, request)
+                tool_calls.append(
+                    ToolCall(
+                        id=f"call_{uuid.uuid4().hex[:8]}",
+                        type="function",
+                        function=FunctionCall(
+                            name=name,
+                            arguments=_serialize_tool_arguments(
+                                arguments, name, request
+                            ),
+                        ),
+                    )
+                )
+                cleaned_text = ""
+
     # Fallback: Raw JSON tool calls (lowest priority)
     # Only try if no other formats matched
     if not tool_calls:
-        raw_json_calls = _parse_raw_json_tool_calls(cleaned_text)
+        raw_json_calls = _parse_raw_json_tool_calls(cleaned_text, request)
         if raw_json_calls:
             for call_data in raw_json_calls:
                 tool_calls.append(
@@ -546,6 +1096,13 @@ def parse_tool_calls(
             cleaned_text = re.sub(r"</?tool_call>", "", cleaned_text)
             cleaned_text = re.sub(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", "", cleaned_text)
             cleaned_text = cleaned_text.strip()
+
+    for tool_call in tool_calls:
+        if tool_call.function and tool_call.function.name.startswith("call_"):
+            normalized_name = _coerce_degraded_tool_name(
+                tool_call.function.name, {}, request
+            )
+            tool_call.function.name = normalized_name
 
     return cleaned_text, tool_calls if tool_calls else None
 

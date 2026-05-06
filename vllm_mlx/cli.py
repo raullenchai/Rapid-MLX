@@ -13,10 +13,13 @@ Usage:
 """
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
 _QWEN36_MTPLX_MODEL = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed"
 _QWEN36_MTPLX_MARKER = "Qwen3.6-27B-MTPLX-Optimized-Speed"
+_QWEN36_35B_A3B_MARKER = "Qwen3.6-35B-A3B"
 
 
 def _has_cli_option(raw_args: list[str], *option_names: str) -> bool:
@@ -34,7 +37,28 @@ def _is_qwen36_mtplx_request(args: argparse.Namespace) -> bool:
         original_alias == "qwen3.6-27b"
         or model == _QWEN36_MTPLX_MODEL
         or _QWEN36_MTPLX_MARKER in model
+        or _is_local_mtplx_qwen_model(model)
     )
+
+
+def _is_local_mtplx_qwen_model(model: str) -> bool:
+    model_path = Path(model).expanduser()
+    if not model_path.is_dir():
+        return False
+    contract_path = model_path / "mtplx_runtime.json"
+    mtp_path = model_path / "mtp.safetensors"
+    if not contract_path.exists() or not mtp_path.exists():
+        return False
+    try:
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return str(contract.get("arch_id")) == "qwen3-next-mtp"
+
+
+def _is_qwen36_35b_a3b_request(args: argparse.Namespace) -> bool:
+    model = str(getattr(args, "model", "") or "")
+    return _QWEN36_35B_A3B_MARKER in model
 
 
 def _apply_qwen36_mtplx_preset(
@@ -69,7 +93,10 @@ def _apply_qwen36_mtplx_preset(
         args.tool_call_parser = "qwen3_coder_xml"
     if not _has_cli_option(raw_args, "--reasoning-parser"):
         args.reasoning_parser = "qwen3"
-    if not _has_cli_option(raw_args, "--no-thinking"):
+    if (
+        not _is_qwen36_35b_a3b_request(args)
+        and not _has_cli_option(raw_args, "--no-thinking", "--enable-thinking")
+    ):
         args.no_thinking = True
     if not _has_cli_option(raw_args, "--enable-tool-logits-bias"):
         args.enable_tool_logits_bias = True
@@ -938,6 +965,29 @@ def models_command(_args):
     print()
 
 
+def convert_mtplx_command(args):
+    """Package an MTP-equipped model into MTPLX sidecar layout."""
+    from vllm_mlx.convert_mtplx import ConvertMTPLXError, convert_mtplx
+
+    try:
+        result = convert_mtplx(
+            args.model,
+            mtp_source=args.mtp_source,
+            output=args.output,
+            overwrite=args.overwrite,
+        )
+    except ConvertMTPLXError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    print(f"Source: {result.source}")
+    print(f"MTP source: {result.mtp_source}")
+    print(f"Output: {result.output}")
+    print(f"MTP sidecar: {result.mtp_file}")
+    print(f"Runtime contract: {result.runtime_contract_file}")
+    print(f"MTP tensors: {result.tensor_count}")
+
+
 def agents_command(args):
     """List, configure, and test agent integrations."""
     from vllm_mlx.agents import get_profile, list_profiles
@@ -1420,6 +1470,12 @@ Examples:
             "Useful for faster responses when chain-of-thought is not needed."
         ),
     )
+    serve_parser.add_argument(
+        "--enable-thinking",
+        action="store_true",
+        default=False,
+        help="Keep model reasoning/thinking enabled when an auto preset would disable it.",
+    )
     # GC control (Tier 0 optimization)
     serve_parser.add_argument(
         "--gc-control",
@@ -1635,6 +1691,30 @@ Examples:
     # Models command
     subparsers.add_parser("models", help="List available model aliases")
 
+    # MTPLX conversion command
+    convert_parser = subparsers.add_parser(
+        "convert-mtplx",
+        help="Package an MTP-equipped model into MTPLX sidecar layout",
+    )
+    convert_parser.add_argument("model", type=str, help="Source model directory")
+    convert_parser.add_argument(
+        "--mtp-source",
+        type=str,
+        default=None,
+        help="Directory containing embedded mtp.* tensors. Defaults to source model.",
+    )
+    convert_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output directory. Defaults to <model>-MTPLX-Optimized-Speed.",
+    )
+    convert_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace the output directory if it already exists.",
+    )
+
     # Agents command
     agents_parser = subparsers.add_parser(
         "agents", help="List, configure, and test agent integrations"
@@ -1742,6 +1822,8 @@ Examples:
         bench_kv_cache_command(args)
     elif args.command == "models":
         models_command(args)
+    elif args.command == "convert-mtplx":
+        convert_mtplx_command(args)
     elif args.command == "agents":
         agents_command(args)
     elif args.command == "doctor":

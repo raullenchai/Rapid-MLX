@@ -105,6 +105,30 @@ Local model path works too:
 lightning-mlx serve /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed
 ```
 
+## Convert Local MTPLX Models
+
+Use `convert-mtplx` to package a local model with an MTPLX MTP sidecar. This is useful when the serving model is quantized, but the MTP tensors come from the original full model:
+
+```bash
+lightning-mlx convert-mtplx \
+  /path/to/Qwen3.6-35B-A3B-4bit \
+  --mtp-source /path/to/Qwen3.6-35B-A3B
+```
+
+By default, the output is written next to the source model as:
+
+```text
+/path/to/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed
+```
+
+Then serve it normally:
+
+```bash
+lightning-mlx serve /path/to/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed
+```
+
+For `Qwen3.6-35B-A3B`, thinking stays enabled by default for agentic tool use. Pass `--no-thinking` only when you explicitly want to disable it.
+
 ## Use It Like OpenAI
 
 ```bash
