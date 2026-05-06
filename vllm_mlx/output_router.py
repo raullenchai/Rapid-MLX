@@ -24,8 +24,8 @@ Usage:
 Designed to replace the fragile regex-based strip_special_tokens +
 reasoning_parser + tool_call_parser chain with a single unified router.
 
-Currently implements Gemma 4 format. Other models can be added by defining
-their token mappings in MODEL_TOKEN_MAPS.
+Currently implements Gemma 4 and Qwen-style think tag formats. Other models
+can be added by defining their token mappings in MODEL_TOKEN_MAPS.
 """
 
 import logging
@@ -78,7 +78,7 @@ class TokenMap:
     tool_response_start: int | None = None  # <|tool_response> = 50
     tool_response_end: int | None = None  # <tool_response|> = 51
 
-    # Think tags (Qwen/DeepSeek style) — for future migration
+    # Think tags (Qwen/DeepSeek style)
     think_start: int | None = None  # <think> token ID
     think_end: int | None = None  # </think> token ID
 
@@ -185,6 +185,15 @@ class OutputRouter:
                 return RouterEvent(Channel.TOOL_CALL, token_id, full_text)
             return None
 
+        # === Think tags (Qwen-style) ===
+        if token_id == m.think_start:
+            self.state = RouterState.THINKING
+            return None
+
+        if token_id == m.think_end:
+            self.state = RouterState.CONTENT
+            return None
+
         # === Default: decode and route based on current state ===
         text = self.tokenizer.decode([token_id])
         if self.state == RouterState.THINKING:
@@ -260,9 +269,20 @@ class OutputRouter:
             )
             return cls(token_map, tokenizer)
 
-        # Qwen/DeepSeek detection: look for <think> and </think>
-        # TODO: implement when migrating existing parsers
-        # if "<think>" in vocab and "</think>" in vocab:
-        #     ...
+        # Qwen detection: <think>...</think> reasoning tags.
+        if "<think>" in vocab and "</think>" in vocab:
+            token_map = TokenMap(
+                think_start=vocab.get("<think>"),
+                think_end=vocab.get("</think>"),
+                bos=vocab.get("<bos>"),
+                eos=vocab.get("<eos>"),
+                pad=vocab.get("<pad>"),
+            )
+            logger.info(
+                "[OutputRouter] Think tag format detected: think=%d/%d",
+                token_map.think_start,
+                token_map.think_end,
+            )
+            return cls(token_map, tokenizer)
 
         return None  # unsupported model format
