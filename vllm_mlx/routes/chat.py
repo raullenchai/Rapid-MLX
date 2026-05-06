@@ -44,7 +44,6 @@ from ..service.helpers import (
     _build_usage,
     _disconnect_guard,
     _extract_streaming_token_logprobs,
-    _extract_token_logprob,
     _inject_json_instruction,
     _maybe_pin_system_prompt,
     _parse_tool_calls_with_parser,

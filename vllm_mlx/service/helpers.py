@@ -151,12 +151,9 @@ def _extract_streaming_token_logprobs(
     if chunk.logprobs is None or not getattr(chunk, "new_text", None):
         return []
     lps = chunk.logprobs if isinstance(chunk.logprobs, list) else [chunk.logprobs]
-    tids = chunk.new_token_ids or (
-        [chunk.tokens[-1]] if chunk.tokens else [0]
-    )
+    tids = chunk.new_token_ids or ([chunk.tokens[-1]] if chunk.tokens else [0])
     return [
-        _extract_token_logprob(lp, tid, tokenizer, top_k)
-        for lp, tid in zip(lps, tids)
+        _extract_token_logprob(lp, tid, tokenizer, top_k) for lp, tid in zip(lps, tids)
     ]
 
 

@@ -316,9 +316,7 @@ class TestExtractStreamingTokenLogprobs:
     misaligned top-k indices and a single under-counted entry.
     """
 
-    def _make_chunk(
-        self, logprobs, new_text="hi", new_token_ids=None, tokens=None
-    ):
+    def _make_chunk(self, logprobs, new_text="hi", new_token_ids=None, tokens=None):
         from types import SimpleNamespace
 
         return SimpleNamespace(
@@ -342,9 +340,7 @@ class TestExtractStreamingTokenLogprobs:
         mock, arr = self._make_logprob_array()
         tok = MagicMock()
         tok.decode.return_value = "x"
-        chunk = self._make_chunk(
-            logprobs=mock, new_token_ids=[7], tokens=[7]
-        )
+        chunk = self._make_chunk(logprobs=mock, new_token_ids=[7], tokens=[7])
 
         with patch("numpy.array", return_value=arr):
             result = _extract_streaming_token_logprobs(chunk, tok, top_k=3)
