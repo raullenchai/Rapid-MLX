@@ -1241,13 +1241,13 @@ class MemoryAwarePrefixCache:
                     arr.tofile(f)
 
                 # Record the per-layer cache class names so loaders can
-                # gate on cache-type compatibility (#198 BUG B). Stored
-                # inline in index.json so we can pre-filter incompatible
-                # entries without parsing the safetensors header for each.
-                # Falls back to ``[]`` if the entry was empty (defensive —
-                # shouldn't happen since we reject empty caches at store).
+                # gate on cache-type compatibility (#198 BUG B). Read from
+                # ``persist_cache`` (post-dequantize), not ``entry.cache``,
+                # so the index reflects what's actually on disk — otherwise
+                # a saved-while-quantized entry would be rejected on a
+                # subsequent unquantized startup despite being loadable.
                 cache_types = [
-                    type(layer).__name__ for layer in entry.cache if layer is not None
+                    type(layer).__name__ for layer in persist_cache if layer is not None
                 ]
 
                 index["entries"].append(

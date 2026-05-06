@@ -832,6 +832,60 @@ def test_save_to_disk_records_cache_types_in_index(tmp_path):
     assert idx["entries"][0]["cache_types"] == ["KVCache", "KVCache"]
 
 
+def test_save_to_disk_records_post_dequant_cache_types(tmp_path):
+    """Regression — when ``store`` quantized the entry but ``save_to_disk``
+    must dequantize before persisting (save_prompt_cache requires .state /
+    .meta_state which QuantizedKVCache doesn't expose), the index must
+    record the *post-dequant* class names. Recording ``QuantizedKVCache``
+    here would cause a subsequent unquantized startup to reject the entry
+    as "config changed", silently losing a perfectly loadable cache.
+    Caught by codex post-v0.6.14 review."""
+    n_tokens = 300  # > kv_min_quantize_tokens default of 256
+    # Build a real KVCache with head_dim=64 so quantize(group_size=64) works.
+    kv_layers = []
+    for layer_idx in range(2):
+        c = KVCache()
+        keys = mx.full((1, 4, n_tokens, 64), 0.5 + layer_idx, dtype=mx.float16)
+        values = mx.full((1, 4, n_tokens, 64), -(0.5 + layer_idx), dtype=mx.float16)
+        c.update_and_fetch(keys, values)
+        kv_layers.append(c)
+    cache = MemoryAwarePrefixCache(
+        model=object(),
+        config=MemoryCacheConfig(
+            max_memory_mb=64,
+            max_entries=100,
+            kv_quantize=True,
+        ),
+    )
+    cache.store(list(range(n_tokens)), kv_layers)
+
+    # Sanity — entry.cache should now be QuantizedKVCache layers.
+    QuantizedKVCache = pytest.importorskip("mlx_lm.models.cache").QuantizedKVCache
+    entry = next(iter(cache._entries.values()))
+    assert all(isinstance(c, QuantizedKVCache) for c in entry.cache)
+
+    cache.save_to_disk(str(tmp_path))
+
+    with open(tmp_path / "index.json") as f:
+        idx = json.load(f)
+    assert idx["entries"][0]["cache_types"] == ["KVCache", "KVCache"], (
+        "cache_types must reflect what's on disk (post-dequant), not what "
+        "lived in entry.cache before save"
+    )
+
+    # End-to-end: a future unquantized startup must accept this entry.
+    plain = MemoryAwarePrefixCache(
+        model=object(),
+        config=MemoryCacheConfig(max_memory_mb=64, max_entries=100, kv_quantize=False),
+    )
+    loaded = plain.load_from_disk(str(tmp_path))
+    assert loaded == 1, (
+        "previously-quantized-but-now-dequantized entry must load under "
+        "unquantized config (otherwise users lose their cache after toggling "
+        "--kv-cache-quantization off)"
+    )
+
+
 def test_incompatible_skipped_does_not_count_as_corruption(tmp_path, caplog):
     """The summary log must distinguish "config changed → expected skips"
     from "disk corrupt → user should investigate". A WARNING for an
