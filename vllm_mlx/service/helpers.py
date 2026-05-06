@@ -132,6 +132,34 @@ def get_usage(output: GenerationOutput) -> Usage:
     )
 
 
+def _extract_streaming_token_logprobs(
+    chunk, tokenizer, top_k: int
+) -> list[TokenLogProb]:
+    """Yield one TokenLogProb per generated token in a streaming chunk.
+
+    ``chunk.logprobs`` may be either a single per-step ``mx.array``
+    (under ``stream_interval=1``) or a ``list[mx.array]`` of merged
+    per-step distributions accumulated across skipped ``should_send()``
+    steps (under ``stream_interval > 1``, after PR #210). The downstream
+    SSE consumer expects one entry per *generated token*, not per flush
+    — so we must iterate, pairing each per-step distribution with the
+    corresponding ``new_token_ids`` entry. Without this iteration the
+    list-form gets passed to ``_extract_token_logprob`` as one giant
+    flattened array, and ``argmax`` reads from concatenated unrelated
+    vocab dims (#220).
+    """
+    if chunk.logprobs is None or not getattr(chunk, "new_text", None):
+        return []
+    lps = chunk.logprobs if isinstance(chunk.logprobs, list) else [chunk.logprobs]
+    tids = chunk.new_token_ids or (
+        [chunk.tokens[-1]] if chunk.tokens else [0]
+    )
+    return [
+        _extract_token_logprob(lp, tid, tokenizer, top_k)
+        for lp, tid in zip(lps, tids)
+    ]
+
+
 def _extract_token_logprob(
     logprobs_array, token_id: int, tokenizer, top_k: int
 ) -> TokenLogProb:

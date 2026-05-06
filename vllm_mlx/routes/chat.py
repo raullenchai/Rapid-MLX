@@ -43,6 +43,7 @@ from ..service.helpers import (
     _TOOL_USE_SYSTEM_SUFFIX,
     _build_usage,
     _disconnect_guard,
+    _extract_streaming_token_logprobs,
     _extract_token_logprob,
     _inject_json_instruction,
     _maybe_pin_system_prompt,
@@ -478,13 +479,11 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             output = None
             async for chunk in engine.stream_chat(messages=messages, **chat_kwargs):
                 output = chunk
-                if chunk.logprobs is not None and chunk.new_text:
-                    token_id = chunk.tokens[-1] if chunk.tokens else 0
-                    token_logprobs_list.append(
-                        _extract_token_logprob(
-                            chunk.logprobs, token_id, engine.tokenizer, top_k_logprobs
-                        )
+                token_logprobs_list.extend(
+                    _extract_streaming_token_logprobs(
+                        chunk, engine.tokenizer, top_k_logprobs
                     )
+                )
             if output is None:
                 return Response(status_code=499)
         elif use_guided and json_schema:
@@ -643,13 +642,12 @@ async def stream_chat_completion(
 
         def _build_chunk_logprobs(output: GenerationOutput) -> ChoiceLogProbs | None:
             """Build ChoiceLogProbs for a streaming chunk if logprobs requested."""
-            if not want_logprobs or output.logprobs is None:
+            if not want_logprobs:
                 return None
-            token_id = output.tokens[-1] if output.tokens else 0
-            token_lp = _extract_token_logprob(
-                output.logprobs, token_id, engine.tokenizer, top_k_logprobs
+            entries = _extract_streaming_token_logprobs(
+                output, engine.tokenizer, top_k_logprobs
             )
-            return ChoiceLogProbs(content=[token_lp])
+            return ChoiceLogProbs(content=entries) if entries else None
 
         # Pre-compute SSE template parts that don't change per-token.
         _sse_created = int(time.time())

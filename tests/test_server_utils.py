@@ -301,6 +301,139 @@ class TestExtractTokenLogprob:
 
 
 # ---------------------------------------------------------------------------
+# _extract_streaming_token_logprobs (regression for #220)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractStreamingTokenLogprobs:
+    """Regression for #220 — under stream_interval > 1 a single chunk
+    carries a list[mx.array] of merged per-step distributions, one per
+    token in the merged window. The downstream SSE consumer must see
+    one TokenLogProb entry per generated token, not one per flush.
+
+    Pre-#220, the chat-route handler passed the entire list to
+    ``_extract_token_logprob`` as one flattened array, producing
+    misaligned top-k indices and a single under-counted entry.
+    """
+
+    def _make_chunk(
+        self, logprobs, new_text="hi", new_token_ids=None, tokens=None
+    ):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            logprobs=logprobs,
+            new_text=new_text,
+            new_token_ids=new_token_ids,
+            tokens=tokens or [],
+        )
+
+    def _make_logprob_array(self, vocab_size=64):
+        arr = np.full(vocab_size, -10.0)
+        arr[0] = -0.1
+        mock = MagicMock()
+        mock.astype.return_value = mock
+        return mock, arr
+
+    def test_single_array_yields_one_entry(self):
+        """Backward-compat — stream_interval=1 still gives one entry."""
+        from vllm_mlx.service.helpers import _extract_streaming_token_logprobs
+
+        mock, arr = self._make_logprob_array()
+        tok = MagicMock()
+        tok.decode.return_value = "x"
+        chunk = self._make_chunk(
+            logprobs=mock, new_token_ids=[7], tokens=[7]
+        )
+
+        with patch("numpy.array", return_value=arr):
+            result = _extract_streaming_token_logprobs(chunk, tok, top_k=3)
+
+        assert len(result) == 1
+
+    def test_list_of_three_yields_three_entries(self):
+        """The bug — under stream_interval=4, a 3-token flush carries a
+        3-element list and must produce 3 separate TokenLogProb entries.
+        """
+        from vllm_mlx.service.helpers import _extract_streaming_token_logprobs
+
+        mock_a, arr_a = self._make_logprob_array()
+        mock_b, arr_b = self._make_logprob_array()
+        mock_c, arr_c = self._make_logprob_array()
+        tok = MagicMock()
+        tok.decode.return_value = "x"
+        chunk = self._make_chunk(
+            logprobs=[mock_a, mock_b, mock_c],
+            new_token_ids=[10, 11, 12],
+            tokens=[10, 11, 12],
+        )
+
+        with patch("numpy.array", side_effect=[arr_a, arr_b, arr_c]):
+            result = _extract_streaming_token_logprobs(chunk, tok, top_k=3)
+
+        assert len(result) == 3, (
+            "Expected one TokenLogProb per merged step; pre-fix this "
+            "returned a single entry per flush"
+        )
+
+    def test_list_pairs_with_new_token_ids(self):
+        """Each per-step distribution must be paired with the matching
+        ``new_token_ids[i]``, not always the last token in ``tokens``."""
+        from vllm_mlx.service.helpers import _extract_streaming_token_logprobs
+
+        mock_a, arr_a = self._make_logprob_array()
+        mock_b, arr_b = self._make_logprob_array()
+        mock_a.astype.return_value = mock_a
+        mock_b.astype.return_value = mock_b
+
+        observed_token_ids = []
+        tok = MagicMock()
+
+        def fake_decode(ids):
+            observed_token_ids.append(ids[0])
+            return f"t{ids[0]}"
+
+        tok.decode.side_effect = fake_decode
+
+        chunk = self._make_chunk(
+            logprobs=[mock_a, mock_b],
+            new_token_ids=[20, 21],
+            tokens=[10, 11, 20, 21],
+        )
+
+        with patch("numpy.array", side_effect=[arr_a, arr_b]):
+            _extract_streaming_token_logprobs(chunk, tok, top_k=1)
+
+        # The sampled token decoded for each entry must come from
+        # new_token_ids, not from chunk.tokens[-1] (= 21 for both).
+        sampled = [tid for tid in observed_token_ids if tid in (20, 21)]
+        assert sampled == [20, 21], (
+            f"Per-step token IDs must come from new_token_ids; got {sampled}"
+        )
+
+    def test_empty_chunk_returns_empty(self):
+        from vllm_mlx.service.helpers import _extract_streaming_token_logprobs
+
+        chunk = self._make_chunk(logprobs=None)
+        assert _extract_streaming_token_logprobs(chunk, MagicMock(), top_k=3) == []
+
+    def test_no_new_text_returns_empty(self):
+        """A chunk without new_text (e.g. empty tool-call passthrough)
+        produces no logprobs entries even if logprobs is set."""
+        from vllm_mlx.service.helpers import _extract_streaming_token_logprobs
+
+        mock, _ = self._make_logprob_array()
+        chunk = self._make_chunk(logprobs=mock, new_text="")
+        assert _extract_streaming_token_logprobs(chunk, MagicMock(), top_k=3) == []
+
+    def test_empty_list_returns_empty(self):
+        from vllm_mlx.service.helpers import _extract_streaming_token_logprobs
+
+        chunk = self._make_chunk(logprobs=[], new_text="hi", new_token_ids=[])
+        assert _extract_streaming_token_logprobs(chunk, MagicMock(), top_k=3) == []
+
+
+# ---------------------------------------------------------------------------
 # _validate_tool_call_params
 # ---------------------------------------------------------------------------
 
