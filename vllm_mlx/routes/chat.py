@@ -683,10 +683,23 @@ async def stream_chat_completion(
             escaped = json.dumps(text)
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
+        def _fast_tool_call_sse(tool_calls: list[dict]) -> str:
+            """Build tool-call SSE chunk directly, bypassing Pydantic serialization."""
+            tool_calls_json = json.dumps(tool_calls, separators=(",", ":"))
+            return (
+                f'data: {{"id":"{response_id}",'
+                f'"object":"chat.completion.chunk",'
+                f'"created":{_sse_created},'
+                f'"model":{_model_escaped},'
+                f'"choices":[{{"index":0,'
+                f'"delta":{{"tool_calls":{tool_calls_json}}},'
+                f'"finish_reason":"tool_calls"}}]}}\n\n'
+            )
+
         # First chunk with role
         _first_sse = f'{_sse_prefix}"role":"assistant"{_sse_suffix}'
-        if logger.isEnabledFor(logging.INFO):
-            logger.info(f"[SSE-ROLE] {_first_sse.strip()[:200]}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[SSE-ROLE] {_first_sse.strip()[:200]}")
         yield _first_sse
 
         # Initialize post-processor.
@@ -712,6 +725,7 @@ async def stream_chat_completion(
         # Track token counts for usage reporting
         prompt_tokens = 0
         completion_tokens = 0
+        stop_after_tool_call = False
 
         # Stream content — PostProcessor handles reasoning/tool/sanitize
         async for output in engine.stream_chat(messages=messages, **kwargs):
@@ -745,22 +759,11 @@ async def stream_chat_completion(
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
 
                 elif event.type == "tool_call":
-                    chunk = ChatCompletionChunk(
-                        id=response_id,
-                        model=_resolve_model_name(request.model),
-                        choices=[
-                            ChatCompletionChunkChoice(
-                                delta=ChatCompletionChunkDelta(
-                                    tool_calls=event.tool_calls,
-                                ),
-                                finish_reason=event.finish_reason,
-                            )
-                        ],
-                        usage=get_usage(output) if output.finished else None,
-                    )
-                    _tc_sse = f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
-                    logger.info(f"[SSE-TC] {_tc_sse.strip()[:300]}")
+                    _tc_sse = _fast_tool_call_sse(event.tool_calls)
+                    logger.debug(f"[SSE-TC] {_tc_sse.strip()[:300]}")
                     yield _tc_sse
+                    stop_after_tool_call = True
+                    break
 
                 elif event.type == "finish":
                     chunk = ChatCompletionChunk(
@@ -781,23 +784,12 @@ async def stream_chat_completion(
                     yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
         # Fallback tool call detection
-        for event in processor.finalize():
-            if event.type == "tool_call":
-                tool_chunk = ChatCompletionChunk(
-                    id=response_id,
-                    model=_resolve_model_name(request.model),
-                    choices=[
-                        ChatCompletionChunkChoice(
-                            delta=ChatCompletionChunkDelta(
-                                tool_calls=event.tool_calls,
-                            ),
-                            finish_reason="tool_calls",
-                        )
-                    ],
-                )
-                _fb_sse = f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
-                logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
-                yield _fb_sse
+        if not stop_after_tool_call:
+            for event in processor.finalize():
+                if event.type == "tool_call":
+                    _fb_sse = _fast_tool_call_sse(event.tool_calls)
+                    logger.debug(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
+                    yield _fb_sse
 
         # Log throughput
         elapsed = time.perf_counter() - start_time
