@@ -1217,13 +1217,15 @@ class MemoryAwarePrefixCache:
         for i, (tokens_key, entry) in enumerate(self._entries.items()):
             entry_path, tokens_path = _entry_paths(i)
             try:
-                # Dequantize _QuantizedCacheWrapper layers before saving.
+                # Dequantize QuantizedKVCache layers before saving.
                 # save_prompt_cache requires .state and .meta_state which
                 # the wrapper does not provide; dequantizing restores the
                 # original cache types that do.
+                from mlx_lm.models.cache import QuantizedKVCache
+
                 persist_cache = (
                     _dequantize_cache(entry.cache)
-                    if any(isinstance(c, _QuantizedCacheWrapper) for c in entry.cache)
+                    if any(isinstance(c, QuantizedKVCache) for c in entry.cache)
                     else entry.cache
                 )
                 save_prompt_cache(
