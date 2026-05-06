@@ -8,6 +8,10 @@ from vllm_mlx.model_aliases import list_aliases, resolve_model
 
 def test_known_alias_resolves():
     assert resolve_model("qwen3.5-9b") == "mlx-community/Qwen3.5-9B-4bit"
+    assert (
+        resolve_model("qwen3.6-27b")
+        == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed"
+    )
     assert resolve_model("llama3-3b") == "mlx-community/Llama-3.2-3B-Instruct-4bit"
 
 

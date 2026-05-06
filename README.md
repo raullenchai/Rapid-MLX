@@ -90,23 +90,18 @@ export PATH="$HOME/.local/bin:$PATH"
 Start a local OpenAI-compatible server:
 
 ```bash
-lightning-mlx serve /path/to/model \
-  --enable-mtp \
-  --served-model-name local \
-  --port 8010 \
-  --default-temperature 0.6 \
-  --default-top-p 0.95 \
-  --disable-prefix-cache \
-  --max-num-seqs 1 \
-  --prefill-batch-size 1 \
-  --completion-batch-size 1 \
-  --stream-interval 1 \
-  --enable-auto-tool-choice \
-  --tool-call-parser qwen3_coder_xml \
-  --reasoning-parser qwen3 \
-  --no-thinking \
-  --enable-tool-logits-bias
+lightning-mlx serve qwen3.6-27b
 ```
+
+That alias expands internally to the optimized MTPLX model and agentic serving preset.
+
+You can also point at a local checkout of the same model:
+
+```bash
+lightning-mlx serve /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed
+```
+
+The same optimized preset is applied for that local path.
 
 Use it as an OpenAI-compatible endpoint:
 
@@ -120,31 +115,6 @@ curl http://localhost:8010/v1/chat/completions \
     ],
     "stream": true
   }'
-```
-
-## Recommended Agentic Settings
-
-For single-agent local coding workloads on Apple Silicon:
-
-```bash
---enable-mtp
---max-num-seqs 1
---prefill-batch-size 1
---completion-batch-size 1
---stream-interval 1
---default-temperature 0.6
---default-top-p 0.95
---disable-prefix-cache
---enable-auto-tool-choice
---enable-tool-logits-bias
-```
-
-For Qwen3-style tool-calling models:
-
-```bash
---tool-call-parser qwen3_coder_xml
---reasoning-parser qwen3
---no-thinking
 ```
 
 ## Benchmark Protocol

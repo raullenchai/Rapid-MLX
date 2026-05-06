@@ -15,6 +15,65 @@ Usage:
 import argparse
 import sys
 
+_QWEN36_MTPLX_MODEL = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed"
+_QWEN36_MTPLX_MARKER = "Qwen3.6-27B-MTPLX-Optimized-Speed"
+
+
+def _has_cli_option(raw_args: list[str], *option_names: str) -> bool:
+    for arg in raw_args:
+        for option in option_names:
+            if arg == option or arg.startswith(f"{option}="):
+                return True
+    return False
+
+
+def _is_qwen36_mtplx_request(args: argparse.Namespace) -> bool:
+    original_alias = getattr(args, "_original_alias", None)
+    model = str(getattr(args, "model", "") or "")
+    return (
+        original_alias == "qwen3.6-27b"
+        or model == _QWEN36_MTPLX_MODEL
+        or _QWEN36_MTPLX_MARKER in model
+    )
+
+
+def _apply_qwen36_mtplx_preset(
+    args: argparse.Namespace, raw_args: list[str]
+) -> None:
+    if getattr(args, "command", None) != "serve" or not _is_qwen36_mtplx_request(args):
+        return
+
+    if not _has_cli_option(raw_args, "--enable-mtp"):
+        args.enable_mtp = True
+    if not _has_cli_option(raw_args, "--served-model-name"):
+        args.served_model_name = "local"
+    if not _has_cli_option(raw_args, "--port"):
+        args.port = 8010
+    if not _has_cli_option(raw_args, "--default-temperature"):
+        args.default_temperature = 0.6
+    if not _has_cli_option(raw_args, "--default-top-p"):
+        args.default_top_p = 0.95
+    if not _has_cli_option(raw_args, "--enable-prefix-cache", "--disable-prefix-cache"):
+        args.disable_prefix_cache = True
+    if not _has_cli_option(raw_args, "--max-num-seqs"):
+        args.max_num_seqs = 1
+    if not _has_cli_option(raw_args, "--prefill-batch-size"):
+        args.prefill_batch_size = 1
+    if not _has_cli_option(raw_args, "--completion-batch-size"):
+        args.completion_batch_size = 1
+    if not _has_cli_option(raw_args, "--stream-interval"):
+        args.stream_interval = 1
+    if not _has_cli_option(raw_args, "--enable-auto-tool-choice"):
+        args.enable_auto_tool_choice = True
+    if not _has_cli_option(raw_args, "--tool-call-parser"):
+        args.tool_call_parser = "qwen3_coder_xml"
+    if not _has_cli_option(raw_args, "--reasoning-parser"):
+        args.reasoning_parser = "qwen3"
+    if not _has_cli_option(raw_args, "--no-thinking"):
+        args.no_thinking = True
+    if not _has_cli_option(raw_args, "--enable-tool-logits-bias"):
+        args.enable_tool_logits_bias = True
+
 
 def _check_disk_space(model_name: str) -> None:
     """Check if there's enough disk space to download the model.
@@ -974,6 +1033,8 @@ def agents_command(args):
 def main():
     from importlib.metadata import version as pkg_version
 
+    raw_args = sys.argv[1:]
+
     try:
         _version = pkg_version("lightning-mlx")
     except Exception:
@@ -1668,6 +1729,8 @@ Examples:
             print(f"  Alias: {args.model} → {resolved}")
             args._original_alias = args.model
             args.model = resolved
+
+    _apply_qwen36_mtplx_preset(args, raw_args)
 
     if args.command == "serve":
         serve_command(args)
