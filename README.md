@@ -1,65 +1,46 @@
 # lightning-mlx
 
-**lightning-mlx** is a high-speed Apple Silicon local LLM server.
+**Run local LLM agents faster on Apple Silicon.**
 
-This project is a fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) with additional work inspired by and integrated from [MTPLX](https://github.com/youssofal/MTPLX/). The goal is simple: run local LLMs as fast as possible on Apple Silicon while keeping an OpenAI-compatible API for agentic tools, editors, CLIs, and local automation.
+**lightning-mlx** is an OpenAI-compatible local LLM server optimized for **coding agents**, **tool calling**, and **fast short-turn loops** on Mac. It is a fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) with MTPLX-style work inspired by [MTPLX](https://github.com/youssofal/MTPLX/).
 
-## Why lightning-mlx
+## What You Get
 
-Local coding agents are bottlenecked by repeated long-context tool turns. Raw decode speed matters, but short agentic turns are often where latency collapses: system prompt, tool schemas, previous tool output, and small next actions all get paid repeatedly.
+- **2.75x faster short agentic turns** in the benchmark fixture.
+- **1.96x higher all-turn throughput** versus the MLX baseline.
+- **Successful artifact generation** where baseline timed out.
+- **OpenAI-compatible API** for local tools, agents, editors, and CLIs.
+- **Apple Silicon first**: built around MLX and local Mac inference.
+- **MTPLX optimized preset** behind one simple command.
 
-lightning-mlx focuses on that workload:
+## Benchmark Highlight
 
-- OpenAI-compatible chat completions API.
-- MLX-native execution for Apple Silicon.
-- MTPLX-style speculative decoding support.
-- Tool calling and reasoning parser support.
-- Fast streaming Server-Sent Events paths for agentic tool calls.
-- Lower Python/Pydantic overhead on the hot streaming path.
-
-## Benchmark Summary
-
-The benchmark below uses the same agentic fixture across both runs:
+Same prompt, same agentic workflow, one server at a time:
 
 ```text
 Create the snake game using react, vite and typescript
 ```
 
-The agent was run from an empty directory through `pi`, with one local server running at a time, `max_num_seqs=1`, MTP enabled, and prefix cache disabled for a conservative apples-to-apples agentic comparison.
-
-| Metric | MLX baseline | lightning-mlx | Gain |
+| Metric | MLX baseline | **lightning-mlx** | **Gain** |
 | --- | ---: | ---: | ---: |
-| Completion result | Timed out after 10 min | Finished successfully | Completed |
-| Generated app build | Not completed | Passed | Valid artifact |
-| All-turn average | 13.49 tok/s | 26.47 tok/s | +96.2% / 1.96x |
-| Long-turn average | 28.02 tok/s | 38.60 tok/s | +37.8% / 1.38x |
-| Short-turn average | 7.42 tok/s | 20.40 tok/s | +174.9% / 2.75x |
-| MTP acceptance average | 92.02% | 94.30% | +2.28 pp |
+| Completion | Timeout after 10 min | **Finished** | **Completed** |
+| Generated app build | Not completed | **Passed** | **Valid artifact** |
+| All-turn avg | 13.49 tok/s | **26.47 tok/s** | **+96.2% / 1.96x** |
+| Long-turn avg | 28.02 tok/s | **38.60 tok/s** | **+37.8% / 1.38x** |
+| Short-turn avg | 7.42 tok/s | **20.40 tok/s** | **+174.9% / 2.75x** |
+| MTP acceptance avg | 92.02% | **94.30%** | **+2.28 pp** |
 
-The largest practical win is in short agentic turns: `7.42 -> 20.40 tok/s`, a `2.75x` improvement. That is the path that matters most for local agents repeatedly deciding, calling tools, reading outputs, and continuing.
+**Biggest win:** short tool-heavy turns went from **7.42 tok/s** to **20.40 tok/s**. That is the loop developers feel most when a local coding agent reads files, calls tools, edits code, and continues.
 
-## What Was Added
-
-lightning-mlx keeps the Rapid-MLX foundation and adds performance work around MTPLX-style local speculative decoding and agentic streaming.
-
-Current kept improvements include:
-
-- Direct JSON serialization for tool-call SSE chunks.
-- Reduced per-token streaming overhead by avoiding Pydantic serialization on the tool-call hot path.
-- Debug-level SSE trace logging instead of info-level per-chunk logging.
-- Benchmark-driven validation against real local agentic artifact generation.
-
-Experimental changes that did not improve the benchmark were removed. The project intentionally keeps only changes with measured performance or reliability value.
+Full benchmark notes are in [`REPORT.md`](REPORT.md).
 
 ## Install
-
-Install from this repository:
 
 ```bash
 python3 -m pip install git+https://github.com/samuelfaj/lightning-mlx.git
 ```
 
-Or install from a local checkout:
+Local checkout:
 
 ```bash
 git clone https://github.com/samuelfaj/lightning-mlx.git
@@ -67,43 +48,39 @@ cd lightning-mlx
 python3 -m pip install -e .
 ```
 
-After installation, the command is available directly in your shell:
-
-```bash
-lightning-mlx --help
-```
-
-For a self-contained install under `~/.lightning-mlx` with a symlink in `~/.local/bin`:
+Self-contained install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/samuelfaj/lightning-mlx/main/install.sh | bash
 ```
 
-If `~/.local/bin` is not already in your `PATH`, add it:
+Then verify:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+lightning-mlx --help
 ```
 
-## Quick Start
-
-Start a local OpenAI-compatible server:
+## Start Fast
 
 ```bash
 lightning-mlx serve qwen3.6-27b
 ```
 
-That alias expands internally to the optimized MTPLX model and agentic serving preset.
+That one command expands to the optimized MTPLX model:
 
-You can also point at a local checkout of the same model:
+```text
+Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed
+```
+
+and applies the agentic performance preset automatically: **MTP on**, **tool parser on**, **reasoning parser on**, **tool logits bias on**, **single-sequence agent mode**, and **OpenAI model name `local`**.
+
+Local model path works too:
 
 ```bash
 lightning-mlx serve /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed
 ```
 
-The same optimized preset is applied for that local path.
-
-Use it as an OpenAI-compatible endpoint:
+## Use It Like OpenAI
 
 ```bash
 curl http://localhost:8010/v1/chat/completions \
@@ -117,27 +94,18 @@ curl http://localhost:8010/v1/chat/completions \
   }'
 ```
 
-## Benchmark Protocol
+## Why Developers Use It
 
-The comparison table is based on a local agentic benchmark:
+**Local agents need different optimization than chat demos.** The hard path is not one long completion; it is dozens of short, tool-heavy turns with growing context. lightning-mlx focuses on that path:
 
-1. Start exactly one server.
-2. Run `pi` from an empty directory.
-3. Use the prompt: `Create the snake game using react, vite and typescript`.
-4. Build the generated Vite app.
-5. Compare throughput from server-side streaming metrics.
-6. Keep only runtime changes that improve measured performance and preserve valid artifact generation.
+- **Fast tool-call streaming**
+- **Lower SSE/Pydantic overhead**
+- **MTPLX-style speculative decoding**
+- **Qwen3.6 MTPLX preset**
+- **Benchmark-driven changes only**
 
-Full benchmark notes for the current optimization branch are in [`REPORT.md`](REPORT.md).
+## Built On
 
-## Upstream Credits
-
-lightning-mlx builds on:
-
-- [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX), the upstream Apple Silicon local inference server.
-- [MTPLX](https://github.com/youssofal/MTPLX/), which informed the MTP/speculative decoding direction.
-- [MLX](https://github.com/ml-explore/mlx), Apple's array framework for Apple Silicon machine learning.
-
-## Status
-
-This repository is optimized for local experimentation and high-speed Apple Silicon agentic inference. APIs and performance work may move quickly. The north star remains stable: make local LLMs feel fast enough for real coding-agent loops on Mac hardware.
+- [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX)
+- [MTPLX](https://github.com/youssofal/MTPLX/)
+- [MLX](https://github.com/ml-explore/mlx)
