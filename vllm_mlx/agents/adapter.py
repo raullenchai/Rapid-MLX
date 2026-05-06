@@ -90,9 +90,9 @@ def get_setup_instructions(
     testing = profile.get_testing_for_version(agent_version)
 
     lines = [
-        f"# {profile.display_name} + Rapid-MLX Setup",
+        f"# {profile.display_name} + lightning-mlx Setup",
         "",
-        "## 1. Start Rapid-MLX",
+        "## 1. Start lightning-mlx",
         "",
     ]
 
@@ -105,7 +105,7 @@ def get_setup_instructions(
     )
     if profile.recommended_models:
         lines.append("```bash")
-        cmd = f"rapid-mlx serve {serve_model}"
+        cmd = f"lightning-mlx serve {serve_model}"
         if len(profile.recommended_models) > 1:
             cmd += "  # or any model below"
         lines.append(cmd)
@@ -117,7 +117,7 @@ def get_setup_instructions(
                 lines.append(f"- `{m}`")
     else:
         lines.append("```bash")
-        lines.append("rapid-mlx serve <MODEL>")
+        lines.append("lightning-mlx serve <MODEL>")
         lines.append("```")
 
     lines.append("")

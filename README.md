@@ -51,18 +51,46 @@ Current kept improvements include:
 
 Experimental changes that did not improve the benchmark were removed. The project intentionally keeps only changes with measured performance or reliability value.
 
-## Quick Start
+## Install
 
-Install dependencies:
+Install from this repository:
 
 ```bash
-uv sync --extra dev
+python3 -m pip install git+https://github.com/samuelfaj/lightning-mlx.git
 ```
+
+Or install from a local checkout:
+
+```bash
+git clone https://github.com/samuelfaj/lightning-mlx.git
+cd lightning-mlx
+python3 -m pip install -e .
+```
+
+After installation, the command is available directly in your shell:
+
+```bash
+lightning-mlx --help
+```
+
+For a self-contained install under `~/.lightning-mlx` with a symlink in `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/samuelfaj/lightning-mlx/main/install.sh | bash
+```
+
+If `~/.local/bin` is not already in your `PATH`, add it:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+## Quick Start
 
 Start a local OpenAI-compatible server:
 
 ```bash
-.venv/bin/rapid-mlx serve /path/to/model \
+lightning-mlx serve /path/to/model \
   --enable-mtp \
   --served-model-name local \
   --port 8010 \

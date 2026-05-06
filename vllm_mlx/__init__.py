@@ -15,7 +15,7 @@ Features:
 try:
     from importlib.metadata import version as _get_version
 
-    __version__ = _get_version("rapid-mlx")
+    __version__ = _get_version("lightning-mlx")
 except Exception:
     __version__ = "0.0.0"  # fallback for editable installs without metadata
 

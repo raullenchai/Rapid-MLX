@@ -210,7 +210,7 @@ def serve_command(args):
 
     # Startup summary
     print()
-    print("  Rapid-MLX")
+    print("  lightning-mlx")
     print("  ─────────")
     features = []
     if args.enable_auto_tool_choice:
@@ -358,7 +358,7 @@ def serve_command(args):
     except OSError:
         print(f"\n  Error: Port {args.port} is already in use.")
         print(
-            f"  Try a different port: rapid-mlx serve {args.model} --port {args.port + 1}"
+            f"  Try a different port: lightning-mlx serve {args.model} --port {args.port + 1}"
         )
         sys.exit(1)
 
@@ -387,7 +387,7 @@ def serve_command(args):
         error_msg = str(e)
         if "404" in error_msg or "not found" in error_msg.lower():
             print(f"\n  Error: Model '{args.model}' not found.")
-            print("  Run `rapid-mlx models` to see available aliases,")
+            print("  Run `lightning-mlx models` to see available aliases,")
             print(
                 "  or use a full HuggingFace path like: mlx-community/Qwen3.5-9B-4bit"
             )
@@ -834,9 +834,9 @@ def bench_kv_cache_command(args):
     )
     print()
     print("Usage:")
-    print("  rapid-mlx serve <model> --continuous-batching --kv-cache-quantization")
+    print("  lightning-mlx serve <model> --continuous-batching --kv-cache-quantization")
     print(
-        "  rapid-mlx serve <model> --continuous-batching --kv-cache-quantization "
+        "  lightning-mlx serve <model> --continuous-batching --kv-cache-quantization "
         "--kv-cache-quantization-bits 4"
     )
 
@@ -875,7 +875,7 @@ def models_command(_args):
             print(f"  {short:<20} → {full}")
     print()
     print(f"  {len(aliases)} aliases available")
-    print("  Usage: rapid-mlx serve <alias>")
+    print("  Usage: lightning-mlx serve <alias>")
     print()
 
 
@@ -906,9 +906,9 @@ def agents_command(args):
             print(f"  {p.name:<15} {p.display_name:<20} {stars:>5}  [{fc}]  {models}")
         print()
         print(f"  {len(profiles)} agents supported")
-        print("  Usage: rapid-mlx agents <name>          Show setup guide")
-        print("         rapid-mlx agents <name> --setup   Auto-configure")
-        print("         rapid-mlx agents <name> --test    Run integration tests")
+        print("  Usage: lightning-mlx agents <name>          Show setup guide")
+        print("         lightning-mlx agents <name> --setup   Auto-configure")
+        print("         lightning-mlx agents <name> --test    Run integration tests")
         print()
         return
 
@@ -916,7 +916,7 @@ def agents_command(args):
     profile = get_profile(agent_name)
     if not profile:
         print(f"  Unknown agent: {agent_name}")
-        print("  Run 'rapid-mlx agents' to see available agents.")
+        print("  Run 'lightning-mlx agents' to see available agents.")
         sys.exit(1)
 
     # --test: run integration tests
@@ -932,7 +932,7 @@ def agents_command(args):
         )
         if not runner._server_available():
             print(f"\n  Server not running at {base_url}")
-            print("  Start it first: rapid-mlx serve <model>")
+            print("  Start it first: lightning-mlx serve <model>")
             sys.exit(1)
 
         report = runner.run()
@@ -975,22 +975,22 @@ def main():
     from importlib.metadata import version as pkg_version
 
     try:
-        _version = pkg_version("rapid-mlx")
+        _version = pkg_version("lightning-mlx")
     except Exception:
         _version = "dev"
 
     parser = argparse.ArgumentParser(
-        description="Rapid-MLX: AI inference for Apple Silicon",
+        description="lightning-mlx: high-speed local LLM inference for Apple Silicon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  rapid-mlx serve qwen3.5-9b --port 8000
-  rapid-mlx serve mlx-community/Qwen3.5-9B-4bit --port 8000
-  rapid-mlx models
+  lightning-mlx serve qwen3.5-9b --port 8000
+  lightning-mlx serve mlx-community/Qwen3.5-9B-4bit --port 8000
+  lightning-mlx models
         """,
     )
     parser.add_argument(
-        "--version", "-V", action="version", version=f"rapid-mlx {_version}"
+        "--version", "-V", action="version", version=f"lightning-mlx {_version}"
     )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
@@ -1604,7 +1604,7 @@ Examples:
         "--base-url",
         type=str,
         default="http://localhost:8000/v1",
-        help="Rapid-MLX server URL (default: http://localhost:8000/v1)",
+        help="lightning-mlx server URL (default: http://localhost:8000/v1)",
     )
     agents_parser.add_argument(
         "--agent-version",

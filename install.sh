@@ -1,16 +1,16 @@
 #!/bin/bash
-# Rapid-MLX installer — AI inference for Apple Silicon
-# Usage: curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
+# lightning-mlx installer — AI inference for Apple Silicon
+# Usage: curl -fsSL https://raw.githubusercontent.com/samuelfaj/lightning-mlx/main/install.sh | bash
 #        curl ... | bash -s 0.4.3          # specific version
 #        curl ... | bash -s latest         # latest from GitHub (pre-release)
 set -euo pipefail
 
 TARGET="${1:-stable}"  # stable (PyPI) | latest (GitHub HEAD) | x.y.z (specific version)
 
-INSTALL_DIR="${HOME}/.rapid-mlx"
+INSTALL_DIR="${HOME}/.lightning-mlx"
 BIN_DIR="${HOME}/.local/bin"
-PYPI_PACKAGE="rapid-mlx"
-GITHUB_REPO="https://github.com/raullenchai/Rapid-MLX.git"
+PYPI_PACKAGE="lightning-mlx"
+GITHUB_REPO="https://github.com/samuelfaj/lightning-mlx.git"
 MIN_PYTHON_MINOR=10
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ fi
 
 echo ""
 echo "  ╭─────────────────────────────────────╮"
-echo "  │  Rapid-MLX — AI on Apple Silicon    │"
+echo "  │  lightning-mlx — Apple Silicon LLMs │"
 echo "  │  2-4x faster than Ollama            │"
 echo "  ╰─────────────────────────────────────╯"
 echo ""
@@ -64,20 +64,20 @@ echo ""
 
 case "$(uname -s)" in
     Darwin) ;;
-    Linux)  err "Rapid-MLX requires macOS with Apple Silicon (MLX framework)."; exit 1 ;;
-    *)      err "Unsupported OS: $(uname -s). Rapid-MLX requires macOS with Apple Silicon."; exit 1 ;;
+    Linux)  err "lightning-mlx requires macOS with Apple Silicon (MLX framework)."; exit 1 ;;
+    *)      err "Unsupported OS: $(uname -s). lightning-mlx requires macOS with Apple Silicon."; exit 1 ;;
 esac
 
 ARCH=$(uname -m)
 if [ "$ARCH" != "arm64" ]; then
-    err "Rapid-MLX requires Apple Silicon (M1/M2/M3/M4)."
+    err "lightning-mlx requires Apple Silicon (M1/M2/M3/M4)."
     dim "Detected: $ARCH"
     exit 1
 fi
 
 MACOS_VERSION=$(sw_vers -productVersion | cut -d. -f1)
 if [ "$MACOS_VERSION" -lt 13 ]; then
-    err "Rapid-MLX requires macOS 13 (Ventura) or later."
+    err "lightning-mlx requires macOS 13 (Ventura) or later."
     dim "Detected: macOS $(sw_vers -productVersion)"
     exit 1
 fi
@@ -115,7 +115,7 @@ if [ -z "$PYTHON" ]; then
         brew install python@3.12
         PYTHON="python3.12"
     else
-        STANDALONE_DIR="${HOME}/.rapid-mlx-python"
+        STANDALONE_DIR="${HOME}/.lightning-mlx-python"
         PY_VERSION="3.12.13"
         # Fetch latest build tag dynamically
         PY_BUILD=$(download "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest" \
@@ -148,10 +148,10 @@ fi
 
 echo ""
 if [ -d "$INSTALL_DIR" ]; then
-    info "Upgrading Rapid-MLX..."
+    info "Upgrading lightning-mlx..."
     "$INSTALL_DIR/bin/pip" install --upgrade pip -q 2>/dev/null
 else
-    info "Installing Rapid-MLX..."
+    info "Installing lightning-mlx..."
     dim "(this takes about a minute)"
     "$PYTHON" -m venv "$INSTALL_DIR"
     "$INSTALL_DIR/bin/pip" install --upgrade pip -q 2>/dev/null
@@ -179,15 +179,12 @@ esac
 mkdir -p "$BIN_DIR"
 
 # Link all CLI entry points
-for cmd in vllm-mlx vllm-mlx-chat vllm-mlx-bench; do
+for cmd in lightning-mlx vllm-mlx vllm-mlx-chat vllm-mlx-bench; do
     [ -f "$INSTALL_DIR/bin/$cmd" ] && ln -sf "$INSTALL_DIR/bin/$cmd" "$BIN_DIR/$cmd"
 done
 
-# rapid-mlx aliases
-[ -f "$INSTALL_DIR/bin/vllm-mlx" ]      && ln -sf "$INSTALL_DIR/bin/vllm-mlx"      "$BIN_DIR/rapid-mlx"
-[ -f "$INSTALL_DIR/bin/vllm-mlx-chat" ]  && ln -sf "$INSTALL_DIR/bin/vllm-mlx-chat"  "$BIN_DIR/rapid-mlx-chat"
-[ -f "$INSTALL_DIR/bin/vllm-mlx-bench" ] && ln -sf "$INSTALL_DIR/bin/vllm-mlx-bench" "$BIN_DIR/rapid-mlx-bench"
-ln -sf "$INSTALL_DIR/bin/python3" "$BIN_DIR/rapid-mlx-python"
+[ -f "$INSTALL_DIR/bin/lightning-mlx" ] && ln -sf "$INSTALL_DIR/bin/lightning-mlx" "$BIN_DIR/lightning-mlx"
+ln -sf "$INSTALL_DIR/bin/python3" "$BIN_DIR/lightning-mlx-python"
 
 # ── 7. Ensure ~/.local/bin is in PATH ────────────────────────────────────────
 
@@ -204,7 +201,7 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
 
     if [ -n "$SHELL_RC" ] && ! grep -q '\.local/bin' "$SHELL_RC" 2>/dev/null; then
         echo '' >> "$SHELL_RC"
-        echo '# Rapid-MLX' >> "$SHELL_RC"
+        echo '# lightning-mlx' >> "$SHELL_RC"
         echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
     fi
     NEED_PATH_HINT=true
@@ -212,27 +209,26 @@ fi
 
 # ── 8. Verify + done ────────────────────────────────────────────────────────
 
-VERSION=$("$INSTALL_DIR/bin/vllm-mlx" --version 2>/dev/null || echo "unknown")
+VERSION=$("$INSTALL_DIR/bin/lightning-mlx" --version 2>/dev/null || echo "unknown")
 
 echo ""
 echo "  ╭─────────────────────────────────────╮"
-printf "  │  ${GREEN}Rapid-MLX installed!${RESET}                │\n"
+printf "  │  ${GREEN}lightning-mlx installed!${RESET}            │\n"
 printf "  │  Version: %-25s│\n" "$VERSION"
 printf "  │  RAM: %-29s│\n" "${RAM_GB} GB ($RAM_TIER)"
 echo "  ╰─────────────────────────────────────╯"
 echo ""
 info "Quick start:"
 echo ""
-echo "    rapid-mlx serve $RECOMMENDED_MODEL"
+echo "    lightning-mlx serve $RECOMMENDED_MODEL"
 echo ""
 dim "Then open a second terminal:"
 echo ""
-echo "    rapid-mlx-chat                                    # built-in chat"
 echo "    OPENAI_BASE_URL=http://localhost:8000/v1 claude    # Claude Code"
 echo "    OPENAI_BASE_URL=http://localhost:8000/v1 aider     # Aider"
 echo ""
-dim "Upgrade:    curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash"
-dim "Uninstall:  rm -rf ~/.rapid-mlx ~/.local/bin/rapid-mlx* ~/.local/bin/vllm-mlx*"
+dim "Upgrade:    curl -fsSL https://raw.githubusercontent.com/samuelfaj/lightning-mlx/main/install.sh | bash"
+dim "Uninstall:  rm -rf ~/.lightning-mlx ~/.local/bin/lightning-mlx* ~/.local/bin/vllm-mlx*"
 echo ""
 
 if [ "$NEED_PATH_HINT" = true ]; then
