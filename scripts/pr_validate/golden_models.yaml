@@ -59,9 +59,29 @@ families:
 #       - id: mlx-community/gemma-4-<NEW_VERSION>
 #         ram_gb_required: 14
 #         quality_tier: golden
+#
+# SmolLM3-3B and Granite 4 H-Tiny (added to model_auto_config.py in
+# the profile-consolidation PR) were ALSO not added here for the same
+# reason. Validation results in that PR:
+#   - SmolLM3-3B-4bit: 10/17 across anthropic_sdk + langchain +
+#     pydantic_ai — model is too small (3B) to reliably follow
+#     tool-call schemas, structured-output schemas, or multi-turn
+#     context. Same class of model-side weakness as Gemma 4.
+#   - Granite 4 H-Tiny 4bit: 16/17 — borderline, ~94% pass rate. The
+#     single fail (pydantic_ai single tool call) is a model-quality
+#     edge case (off-topic Java/Spring response). Not flaky enough
+#     to block merges, but adding here would gate every PR on it.
+# Both families remain available via ``rapid-mlx serve smollm3-3b``
+# and ``rapid-mlx serve granite4-tiny`` (auto-detected parsers).
 
 # Per-model overrides: extra CLI args (e.g. parser overrides for
 # tool-calling tests). Keep small — most models don't need this.
+#
+# ``--enable-auto-tool-choice`` is required even when the parser is
+# auto-detected (model_auto_config picks the parser; the flag toggles
+# the API-level OpenAI-style tool-choice routing). The explicit
+# ``--tool-call-parser hermes`` is redundant with the registry today
+# but documents intent at the validation surface.
 overrides:
   "mlx-community/Qwen3.5-35B-A3B-8bit":
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]

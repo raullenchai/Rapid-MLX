@@ -14,6 +14,7 @@ The design follows vLLM's engine architecture adapted for MLX.
 import asyncio
 import concurrent.futures
 import logging
+import os
 import sys
 import time
 import uuid
@@ -171,23 +172,44 @@ class EngineCore:
         # raise "There is no Stream(gpu, N) in current thread."
         self._mlx_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
-        # Detect hybrid models (GatedDeltaNet) that need request throttling
-        self._hybrid_throttle = False
+        # Per-model capability profile. Runtime probe acts as the safety
+        # net for unknown hybrid arches; regex-based defaults from
+        # ``detect_model_config`` flow in via the engine config when the
+        # model name is known.
+        from .model_auto_config import (
+            detect_model_config,
+            enrich_model_config,
+            format_profile_summary,
+            format_profile_table,
+        )
+
+        model_path = (
+            getattr(self.config, "model_name", None)
+            or getattr(self.config, "model_path", None)
+            or getattr(model, "name_or_path", None)
+        )
+        # Guard against MagicMock / non-string sentinels coming from test
+        # stubs and partially-loaded models.
+        if not isinstance(model_path, str) or not model_path:
+            model_path = None
+        base_cfg = detect_model_config(model_path) if model_path else None
+        self.model_config = enrich_model_config(base_cfg, model)
+        self._hybrid_throttle = self.model_config.is_hybrid
         self._hybrid_lock: asyncio.Lock | None = None  # lazy-init in event loop
         self._last_request_time = 0.0
-        try:
-            if hasattr(model, "make_cache"):
-                from mlx_lm.models.cache import ArraysCache
 
-                test_cache = model.make_cache()
-                if any(isinstance(c, ArraysCache) for c in test_cache):
-                    self._hybrid_throttle = True
-                    logger.info(
-                        "Hybrid model detected (GatedDeltaNet) — "
-                        "enabling 200ms request throttle for batch safety"
-                    )
-        except Exception:
-            pass
+        # Level 1 — always emit a one-line profile summary on engine init.
+        # Level 2 — verbose ASCII capability table when explicitly requested
+        # via env var ``RAPID_MLX_PROFILE_VERBOSE=1`` (or set on EngineConfig).
+        display_path = model_path or "(unknown)"
+        logger.info(format_profile_summary(display_path, self.model_config))
+        if os.environ.get("RAPID_MLX_PROFILE_VERBOSE") == "1" or getattr(
+            self.config, "verbose_profile", False
+        ):
+            for line in format_profile_table(
+                display_path, self.model_config
+            ).splitlines():
+                logger.info(line)
 
         logger.debug(f"Engine {self._engine_id} initialized")
 

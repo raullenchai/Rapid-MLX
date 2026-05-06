@@ -47,5 +47,7 @@
   "nemotron-nano": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
   "bonsai-1.7b": "prism-ml/Bonsai-1.7B-unpacked",
   "bonsai-4b": "prism-ml/Bonsai-4B-unpacked",
-  "bonsai-8b": "prism-ml/Bonsai-8B-unpacked"
+  "bonsai-8b": "prism-ml/Bonsai-8B-unpacked",
+  "smollm3-3b": "mlx-community/SmolLM3-3B-4bit",
+  "granite4-tiny": "mlx-community/granite-4.0-h-tiny-4bit"
 }

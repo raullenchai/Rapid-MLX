@@ -833,6 +833,33 @@ def models_command(_args):
     print()
 
 
+def info_command(args):
+    """Print the per-model profile for a model name or alias.
+
+    Stage 1 (regex match) only — does NOT load the model, so this is fast
+    and works without weights. Stage 2 (ArraysCache probe) is skipped.
+    """
+    from vllm_mlx.model_aliases import resolve_model
+    from vllm_mlx.model_auto_config import (
+        detect_model_config,
+        format_profile_table,
+    )
+
+    name = args.model
+    resolved = resolve_model(name)
+    if resolved and resolved != name:
+        print(f"  alias: {name} → {resolved}")
+        name = resolved
+
+    cfg = detect_model_config(name)
+    print()
+    print(format_profile_table(name, cfg))
+    print()
+    if cfg is None:
+        print("  No pattern matched — runtime probe will run when the model loads.")
+        print()
+
+
 def agents_command(args):
     """List, configure, and test agent integrations."""
     from vllm_mlx.agents import get_profile, list_profiles
@@ -1517,6 +1544,16 @@ Examples:
     # Models command
     subparsers.add_parser("models", help="List available model aliases")
 
+    # Info command — show the per-model profile (parsers + capability gates)
+    info_parser = subparsers.add_parser(
+        "info",
+        help="Show the per-model profile for a model name or alias",
+    )
+    info_parser.add_argument(
+        "model",
+        help="Model alias (e.g. qwen3.5-4b) or HF repo (e.g. mlx-community/SmolLM3-3B-4bit)",
+    )
+
     # Agents command
     agents_parser = subparsers.add_parser(
         "agents", help="List, configure, and test agent integrations"
@@ -1622,6 +1659,8 @@ Examples:
         bench_kv_cache_command(args)
     elif args.command == "models":
         models_command(args)
+    elif args.command == "info":
+        info_command(args)
     elif args.command == "agents":
         agents_command(args)
     elif args.command == "doctor":
