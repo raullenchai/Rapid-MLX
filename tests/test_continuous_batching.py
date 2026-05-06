@@ -156,7 +156,16 @@ class TestContinuousBatchingIntegration:
             assert all(r.completion_tokens > 0 for r in results)
 
     async def test_batching_improves_throughput(self, small_model):
-        """Test that batching improves throughput vs sequential."""
+        """Batched throughput must clearly beat sequential.
+
+        Relative comparison rather than an absolute tok/s threshold —
+        absolute numbers vary 6× run-to-run on the same machine
+        (382-697 tok/s observed) due to GPU contention from the rest
+        of the suite, so a hardcoded floor is inherently flaky. Same
+        prompts, same model, same engine: the only thing that changes
+        between the two phases is concurrent vs serial dispatch, so
+        the speedup directly measures batching's benefit.
+        """
         from vllm_mlx import (
             AsyncEngineCore,
             EngineConfig,
@@ -183,42 +192,69 @@ class TestContinuousBatchingIntegration:
         ]
         params = SamplingParams(max_tokens=30, temperature=0.0)
 
+        def _format(p: str) -> str:
+            return tokenizer.apply_chat_template(
+                [{"role": "user", "content": p}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
         async with AsyncEngineCore(model, tokenizer, config) as engine:
             await asyncio.sleep(0.1)
 
-            # Concurrent batch
-            start = time.perf_counter()
-
-            request_ids = []
-            for p in prompts:
-                formatted = tokenizer.apply_chat_template(
-                    [{"role": "user", "content": p}],
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-                rid = await engine.add_request(formatted, params)
-                request_ids.append(rid)
-
-            async def get_result(rid):
+            async def _await_one(rid):
                 async for out in engine.stream_outputs(rid, timeout=60):
                     if out.finished:
                         return out.completion_tokens
                 return 0
 
-            results = await asyncio.gather(*[get_result(r) for r in request_ids])
+            # Warmup: first request through a fresh engine pays for
+            # initial cache allocation + Metal kernel JIT. Don't
+            # measure it.
+            warm_rid = await engine.add_request(_format(prompts[0]), params)
+            await _await_one(warm_rid)
 
-            batch_time = time.perf_counter() - start
-            total_tokens = sum(results)
-            batch_throughput = total_tokens / batch_time
+            # Sequential — one at a time, await each before sending the next
+            seq_start = time.perf_counter()
+            seq_results: list[int] = []
+            for p in prompts:
+                rid = await engine.add_request(_format(p), params)
+                seq_results.append(await _await_one(rid))
+            seq_time = time.perf_counter() - seq_start
+            seq_total = sum(seq_results)
+            seq_throughput = seq_total / seq_time
 
-            print(f"\nBatch: {len(prompts)} requests in {batch_time:.2f}s")
-            print(f"Total tokens: {total_tokens}")
-            print(f"Throughput: {batch_throughput:.1f} tok/s")
-            print(f"Requests/sec: {len(prompts) / batch_time:.2f}")
+            # Batch — submit all then await concurrently
+            batch_start = time.perf_counter()
+            request_ids = [
+                await engine.add_request(_format(p), params) for p in prompts
+            ]
+            batch_results = await asyncio.gather(*[_await_one(r) for r in request_ids])
+            batch_time = time.perf_counter() - batch_start
+            batch_total = sum(batch_results)
+            batch_throughput = batch_total / batch_time
 
-            # Batching should achieve reasonable throughput
-            assert batch_throughput > 100  # At least 100 tok/s
-            assert all(t > 0 for t in results)
+            speedup = batch_throughput / seq_throughput
+            print(
+                f"\nSequential: {seq_total} tok in {seq_time:.2f}s = "
+                f"{seq_throughput:.1f} tok/s"
+            )
+            print(
+                f"Batch:      {batch_total} tok in {batch_time:.2f}s = "
+                f"{batch_throughput:.1f} tok/s"
+            )
+            print(f"Speedup:    {speedup:.2f}x")
+
+            # Sanity: every request must produce some output
+            assert all(t > 0 for t in seq_results), seq_results
+            assert all(t > 0 for t in batch_results), batch_results
+            # Batching should clearly beat sequential — 1.5x is well
+            # below the typical 2-3x observed on small models, so this
+            # only fires if batching is genuinely broken.
+            assert speedup > 1.5, (
+                f"batch={batch_throughput:.1f} not >1.5x of "
+                f"sequential={seq_throughput:.1f} (speedup={speedup:.2f}x)"
+            )
 
 
 if __name__ == "__main__":
