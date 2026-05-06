@@ -289,7 +289,7 @@ def benchmark_ollama(url: str, model: str, max_tokens: int, warmup: bool = True)
     start = time.perf_counter()
     first_token_at = None
     generated_content = ""
-    eval_count = 0
+    chars_per_token = 4  # Approximate
 
     with requests.post(
         f"{url}/api/chat",
@@ -321,11 +321,10 @@ def benchmark_ollama(url: str, model: str, max_tokens: int, warmup: bool = True)
 
     total_time = time.perf_counter() - start
 
-    # Use eval_count OR generated content length as fallback
-    if eval_count > 0:
-        completion_tokens = eval_count
-    elif len(generated_content) > 0:
-        completion_tokens = len(generated_content)
+    # Ollama eval_count is PROMPT tokens (not generated!)
+    # Estimate generated tokens from content length
+    if len(generated_content) > 0:
+        completion_tokens = int(len(generated_content) / chars_per_token)
     else:
         completion_tokens = max_tokens
 
