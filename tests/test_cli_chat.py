@@ -208,7 +208,10 @@ def test_chat_command_system_prompt_prepended(monkeypatch):
     assert payloads[0]["messages"][1] == {"role": "user", "content": "q1"}
 
 
-def test_chat_command_no_think_passes_chat_template_kwargs(monkeypatch):
+def test_chat_command_no_think_sets_top_level_enable_thinking(monkeypatch):
+    """`--no-think` must set the top-level ``enable_thinking`` request field
+    that the rapid-mlx server actually honors. Sending nested
+    ``chat_template_kwargs`` would be silently dropped."""
     canned = [_delta("ok")]
     with _fake_server(canned) as (port, payloads):
         inputs = iter(["q", "exit"])
@@ -224,7 +227,39 @@ def test_chat_command_no_think_passes_chat_template_kwargs(monkeypatch):
         ns.response_timeout = 5
         ns.model = "qwen3.5-4b"
         cli.chat_command(ns)
-    assert payloads[0].get("chat_template_kwargs") == {"enable_thinking": False}
+    assert payloads[0].get("enable_thinking") is False
+    # The unsupported nested form must NOT be present.
+    assert "chat_template_kwargs" not in payloads[0]
+
+
+def test_chat_command_survives_connection_failure(monkeypatch, capsys):
+    """If the server is unreachable, the REPL must keep running (not crash)
+    and roll back the failed user turn so the next request is clean."""
+    # Bind a port and immediately release it so connect() will fail.
+    import socket
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    dead_port = s.getsockname()[1]
+    s.close()
+
+    inputs = iter(["hello", "exit"])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+
+    ns = type("Args", (), {})()
+    ns.base_url = f"http://127.0.0.1:{dead_port}"
+    ns.port = None
+    ns.system = None
+    ns.no_think = False
+    ns.max_tokens = 50
+    ns.temperature = 0.0
+    ns.ready_timeout = 1
+    ns.response_timeout = 2
+    ns.model = "qwen3.5-4b"
+    # Should not raise — REPL prints "Request failed" and continues to "exit".
+    cli.chat_command(ns)
+    captured = capsys.readouterr()
+    assert "Request failed" in captured.out
 
 
 def test_chat_command_history_unchanged_on_http_error(monkeypatch):

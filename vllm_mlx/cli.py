@@ -1003,9 +1003,14 @@ def chat_command(args):
     if args.system:
         messages.append({"role": "system", "content": args.system})
 
+    # The rapid-mlx server's ChatCompletionRequest exposes a top-level
+    # ``enable_thinking`` field — ``chat_template_kwargs`` is not a recognized
+    # request field and would be silently dropped.
     extra: dict = {}
     if args.no_think:
-        extra["chat_template_kwargs"] = {"enable_thinking": False}
+        extra["enable_thinking"] = False
+
+    import requests
 
     while True:
         try:
@@ -1043,6 +1048,13 @@ def chat_command(args):
             continue
         except RuntimeError as e:
             print(f"\n  {e}\n")
+            messages.pop()
+            continue
+        except requests.RequestException as e:
+            # Connection refused, timeout, dropped midstream — keep the REPL
+            # alive and roll back the failed user turn so the next request
+            # doesn't carry a dangling user role with no assistant reply.
+            print(f"\n  Request failed: {e}\n")
             messages.pop()
             continue
         print("\n")
