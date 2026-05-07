@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/raullenchai-rapid-mlx-badge.png)](https://mseep.ai/app/raullenchai-rapid-mlx)
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/logo.png" alt="Rapid-MLX" width="200">
 </p>
