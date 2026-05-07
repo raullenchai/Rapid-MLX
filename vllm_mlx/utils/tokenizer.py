@@ -199,6 +199,8 @@ def _read_num_mtp_layers(config: dict) -> int:
     n = config.get("num_nextn_predict_layers", 0)
     if n == 0:
         n = config.get("text_config", {}).get("num_nextn_predict_layers", 0)
+    if n == 0:
+        n = config.get("text_config", {}).get("mtp_num_hidden_layers", 0)
     return n
 
 
@@ -232,6 +234,8 @@ def _try_inject_mtp_post_load(model, model_name):
     num_mtp = _read_num_mtp_layers(config)
     if num_mtp > 0 and getattr(model, "mtp", None) is None:
         mtp_file = Path(model_path) / "model-mtp.safetensors"
+        if not mtp_file.exists():
+            mtp_file = Path(model_path) / "mtp.safetensors"
         if mtp_file.exists():
             logger.info(
                 f"[MTP] Found MTP config (layers={num_mtp}) and weights, injecting..."
@@ -240,7 +244,7 @@ def _try_inject_mtp_post_load(model, model_name):
         else:
             logger.info(
                 f"[MTP] Config has num_nextn_predict_layers={num_mtp} "
-                "but model-mtp.safetensors not found, skipping MTP."
+                "but model-mtp.safetensors / mtp.safetensors not found, skipping MTP."
             )
 
 

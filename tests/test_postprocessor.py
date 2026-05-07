@@ -13,6 +13,7 @@ def _make_cfg(**overrides):
     cfg.engine = None
     cfg.reasoning_parser = None
     cfg.reasoning_parser_name = None
+    cfg.no_thinking = False
     cfg.enable_auto_tool_choice = False
     cfg.tool_call_parser = None
     cfg.tool_parser_instance = None
@@ -78,6 +79,17 @@ class TestStreamingPostProcessorBasic:
         content = [e for e in events if e.type == "content"]
         if content:
             assert "<|endoftext|>" not in content[0].content
+
+    def test_no_thinking_disables_reasoning_parser(self):
+        cfg = _make_cfg(reasoning_parser_name="qwen3", no_thinking=True)
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        events = pp.process_chunk(_make_output("hello"))
+
+        assert len(events) == 1
+        assert events[0].type == "content"
+        assert events[0].content == "hello"
 
 
 class TestStreamingPostProcessorChannelRouted:
@@ -341,6 +353,46 @@ class TestStreamingPostProcessorToolCalls:
         args = json.loads(tool_events[0].tool_calls[0]["function"]["arguments"])
         assert args["command"] == "npm test"
         assert args["timeout"] == 60000.0
+
+    def test_prefixed_tool_marker_is_buffered(self):
+        """Do not leak degraded _tool markers as assistant text."""
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ]
+        }
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="qwen3_coder_xml",
+        )
+        pp = StreamingPostProcessor(
+            cfg,
+            tools_requested=True,
+            request=request,
+        )
+        pp.reset()
+
+        assert pp.process_chunk(_make_output("_tool")) == []
+        events = pp.process_chunk(
+            _make_output(': bash({"command":"bun test"})]', finished=True)
+        )
+
+        tool_events = [event for event in events if event.type == "tool_call"]
+        assert len(tool_events) == 1
+        args = json.loads(tool_events[0].tool_calls[0]["function"]["arguments"])
+        assert args["command"] == "bun test"
+        assert all(getattr(event, "content", None) != "_tool" for event in events)
 
     def test_code_brackets_are_not_treated_as_partial_tool_markers(self):
         """Do not strip normal code brackets split at chunk boundaries."""
@@ -1169,6 +1221,16 @@ class TestCoverageGaps:
             events = pp.process_chunk(_make_output("text"))
             content_events = [e for e in events if e.type == "content"]
             assert len(content_events) == 0
+
+    def test_standard_path_role_echo_filtered(self):
+        """Chat-template role echoes are not emitted as assistant content."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        events = pp.process_chunk(_make_output('user: "'))
+
+        assert events == []
 
     def test_standard_path_tool_detected_then_finish(self):
         """Lines 334-335: tool_calls_detected + finish in standard path."""

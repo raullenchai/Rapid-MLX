@@ -34,9 +34,28 @@ Create the snake game using react, vite and typescript
 
 Full benchmark notes are in [`REPORT.md`](REPORT.md).
 
+## Qwen3.6 35B-A3B MTPLX Benchmark
+
+Same prompt, same agentic workflow, one server at a time:
+
+```text
+Create the snake game using react, vite and typescript
+```
+
+| Metric | 35B base | **35B MTPLX** | **Gain** |
+| --- | ---: | ---: | ---: |
+| Completion | Timeout after 10 min | **Finished** | **Completed** |
+| Generated app build | Failed | **Failed** | **No valid artifact** |
+| All-turn avg | 27.73 tok/s | **64.85 tok/s** | **+133.9% / 2.34x** |
+| Long-turn avg | 26.52 tok/s | **75.13 tok/s** | **+183.3% / 2.83x** |
+| Short-turn avg | 29.18 tok/s | **52.50 tok/s** | **+79.9% / 1.80x** |
+| MTP acceptance avg | N/A | **96.62%** | **MTP enabled** |
+
+**Biggest win:** long tool-heavy turns went from **26.52 tok/s** to **75.13 tok/s**. The MTPLX run finished inside the 10 minute limit; the base run did not.
+
 ## More Model Benchmarks
 
-The models below use the same benchmark positioning as upstream [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX): Mac Studio M3 Ultra, Apple MLX backend, and tok/s as decode throughput. **lightning-mlx keeps the same model coverage**, and adds the optimized **Qwen3.6 27B MTPLX** path for local coding agents.
+The models below use the same benchmark positioning as upstream [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX): Mac Studio M3 Ultra, Apple MLX backend, and tok/s as decode throughput. **lightning-mlx keeps the same model coverage**, and adds optimized **Qwen3.6 MTPLX** paths for local coding agents.
 
 | Model | lightning-mlx | Best Alternative | Speedup |
 | --- | ---: | ---: | ---: |
@@ -48,6 +67,7 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 | **DeepSeek V4 Flash 158B-A13B** (8-bit) | **31 tok/s** | Only MLX engine, day-0 | - |
 | **GPT-OSS 20B** | **127 tok/s** · 100% tools | 79 tok/s mlx-lm serve | **1.6x** |
 | **Qwen3.5 9B** | **108 tok/s** | 41 tok/s Ollama | **2.6x** |
+| **Qwen3.6 35B-A3B MTPLX** | **64.85 tok/s agentic all-turn** / **75.13 tok/s long-turn** / **52.50 tok/s short-turn** | 27.73 / 26.52 / 29.18 tok/s 35B base | **2.34x all-turn** / **2.83x long-turn** |
 | **Qwen3.6 35B-A3B** | **95 tok/s** · 100% tools | - | - |
 | **Kimi-Linear 48B** | **94 tok/s** · 100% tools | Only engine | - |
 | **Gemma 4 26B-A4B** | **85 tok/s** | 68 tok/s Ollama | **1.3x** |
@@ -57,7 +77,7 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 | **Qwen3.5 122B** | **44 tok/s** · 100% tools | 43 tok/s mlx-lm serve | ~**1.0x** |
 | **Gemma 4 31B** | **31 tok/s** | - | - |
 
-**Note:** the Qwen3.6 27B MTPLX row is an agentic benchmark, not a single raw decode pass. It measures the developer loop: tool calls, growing context, artifact generation, and build validation.
+**Note:** the Qwen3.6 MTPLX rows are agentic benchmarks, not single raw decode passes. They measure the developer loop: tool calls, growing context, artifact generation, and build validation.
 
 ## Install
 
@@ -104,6 +124,30 @@ Local model path works too:
 ```bash
 lightning-mlx serve /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed
 ```
+
+## Convert Local MTPLX Models
+
+Use `convert-mtplx` to package a local model with an MTPLX MTP sidecar. This is useful when the serving model is quantized, but the MTP tensors come from the original full model:
+
+```bash
+lightning-mlx convert-mtplx \
+  /path/to/Qwen3.6-35B-A3B-4bit \
+  --mtp-source /path/to/Qwen3.6-35B-A3B
+```
+
+By default, the output is written next to the source model as:
+
+```text
+/path/to/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed
+```
+
+Then serve it normally:
+
+```bash
+lightning-mlx serve /path/to/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed
+```
+
+For `Qwen3.6-35B-A3B`, the default temperature is `0.6`. Thinking stays enabled by default for agentic tool use. Pass `--no-thinking` only when you explicitly want to disable it.
 
 ## Use It Like OpenAI
 

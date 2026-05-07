@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for tool_calling.py"""
 
+import json
 from unittest.mock import MagicMock
 
 from vllm_mlx.api.tool_calling import (
@@ -257,6 +258,269 @@ class TestParseToolCalls:
         assert len(tool_calls) == 1
         assert tool_calls[0].function.name == "get_weather"
 
+    def test_raw_command_json_infers_matching_tool(self):
+        """Bare command JSON maps to the requested shell tool schema."""
+        text = '[{"command": "bun install express @types/express cors"}]'
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                        },
+                    },
+                }
+            ]
+        }
+
+        _, tool_calls = parse_tool_calls(text, request=request)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+        assert "bun install express" in tool_calls[0].function.arguments
+
+    def test_function_equals_tool_call_variant(self):
+        """Malformed function=name JSON calls are still parsed."""
+        text = '<tool_call>function=bash({"command":"bun init\\n", "timeout": 30})]'
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+        assert "bun init" in tool_calls[0].function.arguments
+
+    def test_calling_tool_equals_variant(self):
+        """Malformed [Calling tool=name({...})] calls are still parsed."""
+        text = '[Calling tool=bash({"command":"ls -la"})]'
+
+        cleaned, tool_calls = parse_tool_calls(text)
+
+        assert cleaned == ""
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+        assert json.loads(tool_calls[0].function.arguments) == {"command": "ls -la"}
+
+    def test_function_equals_line_command_variant(self):
+        """Malformed line-based function calls are still parsed."""
+        text = "<tool_call>function=bash\nparameter=bash\ncommand=bun --version\n</parameter>"
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+        assert "bun --version" in tool_calls[0].function.arguments
+
+    def test_tool_call_function_parameter_command_variant(self):
+        """Malformed XML-ish function headers are still parsed."""
+        text = (
+            "<tool_call>function=bash>\n"
+            "<parameter=command>\n"
+            "ls -la\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+        assert "ls -la" in tool_calls[0].function.arguments
+
+    def test_tool_call_function_parameter_command_without_angle_variant(self):
+        """Malformed XML-ish function headers may omit the header terminator."""
+        text = (
+            "<tool_call>function=bash\n"
+            "</parameter>\n"
+            "<parameter=command>\n"
+            "bun init --yes\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+        assert "bun init --yes" in tool_calls[0].function.arguments
+
+    def test_parameter_name_commands_variant(self):
+        """Malformed parameter-name command arrays are still parsed."""
+        text = (
+            "<parameter_name>\nbash\n</parameter_name>\n"
+            "<parameter=commands>\n"
+            '["bun add express @types/express"]\n'
+            "</parameter>"
+        )
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+        assert "bun add express" in tool_calls[0].function.arguments
+
+    def test_parameter_name_command_variant(self):
+        """Malformed parameter=name command blocks are still parsed."""
+        text = (
+            "<parameter=name>\n"
+            "bash\n"
+            "</parameter>\n"
+            "<parameter=command>\n"
+            "bun add express && bun add -d @types/express typescript tsx\n"
+            "</parameter>"
+        )
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+        assert "bun add express" in tool_calls[0].function.arguments
+
+    def test_parameter_name_attribute_command_variant(self):
+        """Malformed parameter name attributes are still parsed."""
+        text = (
+            "<tool_call>user\n"
+            '<parameter name="bash">\n'
+            '<parameter name="command">\n'
+            "bun init --yes\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+        assert "bun init --yes" in tool_calls[0].function.arguments
+
+    def test_parameter_name_attribute_edit_content_uses_write(self):
+        """Malformed edit-with-content calls are routed to write when available."""
+        text = (
+            "[user\n"
+            '<parameter name="edit">\n'
+            "<parameter=path>\n"
+            "/tmp/index.ts\n"
+            "</parameter>\n"
+            "<parameter=content>\n"
+            'console.log("ok");\n'
+            "</parameter>\n"
+        )
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "edit",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+            ]
+        }
+
+        _, tool_calls = parse_tool_calls(text, request=request)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "write"
+        arguments = json.loads(tool_calls[0].function.arguments)
+        assert arguments["path"] == "/tmp/index.ts"
+        assert arguments["content"] == 'console.log("ok");'
+
+    def test_tool_call_missing_parameter_terminators_variant(self):
+        """XML-ish tool calls with missing tag terminators are still parsed."""
+        text = (
+            "<tool_call>function=write\n"
+            "</parameter\n"
+            "<parameter=path\n"
+            "/tmp/tsconfig.json\n"
+            "</parameter\n"
+            "<parameter=content>\n"
+            '{"compilerOptions":{"strict":true}}\n'
+            "</parameter\n"
+            "</tool_call>"
+        )
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "write"
+        arguments = json.loads(tool_calls[0].function.arguments)
+        assert arguments["path"] == "/tmp/tsconfig.json"
+        assert arguments["content"]["compilerOptions"]["strict"] is True
+
+    def test_call_prefixed_tool_name_is_normalized(self):
+        """Generated call_<tool> names are normalized to the requested tool."""
+        text = "<tool_call>function=call_bash\n<parameter=command>\nls\n</parameter>"
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                        },
+                    },
+                }
+            ]
+        }
+
+        _, tool_calls = parse_tool_calls(text, request=request)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "bash"
+
+    def test_calling_tool_parameter_variant(self):
+        """Calling-tool text with parameter tags is parsed."""
+        text = (
+            "[Calling tool: edit\n"
+            "<parameter=path>\n"
+            "/tmp/index.ts\n"
+            "</parameter>\n"
+            "<parameter=edits>\n"
+            '[{"oldText":"a","newText":"b"}]\n'
+            "</parameter>\n"
+        )
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "edit"
+        arguments = json.loads(tool_calls[0].function.arguments)
+        assert arguments["path"] == "/tmp/index.ts"
+        assert arguments["edits"][0]["newText"] == "b"
+
+    def test_prefixed_tool_write_variant(self):
+        """Malformed _tool-prefixed calls are still parsed."""
+        text = '_tool: write({"path": "/tmp/index.ts", "content": "console.log(\\"ok\\")"})]'
+
+        _, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "write"
+        assert "/tmp/index.ts" in tool_calls[0].function.arguments
+
     def test_invalid_json_in_tags_not_parsed_as_tool_call(self):
         """Test that JSON without name+arguments is not parsed as a tool call."""
         text = '<tool_call>{"invalid": "json"}</tool_call>'
@@ -302,6 +566,47 @@ class TestParseToolCalls:
         assert tool_calls is not None
         arguments = tool_calls[0].function.arguments
         assert '"content": "{\\"compilerOptions\\": {\\"strict\\": true}}"' in arguments
+
+    def test_nested_schema_extra_properties_are_pruned(self):
+        """Nested generated extras are dropped before OpenAI output."""
+        text = (
+            '<tool_call>{"name":"edit","arguments":{"path":"/tmp/index.ts",'
+            '"edits":[{"oldText":"a","newText":"b","path":"/tmp/index.ts"}]}}'
+            "</tool_call>"
+        )
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "edit",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "edits": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "oldText": {"type": "string"},
+                                            "newText": {"type": "string"},
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+
+        _, tool_calls = parse_tool_calls(text, request=request)
+
+        assert tool_calls is not None
+        arguments = json.loads(tool_calls[0].function.arguments)
+        assert arguments["path"] == "/tmp/index.ts"
+        assert arguments["edits"] == [{"oldText": "a", "newText": "b"}]
 
 
 class TestConvertToolsForTemplate:
@@ -361,6 +666,33 @@ class TestConvertToolsForTemplate:
 
         assert result is not None
         assert len(result) == 2
+
+    def test_shell_tool_is_preferred_for_template(self):
+        """Shell-style tools are shown first for multi-step coding workflows."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "write",
+                    "description": "Write a file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "description": "Run a shell command",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+
+        result = convert_tools_for_template(tools)
+
+        assert result is not None
+        assert result[0]["function"]["name"] == "bash"
+        assert "multi-file changes" in result[0]["function"]["description"]
 
     def test_non_function_type_filtered(self):
         """Test that non-function types are filtered out."""

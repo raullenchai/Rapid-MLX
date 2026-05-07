@@ -621,7 +621,8 @@ def _install_mtp(
        Reject: rollback verify pass, sample residual correction, re-advance
     5. Draft is emitted in the NEXT generation step after primary
     """
-    _orig_step = batch_gen._step
+    _uses_generation_batch_api = not hasattr(batch_gen, "_step")
+    _orig_step = None if _uses_generation_batch_api else batch_gen._step
 
     from .speculative.native_mtp import (
         MTPDistributionParams,
@@ -631,7 +632,7 @@ def _install_mtp(
         sample_from_logprobs,
     )
 
-    if num_draft_tokens != 1:
+    if num_draft_tokens != 1 and not _uses_generation_batch_api:
         logger.warning(
             "[MTP] mtp_num_draft_tokens=%d requested, but current native path "
             "supports one draft token per verify cycle. Using 1.",
@@ -661,6 +662,8 @@ def _install_mtp(
     # keyed by UID for stability across batch changes.
     # Format: {uid: {'token': int, 'logprobs': mx.array}}
     _deferred_drafts = {}
+    _pending_primary_tokens = {}
+    _persistent_mtp_caches = {}
 
     # MTP stats
     _mtp_stats = {"accepted": 0, "rejected": 0, "corrections": 0, "errors": 0}
@@ -791,7 +794,7 @@ def _install_mtp(
                     if hasattr(_c, "state"):
                         _orig_state = _c.state
                         _copied = [
-                            s.copy() if s is not None else None for s in _orig_state
+                            mx.array(s) if s is not None else None for s in _orig_state
                         ]
                         # Preserve original type (tuple vs list) so downstream
                         # code that does `h, c = cache.state` doesn't break.
@@ -983,6 +986,507 @@ def _install_mtp(
 
         return primary_tokens, list(logprobs)
 
+    if _uses_generation_batch_api:
+        generation_cls = batch_gen._generation_batch.__class__
+        if not hasattr(generation_cls, "_rapid_mtp_orig_step"):
+            generation_cls._rapid_mtp_orig_step = generation_cls._step
+        _orig_generation_step = generation_cls._rapid_mtp_orig_step
+
+        def _mtp_generation_step(gen_self):
+            if not gen_self.uids:
+                return [], []
+
+            gen_self._current_tokens = gen_self._next_tokens
+            gen_self._current_logprobs = gen_self._next_logprobs
+            input_tokens = gen_self._current_tokens
+            batch_size = input_tokens.shape[0]
+
+            skip = _skip_state[0]
+            if skip is not None and skip["logits"].shape[0] != batch_size:
+                skip = None
+                _skip_state[0] = None
+
+            if skip is not None:
+                logits = skip["logits"]
+                hidden_states = skip["hidden"]
+                _skip_state[0] = None
+            else:
+                model_output = model(
+                    input_tokens[:, None],
+                    cache=gen_self.prompt_cache,
+                    return_hidden=True,
+                )
+                if not isinstance(model_output, tuple):
+                    return _orig_generation_step(gen_self)
+                logits, hidden_states = model_output
+                logits = logits[:, -1, :]
+
+            current_uids = list(gen_self.uids)
+
+            def _cache_offset(cache):
+                if not cache:
+                    return 0
+                return int(getattr(cache[0], "offset", 0) or 0)
+
+            def _trim_mtp_cache_to(cache, offset):
+                if not cache:
+                    return
+                for c in cache:
+                    current = int(getattr(c, "offset", 0) or 0)
+                    delta = current - int(offset)
+                    if delta > 0 and hasattr(c, "trim"):
+                        c.trim(delta)
+
+            def _append_mtp_history(cache, hidden_seq, token_arrays):
+                if not cache or hidden_seq is None or not token_arrays:
+                    return
+                eval_values = []
+                for depth_index, token_array in enumerate(token_arrays):
+                    if depth_index >= hidden_seq.shape[1]:
+                        break
+                    out = model.mtp_forward(
+                        hidden_seq[:, depth_index : depth_index + 1, :],
+                        token_array[:, None],
+                        mtp_cache=cache,
+                        return_hidden=False,
+                    )
+                    eval_values.append(out)
+                if eval_values:
+                    mx.async_eval(*eval_values)
+            token_context = []
+            if any(gen_self.logits_processors):
+                token_context = [
+                    tc.update_and_fetch(input_tokens[i : i + 1])
+                    for i, tc in enumerate(gen_self._token_context)
+                ]
+                processed_logits = []
+                for e in range(batch_size):
+                    sample_logits = logits[e : e + 1]
+                    for processor in gen_self.logits_processors[e]:
+                        sample_logits = processor(token_context[e], sample_logits)
+                    processed_logits.append(sample_logits)
+                logits = mx.concatenate(processed_logits, axis=0)
+
+            logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+            pending_items = [
+                _pending_primary_tokens.pop(uid, None) for uid in current_uids
+            ]
+            if all(item is not None for item in pending_items):
+                primary_tokens = mx.concatenate(
+                    [item["token_array"] for item in pending_items],
+                    axis=0,
+                )
+                primary_logprobs = [item["logprobs"] for item in pending_items]
+            elif any(gen_self.samplers):
+                all_samples = []
+                for e in range(batch_size):
+                    sample_sampler = gen_self.samplers[e] or gen_self.fallback_sampler
+                    all_samples.append(sample_sampler(logprobs[e : e + 1]))
+                primary_tokens = mx.concatenate(all_samples, axis=0)
+                primary_logprobs = list(logprobs)
+            else:
+                primary_tokens = gen_self.fallback_sampler(logprobs)
+                primary_logprobs = list(logprobs)
+
+            try:
+                cycle_depth = max(1, int(num_draft_tokens))
+                draft_token_arrays = []
+                draft_distributions = []
+                draft_hidden = hidden_states[:, -1:, :]
+                next_token = primary_tokens
+                persistent_mtp_uid = (
+                    current_uids[0]
+                    if batch_size == 1 and hasattr(model, "make_mtp_cache")
+                    else None
+                )
+                if persistent_mtp_uid is not None:
+                    mtp_cache = _persistent_mtp_caches.get(persistent_mtp_uid)
+                    if mtp_cache is None:
+                        mtp_cache = model.make_mtp_cache()
+                        _persistent_mtp_caches[persistent_mtp_uid] = mtp_cache
+                else:
+                    mtp_cache = (
+                        model.make_mtp_cache()
+                        if hasattr(model, "make_mtp_cache")
+                        else None
+                    )
+                mtp_cache_start_offset = _cache_offset(mtp_cache)
+                for _depth_index in range(cycle_depth):
+                    draft_output = model.mtp_forward(
+                        draft_hidden,
+                        next_token[:, None],
+                        mtp_cache=mtp_cache,
+                        return_hidden=True,
+                    )
+                    if isinstance(draft_output, tuple):
+                        draft_logits_full, draft_hidden_full = draft_output
+                    else:
+                        draft_logits_full = draft_output
+                        draft_hidden_full = None
+                    draft_logits = draft_logits_full[:, -1, :]
+                    draft_distribution = distribution_logprobs(
+                        draft_logits,
+                        _draft_params,
+                    )
+                    draft_tokens = sample_from_logprobs(draft_distribution)
+                    draft_token_arrays.append(draft_tokens)
+                    draft_distributions.append(draft_distribution)
+                    next_token = draft_tokens
+                    if draft_hidden_full is None:
+                        break
+                    draft_hidden = draft_hidden_full[:, -1:, :]
+
+                rnn_snapshots = {}
+                for ci, c in enumerate(gen_self.prompt_cache):
+                    if not (hasattr(c, "is_trimmable") and c.is_trimmable()):
+                        if hasattr(c, "state"):
+                            state = c.state
+                            copied = [
+                                mx.array(s) if s is not None else None for s in state
+                            ]
+                            if isinstance(state, tuple):
+                                copied = tuple(copied)
+                            rnn_snapshots[ci] = copied
+
+                verify_input = mx.concatenate(
+                    [primary_tokens[:, None]]
+                    + [tokens[:, None] for tokens in draft_token_arrays],
+                    axis=1,
+                )
+                verify_output = model(
+                    verify_input,
+                    cache=gen_self.prompt_cache,
+                    return_hidden=True,
+                )
+                if isinstance(verify_output, tuple):
+                    verify_logits, verify_hidden = verify_output
+                else:
+                    verify_logits = verify_output
+                    verify_hidden = None
+
+                if optimistic:
+                    if verify_hidden is not None:
+                        last_pos = len(draft_token_arrays)
+                        _skip_state[0] = {
+                            "logits": verify_logits[:, last_pos, :],
+                            "hidden": verify_hidden[:, -1:, :],
+                        }
+                        deferred_logprobs = []
+                        eval_values = [
+                            _skip_state[0]["logits"],
+                            _skip_state[0]["hidden"],
+                        ]
+                        for depth_index, tokens in enumerate(draft_token_arrays):
+                            verify_lp = verify_logits[
+                                :, depth_index, :
+                            ] - mx.logsumexp(
+                                verify_logits[:, depth_index, :],
+                                axis=-1,
+                                keepdims=True,
+                            )
+                            deferred_logprobs.append(verify_lp)
+                            eval_values.extend([tokens, verify_lp])
+                        mx.async_eval(*eval_values)
+                        for e, uid in enumerate(current_uids):
+                            _deferred_drafts[uid] = [
+                                {
+                                    "token_array": tokens[e : e + 1],
+                                    "logprobs": deferred_logprobs[depth_index][e],
+                                }
+                                for depth_index, tokens in enumerate(
+                                    draft_token_arrays
+                                )
+                            ]
+                    _mtp_stats["accepted"] += 1
+                else:
+                    target_distributions = []
+                    accepted_masks = []
+                    correction_distribution = None
+                    correction_tokens = None
+                    accepted_count = len(draft_token_arrays)
+                    for depth_index, draft_tokens in enumerate(draft_token_arrays):
+                        verify_target_logits = verify_logits[:, depth_index, :]
+                        if any(gen_self.logits_processors):
+                            processed_verify_logits = []
+                            for e in range(batch_size):
+                                sample_logits = verify_target_logits[e : e + 1]
+                                history_parts = [
+                                    token_context[e],
+                                    primary_tokens[e : e + 1],
+                                ]
+                                for prev_tokens in draft_token_arrays[:depth_index]:
+                                    history_parts.append(prev_tokens[e : e + 1])
+                                history = mx.concatenate(tuple(history_parts))
+                                for processor in gen_self.logits_processors[e]:
+                                    sample_logits = processor(history, sample_logits)
+                                processed_verify_logits.append(sample_logits)
+                            verify_target_logits = mx.concatenate(
+                                processed_verify_logits,
+                                axis=0,
+                            )
+
+                        target_distribution = distribution_logprobs(
+                            verify_target_logits,
+                            _target_params,
+                        )
+                        accepted_mask = acceptance_mask(
+                            target_distribution,
+                            draft_distributions[depth_index],
+                            draft_tokens,
+                        )
+                        mx.eval(accepted_mask, draft_tokens)
+                        target_distributions.append(target_distribution)
+                        accepted_masks.append(accepted_mask)
+                        if not all(bool(x) for x in accepted_mask.tolist()):
+                            correction_distribution = residual_logprobs(
+                                target_distribution,
+                                draft_distributions[depth_index],
+                            )
+                            correction_tokens = sample_from_logprobs(
+                                correction_distribution
+                            )
+                            mx.eval(correction_tokens)
+                            accepted_count = depth_index
+                            break
+
+                    if (
+                        accepted_count == len(draft_token_arrays)
+                        and verify_hidden is not None
+                    ):
+                        if persistent_mtp_uid is not None and mtp_cache is not None:
+                            _trim_mtp_cache_to(mtp_cache, mtp_cache_start_offset + 1)
+                            _append_mtp_history(
+                                mtp_cache,
+                                verify_hidden[:, : len(draft_token_arrays), :],
+                                draft_token_arrays,
+                            )
+                        _skip_state[0] = {
+                            "logits": verify_logits[:, accepted_count, :],
+                            "hidden": verify_hidden[:, -1:, :],
+                        }
+                        mx.async_eval(_skip_state[0]["logits"], _skip_state[0]["hidden"])
+                        for e, uid in enumerate(current_uids):
+                            deferred = [
+                                {
+                                    "token_array": tokens[e : e + 1],
+                                    "logprobs": target_distributions[depth_index][e],
+                                }
+                                for depth_index, tokens in enumerate(
+                                    draft_token_arrays
+                                )
+                            ]
+                            _deferred_drafts[uid] = deferred
+                        _mtp_stats["accepted"] += 1
+                    else:
+                        assert correction_distribution is not None
+                        assert correction_tokens is not None
+
+                        for c in gen_self.prompt_cache:
+                            if (
+                                hasattr(c, "is_trimmable")
+                                and c.is_trimmable()
+                                and hasattr(c, "trim")
+                            ):
+                                c.trim(1 + len(draft_token_arrays))
+                        for ci, snap in rnn_snapshots.items():
+                            gen_self.prompt_cache[ci].state = snap
+
+                        committed_arrays = [primary_tokens[:, None]]
+                        committed_arrays.extend(
+                            tokens[:, None]
+                            for tokens in draft_token_arrays[:accepted_count]
+                        )
+                        committed_arrays.append(correction_tokens[:, None])
+                        correction_input = mx.concatenate(
+                            committed_arrays,
+                            axis=1,
+                        )
+                        rerun_out = model(
+                            correction_input,
+                            cache=gen_self.prompt_cache,
+                            return_hidden=True,
+                        )
+                        if isinstance(rerun_out, tuple):
+                            rerun_logits, rerun_hidden = rerun_out
+                            last_pos = correction_input.shape[1] - 1
+                            _skip_state[0] = {
+                                "logits": rerun_logits[:, last_pos, :],
+                                "hidden": rerun_hidden[:, -1:, :],
+                            }
+                            mx.async_eval(
+                                _skip_state[0]["logits"],
+                                _skip_state[0]["hidden"],
+                            )
+                        else:
+                            _skip_state[0] = None
+                            rerun_hidden = None
+                        if persistent_mtp_uid is not None and mtp_cache is not None:
+                            _trim_mtp_cache_to(mtp_cache, mtp_cache_start_offset + 1)
+                            history_token_arrays = list(
+                                draft_token_arrays[:accepted_count]
+                            )
+                            history_token_arrays.append(correction_tokens)
+                            if rerun_hidden is not None:
+                                _append_mtp_history(
+                                    mtp_cache,
+                                    rerun_hidden[:, : len(history_token_arrays), :],
+                                    history_token_arrays,
+                                )
+                        for e, uid in enumerate(current_uids):
+                            deferred = [
+                                {
+                                    "token_array": tokens[e : e + 1],
+                                    "logprobs": target_distributions[depth_index][e],
+                                }
+                                for depth_index, tokens in enumerate(
+                                    draft_token_arrays[:accepted_count]
+                                )
+                            ]
+                            deferred.append(
+                                {
+                                    "token_array": correction_tokens[e : e + 1],
+                                    "logprobs": correction_distribution[e],
+                                }
+                            )
+                            _deferred_drafts[uid] = deferred
+                        _mtp_stats["rejected"] += 1
+                        _mtp_stats["corrections"] += 1
+            except Exception as e:
+                if _mtp_stats["errors"] < 3:
+                    logger.warning("[MTP] draft/verify failed: %s", e)
+                else:
+                    logger.debug("[MTP] draft/verify failed: %s", e)
+                _skip_state[0] = None
+                for uid in current_uids:
+                    _deferred_drafts.pop(uid, None)
+                    _pending_primary_tokens.pop(uid, None)
+                    _persistent_mtp_caches.pop(uid, None)
+                _mtp_stats["errors"] += 1
+
+            gen_self._next_tokens = primary_tokens
+            gen_self._next_logprobs = primary_logprobs
+            mx.async_eval(gen_self._next_tokens, gen_self._next_logprobs, token_context)
+            mx.eval(input_tokens, gen_self._current_logprobs)
+            tokens_out = input_tokens.tolist()
+            for token_list, token in zip(gen_self.tokens, tokens_out):
+                token_list.append(token)
+            total = _mtp_stats["accepted"] + _mtp_stats["rejected"]
+            if total > 0 and total % 256 == 0:
+                logger.info(
+                    "[MTP] stats accepted=%d rejected=%d corrections=%d errors=%d "
+                    "acceptance=%.1f%%",
+                    _mtp_stats["accepted"],
+                    _mtp_stats["rejected"],
+                    _mtp_stats["corrections"],
+                    _mtp_stats["errors"],
+                    (_mtp_stats["accepted"] / total) * 100,
+                )
+            return tokens_out, gen_self._current_logprobs
+
+        batch_gen._inner_next = batch_gen._next
+        generation_cls._step = _mtp_generation_step
+
+        def _mtp_next_new(self=batch_gen):
+            prev_deferred = {}
+            gen_batch = self._generation_batch
+            if len(gen_batch) == 0:
+                _skip_state[0] = None
+                _deferred_drafts.clear()
+                _pending_primary_tokens.clear()
+                _persistent_mtp_caches.clear()
+            if len(gen_batch) > 0:
+                for uid in gen_batch.uids:
+                    if uid in _deferred_drafts:
+                        prev_deferred[uid] = _deferred_drafts.pop(uid)
+
+            prompt_responses, generation_responses = self._inner_next()
+            if not prev_deferred or not generation_responses:
+                return prompt_responses, generation_responses
+
+            augmented = []
+            draft_end_uids = set()
+            gen_batch = self._generation_batch
+            for response in generation_responses:
+                augmented.append(response)
+                uid = response.uid
+                if response.finish_reason is not None or uid not in prev_deferred:
+                    continue
+
+                draft_info = prev_deferred.pop(uid)
+                if isinstance(draft_info, dict):
+                    draft_items = [draft_info]
+                else:
+                    draft_items = list(draft_info)
+                for draft_item in draft_items:
+                    if "token_array" in draft_item:
+                        draft_t = int(draft_item["token_array"].item())
+                    else:
+                        draft_t = int(draft_item["token"])
+                    draft_lp = draft_item["logprobs"]
+                    finish_reason = None
+                    current_state = None
+                    match_sequence = None
+                    prompt_cache = None
+                    all_tokens = None
+
+                    if uid in gen_batch.uids:
+                        e = gen_batch.uids.index(uid)
+                        gen_batch._num_tokens[e] += 1
+                        gen_batch.tokens[e].append(draft_t)
+                        (
+                            gen_batch._matcher_states[e],
+                            match_sequence,
+                            current_state,
+                        ) = gen_batch.state_machines[e].match(
+                            gen_batch._matcher_states[e],
+                            draft_t,
+                        )
+                        if gen_batch._num_tokens[e] >= gen_batch.max_tokens[e]:
+                            finish_reason = "length"
+                        if match_sequence is not None and current_state is None:
+                            finish_reason = "stop"
+                        if finish_reason is not None:
+                            prompt_cache = gen_batch.extract_cache(e)
+                            all_tokens = gen_batch.tokens[e]
+                            draft_end_uids.add(uid)
+
+                    augmented.append(
+                        gen_batch.Response(
+                            uid=uid,
+                            token=draft_t,
+                            logprobs=draft_lp,
+                            finish_reason=finish_reason,
+                            current_state=current_state,
+                            match_sequence=match_sequence,
+                            prompt_cache=prompt_cache,
+                            all_tokens=all_tokens,
+                        )
+                    )
+                    if finish_reason is not None:
+                        break
+
+            if draft_end_uids and len(gen_batch) > 0:
+                for uid in draft_end_uids:
+                    _pending_primary_tokens.pop(uid, None)
+                    _deferred_drafts.pop(uid, None)
+                    _persistent_mtp_caches.pop(uid, None)
+                keep = [
+                    i for i, uid in enumerate(gen_batch.uids) if uid not in draft_end_uids
+                ]
+                gen_batch.filter(keep)
+
+            return prompt_responses, augmented
+
+        batch_gen._next = _mtp_next_new
+
+        mode_str = "optimistic (no verify)" if optimistic else "always-advance"
+        logger.info(
+            "[MTP] installed for mlx-lm GenerationBatch API, "
+            f"num_draft_tokens={num_draft_tokens}, "
+            f"draft_temp={draft_temperature}, {mode_str} mode"
+        )
+        return
+
     # Wrap _next() to emit deferred MTP drafts after each primary token.
     # This works regardless of whether _chunked_next or original _next is
     # the current _next implementation, because it sits at the top level.
@@ -1150,6 +1654,7 @@ class Scheduler:
         self.running: dict[str, Request] = {}  # Running requests by ID
         self.requests: dict[str, Request] = {}  # All requests by ID
         self.finished_req_ids: set[str] = set()  # Recently finished
+        self.completed_request_infos: deque[dict[str, Any]] = deque(maxlen=16)
 
         # Mapping between our request IDs and BatchGenerator UIDs
         self.request_id_to_uid: dict[str, int] = {}
@@ -1297,11 +1802,16 @@ class Scheduler:
         self, sampling_params: SamplingParams
     ) -> BatchGenerator:
         """Create a BatchGenerator with the given sampling parameters."""
+        effective_top_k = sampling_params.top_k
+        if self.config.enable_mtp and effective_top_k == 0:
+            effective_top_k = 20
+            logger.info("[MTP] using default top_k=20 for native MTP sampling")
+
         sampler = make_sampler(
             temp=sampling_params.temperature,
             top_p=sampling_params.top_p,
             min_p=sampling_params.min_p,
-            top_k=sampling_params.top_k,
+            top_k=effective_top_k,
         )
 
         stop_tokens = self._get_stop_tokens()
@@ -1394,7 +1904,7 @@ class Scheduler:
                     target_temperature=sampling_params.temperature,
                     target_top_p=sampling_params.top_p,
                     target_min_p=sampling_params.min_p,
-                    target_top_k=sampling_params.top_k,
+                    target_top_k=effective_top_k,
                     draft_temperature=self.config.mtp_draft_temperature,
                 )
             else:
@@ -2161,14 +2671,17 @@ class Scheduler:
             if request is None:
                 continue
 
+            import time as _time
+
+            token_time = _time.time()
+
             # Append token to request
             request.append_output_token(response.token)
 
             # Record first token time for TTFT metric
             if request.first_token_time is None and request.num_output_tokens > 0:
-                import time as _time
-
-                request.first_token_time = _time.time()
+                request.first_token_time = token_time
+            request.last_token_time = token_time
 
             # Decode the new token using IncrementalDecoder for multi-byte
             # safety (emoji, CJK). Skip stop tokens — they are not content.
@@ -2241,6 +2754,9 @@ class Scheduler:
 
                 self.total_completion_tokens += request.num_output_tokens
                 self.num_requests_processed += 1
+                self.completed_request_infos.append(
+                    self._request_info(request, status="finished")
+                )
 
                 logger.debug(
                     f"Request {request_id} finished: {response.finish_reason}, "
@@ -2652,45 +3168,49 @@ class Scheduler:
 
         # Running requests
         for req in self.running.values():
-            n_out = req.num_output_tokens
-            elapsed = now - req.arrival_time
-
-            # Phase detection
-            if n_out == 0:
-                phase = "prefill"
-            else:
-                phase = "generation"
-
-            # Tokens per second (generation phase only)
-            tok_s = None
-            ttft = None
-            if req.first_token_time is not None:
-                ttft = round(req.first_token_time - req.arrival_time, 3)
-                gen_elapsed = now - req.first_token_time
-                if gen_elapsed > 0 and n_out > 0:
-                    tok_s = round(n_out / gen_elapsed, 1)
-
-            # Progress: completion_tokens / max_tokens
-            progress = round(n_out / req.max_tokens, 3) if req.max_tokens > 0 else 0.0
-
-            result.append(
-                {
-                    "request_id": req.request_id,
-                    "status": "running",
-                    "phase": phase,
-                    "elapsed_s": round(elapsed, 2),
-                    "prompt_tokens": req.num_prompt_tokens,
-                    "completion_tokens": n_out,
-                    "max_tokens": req.max_tokens,
-                    "progress": min(progress, 1.0),
-                    "tokens_per_second": tok_s,
-                    "ttft_s": ttft,
-                    "cache_hit_type": req.cache_hit_type,
-                    "cached_tokens": req.cached_tokens,
-                }
-            )
+            result.append(self._request_info(req, status="running", now=now))
 
         return result
+
+    def _request_info(
+        self,
+        req: Request,
+        *,
+        status: str,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Per-request status plus scheduler-owned token timing."""
+        import time as _time
+
+        now = _time.time() if now is None else now
+        n_out = req.num_output_tokens
+        elapsed = now - req.arrival_time
+        phase = "prefill" if n_out == 0 else "generation"
+
+        tok_s = None
+        ttft = None
+        if req.first_token_time is not None:
+            ttft = round(req.first_token_time - req.arrival_time, 3)
+            last_token_time = req.last_token_time or req.first_token_time
+            gen_elapsed = last_token_time - req.first_token_time
+            if gen_elapsed >= 0.5 and n_out >= 8:
+                tok_s = round(n_out / gen_elapsed, 1)
+
+        progress = round(n_out / req.max_tokens, 3) if req.max_tokens > 0 else 0.0
+        return {
+            "request_id": req.request_id,
+            "status": status,
+            "phase": phase,
+            "elapsed_s": round(elapsed, 2),
+            "prompt_tokens": req.num_prompt_tokens,
+            "completion_tokens": n_out,
+            "max_tokens": req.max_tokens,
+            "progress": min(progress, 1.0),
+            "tokens_per_second": tok_s,
+            "ttft_s": ttft,
+            "cache_hit_type": req.cache_hit_type,
+            "cached_tokens": req.cached_tokens,
+        }
 
     def get_stats(self) -> dict[str, Any]:
         """Get scheduler statistics."""
@@ -2700,6 +3220,7 @@ class Scheduler:
             "num_requests_processed": self.num_requests_processed,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
+            "completed_requests": list(self.completed_request_infos),
         }
         # Include Metal memory stats
         try:
@@ -2742,6 +3263,7 @@ class Scheduler:
         self.running.clear()
         self.requests.clear()
         self.finished_req_ids.clear()
+        self.completed_request_infos.clear()
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
         self._detokenizer_pool.clear()
