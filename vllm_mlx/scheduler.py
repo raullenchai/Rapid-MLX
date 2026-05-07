@@ -1135,6 +1135,7 @@ def _install_suffix_decoding(
         "ft_logits_processors": 0,
         "ft_no_draft": 0,
         "ft_cooldown": 0,
+        "ft_non_trimmable_cache": 0,
     }
 
     # Cooldown state: when verify keeps producing 0-acceptance (e.g.,
@@ -1261,6 +1262,19 @@ def _install_suffix_decoding(
             _stats["ft_cooldown"] += 1
             return _orig_step()
 
+        # Defense-in-depth: even though ``profile.supports_spec_decode``
+        # already gates installation on hybrid arches, verify that EVERY
+        # cache layer is trimmable before paying the verify-forward cost.
+        # If any layer can't trim and we end up needing to roll back, the
+        # cache state would silently diverge — better to fall through.
+        for c in gb.prompt_cache:
+            if not (
+                hasattr(c, "is_trimmable") and c.is_trimmable() and hasattr(c, "trim")
+            ):
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_non_trimmable_cache"] += 1
+                return _orig_step()
+
         K = len(draft)
         _stats["verify_steps"] += 1
         _stats["drafts_proposed"] += K
@@ -1302,13 +1316,9 @@ def _install_suffix_decoding(
 
         n_rejected = K - n_accepted
         if n_rejected > 0:
+            # Pre-checked above — every layer here is trimmable.
             for c in gb.prompt_cache:
-                if (
-                    hasattr(c, "is_trimmable")
-                    and c.is_trimmable()
-                    and hasattr(c, "trim")
-                ):
-                    c.trim(n_rejected)
+                c.trim(n_rejected)
 
         # Token emission accounting.
         #
@@ -1354,13 +1364,14 @@ def _install_suffix_decoding(
         # the bonus — used for the bonus surfacing in the next step.
         bonus_logprobs = full_logprobs[0, n_accepted, :]
 
-        # Drafter history += newly-committed tokens (last_token was
-        # added before draft build; only drafts + bonus are new here.
-        # Bonus enters the index too because the next step will
-        # naturally surface it as primary.)
+        # Drafter history += newly-committed tokens. We add ONLY the
+        # accepted drafts here; ``bonus`` will be added on the next
+        # ``_suffix_step`` call (line ~1235 ``drafter.add_generated_token
+        # (last_token)`` where ``last_token = bonus`` since we just
+        # stashed it in ``_next_tokens``). Adding it here too would
+        # double-index it in the suffix tree and skew future drafts.
         for tok in extra_tokens:
             drafter.add_generated_token(tok)
-        drafter.add_generated_token(bonus)
         drafter.record_acceptance(n_accepted)
         _stats["tokens_accepted"] += n_accepted
 
@@ -1418,7 +1429,7 @@ def _install_suffix_decoding(
                 # bail out for this uid.
                 continue
 
-            for tok, lp in pending:
+            for emit_idx, (tok, lp) in enumerate(pending):
                 # Append to gb.tokens[row] (mirrors _step's append).
                 gb.tokens[row].append(tok)
                 gb._num_tokens[row] += 1
@@ -1444,6 +1455,23 @@ def _install_suffix_decoding(
                     finish_reason = "length"
 
                 if finish_reason is not None:
+                    # Roll back KV cache for any *unconsumed* accepted
+                    # drafts. The verify forward in ``_suffix_step``
+                    # advanced the cache through ALL ``n_accepted``
+                    # drafts; if we stop early at ``emit_idx``, the
+                    # remaining ``len(pending) - emit_idx - 1`` drafts
+                    # were never surfaced — their KV state must come
+                    # back out of the cache or it'll poison prefix-cache
+                    # reuse for the next request that hits this prefix.
+                    unused = len(pending) - emit_idx - 1
+                    if unused > 0:
+                        for c in gb.prompt_cache:
+                            if (
+                                hasattr(c, "is_trimmable")
+                                and c.is_trimmable()
+                                and hasattr(c, "trim")
+                            ):
+                                c.trim(unused)
                     augmented.append(
                         gb.Response(
                             uid=uid,

@@ -353,3 +353,32 @@ class TestInstallSuffixDecoding:
         )
 
         assert not hasattr(bg, "_suffix_stats")
+
+    def test_stats_include_non_trimmable_cache_counter(self):
+        """Defense-in-depth: pre-flight check counter is wired into stats.
+
+        Even though ``profile.supports_spec_decode`` already gates install on
+        hybrid arches, the verify path also pre-checks every cache layer
+        is trimmable. If a ``_BaseCache`` (or vendored DeltaNet/Mamba
+        cache) ever slipped through, we'd fall through and bump
+        ``ft_non_trimmable_cache`` instead of corrupting state silently.
+        """
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.scheduler import _install_suffix_decoding
+
+        bg, _gb = self._make_fake_bg()
+
+        _install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=None,
+            max_draft=8,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+        )
+
+        assert "ft_non_trimmable_cache" in bg._suffix_stats
+        assert bg._suffix_stats["ft_non_trimmable_cache"] == 0
