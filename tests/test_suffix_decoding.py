@@ -300,7 +300,7 @@ class TestInstallSuffixDecoding:
         stats = bg._suffix_stats
         assert stats["verify_steps"] == 0
         assert stats["fallthrough_steps"] == 0
-        assert stats["drafts_proposed"] == 0
+        assert stats["draft_tokens_proposed"] == 0
         assert stats["tokens_accepted"] == 0
         # bg and gb share the same stats dict
         assert bg._suffix_stats is gb._suffix_stats
@@ -382,3 +382,46 @@ class TestInstallSuffixDecoding:
 
         assert "ft_non_trimmable_cache" in bg._suffix_stats
         assert bg._suffix_stats["ft_non_trimmable_cache"] == 0
+
+    def test_drafter_pruned_when_primary_finishes(self):
+        """Per-uid drafters must be dropped when the primary finishes.
+
+        Without the cleanup, ``_drafters`` accumulates one entry per
+        completed request for the lifetime of the BatchGenerator. Each
+        drafter can hold up to ``max_history`` indexed tokens (default
+        32K) — a real memory leak on long-running servers.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.scheduler import _install_suffix_decoding
+        from vllm_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
+
+        bg, gb = self._make_fake_bg()
+        # The wrapped next() will call _orig_next() which returns a single
+        # finished response — exercising the primary-finish cleanup branch.
+        finished_response = SimpleNamespace(uid=42, finish_reason="stop")
+        gb.next = lambda: [finished_response]
+
+        _install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=None,
+            max_draft=8,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+        )
+
+        drafters = gb._suffix_drafters
+        # Plant a drafter for uid 42 to mimic a verify step having run.
+        drafters[42] = SuffixDecodingDrafter()
+        # Also stash a pending emit so we exercise the same branch the
+        # production code does (drop-pending + drop-drafter).
+        # Closure-scoped _pending_emits is reachable indirectly: the
+        # wrapped next() pops both before falling through.
+        gb.next()  # invokes the wrapped _suffix_next via the install
+        assert 42 not in drafters, (
+            "Drafter for finished uid was retained — _drafters leak"
+        )

@@ -99,9 +99,11 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # Case 3: proper close tag seen — no correction
             return None
         if accumulated_text:
-            # Cases 1 & 2: no close tag — emit full text as content
+            # Cases 1 & 2: no close tag — emit full text as content,
+            # stripping the template-injected ``<think>`` prefix if present.
             cleaned = accumulated_text
             if cleaned.startswith(self.start_token):
                 cleaned = cleaned[len(self.start_token) :]
-            return DeltaMessage(content=cleaned or None)
+            if cleaned:
+                return DeltaMessage(content=cleaned)
         return None

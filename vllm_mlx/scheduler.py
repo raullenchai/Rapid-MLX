@@ -1123,7 +1123,10 @@ def _install_suffix_decoding(
     _stats = {
         "verify_steps": 0,
         "fallthrough_steps": 0,
-        "drafts_proposed": 0,
+        # Total draft TOKENS proposed across all verify steps (i.e., the
+        # sum of K over verify_steps), not the count of verify proposals.
+        # Mirrors ``DraftStats.total_draft_tokens_proposed`` naming.
+        "draft_tokens_proposed": 0,
         "tokens_accepted": 0,
         "errors": 0,
         # Diagnostic breakdown of WHY we fell through. Sum should equal
@@ -1199,7 +1202,11 @@ def _install_suffix_decoding(
         # Skip when logits_processors are set — applying them at every
         # speculative position would change the math in a way the
         # standalone PoC didn't validate. Defer to a follow-up.
-        if gb.logits_processors and any(p for p in gb.logits_processors if p):
+        # Defensive ``getattr``: GenerationBatch grew this attribute in
+        # mlx-lm 0.31; older builds would AttributeError here and silently
+        # disable the entire suffix-decoding install.
+        _lp = getattr(gb, "logits_processors", None)
+        if _lp and any(p for p in _lp if p):
             _stats["fallthrough_steps"] += 1
             _stats["ft_logits_processors"] += 1
             return _orig_step()
@@ -1277,7 +1284,7 @@ def _install_suffix_decoding(
 
         K = len(draft)
         _stats["verify_steps"] += 1
-        _stats["drafts_proposed"] += K
+        _stats["draft_tokens_proposed"] += K
 
         # Verify forward: [last_token, d_0..d_{K-1}] of shape (1, K+1).
         try:
@@ -1404,6 +1411,17 @@ def _install_suffix_decoding(
         """
         responses = _orig_next()
 
+        # Drop drafters for finished uids unconditionally — each drafter
+        # holds up to ``max_history`` indexed tokens, so a leak here adds
+        # up over a long-running server even on workloads that never hit
+        # the synthetic-emit path. Run this before the early-return so
+        # plain (non-spec-decode) finishes are also reaped.
+        if responses:
+            for r in responses:
+                if r.finish_reason is not None:
+                    _pending_emits.pop(r.uid, None)
+                    _drafters.pop(r.uid, None)
+
         if not _pending_emits or not responses:
             return responses
 
@@ -1411,8 +1429,7 @@ def _install_suffix_decoding(
         for r in responses:
             uid = r.uid
             if r.finish_reason is not None:
-                # Primary finished the sequence — drop any pending.
-                _pending_emits.pop(uid, None)
+                # Already reaped above — just skip.
                 continue
 
             pending = _pending_emits.pop(uid, None)
@@ -1430,7 +1447,9 @@ def _install_suffix_decoding(
                 continue
 
             for emit_idx, (tok, lp) in enumerate(pending):
-                # Append to gb.tokens[row] (mirrors _step's append).
+                # Append to gb.tokens[row] for the synthetic emit; matches
+                # the bookkeeping our wrapped _step already does for the
+                # primary token (mlx-lm's original _step does NOT append).
                 gb.tokens[row].append(tok)
                 gb._num_tokens[row] += 1
 
@@ -1491,6 +1510,10 @@ def _install_suffix_decoding(
                     else:
                         # Cleared the only sequence; reset the batch.
                         gb.filter([])
+                    # Drop the drafter — sequence is done, its history
+                    # would otherwise live in _drafters until the
+                    # BatchGenerator itself is replaced.
+                    _drafters.pop(uid, None)
                     # No more pending to emit for this uid.
                     break
 
@@ -1515,6 +1538,9 @@ def _install_suffix_decoding(
     # engine looks for it) and to gb for direct inspection.
     batch_gen._suffix_stats = _stats
     gb._suffix_stats = _stats
+    # Expose the per-uid drafter dict for tests to assert lifecycle
+    # cleanup. Production code should not mutate this directly.
+    gb._suffix_drafters = _drafters
 
     logger.info(
         "[SuffixDecoding] installed: max_draft=%d, max_suffix_len=%d, "

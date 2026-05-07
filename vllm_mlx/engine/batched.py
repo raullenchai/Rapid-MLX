@@ -319,12 +319,15 @@ class BatchedEngine(BaseEngine):
         else:
             max_num_seqs = 16  # Default for continuous batching
 
-        # Get batch sizes from config if available
-        prefill_batch_size = getattr(self._scheduler_config, "prefill_batch_size", 4)
+        # Get batch sizes from config if available. Fallback defaults match
+        # SchedulerConfig's canonical defaults so a config object missing
+        # these fields (e.g., a stripped-down test double) does not silently
+        # downgrade MLLM batch sizes vs the standard text path.
+        prefill_batch_size = getattr(self._scheduler_config, "prefill_batch_size", 8)
         completion_batch_size = getattr(
-            self._scheduler_config, "completion_batch_size", 16
+            self._scheduler_config, "completion_batch_size", 32
         )
-        prefill_step_size = getattr(self._scheduler_config, "prefill_step_size", 1024)
+        prefill_step_size = getattr(self._scheduler_config, "prefill_step_size", 2048)
 
         mllm_config = MLLMSchedulerConfig(
             max_num_seqs=max_num_seqs,
