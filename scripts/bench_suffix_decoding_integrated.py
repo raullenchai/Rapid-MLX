@@ -306,15 +306,56 @@ def start_server(model: str, port: int, suffix_decoding: bool) -> ServerHandle:
 # ---- Workload execution ---------------------------------------------------
 
 
+# Reliability thresholds — see `tests/test_suffix_bench_methodology.py`.
+#
+# MIN_DECODE_TIME — runs whose decode-time slice is shorter than this can't
+# be measured reliably. Per-request overhead (TLS handshake, framework JSON
+# round-trip, last-chunk flush) dominates; TPS becomes 1000-2700 tok/s
+# nonsense for short responses. 0.5s gives at least ~50-150 generated
+# tokens at typical M-series rates, enough that wall-clock noise is small.
+MIN_DECODE_TIME = 0.5
+
+# TPS_CEILING — physical sanity check. No single-request mlx-lm decode on
+# any M-series Mac (M2 → M3 Ultra) has been observed above this for any
+# model size we ship as an alias (largest sustained: SmolLM3-3B-4bit ~280
+# tok/s, Llama-3.2-1B-4bit ~330 tok/s). A reading above the ceiling means
+# the timing window collapsed (cache hit, prefill-counted-as-decode, etc.)
+# rather than the model genuinely going that fast.
+TPS_CEILING = 500.0
+
+
+@dataclass
+class WorkloadRun:
+    """One end-to-end stream measurement.
+
+    ``tps`` is ``None`` when the run was rejected (too short, ceiling
+    breach, or zero-token response). The raw fields stay populated so a
+    later post-mortem can see *why* it was rejected without re-running.
+    """
+
+    tps: float | None
+    completion_tokens: int
+    decode_time: float
+    total_time: float
+    rejected_reason: str | None = None
+
+
 def run_workload(
     handle: ServerHandle,
     workload_body: dict,
     max_tokens: int,
-) -> float:
-    """Run one request and return decode TPS (completion tokens / decode time).
+) -> WorkloadRun:
+    """Run one request and return a ``WorkloadRun`` with TPS + raw timing.
 
-    Streams to capture TTFT, then derives decode time from
-    ``usage.completion_tokens`` divided by (total_time - ttft).
+    Reliability rules (set ``tps=None`` and a ``rejected_reason``):
+
+    * Zero/missing ``completion_tokens`` — server didn't report usage.
+    * ``decode_time < MIN_DECODE_TIME`` — gen too short to measure.
+    * ``tps > TPS_CEILING`` — implausibly fast, indicates cache leak or
+      collapsed timing window. Don't poison median() with the outlier.
+
+    Returning a structured value (instead of just a float) lets the
+    caller persist raw data for forensic debugging without re-running.
     """
     payload = {
         "model": handle.model,
@@ -325,7 +366,7 @@ def run_workload(
     }
     t0 = time.perf_counter()
     ttft: float | None = None
-    completion_tokens: int | None = None
+    completion_tokens: int = 0
 
     with httpx.stream(
         "POST",
@@ -356,19 +397,54 @@ def run_workload(
                 completion_tokens = int(usage["completion_tokens"])
 
     total = time.perf_counter() - t0
-    if completion_tokens is None or completion_tokens <= 0:
-        return 0.0
-    # Discard runs where the model bailed in fewer than 32 tokens — decode
-    # time is dominated by per-request overhead, not generation, and TPS
-    # becomes meaningless. Returning 0 makes the median() filter these out
-    # naturally if at least one of the 3 runs is healthy.
-    if completion_tokens < 32:
-        return 0.0
-    decode_time = max(total - (ttft or 0.0), 1e-6)
-    return completion_tokens / decode_time
+    decode_time = max(total - (ttft or 0.0), 0.0)
+
+    return _classify_run(completion_tokens, decode_time, total)
+
+
+def _classify_run(
+    completion_tokens: int, decode_time: float, total_time: float
+) -> WorkloadRun:
+    """Apply the reliability gates. Pulled out so it's unit-testable
+    without spinning up an actual server."""
+    if completion_tokens <= 0:
+        return WorkloadRun(
+            None, completion_tokens, decode_time, total_time, "zero_completion_tokens"
+        )
+    if decode_time < MIN_DECODE_TIME:
+        return WorkloadRun(
+            None,
+            completion_tokens,
+            decode_time,
+            total_time,
+            f"decode_time<{MIN_DECODE_TIME}s",
+        )
+    tps = completion_tokens / decode_time
+    if tps > TPS_CEILING:
+        return WorkloadRun(
+            None,
+            completion_tokens,
+            decode_time,
+            total_time,
+            f"tps>{TPS_CEILING}_ceiling",
+        )
+    return WorkloadRun(tps, completion_tokens, decode_time, total_time, None)
 
 
 # ---- Driver ---------------------------------------------------------------
+
+
+@dataclass
+class ModeResult:
+    """Outcome of one (vanilla|suffix) bench pass.
+
+    ``median_tps[name]`` is ``None`` when *every* run for that workload
+    was rejected (so the caller can mark it 'skipped' rather than treat
+    the missing data as 0.0 → false 'avoid' classification).
+    """
+
+    median_tps: dict[str, float | None]
+    raw_runs: dict[str, list[WorkloadRun]]
 
 
 def bench_one_mode(
@@ -377,29 +453,42 @@ def bench_one_mode(
     suffix_decoding: bool,
     runs: int,
     max_tokens: int,
-) -> dict[str, float]:
-    """Median decode TPS per workload, for one (vanilla|suffix) mode."""
+) -> ModeResult:
+    """Run every workload ``runs`` times in a single server lifetime.
+
+    Returns a ``ModeResult`` with both the per-workload median (over
+    valid runs only) and the full raw run list for downstream
+    persistence.
+    """
     handle = start_server(model, port, suffix_decoding)
     try:
         # 1 warmup run that we discard — covers Metal kernel JIT, cache
         # population, and tokenizer load.
         run_workload(handle, WORKLOADS["chat"], max_tokens=32)
-        results: dict[str, float] = {}
+        median_tps: dict[str, float | None] = {}
+        raw: dict[str, list[WorkloadRun]] = {}
         for name, body in WORKLOADS.items():
-            samples: list[float] = []
+            workload_runs: list[WorkloadRun] = []
             for i in range(runs):
-                tps = run_workload(handle, body, max_tokens=max_tokens)
+                wr = run_workload(handle, body, max_tokens=max_tokens)
+                tag = (
+                    f"{wr.tps:.1f} tok/s"
+                    if wr.tps is not None
+                    else f"REJECTED ({wr.rejected_reason}, {wr.completion_tokens}t/{wr.decode_time:.2f}s decode)"
+                )
                 logger.info(
-                    "  [%s] %s run %d/%d: %.1f tok/s",
+                    "  [%s] %s run %d/%d: %s",
                     "ON " if suffix_decoding else "OFF",
                     name,
                     i + 1,
                     runs,
-                    tps,
+                    tag,
                 )
-                samples.append(tps)
-            results[name] = median(samples)
-        return results
+                workload_runs.append(wr)
+            valid = [r.tps for r in workload_runs if r.tps is not None]
+            median_tps[name] = median(valid) if valid else None
+            raw[name] = workload_runs
+        return ModeResult(median_tps=median_tps, raw_runs=raw)
     finally:
         handle.stop()
 
@@ -449,20 +538,61 @@ def main(argv: list[str] | None = None) -> int:
         max_tokens=args.max_tokens,
     )
 
-    speedup = {
-        name: round(suffix[name] / vanilla[name], 3) if vanilla[name] > 0 else 0.0
-        for name in WORKLOADS
-    }
-    tier = classify_suffix_decoding_tier(speedup)
+    # Compute per-workload speedup, skipping workloads where either mode
+    # failed to produce *any* valid run. A workload with no valid data in
+    # either pass shouldn't poison the tier — we drop it from the dict
+    # the classifier sees and report it as 'skipped' in the JSON output.
+    speedup: dict[str, float] = {}
+    skipped: dict[str, str] = {}
+    for name in WORKLOADS:
+        v = vanilla.median_tps.get(name)
+        s = suffix.median_tps.get(name)
+        if v is None or s is None or v <= 0:
+            reason = (
+                "vanilla all runs rejected"
+                if v is None or v <= 0
+                else "suffix all runs rejected"
+            )
+            skipped[name] = reason
+            continue
+        speedup[name] = round(s / v, 3)
+
+    tier = classify_suffix_decoding_tier(speedup) if speedup else "unknown"
+
+    def _serialize_runs(raw: dict[str, list[WorkloadRun]]) -> dict[str, list[dict]]:
+        return {
+            name: [
+                {
+                    "tps": round(r.tps, 1) if r.tps is not None else None,
+                    "completion_tokens": r.completion_tokens,
+                    "decode_time": round(r.decode_time, 3),
+                    "total_time": round(r.total_time, 3),
+                    "rejected_reason": r.rejected_reason,
+                }
+                for r in runs
+            ]
+            for name, runs in raw.items()
+        }
 
     summary = {
         "model": args.model,
         "max_tokens": args.max_tokens,
         "runs": args.runs,
-        "vanilla_tps": {k: round(v, 1) for k, v in vanilla.items()},
-        "suffix_tps": {k: round(v, 1) for k, v in suffix.items()},
+        "vanilla_tps": {
+            k: (round(v, 1) if v is not None else None)
+            for k, v in vanilla.median_tps.items()
+        },
+        "suffix_tps": {
+            k: (round(v, 1) if v is not None else None)
+            for k, v in suffix.median_tps.items()
+        },
         "speedup": speedup,
+        "skipped": skipped,
         "tier": tier,
+        "raw_runs": {
+            "vanilla": _serialize_runs(vanilla.raw_runs),
+            "suffix": _serialize_runs(suffix.raw_runs),
+        },
     }
 
     output = args.output or REPO_ROOT / "evals/results" / (
@@ -471,17 +601,26 @@ def main(argv: list[str] | None = None) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, indent=2) + "\n")
     logger.info("--- summary ---")
-    for k, v in speedup.items():
-        marker = "↑" if v >= 1.05 else ("↓" if v <= 0.95 else "·")
-        logger.info("  %-12s %5.2fx %s", k, v, marker)
+    for k in WORKLOADS:
+        if k in skipped:
+            logger.info("  %-12s SKIPPED (%s)", k, skipped[k])
+        else:
+            v = speedup[k]
+            marker = "↑" if v >= 1.05 else ("↓" if v <= 0.95 else "·")
+            logger.info("  %-12s %5.2fx %s", k, v, marker)
     logger.info("  tier: %s", tier)
     logger.info("  written: %s", output)
 
     if args.update_profile:
-        sd_keys = ", ".join(f'"{k}": {v}' for k, v in speedup.items())
-        logger.info("\nPatch for ModelConfig in vllm_mlx/model_auto_config.py:")
-        logger.info('    suffix_decoding_tier="%s",', tier)
-        logger.info("    suffix_bench_speedup={%s},", sd_keys)
+        # The SSOT lives in aliases.json (PR #283 / #281). Print a JSON
+        # snippet the contributor can paste into the alias entry.
+        snippet = json.dumps(
+            {"suffix_decoding_tier": tier, "suffix_bench_speedup": speedup},
+            indent=2,
+        )
+        logger.info("\nPatch for vllm_mlx/aliases.json (alias %s):", args.model)
+        for line in snippet.splitlines():
+            logger.info("  %s", line)
 
     return 0
 
