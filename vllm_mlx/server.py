@@ -137,6 +137,22 @@ def configure_logging(log_level: str) -> str:
     normalized = normalize_log_level(log_level)
     logging.getLogger().setLevel(getattr(logging, normalized, logging.INFO))
     logger.setLevel(getattr(logging, normalized, logging.INFO))
+
+    # Silence chatty transport-layer loggers unless the user explicitly asked
+    # for DEBUG. At INFO level, ``httpx`` emits one line per HF Hub request
+    # (config.json, README, every model shard), which floods startup with a
+    # screenful of pure noise before the model even loads. ``huggingface_hub``
+    # also doubles up on transfer chatter. Pinning them to WARNING leaves
+    # genuine errors visible without the per-request play-by-play.
+    #
+    # On DEBUG we explicitly reset to NOTSET so they inherit the root level,
+    # making this idempotent across repeated configure_logging() calls in the
+    # same process (test fixtures, in-process restarts).
+    chatty_loggers = ("httpx", "httpcore", "urllib3", "huggingface_hub")
+    target = logging.NOTSET if normalized == "DEBUG" else logging.WARNING
+    for name in chatty_loggers:
+        logging.getLogger(name).setLevel(target)
+
     return normalized.lower()
 
 

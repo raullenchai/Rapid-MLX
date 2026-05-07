@@ -565,3 +565,54 @@ class TestExtractJsonFromResponse:
 
         text = "Hello, world!"
         assert extract_json_from_response(text) == text
+
+
+# ---------------------------------------------------------------------------
+# configure_logging — quiet chatty third-party loggers
+# ---------------------------------------------------------------------------
+
+
+class TestConfigureLogging:
+    """Verify chatty transport-layer loggers are silenced at INFO/WARNING but
+    not at DEBUG, so HF Hub / httpx noise doesn't drown out startup."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_loggers(self):
+        import logging as _logging
+
+        names = ("httpx", "httpcore", "urllib3", "huggingface_hub")
+        saved = {n: _logging.getLogger(n).level for n in names}
+        yield
+        for n, lvl in saved.items():
+            _logging.getLogger(n).setLevel(lvl)
+
+    def test_info_silences_chatty_loggers(self):
+        import logging as _logging
+
+        from vllm_mlx import server
+
+        server.configure_logging("INFO")
+        for name in ("httpx", "httpcore", "urllib3", "huggingface_hub"):
+            assert _logging.getLogger(name).level == _logging.WARNING
+
+    def test_debug_lets_chatty_loggers_through(self):
+        import logging as _logging
+
+        from vllm_mlx import server
+
+        server.configure_logging("DEBUG")
+        for name in ("httpx", "httpcore", "urllib3", "huggingface_hub"):
+            assert _logging.getLogger(name).level == _logging.NOTSET
+
+    def test_idempotent_across_level_toggles(self):
+        """INFO → DEBUG → INFO must reset chatty loggers each time."""
+        import logging as _logging
+
+        from vllm_mlx import server
+
+        server.configure_logging("INFO")
+        assert _logging.getLogger("httpx").level == _logging.WARNING
+        server.configure_logging("DEBUG")
+        assert _logging.getLogger("httpx").level == _logging.NOTSET
+        server.configure_logging("INFO")
+        assert _logging.getLogger("httpx").level == _logging.WARNING
