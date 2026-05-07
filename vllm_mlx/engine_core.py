@@ -194,6 +194,9 @@ class EngineCore:
             model_path = None
         base_cfg = detect_model_config(model_path) if model_path else None
         self.model_config = enrich_model_config(base_cfg, model)
+        # Plumb profile into Scheduler so spec-decode installs can consult
+        # capability gates (e.g. ``supports_spec_decode``).
+        self.scheduler.model_config = self.model_config
         self._hybrid_throttle = self.model_config.is_hybrid
         self._hybrid_lock: asyncio.Lock | None = None  # lazy-init in event loop
         self._last_request_time = 0.0

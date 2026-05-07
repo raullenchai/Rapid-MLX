@@ -1035,6 +1035,390 @@ def _install_mtp(
     )
 
 
+def _install_suffix_decoding(
+    batch_gen: "BatchGenerator",
+    model: Any,
+    profile: Any | None,
+    max_draft: int,
+    max_suffix_len: int,
+    min_confidence: float,
+    requests: dict[str, Any],
+    uid_to_request_id: dict[int, str],
+) -> None:
+    """Monkey-patch a BatchGenerator to use SuffixDecoding spec-decode.
+
+    SuffixDecoding is a drafter-free speculative decoding technique:
+    instead of using a separate draft model, it builds a suffix-tree
+    index over the prompt + already-generated tokens and votes over
+    repeated continuations. Big wins on workloads with structured
+    repetition (tool calls, JSON, code edits, ReAct loops).
+
+    Per generation step (single-request only in v1):
+
+        1. Drafter builds a draft of up to ``max_draft`` tokens by
+           majority vote over historical k-grams.
+        2. If draft is non-empty, run a single ``model([X, d_0..d_{K-1}])``
+           verify forward (K+1 tokens).
+        3. Accept up to first mismatch (greedy verify).
+        4. On reject: trim trimmable cache layers by (K - n_accepted).
+        5. Emit (n_accepted + 1) tokens: primary from logits[0], plus
+           accepted drafts and the bonus token at logits[n_accepted].
+           First token returned as primary; remaining stashed in
+           ``_pending_drafts[uid]`` for ``_next`` to emit.
+
+    Falls through to the original ``_step`` when:
+      - batch size > 1 (v1 is single-request only),
+      - prefill (multi-token input),
+      - active_batch is None or cache mismatch,
+      - sampler is non-greedy (temperature > 0 or top_p < 1),
+      - drafter has no candidate (low repetition).
+
+    The architecture allowlist is enforced upstream via
+    ``ModelConfig.supports_spec_decode``: hybrid linear-attention models
+    (Qwen3.5/3.6 GatedDeltaNet, Granite 4 Mamba2) skip install entirely
+    because chunked-batched verify is not numerically equivalent to
+    step-update on recurrent layers (corrupts output — see
+    ``evals/results/SUFFIX_POC_REPORT.md``).
+    """
+    from .speculative.suffix_decoding import SuffixDecodingDrafter
+
+    if profile is not None and not profile.supports_spec_decode:
+        logger.warning(
+            "[SuffixDecoding] disabled: model is hybrid (linear-attention/"
+            "Mamba). Multi-token verify path is not numerically equivalent "
+            "to step-update on recurrent layers. See "
+            "evals/results/SUFFIX_POC_REPORT.md."
+        )
+        return
+
+    _orig_step = batch_gen._step
+
+    # Per-uid state. Drafters are lazy-init on first encounter (we need
+    # the request's prompt_token_ids to seed the suffix index, and that
+    # only becomes available once the request has reached decode).
+    _drafters: dict[int, SuffixDecodingDrafter] = {}
+    # _pending_drafts[uid] = list of (token, logprobs) tuples to emit in
+    # subsequent _next calls. Each token was produced by the verify
+    # forward and the cache is already advanced past it, so emission is
+    # purely a streaming-side concern.
+    _pending_drafts: dict[int, list[tuple[int, mx.array]]] = {}
+
+    _stats = {
+        "verify_steps": 0,
+        "fallthrough_steps": 0,
+        "drafts_proposed": 0,
+        "tokens_accepted": 0,
+        "errors": 0,
+    }
+
+    def _is_greedy_for_uid(uid: int) -> bool:
+        """Greedy verify only matches user output when sampler is greedy.
+
+        Falls back to vanilla decode otherwise to preserve sampling
+        distribution. (Future: rejection sampling for proper non-greedy.)
+        """
+        req_id = uid_to_request_id.get(uid)
+        req = requests.get(req_id) if req_id else None
+        if req is None or req.sampling_params is None:
+            return True  # default sampler — assume greedy at this layer
+        sp = req.sampling_params
+        if sp.temperature is not None and sp.temperature > 0.0:
+            return False
+        if sp.top_p is not None and sp.top_p < 1.0:
+            return False
+        if sp.top_k is not None and sp.top_k > 0:
+            return False
+        return True
+
+    def _suffix_step(input_tokens, prompt_cache, samplers, logits_processors, tokens):
+        """Wrapped step with SuffixDecoding fast path for single-request batches."""
+        batch_size = input_tokens.shape[0]
+
+        # Prefill or batch>1 → vanilla path. Multi-request batching with
+        # variable per-request draft lengths is non-trivial (padding +
+        # masking + per-uid trim accounting) and intentionally deferred
+        # to a follow-up.
+        if (
+            input_tokens.shape[1] > 1
+            or batch_size != 1
+            or batch_gen.active_batch is None
+            or prompt_cache is not batch_gen.active_batch.cache
+        ):
+            _stats["fallthrough_steps"] += 1
+            return _orig_step(
+                input_tokens, prompt_cache, samplers, logits_processors, tokens
+            )
+
+        uids = list(batch_gen.active_batch.uids)
+        if len(uids) != 1:
+            _stats["fallthrough_steps"] += 1
+            return _orig_step(
+                input_tokens, prompt_cache, samplers, logits_processors, tokens
+            )
+        uid = uids[0]
+
+        if not _is_greedy_for_uid(uid):
+            _stats["fallthrough_steps"] += 1
+            return _orig_step(
+                input_tokens, prompt_cache, samplers, logits_processors, tokens
+            )
+
+        # Lazy-init drafter on first encounter; seed with prompt tokens.
+        drafter = _drafters.get(uid)
+        if drafter is None:
+            req_id = uid_to_request_id.get(uid)
+            req = requests.get(req_id) if req_id else None
+            prompt_ids = (
+                list(req.prompt_token_ids)
+                if req is not None and req.prompt_token_ids
+                else []
+            )
+            drafter = SuffixDecodingDrafter(
+                max_draft_tokens=max_draft,
+                max_suffix_len=max_suffix_len,
+                min_confidence=min_confidence,
+            )
+            drafter.add_prompt_tokens(prompt_ids)
+            # Catch up on already-emitted tokens for this uid (rare; only
+            # happens if suffix decoding was enabled mid-stream, which
+            # the current CLI doesn't allow — included for safety).
+            try:
+                emitted = tokens[0].tolist() if tokens is not None else []
+                for t in emitted:
+                    drafter.add_generated_token(int(t))
+            except Exception:  # noqa: BLE001
+                pass
+            _drafters[uid] = drafter
+
+        # Add the most-recently-emitted token (= last step's primary) to
+        # the drafter's history. ``input_tokens`` is the tail token from
+        # the previous step that this _step's forward will consume.
+        last_token = int(input_tokens[0, 0].item())
+        drafter.add_generated_token(last_token)
+
+        # Build draft from suffix index
+        try:
+            draft = drafter.get_draft()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[SuffixDecoding] drafter error: {e!r}")
+            _stats["errors"] += 1
+            _stats["fallthrough_steps"] += 1
+            return _orig_step(
+                input_tokens, prompt_cache, samplers, logits_processors, tokens
+            )
+
+        if not draft:
+            # No useful draft (rare-pattern history) → vanilla step.
+            _stats["fallthrough_steps"] += 1
+            return _orig_step(
+                input_tokens, prompt_cache, samplers, logits_processors, tokens
+            )
+
+        K = len(draft)
+        _stats["verify_steps"] += 1
+        _stats["drafts_proposed"] += K
+
+        # Verify forward: [last_token, d_0 .. d_{K-1}] of shape (1, K+1)
+        try:
+            draft_arr = mx.array([draft], dtype=input_tokens.dtype)
+            verify_input = mx.concatenate([input_tokens, draft_arr], axis=1)
+            verify_logits = model(verify_input, cache=prompt_cache)
+            # verify_logits shape: (1, K+1, V). Greedy verify.
+            preds = mx.argmax(verify_logits, axis=-1)
+            mx.eval(preds)
+            preds_list = preds.tolist()[0]  # length K+1
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[SuffixDecoding] verify forward failed: {e!r}")
+            _stats["errors"] += 1
+            # Cache was not advanced if forward raised — safe to fall
+            # through to vanilla step (will re-run from same state).
+            return _orig_step(
+                input_tokens, prompt_cache, samplers, logits_processors, tokens
+            )
+
+        # Accept up to first mismatch (greedy verify).
+        n_accepted = 0
+        for i in range(K):
+            if preds_list[i] == draft[i]:
+                n_accepted += 1
+            else:
+                break
+
+        # Trim cache for rejected drafts. n_rejected can be 0 (all
+        # accepted, no trim needed) up to K (nothing accepted, trim full
+        # draft span). KVCache + RotatingKVCache support trim(). Hybrid
+        # caches were filtered upstream by supports_spec_decode.
+        n_rejected = K - n_accepted
+        if n_rejected > 0:
+            for c in prompt_cache:
+                if (
+                    hasattr(c, "is_trimmable")
+                    and c.is_trimmable()
+                    and hasattr(c, "trim")
+                ):
+                    c.trim(n_rejected)
+
+        # Emit token sequence:
+        #   [d_0, d_1, ..., d_{n_accepted-1}, preds_list[n_accepted]]
+        # primary = first emitted = d_0 (== preds_list[0]) if n>=1, else
+        # preds_list[0] (the correction). Either way, primary = preds_list[0].
+        primary_token = preds_list[0]
+        # Remaining tokens to defer: [d_1..d_{n_accepted-1}, preds_list[n_accepted]]
+        # When n_accepted == 0: deferred is empty (only primary emitted).
+        deferred_tokens: list[int]
+        if n_accepted >= 1:
+            deferred_tokens = list(draft[1:n_accepted]) + [preds_list[n_accepted]]
+        else:
+            deferred_tokens = []
+
+        # Update drafter history with all newly-committed tokens (so the
+        # next call's get_draft() sees the latest history).
+        drafter.add_generated_token(primary_token)
+        for d in deferred_tokens:
+            drafter.add_generated_token(d)
+
+        drafter.record_acceptance(n_accepted)
+        _stats["tokens_accepted"] += n_accepted
+
+        # Compute logprobs from verify_logits[0] (primary position) +
+        # subsequent positions for the deferred tokens. Each position's
+        # logprob is normalised independently — matches the standard
+        # path where one logit slice produces one logprob row.
+        logprobs_full = verify_logits - mx.logsumexp(
+            verify_logits, axis=-1, keepdims=True
+        )
+        primary_lp = logprobs_full[:, 0, :]  # shape (1, V)
+
+        # Stash deferred (token, logprobs) for _next to emit.
+        if deferred_tokens:
+            deferred_pairs: list[tuple[int, mx.array]] = []
+            for i, tok in enumerate(deferred_tokens):
+                # Position in verify_logits for the i-th deferred token's
+                # logprobs row: i+1 (since primary is at position 0,
+                # d_1..d_{n_accepted-1} are at 1..n_accepted-1, and the
+                # bonus at n_accepted).
+                lp_row = logprobs_full[:, i + 1, :]
+                deferred_pairs.append((int(tok), lp_row[0]))
+            _pending_drafts[uid] = deferred_pairs
+
+        primary_tokens = mx.array([[primary_token]], dtype=input_tokens.dtype)
+        return primary_tokens, [primary_lp[0]]
+
+    # _next wrapper to emit deferred tokens after primary. Mirrors MTP's
+    # _mtp_next pattern; the only structural difference is variable
+    # number of deferred tokens per uid (MTP always defers exactly one).
+    batch_gen._inner_next = batch_gen._next
+
+    def _suffix_next(self=batch_gen):
+        """Wrapper around _next that emits deferred SuffixDecoding tokens.
+
+        Unlike MTP (which defers exactly 1 token), SuffixDecoding can
+        defer 0..max_draft tokens depending on acceptance. All deferred
+        tokens for a given uid are emitted in a single _next call,
+        following the primary token in the response list.
+        """
+        # Clear stale per-uid state when no batch is active (request
+        # finished) — same hygiene as MTP.
+        if self.active_batch is None:
+            _pending_drafts.clear()
+
+        # Save deferred drafts from PREVIOUS step before _inner_next
+        # runs _suffix_step (which may store NEW deferred drafts).
+        prev_deferred: dict[int, list[tuple[int, mx.array]]] = {}
+        if self.active_batch is not None:
+            for uid in self.active_batch.uids:
+                if uid in _pending_drafts:
+                    prev_deferred[uid] = _pending_drafts.pop(uid)
+
+        responses = self._inner_next()
+
+        if not prev_deferred or not responses:
+            return responses
+
+        augmented = []
+        draft_end_uids: set = set()
+
+        for r in responses:
+            uid = r.uid
+            augmented.append(r)
+
+            if r.finish_reason is not None:
+                # Sequence ended on primary — discard pending drafts
+                _pending_drafts.pop(uid, None)
+                prev_deferred.pop(uid, None)
+                continue
+
+            pending = prev_deferred.pop(uid, None)
+            if not pending:
+                continue
+
+            # Emit each deferred token as a separate Response. Stop on
+            # length-limit / stop-token mid-list and discard the rest.
+            for tok, lp in pending:
+                if uid in draft_end_uids:
+                    break
+
+                if tok in self.stop_tokens:
+                    augmented.append(self.Response(uid, tok, lp, "stop", None))
+                    draft_end_uids.add(uid)
+                    break
+
+                draft_finish = None
+                batch = self.active_batch
+                if batch is not None:
+                    for e, bu in enumerate(batch.uids):
+                        if bu == uid:
+                            batch.num_tokens[e] += 1
+                            batch.tokens[e] = mx.concatenate(
+                                (batch.tokens[e], mx.array([tok]))
+                            )
+                            if batch.num_tokens[e] >= batch.max_tokens[e]:
+                                draft_finish = "length"
+                                draft_end_uids.add(uid)
+                            break
+
+                draft_cache_out = None
+                if draft_finish is not None and batch is not None:
+                    for e, bu in enumerate(batch.uids):
+                        if bu == uid:
+                            draft_cache_out = batch.extract_cache(e)
+                            break
+
+                augmented.append(
+                    self.Response(uid, tok, lp, draft_finish, draft_cache_out)
+                )
+
+                if draft_finish is not None:
+                    break
+
+        # Filter batch for sequences that finished on a deferred token
+        if draft_end_uids and self.active_batch is not None:
+            keep = [
+                e
+                for e, u in enumerate(self.active_batch.uids)
+                if u not in draft_end_uids
+            ]
+            if keep:
+                self.active_batch.filter(keep)
+            else:
+                self.active_batch = None
+
+        return augmented
+
+    batch_gen._step = _suffix_step
+    batch_gen._next = _suffix_next
+    # Stash stats on batch_gen for telemetry surfacing later.
+    batch_gen._suffix_stats = _stats
+
+    logger.info(
+        "[SuffixDecoding] installed: max_draft=%d, max_suffix_len=%d, "
+        "min_confidence=%.2f (single-request fast path; B>1 falls through)",
+        max_draft,
+        max_suffix_len,
+        min_confidence,
+    )
+
+
 class Scheduler:
     """
     Scheduler for continuous batching using mlx-lm BatchGenerator.
@@ -1055,6 +1439,7 @@ class Scheduler:
         tokenizer: Any,
         config: SchedulerConfig | None = None,
         tool_logits_processor_factory: Any | None = None,
+        model_config: Any | None = None,
     ):
         """
         Initialize the scheduler.
@@ -1066,11 +1451,16 @@ class Scheduler:
             tool_logits_processor_factory: Optional callable that creates a
                 logits processor for tool call structural token biasing.
                 Called with no args, returns a processor or None.
+            model_config: Optional ``ModelConfig`` from
+                ``vllm_mlx.model_auto_config``. Used as a capability gate for
+                spec-decoding installs (SuffixDecoding refuses to enable on
+                hybrid linear-attention models).
         """
         self.model = model
         self.tokenizer = tokenizer
         self.config = config or SchedulerConfig()
         self._tool_logits_processor_factory = tool_logits_processor_factory
+        self.model_config = model_config
 
         # Detect if tokenizer is a processor (MLLM) and get the actual tokenizer
         self._actual_tokenizer = self._get_actual_tokenizer(tokenizer)
@@ -1329,6 +1719,20 @@ class Scheduler:
                     "[MTP] --enable-mtp is set but model has no MTP head "
                     "(model.mtp is None). MTP will be disabled."
                 )
+
+        # Install SuffixDecoding (drafter-free spec-decode). Mutually
+        # exclusive with --enable-mtp at the CLI layer.
+        if self.config.enable_suffix_decoding:
+            _install_suffix_decoding(
+                bg,
+                model=self.model,
+                profile=self.model_config,
+                max_draft=self.config.suffix_max_draft,
+                max_suffix_len=self.config.suffix_max_suffix_len,
+                min_confidence=self.config.suffix_min_confidence,
+                requests=self.requests,
+                uid_to_request_id=self.uid_to_request_id,
+            )
 
         return bg
 
