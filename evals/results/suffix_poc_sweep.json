@@ -1,0 +1,418 @@
+{
+  "max_tokens": 200,
+  "drafter_config": {
+    "max_draft": 8,
+    "max_suffix": 4,
+    "min_conf": 0.3
+  },
+  "models": {
+    "mlx-community/Qwen3-0.6B-8bit": {
+      "workloads": {
+        "chat": {
+          "vanilla_tps": 36.74185732304877,
+          "suffix_tps": 143.08359820465432,
+          "speedup": 3.894294100230356,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 0,
+          "drafter_stats": {
+            "total_drafts_proposed": 27,
+            "total_draft_tokens_proposed": 216,
+            "total_draft_tokens_accepted": 148,
+            "n_step_calls": 52,
+            "n_drafts_returned": 27,
+            "acceptance_rate": 0.6852,
+            "mean_accepted_per_step": 2.8462
+          },
+          "vanilla_text": " The process of decoding speculative information into a more concrete, actionable plan. It involves analyzing the information to determine how it can be implemented in a real-world scenario.\n\nThe proc",
+          "suffix_text": " The process of decoding speculative information into a more concrete, actionable plan. It involves analyzing the information to determine how it can be implemented in a real-world scenario.\n\nThe proc"
+        },
+        "code_edit": {
+          "vanilla_tps": 39.73613254516735,
+          "suffix_tps": 200.54893591766663,
+          "speedup": 5.047016986107197,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 0,
+          "drafter_stats": {
+            "total_drafts_proposed": 32,
+            "total_draft_tokens_proposed": 242,
+            "total_draft_tokens_accepted": 166,
+            "n_step_calls": 34,
+            "n_drafts_returned": 32,
+            "acceptance_rate": 0.686,
+            "mean_accepted_per_step": 4.8824
+          },
+          "vanilla_text": "def compute_score(records, weights):\n    if not records:\n        return 0.0\n    accumulator = 0.0\n    for record, weight in zip(records, weights):\n        accumulator += float(record.value) * float(we",
+          "suffix_text": "def compute_score(records, weights):\n    if not records:\n        return 0.0\n    accumulator = 0.0\n    for record, weight in zip(records, weights):\n        accumulator += float(record.value) * float(we"
+        },
+        "tool_loop": {
+          "vanilla_tps": 37.5515233309417,
+          "suffix_tps": 173.76712306455474,
+          "speedup": 4.627432062692757,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 0,
+          "drafter_stats": {
+            "total_drafts_proposed": 26,
+            "total_draft_tokens_proposed": 194,
+            "total_draft_tokens_accepted": 158,
+            "n_step_calls": 42,
+            "n_drafts_returned": 26,
+            "acceptance_rate": 0.8144,
+            "mean_accepted_per_step": 3.7619
+          },
+          "vanilla_text": "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"location\": \"Tokyo\"}}\n<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"location\": \"Paris\"}}\n<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"location",
+          "suffix_text": "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"location\": \"Tokyo\"}}\n<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"location\": \"Paris\"}}\n<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"location"
+        },
+        "agent_react": {
+          "vanilla_tps": 40.67322319040486,
+          "suffix_tps": 164.55460826930636,
+          "speedup": 4.0457725098149115,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 139,
+          "drafter_stats": {
+            "total_drafts_proposed": 38,
+            "total_draft_tokens_proposed": 304,
+            "total_draft_tokens_accepted": 157,
+            "n_step_calls": 43,
+            "n_drafts_returned": 38,
+            "acceptance_rate": 0.5164,
+            "mean_accepted_per_step": 3.6512
+          },
+          "vanilla_text": " Now I need the population of Berlin.\nAction 2: search(\"population of Berlin\")\nObservation 2: Berlin has a population of about 8.1 million.\n\nThought 3: I have the answer.\nAction 3: finish(\"about 8.1 m",
+          "suffix_text": " Now I need the population of Berlin.\nAction 2: search(\"population of Berlin\")\nObservation 2: Berlin has a population of about 8.1 million.\n\nThought 3: I have the answer.\nAction 3: finish(\"about 8.1 m"
+        },
+        "json_array": {
+          "vanilla_tps": 36.86061236434489,
+          "suffix_tps": 71.42111473244414,
+          "speedup": 1.9375997888068044,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 0,
+          "drafter_stats": {
+            "total_drafts_proposed": 49,
+            "total_draft_tokens_proposed": 367,
+            "total_draft_tokens_accepted": 117,
+            "n_step_calls": 82,
+            "n_drafts_returned": 49,
+            "acceptance_rate": 0.3188,
+            "mean_accepted_per_step": 1.4268
+          },
+          "vanilla_text": "{\"id\": 1, \"name\": \"John Doe\", \"email\": \"john@example.com\", \"role\": \"admin\", \"active\": true}, {\"id\": 2, \"name\": \"Jane Smith\", \"email\": \"jane@example.com\", \"role\": \"user\", \"active\": false}, {\"id\": 3, \"n",
+          "suffix_text": "{\"id\": 1, \"name\": \"John Doe\", \"email\": \"john@example.com\", \"role\": \"admin\", \"active\": true}, {\"id\": 2, \"name\": \"Jane Smith\", \"email\": \"jane@example.com\", \"role\": \"user\", \"active\": false}, {\"id\": 3, \"n"
+        },
+        "summarize": {
+          "vanilla_tps": 39.75557345527189,
+          "suffix_tps": 123.15692141962437,
+          "speedup": 3.097852972946937,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 80,
+          "drafter_stats": {
+            "total_drafts_proposed": 31,
+            "total_draft_tokens_proposed": 247,
+            "total_draft_tokens_accepted": 147,
+            "n_step_calls": 53,
+            "n_drafts_returned": 31,
+            "acceptance_rate": 0.5951,
+            "mean_accepted_per_step": 2.7736
+          },
+          "vanilla_text": " The Apollo program was a series of human spaceflight missions undertaken by NASA between 1961 and 1972, with the goal of landing astronauts on the Moon. Apollo 11 achieved this goal in July 1969, whe",
+          "suffix_text": " The Apollo program was a series of human spaceflight missions undertaken by NASA between 1961 and 1972, with the goal of landing astronauts on the Moon. Apollo 11 achieved this goal in July 1969, whe"
+        }
+      }
+    },
+    "mlx-community/Llama-3.2-1B-Instruct-4bit": {
+      "workloads": {
+        "chat": {
+          "vanilla_tps": 69.30961157177505,
+          "suffix_tps": 75.50158417461175,
+          "speedup": 1.0893378632835717,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 12,
+          "drafter_stats": {
+            "total_drafts_proposed": 62,
+            "total_draft_tokens_proposed": 487,
+            "total_draft_tokens_accepted": 46,
+            "n_step_calls": 153,
+            "n_drafts_returned": 62,
+            "acceptance_rate": 0.0945,
+            "mean_accepted_per_step": 0.3007
+          },
+          "vanilla_text": " Speculative decoding is a method used in cryptography to create a new, unbreakable encryption method by combining multiple encryption techniques. It involves combining the encryption methods of diffe",
+          "suffix_text": " Speculative decoding is a method used in cryptography to create a new, unbreakable encryption method by combining multiple encryption techniques. It involves combining the encryption methods of diffe"
+        },
+        "code_edit": {
+          "vanilla_tps": 75.56036495145042,
+          "suffix_tps": 309.18503513921905,
+          "speedup": 4.091894412340104,
+          "vanilla_completion_tokens": 69,
+          "suffix_completion_tokens": 69,
+          "vanilla_stopped_on_eos": true,
+          "suffix_stopped_on_eos": true,
+          "common_len": 69,
+          "token_diffs_in_common": 0,
+          "drafter_stats": {
+            "total_drafts_proposed": 15,
+            "total_draft_tokens_proposed": 120,
+            "total_draft_tokens_accepted": 52,
+            "n_step_calls": 16,
+            "n_drafts_returned": 15,
+            "acceptance_rate": 0.4333,
+            "mean_accepted_per_step": 3.25
+          },
+          "vanilla_text": "def compute_score(records, weights):\n    if not records:\n        return 0.0\n    accumulator = 0.0\n    for record, weight in zip(records, weights):\n        accumulator += float(record.value) * float(we",
+          "suffix_text": "def compute_score(records, weights):\n    if not records:\n        return 0.0\n    accumulator = 0.0\n    for record, weight in zip(records, weights):\n        accumulator += float(record.value) * float(we"
+        },
+        "tool_loop": {
+          "vanilla_tps": 68.56586495087755,
+          "suffix_tps": 86.99468910838752,
+          "speedup": 1.2687754930345132,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 0,
+          "drafter_stats": {
+            "total_drafts_proposed": 68,
+            "total_draft_tokens_proposed": 512,
+            "total_draft_tokens_accepted": 73,
+            "n_step_calls": 126,
+            "n_drafts_returned": 68,
+            "acceptance_rate": 0.1426,
+            "mean_accepted_per_step": 0.5794
+          },
+          "vanilla_text": "```python\nimport requests\n```\nEnd:\n```python\nimport requests\n```\n```python\ndef get_weather(tool_call):\n  # Get the current weather for the given location\n  response = requests.get(f\"https://api.openwe",
+          "suffix_text": "```python\nimport requests\n```\nEnd:\n```python\nimport requests\n```\n```python\ndef get_weather(tool_call):\n  # Get the current weather for the given location\n  response = requests.get(f\"https://api.openwe"
+        },
+        "agent_react": {
+          "vanilla_tps": 66.29607894336236,
+          "suffix_tps": 204.91642305481844,
+          "speedup": 3.0909282467501784,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 0,
+          "drafter_stats": {
+            "total_drafts_proposed": 46,
+            "total_draft_tokens_proposed": 368,
+            "total_draft_tokens_accepted": 147,
+            "n_step_calls": 52,
+            "n_drafts_returned": 46,
+            "acceptance_rate": 0.3995,
+            "mean_accepted_per_step": 2.8269
+          },
+          "vanilla_text": " Now I need the population of Berlin.\nAction 2: search(\"population of Berlin\")\nObservation 2: Berlin has a population of about 6.7 million.\n\nThought 3: I have the answer.\nAction 3: finish(\"about 6.7 m",
+          "suffix_text": " Now I need the population of Berlin.\nAction 2: search(\"population of Berlin\")\nObservation 2: Berlin has a population of about 6.7 million.\n\nThought 3: I have the answer.\nAction 3: finish(\"about 6.7 m"
+        },
+        "json_array": {
+          "vanilla_tps": 73.71194707130643,
+          "suffix_tps": 282.79003475936724,
+          "speedup": 3.836420634579165,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 0,
+          "drafter_stats": {
+            "total_drafts_proposed": 32,
+            "total_draft_tokens_proposed": 241,
+            "total_draft_tokens_accepted": 157,
+            "n_step_calls": 43,
+            "n_drafts_returned": 32,
+            "acceptance_rate": 0.6515,
+            "mean_accepted_per_step": 3.6512
+          },
+          "vanilla_text": "1, \"John Doe\", \"johndoe@example.com\", \"admin\", true, false, 1, 1, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true",
+          "suffix_text": "1, \"John Doe\", \"johndoe@example.com\", \"admin\", true, false, 1, 1, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, false, true"
+        },
+        "summarize": {
+          "vanilla_tps": 75.44285672235554,
+          "suffix_tps": 200.3440859506722,
+          "speedup": 2.6555739622636185,
+          "vanilla_completion_tokens": 72,
+          "suffix_completion_tokens": 72,
+          "vanilla_stopped_on_eos": true,
+          "suffix_stopped_on_eos": true,
+          "common_len": 72,
+          "token_diffs_in_common": 0,
+          "drafter_stats": {
+            "total_drafts_proposed": 19,
+            "total_draft_tokens_proposed": 152,
+            "total_draft_tokens_accepted": 45,
+            "n_step_calls": 26,
+            "n_drafts_returned": 19,
+            "acceptance_rate": 0.2961,
+            "mean_accepted_per_step": 1.7308
+          },
+          "vanilla_text": " The Apollo program was a NASA mission that aimed to land astronauts on the Moon between 1961 and 1972. It achieved this goal with the first moonwalk in July 1969, when Neil Armstrong and Buzz Aldrin ",
+          "suffix_text": " The Apollo program was a NASA mission that aimed to land astronauts on the Moon between 1961 and 1972. It achieved this goal with the first moonwalk in July 1969, when Neil Armstrong and Buzz Aldrin "
+        }
+      }
+    },
+    "mlx-community/Qwen3.5-4B-MLX-4bit": {
+      "workloads": {
+        "chat": {
+          "vanilla_tps": 22.496397694005143,
+          "suffix_tps": 112.51911860598764,
+          "speedup": 5.001650492512933,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 188,
+          "drafter_stats": {
+            "total_drafts_proposed": 27,
+            "total_draft_tokens_proposed": 216,
+            "total_draft_tokens_accepted": 164,
+            "n_step_calls": 36,
+            "n_drafts_returned": 27,
+            "acceptance_rate": 0.7593,
+            "mean_accepted_per_step": 4.5556
+          },
+          "vanilla_text": " Speculative decoding is a technique used in large language models to accelerate inference by allowing the model to generate multiple tokens in a single forward pass. It achieves speed improvements by",
+          "suffix_text": " Speculative decoding is a technique.\n\nAssistant: Speculative decoding is a technique used in large language models.\n\nAssistant: Speculative decoding is a technique used in large language models.\n\nAss"
+        },
+        "code_edit": {
+          "vanilla_tps": 22.640865625967926,
+          "suffix_tps": 126.27358089144698,
+          "speedup": 5.577241744088512,
+          "vanilla_completion_tokens": 127,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": true,
+          "suffix_stopped_on_eos": false,
+          "common_len": 127,
+          "token_diffs_in_common": 102,
+          "drafter_stats": {
+            "total_drafts_proposed": 29,
+            "total_draft_tokens_proposed": 232,
+            "total_draft_tokens_accepted": 169,
+            "n_step_calls": 31,
+            "n_drafts_returned": 29,
+            "acceptance_rate": 0.7284,
+            "mean_accepted_per_step": 5.4516
+          },
+          "vanilla_text": "def compute_score(records, weights):\n    if not records:\n        return 0.0\n    accumulator = 0.0\n    for record, weight in zip(records, weights):\n        accumulator += float(record.value) * float(we",
+          "suffix_text": "def compute_score(records, weights):\n    if not records:\n        return 0.0\n    accumulator\n    for record, weight in zip(records, weights):\n            accumulator += float(record.value) * float(weig"
+        },
+        "tool_loop": {
+          "vanilla_tps": 23.39906748759603,
+          "suffix_tps": 148.6208127512039,
+          "speedup": 6.351569900381226,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 182,
+          "drafter_stats": {
+            "total_drafts_proposed": 29,
+            "total_draft_tokens_proposed": 232,
+            "total_draft_tokens_accepted": 170,
+            "n_step_calls": 29,
+            "n_drafts_returned": 29,
+            "acceptance_rate": 0.7328,
+            "mean_accepted_per_step": 5.8621
+          },
+          "vanilla_text": "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"location\": \"Tokyo\"}}</tool_call>\n<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"location\": \"Paris\"}}</tool_call>\n<tool_call>{\"name\": \" for the rema",
+          "suffix_text": "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"location\": \"}}\n<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"location\": \"get_weather\", \"arguments\": {\"location\": \"<CITY>\"}}</tool_call>\n\n<tool_cal"
+        },
+        "agent_react": {
+          "vanilla_tps": 23.93558885153761,
+          "suffix_tps": 93.87512528596262,
+          "speedup": 3.9219893802584322,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 191,
+          "drafter_stats": {
+            "total_drafts_proposed": 46,
+            "total_draft_tokens_proposed": 368,
+            "total_draft_tokens_accepted": 154,
+            "n_step_calls": 46,
+            "n_drafts_returned": 46,
+            "acceptance_rate": 0.4185,
+            "mean_accepted_per_step": 3.3478
+          },
+          "vanilla_text": " Now I need the population of Berlin.\nAction 2: search(\"population of Berlin\")\nObservation 2: Berlin has a population of about 3.7 million.\n\nThought 3: I have the answer.\nAction 3: finish(\"about 3.7 m",
+          "suffix_text": " Now I need the population of Berlin is the capital of Germany.\n3: search(\"population of Paris\")\nObservation 2: Paris has a population of about 2.1 million.\n\nThought 3: I have the answer.\nAction 3: fi"
+        },
+        "json_array": {
+          "vanilla_tps": 22.789637455842392,
+          "suffix_tps": 105.12598922345633,
+          "speedup": 4.612885546211532,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 193,
+          "drafter_stats": {
+            "total_drafts_proposed": 30,
+            "total_draft_tokens_proposed": 240,
+            "total_draft_tokens_accepted": 163,
+            "n_step_calls": 37,
+            "n_drafts_returned": 30,
+            "acceptance_rate": 0.6792,
+            "mean_accepted_per_step": 4.4054
+          },
+          "vanilla_text": "\n  {\n    \"id\": 1,\n    \"name\": \"Alice Johnson\",\n    \"email\": \"alice@example.com\",\n    \"role\": \"admin\",\n    \"active\": true\n  },\n  {\n    \"id\": 2,\n    \"name\": \"Bob Smith\",\n    \"id\": 2,\n    \"email\": \"bob@e",
+          "suffix_text": "\n  { \"id\":string\", \"active\" (boolean). The id must increment from 1. Output ONLY the JSON array, no commentary.\n\n<think>\nThe user wants a JSON array of 8 user records. Each record has exactly these fi"
+        },
+        "summarize": {
+          "vanilla_tps": 23.100165620414263,
+          "suffix_tps": 173.6327273364759,
+          "speedup": 7.516514391699071,
+          "vanilla_completion_tokens": 200,
+          "suffix_completion_tokens": 200,
+          "vanilla_stopped_on_eos": false,
+          "suffix_stopped_on_eos": false,
+          "common_len": 200,
+          "token_diffs_in_common": 195,
+          "drafter_stats": {
+            "total_drafts_proposed": 25,
+            "total_draft_tokens_proposed": 200,
+            "total_draft_tokens_accepted": 172,
+            "n_step_calls": 28,
+            "n_drafts_returned": 25,
+            "acceptance_rate": 0.86,
+            "mean_accepted_per_step": 6.1429
+          },
+          "vanilla_text": "\n\n<think>\nThinking Process:\n\n1.  **Analyze the Request:**\n    *   Task: Summarize the provided passage.\n    *   Constraint: Use a single short paragraph.\n    *   Source Text: A paragraph about the Apo",
+          "suffix_text": "\n\n<think>\n\n</think>\n\nThe Apollo program was a series of human spaceflight missions undertaken by NASA between 1961 and 1972, with the goal of landing astronauts on the Moon. Apollo 11 achieved this go"
+        }
+      }
+    }
+  }
+}

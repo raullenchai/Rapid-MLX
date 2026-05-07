@@ -274,6 +274,15 @@ def serve_command(args):
         )
         sys.exit(1)
 
+    # Mutual exclusion: only one spec-decode method may wrap _step at a time.
+    if args.suffix_decoding and args.enable_mtp:
+        print(
+            "\n  Error: --suffix-decoding and --enable-mtp are mutually "
+            "exclusive (both monkey-patch the BatchGenerator step). "
+            "Pick one.\n"
+        )
+        sys.exit(1)
+
     # Build scheduler config
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
 
@@ -297,6 +306,11 @@ def serve_command(args):
         enable_mtp=args.enable_mtp,
         mtp_num_draft_tokens=args.mtp_num_draft_tokens,
         mtp_optimistic=args.mtp_optimistic,
+        # SuffixDecoding
+        enable_suffix_decoding=args.suffix_decoding,
+        suffix_max_draft=args.suffix_max_draft,
+        suffix_max_suffix_len=args.suffix_max_suffix_len,
+        suffix_min_confidence=args.suffix_min_confidence,
         # KV cache quantization
         kv_cache_quantization=args.kv_cache_quantization,
         kv_cache_quantization_bits=args.kv_cache_quantization_bits,
@@ -313,6 +327,12 @@ def serve_command(args):
         print(f"Chunked prefill: {args.chunked_prefill_tokens} tokens per step")
     if args.enable_mtp:
         print(f"MTP: enabled, draft_tokens={args.mtp_num_draft_tokens}")
+    if args.suffix_decoding:
+        print(
+            f"SuffixDecoding: enabled, max_draft={args.suffix_max_draft}, "
+            f"max_suffix={args.suffix_max_suffix_len}, "
+            f"min_conf={args.suffix_min_confidence}"
+        )
     print(f"Stream interval: {args.stream_interval} tokens")
     if args.use_paged_cache:
         print(
@@ -1214,6 +1234,38 @@ Examples:
         default=False,
         help="Skip MTP acceptance check for maximum speed. "
         "~5-10%% wrong tokens. Best for chat, not for code.",
+    )
+    # SuffixDecoding — drafter-free spec-decode using a suffix tree over
+    # generated tokens. Big wins on agent/tool/JSON workloads (3-5x);
+    # ~zero overhead on free-form chat. Pure-attention only.
+    serve_parser.add_argument(
+        "--suffix-decoding",
+        action="store_true",
+        default=False,
+        help="Enable SuffixDecoding spec-decode (drafter-free, statistical). "
+        "Speedup is workload-dependent: 3-5x on tool-call/JSON/code-edit, "
+        "~1x on free-form chat. Auto-disabled on hybrid models "
+        "(Qwen3.5/3.6, Granite4, Mamba/Jamba/RWKV).",
+    )
+    serve_parser.add_argument(
+        "--suffix-max-draft",
+        type=int,
+        default=8,
+        help="Max draft tokens per verify step (default: 8). "
+        "Verify forward cost grows linearly with this.",
+    )
+    serve_parser.add_argument(
+        "--suffix-max-suffix-len",
+        type=int,
+        default=4,
+        help="Max k-gram length indexed for suffix matching (default: 4).",
+    )
+    serve_parser.add_argument(
+        "--suffix-min-confidence",
+        type=float,
+        default=0.3,
+        help="Vote confidence floor for draft truncation (default: 0.3). "
+        "Lower → more optimistic drafts; higher → fewer but more reliable.",
     )
     # Prefill step size
     serve_parser.add_argument(

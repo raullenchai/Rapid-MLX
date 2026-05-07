@@ -114,6 +114,16 @@ class SchedulerConfig:
     mtp_num_draft_tokens: int = 1  # Number of draft tokens from MTP head
     mtp_optimistic: bool = False  # Skip acceptance check for max speed
 
+    # SuffixDecoding — drafter-free speculative decoding using a suffix
+    # tree over prompt + generated tokens. Predicts repeated patterns
+    # (tool boilerplate, JSON schemas, ReAct loops) at zero drafter
+    # cost. Pure-attention only; the architecture allowlist is enforced
+    # via ``ModelConfig.supports_spec_decode`` at install time.
+    enable_suffix_decoding: bool = False
+    suffix_max_draft: int = 8  # Max draft tokens per step (verify cost ∝ this)
+    suffix_max_suffix_len: int = 4  # Longest k-gram indexed for matching
+    suffix_min_confidence: float = 0.3  # Vote confidence floor before truncating
+
 
 @dataclass
 class SchedulerOutput:
