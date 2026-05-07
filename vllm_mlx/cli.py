@@ -982,6 +982,46 @@ def models_command(_args):
     print()
 
 
+def daemon_status_command(_args):
+    """List running detached serve daemons."""
+    from vllm_mlx.daemon import format_status, list_daemons
+
+    print(format_status(list_daemons()))
+
+
+def daemon_kill_command(args):
+    """Stop a detached serve daemon by PID or model name."""
+    from vllm_mlx.daemon import DaemonError, stop_daemon
+
+    try:
+        record = stop_daemon(args.target)
+    except DaemonError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    print(
+        "Stopped "
+        f"{record.get('original_alias') or record.get('model')} "
+        f"(pid {record.get('supervisor_pid')})."
+    )
+
+
+def daemon_tui_command(args):
+    """Attach the live TUI to a detached serve daemon."""
+    from vllm_mlx.daemon import DaemonError, resolve_daemon
+    from vllm_mlx.tui import run_monitor
+
+    try:
+        match = resolve_daemon(args.target)
+    except DaemonError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    record = match.record
+    pid = record.get("child_pid") or record.get("supervisor_pid") or "?"
+    raise SystemExit(run_monitor(str(record["base_url"]), interval=1.0, pid=pid))
+
+
 def convert_mtplx_command(args):
     """Package an MTP-equipped model into MTPLX sidecar layout."""
     from vllm_mlx.convert_mtplx import ConvertMTPLXError, convert_mtplx
@@ -1576,6 +1616,11 @@ Examples:
         action="store_true",
         help="Run a live full-screen monitor TUI alongside the server (q to quit).",
     )
+    serve_parser.add_argument(
+        "--daemon",
+        action="store_true",
+        help="Run the server under a detached supervisor and return immediately.",
+    )
     # Bench command
     bench_parser = subparsers.add_parser("bench", help="Run benchmark")
     bench_parser.add_argument("model", type=str, help="Model to benchmark")
@@ -1714,6 +1759,17 @@ Examples:
     # Models command
     subparsers.add_parser("models", help="List available model aliases")
 
+    # Daemon control commands
+    subparsers.add_parser("status", help="List detached lightning-mlx daemons")
+    kill_parser = subparsers.add_parser(
+        "kill", help="Stop a detached daemon by PID or model name"
+    )
+    kill_parser.add_argument("target", type=str, help="Supervisor PID, child PID, or model")
+    tui_parser = subparsers.add_parser(
+        "tui", help="Attach the live TUI to a detached daemon"
+    )
+    tui_parser.add_argument("target", type=str, help="Supervisor PID, child PID, or model")
+
     # MTPLX conversion command
     convert_parser = subparsers.add_parser(
         "convert-mtplx",
@@ -1837,7 +1893,19 @@ Examples:
     _apply_qwen36_35b_defaults(args, raw_args)
 
     if args.command == "serve":
-        serve_command(args)
+        if getattr(args, "daemon", False):
+            from vllm_mlx.daemon import start_daemon
+
+            record = start_daemon(args, raw_args)
+            print(
+                "Started daemon "
+                f"{record.get('original_alias') or record.get('model')} "
+                f"(pid {record['supervisor_pid']})."
+            )
+            print(f"URL: {record['base_url']}/v1")
+            print(f"Log: {record['log_path']}")
+        else:
+            serve_command(args)
     elif args.command == "bench":
         bench_command(args)
     elif args.command == "bench-detok":
@@ -1846,6 +1914,12 @@ Examples:
         bench_kv_cache_command(args)
     elif args.command == "models":
         models_command(args)
+    elif args.command == "status":
+        daemon_status_command(args)
+    elif args.command == "kill":
+        daemon_kill_command(args)
+    elif args.command == "tui":
+        daemon_tui_command(args)
     elif args.command == "convert-mtplx":
         convert_mtplx_command(args)
     elif args.command == "agents":

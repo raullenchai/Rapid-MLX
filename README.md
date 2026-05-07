@@ -132,6 +132,22 @@ Local model path works too:
 lightning-mlx serve /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed
 ```
 
+Run it without keeping a terminal open:
+
+```bash
+lightning-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit --daemon
+```
+
+Daemon mode starts a detached supervisor, writes logs under `~/.lightning-mlx/logs/`, and restarts the server if the model process exits unexpectedly.
+
+```bash
+lightning-mlx status
+lightning-mlx tui <PID-or-model-name>
+lightning-mlx kill <PID-or-model-name>
+```
+
+Use `status` to see running daemons, `tui` to attach the live monitor, and `kill` to stop by supervisor PID, server PID, alias, or model name.
+
 ## Convert Local MTPLX Models
 
 Use `convert-mtplx` to package a local model with an MTPLX MTP sidecar. This is useful when the serving model is quantized, but the MTP tensors come from the original full model:
