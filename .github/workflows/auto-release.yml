@@ -100,7 +100,13 @@ jobs:
       - name: Create tag and release
         if: steps.parse.outputs.should_release == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use a user PAT (RELEASE_PAT) so the resulting ``release: published``
+          # event fires downstream workflows. Releases created with the default
+          # ``GITHUB_TOKEN`` are suppressed by GitHub's anti-loop guard, leaving
+          # ``publish.yml`` un-triggered and the version stranded between tag
+          # and PyPI/Homebrew. Falls back to ``GITHUB_TOKEN`` if the secret is
+          # absent so forks don't break — the release just won't auto-publish.
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           # Pass untrusted strings (commit subjects from git log) via env, never
           # via ``${{ }}`` interpolation into a ``run:`` block — otherwise a
           # commit subject containing ``$(...)`` would execute on the runner
