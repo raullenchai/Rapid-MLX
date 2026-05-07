@@ -21,14 +21,14 @@ Same prompt, same agentic workflow, one server at a time:
 Create the snake game using react, vite and typescript
 ```
 
-| Model | Metric | mlx-lm | Rapid MLX | **Lightning MLX (MTPLX)** |
+| Model | Metric | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
 | --- | --- | ---: | ---: | ---: |
-| Qwen3.6-27B | All Turns | N/A | 13.49 tok/s | **26.47 tok/s** |
-| Qwen3.6-27B | Long | N/A | 28.02 tok/s | **38.60 tok/s** |
-| Qwen3.6-27B | Short | N/A | 7.42 tok/s | **20.40 tok/s** |
-| Qwen3.6-35B | All Turns | N/A | 27.73 tok/s | **64.85 tok/s** |
-| Qwen3.6-35B | Long | N/A | 26.52 tok/s | **75.13 tok/s** |
-| Qwen3.6-35B | Short | N/A | 29.18 tok/s | **52.50 tok/s** |
+| Qwen3.6-27B | All Turns | 13.94 tok/s | 13.49 tok/s | **26.47 tok/s** |
+| Qwen3.6-27B | Long | 20.35 tok/s | 28.02 tok/s | **38.60 tok/s** |
+| Qwen3.6-27B | Short | 9.67 tok/s | 7.42 tok/s | **20.40 tok/s** |
+| Qwen3.6-35B | All Turns | 49.60 tok/s | 27.73 tok/s | **64.85 tok/s** |
+| Qwen3.6-35B | Long | 76.77 tok/s | 26.52 tok/s | **75.13 tok/s** |
+| Qwen3.6-35B | Short | 35.11 tok/s | 29.18 tok/s | **52.50 tok/s** |
 
 | Model / workflow | Baseline acceptance | **MTPLX acceptance** | Delta |
 | --- | ---: | ---: | ---: |
@@ -40,7 +40,7 @@ Artifact result:
 - Qwen3.6-27B Lightning MLX generated app build: **passed**.
 - Qwen3.6-35B base and MTPLX generated app build: failed in both runs.
 
-`mlx-lm` is marked `N/A` for agentic turns because `mlx_lm.server` does not provide the same OpenAI tool-call parser and agent loop used by Rapid MLX and Lightning MLX. Agentic numbers measure the developer loop: tool calls, growing context, file writes, retries, and build validation. They are not directly comparable with raw decode throughput.
+oMLX agentic numbers were collected through its OpenAI-compatible server with Pi using the same snake-game prompt. Agentic numbers measure the developer loop: tool calls, growing context, file writes, retries, and build validation. They are not directly comparable with raw decode throughput.
 
 Full benchmark notes are in [`REPORT.md`](REPORT.md).
 
@@ -53,12 +53,12 @@ bench <model> --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
   --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1
 ```
 
-| Model | mlx-lm | Rapid MLX | **Lightning MLX (MTPLX)** |
+| Model | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
 | --- | ---: | ---: | ---: |
-| Qwen3.6-27B | 29.80 tok/s | 32.37 tok/s | **33.10 tok/s** |
-| Qwen3.6-35B | 110.37 tok/s | 106.00 tok/s | **119.68 tok/s** |
+| Qwen3.6-27B | 31.80 tok/s | 32.37 tok/s | **33.10 tok/s** |
+| Qwen3.6-35B | 114.59 tok/s | 106.00 tok/s | **119.68 tok/s** |
 
-Raw decode numbers measure generation throughput only. They do not include tool calls, file writes, growing context, retries, or build validation.
+Raw decode numbers measure generation throughput only. oMLX was measured with `omlx serve --no-cache` and three OpenAI-compatible chat completion runs after warmup, using `completion_tokens / wall time`. They do not include tool calls, file writes, growing context, retries, or build validation.
 
 ## More Model Benchmarks
 
@@ -66,7 +66,7 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 
 | Model | lightning-mlx | Best Alternative | Speedup |
 | --- | ---: | ---: | ---: |
-| **Qwen3.6 27B MTPLX** | **33.10 tok/s raw decode** / **26.47 tok/s agentic all-turn** | 29.80 tok/s mlx-lm / 32.37 tok/s Rapid MLX raw | **1.96x agentic all-turn** |
+| **Qwen3.6 27B MTPLX** | **33.10 tok/s raw decode** / **26.47 tok/s agentic all-turn** | 31.80 tok/s oMLX / 32.37 tok/s Rapid MLX raw | **1.96x agentic all-turn** |
 | **Phi-4 Mini 14B** | **180 tok/s** | 77 tok/s mlx-lm / 56 tok/s Ollama | **2.3x** / **3.2x** |
 | **Qwen3.5 4B** | **160 tok/s** | 155 tok/s mlx-lm serve | **1.0x** |
 | **Nemotron-Nano 30B** | **141 tok/s** · 100% tools | - | - |
@@ -74,8 +74,8 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 | **DeepSeek V4 Flash 158B-A13B** (8-bit) | **31 tok/s** | Only MLX engine, day-0 | - |
 | **GPT-OSS 20B** | **127 tok/s** · 100% tools | 79 tok/s mlx-lm serve | **1.6x** |
 | **Qwen3.5 9B** | **108 tok/s** | 41 tok/s Ollama | **2.6x** |
-| **Qwen3.6 35B-A3B MTPLX** | **119.68 tok/s raw decode** / **64.85 tok/s agentic all-turn** | 110.37 tok/s mlx-lm / 106.00 tok/s Rapid MLX raw | **2.34x agentic all-turn** |
-| **Qwen3.6 35B-A3B** | **109.89 tok/s raw decode** · 100% tools | 110.37 tok/s mlx-lm / 106.00 tok/s Rapid MLX raw | ~**1.0x** |
+| **Qwen3.6 35B-A3B MTPLX** | **119.68 tok/s raw decode** / **64.85 tok/s agentic all-turn** | 114.59 tok/s oMLX / 106.00 tok/s Rapid MLX raw | **2.34x agentic all-turn** |
+| **Qwen3.6 35B-A3B** | **109.89 tok/s raw decode** · 100% tools | 114.59 tok/s oMLX / 106.00 tok/s Rapid MLX raw | ~**1.0x** |
 | **Kimi-Linear 48B** | **94 tok/s** · 100% tools | Only engine | - |
 | **Gemma 4 26B-A4B** | **85 tok/s** | 68 tok/s Ollama | **1.3x** |
 | **Gemma 4 E4B** | **83 tok/s** | - | - |

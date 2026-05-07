@@ -46,6 +46,42 @@ PI_OFFLINE=1 pi --provider local --model local --no-context-files --no-session \
   -p "Create the snake game using react, vite and typescript"
 ```
 
+## oMLX Comparison
+
+The same snake-game prompt was also run against [oMLX](https://github.com/jundot/omlx) through its OpenAI-compatible server:
+
+```bash
+uv run omlx serve --model-dir /tmp/omlx-models-35b --host 127.0.0.1 --port 8010 --no-cache
+```
+
+Pi command:
+
+```bash
+PI_OFFLINE=1 pi --provider local --model local --no-context-files \
+  --session-dir /tmp/omlx-pi-sessions-35b-snake \
+  -p "Create the snake game using react, vite and typescript"
+```
+
+Agentic results:
+
+| Model | All-turn avg | Long-turn avg | Short-turn avg |
+| --- | ---: | ---: | ---: |
+| Qwen3.6-27B oMLX | 13.94 tok/s | 20.35 tok/s | 9.67 tok/s |
+| Qwen3.6-35B oMLX | 49.60 tok/s | 76.77 tok/s | 35.11 tok/s |
+
+Raw decode results:
+
+| Model | oMLX raw decode |
+| --- | ---: |
+| Qwen3.6-27B | 31.80 tok/s |
+| Qwen3.6-35B | 114.59 tok/s |
+
+Notes:
+
+- oMLX raw decode used `omlx serve --no-cache`, three OpenAI-compatible chat completion runs after warmup, `max_tokens=512`, and `completion_tokens / wall time`.
+- oMLX agentic metrics were computed from Pi session timestamps and assistant usage for the same snake-game prompt.
+- The 27B oMLX load path reported MTP-sidecar tensors as extra parameters during VLM probing, then fell back to LLM loading with the mlx-lm MTP patch applied.
+
 ## Base Run
 
 Command:
