@@ -464,7 +464,31 @@ def bench_command(args):
 
     async def run_benchmark():
         print(f"Loading model: {args.model}")
-        model, tokenizer = load(args.model)
+        try:
+            model, tokenizer = load(args.model)
+        except Exception as e:
+            # Mirror serve_command: clean message instead of a 30-line
+            # traceback when the user typed a missing repo / bad alias.
+            from huggingface_hub.utils import RepositoryNotFoundError
+
+            is_404 = isinstance(e, RepositoryNotFoundError) or (
+                "404" in str(e) or "not found" in str(e).lower()
+            )
+            if is_404:
+                from vllm_mlx.model_aliases import suggest_similar
+
+                shown = getattr(args, "_original_alias", args.model)
+                print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
+                suggestions = suggest_similar(shown)
+                if suggestions:
+                    print(f"  Did you mean: {', '.join(suggestions)}?")
+                print("  Run `rapid-mlx models` to see available aliases,")
+                print(
+                    "  or use a full HuggingFace path like: mlx-community/Qwen3.5-9B-4bit"
+                )
+            else:
+                print(f"\n  Error loading model: {e}")
+            sys.exit(1)
 
         scheduler_config = SchedulerConfig(
             max_num_seqs=args.max_num_seqs,
