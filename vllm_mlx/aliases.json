@@ -116,7 +116,12 @@
     "tool_call_parser": "llama",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.999,
+      "json_array": 0.998
+    }
   },
   "hermes3-8b": {
     "hf_path": "mlx-community/Hermes-3-Llama-3.1-8B-4bit",
@@ -158,7 +163,13 @@
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.993,
+      "json_array": 0.993,
+      "tool_loop": 0.994
+    }
   },
   "mistral-24b": {
     "hf_path": "mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit",
@@ -256,7 +267,12 @@
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.998,
+      "json_array": 0.998
+    }
   },
   "hermes4-70b": {
     "hf_path": "lmstudio-community/Hermes-4-70B-MLX-4bit",
@@ -361,7 +377,12 @@
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.931,
+      "tool_loop": 0.999
+    }
   },
   "granite4-tiny": {
     "hf_path": "mlx-community/granite-4.0-h-tiny-4bit",
