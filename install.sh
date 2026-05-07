@@ -157,20 +157,34 @@ else
     "$INSTALL_DIR/bin/pip" install --upgrade pip -q 2>/dev/null
 fi
 
+# Use uv for resolution + parallel downloads when available — typically 3-10x
+# faster than pip on a fresh install. Falls back to the venv's pip.
 PIP="$INSTALL_DIR/bin/pip"
+INSTALLER=("$PIP" install --prefer-binary)
+UPGRADE_INSTALLER=("$PIP" install --upgrade --prefer-binary)
+FORCE_INSTALLER=("$PIP" install --force-reinstall --prefer-binary)
+
+if command -v uv >/dev/null 2>&1; then
+    UV_PY="$INSTALL_DIR/bin/python"
+    INSTALLER=(uv pip install --python "$UV_PY")
+    UPGRADE_INSTALLER=(uv pip install --python "$UV_PY" --upgrade)
+    FORCE_INSTALLER=(uv pip install --python "$UV_PY" --reinstall)
+    dim "Using uv for fast install"
+fi
+
 case "$TARGET" in
     stable)
-        "$PIP" install --upgrade "$PYPI_PACKAGE" -q 2>/dev/null \
-            || { dim "PyPI unavailable, installing from GitHub..."; "$PIP" install "$PYPI_PACKAGE @ git+${GITHUB_REPO}" ; }
+        "${UPGRADE_INSTALLER[@]}" "$PYPI_PACKAGE" -q 2>/dev/null \
+            || { dim "PyPI unavailable, installing from GitHub..."; "${INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}" ; }
         ;;
     latest)
         info "Installing latest from GitHub..."
-        "$PIP" install --force-reinstall --no-cache-dir "$PYPI_PACKAGE @ git+${GITHUB_REPO}"
+        "${FORCE_INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}"
         ;;
     *)
         info "Installing version ${TARGET}..."
-        "$PIP" install "${PYPI_PACKAGE}==${TARGET}" -q 2>/dev/null \
-            || { dim "Version ${TARGET} not on PyPI, trying GitHub tag..."; "$PIP" install "$PYPI_PACKAGE @ git+${GITHUB_REPO}@v${TARGET}" ; }
+        "${INSTALLER[@]}" "${PYPI_PACKAGE}==${TARGET}" -q 2>/dev/null \
+            || { dim "Version ${TARGET} not on PyPI, trying GitHub tag..."; "${INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}@v${TARGET}" ; }
         ;;
 esac
 
