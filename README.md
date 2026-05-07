@@ -53,10 +53,10 @@ bench <model> --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
   --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1
 ```
 
-| Model | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
-| --- | ---: | ---: | ---: |
-| Qwen3.6-27B | 31.80 tok/s | 32.37 tok/s | **33.10 tok/s** |
-| Qwen3.6-35B | 114.59 tok/s | 106.00 tok/s | **119.68 tok/s** |
+| Model | mlx-lm | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.6-27B | 29.80 tok/s | 31.80 tok/s | 32.37 tok/s | **33.10 tok/s** |
+| Qwen3.6-35B | 110.37 tok/s | 114.59 tok/s | 106.00 tok/s | **119.68 tok/s** |
 
 Raw decode numbers measure generation throughput only. oMLX was measured with `omlx serve --no-cache` and three OpenAI-compatible chat completion runs after warmup, using `completion_tokens / wall time`. They do not include tool calls, file writes, growing context, retries, or build validation.
 
