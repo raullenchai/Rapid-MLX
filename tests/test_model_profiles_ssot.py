@@ -24,6 +24,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from vllm_mlx.model_aliases import (
     AliasProfile,
     list_aliases,
@@ -176,6 +178,37 @@ def test_detect_model_config_returns_none_when_neither_matches() -> None:
     assert cfg is None
 
 
+def test_detect_model_config_alias_wins_over_regex_when_they_disagree() -> None:
+    """The whole architectural point: when an alias profile and a regex
+    pattern both could match, the alias profile must win. Today the
+    derivations agree by construction (alias profiles were generated
+    from the regex matches), but the day someone bumps a single
+    alias's tier in aliases.json, the regex is going to keep returning
+    the family-wide value — and we need the alias to override it.
+
+    Simulate this by monkeypatching the alias profile's
+    tool_call_parser to something the qwen3.5 regex would never
+    return, and assert the alias's value reaches the caller.
+    """
+    import vllm_mlx.model_aliases as ma
+    from vllm_mlx.model_aliases import AliasProfile
+
+    real = ma._aliases["qwen3.5-4b"]
+    forged = AliasProfile(
+        hf_path=real.hf_path,
+        tool_call_parser="ALIAS_WINS",  # the regex would say "hermes"
+        reasoning_parser=real.reasoning_parser,
+        is_hybrid=real.is_hybrid,
+        supports_spec_decode=real.supports_spec_decode,
+    )
+    with patch.dict(ma._aliases, {"qwen3.5-4b": forged}):
+        cfg = detect_model_config("qwen3.5-4b")
+    assert cfg is not None
+    assert cfg.tool_call_parser == "ALIAS_WINS", (
+        "regex shadowed the alias profile — alias-first lookup is broken"
+    )
+
+
 # ---- Backward compat with legacy bare-string form ------------------------
 
 
@@ -191,6 +224,7 @@ def test_legacy_string_value_still_loads(tmp_path) -> None:
     # Reset module cache and point loader at the legacy file
     with (
         patch.object(ma, "_aliases", None),
+        patch.object(ma, "_hf_to_alias", None),
         patch("vllm_mlx.model_aliases.os.path.join", return_value=str(legacy)),
     ):
         profiles = ma.list_profiles()
@@ -203,6 +237,39 @@ def test_legacy_string_value_still_loads(tmp_path) -> None:
     assert profiles["foo"].supports_spec_decode is True
 
 
+def test_empty_hf_path_string_form_raises(tmp_path) -> None:
+    """Empty hf_path slips through downstream as a ``""`` and surfaces
+    as a confusing 404 — catch it at load time."""
+    bad = tmp_path / "aliases.json"
+    bad.write_text(json.dumps({"foo": ""}))
+
+    import vllm_mlx.model_aliases as ma
+
+    with (
+        patch.object(ma, "_aliases", None),
+        patch.object(ma, "_hf_to_alias", None),
+        patch("vllm_mlx.model_aliases.os.path.join", return_value=str(bad)),
+        pytest.raises(ValueError, match="empty"),
+    ):
+        ma.list_profiles()
+
+
+def test_empty_hf_path_dict_form_raises(tmp_path) -> None:
+    """Same empty-path check for the rich-schema form."""
+    bad = tmp_path / "aliases.json"
+    bad.write_text(json.dumps({"foo": {"hf_path": ""}}))
+
+    import vllm_mlx.model_aliases as ma
+
+    with (
+        patch.object(ma, "_aliases", None),
+        patch.object(ma, "_hf_to_alias", None),
+        patch("vllm_mlx.model_aliases.os.path.join", return_value=str(bad)),
+        pytest.raises(ValueError, match="non-empty string"),
+    ):
+        ma.list_profiles()
+
+
 def test_invalid_value_raises_with_alias_name(tmp_path) -> None:
     """A typo in the JSON should fail loud and point at the bad alias,
     not crash deep in some downstream caller."""
@@ -213,14 +280,11 @@ def test_invalid_value_raises_with_alias_name(tmp_path) -> None:
 
     with (
         patch.object(ma, "_aliases", None),
+        patch.object(ma, "_hf_to_alias", None),
         patch("vllm_mlx.model_aliases.os.path.join", return_value=str(bad)),
+        pytest.raises(ValueError, match="foo"),
     ):
-        try:
-            ma.list_profiles()
-        except ValueError as e:
-            assert "foo" in str(e)
-            return
-    raise AssertionError("expected ValueError for bad alias value")
+        ma.list_profiles()
 
 
 # ---- Cross-family granularity (the whole point of the refactor) ----------
@@ -253,3 +317,58 @@ def test_per_alias_schema_allows_independent_overrides() -> None:
     # other. (Mutation isn't supported because the dataclass is frozen,
     # but a re-load with edited JSON would work.)
     assert p1 is not profiles["qwen3.5-9b"]
+
+
+# ---- Reverse-lookup behaviour with shared hf_paths -----------------------
+
+
+def test_reverse_lookup_for_shared_hf_path_is_deterministic() -> None:
+    """Two aliases (``nemotron-30b`` and ``nemotron-nano``) point at the
+    same MLX repo. Reverse lookup by HF path should return the
+    JSON-insertion-order-first alias's profile, deterministically.
+
+    The contract is "any profile valid for this path", but we lock in
+    the order so a future re-shuffle of aliases.json is forced to
+    explicitly update this test (which is the right place to think
+    about who's the canonical alias).
+    """
+    profiles = list_profiles()
+    nemotron_30b = profiles["nemotron-30b"]
+    nemotron_nano = profiles["nemotron-nano"]
+    assert nemotron_30b.hf_path == nemotron_nano.hf_path
+
+    # nemotron-30b appears first in aliases.json, so reverse lookup
+    # by the shared HF path returns nemotron-30b's profile object.
+    via_path = resolve_profile(nemotron_30b.hf_path)
+    assert via_path is not None
+    assert via_path is nemotron_30b
+
+
+def test_reverse_lookup_handles_deepseek_v4_flash_duplicate() -> None:
+    """``deepseek-v4-flash`` and ``deepseek-v4-flash-8bit`` share
+    ``mlx-community/DeepSeek-V4-Flash-8bit`` — same regression guard
+    pattern as the nemotron pair, different family."""
+    profiles = list_profiles()
+    flash = profiles["deepseek-v4-flash"]
+    flash_8bit = profiles["deepseek-v4-flash-8bit"]
+    assert flash.hf_path == flash_8bit.hf_path
+    via_path = resolve_profile(flash.hf_path)
+    assert via_path is not None
+    # Both profiles agree on capability flags (same model), so either
+    # would be correct semantically. Pin the JSON order winner.
+    assert via_path is flash
+
+
+def test_reverse_lookup_index_built_once_after_first_load() -> None:
+    """Cheap behavioural check that the reverse index is built once and
+    reused — exercises the cache path. Not a perf benchmark; just
+    asserts ``_hf_to_alias`` is populated."""
+    import vllm_mlx.model_aliases as ma
+
+    # Trigger load
+    ma.list_profiles()
+    assert ma._hf_to_alias is not None
+    assert len(ma._hf_to_alias) <= len(ma._aliases)  # dedup possible
+    # Every hf_path in aliases must be reachable via reverse lookup
+    for profile in ma._aliases.values():
+        assert profile.hf_path in ma._hf_to_alias

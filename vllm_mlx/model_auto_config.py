@@ -27,6 +27,8 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any
 
+from .model_aliases import resolve_profile
+
 logger = logging.getLogger(__name__)
 
 
@@ -318,11 +320,6 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
         ModelConfig if an alias profile or regex pattern matches, None
         otherwise.
     """
-    # Local import to break a circular dependency: model_aliases needs
-    # the dataclass shape from this module via duck-typing only, so the
-    # late import is the cheaper side of the cycle to defer.
-    from .model_aliases import resolve_profile
-
     profile = resolve_profile(model_path)
     if profile is not None:
         logger.info(
