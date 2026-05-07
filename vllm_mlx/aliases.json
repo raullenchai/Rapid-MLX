@@ -123,7 +123,14 @@
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "neutral",
+    "suffix_bench_speedup": {
+      "chat": 0.983,
+      "json_array": 0.982,
+      "tool_loop": 1.012,
+      "code_edit": 1.018
+    }
   },
   "gemma-4-26b": {
     "hf_path": "mlx-community/gemma-4-26b-a4b-it-4bit",
@@ -326,7 +333,14 @@
     "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "neutral",
+    "suffix_bench_speedup": {
+      "chat": 0.992,
+      "json_array": 0.995,
+      "tool_loop": 1.105,
+      "code_edit": 1.023
+    }
   },
   "bonsai-4b": {
     "hf_path": "prism-ml/Bonsai-4B-unpacked",

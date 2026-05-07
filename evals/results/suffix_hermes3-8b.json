@@ -1,0 +1,24 @@
+{
+  "model": "hermes3-8b",
+  "max_tokens": 256,
+  "runs": 3,
+  "vanilla_tps": {
+    "chat": 96.4,
+    "json_array": 98.2,
+    "tool_loop": 96.0,
+    "code_edit": 93.7
+  },
+  "suffix_tps": {
+    "chat": 94.7,
+    "json_array": 96.5,
+    "tool_loop": 97.2,
+    "code_edit": 95.3
+  },
+  "speedup": {
+    "chat": 0.983,
+    "json_array": 0.982,
+    "tool_loop": 1.012,
+    "code_edit": 1.018
+  },
+  "tier": "neutral"
+}

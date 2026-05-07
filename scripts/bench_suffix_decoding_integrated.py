@@ -254,6 +254,12 @@ def start_server(model: str, port: int, suffix_decoding: bool) -> ServerHandle:
         str(port),
         "--log-level",
         "WARNING",
+        # Determinism: disable prefix cache so the second/third run of the
+        # same workload doesn't replay cached generation. Without this,
+        # disk-persisted entries from prior sessions can pin TPS to bogus
+        # 1000+ tok/s outliers (decode_time goes to ~0). The bench is
+        # measuring the suffix-decoding optimization, not cache reuse.
+        "--disable-prefix-cache",
     ]
     if suffix_decoding:
         cmd.append("--suffix-decoding")
@@ -351,6 +357,12 @@ def run_workload(
 
     total = time.perf_counter() - t0
     if completion_tokens is None or completion_tokens <= 0:
+        return 0.0
+    # Discard runs where the model bailed in fewer than 32 tokens — decode
+    # time is dominated by per-request overhead, not generation, and TPS
+    # becomes meaningless. Returning 0 makes the median() filter these out
+    # naturally if at least one of the 3 runs is healthy.
+    if completion_tokens < 32:
         return 0.0
     decode_time = max(total - (ttft or 0.0), 1e-6)
     return completion_tokens / decode_time

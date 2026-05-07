@@ -1,0 +1,24 @@
+{
+  "model": "bonsai-1.7b",
+  "max_tokens": 256,
+  "runs": 3,
+  "vanilla_tps": {
+    "chat": 92.3,
+    "json_array": 93.8,
+    "tool_loop": 87.0,
+    "code_edit": 88.7
+  },
+  "suffix_tps": {
+    "chat": 91.6,
+    "json_array": 93.3,
+    "tool_loop": 96.1,
+    "code_edit": 90.8
+  },
+  "speedup": {
+    "chat": 0.992,
+    "json_array": 0.995,
+    "tool_loop": 1.105,
+    "code_edit": 1.023
+  },
+  "tier": "neutral"
+}
