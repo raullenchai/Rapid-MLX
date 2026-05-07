@@ -13,7 +13,24 @@
 - **Apple Silicon first**: built around MLX and local Mac inference.
 - **MTPLX optimized preset** behind one simple command.
 
-## Benchmark Highlight
+## Raw Decode Benchmarks
+
+Same machine, same local model paths, same microbenchmark shape:
+
+```bash
+bench <model> --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
+  --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1
+```
+
+| Model | Rapid-MLX raw | **lightning-mlx** | Notes |
+| --- | ---: | ---: | --- |
+| Qwen3.6 27B MTPLX | 32.37 tok/s | **33.10 tok/s** | Raw decode only, no agent loop |
+| Qwen3.6 35B-A3B 4bit | 106.00 tok/s | **109.89 tok/s** | Base model, no MTPLX sidecar |
+| Qwen3.6 35B-A3B MTPLX | 115.18 tok/s | **119.68 tok/s** | MTPLX packaged local model |
+
+Raw decode numbers measure generation throughput only. They do not include tool calls, file writes, growing context, retries, or build validation.
+
+## Agentic Benchmarks
 
 Same prompt, same agentic workflow, one server at a time:
 
@@ -21,37 +38,19 @@ Same prompt, same agentic workflow, one server at a time:
 Create the snake game using react, vite and typescript
 ```
 
-| Metric | MLX baseline | **lightning-mlx** | **Gain** |
-| --- | ---: | ---: | ---: |
-| Completion | Timeout after 10 min | **Finished** | **Completed** |
-| Generated app build | Not completed | **Passed** | **Valid artifact** |
-| All-turn avg | 13.49 tok/s | **26.47 tok/s** | **+96.2% / 1.96x** |
-| Long-turn avg | 28.02 tok/s | **38.60 tok/s** | **+37.8% / 1.38x** |
-| Short-turn avg | 7.42 tok/s | **20.40 tok/s** | **+174.9% / 2.75x** |
-| MTP acceptance avg | 92.02% | **94.30%** | **+2.28 pp** |
+| Model / workflow | Baseline | **lightning-mlx MTPLX** | **Gain** | Artifact |
+| --- | ---: | ---: | ---: | --- |
+| Qwen3.6 27B snake | 13.49 all-turn / 28.02 long / 7.42 short | **26.47 all-turn / 38.60 long / 20.40 short** | **1.96x all-turn / 2.75x short** | **Passed** |
+| Qwen3.6 35B-A3B snake | 27.73 all-turn / 26.52 long / 29.18 short | **64.85 all-turn / 75.13 long / 52.50 short** | **2.34x all-turn / 2.83x long** | Failed in both runs |
 
-**Biggest win:** short tool-heavy turns went from **7.42 tok/s** to **20.40 tok/s**. That is the loop developers feel most when a local coding agent reads files, calls tools, edits code, and continues.
+| Model / workflow | Baseline acceptance | **MTPLX acceptance** | Delta |
+| --- | ---: | ---: | ---: |
+| Qwen3.6 27B snake | 92.02% | **94.30%** | **+2.28 pp** |
+| Qwen3.6 35B-A3B snake | N/A | **96.62%** | **MTP enabled** |
+
+Agentic numbers measure the developer loop: tool calls, growing context, file writes, retries, and build validation. They are not directly comparable with raw decode throughput.
 
 Full benchmark notes are in [`REPORT.md`](REPORT.md).
-
-## Qwen3.6 35B-A3B MTPLX Benchmark
-
-Same prompt, same agentic workflow, one server at a time:
-
-```text
-Create the snake game using react, vite and typescript
-```
-
-| Metric | 35B base | **35B MTPLX** | **Gain** |
-| --- | ---: | ---: | ---: |
-| Completion | Timeout after 10 min | **Finished** | **Completed** |
-| Generated app build | Failed | **Failed** | **No valid artifact** |
-| All-turn avg | 27.73 tok/s | **64.85 tok/s** | **+133.9% / 2.34x** |
-| Long-turn avg | 26.52 tok/s | **75.13 tok/s** | **+183.3% / 2.83x** |
-| Short-turn avg | 29.18 tok/s | **52.50 tok/s** | **+79.9% / 1.80x** |
-| MTP acceptance avg | N/A | **96.62%** | **MTP enabled** |
-
-**Biggest win:** long tool-heavy turns went from **26.52 tok/s** to **75.13 tok/s**. The MTPLX run finished inside the 10 minute limit; the base run did not.
 
 ## More Model Benchmarks
 
@@ -59,7 +58,7 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 
 | Model | lightning-mlx | Best Alternative | Speedup |
 | --- | ---: | ---: | ---: |
-| **Qwen3.6 27B MTPLX** | **26.47 tok/s agentic all-turn** / **38.60 tok/s long-turn** / **20.40 tok/s short-turn** | 13.49 / 28.02 / 7.42 tok/s MLX baseline | **1.96x all-turn** / **2.75x short-turn** |
+| **Qwen3.6 27B MTPLX** | **33.10 tok/s raw decode** / **26.47 tok/s agentic all-turn** | 32.37 tok/s Rapid-MLX raw / 13.49 tok/s agentic baseline | **1.96x agentic all-turn** |
 | **Phi-4 Mini 14B** | **180 tok/s** | 77 tok/s mlx-lm / 56 tok/s Ollama | **2.3x** / **3.2x** |
 | **Qwen3.5 4B** | **160 tok/s** | 155 tok/s mlx-lm serve | **1.0x** |
 | **Nemotron-Nano 30B** | **141 tok/s** · 100% tools | - | - |
@@ -67,8 +66,8 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 | **DeepSeek V4 Flash 158B-A13B** (8-bit) | **31 tok/s** | Only MLX engine, day-0 | - |
 | **GPT-OSS 20B** | **127 tok/s** · 100% tools | 79 tok/s mlx-lm serve | **1.6x** |
 | **Qwen3.5 9B** | **108 tok/s** | 41 tok/s Ollama | **2.6x** |
-| **Qwen3.6 35B-A3B MTPLX** | **64.85 tok/s agentic all-turn** / **75.13 tok/s long-turn** / **52.50 tok/s short-turn** | 27.73 / 26.52 / 29.18 tok/s 35B base | **2.34x all-turn** / **2.83x long-turn** |
-| **Qwen3.6 35B-A3B** | **95 tok/s** · 100% tools | - | - |
+| **Qwen3.6 35B-A3B MTPLX** | **119.68 tok/s raw decode** / **64.85 tok/s agentic all-turn** | 115.18 tok/s Rapid-MLX raw / 27.73 tok/s agentic base | **2.34x agentic all-turn** |
+| **Qwen3.6 35B-A3B** | **109.89 tok/s raw decode** · 100% tools | 106.00 tok/s Rapid-MLX raw | ~**1.0x** |
 | **Kimi-Linear 48B** | **94 tok/s** · 100% tools | Only engine | - |
 | **Gemma 4 26B-A4B** | **85 tok/s** | 68 tok/s Ollama | **1.3x** |
 | **Gemma 4 E4B** | **83 tok/s** | - | - |
@@ -77,7 +76,7 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 | **Qwen3.5 122B** | **44 tok/s** · 100% tools | 43 tok/s mlx-lm serve | ~**1.0x** |
 | **Gemma 4 31B** | **31 tok/s** | - | - |
 
-**Note:** the Qwen3.6 MTPLX rows are agentic benchmarks, not single raw decode passes. They measure the developer loop: tool calls, growing context, artifact generation, and build validation.
+**Note:** raw decode and agentic throughput are different measurements. Raw decode is a microbenchmark. Agentic throughput includes tool calls, growing context, artifact generation, and build validation.
 
 ## Install
 
