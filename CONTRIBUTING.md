@@ -100,6 +100,8 @@ It's still new. File an issue with `[pr_validate]` in the title and the artifact
 
 - **Add parser auto-detection** — Add a regex pattern to `vllm_mlx/model_auto_config.py` so a new model family gets the right tool/reasoning parser automatically.
 
+- **Classify a model into a SuffixDecoding tier** — After adding a `ModelConfig` entry, run `python3.12 scripts/bench_suffix_decoding_integrated.py --model <id>` (10-20 min). Paste the resulting `suffix_decoding_tier=` and `suffix_bench_speedup=` into the entry. Reference the bench output in your PR. See [docs/suffix_decoding_eligibility.md](docs/suffix_decoding_eligibility.md).
+
 - **Verify client integrations** — Test Rapid-MLX with your favorite AI tool (Cursor, Continue, Aider, LangChain, etc.) and report results.
 
 ### 🔴 Advanced

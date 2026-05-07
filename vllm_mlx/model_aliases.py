@@ -43,6 +43,13 @@ class AliasProfile:
     is_hybrid: bool = False
     supports_spec_decode: bool = True
     default_max_tokens: int | None = None
+    # SuffixDecoding eligibility — populated from cross-model bench (issue #269).
+    # ``None`` for ``suffix_bench_speedup`` means "not benched yet"; the tier
+    # then defaults to ``"unknown"`` and the startup hint stays silent.
+    # When populated, ``suffix_bench_speedup`` is a tuple of ``(workload, speedup)``
+    # pairs (tuple, not dict, so frozen dataclass instances stay safely shareable).
+    suffix_decoding_tier: str = "unknown"
+    suffix_bench_speedup: tuple[tuple[str, float], ...] | None = None
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
@@ -72,6 +79,25 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"alias {alias!r}: 'hf_path' must be a non-empty string, "
             f"got {type(hf_path).__name__}={hf_path!r}"
         )
+    raw_speedup = value.get("suffix_bench_speedup")
+    speedup: tuple[tuple[str, float], ...] | None
+    if raw_speedup is None:
+        speedup = None
+    elif isinstance(raw_speedup, dict):
+        try:
+            speedup = tuple(sorted((k, float(v)) for k, v in raw_speedup.items()))
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"alias {alias!r}: suffix_bench_speedup values must be numbers"
+            ) from e
+    else:
+        raise ValueError(
+            f"alias {alias!r}: suffix_bench_speedup must be an object, "
+            f"got {type(raw_speedup).__name__}"
+        )
+    tier = value.get("suffix_decoding_tier", "unknown")
+    if not isinstance(tier, str):
+        raise ValueError(f"alias {alias!r}: suffix_decoding_tier must be a string")
     return AliasProfile(
         hf_path=hf_path,
         tool_call_parser=value.get("tool_call_parser"),
@@ -79,6 +105,8 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         is_hybrid=bool(value.get("is_hybrid", False)),
         supports_spec_decode=bool(value.get("supports_spec_decode", True)),
         default_max_tokens=value.get("default_max_tokens"),
+        suffix_decoding_tier=tier,
+        suffix_bench_speedup=speedup,
     )
 
 

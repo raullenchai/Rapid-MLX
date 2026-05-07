@@ -24,7 +24,7 @@ specific first.
 
 import logging
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .model_aliases import resolve_profile
@@ -62,6 +62,18 @@ class ModelConfig:
     # Pure-attention models (llama, qwen3, mistral, gemma3, gpt-oss,
     # phi, ...) are safe.
     supports_spec_decode: bool = True
+
+    # SuffixDecoding eligibility tier (#269). One of:
+    #   "unknown"    — not benched (silent default)
+    #   "agent"      — tool_loop ≥ 1.8x, no regression — recommend the flag
+    #   "structured" — peak workload ≥ 1.5x, no regression — may help
+    #   "neutral"    — no workload wins, no regression — silent
+    #   "avoid"      — at least one workload regresses — warn
+    suffix_decoding_tier: str = "unknown"
+    # Per-workload speedup measured by ``scripts/bench_suffix_decoding_integrated.py``.
+    # ``field(default_factory=dict)`` so each ``ModelConfig`` instance gets
+    # its own fresh dict (a literal ``{}`` would silently share state).
+    suffix_bench_speedup: dict[str, float] = field(default_factory=dict)
 
 
 # Model family patterns → optimal config.
@@ -327,7 +339,14 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             f"tool_call_parser={profile.tool_call_parser}, "
             f"reasoning_parser={profile.reasoning_parser}, "
             f"is_hybrid={profile.is_hybrid}, "
-            f"supports_spec_decode={profile.supports_spec_decode}"
+            f"supports_spec_decode={profile.supports_spec_decode}, "
+            f"suffix_tier={profile.suffix_decoding_tier}"
+        )
+        # AliasProfile stores the bench dict as a sorted tuple (frozen
+        # dataclasses must avoid mutable shared state). Materialize a
+        # fresh dict here so each ModelConfig instance owns its copy.
+        speedup = (
+            dict(profile.suffix_bench_speedup) if profile.suffix_bench_speedup else {}
         )
         return ModelConfig(
             tool_call_parser=profile.tool_call_parser,
@@ -335,6 +354,8 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             default_max_tokens=profile.default_max_tokens,
             is_hybrid=profile.is_hybrid,
             supports_spec_decode=profile.supports_spec_decode,
+            suffix_decoding_tier=profile.suffix_decoding_tier,
+            suffix_bench_speedup=speedup,
         )
 
     for pattern, config in _MODEL_PATTERNS:
@@ -408,11 +429,147 @@ def enrich_model_config(cfg: ModelConfig | None, model: Any) -> ModelConfig:
 #             can see capabilities without launching a server.
 
 
+# --- SuffixDecoding tier classification (#269) ----------------------------
+#
+# Pure function so the boundary logic is unit-testable in isolation. Bench
+# numbers come from ``scripts/bench_suffix_decoding_integrated.py``;
+# thresholds are tuned to match the qualitative recommendation we'd give
+# a user looking at the same table by eye:
+#
+#   - AGENT     — tool calling specifically wins big AND nothing regresses
+#                 (we'd tell the user "turn it on").
+#   - STRUCTURED — some workload wins meaningfully AND nothing meaningfully
+#                  regresses (we'd say "try it for that workload").
+#   - NEUTRAL   — within noise across the board (silent — no point
+#                 suggesting either direction).
+#   - AVOID     — anything regresses past 0.85x, or signal is too mixed
+#                 to recommend (warn at startup).
+
+
+def classify_suffix_decoding_tier(speedup: dict[str, float]) -> str:
+    """Map a per-workload speedup dict to a tier string.
+
+    Empty dict → "unknown". Single-workload dicts use the special-case
+    rule that an empty ``min(others)`` is treated as +∞ (the AGENT gate
+    is satisfied vacuously). See ``tests/test_suffix_decoding_tier.py``
+    for boundary cases including the real Qwen3-0.6B / Qwen3-14B numbers.
+    """
+    if not speedup:
+        return "unknown"
+
+    lo = min(speedup.values())
+    hi = max(speedup.values())
+
+    # AVOID first: any individual workload regressing past 0.85x means
+    # we don't know the user's traffic mix well enough to recommend.
+    if lo < 0.85:
+        return "avoid"
+
+    # AGENT — tool_loop must be the workload winning big, AND no other
+    # workload regresses past 0.95x. Tool_loop missing from the dict
+    # means the bench didn't measure it; we can't claim agent then.
+    tool_loop = speedup.get("tool_loop")
+    if tool_loop is not None and tool_loop >= 1.8:
+        others = [v for k, v in speedup.items() if k != "tool_loop"]
+        if not others or min(others) >= 0.95:
+            return "agent"
+
+    # STRUCTURED — some workload wins meaningfully (≥1.5x) AND the
+    # weakest workload still clears 0.90x (small regression tolerated
+    # because the user is opting in for the structured win).
+    if hi >= 1.5 and lo >= 0.90:
+        return "structured"
+
+    # NEUTRAL — flat across the board. Tighter than STRUCTURED's 0.90
+    # floor: we want true noise here, not a near-miss STRUCTURED.
+    if lo >= 0.95 and hi >= 1.0 and hi < 1.5:
+        return "neutral"
+
+    # Mixed signal that didn't fit any positive bucket — recommend AVOID
+    # rather than silently shipping ambiguous data.
+    return "avoid"
+
+
+def suffix_decoding_hint(cfg: "ModelConfig | None") -> str | None:
+    """Startup hint for the SuffixDecoding flag, or ``None`` for silent tiers.
+
+    The hint surfaces only AGENT / STRUCTURED / AVOID tiers. UNKNOWN and
+    NEUTRAL stay silent — no user-visible nudge until bench data exists
+    or there's a real regression to warn about.
+
+    Hybrid arches (``supports_spec_decode=False``) always return ``None``
+    even if the tier was somehow set: spec decoding is gated off at the
+    engine level, and a "recommended" hint there would just confuse.
+    """
+    if cfg is None:
+        return None
+    if not cfg.supports_spec_decode:
+        return None
+    tier = cfg.suffix_decoding_tier
+    speedup = cfg.suffix_bench_speedup or {}
+    if tier == "agent":
+        peak = speedup.get("tool_loop") or (max(speedup.values()) if speedup else 0)
+        return (
+            f"SuffixDecoding: recommended for tool/agent traffic "
+            f"(tool_loop {peak:.1f}x). Pass --suffix-decoding to enable."
+        )
+    if tier == "structured":
+        peak_key = max(speedup, key=speedup.get) if speedup else "structured"
+        peak_val = speedup.get(peak_key, 0)
+        return (
+            f"SuffixDecoding: may help on {peak_key} ({peak_val:.2f}x). "
+            "Pass --suffix-decoding if your traffic matches."
+        )
+    if tier == "avoid":
+        worst_key = min(speedup, key=speedup.get) if speedup else "some workloads"
+        worst_val = speedup.get(worst_key, 0)
+        return (
+            f"SuffixDecoding: NOT recommended for this model — {worst_key} "
+            f"regresses to {worst_val:.2f}x. Leave --suffix-decoding off."
+        )
+    return None
+
+
 def _arch_label(cfg: "ModelConfig") -> str:
     """One-word architecture label for human display."""
     if cfg.is_hybrid:
         return "hybrid (linear-attention/Mamba)"
     return "pure attention"
+
+
+def _suffix_tier_cell(cfg: "ModelConfig") -> str:
+    """Format the ``Suffix tier`` row for ``rapid-mlx info``.
+
+    AGENT/STRUCTURED — surface the peak workload speedup (the reason the
+    tier was assigned). AVOID — surface the worst-regressing workload so
+    the user understands the warning. UNKNOWN — point them at the bench
+    script. Hybrid arches always render ``n/a`` regardless of tier
+    because ``supports_spec_decode=False`` gates the flag off anyway.
+    """
+    if not cfg.supports_spec_decode:
+        return "n/a (hybrid arch — spec decode off)"
+    tier = cfg.suffix_decoding_tier
+    speedup = cfg.suffix_bench_speedup or {}
+    if tier == "unknown":
+        return "unknown — run scripts/bench_suffix_decoding_integrated"
+    if tier == "agent" and speedup:
+        peak_key = (
+            "tool_loop" if "tool_loop" in speedup else max(speedup, key=speedup.get)
+        )
+        return (
+            f"agent ({peak_key} {speedup[peak_key]:.2f}x — recommend --suffix-decoding)"
+        )
+    if tier == "structured" and speedup:
+        peak_key = max(speedup, key=speedup.get)
+        return (
+            f"structured ({peak_key} {speedup[peak_key]:.2f}x — try if traffic matches)"
+        )
+    if tier == "neutral":
+        return "neutral (within noise — leave off)"
+    if tier == "avoid" and speedup:
+        worst_key = min(speedup, key=speedup.get)
+        return f"avoid ({worst_key} {speedup[worst_key]:.2f}x regression — leave off)"
+    return tier
 
 
 def format_profile_summary(model_path: str, cfg: "ModelConfig | None") -> str:
@@ -459,6 +616,7 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ("Architecture", "unknown"),
             ("Spec decode", "✓ default-on"),
             ("Throttle", "✗ default-off"),
+            ("Suffix tier", "unknown — run scripts/bench_suffix_decoding_integrated"),
         ]
     else:
         spec = "✓ supported" if cfg.supports_spec_decode else "✗ disabled (hybrid arch)"
@@ -469,6 +627,7 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ("Architecture", _arch_label(cfg)),
             ("Spec decode", spec),
             ("Throttle", throttle),
+            ("Suffix tier", _suffix_tier_cell(cfg)),
         ]
 
     body = [_row(header), _row(sep)]

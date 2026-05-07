@@ -191,6 +191,7 @@ class EngineCore:
             enrich_model_config,
             format_profile_summary,
             format_profile_table,
+            suffix_decoding_hint,
         )
 
         model_path = (
@@ -223,6 +224,12 @@ class EngineCore:
                 display_path, self.model_config
             ).splitlines():
                 logger.info(line)
+
+        # SuffixDecoding eligibility hint — silent for unknown/neutral tiers
+        # so this only fires when the bench has data worth surfacing.
+        hint = suffix_decoding_hint(self.model_config)
+        if hint:
+            logger.info(hint)
 
         logger.debug(f"Engine {self._engine_id} initialized")
 
