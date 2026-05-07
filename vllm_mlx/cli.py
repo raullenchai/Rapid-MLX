@@ -803,6 +803,255 @@ def ps_command(_args):
     print()
 
 
+def _spawn_chat_server(
+    model: str, log_path: str, served_name: str | None = None
+) -> tuple[object, str]:
+    """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
+
+    Returns (Popen handle, base_url). The caller must register cleanup —
+    `chat_command` does so via atexit + signal handlers.
+
+    If ``served_name`` is given, it is passed via ``--served-model-name`` so
+    the spawned server exposes the alias as the API model name (e.g. user
+    typed ``qwen3.5-4b`` → API requests use ``qwen3.5-4b`` rather than the
+    expanded HF path).
+    """
+    import socket
+    import subprocess
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    base_url = f"http://127.0.0.1:{port}"
+    cmd = [
+        sys.executable,
+        "-m",
+        "vllm_mlx.cli",
+        "serve",
+        model,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--log-level",
+        "WARNING",
+    ]
+    if served_name and served_name != model:
+        cmd.extend(["--served-model-name", served_name])
+    log = open(log_path, "w")  # noqa: SIM115 — kept open for proc lifetime
+    proc = subprocess.Popen(  # noqa: S603
+        cmd,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    return proc, base_url
+
+
+def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
+    """Block until /health/ready returns 200, the proc exits, or timeout."""
+    import time
+
+    import requests
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"server exited early (code {proc.returncode}); "
+                "see chat-server.log for details"
+            )
+        try:
+            r = requests.get(f"{base_url}/health/ready", timeout=2)
+            if r.status_code == 200:
+                return
+        except requests.RequestException:
+            pass
+        time.sleep(1)
+    raise TimeoutError(
+        f"server did not become ready within {timeout_s}s "
+        "(large models can take longer — pass --ready-timeout)"
+    )
+
+
+def _stream_chat_response(base_url: str, payload: dict, timeout_s: int) -> str:
+    """POST /v1/chat/completions with stream=True and print tokens as they
+    arrive. Returns the full assistant content (concatenated content deltas).
+
+    Reasoning-content deltas (Qwen3, DeepSeek-R1, etc.) are streamed to stdout
+    in dim ANSI so the user sees thinking, but excluded from the returned
+    string — chat history stores only the final answer, matching the
+    OpenAI-compat split between ``content`` and ``reasoning_content``.
+    """
+    import json
+
+    import requests
+
+    DIM = "\x1b[2m"
+    RESET = "\x1b[0m"
+    is_tty = sys.stdout.isatty()
+    in_reasoning = False
+    full = ""
+
+    with requests.post(
+        f"{base_url}/v1/chat/completions",
+        json=payload,
+        stream=True,
+        timeout=timeout_s,
+    ) as resp:
+        if resp.status_code != 200:
+            # With stream=True the body may still be partial / mid-chunk when
+            # the server closed the socket; read defensively so we surface a
+            # useful HTTP code instead of a ChunkedEncodingError.
+            try:
+                body = resp.text[:500]
+            except Exception:
+                body = "(no body)"
+            raise RuntimeError(f"HTTP {resp.status_code}: {body}")
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            data = line[6:]
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
+            reasoning = delta.get("reasoning_content")
+            piece = delta.get("content")
+            if reasoning:
+                if not in_reasoning:
+                    sys.stdout.write(f"{DIM}[thinking] " if is_tty else "[thinking] ")
+                    in_reasoning = True
+                sys.stdout.write(reasoning)
+                sys.stdout.flush()
+            if piece:
+                if in_reasoning:
+                    sys.stdout.write(f"{RESET}\n" if is_tty else "\n")
+                    in_reasoning = False
+                sys.stdout.write(piece)
+                sys.stdout.flush()
+                full += piece
+    if in_reasoning and is_tty:
+        sys.stdout.write(RESET)
+        sys.stdout.flush()
+    return full
+
+
+def chat_command(args):
+    """Interactive REPL chat with a model.
+
+    Spawns a local `serve` on an ephemeral port (or connects to an existing
+    server via --base-url / --port), then loops stdin → /v1/chat/completions
+    (streaming) → stdout. Maintains multi-turn history; `/reset` clears it.
+    Exits cleanly on Ctrl-D, Ctrl-C, or `exit` / `quit`.
+    """
+    import atexit
+    import signal
+    import subprocess
+    import tempfile
+
+    base_url: str
+    proc = None
+    log_path: str | None = None
+
+    if args.base_url:
+        base_url = args.base_url.rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+    elif args.port is not None:
+        base_url = f"http://127.0.0.1:{args.port}"
+    else:
+        log_path = tempfile.NamedTemporaryFile(
+            prefix="rapid-mlx-chat-", suffix=".log", delete=False
+        ).name
+        print(f"\n  Starting server (log: {log_path}) ...")
+        # If main() resolved an alias, expose the alias as the API model name
+        # so the chat request body matches what the user typed.
+        original = getattr(args, "_original_alias", None)
+        proc, base_url = _spawn_chat_server(args.model, log_path, served_name=original)
+
+        def _cleanup():
+            if proc and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+
+        atexit.register(_cleanup)
+        # Ensure SIGINT/SIGTERM also kill the server before we exit.
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(sig, lambda *_: (_cleanup(), sys.exit(130)))
+            except (ValueError, OSError):
+                pass
+
+        try:
+            _wait_for_chat_server(base_url, proc, timeout_s=args.ready_timeout)
+        except (RuntimeError, TimeoutError) as e:
+            print(f"\n  Failed to start server: {e}")
+            sys.exit(1)
+        print("  Ready.\n")
+
+    print("  Chat — Ctrl-D / Ctrl-C / 'exit' to quit, '/reset' to clear history.\n")
+
+    served_name = getattr(args, "_original_alias", args.model)
+    messages: list[dict] = []
+    if args.system:
+        messages.append({"role": "system", "content": args.system})
+
+    extra: dict = {}
+    if args.no_think:
+        extra["chat_template_kwargs"] = {"enable_thinking": False}
+
+    while True:
+        try:
+            line = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not line:
+            continue
+        if line in ("exit", "quit", "/exit", "/quit"):
+            break
+        if line in ("/reset", "/clear"):
+            messages = (
+                [{"role": "system", "content": args.system}] if args.system else []
+            )
+            print("  (history cleared)\n")
+            continue
+
+        messages.append({"role": "user", "content": line})
+        payload = {
+            "model": served_name,
+            "messages": messages,
+            "max_tokens": args.max_tokens,
+            "temperature": args.temperature,
+            "stream": True,
+            **extra,
+        }
+        try:
+            assistant = _stream_chat_response(
+                base_url, payload, timeout_s=args.response_timeout
+            )
+        except KeyboardInterrupt:
+            print("\n  (response interrupted)\n")
+            messages.pop()
+            continue
+        except RuntimeError as e:
+            print(f"\n  {e}\n")
+            messages.pop()
+            continue
+        print("\n")
+        if assistant:
+            messages.append({"role": "assistant", "content": assistant})
+        else:
+            messages.pop()
+
+
 def info_command(args):
     """Print the per-model profile for a model name or alias.
 
@@ -1558,6 +1807,62 @@ Examples:
     )
     subparsers.add_parser("ps", help="List running rapid-mlx servers")
 
+    # Chat — interactive REPL backed by a (spawned or existing) server
+    chat_parser = subparsers.add_parser(
+        "chat", help="Interactive chat REPL with a model"
+    )
+    chat_parser.add_argument(
+        "model", help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name)"
+    )
+    chat_parser.add_argument(
+        "--system",
+        type=str,
+        default=None,
+        help="System prompt prepended to the conversation",
+    )
+    chat_parser.add_argument(
+        "--no-think",
+        action="store_true",
+        help="Disable thinking mode for reasoning models (Qwen3 enable_thinking=False)",
+    )
+    chat_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=2048,
+        help="Max tokens per assistant response (default: 2048)",
+    )
+    chat_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Sampling temperature (default: 0.7)",
+    )
+    chat_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Connect to existing server on 127.0.0.1:<port> instead of spawning",
+    )
+    chat_parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="Connect to existing server URL (e.g. http://host:8000) "
+        "instead of spawning. Overrides --port.",
+    )
+    chat_parser.add_argument(
+        "--ready-timeout",
+        type=int,
+        default=600,
+        help="Seconds to wait for the spawned server to become ready (default: 600)",
+    )
+    chat_parser.add_argument(
+        "--response-timeout",
+        type=int,
+        default=600,
+        help="Seconds to wait for a single assistant response (default: 600)",
+    )
+
     # Info command — show the per-model profile (parsers + capability gates)
     info_parser = subparsers.add_parser(
         "info",
@@ -1700,6 +2005,8 @@ Examples:
         rm_command(args)
     elif args.command == "ps":
         ps_command(args)
+    elif args.command == "chat":
+        chat_command(args)
     elif args.command == "info":
         info_command(args)
     elif args.command == "agents":
