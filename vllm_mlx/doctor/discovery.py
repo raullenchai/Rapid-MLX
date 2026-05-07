@@ -14,8 +14,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .runner import REPO_ROOT
-
 
 @dataclass
 class ModelAvailability:
@@ -27,10 +25,16 @@ class ModelAvailability:
 
 
 def load_aliases() -> dict[str, str]:
-    """Return the alias → repo-id mapping shipped with the package."""
-    aliases_path = REPO_ROOT / "vllm_mlx" / "aliases.json"
-    with open(aliases_path) as f:
-        return json.load(f)
+    """Return the alias → repo-id mapping shipped with the package.
+
+    Thin wrapper over ``vllm_mlx.model_aliases.list_aliases`` so the
+    doctor harness sees the same view regardless of whether the entry
+    in ``aliases.json`` is the legacy bare-string form or the rich
+    profile form (this module pre-dates the schema bump).
+    """
+    from ..model_aliases import list_aliases as _list
+
+    return _list()
 
 
 def _hf_cache_roots() -> list[Path]:

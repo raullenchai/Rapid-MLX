@@ -301,12 +301,45 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
 def detect_model_config(model_path: str) -> ModelConfig | None:
     """Detect optimal parser config from model name/path.
 
+    Two-stage lookup:
+    1. **Alias profile** (single source of truth) — if ``model_path`` is a
+       known alias name (``qwen3.5-4b``) or maps to one's HF path
+       (``mlx-community/Qwen3.5-4B-MLX-4bit``), return that profile's
+       config directly. This guarantees per-alias granularity for any
+       optimization that varies by size/quant within a family.
+    2. **Regex fallback** (``_MODEL_PATTERNS``) — for non-aliased HF
+       paths the user serves directly. Coarser-grained: one pattern
+       covers a whole family.
+
     Args:
         model_path: Model name or path (e.g. "mlx-community/Qwen3.5-9B-4bit")
 
     Returns:
-        ModelConfig if a pattern matches, None otherwise.
+        ModelConfig if an alias profile or regex pattern matches, None
+        otherwise.
     """
+    # Local import to break a circular dependency: model_aliases needs
+    # the dataclass shape from this module via duck-typing only, so the
+    # late import is the cheaper side of the cycle to defer.
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_path)
+    if profile is not None:
+        logger.info(
+            f"Resolved alias profile for '{model_path}' → "
+            f"tool_call_parser={profile.tool_call_parser}, "
+            f"reasoning_parser={profile.reasoning_parser}, "
+            f"is_hybrid={profile.is_hybrid}, "
+            f"supports_spec_decode={profile.supports_spec_decode}"
+        )
+        return ModelConfig(
+            tool_call_parser=profile.tool_call_parser,
+            reasoning_parser=profile.reasoning_parser,
+            default_max_tokens=profile.default_max_tokens,
+            is_hybrid=profile.is_hybrid,
+            supports_spec_decode=profile.supports_spec_decode,
+        )
+
     for pattern, config in _MODEL_PATTERNS:
         if pattern.search(model_path):
             logger.info(
