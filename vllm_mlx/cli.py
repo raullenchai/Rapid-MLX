@@ -406,13 +406,16 @@ def serve_command(args):
             mtp=args.enable_mtp,
         )
     except Exception as e:
-        # Show clean error instead of raw traceback
-        error_msg = str(e)
-        if (
-            "404" in error_msg
-            or "not found" in error_msg.lower()
-            or "RepositoryNotFound" in error_msg
-        ):
+        # Show clean error instead of raw traceback. Catch the typed
+        # HF exception class for the 404 case; fall back to substring
+        # match for legacy callers (older huggingface_hub) and for
+        # non-HF errors that still spell out "not found".
+        from huggingface_hub.utils import RepositoryNotFoundError
+
+        is_404 = isinstance(e, RepositoryNotFoundError) or (
+            "404" in str(e) or "not found" in str(e).lower()
+        )
+        if is_404:
             from vllm_mlx.model_aliases import suggest_similar
 
             shown = getattr(args, "_original_alias", args.model)
@@ -425,7 +428,7 @@ def serve_command(args):
                 "  or use a full HuggingFace path like: mlx-community/Qwen3.5-9B-4bit"
             )
         else:
-            print(f"\n  Error loading model: {error_msg}")
+            print(f"\n  Error loading model: {e}")
         sys.exit(1)
 
     # Start server
@@ -1432,7 +1435,9 @@ Examples:
             # Not an alias, not a HuggingFace org/name path, not a local
             # directory — fail fast with suggestions instead of letting the
             # request hit HuggingFace and 404 with a 30-line stack trace.
-            print(f"\n  Error: '{args.model}' is not a known alias or HuggingFace path.")
+            print(
+                f"\n  Error: '{args.model}' is not a known alias or HuggingFace path."
+            )
             suggestions = suggest_similar(args.model)
             if suggestions:
                 print(f"  Did you mean: {', '.join(suggestions)}?")
