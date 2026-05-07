@@ -110,3 +110,51 @@ python3.12 scripts/bench_suffix_decoding.py \
 ```
 
 Raw JSON: `evals/results/suffix_poc_sweep.json`.
+
+## Larger-model sweep (post-integration validation)
+
+**Date**: 2026-05-06 (after PR #267 merged-ready)
+**Goal**: validate that the speedup story holds at 3B-14B scale, not just toy 0.6-1B models.
+**Models** (5): pure-attention dense in 3B, 4B, 8B, 8B, 14B.
+**Workloads** (4): `chat`, `json_array`, `tool_loop`, `code_edit` — drops the longer-context `agent_react`/`summarize` to keep total wall-clock manageable across 5 models.
+**Note**: this is the **standalone PoC bench** (`scripts/bench_suffix_decoding.py`), which predates the integration's cooldown / `min_draft_len` / cache-trim guards. Output divergence (`tok-diff ✗`) on chat / code_edit reflects PoC limitations; the integrated path in PR #267 has the additional safeguards and bit-identical output verified by tests.
+
+| model | chat | json_array | **tool_loop** | code_edit |
+|---|---:|---:|---:|---:|
+| SmolLM3-3B-4bit | 0.82x | 1.68x | **2.52x** | 1.97x |
+| Qwen3-4B-4bit | 0.82x | 1.09x | **2.58x** | 1.21x |
+| Llama-3.1-8B-Instruct-4bit | 1.41x | 0.91x | **1.93x** | 1.41x |
+| Qwen3-8B-4bit | 0.69x | 0.98x | **2.09x** | 1.29x |
+| Qwen3-14B-4bit | 0.64x | 1.07x | **1.99x** | 0.63x |
+
+### Acceptance rates on tool_loop (the hottest workload)
+
+| model | accepted/step | accept rate |
+|---|---:|---:|
+| SmolLM3-3B | 3.11 | n/a |
+| Qwen3-4B | 3.50 | n/a |
+| Llama-3.1-8B | 3.20 | 71% |
+| Qwen3-8B | 3.64 | 76% |
+| Qwen3-14B | 4.12 | 80% |
+
+### Conclusions
+
+1. **Speedup is workload-bound, not size-bound.** tool_loop holds 1.93-2.58x at every scale tested (3B → 14B). Larger models actually accept *more* drafts (Qwen3-14B = 4.12 tok/step, the highest of the sweep) — likely because larger models are better at producing the structured patterns the suffix index can mine.
+2. **Chat regresses on most models** (0.64-0.82x except Llama-3.1-8B). Free-form chat has near-zero drafter acceptance (≤0.17 tok/step), and on the standalone PoC the verify-forward overhead dominates. The integrated path's **cooldown** (3 zero-accepts → skip 10 verifies) brings this to the regression floor in production.
+3. **Production guidance**: enable `--suffix-decoding` for agentic/JSON/code-emit workloads. The integrated path is OFF by default, opt-in.
+
+### Repro
+
+```bash
+python3.12 scripts/bench_suffix_decoding.py \
+  --models mlx-community/SmolLM3-3B-4bit \
+           mlx-community/Qwen3-4B-4bit \
+           mlx-community/Llama-3.1-8B-Instruct-4bit \
+           mlx-community/Qwen3-8B-4bit \
+           mlx-community/Qwen3-14B-4bit \
+  --workloads chat json_array tool_loop code_edit \
+  --max-tokens 256 \
+  --json /tmp/suffix_5models.json
+```
+
+Raw JSON: `/tmp/suffix_5models.json` (large-model sweep, 2026-05-06).

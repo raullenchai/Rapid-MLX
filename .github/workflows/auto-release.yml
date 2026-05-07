@@ -1,0 +1,118 @@
+name: Auto-release on version bump
+
+# When a commit lands on main with subject ``chore: bump version to X.Y.Z``,
+# automatically tag ``vX.Y.Z`` and publish a GitHub Release. The existing
+# ``publish.yml`` then fans out to PyPI + Homebrew on the ``release:
+# published`` event.
+#
+# Without this, the release pipeline stalls between "version committed
+# to main" and "Release published" — a manual step that gets forgotten
+# and leaves users with stale ``rapid-mlx models`` output for days.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  detect-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Parse commit subject
+        id: parse
+        run: |
+          SUBJECT=$(git log -1 --pretty=%s)
+          echo "subject: $SUBJECT"
+
+          # Strict format: ``chore: bump version to X.Y.Z``.
+          # We don't try to be clever — version bumps are intentional
+          # and the dev should match this exact form.
+          if echo "$SUBJECT" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+$'; then
+            VERSION=$(echo "$SUBJECT" | sed -E 's/^chore: bump version to ([0-9]+\.[0-9]+\.[0-9]+)$/\1/')
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Detected version bump → v$VERSION"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "Not a version bump — skipping"
+          fi
+
+      - name: Verify pyproject.toml matches
+        if: steps.parse.outputs.should_release == 'true'
+        run: |
+          PROJECT_VER=$(grep -m1 '^version *=' pyproject.toml | awk -F'"' '{print $2}')
+          PARSED_VER="${{ steps.parse.outputs.version }}"
+          if [ "$PROJECT_VER" != "$PARSED_VER" ]; then
+            echo "❌ Commit subject says $PARSED_VER but pyproject.toml has $PROJECT_VER" >&2
+            exit 1
+          fi
+          echo "✓ pyproject.toml ($PROJECT_VER) matches commit subject"
+
+      - name: Check tag does not already exist
+        if: steps.parse.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.parse.outputs.version }}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
+            echo "Tag $TAG already exists — nothing to do (idempotent)"
+            exit 0
+          fi
+          echo "tag $TAG is new"
+
+      - name: Build CHANGELOG body
+        if: steps.parse.outputs.should_release == 'true'
+        id: changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find the last release tag to enumerate merged PRs since then.
+          PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1 || true)
+          VERSION="${{ steps.parse.outputs.version }}"
+
+          if [ -n "$PREV_TAG" ]; then
+            echo "Generating notes since $PREV_TAG"
+            COMMITS=$(git log "$PREV_TAG..HEAD" --pretty='- %s (%h)' || true)
+          else
+            COMMITS=$(git log -50 --pretty='- %s (%h)')
+          fi
+
+          {
+            echo 'body<<__EOF__'
+            echo "## What's new in v$VERSION"
+            echo
+            if [ -n "$COMMITS" ]; then
+              echo "$COMMITS"
+            else
+              echo "_(no changes recorded)_"
+            fi
+            echo
+            echo "Install: \`brew upgrade rapid-mlx\` or \`pip install -U rapid-mlx==$VERSION\`"
+            echo '__EOF__'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create tag and release
+        if: steps.parse.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.parse.outputs.version }}"
+
+          # Idempotency: re-check at create time too.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — done"
+            exit 0
+          fi
+
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "${{ steps.changelog.outputs.body }}" \
+            --target "${{ github.sha }}"
+
+          echo "✓ Released $TAG — publish.yml will now fan out to PyPI + Homebrew"

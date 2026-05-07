@@ -1,0 +1,105 @@
+name: Version bump check
+
+# When a PR touches user-facing surface (model aliases, CLI flags,
+# capability profiles, dependencies), require that pyproject.toml's
+# version field is bumped in the same PR. Without this guard, brew /
+# PyPI users see a stale ``rapid-mlx models`` list any time someone
+# merges a model add but forgets to cut a release.
+#
+# Bypass for pure refactors that touch the watched paths but don't
+# change user-visible behavior: add the `skip-version-bump` label.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "vllm_mlx/aliases.json"
+      - "vllm_mlx/model_auto_config.py"
+      - "vllm_mlx/cli.py"
+      - "pyproject.toml"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Skip if bypass label set
+        id: bypass
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels) }}
+        run: |
+          if echo "$LABELS" | grep -q '"name": *"skip-version-bump"'; then
+            echo "Bypass label set — skipping version bump check"
+            echo "bypass=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bypass=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect user-facing changes
+        if: steps.bypass.outputs.bypass != 'true'
+        id: facing
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Files that actually expose new things to users.
+          # pyproject.toml is checked separately (deps changes also count).
+          USER_FACING=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
+            vllm_mlx/aliases.json \
+            vllm_mlx/model_auto_config.py \
+            vllm_mlx/cli.py \
+            || true)
+          DEPS_CHANGED=$(git diff "$BASE_SHA" "$HEAD_SHA" -- pyproject.toml \
+            | grep -E '^\+.*(dependencies|optional-dependencies|requires)' \
+            || true)
+
+          if [ -z "$USER_FACING" ] && [ -z "$DEPS_CHANGED" ]; then
+            echo "No user-facing change detected"
+            echo "user_facing=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "User-facing change detected:"
+            [ -n "$USER_FACING" ] && echo "$USER_FACING"
+            [ -n "$DEPS_CHANGED" ] && echo "deps changed in pyproject.toml"
+            echo "user_facing=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify version bump
+        if: steps.bypass.outputs.bypass != 'true' && steps.facing.outputs.user_facing == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Extract version line on base + head. ``grep -m1`` stops at the
+          # first match; the project version is the first ``version =``
+          # in ``[project]``.
+          BASE_VER=$(git show "$BASE_SHA:pyproject.toml" \
+            | grep -m1 '^version *=' | awk -F'"' '{print $2}')
+          HEAD_VER=$(git show "$HEAD_SHA:pyproject.toml" \
+            | grep -m1 '^version *=' | awk -F'"' '{print $2}')
+
+          echo "base version: $BASE_VER"
+          echo "head version: $HEAD_VER"
+
+          if [ "$BASE_VER" = "$HEAD_VER" ]; then
+            cat <<EOF >&2
+
+          ❌ User-facing change detected but pyproject.toml version is unchanged.
+
+          Files that triggered this check:
+          $(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- vllm_mlx/aliases.json vllm_mlx/model_auto_config.py vllm_mlx/cli.py | sed 's/^/    /')
+
+          To fix: bump pyproject.toml — e.g. ${BASE_VER} → next patch.
+          To bypass (pure refactor, no user-visible change): add the
+          ``skip-version-bump`` label to this PR.
+          EOF
+            exit 1
+          fi
+
+          echo "✓ version bumped: $BASE_VER → $HEAD_VER"

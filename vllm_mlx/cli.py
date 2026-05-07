@@ -818,7 +818,13 @@ def bench_kv_cache_command(args):
 
 def models_command(_args):
     """List available model aliases."""
+    from vllm_mlx._version_check import print_staleness_warning_if_any
     from vllm_mlx.model_aliases import list_aliases
+
+    # Best-effort: warn if the user is on a stale brew/pip install. The
+    # call is fail-silent and gated to interactive TTYs, so it'll never
+    # break this command — see ``_version_check.py``.
+    print_staleness_warning_if_any()
 
     # Hardcoded benchmark data: (size, speed, recommended Mac tier)
     MODEL_INFO = {
