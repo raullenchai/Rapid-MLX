@@ -44,6 +44,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
+    """Return whether streaming should begin in an implicit thinking block.
+
+    Some thinking-capable chat templates include ``<think>`` in the generated
+    assistant prefix instead of emitting it as a normal output token.  In that
+    case the stream router needs to start in thinking mode so tokens before
+    ``</think>`` are emitted as Anthropic thinking deltas.
+
+    When thinking is explicitly disabled, however, the template marker is only
+    stale capability metadata for routing purposes: direct answer tokens should
+    be emitted as text.  Otherwise Claude Code receives a message with only a
+    thinking block and no text result.
+    """
+    if enable_thinking is False:
+        return False
+    return "<think>" in chat_template and "add_generation_prompt" in chat_template
+
+
 @router.post("/v1/messages")
 async def create_anthropic_message(
     request: Request,
@@ -336,6 +354,14 @@ async def _stream_anthropic_messages(
     accumulated_text = ""
     accumulated_raw = ""
     tool_filter = StreamingToolCallFilter()
+    _tokenizer = engine.tokenizer if hasattr(engine, "tokenizer") else None
+    _chat_template = ""
+    if _tokenizer and hasattr(_tokenizer, "chat_template"):
+        _chat_template = _tokenizer.chat_template or ""
+    _starts_thinking = _should_start_in_thinking(
+        _chat_template, chat_kwargs.get("enable_thinking")
+    )
+    think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
     prompt_tokens = 0
     completion_tokens = 0
 
@@ -352,22 +378,18 @@ async def _stream_anthropic_messages(
             reasoning_parser = get_parser(cfg.reasoning_parser_name)()
         except Exception:
             pass
+    # Closes #223: when the client explicitly opts out of thinking, bypass
+    # the reasoning parser. Parsers like qwen3 use an implicit-think
+    # heuristic (no <think> tag → all tokens treated as reasoning), so a
+    # direct answer would otherwise be misrouted to thinking_delta blocks
+    # and the text_delta block would stay empty. Mirrors the chat-route
+    # bypass at postprocessor.py:217. The think_router branch below picks
+    # up the work, and `_should_start_in_thinking` already returns False
+    # for enable_thinking=False, so the answer streams as text.
+    if chat_kwargs.get("enable_thinking") is False:
+        reasoning_parser = None
     if reasoning_parser:
         reasoning_parser.reset_state()
-
-    # StreamingThinkRouter is only used as a heuristic fallback when no
-    # reasoning parser is active. When a parser is configured it already
-    # separates thinking from content, making the router redundant.
-    think_router = None
-    if not reasoning_parser:
-        _tokenizer = engine.tokenizer if hasattr(engine, "tokenizer") else None
-        _chat_template = ""
-        if _tokenizer and hasattr(_tokenizer, "chat_template"):
-            _chat_template = _tokenizer.chat_template or ""
-        _starts_thinking = (
-            "<think>" in _chat_template and "add_generation_prompt" in _chat_template
-        )
-        think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
 
     async for output in engine.stream_chat(messages=messages, **chat_kwargs):
         delta_text = output.new_text
@@ -379,67 +401,74 @@ async def _stream_anthropic_messages(
 
         if delta_text:
             accumulated_text += delta_text
-            content = None
 
             if reasoning_parser:
+                # Closes #185: when a reasoning_parser is active it ALREADY
+                # splits content vs reasoning at every chunk; routing the
+                # parser's content through `think_router` (which detects
+                # raw `<think>` tags in the underlying stream) double-counts
+                # and silently buffers the answer as thinking_delta. Symptom
+                # was Anthropic stream test 4 returning 0 chunks for every
+                # qwen3-family model since v0.6.4. Bypass `think_router`
+                # here and emit reasoning/content as their own block types
+                # directly.
                 previous_raw = accumulated_raw
                 accumulated_raw += delta_text
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, accumulated_raw, delta_text
                 )
-                if delta_msg is not None:
-                    # The reasoning parser already separates reasoning from
-                    # content — bypass StreamingThinkRouter and emit each
-                    # directly as the appropriate SSE block type.
-                    if delta_msg.reasoning:
-                        pieces = [("thinking", delta_msg.reasoning)]
-                        (
-                            events,
-                            current_block_type,
-                            block_index,
-                        ) = _emit_content_pieces(
-                            pieces, current_block_type, block_index
-                        )
-                        for event in events:
-                            yield event
-                    if delta_msg.content:
-                        cleaned = strip_special_tokens(delta_msg.content)
-                        if cleaned:
-                            filtered = tool_filter.process(cleaned)
-                            if filtered:
-                                pieces = [("text", filtered)]
-                                (
-                                    events,
-                                    current_block_type,
-                                    block_index,
-                                ) = _emit_content_pieces(
-                                    pieces, current_block_type, block_index
-                                )
-                                for event in events:
-                                    yield event
-            else:
-                content = strip_special_tokens(delta_text)
-                if content:
-                    filtered = tool_filter.process(content)
-                    if not filtered:
-                        continue
-                    pieces = think_router.process(filtered)
+                if delta_msg is None:
+                    continue
+                pieces: list[tuple[str, str]] = []
+                if delta_msg.reasoning:
+                    reasoning = strip_special_tokens(delta_msg.reasoning)
+                    if reasoning:
+                        pieces.append(("thinking", reasoning))
+                if delta_msg.content:
+                    content = strip_special_tokens(delta_msg.content)
+                    if content:
+                        # Tool tags only appear in the content channel —
+                        # filter still applies, but reasoning bypasses it.
+                        filtered = tool_filter.process(content)
+                        if filtered:
+                            pieces.append(("text", filtered))
+                if pieces:
                     events, current_block_type, block_index = _emit_content_pieces(
                         pieces, current_block_type, block_index
                     )
                     for event in events:
                         yield event
+                continue
 
-    # Flush remaining from tool filter
+            # No reasoning_parser path — keep the existing think_router
+            # heuristic that detects `<think>` tags in the raw stream.
+            content = strip_special_tokens(delta_text)
+            if content:
+                content = strip_special_tokens(content)
+
+            if content:
+                filtered = tool_filter.process(content)
+                if not filtered:
+                    continue
+                pieces = think_router.process(filtered)
+                events, current_block_type, block_index = _emit_content_pieces(
+                    pieces, current_block_type, block_index
+                )
+                for event in events:
+                    yield event
+
+    # Flush remaining from both filters
     remaining = tool_filter.flush()
     if remaining:
-        pieces = (
-            [("text", remaining)]
-            if reasoning_parser
-            else think_router.process(remaining)
-        )
+        # When reasoning_parser owns the split, route flushed tool-filter
+        # content straight to text — `think_router` would mis-buffer it
+        # for the same reason as above.
+        if reasoning_parser:
+            pieces_flush: list[tuple[str, str]] = [("text", remaining)]
+        else:
+            pieces_flush = think_router.process(remaining)
         events, current_block_type, block_index = _emit_content_pieces(
-            pieces, current_block_type, block_index
+            pieces_flush, current_block_type, block_index
         )
         for event in events:
             yield event
