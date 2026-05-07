@@ -17,76 +17,103 @@ import os
 import sys
 
 
-def _check_disk_space(model_name: str) -> None:
-    """Check if there's enough disk space to download the model.
+def _check_disk_space(model_name: str, force: bool = False) -> None:
+    """Verify there's enough disk space to download the model.
 
-    Queries HuggingFace for model repo size and compares with available space.
-    Warns (but does not block) if disk space is insufficient.
-    Skips silently if the model is already local or if the check fails.
+    Queries HuggingFace for the repo size and compares with available space
+    on the resolved HF cache filesystem (respects ``HF_HOME`` /
+    ``HF_HUB_CACHE`` rather than the hard-coded ``~/.cache/huggingface``).
+
+    Behaviour:
+
+    - Model is already a local path → return.
+    - ``config.json`` is in the cache → assume already downloaded → return.
+    - HF API call fails (offline, gated repo, etc.) → return silently. The
+      loader's 404/auth handlers will surface the real error if there is one.
+    - Determined size and disk is insufficient → print actionable error
+      and ``sys.exit(1)``. ``force=True`` warns instead of aborting.
+
+    The previous behaviour was to print a soft warning then continue. Users
+    burned 30+ minutes downloading a 141 GB model on an 8.8 GB disk before
+    HF Hub crashed with ``OSError: No space left on device``.
     """
-    import os
-    from pathlib import Path
-
-    # Skip if model is a local path that already exists
+    # Skip if model is a local path that already exists.
     if os.path.exists(model_name):
         return
 
-    # Check if model is already cached by huggingface_hub
+    # Skip if model is already in the HF cache.
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        # Quick check: see if config.json is cached (implies model is downloaded)
         cached = try_to_load_from_cache(model_name, "config.json")
         if isinstance(cached, str) and os.path.exists(cached):
             return
     except Exception:
         pass
 
-    # Query HuggingFace API for model size
+    # Query HF for repo size + free space on the actual HF cache filesystem.
     try:
         from huggingface_hub import model_info
+        from huggingface_hub.constants import HF_HUB_CACHE
 
         info = model_info(model_name, files_metadata=True)
-        # safetensors_total or siblings file sizes
-        model_size_bytes = 0
-        if hasattr(info, "safetensors") and info.safetensors:
-            # Total size from safetensors metadata
-            params = info.safetensors
-            if hasattr(params, "total"):
-                # This is parameter count, not file size — use siblings instead
-                pass
-        # Sum file sizes from siblings
-        if hasattr(info, "siblings") and info.siblings:
-            for sibling in info.siblings:
-                if hasattr(sibling, "size") and sibling.size:
-                    model_size_bytes += sibling.size
-
+        model_size_bytes = sum(
+            (s.size or 0)
+            for s in (getattr(info, "siblings", None) or [])
+            if hasattr(s, "size")
+        )
         if model_size_bytes == 0:
-            return  # Can't determine size, skip check
+            return  # Can't determine size — skip rather than guess.
 
-        # Get available disk space
-        cache_dir = Path.home() / ".cache" / "huggingface"
-        stat = os.statvfs(str(cache_dir) if cache_dir.exists() else str(Path.home()))
+        # statvfs needs an existing path; HF_HUB_CACHE may not exist yet on
+        # a fresh install. Walk up to the first ancestor that does.
+        probe = HF_HUB_CACHE
+        while probe and not os.path.exists(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        if not probe or not os.path.exists(probe):
+            probe = os.path.expanduser("~")
+
+        stat = os.statvfs(probe)
         available_bytes = stat.f_bavail * stat.f_frsize
+
+        # ~10% headroom for temp files during xet_get / move-into-place.
+        required_bytes = int(model_size_bytes * 1.1)
+        if available_bytes >= required_bytes:
+            return
 
         model_size_gb = model_size_bytes / (1024**3)
         available_gb = available_bytes / (1024**3)
+        need_to_free_gb = (required_bytes - available_bytes) / (1024**3)
 
-        # Need ~10% extra for temp files during download
-        required_bytes = int(model_size_bytes * 1.1)
-
-        if available_bytes < required_bytes:
-            print()
+        print()
+        print("  Error: Insufficient disk space for download.")
+        print(f"    Model size:    {model_size_gb:>7.1f} GB")
+        print(f"    Free space:    {available_gb:>7.1f} GB  ({probe})")
+        print(f"    Need to free:  {need_to_free_gb:>7.1f} GB")
+        print()
+        print("  Suggestions:")
+        print("    - Free disk space, or set HF_HOME to a drive with more room")
+        print("    - Pick a smaller variant: rapid-mlx models")
+        if not force:
             print(
-                f"  Warning: Model requires ~{model_size_gb:.1f} GB "
-                f"but only {available_gb:.1f} GB available on disk."
-            )
-            print(
-                "  The download may fail. Free up disk space or choose a smaller model."
+                "    - Bypass this check (download will likely fail mid-way): "
+                "--force-disk-check"
             )
             print()
+            sys.exit(1)
+        # ``force=True``: warn loudly, let the user proceed at their own risk.
+        print("  --force-disk-check set — proceeding anyway.")
+        print()
+    except SystemExit:
+        raise
     except Exception:
-        pass  # Non-critical — don't block startup on check failure
+        # Network / auth / etc. failures are non-critical — fall through to
+        # the loader's own error handling rather than blocking startup on a
+        # flaky HF metadata query.
+        pass
 
 
 def serve_command(args):
@@ -386,7 +413,7 @@ def serve_command(args):
         sys.exit(1)
 
     # Check disk space before downloading model
-    _check_disk_space(args.model)
+    _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
 
     # Load model with unified server
     try:
@@ -763,6 +790,15 @@ Examples:
         type=str,
         default=None,
         help="The model name used in the API. If not specified, the model argument is used.",
+    )
+    serve_parser.add_argument(
+        "--force-disk-check",
+        action="store_true",
+        help=(
+            "Skip the pre-flight disk-space check that aborts when the model "
+            "is larger than free disk. Use only if you know the HF cache lives "
+            "on a different filesystem (e.g. external drive via HF_HOME)."
+        ),
     )
     serve_parser.add_argument(
         "--host", type=str, default="0.0.0.0", help="Host to bind"
