@@ -89,7 +89,11 @@ class EngineConfig:
 
     model_name: str = ""
     scheduler_config: SchedulerConfig | None = None
-    step_interval: float = 0.001  # 1ms between steps
+    # Housekeeping cadence when the scheduler is empty. The loop wakes
+    # immediately on a new ``add_request`` via an asyncio Event; this
+    # interval only bounds idle wake-ups for periodic checks. Bumped from
+    # 1 ms (kHz polling) to 5 s (0.2 Hz) — see issue #265.
+    step_interval: float = 5.0
     stream_interval: int = 1  # Tokens to batch before streaming (1=every token)
     gpu_memory_utilization: float = 0.90  # Fraction of device memory for allocation
     tool_logits_processor_factory: Any | None = None  # Factory for tool logits bias
@@ -164,6 +168,12 @@ class EngineCore:
         self._task: asyncio.Task | None = None
         self._start_time: float | None = None
         self._steps_executed = 0
+
+        # Idle-wakeup signal: ``add_request`` sets this so the engine loop
+        # can wait on it instead of polling at kHz when the scheduler is
+        # empty. Lazy-created in ``_engine_loop`` because asyncio.Event
+        # binds to the running loop. See issue #265.
+        self._idle_event: asyncio.Event | None = None
 
         # Single MLX worker thread that owns the per-thread generation_stream
         # (created on demand in start(); see _init_mlx_step_thread). All MLX
@@ -313,6 +323,11 @@ class EngineCore:
         stream_interval = self.config.stream_interval
         use_simple_streaming = stream_interval == 1
 
+        # Bind the idle-wakeup event to the running loop (asyncio.Event must
+        # be created on the loop it's awaited from).
+        if self._idle_event is None:
+            self._idle_event = asyncio.Event()
+
         # Emergency memory pressure threshold — dynamic based on gpu_memory_utilization.
         # Uses Metal's max recommended working set when available, falling back to
         # device memory. Applies a 5% gap above the soft limit (capped at 99%).
@@ -428,8 +443,19 @@ class EngineCore:
                         # making the server unresponsive to all HTTP requests.
                         await asyncio.sleep(0)
                 else:
-                    # No work, yield control
-                    await asyncio.sleep(step_interval)
+                    # No work — block until ``add_request`` sets the
+                    # event, with a long fallback timeout for
+                    # housekeeping (memory pressure, scheduler.deep_reset
+                    # races, etc.). Drops idle CPU from kHz polling to
+                    # essentially zero without adding any first-token
+                    # latency for requests that arrive mid-idle.
+                    try:
+                        await asyncio.wait_for(
+                            self._idle_event.wait(), timeout=step_interval
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    self._idle_event.clear()
 
             except asyncio.CancelledError:
                 break
@@ -518,6 +544,12 @@ class EngineCore:
             )
         else:
             self.scheduler.add_request(request)
+
+        # Wake the engine loop if it's blocked on the idle event.
+        # asyncio.Event.set() is loop-thread-safe when called from coros
+        # running on the same loop (which add_request always is).
+        if self._idle_event is not None:
+            self._idle_event.set()
 
         return request_id
 
