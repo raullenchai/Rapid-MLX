@@ -189,3 +189,167 @@ class TestRealisticAgentWorkload:
         # 30, 31, 40 in absolute positions. We should draft those.
         draft = drafter.get_draft()
         assert draft == [30, 31, 40]
+
+
+class TestInstallSuffixDecoding:
+    """Tests for the GenerationBatch monkey-patch installer.
+
+    These cover the *wiring* — allowlist gate, install side-effects,
+    fallback behaviour — without requiring a real model. End-to-end
+    output-correctness is covered by ``scripts/bench_suffix_decoding.py``
+    and the PoC sweep in ``evals/results/SUFFIX_POC_REPORT.md``.
+
+    The hook patches ``BatchGenerator._generation_batch._step`` and
+    ``.next`` (mlx-lm 0.31+ moved the step from BatchGenerator down to
+    GenerationBatch). Tests use a minimal fake with the same surface.
+    """
+
+    def _make_fake_bg(self):
+        """Build a minimal fake BatchGenerator + GenerationBatch.
+
+        Captures the attributes the install function reads. Intentionally
+        avoids MagicMock because hasattr() on a MagicMock returns True
+        for any name, which masks the "no-op install" check.
+        """
+
+        class _GB:
+            pass
+
+        gb = _GB()
+        gb._step = lambda: ([], [])  # original step (returns empty)
+        gb.next = lambda: []  # original next
+
+        class _BG:
+            pass
+
+        bg = _BG()
+        bg._generation_batch = gb
+        return bg, gb
+
+    def test_hybrid_profile_skips_install(self):
+        """``supports_spec_decode == False`` → install is a no-op.
+
+        The whole point of the per-model profile is that hybrid models
+        (Qwen3.5/3.6 GatedDeltaNet, Granite 4 Mamba2) never get
+        SuffixDecoding installed — chunked-batched verify corrupts their
+        output (see SUFFIX_POC_REPORT.md table 4).
+        """
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.scheduler import _install_suffix_decoding
+
+        bg, gb = self._make_fake_bg()
+        orig_step = gb._step
+        orig_next = gb.next
+
+        profile = ModelConfig(
+            is_hybrid=True,
+            supports_spec_decode=False,
+        )
+
+        _install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=profile,
+            max_draft=8,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+        )
+
+        # Refusing to install means leaving _step / next pristine.
+        assert gb._step is orig_step
+        assert gb.next is orig_next
+        # No telemetry attribute either (on bg or gb).
+        assert not hasattr(bg, "_suffix_stats")
+        assert not hasattr(gb, "_suffix_stats")
+
+    def test_pure_attention_profile_installs(self):
+        """Default ``supports_spec_decode=True`` → step/next replaced + stats attached."""
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.scheduler import _install_suffix_decoding
+
+        bg, gb = self._make_fake_bg()
+        orig_step = gb._step
+        orig_next = gb.next
+
+        profile = ModelConfig()  # defaults: supports_spec_decode=True
+        assert profile.supports_spec_decode
+
+        _install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=profile,
+            max_draft=8,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+        )
+
+        # Both ._step and .next on the GenerationBatch should be replaced.
+        assert gb._step is not orig_step
+        assert gb.next is not orig_next
+        # Telemetry attribute attached for /metrics surfacing.
+        assert hasattr(bg, "_suffix_stats")
+        assert hasattr(gb, "_suffix_stats")
+        stats = bg._suffix_stats
+        assert stats["verify_steps"] == 0
+        assert stats["fallthrough_steps"] == 0
+        assert stats["drafts_proposed"] == 0
+        assert stats["tokens_accepted"] == 0
+        # bg and gb share the same stats dict
+        assert bg._suffix_stats is gb._suffix_stats
+
+    def test_no_profile_treats_as_supported(self):
+        """``profile=None`` → install proceeds (default-on for unknown families)."""
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.scheduler import _install_suffix_decoding
+
+        bg, gb = self._make_fake_bg()
+        orig_step = gb._step
+
+        _install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=None,
+            max_draft=8,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+        )
+
+        assert gb._step is not orig_step
+        assert hasattr(bg, "_suffix_stats")
+
+    def test_step_falls_through_when_no_generation_batch(self):
+        """If BatchGenerator has no ``_generation_batch`` (older mlx-lm),
+        install logs a warning and returns without patching anything."""
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.scheduler import _install_suffix_decoding
+
+        # bg WITHOUT _generation_batch — simulates pre-0.31 mlx-lm
+        class _BG:
+            pass
+
+        bg = _BG()
+
+        _install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=None,
+            max_draft=8,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+        )
+
+        assert not hasattr(bg, "_suffix_stats")

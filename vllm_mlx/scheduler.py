@@ -123,6 +123,12 @@ class SchedulerConfig:
     suffix_max_draft: int = 8  # Max draft tokens per step (verify cost ∝ this)
     suffix_max_suffix_len: int = 4  # Longest k-gram indexed for matching
     suffix_min_confidence: float = 0.3  # Vote confidence floor before truncating
+    # Skip the verify forward when the drafter returned fewer than this
+    # many tokens. Single-token drafts are common on free-form chat where
+    # the drafter sees a weak match — verify cost dominates the small
+    # win. Default 2 keeps chat near regression-floor while still
+    # accepting most useful drafts on tool/JSON workloads.
+    suffix_min_draft_len: int = 2
 
 
 @dataclass
@@ -1044,41 +1050,40 @@ def _install_suffix_decoding(
     min_confidence: float,
     requests: dict[str, Any],
     uid_to_request_id: dict[int, str],
+    min_draft_len: int = 2,
 ) -> None:
-    """Monkey-patch a BatchGenerator to use SuffixDecoding spec-decode.
+    """Monkey-patch BatchGenerator's GenerationBatch to add SuffixDecoding.
 
-    SuffixDecoding is a drafter-free speculative decoding technique:
-    instead of using a separate draft model, it builds a suffix-tree
-    index over the prompt + already-generated tokens and votes over
-    repeated continuations. Big wins on workloads with structured
-    repetition (tool calls, JSON, code edits, ReAct loops).
+    Drafter-free spec-decode: a suffix-tree index over prompt + emitted
+    tokens predicts repeated patterns (tool calls, JSON, code edits,
+    ReAct loops) at zero drafter cost. Big wins on agent workloads
+    (3-5×); ~1× on free-form chat (regression-floor).
 
-    Per generation step (single-request only in v1):
+    The hot path lives in ``GenerationBatch._step`` (mlx-lm 0.31+):
 
-        1. Drafter builds a draft of up to ``max_draft`` tokens by
-           majority vote over historical k-grams.
-        2. If draft is non-empty, run a single ``model([X, d_0..d_{K-1}])``
-           verify forward (K+1 tokens).
-        3. Accept up to first mismatch (greedy verify).
-        4. On reject: trim trimmable cache layers by (K - n_accepted).
-        5. Emit (n_accepted + 1) tokens: primary from logits[0], plus
-           accepted drafts and the bonus token at logits[n_accepted].
-           First token returned as primary; remaining stashed in
-           ``_pending_drafts[uid]`` for ``_next`` to emit.
+      1. Drafter builds up to ``max_draft`` candidate tokens.
+      2. We run ``model([X, d_0..d_{K-1}])`` of shape (1, K+1).
+      3. Greedy compare argmax(logits[i]) vs draft[i]; accept up to
+         first mismatch. ``n_accepted ∈ [0, K]``.
+      4. Trim trimmable cache layers by ``K - n_accepted``.
+      5. Emit ``n_accepted + 1`` new tokens: ``[d_0..d_{n-1}, bonus]``
+         where ``bonus = preds[n_accepted]``.
 
-    Falls through to the original ``_step`` when:
-      - batch size > 1 (v1 is single-request only),
-      - prefill (multi-token input),
-      - active_batch is None or cache mismatch,
-      - sampler is non-greedy (temperature > 0 or top_p < 1),
-      - drafter has no candidate (low repetition).
+    Wrapped ``GenerationBatch.next()`` augments the single Response
+    that ``_step`` returns with ``n_accepted`` extra synthetic Responses
+    so the engine sees the full token burst.
+
+    Falls through to ``_orig_step`` when:
+      - batch size != 1 (multi-request not handled in v1),
+      - sampler is non-greedy (temperature > 0 / top_p < 1 / top_k > 0),
+      - logits processors are configured (would need per-position apply),
+      - drafter returns empty (low repetition).
 
     The architecture allowlist is enforced upstream via
     ``ModelConfig.supports_spec_decode``: hybrid linear-attention models
     (Qwen3.5/3.6 GatedDeltaNet, Granite 4 Mamba2) skip install entirely
-    because chunked-batched verify is not numerically equivalent to
-    step-update on recurrent layers (corrupts output — see
-    ``evals/results/SUFFIX_POC_REPORT.md``).
+    because chunked-batched verify isn't numerically equivalent to
+    step-update on recurrent layers — see SUFFIX_POC_REPORT.md.
     """
     from .speculative.suffix_decoding import SuffixDecodingDrafter
 
@@ -1091,17 +1096,29 @@ def _install_suffix_decoding(
         )
         return
 
-    _orig_step = batch_gen._step
+    # mlx-lm 0.31+ moved the actual generation step from BatchGenerator
+    # to GenerationBatch. The _generation_batch instance is created once
+    # in BatchGenerator.__init__ and is mutated (extend/filter) in place
+    # — so a single instance-level patch persists across all sequences.
+    gb = getattr(batch_gen, "_generation_batch", None)
+    if gb is None:
+        logger.warning(
+            "[SuffixDecoding] disabled: BatchGenerator has no _generation_batch "
+            "attribute (mlx-lm version mismatch — expected ≥0.31)."
+        )
+        return
 
-    # Per-uid state. Drafters are lazy-init on first encounter (we need
-    # the request's prompt_token_ids to seed the suffix index, and that
-    # only becomes available once the request has reached decode).
+    _orig_step = gb._step
+    _orig_next = gb.next
+
+    # Per-uid drafter state. Lazy-init on first encounter (we need the
+    # request's prompt_token_ids to seed the suffix index).
     _drafters: dict[int, SuffixDecodingDrafter] = {}
-    # _pending_drafts[uid] = list of (token, logprobs) tuples to emit in
-    # subsequent _next calls. Each token was produced by the verify
-    # forward and the cache is already advanced past it, so emission is
-    # purely a streaming-side concern.
-    _pending_drafts: dict[int, list[tuple[int, mx.array]]] = {}
+    # When _step does a verify forward, it stashes the extra emitted
+    # tokens here (one entry per accepted draft + bonus). The wrapped
+    # ``next()`` then drains the queue, producing one synthetic Response
+    # per token so the engine surface stays consistent.
+    _pending_emits: dict[int, list[tuple[int, mx.array]]] = {}
 
     _stats = {
         "verify_steps": 0,
@@ -1109,61 +1126,84 @@ def _install_suffix_decoding(
         "drafts_proposed": 0,
         "tokens_accepted": 0,
         "errors": 0,
+        # Diagnostic breakdown of WHY we fell through. Sum should equal
+        # ``fallthrough_steps``. Useful when debugging "no drafts, no
+        # speedup" reports — points at the specific guard.
+        "ft_batch_size": 0,
+        "ft_uids_size": 0,
+        "ft_non_greedy": 0,
+        "ft_logits_processors": 0,
+        "ft_no_draft": 0,
+        "ft_cooldown": 0,
     }
 
-    def _is_greedy_for_uid(uid: int) -> bool:
-        """Greedy verify only matches user output when sampler is greedy.
+    # Cooldown state: when verify keeps producing 0-acceptance (e.g.,
+    # free-form chat where drafter has weak signal), each verify pays
+    # K-token forward overhead for ~zero gain. Detect three consecutive
+    # zero-accept verifies and skip drafting for the next 10 steps;
+    # after that try once. Tool/JSON workloads keep accepting → never
+    # triggered. Chat hits ~90% skip → near regression-floor.
+    _consecutive_zero_accepts = [0]
+    _cooldown_remaining = [0]
+    _COOLDOWN_TRIGGER = 3
+    _COOLDOWN_LENGTH = 10
 
-        Falls back to vanilla decode otherwise to preserve sampling
-        distribution. (Future: rejection sampling for proper non-greedy.)
+    def _is_greedy_for_uid(uid: int) -> bool:
+        """Detect whether the request's sampler is effectively greedy.
+
+        With ``temperature == 0`` mlx-lm short-circuits to argmax, so
+        top_p / top_k are no-ops in that regime — we only check the
+        temperature. (Defaults of top_p=0.9 / top_k=0 are common and
+        don't actually change the sampler when temp=0.)
+
+        Greedy verify only matches the user-requested distribution
+        when the actual sampler is greedy; otherwise we fall through to
+        keep token-stream stochasticity intact.
         """
         req_id = uid_to_request_id.get(uid)
         req = requests.get(req_id) if req_id else None
         if req is None or req.sampling_params is None:
-            return True  # default sampler — assume greedy at this layer
+            return True
         sp = req.sampling_params
-        if sp.temperature is not None and sp.temperature > 0.0:
-            return False
-        if sp.top_p is not None and sp.top_p < 1.0:
-            return False
-        if sp.top_k is not None and sp.top_k > 0:
-            return False
-        return True
+        if sp.temperature is None or sp.temperature == 0.0:
+            return True
+        return False
 
-    def _suffix_step(input_tokens, prompt_cache, samplers, logits_processors, tokens):
-        """Wrapped step with SuffixDecoding fast path for single-request batches."""
-        batch_size = input_tokens.shape[0]
+    def _suffix_step():
+        """Wrapped GenerationBatch._step.
 
-        # Prefill or batch>1 → vanilla path. Multi-request batching with
-        # variable per-request draft lengths is non-trivial (padding +
-        # masking + per-uid trim accounting) and intentionally deferred
-        # to a follow-up.
-        if (
-            input_tokens.shape[1] > 1
-            or batch_size != 1
-            or batch_gen.active_batch is None
-            or prompt_cache is not batch_gen.active_batch.cache
-        ):
+        Original signature: ``() -> (List[int], List[mx.array])``.
+        We preserve that contract — return the **single** primary token
+        (= the input that was just fed through the model) plus its
+        logprobs. Additional emitted tokens (accepted drafts + bonus)
+        are stashed in ``_pending_emits`` for ``_suffix_next`` to drain.
+        """
+        # Single-request guard. _next_tokens has shape (B,).
+        if gb._next_tokens is None or gb._next_tokens.shape[0] != 1:
             _stats["fallthrough_steps"] += 1
-            return _orig_step(
-                input_tokens, prompt_cache, samplers, logits_processors, tokens
-            )
+            _stats["ft_batch_size"] += 1
+            return _orig_step()
 
-        uids = list(batch_gen.active_batch.uids)
-        if len(uids) != 1:
+        if len(gb.uids) != 1:
             _stats["fallthrough_steps"] += 1
-            return _orig_step(
-                input_tokens, prompt_cache, samplers, logits_processors, tokens
-            )
-        uid = uids[0]
+            _stats["ft_uids_size"] += 1
+            return _orig_step()
 
+        uid = gb.uids[0]
         if not _is_greedy_for_uid(uid):
             _stats["fallthrough_steps"] += 1
-            return _orig_step(
-                input_tokens, prompt_cache, samplers, logits_processors, tokens
-            )
+            _stats["ft_non_greedy"] += 1
+            return _orig_step()
 
-        # Lazy-init drafter on first encounter; seed with prompt tokens.
+        # Skip when logits_processors are set — applying them at every
+        # speculative position would change the math in a way the
+        # standalone PoC didn't validate. Defer to a follow-up.
+        if gb.logits_processors and any(p for p in gb.logits_processors if p):
+            _stats["fallthrough_steps"] += 1
+            _stats["ft_logits_processors"] += 1
+            return _orig_step()
+
+        # Lazy-init drafter on first encounter for this uid.
         drafter = _drafters.get(uid)
         if drafter is None:
             req_id = uid_to_request_id.get(uid)
@@ -1179,64 +1219,69 @@ def _install_suffix_decoding(
                 min_confidence=min_confidence,
             )
             drafter.add_prompt_tokens(prompt_ids)
-            # Catch up on already-emitted tokens for this uid (rare; only
-            # happens if suffix decoding was enabled mid-stream, which
-            # the current CLI doesn't allow — included for safety).
+            # Catch up any tokens already in gb.tokens[0] (rare path —
+            # only if suffix decoding were enabled mid-stream).
             try:
-                emitted = tokens[0].tolist() if tokens is not None else []
-                for t in emitted:
+                for t in gb.tokens[0]:
                     drafter.add_generated_token(int(t))
             except Exception:  # noqa: BLE001
                 pass
             _drafters[uid] = drafter
 
-        # Add the most-recently-emitted token (= last step's primary) to
-        # the drafter's history. ``input_tokens`` is the tail token from
-        # the previous step that this _step's forward will consume.
-        last_token = int(input_tokens[0, 0].item())
+        # The token we're about to feed (= last step's sampled token).
+        # Also the one ``_orig_step`` would return as ``inputs.tolist()``.
+        inputs = gb._next_tokens
+        last_token = int(inputs[0].item())
         drafter.add_generated_token(last_token)
 
-        # Build draft from suffix index
+        # Build draft.
         try:
             draft = drafter.get_draft()
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[SuffixDecoding] drafter error: {e!r}")
             _stats["errors"] += 1
             _stats["fallthrough_steps"] += 1
-            return _orig_step(
-                input_tokens, prompt_cache, samplers, logits_processors, tokens
-            )
+            return _orig_step()
 
-        if not draft:
-            # No useful draft (rare-pattern history) → vanilla step.
+        if not draft or len(draft) < min_draft_len:
+            # No (or too-short) repetition signal — vanilla step.
+            # Short drafts on free-form text would pay verify-forward
+            # overhead for almost no acceptance gain (chat regression-
+            # floor). Skip them.
             _stats["fallthrough_steps"] += 1
-            return _orig_step(
-                input_tokens, prompt_cache, samplers, logits_processors, tokens
-            )
+            _stats["ft_no_draft"] += 1
+            return _orig_step()
+
+        # Cooldown check: skip verify if we're in a cooldown window
+        # following several zero-accept verifies. This stops chat
+        # workloads from paying verify overhead they can't recoup.
+        if _cooldown_remaining[0] > 0:
+            _cooldown_remaining[0] -= 1
+            _stats["fallthrough_steps"] += 1
+            _stats["ft_cooldown"] += 1
+            return _orig_step()
 
         K = len(draft)
         _stats["verify_steps"] += 1
         _stats["drafts_proposed"] += K
 
-        # Verify forward: [last_token, d_0 .. d_{K-1}] of shape (1, K+1)
+        # Verify forward: [last_token, d_0..d_{K-1}] of shape (1, K+1).
         try:
-            draft_arr = mx.array([draft], dtype=input_tokens.dtype)
-            verify_input = mx.concatenate([input_tokens, draft_arr], axis=1)
-            verify_logits = model(verify_input, cache=prompt_cache)
-            # verify_logits shape: (1, K+1, V). Greedy verify.
+            draft_arr = mx.array([draft], dtype=inputs.dtype)
+            verify_input = mx.concatenate([inputs[:, None], draft_arr], axis=1)
+            verify_logits = gb.model(verify_input, cache=gb.prompt_cache)
+            # logits shape (1, K+1, V); greedy verify.
             preds = mx.argmax(verify_logits, axis=-1)
             mx.eval(preds)
-            preds_list = preds.tolist()[0]  # length K+1
+            preds_list = preds.tolist()[0]
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[SuffixDecoding] verify forward failed: {e!r}")
             _stats["errors"] += 1
-            # Cache was not advanced if forward raised — safe to fall
-            # through to vanilla step (will re-run from same state).
-            return _orig_step(
-                input_tokens, prompt_cache, samplers, logits_processors, tokens
-            )
+            # Cache was not advanced because the forward raised; safe to
+            # retry via vanilla path below.
+            return _orig_step()
 
-        # Accept up to first mismatch (greedy verify).
+        # Accept up to first mismatch (greedy).
         n_accepted = 0
         for i in range(K):
             if preds_list[i] == draft[i]:
@@ -1244,13 +1289,20 @@ def _install_suffix_decoding(
             else:
                 break
 
-        # Trim cache for rejected drafts. n_rejected can be 0 (all
-        # accepted, no trim needed) up to K (nothing accepted, trim full
-        # draft span). KVCache + RotatingKVCache support trim(). Hybrid
-        # caches were filtered upstream by supports_spec_decode.
+        # Cooldown bookkeeping: track consecutive zero-accept verifies
+        # so workloads with weak drafter signal (e.g., free-form chat)
+        # automatically stop paying verify overhead.
+        if n_accepted == 0:
+            _consecutive_zero_accepts[0] += 1
+            if _consecutive_zero_accepts[0] >= _COOLDOWN_TRIGGER:
+                _cooldown_remaining[0] = _COOLDOWN_LENGTH
+                _consecutive_zero_accepts[0] = 0
+        else:
+            _consecutive_zero_accepts[0] = 0
+
         n_rejected = K - n_accepted
         if n_rejected > 0:
-            for c in prompt_cache:
+            for c in gb.prompt_cache:
                 if (
                     hasattr(c, "is_trimmable")
                     and c.is_trimmable()
@@ -1258,157 +1310,183 @@ def _install_suffix_decoding(
                 ):
                     c.trim(n_rejected)
 
-        # Emit token sequence:
-        #   [d_0, d_1, ..., d_{n_accepted-1}, preds_list[n_accepted]]
-        # primary = first emitted = d_0 (== preds_list[0]) if n>=1, else
-        # preds_list[0] (the correction). Either way, primary = preds_list[0].
-        primary_token = preds_list[0]
-        # Remaining tokens to defer: [d_1..d_{n_accepted-1}, preds_list[n_accepted]]
-        # When n_accepted == 0: deferred is empty (only primary emitted).
-        deferred_tokens: list[int]
-        if n_accepted >= 1:
-            deferred_tokens = list(draft[1:n_accepted]) + [preds_list[n_accepted]]
-        else:
-            deferred_tokens = []
+        # Token emission accounting.
+        #
+        # _orig_step emits one token per call: the ``inputs`` it just
+        # fed through the model (= what was previously in
+        # ``_next_tokens``). The newly-sampled token is stashed in
+        # ``_next_tokens`` for the next step.
+        #
+        # For spec-decode the verify forward consumed K+1 tokens
+        # (last_token + K drafts), so we have committed to the cache
+        # ``[..., last_token, d_0..d_{n_accepted-1}]`` after trim.
+        # Tokens that NEED to surface on the response stream:
+        #
+        #   - last_token   ← primary, returned by this _step (1 token)
+        #   - d_0..d_{n-1} ← accepted drafts (n tokens, drained by
+        #                    _suffix_next as synthetic responses)
+        #
+        # The bonus (= preds[n_accepted], the correction at the
+        # rejection point or the post-K bonus) is **NOT** emitted this
+        # step — it gets stashed in _next_tokens and surfaces as the
+        # primary of the NEXT _step call. Otherwise it would duplicate
+        # (see early bug: every-other-token doubling).
+        bonus = preds_list[n_accepted]
 
-        # Update drafter history with all newly-committed tokens (so the
-        # next call's get_draft() sees the latest history).
-        drafter.add_generated_token(primary_token)
-        for d in deferred_tokens:
-            drafter.add_generated_token(d)
+        full_logprobs = verify_logits - mx.logsumexp(
+            verify_logits, axis=-1, keepdims=True
+        )
+        # The primary's logprobs come from the PREVIOUS step (saved in
+        # gb._next_logprobs). Passing them through preserves the same
+        # contract as _orig_step.
+        primary_logprobs = (
+            gb._next_logprobs[0]
+            if gb._next_logprobs is not None and len(gb._next_logprobs) > 0
+            else full_logprobs[0, 0, :]
+        )
+        extra_tokens = list(draft[:n_accepted])
+        extra_logprobs: list[mx.array] = []
+        for i in range(n_accepted):
+            # full_logprobs[0, i, :] is the logprobs row that PRODUCED
+            # the token at sequence position N+i+1, i.e. d_i.
+            extra_logprobs.append(full_logprobs[0, i, :])
+        # logprobs row at position n_accepted is the one that produced
+        # the bonus — used for the bonus surfacing in the next step.
+        bonus_logprobs = full_logprobs[0, n_accepted, :]
 
+        # Drafter history += newly-committed tokens (last_token was
+        # added before draft build; only drafts + bonus are new here.
+        # Bonus enters the index too because the next step will
+        # naturally surface it as primary.)
+        for tok in extra_tokens:
+            drafter.add_generated_token(tok)
+        drafter.add_generated_token(bonus)
         drafter.record_acceptance(n_accepted)
         _stats["tokens_accepted"] += n_accepted
 
-        # Compute logprobs from verify_logits[0] (primary position) +
-        # subsequent positions for the deferred tokens. Each position's
-        # logprob is normalised independently — matches the standard
-        # path where one logit slice produces one logprob row.
-        logprobs_full = verify_logits - mx.logsumexp(
-            verify_logits, axis=-1, keepdims=True
-        )
-        primary_lp = logprobs_full[:, 0, :]  # shape (1, V)
+        # Update gb state for the next _step call. Bonus becomes the
+        # next step's primary input. async_eval overlaps device work
+        # with engine bookkeeping (matches _orig_step's pattern).
+        bonus_arr = mx.array([bonus], dtype=inputs.dtype)
+        gb._next_tokens = bonus_arr
+        gb._next_logprobs = [bonus_logprobs]
+        mx.async_eval(bonus_arr, bonus_logprobs)
 
-        # Stash deferred (token, logprobs) for _next to emit.
-        if deferred_tokens:
-            deferred_pairs: list[tuple[int, mx.array]] = []
-            for i, tok in enumerate(deferred_tokens):
-                # Position in verify_logits for the i-th deferred token's
-                # logprobs row: i+1 (since primary is at position 0,
-                # d_1..d_{n_accepted-1} are at 1..n_accepted-1, and the
-                # bonus at n_accepted).
-                lp_row = logprobs_full[:, i + 1, :]
-                deferred_pairs.append((int(tok), lp_row[0]))
-            _pending_drafts[uid] = deferred_pairs
+        # _step normally appends inputs.tolist()[i] to gb.tokens[i].
+        # We do the same for last_token (the primary that we return).
+        # The extra tokens get appended in the next() wrapper as each
+        # synthetic Response is built, mirroring _orig_step's flow.
+        gb.tokens[0].append(last_token)
 
-        primary_tokens = mx.array([[primary_token]], dtype=input_tokens.dtype)
-        return primary_tokens, [primary_lp[0]]
+        # Stash extras for next() to drain.
+        _pending_emits[uid] = list(zip(extra_tokens, extra_logprobs))
 
-    # _next wrapper to emit deferred tokens after primary. Mirrors MTP's
-    # _mtp_next pattern; the only structural difference is variable
-    # number of deferred tokens per uid (MTP always defers exactly one).
-    batch_gen._inner_next = batch_gen._next
+        return [last_token], [primary_logprobs]
 
-    def _suffix_next(self=batch_gen):
-        """Wrapper around _next that emits deferred SuffixDecoding tokens.
+    def _suffix_next():
+        """Wrapped GenerationBatch.next.
 
-        Unlike MTP (which defers exactly 1 token), SuffixDecoding can
-        defer 0..max_draft tokens depending on acceptance. All deferred
-        tokens for a given uid are emitted in a single _next call,
-        following the primary token in the response list.
+        Calls ``_orig_next`` (which calls our wrapped ``_step``) for the
+        primary Response, then for each pending extra token builds a
+        synthetic Response, handling stop-token / max-tokens like the
+        original ``next()`` does.
         """
-        # Clear stale per-uid state when no batch is active (request
-        # finished) — same hygiene as MTP.
-        if self.active_batch is None:
-            _pending_drafts.clear()
+        responses = _orig_next()
 
-        # Save deferred drafts from PREVIOUS step before _inner_next
-        # runs _suffix_step (which may store NEW deferred drafts).
-        prev_deferred: dict[int, list[tuple[int, mx.array]]] = {}
-        if self.active_batch is not None:
-            for uid in self.active_batch.uids:
-                if uid in _pending_drafts:
-                    prev_deferred[uid] = _pending_drafts.pop(uid)
-
-        responses = self._inner_next()
-
-        if not prev_deferred or not responses:
+        if not _pending_emits or not responses:
             return responses
 
-        augmented = []
-        draft_end_uids: set = set()
-
+        augmented = list(responses)
         for r in responses:
             uid = r.uid
-            augmented.append(r)
-
             if r.finish_reason is not None:
-                # Sequence ended on primary — discard pending drafts
-                _pending_drafts.pop(uid, None)
-                prev_deferred.pop(uid, None)
+                # Primary finished the sequence — drop any pending.
+                _pending_emits.pop(uid, None)
                 continue
 
-            pending = prev_deferred.pop(uid, None)
+            pending = _pending_emits.pop(uid, None)
             if not pending:
                 continue
 
-            # Emit each deferred token as a separate Response. Stop on
-            # length-limit / stop-token mid-list and discard the rest.
+            # Find this uid's row in gb (post _orig_next, gb may have
+            # been filtered if the primary finished — but we already
+            # filtered out finished primaries above).
+            try:
+                row = gb.uids.index(uid)
+            except ValueError:
+                # Sequence already gone (filtered by _orig_next somehow);
+                # bail out for this uid.
+                continue
+
             for tok, lp in pending:
-                if uid in draft_end_uids:
+                # Append to gb.tokens[row] (mirrors _step's append).
+                gb.tokens[row].append(tok)
+                gb._num_tokens[row] += 1
+
+                # Run the stop-machine on this token to detect stop seqs.
+                finish_reason = None
+                match_sequence = None
+                current_state = None
+                try:
+                    new_state, match_sequence, current_state = gb.state_machines[
+                        row
+                    ].match(gb._matcher_states[row], tok)
+                    gb._matcher_states[row] = new_state
+                    if match_sequence is not None and current_state is None:
+                        finish_reason = "stop"
+                except Exception:  # noqa: BLE001
+                    # If the matcher is in an unexpected state for any
+                    # reason, treat the synthetic emit as plain. We'd
+                    # rather emit a token than crash the request.
+                    pass
+
+                if finish_reason is None and gb._num_tokens[row] >= gb.max_tokens[row]:
+                    finish_reason = "length"
+
+                if finish_reason is not None:
+                    augmented.append(
+                        gb.Response(
+                            uid=uid,
+                            token=tok,
+                            logprobs=lp,
+                            finish_reason=finish_reason,
+                            current_state=current_state,
+                            match_sequence=match_sequence,
+                            prompt_cache=gb.extract_cache(row),
+                            all_tokens=gb.tokens[row],
+                        )
+                    )
+                    # Filter the finished sequence out of gb.
+                    keep = [i for i in range(len(gb.uids)) if i != row]
+                    if keep:
+                        gb.filter(keep)
+                    else:
+                        # Cleared the only sequence; reset the batch.
+                        gb.filter([])
+                    # No more pending to emit for this uid.
                     break
-
-                if tok in self.stop_tokens:
-                    augmented.append(self.Response(uid, tok, lp, "stop", None))
-                    draft_end_uids.add(uid)
-                    break
-
-                draft_finish = None
-                batch = self.active_batch
-                if batch is not None:
-                    for e, bu in enumerate(batch.uids):
-                        if bu == uid:
-                            batch.num_tokens[e] += 1
-                            batch.tokens[e] = mx.concatenate(
-                                (batch.tokens[e], mx.array([tok]))
-                            )
-                            if batch.num_tokens[e] >= batch.max_tokens[e]:
-                                draft_finish = "length"
-                                draft_end_uids.add(uid)
-                            break
-
-                draft_cache_out = None
-                if draft_finish is not None and batch is not None:
-                    for e, bu in enumerate(batch.uids):
-                        if bu == uid:
-                            draft_cache_out = batch.extract_cache(e)
-                            break
 
                 augmented.append(
-                    self.Response(uid, tok, lp, draft_finish, draft_cache_out)
+                    gb.Response(
+                        uid=uid,
+                        token=tok,
+                        logprobs=lp,
+                        finish_reason=None,
+                        current_state=current_state,
+                        match_sequence=match_sequence,
+                        prompt_cache=None,
+                        all_tokens=None,
+                    )
                 )
-
-                if draft_finish is not None:
-                    break
-
-        # Filter batch for sequences that finished on a deferred token
-        if draft_end_uids and self.active_batch is not None:
-            keep = [
-                e
-                for e, u in enumerate(self.active_batch.uids)
-                if u not in draft_end_uids
-            ]
-            if keep:
-                self.active_batch.filter(keep)
-            else:
-                self.active_batch = None
 
         return augmented
 
-    batch_gen._step = _suffix_step
-    batch_gen._next = _suffix_next
-    # Stash stats on batch_gen for telemetry surfacing later.
+    gb._step = _suffix_step
+    gb.next = _suffix_next
+    # Telemetry attached to the BatchGenerator (where the rest of the
+    # engine looks for it) and to gb for direct inspection.
     batch_gen._suffix_stats = _stats
+    gb._suffix_stats = _stats
 
     logger.info(
         "[SuffixDecoding] installed: max_draft=%d, max_suffix_len=%d, "
@@ -1730,6 +1808,7 @@ class Scheduler:
                 max_draft=self.config.suffix_max_draft,
                 max_suffix_len=self.config.suffix_max_suffix_len,
                 min_confidence=self.config.suffix_min_confidence,
+                min_draft_len=self.config.suffix_min_draft_len,
                 requests=self.requests,
                 uid_to_request_id=self.uid_to_request_id,
             )

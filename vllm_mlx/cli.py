@@ -311,6 +311,7 @@ def serve_command(args):
         suffix_max_draft=args.suffix_max_draft,
         suffix_max_suffix_len=args.suffix_max_suffix_len,
         suffix_min_confidence=args.suffix_min_confidence,
+        suffix_min_draft_len=args.suffix_min_draft_len,
         # KV cache quantization
         kv_cache_quantization=args.kv_cache_quantization,
         kv_cache_quantization_bits=args.kv_cache_quantization_bits,
@@ -1266,6 +1267,15 @@ Examples:
         default=0.3,
         help="Vote confidence floor for draft truncation (default: 0.3). "
         "Lower → more optimistic drafts; higher → fewer but more reliable.",
+    )
+    serve_parser.add_argument(
+        "--suffix-min-draft-len",
+        type=int,
+        default=2,
+        help="Skip the verify forward when drafter returns fewer than "
+        "this many tokens (default: 2). Protects free-form chat from "
+        "verify overhead on weak 1-token drafts. Set to 1 to verify "
+        "every draft (more aggressive; can regress chat).",
     )
     # Prefill step size
     serve_parser.add_argument(
