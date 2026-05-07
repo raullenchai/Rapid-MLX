@@ -1400,6 +1400,14 @@ Examples:
     # Models command
     subparsers.add_parser("models", help="List available model aliases")
 
+    # Version + help — utility commands that mirror the existing flags but
+    # are scriptable as plain subcommands.
+    subparsers.add_parser("version", help="Show version number")
+    help_parser = subparsers.add_parser("help", help="Show help for a subcommand")
+    help_parser.add_argument(
+        "subcommand", nargs="?", help="Subcommand to show help for (omit for top-level)"
+    )
+
     # Info command — show the per-model profile (parsers + capability gates)
     info_parser = subparsers.add_parser(
         "info",
@@ -1524,6 +1532,18 @@ Examples:
         bench_command(args)
     elif args.command == "models":
         models_command(args)
+    elif args.command == "version":
+        print(f"rapid-mlx {_version}")
+    elif args.command == "help":
+        target = getattr(args, "subcommand", None)
+        if not target:
+            parser.print_help()
+        elif target in subparsers.choices:
+            subparsers.choices[target].print_help()
+        else:
+            print(f"Unknown subcommand: {target}")
+            print("Run `rapid-mlx help` for the list of subcommands.")
+            sys.exit(1)
     elif args.command == "info":
         info_command(args)
     elif args.command == "agents":
