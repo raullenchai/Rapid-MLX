@@ -140,9 +140,6 @@ class MLXModelRunner:
                 "mlx-lm is required for MLX model runner. "
                 "Install with: pip install mlx-lm"
             )
-        except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            raise
 
     def _apply_optimizations(self) -> None:
         """Apply low-level optimizations for maximum performance."""

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Model alias registry — maps short names to HuggingFace paths."""
 
+import difflib
 import json
 import os
 
@@ -35,3 +36,8 @@ def resolve_model(name: str) -> str:
 def list_aliases() -> dict[str, str]:
     """Return all available aliases."""
     return dict(_load())
+
+
+def suggest_similar(name: str, n: int = 3, cutoff: float = 0.5) -> list[str]:
+    """Return up to `n` aliases similar to `name` for typo suggestions."""
+    return difflib.get_close_matches(name, _load().keys(), n=n, cutoff=cutoff)

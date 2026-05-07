@@ -3,7 +3,7 @@
 
 import os
 
-from vllm_mlx.model_aliases import list_aliases, resolve_model
+from vllm_mlx.model_aliases import list_aliases, resolve_model, suggest_similar
 
 
 def test_known_alias_resolves():
@@ -43,3 +43,14 @@ def test_hermes_alias_not_llama():
     aliases = list_aliases()
     assert "llama3-8b" not in aliases
     assert "hermes3-8b" in aliases
+
+
+def test_suggest_similar_finds_typo():
+    # Real reproduction case from a user: typing a non-existent variant
+    # of an existing family should suggest the family aliases.
+    suggestions = suggest_similar("deepseek-v4-27b")
+    assert any("deepseek-v4" in s for s in suggestions), suggestions
+
+
+def test_suggest_similar_empty_for_nonsense():
+    assert suggest_similar("xyzabc12345") == []
