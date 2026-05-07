@@ -119,12 +119,32 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
                 args.hidden_size, eps=args.rms_norm_eps
             )
             self.fc = nn.Linear(args.hidden_size * 2, args.hidden_size, bias=False)
-            # MTP decoder uses full attention (not linear/delta-net)
             fa_idx = args.full_attention_interval - 1
-            decoder_layer_cls = type(text_model.model.layers[fa_idx])
-            self.layers = [
-                decoder_layer_cls(args, layer_idx=fa_idx) for _ in range(n_layers)
-            ]
+            full_layer = text_model.model.layers[fa_idx]
+            attn_cls = type(full_layer.self_attn)
+            mlp_cls = type(full_layer.mlp)
+
+            class _MTPFullAttentionLayer(nn.Module):
+                def __init__(self, args):
+                    super().__init__()
+                    self.self_attn = attn_cls(args)
+                    self.input_layernorm = nn.RMSNorm(
+                        args.hidden_size, eps=args.rms_norm_eps
+                    )
+                    self.post_attention_layernorm = nn.RMSNorm(
+                        args.hidden_size, eps=args.rms_norm_eps
+                    )
+                    if args.num_experts > 0:
+                        self.mlp = mlp_cls(args)
+                    else:
+                        self.mlp = mlp_cls(args.hidden_size, args.intermediate_size)
+
+                def __call__(self, x, mask=None, cache=None):
+                    r = self.self_attn(self.input_layernorm(x), mask, cache)
+                    h = x + r
+                    return h + self.mlp(self.post_attention_layernorm(h))
+
+            self.layers = [_MTPFullAttentionLayer(args) for _ in range(n_layers)]
             self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
 
     mtp = _MTPModule(args, num_mtp_layers)

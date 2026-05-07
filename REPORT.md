@@ -583,7 +583,7 @@ Conversion bug found:
 - Old `convert-mtplx` wrote only 15 tensors and dropped the MoE router/shared-expert tensors, leaving part of the MTP block randomly initialized.
 - Old `convert-mtplx` also hardlinked `config.json` and then rewrote it in the output directory, contaminating the source model config.
 
-Fix applied:
+First fix applied:
 
 - `convert-mtplx` now preserves MoE router/shared-expert MTP tensors.
 - `convert-mtplx` now shifts MTP norm tensors by `+1.0`, matching mlx-lm sanitize behavior for Qwen3.6 MTP weights.
@@ -594,7 +594,7 @@ Fix applied:
 - Both regenerated outputs now have 20 sidecar tensors.
 - Source model configs no longer contain generated MTPLX fields without a sidecar.
 
-35B results after conversion fix:
+35B results after first conversion fix:
 
 - `Qwen3.6-35B-A3B-4bit-MTPLX-Fixed-Test`:
   - `accepted=4 rejected=252 acceptance=1.6%`
@@ -609,6 +609,59 @@ Fix applied:
   - `accepted=5 rejected=1019 acceptance=0.5%`
   - 2176 completion tokens in 73.39s, 29.7 tok/s
 
+Root cause found:
+
+- vLLM's `Qwen3_5MultiTokenPredictor` applies two additional RMSNorms before the MTP projection:
+  - `mtp.pre_fc_norm_embedding.weight`
+  - `mtp.pre_fc_norm_hidden.weight`
+- The first conversion fix shifted decoder-layer norms but missed those two pre-FC norms.
+- MLX `nn.RMSNorm` expects sanitized Qwen-style norm weights, so every 1D MTP tensor whose name contains `norm` must be shifted by `+1.0`.
+
+Final fix applied:
+
+- `convert-mtplx` now shifts all 1D MTP norm tensors, including both `pre_fc_norm_*` weights.
+- The Qwen3.6 MTP patch builds its draft layer as an explicit full-attention layer, matching the vLLM MTP block shape more closely.
+- Regenerated:
+  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed`
+  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`
+
+35B results after final conversion fix:
+
+- `Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`, direct completion:
+  - `accepted=227 rejected=29 acceptance=88.7%`
+  - `accepted=460 rejected=52 acceptance=89.8%`
+  - `accepted=674 rejected=94 acceptance=87.8%`
+  - `accepted=915 rejected=109 acceptance=89.4%`
+  - 2176 completion tokens in 17.72s, 122.8 tok/s
+- Temperature matrix on the same regenerated model:
+  - `temperature=0.0`: final acceptance `87.2%`, 121.4 tok/s
+  - `temperature=0.2`: final acceptance `89.8%`, 124.9 tok/s
+  - `temperature=0.5`: final acceptance `90.3%`, 105.6 tok/s
+  - `temperature=1.0`: final acceptance `88.7%`, 95.7 tok/s
+
+Pi REST API validation:
+
+- Model served:
+  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`
+- Prompt:
+  - `create a REST api using express and bun and typescript.`
+- Generated project:
+  - `/tmp/pi-mtplx-rest-98VKWN`
+- Generated files included:
+  - `package.json`
+  - `tsconfig.json`
+  - `src/index.ts`
+- Build proof:
+  - `bun run build` passed.
+  - `Bundled 146 modules in 15ms`.
+- Smoke proof:
+  - `/api/health` returned `HTTP/1.1 200 OK`.
+  - Response body included `{"status":"ok","timestamp":"2026-05-07T02:21:47.188Z"}`.
+- MTP acceptance during agentic Pi turns:
+  - `91.4%`, then `94.5%`
+  - `91.8%`, then `94.1%`
+  - `93.8%`, then `95.1%`
+
 Negative tests:
 
 - FC concat order variants (`embedding,hidden` vs `hidden,embedding`) did not improve acceptance; default `embedding,hidden` was best.
@@ -619,6 +672,7 @@ Negative tests:
 
 Interpretation:
 
-- There was a real `convert-mtplx` bug. Fixing it changes the 35B sidecar from incomplete to structurally correct and raises 4bit acceptance from `0.0%` to roughly `0.6%`.
-- The remaining low acceptance is not caused only by 4bit quantization, because full-precision 35B with the corrected sidecar also stays around `0.5%`.
-- Current evidence points to a remaining 35B-A3B MTP architecture/semantics mismatch in the MLX runtime, or a low-quality/incompatible embedded MTP head for this checkpoint. It is not a generic MTPLX runtime failure because the official 27B path reaches `94.3%`.
+- There were two real `convert-mtplx` bugs for Qwen3.6 35B-A3B: incomplete sidecar extraction and incomplete Qwen norm sanitization.
+- Preserving the MoE MTP tensors made the sidecar structurally complete but still left acceptance near zero.
+- Shifting all 1D MTP norm tensors fixed the remaining acceptance mismatch.
+- The regenerated 35B 4-bit MTPLX model now reaches roughly `89-90%` direct acceptance and `91-95%` agentic Pi-turn acceptance on the REST API workflow.

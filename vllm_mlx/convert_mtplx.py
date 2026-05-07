@@ -204,14 +204,8 @@ def _normalize_qwen36_mtp(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _shift_qwen36_mtp_norms(tensors: dict[str, Any]) -> None:
-    norm_suffixes = (
-        ".input_layernorm.weight",
-        ".post_attention_layernorm.weight",
-        ".q_norm.weight",
-        ".k_norm.weight",
-    )
     for key in list(tensors):
-        if key == "mtp.norm.weight" or any(key.endswith(sfx) for sfx in norm_suffixes):
+        if "norm" in key and getattr(tensors[key], "ndim", None) == 1:
             tensors[key] = tensors[key] + 1.0
 
 

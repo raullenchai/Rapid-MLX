@@ -98,6 +98,8 @@ def test_convert_mtplx_writes_expected_sidecar_layout(tmp_path):
     assert sidecar["mtp.layers.0.mlp.up_proj.weight"].shape == (3, 2, 2)
     assert mx.all(sidecar["mtp.norm.weight"] == 2.0).item()
     assert mx.all(sidecar["mtp.layers.0.input_layernorm.weight"] == 2.0).item()
+    assert mx.all(sidecar["mtp.pre_fc_norm_embedding.weight"] == 2.0).item()
+    assert mx.all(sidecar["mtp.pre_fc_norm_hidden.weight"] == 2.0).item()
 
     config = json.loads((result.output / "config.json").read_text())
     assert config["mlx_lm_extra_tensors"]["mtp_file"] == "mtp.safetensors"
