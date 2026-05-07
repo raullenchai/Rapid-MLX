@@ -4,7 +4,7 @@
 from argparse import Namespace
 import json
 
-from vllm_mlx.cli import _apply_qwen36_mtplx_preset
+from vllm_mlx.cli import _apply_qwen36_35b_defaults, _apply_qwen36_mtplx_preset
 
 
 def _serve_args(model: str, original_alias: str | None = None) -> Namespace:
@@ -131,6 +131,33 @@ def test_verified_local_mtplx_qwen35b_path_respects_log_level(tmp_path):
     _apply_qwen36_mtplx_preset(args, ["serve", str(model), "--log-level", "INFO"])
 
     assert args.log_level == "INFO"
+
+
+def test_qwen36_35b_base_path_uses_temperature_defaults():
+    args = _serve_args("/models/Qwen3.6-35B-A3B-4bit")
+
+    _apply_qwen36_35b_defaults(args, ["serve", "/models/Qwen3.6-35B-A3B-4bit"])
+
+    assert args.default_temperature == 0.6
+    assert args.default_top_p == 0.95
+    assert args.enable_mtp is False
+
+
+def test_qwen36_35b_base_path_respects_temperature_override():
+    args = _serve_args("/models/Qwen3.6-35B-A3B-4bit")
+    args.default_temperature = 0.2
+
+    _apply_qwen36_35b_defaults(
+        args,
+        [
+            "serve",
+            "/models/Qwen3.6-35B-A3B-4bit",
+            "--default-temperature",
+            "0.2",
+        ],
+    )
+
+    assert args.default_temperature == 0.2
 
 
 def test_qwen36_preset_respects_explicit_overrides():

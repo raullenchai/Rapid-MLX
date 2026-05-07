@@ -108,6 +108,17 @@ def _apply_qwen36_mtplx_preset(
         args.enable_tool_logits_bias = True
 
 
+def _apply_qwen36_35b_defaults(args: argparse.Namespace, raw_args: list[str]) -> None:
+    if getattr(args, "command", None) != "serve" or not _is_qwen36_35b_a3b_request(
+        args
+    ):
+        return
+    if not _has_cli_option(raw_args, "--default-temperature"):
+        args.default_temperature = 0.6
+    if not _has_cli_option(raw_args, "--default-top-p"):
+        args.default_top_p = 0.95
+
+
 def _check_disk_space(model_name: str) -> None:
     """Check if there's enough disk space to download the model.
 
@@ -1823,6 +1834,7 @@ Examples:
             args.model = resolved
 
     _apply_qwen36_mtplx_preset(args, raw_args)
+    _apply_qwen36_35b_defaults(args, raw_args)
 
     if args.command == "serve":
         serve_command(args)

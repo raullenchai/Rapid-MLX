@@ -1,678 +1,175 @@
-# Qwen3.6-35B-A3B MTPLX Agentic Snake Report
+# Qwen3.6 35B-A3B MTPLX Benchmark Report
 
-Branch/workdir: `/Users/samuelfajreldines/dev/rapid-mlx`
+## Benchmark Highlight
 
-Target prompt:
+Same prompt, same agentic workflow, one server at a time:
 
 ```text
-create the snake game with html and typescript
+Create the snake game using react, vite and typescript
 ```
 
-Goal:
-
-- Plain serve command must work for `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`.
-- Pi provider `local`, model `local` must create a functional HTML + TypeScript snake game.
-- Runtime change must be generic, not prompt-specific.
-- Tool-use must be efficient: no 2048-token loops, no reasoning/prolixity in stream.
-- Final proof must include generated files plus build/check/browser smoke where applicable.
-
-## Current Baseline From Live Runs
-
-Observed before this pass:
-
-- Plain `hi` was fixed earlier: no `reasoning_content` leaked and response was short.
-- Pi snake prompt still failed.
-- Runs timed out at 60-90s.
-- Generated artifacts were incomplete:
-  - `/tmp/rapid-mlx-pi-snake-html-ts-info`: only `index.html`, no script/build.
-  - `/tmp/rapid-mlx-pi-snake-html-ts-bashhint`: `index.html` + `snake.ts`, but no package/build and HTML referenced raw `snake.ts`.
-- Server logs showed first tool request could generate 480-1102 tokens and following tool turns could hit 2048 tokens.
-- MTP acceptance for this workload was effectively 0 accepted / many rejected, so MTP added work without benefit in these tool-heavy turns.
-
-## Working Hypothesis
-
-Primary issue is not `reasoning_content` leakage anymore. The model spends too many tokens inside tool responses and often writes incomplete multi-file artifacts over several turns. Need runtime-level bounds and retry behavior for tool requests.
-
-Next candidate changes:
-
-- Cap tool request generation budget from the first request, not only after `last_role == tool`.
-- Use lower temperature for tool requests when user did not explicitly set it.
-- Add a short retry path when tool requests produce content/deferred plans instead of tool calls.
-- Consider disabling MTP for tool-heavy 35B requests if acceptance remains 0 and latency worsens.
-
-## Candidate A: Bound Tool-Turn Budgets
-
-Change under test:
-
-- Tool requests now cap generation at `1024` tokens from the first turn.
-- Tool retry turns now cap generation at `512` tokens and retry at most `3` times.
-- Tool requests default to temperature `0.2` unless the client explicitly sets temperature.
-
-Why:
-
-- Live Pi snake runs showed first request using `max_tokens=32768` and retry requests using `2048`, causing 60-90s stalls.
-- This is generic for tool-use and not specific to snake.
-
-Validation status:
-
-- Unit tests passed with Candidate A.
-- Live result: rejected.
-
-Live result:
-
-- Directory: `/tmp/rapid-mlx-pi-snake-candidate-a`.
-- `pi`: exit code `0`, but invalid artifact.
-- Files: `index.html`, `style.css`, `snake.ts`, `pi.out`.
-- Problem: `index.html` references raw `snake.ts`; browser will not execute TypeScript interfaces/enums directly.
-- Problem: final `pi.out` was malformed/incomplete: `<think>Let</think>` then `[Calling tool=read]`.
-- Server logs confirmed caps applied (`1024` first turn, `512` retry), but quality degraded and artifact was not usable.
-
-Decision:
-
-- Reverted Candidate A. It reduced budget but made the agent stop with incomplete/broken output.
-
-## Candidate B: Prompt-Level Structured Tool Thinking
-
-Change under test:
-
-- Add structured-cot-inspired instruction to tool-use system suffix.
-- This is prompt-level only, not grammar-constrained decoding, because lightning-mlx does not currently expose GBNF/logit-mask grammar support.
-- Keep budgets unchanged to avoid truncating tool-call arguments.
-
-Rationale:
-
-- `structured-cot` reports large compression by constraining `<think>` to compact fields such as `GOAL/APPROACH/EDGE`.
-- For this runtime, the nearest safe generic step is a short structured planning format for tool turns while preserving existing parser/tool behavior.
-
-Implementation:
-
-- Tool-use system suffix now says any necessary internal planning before a tool call must be compact structured `GOAL/ACTION/VERIFY`, one short line each, then immediately call the tool.
-- Added unit coverage for this suffix.
-
-Validation status:
-
-- Focused tests passed: `154 passed`.
-- Live result: rejected.
-
-Live result:
-
-- Directory: `/tmp/rapid-mlx-pi-snake-candidate-b`.
-- After 40s, no generated files except empty `pi.out`.
-- Server first request still had `max_tokens=32768`.
-- MTP stats stayed `accepted=0`, rejected increasing.
-
-Decision:
-
-- Reverted Candidate B. Prompt-level structured-cot instruction worsened live behavior. True grammar-constrained decoding may still be useful later, but prompt-only structured planning is not kept.
-
-## Candidate C: Prefer Bash In Tool Template
-
-Change under test:
-
-- Preserve OpenAI response behavior, but present `bash` first in the chat template tool list when available.
-- Augment only the `bash` tool description with a generic note: prefer it for multi-file project setup, build, test, and validation workflows.
-
-Why:
-
-- Live artifacts show the model repeatedly chooses one-file write flows (`index.html`, then `snake.ts`) and skips build/validation.
-- Pi exposes a `bash` tool that can create multi-file projects and validate them in one turn.
-- This is generic for agentic coding workflows and not snake-specific.
-
-Validation status:
-
-- Unit test added for bash ordering/description.
-- Focused tests passed: `154 passed`.
-- Live result: rejected.
-
-Live result:
-
-- Directory: `/tmp/rapid-mlx-pi-snake-candidate-c`.
-- After 35s, no generated files except empty `pi.out`.
-- Server first request still ran very long with `max_tokens=32768`.
-- MTP remained `accepted=0`.
-
-Decision:
-
-- Reverted Candidate C. Tool ordering/description did not improve live behavior.
-
-## Candidate D: Parse Bracketed Equals Tool Calls
-
-Change under test:
-
-- Add generic parser support for malformed tool text like `[Calling tool=read]`.
-- Parse `[Calling tool=name({...})]` when arguments are present.
-- Treat no-argument `[Calling tool=name]` text as deferred tool-use intent so the retry path handles it instead of streaming it as final content.
-
-Why:
-
-- Candidate A finished with `pi.out` containing `<think>Let</think>` followed by `[Calling tool=read]`.
-- That is tool intent, not final assistant content. If parser converts it into a real tool call, Pi can continue instead of stopping on malformed text.
-
-Validation status:
-
-- Unit tests added for `[Calling tool=bash({...})]` parser and `[Calling tool=read]` deferred-tool detection.
-- Focused tests passed: `155 passed`.
-- Live Pi validation pending.
-
-## Candidate E: Conservative First Tool Budget Cap
-
-Change under test:
-
-- Cap every request with tools at `2048` generated tokens, including the first tool request.
-- Keep retry count and temperature behavior unchanged.
-
-Why:
-
-- Baseline showed first tool requests using `max_tokens=32768`, which allowed long planning/prolixity before a tool call.
-- Candidate A proved aggressive caps (`1024` first request, `512` retries) reduce budget but hurt artifact quality.
-- Candidate E is the smallest conservative runtime bound: prevent runaway first turns without squeezing valid multi-file tool arguments.
-
-Validation status:
-
-- Unit test added for `_tool_turn_max_tokens`.
-- Focused tests passed: `156 passed`.
-- Live result: rejected.
-
-Live result:
-
-- Directory: `/tmp/rapid-mlx-pi-snake-candidate-e`.
-- `pi`: timeout after 120s (`EXIT:142`).
-- Files: only `index.html` plus empty `pi.out`.
-- Server confirmed first tool request was capped from `32768` to `2048`.
-- But it still generated full `2048` tokens on consecutive tool turns.
-- MTP stayed `accepted=0` while rejected count climbed.
-
-Decision:
-
-- Partially useful but incomplete. It proves first-turn cap applies, but still violates the no-2048-loop criterion.
-- Superseded by Candidate F with lower cap and generic shell-tool preference.
-
-## Candidate F: Lower Tool Cap Plus Shell Tool Preference
-
-Change under test:
-
-- Cap tool requests at `1536` tokens to avoid 2048-token loops.
-- Present shell-style tools (`bash`, `shell`, `exec`, `run_command`) first in the chat-template tool list.
-- Add a short generic shell-tool description hint for multi-file changes plus build/test/validation.
-
-Why:
-
-- Candidate E still hit repeated 2048-token tool turns.
-- Pi created one file at a time. Shell tools can create and validate a multi-file project in one turn.
-- Candidate C tested shell preference alone and failed because first request still had `32768`; Candidate F tests the combined runtime fix.
-
-Validation status:
-
-- Implemented.
-- Focused tests passed: `157 passed`.
-- Live result: rejected.
-
-Live result:
-
-- Directory: `/tmp/rapid-mlx-pi-snake-candidate-f`.
-- `pi`: timeout after 150s (`EXIT:142`).
-- Files: `index.html`, `snake.ts`, empty `pi.out`.
-- `index.html` references `snake.js`, but no `snake.js` or build/package was created.
-- Server confirmed cap lowered to `1536`.
-- Still multiple long tool turns: 1536, 1536, 92, then cancelled after 498 tokens.
-- MTP stayed `accepted=0`, rejected exceeded 4000.
-
-Decision:
-
-- Partial improvement only. More files were created, but still not functional and still too slow.
-- Keep shell preference as a candidate only if later validation passes; otherwise revert before final.
-
-## Candidate G: Explicit No-MTP Comparison
-
-Change under test:
-
-- Add explicit `--disable-mtp` override so MTPLX presets can be compared without speculative decode.
-- Run the same Candidate F runtime behavior with MTP disabled.
-
-Why:
-
-- All 35B tool-heavy runs show MTP `accepted=0`; every speculative step is rejected/corrected.
-- Need proof whether MTP is net-negative for this workload before changing defaults.
-
-Validation status:
-
-- `--disable-mtp` implemented as explicit CLI override only.
-- Focused tests passed: `158 passed`.
-- Live result: rejected.
-
-Live result:
-
-- Directory: `/tmp/rapid-mlx-pi-snake-candidate-g-nomtp`.
-- `pi`: timeout after 150s (`EXIT:142`).
-- Files: only `index.html`, `styles.css`, empty `pi.out`.
-- No MTP stats were emitted, confirming MTP was disabled.
-- Decode throughput per long turn improved versus MTP, but artifact quality/regression was worse.
-
-Decision:
-
-- Keep `--disable-mtp` as explicit diagnostic/fallback flag unless later tests show downside.
-- Do not disable MTP by default from this evidence alone.
-
-## Candidate H: Parser Change
-
-Change under test:
-
-- Considered running the 35B MTPLX model with `--tool-call-parser qwen3_xml`.
-
-Why:
-
-- Hypothesis was that parser mismatch could cause late fallback tool calls.
-- User clarified this is wrong for Qwen3.6: parser must always be `qwen3_coder_xml` with `reasoning-parser qwen3`.
-
-Validation status:
-
-- No parser change kept.
-- Added auto-config test proving Qwen3.6 resolves to `qwen3_coder_xml` + `qwen3`.
-- Existing MTPLX preset already applies `qwen3_coder_xml` + `qwen3`.
-- Focused tests passed: `187 passed`.
-
-## Conversion / Model Quality Check
-
-Question:
-
-- Could `convert-mtplx` have produced a bad model, or could the 35B-A3B architecture be a poor MTPLX fit?
-
-Evidence:
-
-- `mtplx inspect /Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed --json` passed.
-- Compatibility status: `verified-native`.
-- Runtime contract found: `mtplx_runtime.json`.
-- MTP sidecar found: `mtp.safetensors`.
-- MTP tensor gate passed: `15` expected tensors, `15` present, no missing keys, no extra keys.
-- Runtime contract exactness baseline reports `max_abs_diff: 0.0`.
-- Converted model files match expected 4-bit base layout plus `mtp.safetensors` and `mtplx_runtime.json`.
-
-Interpretation:
-
-- No current evidence of a broken conversion layout.
-- Still possible that this 35B-A3B 4-bit base plus BF16 MTP sidecar has poor speculative acceptance in this runtime.
-- Live evidence supports that concern: MTP acceptance stayed `0` in agentic tool-heavy runs.
-- Disabling MTP improved raw decode speed but worsened artifact quality, so the issue is not only MTP overhead.
-
-Decision:
-
-- Do not blame `convert-mtplx` yet.
-- Treat this as either runtime MTP acceptance mismatch for 35B-A3B, model/tool-use weakness, or both.
-
-## Pi `userThe` Degeneration Check
-
-Question:
-
-- The Pi terminal shows `userThe userThe...` for a simple `hi`. Is that MTP runtime mismatch, bad conversion, or model weakness?
-
-Matrix:
-
-- Base 4bit model, direct OpenAI curl, no MTP:
-  - Command served `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit`.
-  - Response: `Hi! How can I help you today? 😊`.
-  - No `userThe`.
-- MTPLX model, direct OpenAI curl, `--disable-mtp`:
-  - Response: `Hi! How can I help you today? 😊`.
-  - Same prompt/completion usage as base direct curl: `11` prompt, `212` completion.
-  - No `userThe`.
-- MTPLX model, direct OpenAI curl, MTP enabled:
-  - Response: `Hello! How can I help you today? 😊`.
-  - Usage: `11` prompt, `34` completion.
-  - No `userThe`.
-- MTPLX model, Pi `hi`, MTP enabled:
-  - Command wrote `/tmp/rapid-mlx-pi-hi-mtp/pi.out`.
-  - Output reproduced `The userThe userThe...`.
-  - Server request shape: stream=true, `msgs=2`, roles `['system', 'user']`, `tools=4`, total chars around `2436`, prompt tokens `1727`.
-  - MTP stats during this request: `accepted=0`, rejected climbed to `768`.
-  - Completion hit `1536` tokens.
-- MTPLX model, Pi `hi`, `--disable-mtp`:
-  - Output file size `0`, exit `0`.
-  - Server generated only `38` tokens.
-  - No `userThe`.
-- Base 4bit model, Pi `hi`:
-  - Output file size `0`, exit `0`.
-  - Server generated only `33` tokens.
-  - No `userThe`.
-
-Interpretation:
-
-- `convert-mtplx` base copy is likely fine because MTPLX with MTP disabled behaves like base.
-- Direct API with MTP enabled is also fine for the tiny no-tool request.
-- Degeneration is specific to MTP enabled under Pi's agentic request shape: long system prompt plus tools plus streaming.
-- This is now strong evidence of an MTP acceptance/runtime mismatch for tool-heavy 35B-A3B requests, not a generic tokenizer/model conversion failure.
-
-## Full-Precision MTPLX Comparison
-
-Question:
-
-- Is the `userThe` degeneration caused by Qwen3.6-35B-A3B itself, by quantization, or by MTPLX conversion?
-
-Additional matrix:
-
-- Full source model `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B` served with `--enable-mtp`:
-  - Runtime warning: no `model-mtp.safetensors` / `mtp.safetensors`; MTP validation failed and was disabled.
-  - Pi `hi`: exit `0`, output size `0`.
-  - Server generated `36` tokens.
-  - No `userThe`.
-- Full converted MTPLX model `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed` served with MTP enabled:
-  - MTP injected and validated.
-  - Pi `hi`: exit `0`, output size `0`.
-  - Server generated `34` tokens.
-  - No `userThe`.
-- Earlier 4-bit converted MTPLX model `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` with MTP enabled:
-  - Pi `hi` reproduced `The userThe userThe...`.
-  - Server generated `1536` tokens and MTP accepted `0`.
-
-Interpretation:
-
-- Qwen3.6-35B-A3B full MTPLX can run Pi `hi` with MTP enabled without degeneration.
-- The bug is not explained by Qwen3.6-35B-A3B architecture alone.
-- Current strongest culprit is the 4-bit converted model path: 4-bit base plus BF16 MTP sidecar or quantized-base/MTP acceptance mismatch.
-- The full source model is not a true MTP comparison because MTP did not activate there.
-
-## Full MTPLX Express/Bun/TypeScript Pi Run
-
-Prompt:
-
-```text
-create a REST api using express and bun and typescript.
-```
-
-Model:
-
-```text
-/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed
-```
-
-Serve:
+| Metric | 35B base | **35B MTPLX** | **Gain** |
+| --- | ---: | ---: | ---: |
+| Completion | Timeout after 10 min | **Finished** | **Completed** |
+| Generated app build | Failed | **Failed** | **No valid artifact** |
+| All-turn avg | 27.73 tok/s | **64.85 tok/s** | **+133.9% / 2.34x** |
+| Long-turn avg | 26.52 tok/s | **75.13 tok/s** | **+183.3% / 2.83x** |
+| Short-turn avg | 29.18 tok/s | **52.50 tok/s** | **+79.9% / 1.80x** |
+| MTP acceptance avg | N/A | **96.62%** | **MTP enabled** |
+
+**Biggest win:** long tool-heavy turns went from **26.52 tok/s** to **75.13 tok/s**. The MTPLX run finished the agentic workflow inside the 10 minute limit; the base run did not.
+
+## Setup
+
+Hardware and runtime:
+
+- Apple Silicon local MLX runtime.
+- Repository branch: `convert-mtplx`.
+- Server command was run once per model, with one server active at a time.
+- Prefix cache was disabled for both runs.
+- Tool parser: `qwen3_coder_xml`.
+- Reasoning parser: `qwen3`.
+- Default temperature: `0.6`.
+- Default top-p: `0.95`.
+
+Models:
+
+- 35B base:
+  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit`
+- 35B MTPLX:
+  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`
+
+Agent command:
 
 ```bash
-uv run lightning-mlx serve /Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed --enable-mtp --disable-prefix-cache --log-level INFO
+PI_OFFLINE=1 pi --provider local --model local --no-context-files --no-session \
+  -p "Create the snake game using react, vite and typescript"
 ```
 
-Result:
+## Base Run
 
-- Directory: `/tmp/rapid-mlx-pi-express-bun-full-mtplx`.
+Command:
+
+```bash
+uv run lightning-mlx serve /Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit \
+  --served-model-name local \
+  --port 8010 \
+  --default-temperature 0.6 \
+  --default-top-p 0.95 \
+  --disable-prefix-cache \
+  --max-num-seqs 1 \
+  --prefill-batch-size 1 \
+  --completion-batch-size 1 \
+  --stream-interval 1 \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder_xml \
+  --reasoning-parser qwen3 \
+  --enable-tool-logits-bias \
+  --log-level INFO
+```
+
+Outcome:
+
+- Pi exit: `142`.
+- The benchmark hit the 10 minute limit.
+- The model generated a React/Vite/TypeScript project in `/tmp/lmlx-35b-base-snake`.
+- Build failed:
+  - `src/App.tsx(190,9): error TS1109: Expression expected.`
+  - `src/App.tsx(190,10): error TS1109: Expression expected.`
+
+Observed stream completions:
+
+| Turn | Tokens | tok/s |
+| ---: | ---: | ---: |
+| 1 | 63 | 21.7 |
+| 2 | 121 | 59.1 |
+| 3 | 41 | 38.8 |
+| 4 | 28 | 24.8 |
+| 5 | 34 | 1.5 |
+| 6 | 1536 | 35.2 |
+| 7 | 1536 | 20.6 |
+| 8 | 1536 | 25.5 |
+| 9 | 1536 | 27.2 |
+| 10 | 1536 | 26.2 |
+| 11 | 1536 | 24.4 |
+
+Base metrics:
+
+- All-turn avg: `27.73 tok/s`.
+- Long-turn avg: `26.52 tok/s`.
+- Short-turn avg: `29.18 tok/s`.
+- Completion: timeout after 10 minutes.
+- Generated app build: failed.
+
+## MTPLX Run
+
+Command:
+
+```bash
+uv run lightning-mlx serve /Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed \
+  --log-level INFO
+```
+
+The MTPLX local-path preset automatically applied:
+
+- MTP enabled.
+- Served OpenAI model name `local`.
+- Port `8010`.
+- Default temperature `0.6`.
+- Default top-p `0.95`.
+- Prefix cache disabled.
+- Single-sequence agent mode.
+- `qwen3_coder_xml` tool parser.
+- `qwen3` reasoning parser.
+- Tool logits bias.
+- Thinking enabled for Qwen3.6 35B-A3B.
+
+Outcome:
+
 - Pi exit: `0`.
-- No `userThe` output; `pi.out` size `0`.
-- Generated files:
-  - `package.json`
-  - `tsconfig.json`
-  - `src/index.ts`
-  - `src/routes/userRoutes.ts`
-  - `src/services/userService.ts`
-  - `src/types/index.ts`
-- `bun install` passed.
-- `bun run build` passed and created `dist/index.js`.
-- Smoke:
-  - Server started with `bun run start`.
-  - `GET /api/users` returned `200`.
-  - `GET /` returned `404` with JSON `{ success: false, error: "Route not found" }`, which matches generated catch-all behavior.
-
-Runtime evidence:
-
-- MTP injected and validated.
-- MTP acceptance remained `0` during long agentic turns.
-- Despite `accepted=0`, full MTPLX avoided the `userThe` degeneration seen on the 4-bit MTPLX model.
-- Some turns were still slow: examples include 73 tokens in 74s and 1036 tokens in 108s.
-
-Interpretation:
-
-- Full MTPLX can complete a practical agentic coding prompt with valid build and endpoint smoke proof.
-- The remaining performance issue is MTP acceptance staying at `0`; full precision avoids corruption but still pays speculative overhead.
-- This further isolates the severe degeneration to the 4-bit MTPLX path, while quality on full MTPLX is usable but slow.
-
-## Official 27B MTPLX Comparison
-
-Question:
-
-- Is zero MTP acceptance caused by our `convert-mtplx`, or does the official `Qwen3.6-27B-MTPLX-Optimized-Speed` also fail in this runtime?
-
-Model:
-
-```text
-/Users/samuelfajreldines/dev/models/Qwen3.6-27B-MTPLX-Optimized-Speed
-```
-
-Inspect:
-
-- `mtplx inspect ... --json` passed with `support_level: verified-native`.
-- Runtime contract exists.
-- Sidecar format: `prequantized-mlx-affine`.
-- MTP tensor count: `29`.
-- Contract `mtp_depth_max: 3`.
-- Contract exactness baseline: passed, `max_abs_diff: 0.0`, `sample_agreement: 1.0`, `topk_overlap_ratio: 1.0`.
-
-Serve/runtime result:
-
-- MTP injected as quantized MTP: `4-bit`, `group_size=64`.
-- Runtime then emitted repeated warnings:
-  - `[quantized_matmul] The shapes of the weight and scales are incompatible based on bits and group_size.`
-  - Example: `w.shape() == (12288,640)` and `scales.shape() == (12288,160)` with `group_size=64` and `bits=4`.
-- Pi `hi` did not degenerate:
-  - exit `0`
-  - output size `0`
-  - server generated `3` tokens
-- But MTP was not successfully providing accepted speculative tokens; it failed inside the quantized matmul path and effectively fell back to normal decode.
-
-Interpretation:
-
-- This weakens the hypothesis that the issue is only our `convert-mtplx`.
-- The official 27B MTPLX model also does not exercise a healthy accepting MTP path in the current runtime.
-- Different failure mode:
-  - official 27B quantized sidecar: runtime shape error in quantized MTP matmul;
-  - our 35B full BF16 sidecar: runs but MTP accepted remains `0`;
-  - our 35B 4-bit + BF16 sidecar: runs, accepted remains `0`, and Pi tool-heavy request can degenerate into `userThe`.
-- Next likely fix area is the runtime MTP implementation, especially quantized sidecar handling and acceptance/cache alignment, not only the conversion script.
-
-## Main Branch Comparison For Official 27B
-
-Question:
-
-- User reported `main` works perfectly with `Qwen3.6-27B-MTPLX-Optimized-Speed`.
-
-Finding:
-
-- Tested a temporary `main` worktree at `/tmp/rapid-mlx-main-mtp-check`.
-- `main` serves the 27B model successfully, but MTP does not activate.
-- Logs on `main`:
-  - `Model does not have MTP config (num_nextn_predict_layers=0).`
-  - `MTP validation failed — --enable-mtp will be ignored.`
-  - `--enable-mtp is set but model has no MTP head (model.mtp is None). MTP will be disabled.`
-- Pi `hi` on `main`:
-  - exit `0`
-  - output size `0`
-  - generated `10` tokens
-  - no `userThe`
-
-Interpretation:
-
-- `main` works because it silently falls back to normal decode for this model.
-- Current branch changed behavior by detecting `text_config.mtp_num_hidden_layers` and loading `mtp.safetensors`; that exposed runtime MTP bugs.
-
-Fix attempted:
-
-- Official 27B sidecar uses packed quantized weights whose scales imply `group_size=32`, while config says `group_size=64`.
-- Added runtime inference of quantized MTP group size from sidecar shapes.
-- After patch, 27B logs:
-  - `Quantized MTP: 4-bit, group_size=32`
-  - no more `quantized_matmul` shape error during warmup or Pi `hi`.
-- Focused tests passed: `53 passed`.
-
-Remaining issue:
-
-- Medium 27B generation still shows `MTP stats {'accepted': 0, 'rejected': 128, 'corrections': 128, 'errors': 0}`.
-- Therefore group-size was one bug, but acceptance/cache alignment remains wrong.
-
-## Benchmark Branch Comparison
-
-Question:
-
-- The benchmark highlight reports `Qwen3.6-27B-MTPLX-Optimized-Speed` with MTP acceptance around `94.30%`.
-
-Finding:
-
-- The benchmark report itself says `Branch: optimize-agentic-mtp-speed`.
-- Tested local branch `optimize-agentic-mtp-speed` at commit `4f9f442 Improve MTP agentic tool-call performance`.
-- This branch is not using the same MTP scheduler mode as current `convert-mtplx`.
-
-Observed in benchmark branch logs:
-
-- MTP injects quantized sidecar with `group_size=32`.
-- Scheduler logs:
-  - `[MTP] using default top_k=20 for native MTP sampling`
-  - `[MTP] installed for mlx-lm GenerationBatch API, num_draft_tokens=1, draft_temp=0.7, always-advance mode`
-- Medium generation:
-  - 366 completion tokens in 10.48s
-  - 34.9 tok/s
-  - no degeneration
-
-Observed in current `convert-mtplx` branch:
-
-- After group-size fix, 27B injects quantized sidecar with `group_size=32`.
-- Scheduler logs:
-  - `[MTP] installed native GenerationBatch speculative patch, num_draft_tokens=1, draft_temp=0.7, verified mode`
-- Medium generation:
-  - 356 completion tokens in 15.66s
-  - 22.7 tok/s
-  - `accepted=0`, `rejected=128`
-
-Interpretation:
-
-- The benchmark win came from the `always-advance` MTP scheduler path.
-- Current branch replaced/added a `verified mode` path for mlx-lm `GenerationBatch`, and that path rejects every MTP draft.
-- Therefore the regression is not only conversion. It is primarily scheduler behavior drift from the benchmark branch.
-
-Likely next fix:
-
-- Restore the benchmark branch's `always-advance` scheduler behavior for this Qwen3.6 MTPLX path, or expose it as the default performance profile for MTPLX models.
-- Keep `verified` mode only behind an explicit safety/debug flag until acceptance/cache alignment is fixed.
-
-## Qwen3.6 35B-A3B Acceptance Investigation
-
-Question:
-
-- Find whether low MTP acceptance on `Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` is caused by runtime code, `convert-mtplx`, or the 35B-A3B MTP head itself.
-
-Controls:
-
-- `Qwen3.6-27B-MTPLX-Optimized-Speed` after restoring the benchmark `always-advance` scheduler path:
-  - `accepted=236 rejected=20 acceptance=92.2%`
-  - `accepted=478 rejected=34 acceptance=93.4%`
-  - `accepted=724 rejected=44 acceptance=94.3%`
-  - 1573 completion tokens in 37.07s, 42.4 tok/s
-- This proves the restored runtime path can produce high acceptance with a known-good MTPLX model.
-
-35B results before conversion fix:
-
-- `Qwen3.6-35B-A3B-MTPLX-Optimized-Speed` full precision:
-  - `accepted=0 rejected=1280 acceptance=0.0%`
-  - 2560 completion tokens in 124.85s, 20.5 tok/s
-- `Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`:
-  - `accepted=0 rejected=1280 acceptance=0.0%`
-  - 2560 completion tokens in 37.98s, 67.4 tok/s
-
-Conversion bug found:
-
-- The embedded 35B MTP source has 19 raw `mtp.*` tensors, including:
-  - `mtp.layers.0.mlp.gate.weight`
-  - `mtp.layers.0.mlp.shared_expert.down_proj.weight`
-  - `mtp.layers.0.mlp.shared_expert.gate_proj.weight`
-  - `mtp.layers.0.mlp.shared_expert.up_proj.weight`
-  - `mtp.layers.0.mlp.shared_expert_gate.weight`
-- Old `convert-mtplx` wrote only 15 tensors and dropped the MoE router/shared-expert tensors, leaving part of the MTP block randomly initialized.
-- Old `convert-mtplx` also hardlinked `config.json` and then rewrote it in the output directory, contaminating the source model config.
-
-First fix applied:
-
-- `convert-mtplx` now preserves MoE router/shared-expert MTP tensors.
-- `convert-mtplx` now shifts MTP norm tensors by `+1.0`, matching mlx-lm sanitize behavior for Qwen3.6 MTP weights.
-- `convert-mtplx` now copies `config.json` instead of hardlinking it.
-- Regenerated:
-  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed`
-  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`
-- Both regenerated outputs now have 20 sidecar tensors.
-- Source model configs no longer contain generated MTPLX fields without a sidecar.
-
-35B results after first conversion fix:
-
-- `Qwen3.6-35B-A3B-4bit-MTPLX-Fixed-Test`:
-  - `accepted=4 rejected=252 acceptance=1.6%`
-  - `accepted=4 rejected=508 acceptance=0.8%`
-  - `accepted=5 rejected=763 acceptance=0.7%`
-  - `accepted=6 rejected=1018 acceptance=0.6%`
-  - 2304 completion tokens in 26.96s, 85.5 tok/s
-- `Qwen3.6-35B-A3B-MTPLX-Fixed-Test` full precision:
-  - `accepted=3 rejected=253 acceptance=1.2%`
-  - `accepted=3 rejected=509 acceptance=0.6%`
-  - `accepted=5 rejected=763 acceptance=0.7%`
-  - `accepted=5 rejected=1019 acceptance=0.5%`
-  - 2176 completion tokens in 73.39s, 29.7 tok/s
-
-Root cause found:
-
-- vLLM's `Qwen3_5MultiTokenPredictor` applies two additional RMSNorms before the MTP projection:
-  - `mtp.pre_fc_norm_embedding.weight`
-  - `mtp.pre_fc_norm_hidden.weight`
-- The first conversion fix shifted decoder-layer norms but missed those two pre-FC norms.
-- MLX `nn.RMSNorm` expects sanitized Qwen-style norm weights, so every 1D MTP tensor whose name contains `norm` must be shifted by `+1.0`.
-
-Final fix applied:
-
-- `convert-mtplx` now shifts all 1D MTP norm tensors, including both `pre_fc_norm_*` weights.
-- The Qwen3.6 MTP patch builds its draft layer as an explicit full-attention layer, matching the vLLM MTP block shape more closely.
-- Regenerated:
-  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed`
-  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`
-
-35B results after final conversion fix:
-
-- `Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`, direct completion:
-  - `accepted=227 rejected=29 acceptance=88.7%`
-  - `accepted=460 rejected=52 acceptance=89.8%`
-  - `accepted=674 rejected=94 acceptance=87.8%`
-  - `accepted=915 rejected=109 acceptance=89.4%`
-  - 2176 completion tokens in 17.72s, 122.8 tok/s
-- Temperature matrix on the same regenerated model:
-  - `temperature=0.0`: final acceptance `87.2%`, 121.4 tok/s
-  - `temperature=0.2`: final acceptance `89.8%`, 124.9 tok/s
-  - `temperature=0.5`: final acceptance `90.3%`, 105.6 tok/s
-  - `temperature=1.0`: final acceptance `88.7%`, 95.7 tok/s
-
-Pi REST API validation:
-
-- Model served:
-  - `/Users/samuelfajreldines/dev/models/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`
-- Prompt:
-  - `create a REST api using express and bun and typescript.`
-- Generated project:
-  - `/tmp/pi-mtplx-rest-98VKWN`
-- Generated files included:
-  - `package.json`
-  - `tsconfig.json`
-  - `src/index.ts`
-- Build proof:
-  - `bun run build` passed.
-  - `Bundled 146 modules in 15ms`.
-- Smoke proof:
-  - `/api/health` returned `HTTP/1.1 200 OK`.
-  - Response body included `{"status":"ok","timestamp":"2026-05-07T02:21:47.188Z"}`.
-- MTP acceptance during agentic Pi turns:
-  - `91.4%`, then `94.5%`
-  - `91.8%`, then `94.1%`
-  - `93.8%`, then `95.1%`
-
-Negative tests:
-
-- FC concat order variants (`embedding,hidden` vs `hidden,embedding`) did not improve acceptance; default `embedding,hidden` was best.
-- Hidden-state variants (`normed` vs `pre_norm`) did not improve acceptance.
-- Draft temperatures `0.0`, `0.2`, and `0.5` did not materially improve acceptance.
-- `--mtp-num-draft-tokens 2` and `4` made acceptance worse (`0.0%`) and/or throughput lower.
-- A quantized-MTP sidecar experiment failed in the current loader path with `gather_qmm` expecting `uint32` but receiving `bfloat16`; this needs separate SwitchLinear quantized-save/load work and is not proven to help because the full-precision 35B acceptance is also low.
-
-Interpretation:
-
-- There were two real `convert-mtplx` bugs for Qwen3.6 35B-A3B: incomplete sidecar extraction and incomplete Qwen norm sanitization.
-- Preserving the MoE MTP tensors made the sidecar structurally complete but still left acceptance near zero.
-- Shifting all 1D MTP norm tensors fixed the remaining acceptance mismatch.
-- The regenerated 35B 4-bit MTPLX model now reaches roughly `89-90%` direct acceptance and `91-95%` agentic Pi-turn acceptance on the REST API workflow.
+- The agentic workflow finished.
+- The model generated a React/Vite/TypeScript project in `/tmp/lmlx-35b-mtplx-snake`.
+- Build failed:
+  - `src/components/SnakeBoard.tsx(1,10): error TS1484: 'Position' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.`
+  - `src/hooks/useSnakeGame.ts(2,48): error TS2307: Cannot find module './types' or its corresponding type declarations.`
+  - `src/hooks/useSnakeGame.ts(62,14): error TS7006: Parameter 'prev' implicitly has an 'any' type.`
+  - `src/hooks/useSnakeGame.ts(72,14): error TS7006: Parameter 'prev' implicitly has an 'any' type.`
+  - `src/hooks/useSnakeGame.ts(106,28): error TS7006: Parameter 's' implicitly has an 'any' type.`
+
+Observed stream completions:
+
+| Turn | Tokens | tok/s |
+| ---: | ---: | ---: |
+| 1 | 64 | 31.7 |
+| 2 | 358 | 79.1 |
+| 3 | 61 | 27.6 |
+| 4 | 70 | 54.2 |
+| 5 | 1536 | 106.4 |
+| 6 | 1536 | 56.0 |
+| 7 | 1488 | 124.9 |
+| 8 | 945 | 113.6 |
+| 9 | 250 | 69.9 |
+| 10 | 1536 | 37.6 |
+| 11 | 1536 | 12.3 |
+
+MTPLX metrics:
+
+- All-turn avg: `64.85 tok/s`.
+- Long-turn avg: `75.13 tok/s`.
+- Short-turn avg: `52.50 tok/s`.
+- MTP acceptance avg: `96.62%`.
+- Completion: finished.
+- Generated app build: failed.
+
+## Interpretation
+
+MTPLX fixed the core performance problem for Qwen3.6 35B-A3B. The 35B base run timed out after 10 minutes, while the 35B MTPLX run completed. The throughput gain was strongest on long turns, where MTPLX reached **2.83x** the base throughput.
+
+The benchmark did not produce a valid build artifact. That is a model or agent-output quality issue for this single snake workflow, not an MTP acceptance issue: MTP acceptance averaged **96.62%** in the MTPLX run.
+
+For serving Qwen3.6 35B-A3B, the measured default is:
+
+- `default_temperature=0.6`
+- `default_top_p=0.95`
+
+This keeps MTP acceptance high while preserving good throughput.
