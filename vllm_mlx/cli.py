@@ -625,46 +625,60 @@ def bench_command(args):
 
 
 def models_command(_args):
-    """List available model aliases."""
-    from vllm_mlx._version_check import print_staleness_warning_if_any
-    from vllm_mlx.model_aliases import list_aliases
+    """List available model aliases with their per-model profile capabilities.
 
-    # Best-effort: warn if the user is on a stale brew/pip install. The
-    # call is fail-silent and gated to interactive TTYs, so it'll never
-    # break this command — see ``_version_check.py``.
+    Pulls from ``list_profiles()`` so every alias's ``tool_call_parser`` /
+    ``reasoning_parser`` / ``is_hybrid`` / ``supports_spec_decode`` /
+    ``suffix_decoding_tier`` shows up in the table — letting users pick a
+    model on capabilities, not just on name.
+    """
+    from vllm_mlx._version_check import print_staleness_warning_if_any
+    from vllm_mlx.model_aliases import list_profiles
+
     print_staleness_warning_if_any()
 
-    # Hardcoded benchmark data: (size, speed, recommended Mac tier)
-    MODEL_INFO = {
-        "qwen3.5-4b": ("2.4 GB", "168 tok/s", "16GB+ Mac"),
-        "qwen3.5-9b": ("5.1 GB", "108 tok/s", "24GB+ Mac"),
-        "qwen3.5-27b": ("15.3 GB", "39 tok/s", "32GB+ Mac"),
-        "qwen3.5-35b": ("37 GB", "83 tok/s", "48GB+ Mac"),
-        "qwen3.5-122b": ("65 GB", "57 tok/s", "96GB+ Mac"),
-        "qwen3.6-35b": ("20 GB", "94 tok/s", "32GB+ Mac"),
-        "qwen3-coder": ("45 GB", "74 tok/s", "64GB+ Mac"),
-        "gemma-4-26b": ("14.4 GB", "85 tok/s", "24GB+ Mac"),
-        "gemma-4-31b": ("17 GB", "31 tok/s", "32GB+ Mac"),
-        "qwopus-27b": ("14.8 GB", "39 tok/s", "32GB+ Mac"),
-        "kimi-48b": ("~28 GB", "94 tok/s", "48GB+ Mac"),
-    }
+    profiles = list_profiles()
+    print()
+    print(f"  Available models ({len(profiles)} aliases)")
 
-    aliases = list_aliases()
-    print()
-    print("  Available model aliases")
-    print("  " + "─" * 70)
-    print(f"  {'Alias':<20} {'Size':<10} {'Speed':<12} {'Recommended'}")
-    print("  " + "─" * 70)
-    for short, full in sorted(aliases.items()):
-        info = MODEL_INFO.get(short)
-        if info:
-            size, speed, rec = info
-            print(f"  {short:<20} {size:<10} {speed:<12} {rec}")
+    # Widths sized to fit the longest values currently in aliases.json:
+    # alias 22 (qwen3.5-122b-mxfp4 etc.), tool 16 (qwen3_coder_xml + 1 pad),
+    # reasoning 12 (deepseek_r1 + 1 pad), spec 10 ("✗ hybrid"), tier 11.
+    cols = (
+        ("Alias", 22),
+        ("Tools", 16),
+        ("Reasoning", 12),
+        ("Spec-Decode", 10),
+        ("Suffix Tier", 11),
+    )
+    width = sum(w for _, w in cols) + len(cols) - 1
+    sep = "  " + "─" * width
+    header = "  " + " ".join(f"{name:<{w}}" for name, w in cols)
+    print(sep)
+    print(header)
+    print(sep)
+
+    for alias in sorted(profiles.keys()):
+        p = profiles[alias]
+        tools = p.tool_call_parser or "—"
+        reasoning = p.reasoning_parser or "—"
+        if p.is_hybrid:
+            # Hybrid models cannot use spec-decode or suffix-decode regardless
+            # of the supports_spec_decode flag (mlx-lm BatchGenerator gate).
+            spec = "✗ hybrid"
+            tier = "n/a"
         else:
-            print(f"  {short:<20} → {full}")
+            spec = "✓" if p.supports_spec_decode else "✗"
+            tier = p.suffix_decoding_tier
+        row = f"  {alias:<22} {tools:<16} {reasoning:<12} {spec:<10} {tier:<11}"
+        print(row)
+
+    print(sep)
     print()
-    print(f"  {len(aliases)} aliases available")
-    print("  Usage: rapid-mlx serve <alias>")
+    print("  Tip: `rapid-mlx info <alias>` for the full per-model profile")
+    print("       `rapid-mlx pull <alias>` to download")
+    print("       `rapid-mlx chat <alias>` for an interactive REPL")
+    print("       `rapid-mlx serve <alias>` for an OpenAI-compatible server")
     print()
 
 
