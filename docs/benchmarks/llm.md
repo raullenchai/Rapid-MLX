@@ -55,7 +55,7 @@ rapid-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit --prompts 5 --m
 
 ### Streaming Detokenizer (M1 Max, 64GB)
 
-`rapid-mlx bench-detok`:
+`python3 scripts/bench_detok.py`:
 
 | Tokens | Iterations | Naive Time | Streaming Time | Speedup |
 |--------|------------|------------|----------------|---------|
@@ -195,7 +195,7 @@ The naive approach calls `decode([token])` for each token. In theory, streaming 
 ### Isolated Benchmark Results
 
 ```bash
-rapid-mlx bench-detok
+python3 scripts/bench_detok.py
 ```
 
 When reusing the same detokenizer instance (with `reset()` between uses):
@@ -265,7 +265,7 @@ python tests/test_prefix_cache.py
 # Paged cache test
 python tests/test_paged_cache_real_inference.py
 
-# Streaming detokenizer benchmark
-rapid-mlx bench-detok
-rapid-mlx bench-detok mlx-community/Llama-3.2-1B-Instruct-4bit --iterations 5
+# Streaming detokenizer benchmark (dev micro-bench)
+python3 scripts/bench_detok.py
+python3 scripts/bench_detok.py mlx-community/Llama-3.2-1B-Instruct-4bit --iterations 5
 ```
