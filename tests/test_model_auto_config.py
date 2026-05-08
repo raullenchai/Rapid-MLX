@@ -27,6 +27,7 @@ class TestDetectModelConfig:
         "model_path",
         [
             "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+            "samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed",
             "mlx-community/Qwen3.6-35B-A3B-4bit",
             "/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
         ],

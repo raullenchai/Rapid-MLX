@@ -12,6 +12,10 @@ def test_known_alias_resolves():
         resolve_model("qwen3.6-27b")
         == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed"
     )
+    assert (
+        resolve_model("qwen3.6-35b")
+        == "samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed"
+    )
     assert resolve_model("llama3-3b") == "mlx-community/Llama-3.2-3B-Instruct-4bit"
 
 

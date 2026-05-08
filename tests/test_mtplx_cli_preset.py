@@ -1,6 +1,7 @@
 import argparse
 
 from vllm_mlx.cli import (
+    _QWEN36_35B_MTPLX_MODEL,
     _QWEN36_MTPLX_MODEL,
     _apply_qwen36_mtplx_preset,
 )
@@ -22,6 +23,8 @@ def _serve_args(**overrides):
         "prefill_batch_size": 8,
         "completion_batch_size": 32,
         "prefill_step_size": 2048,
+        "mtp_num_draft_tokens": 1,
+        "mtp_optimistic": False,
         "stream_interval": 1,
         "enable_auto_tool_choice": False,
         "tool_call_parser": None,
@@ -59,6 +62,8 @@ def test_qwen36_mtplx_preset_uses_sustained_prefill_step_size():
 
     assert args.enable_mtp is True
     assert args.prefill_step_size == 8192
+    assert args.mtp_num_draft_tokens == 3
+    assert args.mtp_optimistic is True
     assert args.max_num_seqs == 1
     assert args.prefill_batch_size == 1
     assert args.completion_batch_size == 1
@@ -77,6 +82,21 @@ def test_qwen36_mtplx_bench_preset_enables_mtp():
     assert args.max_num_seqs == 1
     assert args.prefill_batch_size == 1
     assert args.completion_batch_size == 1
+
+
+def test_qwen36_35b_mtplx_preset_uses_max_performance():
+    args = _serve_args(model=_QWEN36_35B_MTPLX_MODEL)
+
+    _apply_qwen36_mtplx_preset(args, ["serve", _QWEN36_35B_MTPLX_MODEL])
+
+    assert args.enable_mtp is True
+    assert args.disable_prefix_cache is True
+    assert args.max_num_seqs == 1
+    assert args.prefill_batch_size == 1
+    assert args.completion_batch_size == 1
+    assert args.prefill_step_size == 8192
+    assert args.mtp_num_draft_tokens == 3
+    assert args.mtp_optimistic is True
 
 
 def test_qwen36_mtplx_bench_preset_keeps_disabled_mtp():

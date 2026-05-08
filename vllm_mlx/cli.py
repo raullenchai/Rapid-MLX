@@ -19,6 +19,8 @@ from pathlib import Path
 
 _QWEN36_MTPLX_MODEL = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed"
 _QWEN36_MTPLX_MARKER = "Qwen3.6-27B-MTPLX-Optimized-Speed"
+_QWEN36_35B_MTPLX_MODEL = "samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed"
+_QWEN36_35B_MTPLX_MARKER = "Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed"
 _QWEN36_35B_A3B_MARKER = "Qwen3.6-35B-A3B"
 
 
@@ -35,8 +37,11 @@ def _is_qwen36_mtplx_request(args: argparse.Namespace) -> bool:
     model = str(getattr(args, "model", "") or "")
     return (
         original_alias == "qwen3.6-27b"
+        or original_alias == "qwen3.6-35b"
         or model == _QWEN36_MTPLX_MODEL
+        or model == _QWEN36_35B_MTPLX_MODEL
         or _QWEN36_MTPLX_MARKER in model
+        or _QWEN36_35B_MTPLX_MARKER in model
         or _is_local_mtplx_qwen_model(model)
     )
 
@@ -85,12 +90,12 @@ def _apply_qwen36_mtplx_preset(
         args.completion_batch_size = 1
     if not _has_cli_option(raw_args, "--prefill-step-size"):
         args.prefill_step_size = 8192
+    if not _has_cli_option(raw_args, "--mtp-num-draft-tokens"):
+        args.mtp_num_draft_tokens = 3
+    if not _has_cli_option(raw_args, "--mtp-optimistic"):
+        args.mtp_optimistic = True
 
     if command == "bench":
-        if not _has_cli_option(raw_args, "--mtp-num-draft-tokens"):
-            args.mtp_num_draft_tokens = 3
-        if not _has_cli_option(raw_args, "--mtp-optimistic"):
-            args.mtp_optimistic = True
         return
 
     if command != "serve":

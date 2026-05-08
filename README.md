@@ -59,11 +59,13 @@ acceptance and `--prefill-step-size 8192`.
 | Model | mlx-lm | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
 | --- | ---: | ---: | ---: | ---: |
 | Qwen3.6-27B | 29.80 tok/s | 31.80 tok/s | 32.37 tok/s | **40.67 tok/s** |
-| Qwen3.6-35B | 110.37 tok/s | 114.59 tok/s | 106.00 tok/s | **119.68 tok/s** |
+| Qwen3.6-35B | 110.37 tok/s | 114.59 tok/s | 106.00 tok/s | **220.86 tok/s** |
 
 Raw decode numbers measure generation throughput only. oMLX was measured with `omlx serve --no-cache` and three OpenAI-compatible chat completion runs after warmup, using `completion_tokens / wall time`. They do not include tool calls, file writes, growing context, retries, or build validation.
 
 The Qwen3.6-27B MTPLX row was rechecked locally after fixing `bench` to use the same MTPLX loader/preset path as `serve`. The README command produced 268 completion tokens at 40.67 tok/s, above the previous 32.37 tok/s MTPLX result.
+
+The Qwen3.6-35B MTPLX row uses `samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`. The README command produced 794 completion tokens at 220.86 tok/s with the MTPLX max-performance preset; disabling MTP produced 101.86 tok/s.
 
 ## More Model Benchmarks
 
@@ -79,7 +81,7 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 | **DeepSeek V4 Flash 158B-A13B** (8-bit) | **31 tok/s** | Only MLX engine, day-0 | - |
 | **GPT-OSS 20B** | **127 tok/s** · 100% tools | 79 tok/s mlx-lm serve | **1.6x** |
 | **Qwen3.5 9B** | **108 tok/s** | 41 tok/s Ollama | **2.6x** |
-| **Qwen3.6 35B-A3B MTPLX** | **119.68 tok/s raw decode** / **64.85 tok/s agentic all-turn** | 114.59 tok/s oMLX / 106.00 tok/s Rapid MLX raw | **2.34x agentic all-turn** |
+| **Qwen3.6 35B-A3B MTPLX** | **220.86 tok/s raw decode** / **64.85 tok/s agentic all-turn** | 114.59 tok/s oMLX / 106.00 tok/s Rapid MLX raw | **1.93x raw** / **2.34x agentic all-turn** |
 | **Qwen3.6 35B-A3B** | **109.89 tok/s raw decode** · 100% tools | 114.59 tok/s oMLX / 106.00 tok/s Rapid MLX raw | ~**1.0x** |
 | **Kimi-Linear 48B** | **94 tok/s** · 100% tools | Only engine | - |
 | **Gemma 4 26B-A4B** | **85 tok/s** | 68 tok/s Ollama | **1.3x** |
@@ -129,7 +131,17 @@ That one command expands to the optimized MTPLX model:
 Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed
 ```
 
-and applies the agentic performance preset automatically: **MTP on**, **tool parser on**, **reasoning parser on**, **tool logits bias on**, **single-sequence agent mode**, and **OpenAI model name `local`**.
+The 35B alias also expands to the optimized MTPLX model:
+
+```bash
+lightning-mlx serve qwen3.6-35b
+```
+
+```text
+samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed
+```
+
+Both aliases apply the agentic performance preset automatically: **MTP on**, **MTP depth 3**, **optimistic MTP**, **tool parser on**, **reasoning parser on**, **tool logits bias on**, **single-sequence agent mode**, and **OpenAI model name `local`**.
 
 Local model path works too:
 
