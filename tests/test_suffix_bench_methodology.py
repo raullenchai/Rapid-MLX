@@ -123,3 +123,44 @@ class TestThresholds:
         # (~330 tok/s for Llama-3.2-1B-4bit). If a future model goes past
         # this for real we re-tune; until then it's a reliable sanity gate.
         assert pytest.approx(500.0) == bench.TPS_CEILING
+
+
+class TestPayloadIsGreedy:
+    """Pin the contract that bench requests force greedy sampling.
+
+    Without ``temperature: 0.0`` in the payload the server's
+    ``_resolve_temperature`` returns the 0.7 fallback,
+    ``_install_suffix_decoding._is_greedy_for_uid`` returns False on
+    every step, the verify path falls through to vanilla, and the
+    bench measures vanilla-vs-vanilla. Every measurement collapses
+    to ~1.0x and the resulting tier dataset is meaningless.
+
+    The whole batch-1 / batch-2 tier sweep on disk before this fix
+    landed was wrong for exactly this reason.
+    """
+
+    def test_payload_forces_temperature_zero(self):
+        """Inspect the source so the constraint can't drift via a refactor
+        that 'still imports run_workload' but reshuffles the body."""
+        text = Path(bench.__file__).read_text()
+        assert '"temperature": 0.0' in text, (
+            "bench payload must set temperature=0.0 to force greedy sampling. "
+            "Without this, server defaults to 0.7 and SuffixDecoding falls "
+            "through on every step (see scheduler.py::_is_greedy_for_uid). "
+            "Tier dataset becomes vanilla-vs-vanilla noise."
+        )
+
+    def test_workload_bodies_dont_set_temperature(self):
+        """Workload dicts must not pre-set temperature — the central
+        payload override is the single source of truth.
+
+        If a workload sneaks in ``"temperature": 0.7``, the
+        ``**workload_body`` spread (which comes AFTER the temperature
+        key in ``run_workload``) would clobber the greedy default.
+        Catch that before it ships.
+        """
+        for name, body in bench.WORKLOADS.items():
+            assert "temperature" not in body, (
+                f"workload '{name}' sets temperature, which would override "
+                "the greedy default. Remove it from the workload body."
+            )
