@@ -598,11 +598,11 @@ class TestAPIKeyVerification:
                 scheme="Bearer", credentials="invalid-key"
             )
 
-            # Should raise HTTPException with 401
+            # Should raise HTTPException with 401. asyncio.run() spins a fresh
+            # loop per call — get_event_loop() is deprecated in Py 3.10+ and
+            # raises RuntimeError when a prior test has closed the global loop.
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.get_event_loop().run_until_complete(
-                    server.verify_api_key(credentials)
-                )
+                asyncio.run(server.verify_api_key(credentials))
 
             assert exc_info.value.status_code == 401
             assert "Invalid API key" in str(exc_info.value.detail)
@@ -630,10 +630,9 @@ class TestAPIKeyVerification:
                 scheme="Bearer", credentials="valid-secret-key"
             )
 
-            # Should not raise any exception
-            result = asyncio.get_event_loop().run_until_complete(
-                server.verify_api_key(credentials)
-            )
+            # Should not raise any exception. asyncio.run() over the deprecated
+            # get_event_loop() — see test_verify_api_key_rejects_invalid.
+            result = asyncio.run(server.verify_api_key(credentials))
             # verify_api_key returns True on success (no exception raised)
             assert result is True or result is None
         finally:
