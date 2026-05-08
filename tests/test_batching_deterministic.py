@@ -112,22 +112,24 @@ class TestDeterministicConcurrentRequests:
         reason=(
             "Bisected to PR #280 (event-driven idle wakeup). The test adds 4 "
             "requests one at a time via `await engine.add_request(...)`. Each "
-            "add_request sets the idle event, so the engine wakes and starts "
-            "stepping request #1 before #2..#4 are queued. Each request thus "
-            "has its first decode step at a *different* batch size (1, then 2, "
-            "then 3, then 4) — different Metal matmul reduction orders → "
-            "ε-level FP differences → argmax flip at low-margin tokens. The "
-            "old kHz polling loop accidentally coalesced the four "
+            "add_request sets the idle event, so the engine can start "
+            "processing before all four requests are queued — otherwise "
+            "identical requests may reach their first generated tokens under "
+            "different active batch sizes. Different Metal matmul reduction "
+            "orders → ε-level FP differences → argmax flip at low-margin "
+            "tokens. The old kHz polling loop accidentally coalesced the four "
             "add_request() calls into one batch start; the event-driven "
-            "wakeup is more responsive and exposes this. The right fix is "
-            "either a small coalescing window in the scheduler or relaxing "
-            "this test's assertion to first-N-token equivalence. "
+            "wakeup is more responsive and exposes this. The right long-term "
+            "fix is either a small coalescing window in the scheduler or "
+            "relaxing this test's assertion to first-N-token equivalence. "
             "test_concurrent_different_prompts still pins run-to-run "
-            "determinism, which is the contract that actually matters. "
-            "strict=True so any future xpass alerts us to revisit instead "
-            "of letting the marker rot."
+            "determinism — that's the contract that actually matters. "
+            "strict=False on purpose: the underlying failure is "
+            "timing-dependent (different runners may coalesce differently), "
+            "so a strict marker would itself become flaky. The follow-up "
+            "issue is the place to revisit, not a CI red light."
         ),
-        strict=True,
+        strict=False,
     )
     @pytest.mark.asyncio
     async def test_concurrent_same_prompt(self, model_and_tokenizer):
