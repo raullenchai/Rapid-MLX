@@ -398,3 +398,234 @@ def test_chat_command_history_unchanged_on_http_error(monkeypatch):
     # first turn (rollback contract).
     assert len(recorded) == 2
     assert recorded[1]["messages"] == [{"role": "user", "content": "bad2"}]
+
+
+def _ns_for_chat(port: int, **overrides) -> object:
+    """Build a chat_command argparse namespace pointing at a fake server."""
+    ns = type("Args", (), {})()
+    ns.base_url = f"http://127.0.0.1:{port}"
+    ns.port = None
+    ns.system = None
+    ns.think = False
+    ns.max_tokens = 50
+    ns.temperature = 0.0
+    ns.ready_timeout = 5
+    ns.response_timeout = 5
+    ns.model = "qwen3.5-4b"
+    for k, v in overrides.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def test_stream_chat_response_captures_usage_into_metrics():
+    """When the server emits a usage chunk (stream_options.include_usage),
+    `_stream_chat_response` populates the metrics dict so the chat REPL
+    can print the token-speed line."""
+    canned = [
+        _delta("Hello"),
+        _delta(", world!"),
+        # Final usage-only chunk: empty choices, populated usage block.
+        {"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 4}},
+    ]
+    metrics: dict = {}
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch.object(sys, "stdout", io.StringIO()),
+    ):
+        full = cli._stream_chat_response(
+            f"http://127.0.0.1:{port}",
+            {"model": "x", "messages": [], "stream": True},
+            timeout_s=10,
+            metrics=metrics,
+        )
+    assert full == "Hello, world!"
+    assert metrics["completion_tokens"] == 4
+    assert metrics["prompt_tokens"] == 7
+
+
+def test_chat_command_help_command_prints_help(monkeypatch, capsys):
+    """`/help` lists the slash commands and exits to the prompt without
+    sending anything to the server."""
+    canned = [_delta("ok")]  # never sent — REPL exits before any POST
+    with _fake_server(canned) as (port, payloads):
+        inputs = iter(["/help", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    out = capsys.readouterr().out
+    for needle in ("/help", "/reset", "/model", "/save", "/exit"):
+        assert needle in out, f"help output missing {needle!r}"
+    assert payloads == [], "help must not send any chat completion request"
+
+
+def test_chat_command_unknown_slash_command_warns(monkeypatch, capsys):
+    """`/foo` produces a friendly hint and does NOT POST to the server."""
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (port, payloads):
+        inputs = iter(["/madeup", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    out = capsys.readouterr().out
+    assert "Unknown command" in out
+    assert "/help" in out
+    assert payloads == []
+
+
+def test_chat_command_save_writes_markdown_file(monkeypatch, tmp_path, capsys):
+    """`/save <path>` serialises history (sans system prompt) to markdown."""
+    canned = [_delta("Hi there!")]
+    out_path = tmp_path / "convo.md"
+    with _fake_server(canned) as (port, _payloads):
+        inputs = iter(["hello", f"/save {out_path}", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    body = out_path.read_text(encoding="utf-8")
+    assert "# rapid-mlx chat" in body
+    assert "## User" in body and "hello" in body
+    assert "## Assistant" in body and "Hi there!" in body
+    assert "Saved" in capsys.readouterr().out
+
+
+def test_chat_command_save_without_arg_prints_usage(monkeypatch, capsys):
+    """Bare `/save` should not crash — prints a Usage hint."""
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (port, _payloads):
+        inputs = iter(["/save", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    assert "Usage: /save" in capsys.readouterr().out
+
+
+def test_chat_command_multiline_heredoc_collected_into_one_message(monkeypatch):
+    """Triple-quote heredoc collects multiple input lines into a single
+    user message. Critical for pasting code blocks."""
+    canned = [_delta("noted")]
+    with _fake_server(canned) as (port, payloads):
+        inputs = iter(['"""', "line one", "line two", '"""', "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    assert len(payloads) == 1
+    msg = payloads[0]["messages"][0]
+    assert msg["role"] == "user"
+    assert msg["content"] == "line one\nline two"
+
+
+def test_chat_command_sends_stream_options_include_usage(monkeypatch):
+    """Chat payload must request usage in the stream so the speed line
+    can show real (not estimated) token counts."""
+    canned = [_delta("hi"), {"choices": [], "usage": {"completion_tokens": 1}}]
+    with _fake_server(canned) as (port, payloads):
+        inputs = iter(["q", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    assert payloads[0].get("stream_options") == {"include_usage": True}
+
+
+def test_chat_command_speed_line_uses_server_token_count(monkeypatch, capsys):
+    """When the server reports usage, the speed line shows the real count
+    (not an estimate prefixed with `~`)."""
+    canned = [
+        _delta("hello world"),
+        {"choices": [], "usage": {"completion_tokens": 17}},
+    ]
+    with _fake_server(canned) as (port, _payloads):
+        inputs = iter(["q", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    out = capsys.readouterr().out
+    assert "17 tok" in out
+    assert "tok/s" in out
+    assert "~17" not in out
+
+
+def test_stream_chat_response_renders_atx_headings(monkeypatch):
+    """ATX headings (`# h1`..`###### h6`) at line start get a colored
+    style applied across the heading line. We simulate a TTY so the
+    state machine path runs."""
+
+    class _Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    canned = [
+        _delta("# Big\n"),
+        _delta("## Sub\n"),
+        _delta("Body line with `code`.\n"),
+        _delta("### Smaller\n"),
+        _delta("Tail.\n"),
+    ]
+    out_buf = _Tty()
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch.object(sys, "stdout", out_buf),
+        patch.dict("os.environ", {}, clear=False),
+    ):
+        # Make sure NO_COLOR isn't set in the test env.
+        os = __import__("os")
+        os.environ.pop("NO_COLOR", None)
+        full = cli._stream_chat_response(
+            f"http://127.0.0.1:{port}",
+            {"model": "x", "messages": [], "stream": True},
+            timeout_s=10,
+        )
+    rendered = out_buf.getvalue()
+    # Plain text content survived intact.
+    assert full == "# Big\n## Sub\nBody line with `code`.\n### Smaller\nTail.\n"
+    # Heading lines are wrapped in ANSI escapes.
+    assert "\x1b[" in rendered, "expected ANSI escapes on a TTY render"
+    assert "# Big" in rendered and "## Sub" in rendered
+    # Plain body line did not pick up a heading style — only inline `code`
+    # got the cyan single-backtick wrap.
+    assert "Body line with " in rendered
+
+
+def test_stream_chat_response_aborts_on_repetition(monkeypatch):
+    """The repetition guard must cut the stream when the model degenerates
+    into the same token repeated 30+ times — otherwise the screen fills
+    with garbage and the REPL feels broken. We model the real-world
+    scenario by feeding the same word as 80 separate chunks (matching how
+    a token-streaming server actually delivers degenerate output).
+    """
+    canned = [_delta("Barley ") for _ in range(80)]
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch.object(sys, "stdout", io.StringIO()) as buf,
+    ):
+        full = cli._stream_chat_response(
+            f"http://127.0.0.1:{port}",
+            {"model": "x", "messages": [], "stream": True},
+            timeout_s=10,
+        )
+    # Guard kicked in well before the 80th chunk.
+    assert full.count("Barley") < 80
+    assert "repeating" in buf.getvalue() or "repetition" in buf.getvalue()
+
+
+def test_ensure_model_downloaded_calls_disk_check(monkeypatch):
+    """`_ensure_model_downloaded` must gate on `_check_disk_space` so a
+    user without room for a 20 GB model fails fast with a clear error
+    instead of a 90 % partial download."""
+    # Force the cache-miss path so we reach the download branch.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache", lambda *_a, **_kw: None
+    )
+    # Force a non-existent model_name path.
+    monkeypatch.setattr("os.path.exists", lambda _p: False)
+
+    called: list = []
+
+    def _fake_check(name, force=False):
+        called.append(name)
+
+    monkeypatch.setattr(cli, "_check_disk_space", _fake_check)
+    # Make snapshot_download a no-op so we don't hit the network.
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download", lambda *_a, **_kw: "/tmp/fake"
+    )
+    # Stub model_info too so we don't query the API.
+    monkeypatch.setattr(
+        "huggingface_hub.model_info",
+        lambda *_a, **_kw: type("I", (), {"siblings": []})(),
+    )
+
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+    assert called == ["mlx-community/Fake-Model-1B"]

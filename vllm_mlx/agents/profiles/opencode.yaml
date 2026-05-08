@@ -1,0 +1,62 @@
+name: opencode
+display_name: "OpenCode"
+repo: "sst/opencode"
+stars: 16000
+
+# OpenCode (opencode.ai) is a Claude-Code-like terminal coding agent.
+# It speaks the OpenAI-compatible chat completions API via the
+# ``@ai-sdk/openai-compatible`` provider; we point that at rapid-mlx.
+#
+# Config lives at ~/.config/opencode/opencode.json (or ./opencode.json in
+# a project root). The ``$schema`` URL is canonical from opencode.ai.
+config:
+  type: json
+  path: "~/.config/opencode/opencode.json"
+  template: |
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "provider": {
+        "rapid-mlx": {
+          "npm": "@ai-sdk/openai-compatible",
+          "name": "Rapid-MLX",
+          "options": {
+            "baseURL": "{base_url}",
+            "apiKey": "not-needed"
+          },
+          "models": {
+            "{model_id}": {}
+          }
+        }
+      },
+      "model": "rapid-mlx/{model_id}"
+    }
+
+models:
+  recommended:
+    - "qwen3-coder-30b"
+    - "qwen3.5-9b"
+    - "qwen3.6-35b"
+    - "qwen3.5-4b"
+  parser_override: null
+
+streaming:
+  extra_tool_tags: []
+  suppress_patterns: []
+  max_tools: 25  # mirrors Claude Code tool count
+
+testing:
+  binary: opencode
+  query_cmd: null  # opencode is interactive — no single-query mode
+  query_timeout: 120
+  install_cmd: "brew install sst/tap/opencode  # or: npm install -g opencode-ai"
+
+capabilities:
+  function_calling: true
+  streaming: true
+  vision: false
+  reasoning: true
+
+known_issues:
+  - "Config schema may need updating across OpenCode versions — if this template doesn't load, run `opencode --help` and check `~/.config/opencode/opencode.json` against the docs at opencode.ai."
+  - "OpenCode is interactive-only (no headless query mode); --test in rapid-mlx agents will skip the query check."
+  - "First run of OpenCode may prompt for an Anthropic API key — choose 'skip' since rapid-mlx is providing the model via the openai-compat provider."

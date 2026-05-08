@@ -85,6 +85,8 @@ curl http://localhost:8000/v1/chat/completions \
 
 That's it — you now have an OpenAI-compatible AI server on `localhost:8000`. Point any app at `http://localhost:8000/v1` and it just works.
 
+> **Want a Claude Code-like TUI?** Rapid-MLX is the *backend* — pair it with an open-source agent CLI like [OpenCode](https://github.com/sst/opencode) or [codex](https://github.com/openai/codex) for the full slash-commands / tool-use / multi-turn experience. Run `rapid-mlx agents opencode --setup` (or `codex --setup`) to wire it up automatically.
+
 > **Tip:** Run `rapid-mlx models` to see all available model aliases. For a smaller/faster model, try `rapid-mlx serve qwen3.5-9b` (~5 GB).
 
 <details>
@@ -135,6 +137,7 @@ print(response.choices[0].message.content)
 | [OpenClaude](https://github.com/Gitlawb/openclaude) (Anthropic SDK) | Agent | `CLAUDE_CODE_USE_OPENAI=1` ([test](tests/integrations/test_anthropic_sdk.py)) |
 | [Aider](https://aider.chat) | Agent | CLI edit-and-commit, architect mode ([test](tests/integrations/test_aider.sh)) |
 | [Goose](https://github.com/block/goose) | Agent | Ollama provider via `OLLAMA_HOST` |
+| [OpenCode](https://github.com/sst/opencode) | TUI Agent | Claude Code-like terminal UX, OpenAI-compat provider |
 | [Claw Code](https://github.com/ultraworkers/claw-code) | Agent | OpenAI & Anthropic endpoints |
 
 ### UI / IDE Clients
