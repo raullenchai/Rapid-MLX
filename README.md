@@ -67,15 +67,6 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 | **Qwen3.5 122B** | **44 tok/s** · 100% tools | 43 tok/s mlx-lm serve | ~**1.0x** |
 | **Gemma 4 31B** | **31 tok/s** | - | - |
 
-## What You Get
-
-- **2.75x faster short agentic turns** in the benchmark fixture.
-- **1.96x higher all-turn throughput** versus the MLX baseline.
-- **Successful artifact generation** where baseline timed out.
-- **OpenAI-compatible API** for local tools, agents, editors, and CLIs.
-- **Apple Silicon first**: built around MLX and local Mac inference.
-- **MTPLX optimized preset** behind one simple command.
-
 ## Install
 
 ```bash
@@ -171,15 +162,14 @@ curl http://localhost:8010/v1/chat/completions \
   }'
 ```
 
-## Why Developers Use It
+## What You Get
 
-**Local agents need different optimization than chat demos.** The hard path is not one long completion; it is dozens of short, tool-heavy turns with growing context. lightning-mlx focuses on that path:
-
-- **Fast tool-call streaming**
-- **Lower SSE/Pydantic overhead**
-- **MTPLX-style speculative decoding**
-- **Qwen3.6 MTPLX preset**
-- **Benchmark-driven changes only**
+- **2.75x faster short agentic turns** in the benchmark fixture.
+- **1.96x higher all-turn throughput** versus the MLX baseline.
+- **Successful artifact generation** where baseline timed out.
+- **OpenAI-compatible API** for local tools, agents, editors, and CLIs.
+- **Apple Silicon first**: built around MLX and local Mac inference.
+- **MTPLX optimized preset** behind one simple command.
 
 ## Built On
 
