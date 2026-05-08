@@ -578,6 +578,71 @@ def test_stream_chat_response_renders_atx_headings(monkeypatch):
     assert "Body line with " in rendered
 
 
+def test_chat_command_heredoc_does_not_trigger_slash_dispatch(monkeypatch):
+    """A heredoc body whose first line starts with `/save` (or any
+    slash) must reach the model as a regular user message, not get
+    silently swallowed by the slash-command dispatcher. Pasted markdown
+    docs whose first line is a path (`/path/to/file.py`) was a real
+    regression in round-1 review."""
+    canned = [_delta("ack")]
+    with _fake_server(canned) as (port, payloads):
+        # Heredoc body opens with `/save`-looking text — must NOT be
+        # dispatched as the /save slash command.
+        inputs = iter(['"""', "/save broken.txt", "second line", '"""', "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    assert len(payloads) == 1, "heredoc body must reach the server as a chat turn"
+    msg = payloads[0]["messages"][0]
+    assert msg["role"] == "user"
+    assert msg["content"] == "/save broken.txt\nsecond line"
+
+
+def test_chat_command_save_refuses_to_overwrite(monkeypatch, tmp_path, capsys):
+    """`/save` must NOT silently clobber an existing file — destructive
+    and easily triggered by typing the same path twice."""
+    canned = [_delta("ok")]
+    target = tmp_path / "convo.md"
+    target.write_text("PRE-EXISTING CONTENT")
+    with _fake_server(canned) as (port, _payloads):
+        inputs = iter(["hi", f"/save {target}", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    assert target.read_text() == "PRE-EXISTING CONTENT", "must not overwrite"
+    assert "already exists" in capsys.readouterr().out
+
+
+def test_chat_command_save_creates_parent_directories(monkeypatch, tmp_path):
+    """`/save logs/2026/convo.md` should auto-create the parent dirs
+    instead of failing with a confusing ENOENT."""
+    canned = [_delta("ok")]
+    nested = tmp_path / "logs" / "subdir" / "convo.md"
+    with _fake_server(canned) as (port, _payloads):
+        inputs = iter(["hi", f"/save {nested}", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    assert nested.exists()
+    assert "## User" in nested.read_text(encoding="utf-8")
+
+
+def test_stream_chat_response_no_false_positive_on_repeated_lists(monkeypatch):
+    """Legitimate repetitive content (a list of zeros, a markdown table
+    separator) used to trip the round-1 guard's `≤2 unique tokens in 30`
+    rule. The new guard requires the SAME single token to repeat
+    consecutively, so these must stream through cleanly."""
+    canned = [_delta("[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]")]
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch.object(sys, "stdout", io.StringIO()) as buf,
+    ):
+        full = cli._stream_chat_response(
+            f"http://127.0.0.1:{port}",
+            {"model": "x", "messages": [], "stream": True},
+            timeout_s=10,
+        )
+    assert full == "[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]"
+    assert "repeating" not in buf.getvalue()
+
+
 def test_stream_chat_response_aborts_on_repetition(monkeypatch):
     """The repetition guard must cut the stream when the model degenerates
     into the same token repeated 30+ times — otherwise the screen fills

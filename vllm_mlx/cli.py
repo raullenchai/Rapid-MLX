@@ -182,10 +182,19 @@ def _ensure_model_downloaded(model_name: str) -> None:
 
         snapshot_download(model_name)
         print()
+    except SystemExit:
+        # _check_disk_space aborts via sys.exit(1) — let it through.
+        raise
     except Exception as e:
-        # Don't block startup on flaky pre-fetch — the spawned serve
-        # will retry the download (just without a foreground progress
-        # bar) and surface the real error.
+        # Definitive 404s are surfaced so callers (e.g. ``/model bogus``)
+        # can refuse fast instead of spawning a doomed serve subprocess
+        # that fails after ``--ready-timeout``. Other transient errors
+        # (network, auth) fall through silently — the spawned server's
+        # own loader will retry and surface a real error if needed.
+        from huggingface_hub.utils import RepositoryNotFoundError
+
+        if isinstance(e, RepositoryNotFoundError) or "404" in str(e):
+            raise RuntimeError(f"Model {model_name!r} not found on HuggingFace") from e
         print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
 
 
@@ -930,6 +939,11 @@ def _spawn_chat_server(
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+    # Stash the log handle and path on the proc object so the chat REPL
+    # can close+unlink them when the proc is torn down (fixes the file
+    # descriptor + tempfile leak across `/model` swaps).
+    proc._rapid_mlx_log = log
+    proc._rapid_mlx_log_path = log_path
     return proc, base_url
 
 
@@ -1168,10 +1182,18 @@ def _stream_chat_response(
             _state["pending"] = ""
 
     # ----- Repetition guard ----------------------------------------------
-    # Smaller models (qwen3.5-4b on multi-turn, etc.) sometimes degenerate
-    # into the same token repeated until max_tokens — filling the screen
-    # with a wall of "Barley Barley Barley...". We can't fix the model,
-    # but we can stop the stream so the REPL stays usable.
+    # Models occasionally degenerate into the same token repeated until
+    # max_tokens — filling the screen with "Barley Barley Barley...".
+    # The earlier guard ("≤2 unique tokens in the last 30") fired on
+    # legitimate content like ``[0, 0, 0, 0, 0]``, markdown table
+    # separators ``| --- | --- |``, and any list of identical short
+    # numbers. The current criterion is stricter: the SAME token must
+    # repeat ≥``REPEAT_LIMIT`` times *consecutively*. Tracked in a
+    # rolling counter so cost is O(1) per chunk regardless of response
+    # length (the previous ``full.split()`` was O(n²)).
+    REPEAT_LIMIT = 25
+    repeat_last: str | None = None
+    repeat_run = 0
     repetition_aborted = False
 
     with requests.post(
@@ -1227,12 +1249,22 @@ def _stream_chat_response(
                     in_reasoning = False
                 _emit_with_inline_md(piece)
                 full += piece
-                # Repetition guard: if the last 30 whitespace-separated
-                # tokens collapse to ≤2 unique values, the model has
-                # almost certainly degenerated — abort the stream.
-                words = full.split()
-                if len(words) >= 30 and len(set(words[-30:])) <= 2:
-                    repetition_aborted = True
+                # Rolling counter: each new whitespace-separated token in
+                # this delta either extends the current consecutive run
+                # or resets it. Aborts only on a single token repeated
+                # ``REPEAT_LIMIT`` times in a row, not on diverse-but-
+                # repetitive content like ``[0, 0, 0, ...]`` or markdown
+                # tables.
+                for tok in piece.split():
+                    if tok == repeat_last:
+                        repeat_run += 1
+                    else:
+                        repeat_last = tok
+                        repeat_run = 1
+                    if repeat_run >= REPEAT_LIMIT:
+                        repetition_aborted = True
+                        break
+                if repetition_aborted:
                     break
     _close_open_md_spans()
     if in_reasoning and is_tty:
@@ -1299,26 +1331,61 @@ def chat_command(args):
         original = getattr(args, "_original_alias", None)
         proc, base_url = _spawn_chat_server(args.model, log_path, served_name=original)
 
-        def _cleanup():
-            # Exit fast on REPL teardown. Give SIGTERM 1 s to flush
-            # uvicorn's lifespan, then SIGKILL — there's nothing critical
-            # to write back, the model is in-memory only, and a 10 s
-            # graceful shutdown made `exit` feel like 5 s of frozen
-            # terminal.
-            if proc and proc.poll() is None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=1)
-                except subprocess.TimeoutExpired:
+        def _teardown_proc(p) -> None:
+            """Terminate a spawned chat server and free its log file.
+
+            Used by `_cleanup` (process exit) and `_switch_model` (mid-
+            session swap). Idempotent — safe to call when the proc has
+            already exited or never existed.
+            """
+            if p is None:
+                return
+            try:
+                if p.poll() is None:
                     try:
-                        proc.kill()
+                        p.terminate()
+                        p.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            p.kill()
+                        except (ProcessLookupError, OSError):
+                            pass
                     except (ProcessLookupError, OSError):
                         pass
-                except (ProcessLookupError, OSError):
-                    pass
+            finally:
+                # Close the log handle and unlink the tempfile so /model
+                # swaps don't leak FDs and tempfiles. Both attributes set
+                # by _spawn_chat_server.
+                fh = getattr(p, "_rapid_mlx_log", None)
+                if fh is not None:
+                    try:
+                        fh.close()
+                    except OSError:
+                        pass
+                lp = getattr(p, "_rapid_mlx_log_path", None)
+                if lp:
+                    try:
+                        os.unlink(lp)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        pass
 
+        def _cleanup():
+            # Exit fast on REPL teardown — drives _teardown_proc on the
+            # current ``proc``. SIGTERM gives uvicorn 1 s to flush its
+            # lifespan; then SIGKILL.
+            _teardown_proc(proc)
+
+        # Install the SIGTERM handler BEFORE atexit registration. A
+        # SIGTERM in the microsecond window between `atexit.register` and
+        # `signal.signal` would otherwise hit Python's default handler
+        # (calls `_exit`, skips atexit) and orphan the spawned server.
+        try:
+            signal.signal(signal.SIGTERM, lambda *_: (_cleanup(), sys.exit(143)))
+        except (ValueError, OSError):
+            pass
         atexit.register(_cleanup)
-        # SIGTERM gets a custom handler that runs cleanup before exiting.
         # SIGINT is *deliberately* left on the default handler: that way
         # Ctrl-C unblocks ``input()`` via the natural KeyboardInterrupt
         # path, the REPL loop's ``except KeyboardInterrupt: break`` fires,
@@ -1326,10 +1393,6 @@ def chat_command(args):
         # calls ``proc.terminate(); proc.wait(timeout=10)`` makes the
         # whole REPL feel frozen for up to 10 s after Ctrl-C and also
         # suppresses the KeyboardInterrupt that ``input()`` relies on.
-        try:
-            signal.signal(signal.SIGTERM, lambda *_: (_cleanup(), sys.exit(143)))
-        except (ValueError, OSError):
-            pass
 
         try:
             _wait_for_chat_server(base_url, proc, timeout_s=args.ready_timeout)
@@ -1371,17 +1434,35 @@ def chat_command(args):
 
     import requests
 
-    # Importing ``readline`` upgrades the built-in ``input()`` so that the
-    # arrow keys recall earlier prompts (and Ctrl-A/E/U work). The module
-    # is stdlib on macOS/Linux; on Windows it doesn't exist and we just
-    # fall back to plain input().
+    # Importing ``readline`` upgrades the built-in ``input()`` so that
+    # the arrow keys recall earlier prompts (and Ctrl-A/E/U/R work).
+    # The module is stdlib on macOS/Linux; on Windows it doesn't exist
+    # and we fall back to plain input(). When readline IS available we
+    # need to wrap the colored prompt's ANSI escapes in \001/\002 so
+    # readline's column counter doesn't include the invisible bytes —
+    # otherwise long history entries wrap incorrectly and Ctrl-A jumps
+    # to the wrong column (especially on libedit-backed Apple system
+    # python). The wrappers are no-op on a terminal, so it's safe to
+    # always emit them when readline is loaded.
+    have_readline = False
     try:
         import readline  # noqa: F401 — side-effect import
+
+        have_readline = True
     except ImportError:
         pass
 
-    prompt = f"{BOLD}{CYAN}>{RESET} " if _is_tty else "> "
-    cont_prompt = f"{DIM}…{RESET} " if _is_tty else "… "
+    def _wrap_invisible(esc: str) -> str:
+        if have_readline and esc:
+            return "\001" + esc + "\002"
+        return esc
+
+    if _is_tty:
+        prompt = _wrap_invisible(BOLD + CYAN) + ">" + _wrap_invisible(RESET) + " "
+        cont_prompt = _wrap_invisible(DIM) + "…" + _wrap_invisible(RESET) + " "
+    else:
+        prompt = "> "
+        cont_prompt = "… "
 
     def _print_help():
         print(
@@ -1403,6 +1484,23 @@ def chat_command(args):
 
     def _save_conversation(path_arg: str):
         path = os.path.expanduser(path_arg)
+        # Refuse silently overwriting an existing file — destructive and
+        # easily triggered by a stray `/save out.md` over a working file.
+        if os.path.exists(path):
+            print(
+                f"  {YELLOW}{path} already exists.{RESET} "
+                f"{DIM}(/save won't overwrite — pick a different path){RESET}\n"
+            )
+            return
+        # Auto-create parent directories; otherwise users see a confusing
+        # "No such file or directory" for /save logs/2026-05/convo.md.
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError as exc:
+                print(f"  {RED}Save failed:{RESET} cannot create {parent}: {exc}\n")
+                return
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(f"# rapid-mlx chat — {served_name}\n\n")
@@ -1427,6 +1525,14 @@ def chat_command(args):
             lines.append(more)
 
     def _switch_model(new_alias: str) -> None:
+        """Hot-swap the spawned chat server to a new model alias.
+
+        Order matters: validate + pre-download the new model BEFORE
+        terminating the old one. If anything fails (bogus alias, disk
+        gate, network), the old server stays running and the REPL is
+        usable. Only when the new model is on-disk and the new server is
+        spawn-ready do we tear down the old proc and rebind.
+        """
         nonlocal proc, base_url, log_path, served_name, messages
         if proc is None:
             print(
@@ -1437,33 +1543,55 @@ def chat_command(args):
         from vllm_mlx.model_aliases import resolve_model
 
         resolved = resolve_model(new_alias) or new_alias
-        print(f"  {DIM}Switching to {new_alias} → {resolved} ...{RESET}")
-        # Tear down the current server.
-        try:
-            proc.terminate()
-            proc.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-            except (ProcessLookupError, OSError):
-                pass
-        except (ProcessLookupError, OSError):
-            pass
+        print(f"  {DIM}Preparing {new_alias} → {resolved} ...{RESET}")
+
+        # 1. Pre-download the new model (this also runs the disk-space
+        #    gate). The current server keeps running while we do this so
+        #    a download failure leaves the user where they were.
         try:
             _ensure_model_downloaded(resolved)
         except SystemExit:
-            print(f"  {RED}Model switch aborted.{RESET}\n")
+            # Disk gate aborted via sys.exit(1); old server is untouched.
+            print(
+                f"  {RED}Model switch aborted{RESET} "
+                f"{DIM}(disk gate); previous server still running.{RESET}\n"
+            )
             return
-        log_path = tempfile.NamedTemporaryFile(
+        except RuntimeError as exc:
+            # Definitive 404 from HF; old server stays.
+            print(
+                f"  {RED}Model switch aborted:{RESET} {exc}  "
+                f"{DIM}(previous server still running){RESET}\n"
+            )
+            return
+
+        # 2. Allocate a new log file and spawn the new server. We don't
+        #    tear down the old one yet; we want a working candidate
+        #    before we commit.
+        new_log_path = tempfile.NamedTemporaryFile(
             prefix="rapid-mlx-chat-", suffix=".log", delete=False
         ).name
-        print(f"  Starting server {DIM}(log: {log_path}){RESET} ...")
-        proc, base_url = _spawn_chat_server(resolved, log_path, served_name=new_alias)
+        print(f"  Starting server {DIM}(log: {new_log_path}){RESET} ...")
+        new_proc, new_base_url = _spawn_chat_server(
+            resolved, new_log_path, served_name=new_alias
+        )
         try:
-            _wait_for_chat_server(base_url, proc, timeout_s=args.ready_timeout)
+            _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
         except (RuntimeError, TimeoutError) as exc:
-            print(f"  {RED}Failed to start new server:{RESET} {exc}\n")
+            print(
+                f"  {RED}Failed to start new server:{RESET} {exc}  "
+                f"{DIM}(previous server still running){RESET}\n"
+            )
+            # Roll back: tear down the half-spawned new proc + free its
+            # log file. The old proc/base_url/log_path stay bound.
+            _teardown_proc(new_proc)
             return
+
+        # 3. New server is healthy — commit by tearing down the old one.
+        _teardown_proc(proc)
+        proc = new_proc
+        base_url = new_base_url
+        log_path = new_log_path
         served_name = new_alias
         messages = [{"role": "system", "content": args.system}] if args.system else []
         print(
@@ -1479,44 +1607,51 @@ def chat_command(args):
             break
         if not line:
             continue
+        # Heredoc-pasted content must NEVER be dispatched as a slash
+        # command — a markdown doc whose first line starts with `/path`
+        # or whose content includes `/save` would otherwise be silently
+        # eaten by the slash dispatcher. Track the source so we know.
+        is_heredoc = False
         if line == '"""':
             line = _read_multiline()
             if not line:
                 continue
-        if line in ("exit", "quit", "/exit", "/quit"):
-            break
-        if line in ("/help", "/?"):
-            _print_help()
-            continue
-        if line in ("/reset", "/clear"):
-            messages = (
-                [{"role": "system", "content": args.system}] if args.system else []
-            )
-            print(f"  {DIM}(history cleared){RESET}\n")
-            continue
-        if line.startswith("/save"):
-            parts = line.split(maxsplit=1)
-            if len(parts) < 2:
-                print(f"  {YELLOW}Usage: /save <path>{RESET}\n")
-            else:
-                _save_conversation(parts[1])
-            continue
-        if line.startswith("/model"):
-            parts = line.split(maxsplit=1)
-            if len(parts) < 2:
-                print(
-                    f"  {YELLOW}Usage: /model <alias>{RESET}  "
-                    f"{DIM}(see `rapid-mlx models`){RESET}\n"
+            is_heredoc = True
+        if not is_heredoc:
+            if line in ("exit", "quit", "/exit", "/quit"):
+                break
+            if line in ("/help", "/?"):
+                _print_help()
+                continue
+            if line in ("/reset", "/clear"):
+                messages = (
+                    [{"role": "system", "content": args.system}] if args.system else []
                 )
-            else:
-                _switch_model(parts[1].strip())
-            continue
-        if line.startswith("/"):
-            print(
-                f"  {YELLOW}Unknown command: {line.split()[0]}{RESET}  "
-                f"{DIM}(type /help){RESET}\n"
-            )
-            continue
+                print(f"  {DIM}(history cleared){RESET}\n")
+                continue
+            if line.startswith("/save"):
+                parts = line.split(maxsplit=1)
+                if len(parts) < 2:
+                    print(f"  {YELLOW}Usage: /save <path>{RESET}\n")
+                else:
+                    _save_conversation(parts[1])
+                continue
+            if line.startswith("/model"):
+                parts = line.split(maxsplit=1)
+                if len(parts) < 2:
+                    print(
+                        f"  {YELLOW}Usage: /model <alias>{RESET}  "
+                        f"{DIM}(see `rapid-mlx models`){RESET}\n"
+                    )
+                else:
+                    _switch_model(parts[1].strip())
+                continue
+            if line.startswith("/"):
+                print(
+                    f"  {YELLOW}Unknown command: {line.split()[0]}{RESET}  "
+                    f"{DIM}(type /help){RESET}\n"
+                )
+                continue
 
         messages.append({"role": "user", "content": line})
         payload = {
