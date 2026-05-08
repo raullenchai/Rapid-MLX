@@ -1298,6 +1298,11 @@ def chat_command(args):
     base_url: str
     proc = None
     log_path: str | None = None
+    # Tracks every spawned server (initial + every /model candidate) so
+    # the SIGTERM/atexit cleanup tears down in-flight candidates too —
+    # not just the bound ``proc``. A SIGTERM landing while a /model
+    # swap is mid-spawn would otherwise orphan the candidate server.
+    _active_procs: list[subprocess.Popen] = []
 
     # TTY-gated ANSI palette for the chat UI. NO_COLOR is honoured.
     _is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
@@ -1308,6 +1313,80 @@ def chat_command(args):
     YELLOW = "\x1b[33m" if _is_tty else ""
     RED = "\x1b[31m" if _is_tty else ""
     RESET = "\x1b[0m" if _is_tty else ""
+
+    def _teardown_proc(p) -> None:
+        """Terminate a spawned chat server and free its log file.
+
+        Used by `_cleanup` (process exit) and `_switch_model` (mid-
+        session swap). Idempotent — safe to call when the proc has
+        already exited or never existed. Also reaps the killed child
+        with wait(timeout=1) so repeated /model swaps don't leave
+        zombies until the parent exits.
+        """
+        if p is None:
+            return
+        try:
+            if p.poll() is None:
+                try:
+                    p.terminate()
+                    p.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    try:
+                        p.kill()
+                        # Reap the SIGKILL'd child — without this,
+                        # repeated /model swaps stack zombie entries.
+                        try:
+                            p.wait(timeout=1)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    except (ProcessLookupError, OSError):
+                        pass
+                except (ProcessLookupError, OSError):
+                    pass
+        finally:
+            # Drop from the tracked set so a subsequent _cleanup walk
+            # doesn't double-tear it down.
+            try:
+                _active_procs.remove(p)
+            except ValueError:
+                pass
+            # Close the log handle and unlink the tempfile so /model
+            # swaps don't leak FDs and tempfiles. Both attributes set
+            # by _spawn_chat_server.
+            fh = getattr(p, "_rapid_mlx_log", None)
+            if fh is not None:
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+            lp = getattr(p, "_rapid_mlx_log_path", None)
+            if lp:
+                try:
+                    os.unlink(lp)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+
+    def _cleanup():
+        # Walk every tracked proc — covers the active server and any
+        # in-flight /model candidate. Iterate over a snapshot since
+        # _teardown_proc mutates _active_procs.
+        for p in list(_active_procs):
+            _teardown_proc(p)
+
+    # Install SIGTERM handler + atexit BEFORE any spawn. Otherwise a
+    # SIGTERM landing in the window between `Popen()` and `signal.signal`
+    # uses Python's default handler (calls `_exit`, skips atexit) and
+    # orphans the spawned server. SIGINT is *deliberately* left on the
+    # default handler so Ctrl-C unblocks ``input()`` via the natural
+    # KeyboardInterrupt path, the REPL loop's ``except
+    # KeyboardInterrupt: break`` fires, and atexit runs ``_cleanup``.
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: (_cleanup(), sys.exit(143)))
+    except (ValueError, OSError):
+        pass
+    atexit.register(_cleanup)
 
     if args.base_url:
         base_url = args.base_url.rstrip("/")
@@ -1330,69 +1409,7 @@ def chat_command(args):
         # so the chat request body matches what the user typed.
         original = getattr(args, "_original_alias", None)
         proc, base_url = _spawn_chat_server(args.model, log_path, served_name=original)
-
-        def _teardown_proc(p) -> None:
-            """Terminate a spawned chat server and free its log file.
-
-            Used by `_cleanup` (process exit) and `_switch_model` (mid-
-            session swap). Idempotent — safe to call when the proc has
-            already exited or never existed.
-            """
-            if p is None:
-                return
-            try:
-                if p.poll() is None:
-                    try:
-                        p.terminate()
-                        p.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            p.kill()
-                        except (ProcessLookupError, OSError):
-                            pass
-                    except (ProcessLookupError, OSError):
-                        pass
-            finally:
-                # Close the log handle and unlink the tempfile so /model
-                # swaps don't leak FDs and tempfiles. Both attributes set
-                # by _spawn_chat_server.
-                fh = getattr(p, "_rapid_mlx_log", None)
-                if fh is not None:
-                    try:
-                        fh.close()
-                    except OSError:
-                        pass
-                lp = getattr(p, "_rapid_mlx_log_path", None)
-                if lp:
-                    try:
-                        os.unlink(lp)
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        pass
-
-        def _cleanup():
-            # Exit fast on REPL teardown — drives _teardown_proc on the
-            # current ``proc``. SIGTERM gives uvicorn 1 s to flush its
-            # lifespan; then SIGKILL.
-            _teardown_proc(proc)
-
-        # Install the SIGTERM handler BEFORE atexit registration. A
-        # SIGTERM in the microsecond window between `atexit.register` and
-        # `signal.signal` would otherwise hit Python's default handler
-        # (calls `_exit`, skips atexit) and orphan the spawned server.
-        try:
-            signal.signal(signal.SIGTERM, lambda *_: (_cleanup(), sys.exit(143)))
-        except (ValueError, OSError):
-            pass
-        atexit.register(_cleanup)
-        # SIGINT is *deliberately* left on the default handler: that way
-        # Ctrl-C unblocks ``input()`` via the natural KeyboardInterrupt
-        # path, the REPL loop's ``except KeyboardInterrupt: break`` fires,
-        # and ``atexit`` runs ``_cleanup``. A custom SIGINT handler that
-        # calls ``proc.terminate(); proc.wait(timeout=10)`` makes the
-        # whole REPL feel frozen for up to 10 s after Ctrl-C and also
-        # suppresses the KeyboardInterrupt that ``input()`` relies on.
+        _active_procs.append(proc)
 
         try:
             _wait_for_chat_server(base_url, proc, timeout_s=args.ready_timeout)
@@ -1484,14 +1501,6 @@ def chat_command(args):
 
     def _save_conversation(path_arg: str):
         path = os.path.expanduser(path_arg)
-        # Refuse silently overwriting an existing file — destructive and
-        # easily triggered by a stray `/save out.md` over a working file.
-        if os.path.exists(path):
-            print(
-                f"  {YELLOW}{path} already exists.{RESET} "
-                f"{DIM}(/save won't overwrite — pick a different path){RESET}\n"
-            )
-            return
         # Auto-create parent directories; otherwise users see a confusing
         # "No such file or directory" for /save logs/2026-05/convo.md.
         parent = os.path.dirname(os.path.abspath(path))
@@ -1502,13 +1511,27 @@ def chat_command(args):
                 print(f"  {RED}Save failed:{RESET} cannot create {parent}: {exc}\n")
                 return
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            # Mode "x" (O_CREAT | O_EXCL) is atomic — refuses if the path
+            # already exists, with no TOCTOU window between exists() and
+            # open() that an exists()-then-open("w") check has. Also
+            # naturally rejects existing symlinks pointing elsewhere.
+            with open(path, "x", encoding="utf-8") as f:
                 f.write(f"# rapid-mlx chat — {served_name}\n\n")
                 for m in messages:
                     if m["role"] == "system":
                         continue
                     f.write(f"## {m['role'].capitalize()}\n\n{m['content']}\n\n")
             print(f"  {GREEN}✓{RESET} Saved {len(messages)} messages to {path}\n")
+        except FileExistsError:
+            print(
+                f"  {YELLOW}{path} already exists.{RESET} "
+                f"{DIM}(/save won't overwrite — pick a different path){RESET}\n"
+            )
+        except IsADirectoryError:
+            print(
+                f"  {RED}Save failed:{RESET} {path} is a directory — "
+                f"{DIM}give a file path, not a directory{RESET}\n"
+            )
         except OSError as exc:
             print(f"  {RED}Save failed:{RESET} {exc}\n")
 
@@ -1518,10 +1541,22 @@ def chat_command(args):
             try:
                 more = input(cont_prompt)
             except (EOFError, KeyboardInterrupt):
-                print(f"\n  {YELLOW}(multi-line cancelled){RESET}\n")
+                # Tell the user how many lines they're losing — silent
+                # discard on Ctrl-C/Ctrl-D mid-paste is hostile.
+                if lines:
+                    print(
+                        f"\n  {YELLOW}(multi-line cancelled — "
+                        f"{len(lines)} line{'' if len(lines) == 1 else 's'} "
+                        f"discarded){RESET}\n"
+                    )
+                else:
+                    print(f"\n  {YELLOW}(multi-line cancelled){RESET}\n")
                 return ""
             if more.rstrip() == '"""':
-                return "\n".join(lines).strip()
+                # Preserve leading/trailing whitespace verbatim — the
+                # heredoc is meant for code paste, where stripping
+                # indentation actively corrupts the input.
+                return "\n".join(lines)
             lines.append(more)
 
     def _switch_model(new_alias: str) -> None:
@@ -1575,6 +1610,12 @@ def chat_command(args):
         new_proc, new_base_url = _spawn_chat_server(
             resolved, new_log_path, served_name=new_alias
         )
+        # Register the candidate in the cleanup set IMMEDIATELY — before
+        # the readiness wait. A SIGTERM/Ctrl-C during the (possibly
+        # multi-second) load otherwise orphans this process: it isn't
+        # bound to the outer ``proc`` yet and was previously invisible
+        # to ``_cleanup``.
+        _active_procs.append(new_proc)
         try:
             _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
         except (RuntimeError, TimeoutError) as exc:
@@ -1587,13 +1628,17 @@ def chat_command(args):
             _teardown_proc(new_proc)
             return
 
-        # 3. New server is healthy — commit by tearing down the old one.
-        _teardown_proc(proc)
+        # 3. New server is healthy — commit. Rebind ``proc`` BEFORE
+        #    tearing down the old one so a SIGTERM during teardown
+        #    walks the new (still-running) proc, not just a freshly
+        #    killed corpse.
+        old_proc = proc
         proc = new_proc
         base_url = new_base_url
         log_path = new_log_path
         served_name = new_alias
         messages = [{"role": "system", "content": args.system}] if args.system else []
+        _teardown_proc(old_proc)
         print(
             f"  {GREEN}✓ Switched to {new_alias}.{RESET} "
             f"{DIM}(history cleared){RESET}\n"

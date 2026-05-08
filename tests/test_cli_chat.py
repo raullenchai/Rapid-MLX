@@ -694,3 +694,198 @@ def test_ensure_model_downloaded_calls_disk_check(monkeypatch):
 
     cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
     assert called == ["mlx-community/Fake-Model-1B"]
+
+
+def test_chat_command_heredoc_preserves_indentation_and_blank_lines(monkeypatch):
+    """Heredoc must preserve leading whitespace (Python indentation) and
+    trailing blank lines verbatim — calling ``.strip()`` corrupts exactly
+    the code-paste workflow the heredoc exists for."""
+    canned = [_delta("ack")]
+    with _fake_server(canned) as (port, payloads):
+        inputs = iter(
+            [
+                '"""',
+                "    def f():",
+                "        return 1",
+                "",  # blank line in the middle
+                "    g()",
+                "",  # trailing blank
+                '"""',
+                "exit",
+            ]
+        )
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    assert len(payloads) == 1
+    msg = payloads[0]["messages"][0]
+    expected = "    def f():\n        return 1\n\n    g()\n"
+    assert msg["content"] == expected, (
+        f"heredoc must preserve leading spaces + trailing blank, "
+        f"got: {msg['content']!r}"
+    )
+
+
+def test_chat_command_save_uses_exclusive_mode_no_toctou(monkeypatch, tmp_path):
+    """``/save`` must call ``open(path, 'x')`` so the existence check is
+    atomic. An ``exists()``-then-``open('w')`` pair is TOCTOU-racy and a
+    symlink to an arbitrary path can defeat ``os.path.exists`` on the
+    first probe but still get clobbered on the open."""
+    canned = [_delta("ok")]
+    target = tmp_path / "x.md"
+    seen_modes: list[str] = []
+    real_open = open
+
+    def _spy_open(path, mode="r", *args, **kwargs):
+        if str(path) == str(target):
+            seen_modes.append(mode)
+        return real_open(path, mode, *args, **kwargs)
+
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch("builtins.open", side_effect=_spy_open),
+    ):
+        inputs = iter(["hi", f"/save {target}", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    assert "x" in seen_modes, (
+        f"expected /save to open with exclusive mode 'x' (got modes={seen_modes})"
+    )
+
+
+def test_chat_command_sigterm_handler_installed_before_spawn(monkeypatch):
+    """SIGTERM handler MUST be installed before any ``_spawn_chat_server``
+    call. A SIGTERM landing in the window between Popen() and
+    signal.signal() uses Python's default handler (skips atexit) and
+    orphans the spawned server."""
+    import signal as _signal
+
+    call_order: list[str] = []
+
+    real_signal = _signal.signal
+
+    def _spy_signal(signum, handler):
+        if signum == _signal.SIGTERM:
+            call_order.append("signal.SIGTERM")
+        return real_signal(signum, handler)
+
+    def _fake_spawn(*_a, **_kw):
+        call_order.append("spawn")
+
+        # Return a no-op proc plus a base_url that points at the fake
+        # server so the rest of the REPL flow is unaffected.
+        class _NoopProc:
+            _rapid_mlx_log = None
+            _rapid_mlx_log_path = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                pass
+
+            def kill(self):
+                pass
+
+        return _NoopProc(), f"http://127.0.0.1:{port}"
+
+    monkeypatch.setattr("signal.signal", _spy_signal)
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: None)
+
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (fake_port, _payloads):
+        port = fake_port
+        inputs = iter(["hi", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        # Take the spawn path: clear base_url and port so chat_command
+        # falls into the "spawn our own" branch.
+        ns = _ns_for_chat(fake_port)
+        ns.base_url = None
+        ns.port = None
+        cli.chat_command(ns)
+    assert "signal.SIGTERM" in call_order, "SIGTERM handler was never installed"
+    assert "spawn" in call_order, "spawn never happened"
+    assert call_order.index("signal.SIGTERM") < call_order.index("spawn"), (
+        f"SIGTERM handler installed AFTER spawn — orphan window. "
+        f"call_order={call_order}"
+    )
+
+
+def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys):
+    """When the candidate server fails the readiness wait, ``_switch_model``
+    must (1) tear down the candidate proc, (2) keep the old proc as the
+    active one, and (3) NOT clear chat history. Round-1 P0 regression test."""
+
+    spawned: list[object] = []
+    teardowns: list[object] = []
+
+    class _FakeProc:
+        def __init__(self, name):
+            self.name = name
+            self._rapid_mlx_log = None
+            self._rapid_mlx_log_path = None
+            self._terminated = False
+
+        def poll(self):
+            return None if not self._terminated else 0
+
+        def terminate(self):
+            self._terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self._terminated = True
+
+    def _fake_spawn(model, log_path, served_name=None):
+        proc = _FakeProc(model)
+        spawned.append(proc)
+        return proc, f"http://127.0.0.1:{port}"
+
+    wait_calls = {"n": 0}
+
+    def _fake_wait(base_url, proc, timeout_s):
+        wait_calls["n"] += 1
+        # First call (initial spawn) succeeds; second call (the /model
+        # candidate) fails.
+        if wait_calls["n"] >= 2:
+            raise RuntimeError("simulated load failure")
+
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", _fake_wait)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_model",
+        lambda alias: f"mlx-community/{alias}-resolved",
+    )
+
+    canned = [_delta("ack")]
+    with _fake_server(canned) as (fake_port, payloads):
+        port = fake_port
+        inputs = iter(["first turn", "/model bogus", "second turn", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        ns = _ns_for_chat(fake_port, model="qwen3.5-4b")
+        ns.base_url = None
+        ns.port = None
+        cli.chat_command(ns)
+
+    out = capsys.readouterr().out
+    assert "Failed to start new server" in out, (
+        "expected explicit rollback message on candidate failure"
+    )
+    assert "previous server still running" in out
+    # Two user turns: history must NOT be cleared by a failed switch.
+    assert len(payloads) == 2, (
+        f"expected both turns to land on the original server "
+        f"(history preserved); saw {len(payloads)}"
+    )
+    # Both turns sent the SAME conversation list; the second turn carries
+    # the first as history.
+    assert any(m["content"] == "first turn" for m in payloads[1]["messages"]), (
+        "second-turn payload lost the first turn after the failed /model swap"
+    )
