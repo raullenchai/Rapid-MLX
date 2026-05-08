@@ -110,20 +110,24 @@ class TestDeterministicConcurrentRequests:
 
     @pytest.mark.xfail(
         reason=(
-            "Token-level determinism across concurrent batched requests is not "
-            "guaranteed on Apple Silicon: when batch composition changes "
-            "mid-stream (a request finishes while others are still running), "
-            "Metal matmul reduction order shifts and ε-level FP differences "
-            "can flip the argmax at low-margin token positions. The "
-            "event-driven scheduler from PR #280 surfaced this latent "
-            "non-determinism that the prior kHz-polling loop happened to "
-            "smooth over. Tracked in a follow-up issue — fix is to either "
-            "stabilize batch composition or relax the assertion to "
-            "first-N-token equivalence. test_concurrent_different_prompts "
-            "still pins run-to-run determinism, which is the contract that "
-            "actually matters."
+            "Bisected to PR #280 (event-driven idle wakeup). The test adds 4 "
+            "requests one at a time via `await engine.add_request(...)`. Each "
+            "add_request sets the idle event, so the engine wakes and starts "
+            "stepping request #1 before #2..#4 are queued. Each request thus "
+            "has its first decode step at a *different* batch size (1, then 2, "
+            "then 3, then 4) — different Metal matmul reduction orders → "
+            "ε-level FP differences → argmax flip at low-margin tokens. The "
+            "old kHz polling loop accidentally coalesced the four "
+            "add_request() calls into one batch start; the event-driven "
+            "wakeup is more responsive and exposes this. The right fix is "
+            "either a small coalescing window in the scheduler or relaxing "
+            "this test's assertion to first-N-token equivalence. "
+            "test_concurrent_different_prompts still pins run-to-run "
+            "determinism, which is the contract that actually matters. "
+            "strict=True so any future xpass alerts us to revisit instead "
+            "of letting the marker rot."
         ),
-        strict=False,
+        strict=True,
     )
     @pytest.mark.asyncio
     async def test_concurrent_same_prompt(self, model_and_tokenizer):
