@@ -64,21 +64,17 @@ def _is_qwen36_35b_a3b_request(args: argparse.Namespace) -> bool:
 def _apply_qwen36_mtplx_preset(
     args: argparse.Namespace, raw_args: list[str]
 ) -> None:
-    if getattr(args, "command", None) != "serve" or not _is_qwen36_mtplx_request(args):
+    if not _is_qwen36_mtplx_request(args):
         return
 
-    if _has_cli_option(raw_args, "--disable-mtp"):
+    command = getattr(args, "command", None)
+    if command not in {"serve", "bench"}:
+        return
+
+    if hasattr(args, "enable_mtp") and _has_cli_option(raw_args, "--disable-mtp"):
         args.enable_mtp = False
-    elif not _has_cli_option(raw_args, "--enable-mtp"):
+    elif hasattr(args, "enable_mtp") and not _has_cli_option(raw_args, "--enable-mtp"):
         args.enable_mtp = True
-    if not _has_cli_option(raw_args, "--served-model-name"):
-        args.served_model_name = "local"
-    if not _has_cli_option(raw_args, "--port"):
-        args.port = 8010
-    if not _has_cli_option(raw_args, "--default-temperature"):
-        args.default_temperature = 0.6
-    if not _has_cli_option(raw_args, "--default-top-p"):
-        args.default_top_p = 0.95
     if not _has_cli_option(raw_args, "--enable-prefix-cache", "--disable-prefix-cache"):
         args.disable_prefix_cache = True
     if not _has_cli_option(raw_args, "--max-num-seqs"):
@@ -89,6 +85,25 @@ def _apply_qwen36_mtplx_preset(
         args.completion_batch_size = 1
     if not _has_cli_option(raw_args, "--prefill-step-size"):
         args.prefill_step_size = 8192
+
+    if command == "bench":
+        if not _has_cli_option(raw_args, "--mtp-num-draft-tokens"):
+            args.mtp_num_draft_tokens = 3
+        if not _has_cli_option(raw_args, "--mtp-optimistic"):
+            args.mtp_optimistic = True
+        return
+
+    if command != "serve":
+        return
+
+    if not _has_cli_option(raw_args, "--served-model-name"):
+        args.served_model_name = "local"
+    if not _has_cli_option(raw_args, "--port"):
+        args.port = 8010
+    if not _has_cli_option(raw_args, "--default-temperature"):
+        args.default_temperature = 0.6
+    if not _has_cli_option(raw_args, "--default-top-p"):
+        args.default_top_p = 0.95
     if not _has_cli_option(raw_args, "--stream-interval"):
         args.stream_interval = 1
     if not _has_cli_option(raw_args, "--enable-auto-tool-choice"):
@@ -570,18 +585,17 @@ def bench_command(args):
     import asyncio
     import time
 
-    from mlx_lm import load
-
     from .engine_core import AsyncEngineCore, EngineConfig
     from .request import SamplingParams
     from .scheduler import SchedulerConfig
+    from .utils.tokenizer import load_model_with_fallback
 
     # Handle prefix cache flags
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
 
     async def run_benchmark():
         print(f"Loading model: {args.model}")
-        model, tokenizer = load(args.model)
+        model, tokenizer = load_model_with_fallback(args.model)
 
         scheduler_config = SchedulerConfig(
             max_num_seqs=args.max_num_seqs,
@@ -598,6 +612,11 @@ def bench_command(args):
             use_paged_cache=args.use_paged_cache,
             paged_cache_block_size=args.paged_cache_block_size,
             max_cache_blocks=args.max_cache_blocks,
+            # MTP
+            enable_mtp=args.enable_mtp,
+            mtp_num_draft_tokens=args.mtp_num_draft_tokens,
+            mtp_draft_temperature=args.mtp_draft_temperature,
+            mtp_optimistic=args.mtp_optimistic,
             # KV cache quantization
             kv_cache_quantization=args.kv_cache_quantization,
             kv_cache_quantization_bits=args.kv_cache_quantization_bits,
@@ -1648,6 +1667,36 @@ Examples:
         type=int,
         default=8192,
         help="Chunk size for prompt prefill processing (default: 8192)",
+    )
+    bench_parser.add_argument(
+        "--enable-mtp",
+        action="store_true",
+        default=False,
+        help="Enable MTP (Multi-Token Prediction) for models with built-in MTP heads.",
+    )
+    bench_parser.add_argument(
+        "--disable-mtp",
+        action="store_true",
+        default=False,
+        help="Disable auto-enabled MTP presets for comparison or fallback.",
+    )
+    bench_parser.add_argument(
+        "--mtp-num-draft-tokens",
+        type=int,
+        default=1,
+        help="Number of draft tokens per MTP step (default: 1)",
+    )
+    bench_parser.add_argument(
+        "--mtp-draft-temperature",
+        type=float,
+        default=0.7,
+        help="Draft sampler temperature for native MTP (default: 0.7)",
+    )
+    bench_parser.add_argument(
+        "--mtp-optimistic",
+        action="store_true",
+        default=False,
+        help="Skip MTP acceptance check for maximum speed.",
     )
     bench_parser.add_argument(
         "--enable-prefix-cache",

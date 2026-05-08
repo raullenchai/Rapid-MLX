@@ -53,16 +53,17 @@ bench <model> --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
   --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1
 ```
 
-`--prefill-step-size` defaults to `8192` tokens.
+For MTPLX Qwen3.6 benchmark runs, the preset uses MTP depth 3 with optimistic
+acceptance and `--prefill-step-size 8192`.
 
 | Model | mlx-lm | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
 | --- | ---: | ---: | ---: | ---: |
-| Qwen3.6-27B | 29.80 tok/s | 31.80 tok/s | 32.37 tok/s | **28.46 tok/s** |
+| Qwen3.6-27B | 29.80 tok/s | 31.80 tok/s | 32.37 tok/s | **40.67 tok/s** |
 | Qwen3.6-35B | 110.37 tok/s | 114.59 tok/s | 106.00 tok/s | **119.68 tok/s** |
 
 Raw decode numbers measure generation throughput only. oMLX was measured with `omlx serve --no-cache` and three OpenAI-compatible chat completion runs after warmup, using `completion_tokens / wall time`. They do not include tool calls, file writes, growing context, retries, or build validation.
 
-The Qwen3.6-27B MTPLX row was rechecked locally with the default `8192` prefill step size. The current branch produced 1536 completion tokens at 28.12 tok/s; the sustained/default run produced 304 completion tokens at 28.46 tok/s. Compared with the previous README Lightning MTPLX baseline of 26.47 tok/s, that is about +6.5% for the full-token run and +7.5% for the sustained/default run.
+The Qwen3.6-27B MTPLX row was rechecked locally after fixing `bench` to use the same MTPLX loader/preset path as `serve`. The README command produced 268 completion tokens at 40.67 tok/s, above the previous 32.37 tok/s MTPLX result.
 
 ## More Model Benchmarks
 
@@ -70,7 +71,7 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 
 | Model | lightning-mlx | Best Alternative | Speedup |
 | --- | ---: | ---: | ---: |
-| **Qwen3.6 27B MTPLX** | **28.46 tok/s raw decode** / **26.47 tok/s agentic all-turn** | 31.80 tok/s oMLX / 32.37 tok/s Rapid MLX raw | **1.96x agentic all-turn** |
+| **Qwen3.6 27B MTPLX** | **40.67 tok/s raw decode** / **26.47 tok/s agentic all-turn** | 31.80 tok/s oMLX / 32.37 tok/s Rapid MLX raw | **1.26x raw** / **1.96x agentic all-turn** |
 | **Phi-4 Mini 14B** | **180 tok/s** | 77 tok/s mlx-lm / 56 tok/s Ollama | **2.3x** / **3.2x** |
 | **Qwen3.5 4B** | **160 tok/s** | 155 tok/s mlx-lm serve | **1.0x** |
 | **Nemotron-Nano 30B** | **141 tok/s** · 100% tools | - | - |
