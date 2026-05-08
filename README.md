@@ -1,6 +1,6 @@
 # lightning-mlx
 
-**Run local LLM agents faster on Apple Silicon.**
+**🔥 The fastest local AI engine for Apple Silicon. Optimized for agentic use.**
 
 **lightning-mlx** is an OpenAI-compatible local LLM server optimized for **coding agents**, **tool calling**, and **fast short-turn loops** on Mac. It is a fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) with MTPLX-style work inspired by [MTPLX](https://github.com/youssofal/MTPLX/).
 
@@ -12,6 +12,41 @@
 - **OpenAI-compatible API** for local tools, agents, editors, and CLIs.
 - **Apple Silicon first**: built around MLX and local Mac inference.
 - **MTPLX optimized preset** behind one simple command.
+
+## Raw Decode Benchmarks
+
+Same machine, same local model paths, same microbenchmark shape:
+
+```bash
+bench <model> --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
+  --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1
+```
+
+The Lightning MLX MTPLX raw-decode rows were run with explicit max-performance
+benchmark settings:
+
+| Model | mlx-lm | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.6-27B | 29.80 tok/s | 31.80 tok/s | 32.37 tok/s | **40.67 tok/s** |
+
+```bash
+lightning-mlx bench Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed \
+  --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
+  --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1 \
+  --prefill-step-size 8192 --mtp-num-draft-tokens 3 --mtp-optimistic
+```
+
+
+| Model | mlx-lm | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.6-35B | 110.37 tok/s | 114.59 tok/s | 106.00 tok/s | **220.86 tok/s** |
+
+```bash
+lightning-mlx bench samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed \
+  --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
+  --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1 \
+  --prefill-step-size 8192 --mtp-num-draft-tokens 3 --mtp-optimistic
+```
 
 ## Agentic Benchmarks
 
@@ -30,56 +65,6 @@ Create the snake game using react, vite and typescript
 | Qwen3.6-35B | Long | 76.77 tok/s | 26.52 tok/s | **75.13 tok/s** |
 | Qwen3.6-35B | Short | 35.11 tok/s | 29.18 tok/s | **52.50 tok/s** |
 
-| Model / workflow | Baseline acceptance | **MTPLX acceptance** | Delta |
-| --- | ---: | ---: | ---: |
-| Qwen3.6 27B snake | 92.02% | **94.30%** | **+2.28 pp** |
-| Qwen3.6 35B-A3B snake | N/A | **96.62%** | **MTP enabled** |
-
-Artifact result:
-
-- Qwen3.6-27B Lightning MLX generated app build: **passed**.
-- Qwen3.6-35B base and MTPLX generated app build: failed in both runs.
-
-oMLX agentic numbers were collected through its OpenAI-compatible server with Pi using the same snake-game prompt. Agentic numbers measure the developer loop: tool calls, growing context, file writes, retries, and build validation. They are not directly comparable with raw decode throughput.
-
-Full benchmark notes are in [`REPORT.md`](REPORT.md).
-
-## Raw Decode Benchmarks
-
-Same machine, same local model paths, same microbenchmark shape:
-
-```bash
-bench <model> --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
-  --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1
-```
-
-The Lightning MLX MTPLX raw-decode rows were run with explicit max-performance
-benchmark settings:
-
-```bash
-lightning-mlx bench Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed \
-  --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
-  --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1 \
-  --prefill-step-size 8192 --mtp-num-draft-tokens 3 --mtp-optimistic
-```
-
-```bash
-lightning-mlx bench samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed \
-  --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
-  --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1 \
-  --prefill-step-size 8192 --mtp-num-draft-tokens 3 --mtp-optimistic
-```
-
-| Model | mlx-lm | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
-| --- | ---: | ---: | ---: | ---: |
-| Qwen3.6-27B | 29.80 tok/s | 31.80 tok/s | 32.37 tok/s | **40.67 tok/s** |
-| Qwen3.6-35B | 110.37 tok/s | 114.59 tok/s | 106.00 tok/s | **220.86 tok/s** |
-
-Raw decode numbers measure generation throughput only. oMLX was measured with `omlx serve --no-cache` and three OpenAI-compatible chat completion runs after warmup, using `completion_tokens / wall time`. They do not include tool calls, file writes, growing context, retries, or build validation.
-
-The Qwen3.6-27B MTPLX row was rechecked locally after fixing `bench` to use the same MTPLX loader/preset path as `serve`. The README command produced 268 completion tokens at 40.67 tok/s, above the previous 32.37 tok/s MTPLX result.
-
-The Qwen3.6-35B MTPLX row uses `samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed`. The README command produced 794 completion tokens at 220.86 tok/s with the MTPLX max-performance preset; disabling MTP produced 101.86 tok/s.
 
 ## More Model Benchmarks
 
@@ -135,27 +120,12 @@ lightning-mlx --help
 
 ## Start Fast
 
+Best optimized models:
+
 ```bash
 lightning-mlx serve qwen3.6-27b
-```
-
-That one command expands to the optimized MTPLX model:
-
-```text
-Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed
-```
-
-The 35B alias also expands to the optimized MTPLX model:
-
-```bash
 lightning-mlx serve qwen3.6-35b
 ```
-
-```text
-samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed
-```
-
-Both aliases apply the agentic performance preset automatically: **MTP on**, **MTP depth 3**, **optimistic MTP**, **tool parser on**, **reasoning parser on**, **tool logits bias on**, **single-sequence agent mode**, and **OpenAI model name `local`**.
 
 Local model path works too:
 
