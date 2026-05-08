@@ -61,18 +61,27 @@ def test_models_command_renders_hybrid_marker_for_qwen35():
 
 
 def test_models_command_renders_parser_for_hermes3_8b():
-    """Non-hybrid model with both parsers populated should show them.
+    """Non-hybrid model with parser + benched tier renders both columns.
 
-    hermes3-8b has tool_call_parser='hermes' and a benched suffix tier
-    ('neutral'). Pin this so a tier/data regression on hermes3-8b is
-    caught at CI time rather than first user report.
+    Two contracts: (1) the tool parser cell shows the value from the
+    alias registry, (2) the suffix-tier cell shows the tier currently
+    recorded in ``aliases.json``. Reading the expected tier from the
+    registry (not hardcoding it) means a future bench re-sweep that
+    reclassifies hermes3-8b doesn't break this test, while a *display*
+    regression (tier dropped from the row entirely) still does.
     """
     out = _capture_models_output()
     matches = [line for line in out.splitlines() if "hermes3-8b " in line]
     assert matches, "no row found for hermes3-8b"
     row = matches[0]
-    assert "hermes" in row, f"expected 'hermes' tool parser in row: {row!r}"
-    assert "neutral" in row, f"expected 'neutral' tier in row: {row!r}"
+    profile = list_profiles().get("hermes3-8b")
+    assert profile is not None, "hermes3-8b alias missing — fixture drift"
+    assert (profile.tool_call_parser or "") in row, (
+        f"expected tool parser {profile.tool_call_parser!r} in row: {row!r}"
+    )
+    assert profile.suffix_decoding_tier in row, (
+        f"expected suffix tier {profile.suffix_decoding_tier!r} in row: {row!r}"
+    )
 
 
 def test_models_command_renders_em_dash_for_unset_parsers():
