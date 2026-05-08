@@ -2,7 +2,7 @@
 
 **🔥 The fastest local AI engine for Apple Silicon. Optimized for agentic use.**
 
-It is a fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) with MTPLX-style work inspired by [MTPLX](https://github.com/youssofal/MTPLX/).
+It's [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) with [MTPLX](https://github.com/youssofal/MTPLX/) inspired work.
 
 ## Raw Decode Benchmarks
 
