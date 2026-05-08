@@ -1028,21 +1028,28 @@ class TestGemma4Streaming:
         assert m2.reasoning == "thinking step 1"
         assert m2.content is None
 
-    def test_delta_straddles_thought_close_then_content_open(self):
+    @pytest.mark.parametrize(
+        "content_marker",
+        ["<|channel>content", "<|channel>final"],
+        ids=["content", "final"],
+    )
+    def test_delta_straddles_thought_close_then_content_open(self, content_marker):
         """Regression for issue #219.
 
         At stream_interval > 1 a single buffered delta can contain the tail of
-        the thought channel, the channel-close marker, the content-open marker,
-        and the start of the actual content. The pre-fix parser classified the
-        entire delta as content (because state at end of current_text was
-        in_content), so bytes before the close marker leaked from reasoning
-        into content. This test asserts the split.
+        the thought channel, the channel-close marker, the content-channel-open
+        marker (either <|channel>content or <|channel>final, since the parser
+        treats final as a content-channel variant), and the start of the actual
+        content. The pre-fix parser classified the entire delta as content
+        (because state at end of current_text was in_content), so bytes before
+        the close marker leaked from reasoning into content. This test asserts
+        the split for both content and final markers.
         """
         prev = "<|channel>thought\nworking through it"
         self.parser.extract_reasoning_streaming("", prev, prev)
         assert self.parser._in_thought is True
 
-        delta = " final guess<channel|><|channel>content\nThe answer is 42."
+        delta = f" final guess<channel|>{content_marker}\nThe answer is 42."
         curr = prev + delta
         result = self.parser.extract_reasoning_streaming(prev, curr, delta)
         assert result.reasoning == " final guess", (
@@ -1050,8 +1057,8 @@ class TestGemma4Streaming:
             f"reasoning, got {result.reasoning!r}"
         )
         assert result.content == "The answer is 42.", (
-            f"content bytes from after the content-open marker should land in "
-            f"content, got {result.content!r}"
+            f"content bytes from after the {content_marker} marker should land "
+            f"in content, got {result.content!r}"
         )
         assert self.parser._in_content is True
         assert self.parser._in_thought is False
