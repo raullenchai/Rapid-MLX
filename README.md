@@ -2,16 +2,7 @@
 
 **🔥 The fastest local AI engine for Apple Silicon. Optimized for agentic use.**
 
-**lightning-mlx** is an OpenAI-compatible local LLM server optimized for **coding agents**, **tool calling**, and **fast short-turn loops** on Mac. It is a fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) with MTPLX-style work inspired by [MTPLX](https://github.com/youssofal/MTPLX/).
-
-## What You Get
-
-- **2.75x faster short agentic turns** in the benchmark fixture.
-- **1.96x higher all-turn throughput** versus the MLX baseline.
-- **Successful artifact generation** where baseline timed out.
-- **OpenAI-compatible API** for local tools, agents, editors, and CLIs.
-- **Apple Silicon first**: built around MLX and local Mac inference.
-- **MTPLX optimized preset** behind one simple command.
+It is a fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) with MTPLX-style work inspired by [MTPLX](https://github.com/youssofal/MTPLX/).
 
 ## Raw Decode Benchmarks
 
@@ -57,11 +48,10 @@ Create the snake game using react, vite and typescript
 
 ## More Model Benchmarks
 
-The models below use the same benchmark positioning as upstream [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX): Mac Studio M3 Ultra, Apple MLX backend, and tok/s as decode throughput. **lightning-mlx keeps the same model coverage**, and adds optimized **Qwen3.6 MTPLX** paths for local coding agents.
+The models below use the same benchmark positioning as upstream [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX): Mac Studio M3 Ultra, Apple MLX backend, and tok/s as decode throughput.
 
 | Model | lightning-mlx | Best Alternative | Speedup |
 | --- | ---: | ---: | ---: |
-| **Qwen3.6 27B MTPLX** | **40.67 tok/s raw decode** / **26.47 tok/s agentic all-turn** | 31.80 tok/s oMLX / 32.37 tok/s Rapid MLX raw | **1.26x raw** / **1.96x agentic all-turn** |
 | **Phi-4 Mini 14B** | **180 tok/s** | 77 tok/s mlx-lm / 56 tok/s Ollama | **2.3x** / **3.2x** |
 | **Qwen3.5 4B** | **160 tok/s** | 155 tok/s mlx-lm serve | **1.0x** |
 | **Nemotron-Nano 30B** | **141 tok/s** · 100% tools | - | - |
@@ -69,8 +59,6 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 | **DeepSeek V4 Flash 158B-A13B** (8-bit) | **31 tok/s** | Only MLX engine, day-0 | - |
 | **GPT-OSS 20B** | **127 tok/s** · 100% tools | 79 tok/s mlx-lm serve | **1.6x** |
 | **Qwen3.5 9B** | **108 tok/s** | 41 tok/s Ollama | **2.6x** |
-| **Qwen3.6 35B-A3B MTPLX** | **220.86 tok/s raw decode** / **64.85 tok/s agentic all-turn** | 114.59 tok/s oMLX / 106.00 tok/s Rapid MLX raw | **1.93x raw** / **2.34x agentic all-turn** |
-| **Qwen3.6 35B-A3B** | **109.89 tok/s raw decode** · 100% tools | 114.59 tok/s oMLX / 106.00 tok/s Rapid MLX raw | ~**1.0x** |
 | **Kimi-Linear 48B** | **94 tok/s** · 100% tools | Only engine | - |
 | **Gemma 4 26B-A4B** | **85 tok/s** | 68 tok/s Ollama | **1.3x** |
 | **Gemma 4 E4B** | **83 tok/s** | - | - |
@@ -79,7 +67,14 @@ The models below use the same benchmark positioning as upstream [Rapid-MLX](http
 | **Qwen3.5 122B** | **44 tok/s** · 100% tools | 43 tok/s mlx-lm serve | ~**1.0x** |
 | **Gemma 4 31B** | **31 tok/s** | - | - |
 
-**Note:** raw decode and agentic throughput are different measurements. Raw decode is a microbenchmark. Agentic throughput includes tool calls, growing context, artifact generation, and build validation.
+## What You Get
+
+- **2.75x faster short agentic turns** in the benchmark fixture.
+- **1.96x higher all-turn throughput** versus the MLX baseline.
+- **Successful artifact generation** where baseline timed out.
+- **OpenAI-compatible API** for local tools, agents, editors, and CLIs.
+- **Apple Silicon first**: built around MLX and local Mac inference.
+- **MTPLX optimized preset** behind one simple command.
 
 ## Install
 
