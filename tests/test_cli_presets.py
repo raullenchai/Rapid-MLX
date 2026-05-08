@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for lightning-mlx CLI model presets."""
 
-from argparse import Namespace
 import json
+from argparse import Namespace
 
 from vllm_mlx.cli import _apply_qwen36_35b_defaults, _apply_qwen36_mtplx_preset
 
@@ -54,8 +54,8 @@ def test_qwen36_alias_applies_agentic_mtplx_preset():
     assert args.enable_auto_tool_choice is True
     assert args.tool_call_parser == "qwen3_coder_xml"
     assert args.reasoning_parser == "qwen3"
-    assert args.no_thinking is True
-    assert args.enable_tool_logits_bias is True
+    assert args.no_thinking is False
+    assert args.enable_tool_logits_bias is False
 
 
 def test_qwen36_local_path_applies_same_preset():
@@ -70,11 +70,11 @@ def test_qwen36_local_path_applies_same_preset():
     assert args.port == 8010
     assert args.tool_call_parser == "qwen3_coder_xml"
     assert args.reasoning_parser == "qwen3"
-    assert args.no_thinking is True
-    assert args.enable_tool_logits_bias is True
+    assert args.no_thinking is False
+    assert args.enable_tool_logits_bias is False
 
 
-def test_verified_local_mtplx_qwen35b_path_keeps_thinking_enabled(tmp_path):
+def test_verified_local_mtplx_qwen35b_path_uses_no_thinking_default(tmp_path):
     model = tmp_path / "Qwen3.6-35B-A3B-MTPLX-Optimized-Speed"
     model.mkdir()
     (model / "mtp.safetensors").write_bytes(b"")
@@ -98,9 +98,9 @@ def test_verified_local_mtplx_qwen35b_path_keeps_thinking_enabled(tmp_path):
     assert args.enable_auto_tool_choice is True
     assert args.tool_call_parser == "qwen3_coder_xml"
     assert args.reasoning_parser == "qwen3"
-    assert args.no_thinking is False
+    assert args.no_thinking is True
     assert args.log_level == "WARNING"
-    assert args.enable_tool_logits_bias is True
+    assert args.enable_tool_logits_bias is False
 
 
 def test_verified_local_mtplx_qwen35b_path_respects_no_thinking(tmp_path):
@@ -116,6 +116,20 @@ def test_verified_local_mtplx_qwen35b_path_respects_no_thinking(tmp_path):
     _apply_qwen36_mtplx_preset(args, ["serve", str(model), "--no-thinking"])
 
     assert args.no_thinking is True
+
+
+def test_verified_local_mtplx_qwen35b_path_respects_enable_thinking(tmp_path):
+    model = tmp_path / "Qwen3.6-35B-A3B-MTPLX-Optimized-Speed"
+    model.mkdir()
+    (model / "mtp.safetensors").write_bytes(b"")
+    (model / "mtplx_runtime.json").write_text(
+        json.dumps({"arch_id": "qwen3-next-mtp"}), encoding="utf-8"
+    )
+    args = _serve_args(str(model))
+
+    _apply_qwen36_mtplx_preset(args, ["serve", str(model), "--enable-thinking"])
+
+    assert args.no_thinking is False
 
 
 def test_verified_local_mtplx_qwen35b_path_respects_log_level(tmp_path):

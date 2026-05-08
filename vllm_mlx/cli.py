@@ -38,8 +38,7 @@ def _is_qwen36_mtplx_request(args: argparse.Namespace) -> bool:
     return (
         original_alias == "qwen3.6-27b"
         or original_alias == "qwen3.6-35b"
-        or model == _QWEN36_MTPLX_MODEL
-        or model == _QWEN36_35B_MTPLX_MODEL
+        or model in (_QWEN36_MTPLX_MODEL, _QWEN36_35B_MTPLX_MODEL)
         or _QWEN36_MTPLX_MARKER in model
         or _QWEN36_35B_MTPLX_MARKER in model
         or _is_local_mtplx_qwen_model(model)
@@ -120,24 +119,22 @@ def _apply_qwen36_mtplx_preset(
         args.default_top_p = 0.95
     if not _has_cli_option(raw_args, "--stream-interval"):
         args.stream_interval = 1
+    if not _has_cli_option(raw_args, "--mtp-num-draft-tokens"):
+        args.mtp_num_draft_tokens = 1 if _is_qwen36_35b_a3b_request(args) else 3
     if not _has_cli_option(raw_args, "--enable-auto-tool-choice"):
         args.enable_auto_tool_choice = True
     if not _has_cli_option(raw_args, "--tool-call-parser"):
         args.tool_call_parser = "qwen3_coder_xml"
     if not _has_cli_option(raw_args, "--reasoning-parser"):
         args.reasoning_parser = "qwen3"
-    if (
-        not _is_qwen36_35b_a3b_request(args)
-        and not _has_cli_option(raw_args, "--no-thinking", "--enable-thinking")
-    ):
-        args.no_thinking = True
     if _is_qwen36_35b_a3b_request(args) and not _has_cli_option(
         raw_args, "--log-level"
     ):
         args.log_level = "WARNING"
-    if not _has_cli_option(raw_args, "--enable-tool-logits-bias"):
-        args.enable_tool_logits_bias = True
-
+    if _is_qwen36_35b_a3b_request(args) and not _has_cli_option(
+        raw_args, "--no-thinking", "--enable-thinking"
+    ):
+        args.no_thinking = True
 
 def _apply_qwen36_35b_defaults(args: argparse.Namespace, raw_args: list[str]) -> None:
     if getattr(args, "command", None) != "serve" or not _is_qwen36_35b_a3b_request(

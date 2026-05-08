@@ -62,11 +62,12 @@ def test_qwen36_mtplx_serve_preset_uses_agentic_defaults():
 
     assert args.enable_mtp is True
     assert args.prefill_step_size == 2048
-    assert args.mtp_num_draft_tokens == 1
+    assert args.mtp_num_draft_tokens == 3
     assert args.mtp_optimistic is False
     assert args.max_num_seqs == 1
     assert args.prefill_batch_size == 1
     assert args.completion_batch_size == 1
+    assert args.no_thinking is False
 
 
 def test_qwen36_mtplx_bench_preset_enables_mtp():
@@ -97,6 +98,7 @@ def test_qwen36_35b_mtplx_serve_preset_uses_agentic_defaults():
     assert args.prefill_step_size == 2048
     assert args.mtp_num_draft_tokens == 1
     assert args.mtp_optimistic is False
+    assert args.no_thinking is True
 
 
 def test_qwen36_mtplx_bench_preset_keeps_disabled_mtp():

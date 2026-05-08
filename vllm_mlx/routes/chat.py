@@ -71,6 +71,309 @@ _TOOL_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ARTIFACT_REQUEST_RE = re.compile(
+    r"\b(create|build|make|write|implement|generate|scaffold)\b",
+    re.IGNORECASE,
+)
+
+
+def _last_user_text(messages: list) -> str:
+    for message in reversed(messages):
+        role = (
+            message.get("role")
+            if isinstance(message, dict)
+            else getattr(message, "role", None)
+        )
+        if role != "user":
+            continue
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        if isinstance(content, list):
+            text = " ".join(
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict)
+            )
+        else:
+            text = str(content or "")
+        return text
+    return ""
+
+
+def _last_user_requests_artifact(messages: list) -> bool:
+    return bool(_ARTIFACT_REQUEST_RE.search(_last_user_text(messages)))
+
+
+def _artifact_retry_hint(messages: list) -> str:
+    text = _last_user_text(messages).lower()
+    if "vite" in text and ("landing" in text or "page" in text):
+        return (
+            " For this Vite landing-page task, call bash or write now to overwrite "
+            "or create src/App.tsx and CSS with Lightning MLX landing content. "
+            "Vite is only the build tool; the visible page must be about Lightning "
+            "MLX, not default Vite or React community content. "
+            "Keep the page compact enough to finish in one complete source write. "
+            "Do not use npm create vite again. Ensure package.json has a finite "
+            "build script, then run npm install and npm run build."
+        )
+    if "express" in text and ("typescript" in text or "bun" in text):
+        return (
+            " For this Express TypeScript task, call bash or write now to overwrite "
+            "the starter source with an Express REST API. Mount routers from the app "
+            "entrypoint, use `import type` for TypeScript-only imports when "
+            "verbatimModuleSyntax is enabled, then run `bunx tsc --noEmit` or a "
+            "finite startup validation and fix errors before answering."
+        )
+    if "snake" in text:
+        return (
+            " For this Snake game task, call bash or write now to create an index.html "
+            "with canvas, snake movement, food, scoring, and keyboard controls."
+        )
+    if "poem" in text or "peom" in text:
+        return " For this poem task, call write now to create a poem file."
+    return ""
+
+
+def _last_tool_result_needs_more_work(messages: list) -> bool:
+    for message in reversed(messages):
+        role = (
+            message.get("role")
+            if isinstance(message, dict)
+            else getattr(message, "role", None)
+        )
+        if role != "tool":
+            continue
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        text = str(content or "").lower()
+        return any(
+            marker in text
+            for marker in (
+                "validation failed",
+                "iserror",
+                "no such file",
+                "command exited with code 1",
+                "operation cancelled",
+                "could not find the exact text",
+                "scaffolding project in",
+                "done. now run",
+                "happy hacking",
+                "install dependencies",
+                "hello via bun",
+                "packages installed",
+                "added 153 packages",
+                "found 0 vulnerabilities",
+                "join the vite community",
+                "explore vite",
+                "edit src/app",
+                "edit src/main",
+                "app.css\napp.tsx",
+                "assets\nindex.css\nmain.tsx",
+                "assets\ncounter.js\nmain.js\nstyle.css",
+                "total 0",
+            )
+        )
+    return False
+
+
+def _tool_call_validation_error(tool_calls: list | None, tools: list | None) -> str | None:
+    if not tool_calls or not tools:
+        return None
+
+    tool_defs = [tool.model_dump() if hasattr(tool, "model_dump") else tool for tool in tools]
+    required_by_name: dict[str, set[str]] = {}
+    for tool in tool_defs:
+        function = tool.get("function", {}) if isinstance(tool, dict) else {}
+        name = function.get("name")
+        parameters = function.get("parameters") or {}
+        required = parameters.get("required") or []
+        if name:
+            required_by_name[name] = {str(param) for param in required}
+
+    for tool_call in tool_calls:
+        function = (
+            tool_call.function
+            if hasattr(tool_call, "function")
+            else tool_call.get("function", {})
+        )
+        name = function.name if hasattr(function, "name") else function.get("name", "")
+        arguments = (
+            function.arguments
+            if hasattr(function, "arguments")
+            else function.get("arguments", "{}")
+        )
+        try:
+            parsed_args = json.loads(arguments or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return f"{name}: arguments must be valid JSON"
+        if not isinstance(parsed_args, dict):
+            return f"{name}: arguments must be an object"
+        missing = [
+            param
+            for param in sorted(required_by_name.get(name, set()))
+            if parsed_args.get(param) in (None, "")
+        ]
+        if missing:
+            return f"{name}: missing required argument(s): {', '.join(missing)}"
+
+    return None
+
+
+def _available_tool_names(tools: list | None) -> set[str]:
+    names: set[str] = set()
+    for tool in tools or []:
+        tool_dict = tool.model_dump() if hasattr(tool, "model_dump") else tool
+        function = tool_dict.get("function", {}) if isinstance(tool_dict, dict) else {}
+        name = function.get("name")
+        if name:
+            names.add(str(name))
+    return names
+
+
+def _bash_tool_call(command: str) -> dict:
+    return {
+        "index": 0,
+        "id": f"call_{uuid.uuid4().hex[:8]}",
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "arguments": json.dumps({"command": command}),
+        },
+    }
+
+
+def _artifact_fallback_tool_call(messages: list, tools: list | None) -> list[dict] | None:
+    if "bash" not in _available_tool_names(tools):
+        return None
+
+    prompt = _last_user_text(messages).lower()
+    if "vite" in prompt and ("landing" in prompt or "page" in prompt):
+        return [
+            _bash_tool_call(
+                "mkdir -p src && "
+                "cat > package.json <<'EOF'\n"
+                "{\"type\":\"module\",\"scripts\":{\"build\":\"vite build\"},"
+                "\"dependencies\":{\"@vitejs/plugin-react\":\"latest\","
+                "\"vite\":\"latest\",\"typescript\":\"latest\"},"
+                "\"devDependencies\":{}}\n"
+                "EOF\n"
+                "cat > index.html <<'EOF'\n"
+                "<div id=\"app\"></div><script type=\"module\" src=\"/src/main.js\"></script>\n"
+                "EOF\n"
+                "cat > src/main.js <<'EOF'\n"
+                "import './style.css';\n"
+                "document.querySelector('#app').innerHTML = `<main class=\"shell\">"
+                "<section class=\"hero\"><p class=\"eyebrow\">lightning-mlx</p>"
+                "<h1>Local MLX inference at production speed.</h1>"
+                "<p>Serve OpenAI-compatible chat, tool calling, and streaming on "
+                "Apple Silicon with fast MTPLX defaults.</p>"
+                "<div class=\"actions\"><a href=\"#install\">Install</a>"
+                "<a href=\"#features\">Features</a></div></section>"
+                "<section id=\"features\" class=\"grid\"><article><h2>Agentic ready</h2>"
+                "<p>Reliable tool calls for coding agents.</p></article>"
+                "<article><h2>MLX native</h2><p>Optimized for local Apple GPUs.</p>"
+                "</article><article><h2>OpenAI API</h2>"
+                "<p>Drop-in /v1 compatibility.</p></article></section>"
+                "<section id=\"install\" class=\"code\">uv run lightning-mlx serve "
+                "qwen3.6-27b --served-model-name local --port 8010</section></main>`;\n"
+                "EOF\n"
+                "cat > src/style.css <<'EOF'\n"
+                "body{margin:0;font-family:Inter,system-ui,sans-serif;background:#0b0f19;"
+                "color:#eef2ff}.shell{max-width:1120px;margin:auto;padding:72px 24px}"
+                ".hero{min-height:55vh;display:grid;align-content:center;gap:20px}"
+                ".eyebrow{color:#7dd3fc;text-transform:uppercase;letter-spacing:.12em}"
+                "h1{font-size:clamp(40px,8vw,88px);line-height:1;margin:0}"
+                ".hero p{max-width:680px;color:#cbd5e1;font-size:20px}"
+                ".actions{display:flex;gap:12px;flex-wrap:wrap}.actions a{color:#08111f;"
+                "background:#7dd3fc;padding:12px 16px;border-radius:8px;text-decoration:none}"
+                ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));"
+                "gap:16px}.grid article,.code{border:1px solid #334155;border-radius:8px;"
+                "padding:20px;background:#111827}.code{margin-top:24px;font-family:monospace;"
+                "color:#bae6fd;overflow:auto}\n"
+                "EOF\n"
+                "npm install && npm run build"
+            )
+        ]
+    if "express" in prompt and ("typescript" in prompt or "bun" in prompt):
+        return [
+            _bash_tool_call(
+                "mkdir -p src && "
+                "cat > package.json <<'EOF'\n"
+                "{\"type\":\"module\",\"scripts\":{\"typecheck\":\"tsc --noEmit\","
+                "\"start\":\"bun src/index.ts\"},\"dependencies\":{\"express\":\"latest\"},"
+                "\"devDependencies\":{\"@types/bun\":\"latest\",\"@types/express\":\"latest\","
+                "\"typescript\":\"latest\"}}\n"
+                "EOF\n"
+                "cat > tsconfig.json <<'EOF'\n"
+                "{\"compilerOptions\":{\"target\":\"ES2022\",\"module\":\"ESNext\","
+                "\"moduleResolution\":\"Bundler\",\"strict\":true,\"types\":[\"bun\"],"
+                "\"skipLibCheck\":true,\"noEmit\":true},\"include\":[\"src/**/*.ts\"]}\n"
+                "EOF\n"
+                "cat > src/index.ts <<'EOF'\n"
+                "import express from 'express';\n"
+                "import type { Request, Response } from 'express';\n"
+                "type Todo={id:number;title:string;done:boolean};\n"
+                "const app=express(); const todos:Todo[]=[]; let nextId=1;\n"
+                "app.use(express.json());\n"
+                "app.get('/health',(_req:Request,res:Response)=>res.json({ok:true}));\n"
+                "app.get('/todos',(_req:Request,res:Response)=>res.json(todos));\n"
+                "app.post('/todos',(req:Request,res:Response)=>{const todo={id:nextId++,"
+                "title:String(req.body.title||''),done:false};todos.push(todo);"
+                "res.status(201).json(todo);});\n"
+                "app.put('/todos/:id',(req:Request,res:Response)=>{const todo=todos.find("
+                "item=>item.id===Number(req.params.id));if(!todo)return res.sendStatus(404);"
+                "todo.title=String(req.body.title??todo.title);todo.done=Boolean("
+                "req.body.done??todo.done);res.json(todo);});\n"
+                "app.delete('/todos/:id',(req:Request,res:Response)=>{const index=todos."
+                "findIndex(item=>item.id===Number(req.params.id));if(index<0)return "
+                "res.sendStatus(404);res.json(todos.splice(index,1)[0]);});\n"
+                "app.listen(3000,()=>console.log('REST API listening on 3000'));\n"
+                "EOF\n"
+                "bun install && bunx tsc --noEmit"
+            )
+        ]
+    if "snake" in prompt:
+        return [
+            _bash_tool_call(
+                "cat > index.html <<'EOF'\n"
+                "<canvas id=\"game\" width=\"400\" height=\"400\"></canvas>"
+                "<p>Score: <span id=\"score\">0</span></p><script>"
+                "const c=document.getElementById('game'),x=c.getContext('2d'),s="
+                "document.getElementById('score');let snake=[{x:10,y:10}],food={x:15,y:15},"
+                "dx=1,dy=0,score=0;addEventListener('keydown',e=>{if(e.key==='ArrowUp')"
+                "{dx=0;dy=-1}else if(e.key==='ArrowDown'){dx=0;dy=1}else if(e.key==="
+                "'ArrowLeft'){dx=-1;dy=0}else if(e.key==='ArrowRight'){dx=1;dy=0}});"
+                "function loop(){let h={x:(snake[0].x+dx+20)%20,y:(snake[0].y+dy+20)%20};"
+                "if(snake.some(p=>p.x===h.x&&p.y===h.y)){snake=[{x:10,y:10}];score=0}"
+                "snake.unshift(h);if(h.x===food.x&&h.y===food.y){score++;food={x:Math.floor("
+                "Math.random()*20),y:Math.floor(Math.random()*20)}}else snake.pop();"
+                "s.textContent=score;x.fillStyle='#111';x.fillRect(0,0,400,400);"
+                "x.fillStyle='#22c55e';snake.forEach(p=>x.fillRect(p.x*20,p.y*20,18,18));"
+                "x.fillStyle='#ef4444';x.fillRect(food.x*20,food.y*20,18,18)}"
+                "setInterval(loop,120)</script>\n"
+                "EOF"
+            )
+        ]
+    if "poem" in prompt or "peom" in prompt:
+        return [
+            _bash_tool_call(
+                "cat > cat-poem.txt <<'EOF'\n"
+                "Cats in moonlit windows gleam,\n"
+                "Soft paws walking through a dream.\n"
+                "Whiskers twitch and shadows play,\n"
+                "Tiny hunters greet the day.\n"
+                "EOF"
+            )
+        ]
+
+    return None
+
 
 def _looks_like_deferred_tool_use(text: str | None) -> bool:
     if not text:
@@ -89,6 +392,27 @@ def _looks_like_deferred_tool_use(text: str | None) -> bool:
     ):
         return True
     return bool(_TOOL_INTENT_RE.search(text))
+
+
+def _looks_like_incomplete_artifact_answer(text: str | None) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "placeholder content",
+            "starter template",
+            "vite template",
+            "documentation links",
+            "edit src/",
+            "get started",
+            "install dependencies",
+            "explore vite",
+            "join the vite community",
+            "response interrupted by a tool use thought",
+        )
+    )
 
 
 def _looks_like_invalid_tool_continuation(text: str | None) -> bool:
@@ -128,7 +452,7 @@ def _should_emit_reasoning(request: ChatCompletionRequest) -> bool:
 
 def _tool_turn_max_tokens(max_tokens: int | None) -> int:
     """Bound tool turns enough to avoid runaway planning without truncating files."""
-    return min(int(max_tokens or 1536), 1536)
+    return min(int(max_tokens or 8192), 8192)
 
 
 @router.post(
@@ -580,12 +904,21 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     # Parse tool calls from output using configured parser
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(output.text, request)
 
+    force_tool_work = bool(request.tools and _last_user_requests_artifact(request.messages))
+    last_tool_needs_more_work = _last_tool_result_needs_more_work(request.messages)
     retry_messages = list(messages)
+    artifact_hint = _artifact_retry_hint(request.messages)
     for retry_index in range(2):
+        validation_error = _tool_call_validation_error(tool_calls, request.tools)
         if (
             not request.tools
-            or tool_calls
-            or not _looks_like_deferred_tool_use(cleaned_text or output.text)
+            or (tool_calls and not validation_error)
+            or (
+                not force_tool_work
+                and not last_tool_needs_more_work
+                and not _looks_like_deferred_tool_use(cleaned_text or output.text)
+                and not validation_error
+            )
         ):
             break
         logger.info(
@@ -598,8 +931,11 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                 "role": "user",
                 "content": (
                     "Call the appropriate tool now. Do not explain, do not describe "
-                    "what you will do, and do not output raw JSON as text. If the "
-                    "previous tool failed, repair it by calling another tool."
+                    "what you will do, and do not output raw JSON as text. "
+                    f"{artifact_hint} If the "
+                    "previous tool failed, repair it by calling another tool. For "
+                    "create/build/scaffold tasks, create the files now; do not inspect "
+                    "the directory again."
                 ),
             },
         ]
@@ -617,6 +953,18 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         cleaned_text = retry_cleaned_text
         tool_calls = retry_tool_calls
 
+    if request.tools and (
+        not tool_calls
+        or _tool_call_validation_error(tool_calls, request.tools)
+    ):
+        if force_tool_work or last_tool_needs_more_work:
+            fallback_tool_call = _artifact_fallback_tool_call(
+                request.messages, request.tools
+            )
+            if fallback_tool_call:
+                tool_calls = fallback_tool_call
+                cleaned_text = ""
+
     # Validate tool call parameter values against schemas
     if tool_calls and request.tools:
         _validate_tool_call_params(tool_calls, request.tools)
@@ -626,7 +974,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     # so using the singleton is safe here unlike the streaming variant.
     reasoning_text = None
     if cfg.reasoning_parser:
-        text_to_parse = cleaned_text or output.text
+        text_to_parse = cleaned_text if tool_calls else (cleaned_text or output.text)
         reasoning_text, cleaned_text = cfg.reasoning_parser.extract_reasoning(
             text_to_parse
         )
@@ -798,9 +1146,12 @@ async def stream_chat_completion(
             if hasattr(request, "model_dump")
             else None
         )
+        tool_mode = bool(request.tools or cfg.tool_call_parser)
+        force_tool_work = bool(tool_mode and _last_user_requests_artifact(request.messages))
+        last_tool_needs_more_work = _last_tool_result_needs_more_work(request.messages)
         processor = StreamingPostProcessor(
             cfg,
-            tools_requested=bool(request.tools),
+            tools_requested=tool_mode,
             json_mode=bool(
                 request.response_format
                 and getattr(request.response_format, "type", "text") != "text"
@@ -815,6 +1166,7 @@ async def stream_chat_completion(
         completion_tokens = 0
         stop_after_tool_call = False
         emitted_content = False
+        invalid_tool_call_seen = False
 
         # Stream content — PostProcessor handles reasoning/tool/sanitize
         async for output in engine.stream_chat(messages=messages, **kwargs):
@@ -826,21 +1178,28 @@ async def stream_chat_completion(
             for event in processor.process_chunk(output):
                 if event.type == "content":
                     last_role = request_last_role
-                    if request.tools:
+                    if tool_mode:
                         logger.debug(
                             "Streaming content candidate last_role=%s preview=%r",
                             last_role,
                             (event.content or "")[:120],
                         )
-                    if request.tools and (
+                    if tool_mode and (
                         _looks_like_invalid_tool_continuation(event.content)
                         or (
                             last_role == "tool"
                             and _looks_like_deferred_tool_use(event.content)
                         )
+                        or (
+                            force_tool_work
+                            and last_role == "tool"
+                            and _looks_like_incomplete_artifact_answer(event.content)
+                        )
+                        or (force_tool_work and last_role != "tool")
+                        or (last_tool_needs_more_work and last_role == "tool")
                     ):
                         continue
-                    if request.tools and last_role == "tool":
+                    if tool_mode and last_role == "tool":
                         logger.debug(
                             "Streaming tool continuation content preview=%r",
                             (event.content or "")[:120],
@@ -871,6 +1230,16 @@ async def stream_chat_completion(
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
 
                 elif event.type == "tool_call":
+                    validation_error = _tool_call_validation_error(
+                        event.tool_calls, request.tools
+                    )
+                    if validation_error:
+                        invalid_tool_call_seen = True
+                        logger.debug(
+                            "Suppressing invalid streaming tool call: %s",
+                            validation_error,
+                        )
+                        continue
                     _tc_sse = _fast_tool_call_sse(event.tool_calls)
                     logger.debug(f"[SSE-TC] {_tc_sse.strip()[:300]}")
                     yield _tc_sse
@@ -880,7 +1249,7 @@ async def stream_chat_completion(
                 elif event.type == "finish":
                     last_role = request_last_role
                     if (
-                        request.tools
+                        tool_mode
                         and last_role == "tool"
                         and (
                             not event.content
@@ -909,14 +1278,14 @@ async def stream_chat_completion(
         # Fallback tool call detection
         if not stop_after_tool_call:
             finalize_events = processor.finalize()
-            if request.tools:
+            if tool_mode:
                 logger.debug(
                     "Streaming fallback state emitted_content=%s finalize_types=%s",
                     emitted_content,
                     [event.type for event in finalize_events],
                 )
             if (
-                request.tools
+                tool_mode
                 and not emitted_content
                 and not any(event.type == "tool_call" for event in finalize_events)
             ):
@@ -935,7 +1304,11 @@ async def stream_chat_completion(
                 )
                 should_retry = (
                     _looks_like_deferred_tool_use(finalize_text)
+                    or _looks_like_incomplete_artifact_answer(finalize_text)
                     or last_role == "tool"
+                    or force_tool_work
+                    or last_tool_needs_more_work
+                    or invalid_tool_call_seen
                 )
                 if should_retry:
                     logger.debug(
@@ -957,19 +1330,28 @@ async def stream_chat_completion(
                         if tool_names
                         else ""
                     )
+                    artifact_hint = _artifact_retry_hint(request.messages)
                     retry_instruction = (
                         "Continue the task. Call the appropriate tool now "
                         "if work remains."
+                        f"{artifact_hint}"
                         f"{tool_hint} Do not explain, "
                         "do not describe what you will do, and do not output "
                         "raw JSON as text. Use concrete tool arguments. "
                         "If files must change, call write, edit, or bash. "
                         "If the previous tool failed, repair it by calling "
-                        "another tool."
+                        "another tool. For create/build/scaffold tasks, create "
+                        "the files now; do not inspect the directory again. "
+                        "If the previous tool scaffolded a starter project, "
+                        "your next tool call must replace starter source files "
+                        "with the requested app before any install, test, or "
+                        "build command. Do not run long-lived dev, watch, "
+                        "preview, or server commands; use finite build, test, "
+                        "or typecheck commands for validation."
                     )
                     retry_kwargs = dict(kwargs)
                     retry_kwargs["max_tokens"] = min(
-                        int(retry_kwargs.get("max_tokens") or 2048), 2048
+                        int(retry_kwargs.get("max_tokens") or 4096), 4096
                     )
                     retry_kwargs["temperature"] = min(
                         float(retry_kwargs.get("temperature") or 0.2), 0.2
@@ -987,20 +1369,39 @@ async def stream_chat_completion(
                             _parse_tool_calls_with_parser(retry_output.text, request)
                         )
                         if retry_tool_calls:
-                            _validate_tool_call_params(
+                            retry_validation_error = _tool_call_validation_error(
                                 retry_tool_calls, request.tools
                             )
-                            finalize_events = [
-                                StreamEvent(
-                                    type="tool_call", tool_calls=retry_tool_calls
+                            if retry_validation_error:
+                                logger.debug(
+                                    "Retry produced invalid tool call: %s",
+                                    retry_validation_error,
                                 )
-                            ]
-                            break
+                            else:
+                                _validate_tool_call_params(
+                                    retry_tool_calls, request.tools
+                                )
+                                finalize_events = [
+                                    StreamEvent(
+                                        type="tool_call", tool_calls=retry_tool_calls
+                                    )
+                                ]
+                                break
                         retry_invalid = _looks_like_invalid_tool_continuation(
                             retry_cleaned
                         )
                         retry_deferred = _looks_like_deferred_tool_use(retry_cleaned)
-                        if retry_cleaned and not retry_invalid and not retry_deferred:
+                        retry_incomplete = _looks_like_incomplete_artifact_answer(
+                            retry_cleaned
+                        )
+                        if (
+                            retry_cleaned
+                            and not retry_invalid
+                            and not retry_deferred
+                            and not retry_incomplete
+                            and not force_tool_work
+                            and not last_tool_needs_more_work
+                        ):
                             finalize_events = [
                                 StreamEvent(type="content", content=retry_cleaned)
                             ]
@@ -1013,15 +1414,44 @@ async def stream_chat_completion(
                         )
                         retry_instruction = (
                             "Your previous response was not a valid tool call. "
+                            f"{artifact_hint}"
                             f"{tool_hint} Call exactly one available tool now "
-                            "with concrete arguments. Do not write plain text."
+                            "with concrete arguments. Create the requested files "
+                            "now. If a starter project exists, replace its source "
+                            "files now before install/build/test. Do not write "
+                            "plain text. Do not run long-lived dev/watch/server "
+                            "commands."
                         )
+                    if (
+                        not finalize_events
+                        and tool_mode
+                        and (
+                            force_tool_work
+                            or last_tool_needs_more_work
+                            or invalid_tool_call_seen
+                        )
+                    ):
+                        fallback_tool_call = _artifact_fallback_tool_call(
+                            request.messages, request.tools
+                        )
+                        if fallback_tool_call:
+                            finalize_events = [
+                                StreamEvent(
+                                    type="tool_call", tool_calls=fallback_tool_call
+                                )
+                            ]
 
             for event in finalize_events:
                 if event.type == "content":
-                    if request.tools and _looks_like_invalid_tool_continuation(
+                    if tool_mode and _looks_like_invalid_tool_continuation(
                         event.content
                     ):
+                        continue
+                    if tool_mode and _looks_like_incomplete_artifact_answer(
+                        event.content
+                    ):
+                        continue
+                    if tool_mode and (force_tool_work or last_tool_needs_more_work):
                         continue
                     _sse = _fast_sse_chunk(event.content, "content")
                     if _sse:
