@@ -15,37 +15,26 @@
 
 ## Raw Decode Benchmarks
 
-Same machine, same local model paths, same microbenchmark shape:
-
-```bash
-bench <model> --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
-  --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1
-```
-
 The Lightning MLX MTPLX raw-decode rows were run with explicit max-performance
 benchmark settings:
 
 | Model | mlx-lm | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
 | --- | ---: | ---: | ---: | ---: |
 | Qwen3.6-27B | 29.80 tok/s | 31.80 tok/s | 32.37 tok/s | **40.67 tok/s** |
-
-```bash
-lightning-mlx bench Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed \
-  --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
-  --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1 \
-  --prefill-step-size 8192 --mtp-num-draft-tokens 3 --mtp-optimistic
-```
-
-
-| Model | mlx-lm | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
-| --- | ---: | ---: | ---: | ---: |
 | Qwen3.6-35B | 110.37 tok/s | 114.59 tok/s | 106.00 tok/s | **220.86 tok/s** |
 
+Used:
+
 ```bash
-lightning-mlx bench samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed \
-  --num-prompts 3 --max-tokens 512 --disable-prefix-cache \
-  --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1 \
-  --prefill-step-size 8192 --mtp-num-draft-tokens 3 --mtp-optimistic
+lightning-mlx bench qwen3.6-27b \
+--num-prompts 3 --max-tokens 512 --disable-prefix-cache \
+--max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1 \
+--prefill-step-size 8192 --mtp-num-draft-tokens 3 --mtp-optimistic
+
+lightning-mlx bench qwen3.6-35b \
+--num-prompts 3 --max-tokens 512 --disable-prefix-cache \
+--max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1 \
+--prefill-step-size 8192 --mtp-num-draft-tokens 3 --mtp-optimistic
 ```
 
 ## Agentic Benchmarks
