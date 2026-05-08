@@ -68,7 +68,7 @@ class SchedulerConfig:
     # BatchGenerator settings
     prefill_batch_size: int = 8
     completion_batch_size: int = 32
-    prefill_step_size: int = 2048
+    prefill_step_size: int = 8192
 
     # Prefix cache settings
     enable_prefix_cache: bool = True
@@ -3088,7 +3088,6 @@ class Scheduler:
                 break
 
         # Clear finished tracking for next step
-        old_finished = self.finished_req_ids
         self.finished_req_ids = set()
 
         # Adaptive interval: scale inversely with concurrency to prevent

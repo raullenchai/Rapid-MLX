@@ -87,6 +87,8 @@ def _apply_qwen36_mtplx_preset(
         args.prefill_batch_size = 1
     if not _has_cli_option(raw_args, "--completion-batch-size"):
         args.completion_batch_size = 1
+    if not _has_cli_option(raw_args, "--prefill-step-size"):
+        args.prefill_step_size = 8192
     if not _has_cli_option(raw_args, "--stream-interval"):
         args.stream_interval = 1
     if not _has_cli_option(raw_args, "--enable-auto-tool-choice"):
@@ -384,6 +386,7 @@ def serve_command(args):
         max_num_seqs=args.max_num_seqs,
         prefill_batch_size=args.prefill_batch_size,
         completion_batch_size=args.completion_batch_size,
+        prefill_step_size=args.prefill_step_size,
         enable_prefix_cache=enable_prefix_cache,
         prefix_cache_size=args.prefix_cache_size,
         # Memory-aware cache options
@@ -584,6 +587,7 @@ def bench_command(args):
             max_num_seqs=args.max_num_seqs,
             prefill_batch_size=args.prefill_batch_size,
             completion_batch_size=args.completion_batch_size,
+            prefill_step_size=args.prefill_step_size,
             enable_prefix_cache=enable_prefix_cache,
             prefix_cache_size=args.prefix_cache_size,
             # Memory-aware cache options
@@ -1418,9 +1422,9 @@ Examples:
     serve_parser.add_argument(
         "--prefill-step-size",
         type=int,
-        default=2048,
+        default=8192,
         help="Chunk size for prompt prefill processing. Larger values use more memory "
-        "but can improve prefill throughput. (default: 2048)",
+        "but can improve prefill throughput. (default: 8192)",
     )
     # MCP options
     serve_parser.add_argument(
@@ -1638,6 +1642,12 @@ Examples:
     )
     bench_parser.add_argument(
         "--completion-batch-size", type=int, default=16, help="Completion batch size"
+    )
+    bench_parser.add_argument(
+        "--prefill-step-size",
+        type=int,
+        default=8192,
+        help="Chunk size for prompt prefill processing (default: 8192)",
     )
     bench_parser.add_argument(
         "--enable-prefix-cache",

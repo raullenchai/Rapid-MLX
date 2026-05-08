@@ -249,7 +249,7 @@ def _write_runtime_contract(output: Path) -> Path:
         "mtplx_version": _mtplx_version(),
         "arch_id": "qwen3-next-mtp",
         "mtp_depth_max": 1,
-        "recommended_profile": "performance-cold",
+        "recommended_profile": "sustained",
         "exactness_baseline": {
             "context": 2048,
             "max_abs_diff": 0.0,

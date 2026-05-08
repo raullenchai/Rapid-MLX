@@ -112,7 +112,7 @@ def test_convert_mtplx_writes_expected_sidecar_layout(tmp_path):
     contract = json.loads(result.runtime_contract_file.read_text())
     assert contract["arch_id"] == "qwen3-next-mtp"
     assert contract["mtp_depth_max"] == 1
-    assert contract["recommended_profile"] == "performance-cold"
+    assert contract["recommended_profile"] == "sustained"
     assert contract["exactness_baseline"]["context"] == 2048
     assert contract["exactness_baseline"]["max_abs_diff"] == 0.0
 
