@@ -80,6 +80,28 @@ def _apply_qwen36_mtplx_preset(
         args.enable_mtp = False
     elif hasattr(args, "enable_mtp") and not _has_cli_option(raw_args, "--enable-mtp"):
         args.enable_mtp = True
+    if command == "bench":
+        if not _has_cli_option(
+            raw_args, "--enable-prefix-cache", "--disable-prefix-cache"
+        ):
+            args.disable_prefix_cache = True
+        if not _has_cli_option(raw_args, "--max-num-seqs"):
+            args.max_num_seqs = 1
+        if not _has_cli_option(raw_args, "--prefill-batch-size"):
+            args.prefill_batch_size = 1
+        if not _has_cli_option(raw_args, "--completion-batch-size"):
+            args.completion_batch_size = 1
+        if not _has_cli_option(raw_args, "--prefill-step-size"):
+            args.prefill_step_size = 8192
+        if not _has_cli_option(raw_args, "--mtp-num-draft-tokens"):
+            args.mtp_num_draft_tokens = 3
+        if not _has_cli_option(raw_args, "--mtp-optimistic"):
+            args.mtp_optimistic = True
+        return
+
+    if command != "serve":
+        return
+
     if not _has_cli_option(raw_args, "--enable-prefix-cache", "--disable-prefix-cache"):
         args.disable_prefix_cache = True
     if not _has_cli_option(raw_args, "--max-num-seqs"):
@@ -88,19 +110,6 @@ def _apply_qwen36_mtplx_preset(
         args.prefill_batch_size = 1
     if not _has_cli_option(raw_args, "--completion-batch-size"):
         args.completion_batch_size = 1
-    if not _has_cli_option(raw_args, "--prefill-step-size"):
-        args.prefill_step_size = 8192
-    if not _has_cli_option(raw_args, "--mtp-num-draft-tokens"):
-        args.mtp_num_draft_tokens = 3
-    if not _has_cli_option(raw_args, "--mtp-optimistic"):
-        args.mtp_optimistic = True
-
-    if command == "bench":
-        return
-
-    if command != "serve":
-        return
-
     if not _has_cli_option(raw_args, "--served-model-name"):
         args.served_model_name = "local"
     if not _has_cli_option(raw_args, "--port"):

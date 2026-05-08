@@ -55,15 +55,15 @@ def _bench_args(**overrides):
     return argparse.Namespace(**values)
 
 
-def test_qwen36_mtplx_preset_uses_sustained_prefill_step_size():
+def test_qwen36_mtplx_serve_preset_uses_agentic_defaults():
     args = _serve_args()
 
     _apply_qwen36_mtplx_preset(args, ["serve", _QWEN36_MTPLX_MODEL])
 
     assert args.enable_mtp is True
-    assert args.prefill_step_size == 8192
-    assert args.mtp_num_draft_tokens == 3
-    assert args.mtp_optimistic is True
+    assert args.prefill_step_size == 2048
+    assert args.mtp_num_draft_tokens == 1
+    assert args.mtp_optimistic is False
     assert args.max_num_seqs == 1
     assert args.prefill_batch_size == 1
     assert args.completion_batch_size == 1
@@ -84,7 +84,7 @@ def test_qwen36_mtplx_bench_preset_enables_mtp():
     assert args.completion_batch_size == 1
 
 
-def test_qwen36_35b_mtplx_preset_uses_max_performance():
+def test_qwen36_35b_mtplx_serve_preset_uses_agentic_defaults():
     args = _serve_args(model=_QWEN36_35B_MTPLX_MODEL)
 
     _apply_qwen36_mtplx_preset(args, ["serve", _QWEN36_35B_MTPLX_MODEL])
@@ -94,9 +94,9 @@ def test_qwen36_35b_mtplx_preset_uses_max_performance():
     assert args.max_num_seqs == 1
     assert args.prefill_batch_size == 1
     assert args.completion_batch_size == 1
-    assert args.prefill_step_size == 8192
-    assert args.mtp_num_draft_tokens == 3
-    assert args.mtp_optimistic is True
+    assert args.prefill_step_size == 2048
+    assert args.mtp_num_draft_tokens == 1
+    assert args.mtp_optimistic is False
 
 
 def test_qwen36_mtplx_bench_preset_keeps_disabled_mtp():
