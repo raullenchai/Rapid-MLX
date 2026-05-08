@@ -1838,7 +1838,11 @@ Examples:
         "chat", help="Interactive chat REPL with a model"
     )
     chat_parser.add_argument(
-        "model", help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name)"
+        "model",
+        nargs="?",
+        default="qwen3.5-4b",
+        help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name). "
+        "Defaults to qwen3.5-4b when omitted.",
     )
     chat_parser.add_argument(
         "--system",

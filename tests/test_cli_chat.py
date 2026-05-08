@@ -86,14 +86,45 @@ def test_chat_subcommand_registered_in_cli():
     assert exc.value.code == 0
 
 
-def test_chat_subcommand_requires_model():
-    """`rapid-mlx chat` (no model) exits non-zero."""
+def test_chat_no_model_defaults_to_qwen35_4b():
+    """`rapid-mlx chat` (no model) routes chat_command with qwen3.5-4b.
+
+    Goes through the real ``cli.main()`` so a parser-wiring regression
+    (e.g. dropping ``nargs='?'`` or changing the default alias) fails the
+    test. ``chat_command`` is patched to capture args before the REPL
+    runs.
+    """
+    captured: list = []
     with (
         patch.object(sys, "argv", ["rapid-mlx", "chat"]),
-        pytest.raises(SystemExit) as exc,
+        patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
-    assert exc.value.code != 0
+    assert len(captured) == 1
+    args = captured[0]
+    # Either the alias name itself or the resolved HF repo path — either
+    # signals the default plumbed through. The canonical alias is the one
+    # we documented as the default; confirm via the round-trip name.
+    assert (
+        args.model == "qwen3.5-4b"
+        or getattr(args, "_original_alias", None) == "qwen3.5-4b"
+    )
+
+
+def test_chat_with_alias_overrides_default():
+    """`rapid-mlx chat <alias>` uses the user-supplied alias, not the default."""
+    captured: list = []
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "smollm3-3b"]),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+    assert len(captured) == 1
+    args = captured[0]
+    assert (
+        args.model == "smollm3-3b"
+        or getattr(args, "_original_alias", None) == "smollm3-3b"
+    )
 
 
 def test_stream_chat_response_concatenates_deltas():
