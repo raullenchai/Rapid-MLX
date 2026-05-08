@@ -139,15 +139,41 @@ class TestPayloadIsGreedy:
     landed was wrong for exactly this reason.
     """
 
-    def test_payload_forces_temperature_zero(self):
-        """Inspect the source so the constraint can't drift via a refactor
-        that 'still imports run_workload' but reshuffles the body."""
-        text = Path(bench.__file__).read_text()
-        assert '"temperature": 0.0' in text, (
+    def test_payload_forces_temperature_zero(self, monkeypatch):
+        """Capture the actual payload that ``run_workload`` would send and
+        assert ``temperature == 0.0``. Catches a refactor that reshuffles
+        the body in any way — substring tests would pass on a comment.
+        """
+        captured = {}
+
+        class _FakeStream:
+            def __init__(self, *args, **kwargs):
+                captured["json"] = kwargs.get("json")
+
+            def __enter__(self):
+                self._lines = iter([])
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def iter_lines(self):
+                return self._lines
+
+        monkeypatch.setattr(bench.httpx, "stream", _FakeStream)
+        handle = bench.ServerHandle(
+            proc=None,  # type: ignore[arg-type]
+            base_url="http://127.0.0.1:0/v1",
+            model="dummy",
+        )
+        bench.run_workload(handle, {"messages": [{"role": "user", "content": "x"}]}, 8)
+
+        payload = captured["json"]
+        assert payload["temperature"] == 0.0, (
             "bench payload must set temperature=0.0 to force greedy sampling. "
-            "Without this, server defaults to 0.7 and SuffixDecoding falls "
-            "through on every step (see scheduler.py::_is_greedy_for_uid). "
-            "Tier dataset becomes vanilla-vs-vanilla noise."
+            "Without this, server defaults to 0.7 and SuffixDecoding's "
+            "_is_greedy_for_uid returns False, so the verify path falls "
+            "through on every step. Tier dataset becomes vanilla-vs-vanilla."
         )
 
     def test_workload_bodies_dont_set_temperature(self):

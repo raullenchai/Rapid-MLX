@@ -357,15 +357,16 @@ def run_workload(
     Returning a structured value (instead of just a float) lets the
     caller persist raw data for forensic debugging without re-running.
     """
-    # Greedy sampling is mandatory: the SuffixDecoding install path in
-    # ``vllm_mlx/scheduler.py:_install_suffix_decoding`` falls through to
-    # vanilla on every step when ``temperature > 0`` (or top_p < 1, top_k > 0).
-    # Without an explicit ``temperature: 0.0`` here the server resolves to its
-    # 0.7 fallback, the patch never fires, and every measurement reduces to
-    # vanilla-vs-vanilla — the bug that produced the 1.0x flat tier data
-    # before this fix. Workload bodies still take precedence (tests can
-    # override) but the production sweep must stay greedy. See
-    # tests/test_suffix_bench_methodology.py::test_payload_is_greedy.
+    # Greedy sampling is mandatory. ``_install_suffix_decoding`` in
+    # ``vllm_mlx/scheduler.py`` only fires when ``_is_greedy_for_uid``
+    # returns True, which checks **temperature == 0** specifically (mlx-lm's
+    # ``make_sampler`` short-circuits to argmax at temp=0, so top_p/top_k
+    # don't matter in that regime). Without ``"temperature": 0.0`` here the
+    # server resolves to its 0.7 fallback, the patch never fires, and every
+    # measurement reduces to vanilla-vs-vanilla — the bug that produced the
+    # 1.0x flat tier data before this fix. Workload bodies still take
+    # precedence (tests can override) but the production sweep must stay
+    # greedy. See tests/test_suffix_bench_methodology.py::TestPayloadIsGreedy.
     payload = {
         "model": handle.model,
         "max_tokens": max_tokens,
