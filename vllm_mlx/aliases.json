@@ -119,8 +119,8 @@
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
     "suffix_bench_speedup": {
-      "chat": 0.999,
-      "json_array": 0.998
+      "chat": 0.588,
+      "json_array": 0.875
     }
   },
   "hermes3-8b": {
@@ -129,12 +129,12 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
-    "suffix_decoding_tier": "neutral",
+    "suffix_decoding_tier": "avoid",
     "suffix_bench_speedup": {
-      "chat": 0.983,
-      "json_array": 0.982,
-      "tool_loop": 1.012,
-      "code_edit": 1.018
+      "chat": 0.615,
+      "json_array": 0.976,
+      "tool_loop": 0.594,
+      "code_edit": 0.584
     }
   },
   "gemma-4-26b": {
@@ -142,14 +142,24 @@
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "json_array": 0.203
+    }
   },
   "gemma-4-31b": {
     "hf_path": "mlx-community/gemma-4-31b-it-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 1.468,
+      "json_array": 0.67,
+      "code_edit": 0.996
+    }
   },
   "gemma3-12b": {
     "hf_path": "mlx-community/gemma-3-12b-it-qat-4bit",
@@ -166,9 +176,10 @@
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
     "suffix_bench_speedup": {
-      "chat": 0.993,
-      "json_array": 0.993,
-      "tool_loop": 0.994
+      "chat": 0.66,
+      "json_array": 0.944,
+      "tool_loop": 0.671,
+      "code_edit": 0.874
     }
   },
   "mistral-24b": {
@@ -218,14 +229,27 @@
     "tool_call_parser": "deepseek_v31",
     "reasoning_parser": "deepseek_r1",
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 1.03,
+      "json_array": 0.964,
+      "code_edit": 0.289
+    }
   },
   "deepseek-r1-32b": {
     "hf_path": "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit",
     "tool_call_parser": "deepseek",
     "reasoning_parser": "deepseek_r1",
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "neutral",
+    "suffix_bench_speedup": {
+      "chat": 1.032,
+      "json_array": 0.986,
+      "tool_loop": 0.984,
+      "code_edit": 1.002
+    }
   },
   "qwopus-9b": {
     "hf_path": "Jackrong/MLX-Qwopus3.5-9B-v3-4bit",
@@ -270,8 +294,8 @@
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
     "suffix_bench_speedup": {
-      "chat": 0.998,
-      "json_array": 0.998
+      "chat": 0.838,
+      "json_array": 1.08
     }
   },
   "hermes4-70b": {
@@ -279,35 +303,67 @@
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.695,
+      "json_array": 1.08,
+      "tool_loop": 0.751,
+      "code_edit": 0.679
+    }
   },
   "qwen3-vl-8b": {
     "hf_path": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "neutral",
+    "suffix_bench_speedup": {
+      "chat": 0.995,
+      "json_array": 1.034,
+      "code_edit": 1.024
+    }
   },
   "qwen3-vl-30b": {
     "hf_path": "mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "neutral",
+    "suffix_bench_speedup": {
+      "chat": 1.046,
+      "json_array": 1.031,
+      "code_edit": 0.993
+    }
   },
   "devstral-v2-24b": {
     "hf_path": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "neutral",
+    "suffix_bench_speedup": {
+      "chat": 0.992,
+      "json_array": 1.015,
+      "code_edit": 1.029
+    }
   },
   "qwen3-coder-30b": {
     "hf_path": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.874,
+      "json_array": 0.988,
+      "tool_loop": 1.039,
+      "code_edit": 0.929
+    }
   },
   "gemma-3n-e4b": {
     "hf_path": "mlx-community/gemma-3n-E4B-it-4bit",
@@ -350,12 +406,12 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
-    "suffix_decoding_tier": "neutral",
+    "suffix_decoding_tier": "avoid",
     "suffix_bench_speedup": {
-      "chat": 0.992,
-      "json_array": 0.995,
-      "tool_loop": 1.105,
-      "code_edit": 1.023
+      "chat": 0.713,
+      "json_array": 1.304,
+      "tool_loop": 0.884,
+      "code_edit": 1.051
     }
   },
   "bonsai-4b": {
@@ -363,14 +419,26 @@
     "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.732,
+      "json_array": 0.799,
+      "code_edit": 1.012
+    }
   },
   "bonsai-8b": {
     "hf_path": "prism-ml/Bonsai-8B-unpacked",
     "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.78,
+      "json_array": 1.268,
+      "code_edit": 1.181
+    }
   },
   "smollm3-3b": {
     "hf_path": "mlx-community/SmolLM3-3B-4bit",
@@ -380,8 +448,8 @@
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
     "suffix_bench_speedup": {
-      "chat": 0.931,
-      "tool_loop": 0.999
+      "chat": 0.506,
+      "tool_loop": 0.776
     }
   },
   "granite4-tiny": {
