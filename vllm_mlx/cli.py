@@ -118,6 +118,53 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
         pass
 
 
+def _apply_alias_profile_to_args(args, auto_config, logger) -> None:
+    """Bridge from the resolved per-alias ``ModelConfig`` to ``serve``'s
+    argparse Namespace. Mutates ``args`` in place.
+
+    Wires three auto-decisions:
+    - ``tool_call_parser`` → enables auto tool choice (parser auto-detect)
+    - ``reasoning_parser`` → enabled unless ``--no-thinking`` already set
+    - ``suffix_decoding_tier`` ∈ {``agent``, ``structured``} on a non-hybrid
+      arch → flips ``args.suffix_decoding=True`` unless the user already
+      passed either ``--suffix-decoding`` or ``--no-suffix-decoding``
+
+    Hybrid arches (``supports_spec_decode=False``) skip the suffix-decoding
+    auto-enable even if the tier is somehow set; the framework gate
+    (mlx-lm BatchGenerator) refuses spec-decode on hybrids so the flag
+    would be a no-op at best, confusing at worst. Trust the gate.
+    """
+    if auto_config is None:
+        return
+    if not args.tool_call_parser and auto_config.tool_call_parser:
+        args.tool_call_parser = auto_config.tool_call_parser
+        args.enable_auto_tool_choice = True
+        logger.info(
+            f"Auto-configured --tool-call-parser {auto_config.tool_call_parser}"
+        )
+    if (
+        not args.reasoning_parser
+        and not args.no_thinking
+        and auto_config.reasoning_parser
+    ):
+        args.reasoning_parser = auto_config.reasoning_parser
+        logger.info(
+            f"Auto-configured --reasoning-parser {auto_config.reasoning_parser}"
+        )
+    if (
+        not args.suffix_decoding
+        and not args.no_suffix_decoding
+        and auto_config.supports_spec_decode
+        and auto_config.suffix_decoding_tier in ("agent", "structured")
+    ):
+        args.suffix_decoding = True
+        logger.info(
+            f"Auto-enabled --suffix-decoding "
+            f"(profile tier: {auto_config.suffix_decoding_tier}; "
+            "pass --no-suffix-decoding to disable)"
+        )
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -147,30 +194,18 @@ def serve_command(args):
         )
         sys.exit(1)
 
-    # Auto-detect parser config from model name when not explicitly set
-    if not args.tool_call_parser or not args.reasoning_parser:
-        try:
-            from .model_auto_config import detect_model_config
+    # Auto-detect parser + suffix-decoding tier from the alias profile.
+    # ``detect_model_config`` is the single source of truth — it consults
+    # ``aliases.json`` first (rich profile), then regex fallback.
+    try:
+        from .model_auto_config import detect_model_config
 
-            auto_config = detect_model_config(args.model)
-            if auto_config:
-                if not args.tool_call_parser and auto_config.tool_call_parser:
-                    args.tool_call_parser = auto_config.tool_call_parser
-                    args.enable_auto_tool_choice = True
-                    logger.info(
-                        f"Auto-configured --tool-call-parser {auto_config.tool_call_parser}"
-                    )
-                if (
-                    not args.reasoning_parser
-                    and not args.no_thinking
-                    and auto_config.reasoning_parser
-                ):
-                    args.reasoning_parser = auto_config.reasoning_parser
-                    logger.info(
-                        f"Auto-configured --reasoning-parser {auto_config.reasoning_parser}"
-                    )
-        except Exception as e:
-            logger.debug(f"Auto-detection failed (non-fatal): {e}")
+        auto_config = detect_model_config(args.model)
+    except Exception as e:
+        logger.debug(f"Auto-detection failed (non-fatal): {e}")
+        auto_config = None
+
+    _apply_alias_profile_to_args(args, auto_config, logger)
 
     # Pass alias info to server (for /v1/models)
     server._model_alias = getattr(args, "_original_alias", None)
@@ -1478,8 +1513,18 @@ Examples:
         default=False,
         help="Enable SuffixDecoding spec-decode (drafter-free, statistical). "
         "Speedup is workload-dependent: 3-5x on tool-call/JSON/code-edit, "
-        "~1x on free-form chat. Auto-disabled on hybrid models "
+        "~1x on free-form chat. Auto-enabled when the alias profile's "
+        "suffix_decoding_tier is 'agent' or 'structured'; pass "
+        "--no-suffix-decoding to opt out. Auto-disabled on hybrid models "
         "(Qwen3.5/3.6, Granite4, Mamba/Jamba/RWKV).",
+    )
+    serve_parser.add_argument(
+        "--no-suffix-decoding",
+        action="store_true",
+        default=False,
+        help="Opt out of the auto-enable triggered by an 'agent' or "
+        "'structured' alias profile tier. Useful for benchmarking the "
+        "non-spec-decode baseline.",
     )
     serve_parser.add_argument(
         "--suffix-max-draft",
