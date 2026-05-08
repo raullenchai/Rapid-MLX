@@ -1,0 +1,215 @@
+{
+  "model": "gemma3-27b",
+  "max_tokens": 256,
+  "runs": 3,
+  "vanilla_tps": {
+    "chat": null,
+    "json_array": null,
+    "tool_loop": null,
+    "code_edit": null
+  },
+  "suffix_tps": {
+    "chat": null,
+    "json_array": null,
+    "tool_loop": null,
+    "code_edit": null
+  },
+  "speedup": {},
+  "skipped": {
+    "chat": "vanilla all runs rejected",
+    "json_array": "vanilla all runs rejected",
+    "tool_loop": "vanilla all runs rejected",
+    "code_edit": "vanilla all runs rejected"
+  },
+  "tier": "unknown",
+  "raw_runs": {
+    "vanilla": {
+      "chat": [
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.097,
+          "total_time": 0.097,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.096,
+          "total_time": 0.096,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.097,
+          "total_time": 0.097,
+          "rejected_reason": "zero_completion_tokens"
+        }
+      ],
+      "json_array": [
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.097,
+          "total_time": 0.097,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.093,
+          "total_time": 0.093,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.094,
+          "total_time": 0.094,
+          "rejected_reason": "zero_completion_tokens"
+        }
+      ],
+      "tool_loop": [
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.094,
+          "total_time": 0.094,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.095,
+          "total_time": 0.095,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.095,
+          "total_time": 0.095,
+          "rejected_reason": "zero_completion_tokens"
+        }
+      ],
+      "code_edit": [
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.093,
+          "total_time": 0.093,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.09,
+          "total_time": 0.09,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.099,
+          "total_time": 0.099,
+          "rejected_reason": "zero_completion_tokens"
+        }
+      ]
+    },
+    "suffix": {
+      "chat": [
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.093,
+          "total_time": 0.093,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.092,
+          "total_time": 0.092,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.095,
+          "total_time": 0.095,
+          "rejected_reason": "zero_completion_tokens"
+        }
+      ],
+      "json_array": [
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.094,
+          "total_time": 0.094,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.094,
+          "total_time": 0.094,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.095,
+          "total_time": 0.095,
+          "rejected_reason": "zero_completion_tokens"
+        }
+      ],
+      "tool_loop": [
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.097,
+          "total_time": 0.097,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.099,
+          "total_time": 0.099,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.1,
+          "total_time": 0.1,
+          "rejected_reason": "zero_completion_tokens"
+        }
+      ],
+      "code_edit": [
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.095,
+          "total_time": 0.095,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.096,
+          "total_time": 0.096,
+          "rejected_reason": "zero_completion_tokens"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 0,
+          "decode_time": 0.096,
+          "total_time": 0.096,
+          "rejected_reason": "zero_completion_tokens"
+        }
+      ]
+    }
+  }
+}

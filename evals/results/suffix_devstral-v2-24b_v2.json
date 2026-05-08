@@ -1,0 +1,216 @@
+{
+  "model": "devstral-v2-24b",
+  "max_tokens": 256,
+  "runs": 3,
+  "vanilla_tps": {
+    "chat": 46.1,
+    "json_array": 45.4,
+    "tool_loop": null,
+    "code_edit": 45.4
+  },
+  "suffix_tps": {
+    "chat": 45.8,
+    "json_array": 46.1,
+    "tool_loop": null,
+    "code_edit": 46.7
+  },
+  "speedup": {
+    "chat": 0.992,
+    "json_array": 1.015,
+    "code_edit": 1.029
+  },
+  "skipped": {
+    "tool_loop": "vanilla all runs rejected"
+  },
+  "tier": "neutral",
+  "raw_runs": {
+    "vanilla": {
+      "chat": [
+        {
+          "tps": 44.8,
+          "completion_tokens": 202,
+          "decode_time": 4.509,
+          "total_time": 4.824,
+          "rejected_reason": null
+        },
+        {
+          "tps": 46.4,
+          "completion_tokens": 178,
+          "decode_time": 3.834,
+          "total_time": 4.205,
+          "rejected_reason": null
+        },
+        {
+          "tps": 46.1,
+          "completion_tokens": 171,
+          "decode_time": 3.706,
+          "total_time": 3.998,
+          "rejected_reason": null
+        }
+      ],
+      "json_array": [
+        {
+          "tps": 45.1,
+          "completion_tokens": 252,
+          "decode_time": 5.588,
+          "total_time": 5.941,
+          "rejected_reason": null
+        },
+        {
+          "tps": 45.6,
+          "completion_tokens": 254,
+          "decode_time": 5.574,
+          "total_time": 5.938,
+          "rejected_reason": null
+        },
+        {
+          "tps": 45.4,
+          "completion_tokens": 256,
+          "decode_time": 5.64,
+          "total_time": 5.987,
+          "rejected_reason": null
+        }
+      ],
+      "tool_loop": [
+        {
+          "tps": null,
+          "completion_tokens": 13,
+          "decode_time": 0.278,
+          "total_time": 1.733,
+          "rejected_reason": "decode_time<0.5s"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 13,
+          "decode_time": 0.286,
+          "total_time": 1.73,
+          "rejected_reason": "decode_time<0.5s"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 13,
+          "decode_time": 0.283,
+          "total_time": 1.717,
+          "rejected_reason": "decode_time<0.5s"
+        }
+      ],
+      "code_edit": [
+        {
+          "tps": 45.3,
+          "completion_tokens": 66,
+          "decode_time": 1.455,
+          "total_time": 1.897,
+          "rejected_reason": null
+        },
+        {
+          "tps": 46.1,
+          "completion_tokens": 76,
+          "decode_time": 1.648,
+          "total_time": 2.178,
+          "rejected_reason": null
+        },
+        {
+          "tps": 45.4,
+          "completion_tokens": 77,
+          "decode_time": 1.696,
+          "total_time": 2.143,
+          "rejected_reason": null
+        }
+      ]
+    },
+    "suffix": {
+      "chat": [
+        {
+          "tps": 46.8,
+          "completion_tokens": 216,
+          "decode_time": 4.614,
+          "total_time": 4.888,
+          "rejected_reason": null
+        },
+        {
+          "tps": 45.8,
+          "completion_tokens": 193,
+          "decode_time": 4.216,
+          "total_time": 4.528,
+          "rejected_reason": null
+        },
+        {
+          "tps": 45.1,
+          "completion_tokens": 191,
+          "decode_time": 4.233,
+          "total_time": 4.573,
+          "rejected_reason": null
+        }
+      ],
+      "json_array": [
+        {
+          "tps": 46.1,
+          "completion_tokens": 255,
+          "decode_time": 5.532,
+          "total_time": 5.87,
+          "rejected_reason": null
+        },
+        {
+          "tps": 45.5,
+          "completion_tokens": 256,
+          "decode_time": 5.628,
+          "total_time": 5.976,
+          "rejected_reason": null
+        },
+        {
+          "tps": 46.4,
+          "completion_tokens": 256,
+          "decode_time": 5.522,
+          "total_time": 5.904,
+          "rejected_reason": null
+        }
+      ],
+      "tool_loop": [
+        {
+          "tps": null,
+          "completion_tokens": 13,
+          "decode_time": 0.315,
+          "total_time": 1.765,
+          "rejected_reason": "decode_time<0.5s"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 13,
+          "decode_time": 0.318,
+          "total_time": 1.784,
+          "rejected_reason": "decode_time<0.5s"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 13,
+          "decode_time": 0.3,
+          "total_time": 1.831,
+          "rejected_reason": "decode_time<0.5s"
+        }
+      ],
+      "code_edit": [
+        {
+          "tps": 46.7,
+          "completion_tokens": 65,
+          "decode_time": 1.392,
+          "total_time": 1.827,
+          "rejected_reason": null
+        },
+        {
+          "tps": 46.6,
+          "completion_tokens": 49,
+          "decode_time": 1.052,
+          "total_time": 1.572,
+          "rejected_reason": null
+        },
+        {
+          "tps": 47.5,
+          "completion_tokens": 74,
+          "decode_time": 1.558,
+          "total_time": 1.986,
+          "rejected_reason": null
+        }
+      ]
+    }
+  }
+}
