@@ -177,16 +177,60 @@ class TestPayloadIsGreedy:
         )
 
     def test_workload_bodies_dont_set_temperature(self):
-        """Workload dicts must not pre-set temperature — the central
-        payload override is the single source of truth.
-
-        If a workload sneaks in ``"temperature": 0.7``, the
-        ``**workload_body`` spread (which comes AFTER the temperature
-        key in ``run_workload``) would clobber the greedy default.
-        Catch that before it ships.
-        """
+        """Belt-and-suspenders: even though run_workload now forces
+        greedy regardless of body, canonical workloads still shouldn't
+        try to set a temperature — anything they specify would be a
+        confusing dead value."""
         for name, body in bench.WORKLOADS.items():
             assert "temperature" not in body, (
-                f"workload '{name}' sets temperature, which would override "
-                "the greedy default. Remove it from the workload body."
+                f"workload '{name}' sets a temperature value that would be "
+                "silently overridden. Remove it from the workload body."
             )
+
+    def test_hostile_workload_cannot_clobber_greedy(self, monkeypatch):
+        """The dynamic invariant: ``run_workload`` MUST force greedy
+        regardless of what the workload body contains. A workload that
+        tries to set ``temperature: 0.7`` should still result in the
+        request being sent with ``temperature: 0.0``.
+
+        This pins the dict-spread order in run_workload — if someone
+        flips ``**workload_body`` to come last, the test catches it
+        instead of the next bench sweep silently going non-greedy.
+        """
+        captured = {}
+
+        class _FakeStream:
+            def __init__(self, *args, **kwargs):
+                captured["json"] = kwargs.get("json")
+
+            def __enter__(self):
+                self._lines = iter([])
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def iter_lines(self):
+                return self._lines
+
+        monkeypatch.setattr(bench.httpx, "stream", _FakeStream)
+        handle = bench.ServerHandle(
+            proc=None,  # type: ignore[arg-type]
+            base_url="http://127.0.0.1:0/v1",
+            model="dummy",
+        )
+        bench.run_workload(
+            handle,
+            {
+                "messages": [{"role": "user", "content": "x"}],
+                "temperature": 0.7,  # hostile — must lose
+            },
+            8,
+        )
+
+        assert captured["json"]["temperature"] == 0.0, (
+            "run_workload must force greedy regardless of workload body. "
+            "If a workload's temperature wins, suffix-decoding will fall "
+            "through and the bench will be vanilla-vs-vanilla. Check the "
+            "dict-spread order in run_workload's payload construction."
+        )
