@@ -944,12 +944,18 @@ def _spawn_chat_server(
     if served_name and served_name != model:
         cmd.extend(["--served-model-name", served_name])
     log = open(log_path, "w")  # noqa: SIM115 — kept open for proc lifetime
-    proc = subprocess.Popen(  # noqa: S603
-        cmd,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    try:
+        proc = subprocess.Popen(  # noqa: S603
+            cmd,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except (OSError, ValueError):
+        # Popen raised before constructing the child — the log handle
+        # would otherwise leak. Re-raise after closing.
+        log.close()
+        raise
     # Register first so a SIGTERM landing between here and the caller's
     # next statement still tears the child down.
     if register_in is not None:
@@ -1719,8 +1725,12 @@ def chat_command(args):
             # *exact* match. ``startswith("/save")`` would otherwise treat
             # ``/savefoo`` as ``/save`` (with arg ``foo``), silently
             # writing a file from a typo. Same for ``/modelfoo``.
-            cmd, _, rest = line.partition(" ")
-            rest = rest.strip()
+            # ``str.split(maxsplit=1)`` (no separator arg) splits on any
+            # whitespace, so ``/save\tpath.md`` works the same as
+            # ``/save path.md``.
+            parts = line.split(maxsplit=1)
+            cmd = parts[0] if parts else ""
+            rest = parts[1].strip() if len(parts) > 1 else ""
             if cmd in ("exit", "quit", "/exit", "/quit"):
                 break
             if cmd in ("/help", "/?"):

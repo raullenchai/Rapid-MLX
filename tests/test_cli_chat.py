@@ -926,6 +926,26 @@ def test_chat_command_slash_command_dispatch_uses_exact_match(
     )
 
 
+def test_chat_command_slash_command_accepts_tab_separator(
+    monkeypatch, tmp_path, capsys
+):
+    """``/save\\tpath.md`` (tab as separator) must work like
+    ``/save path.md``. Splitting on a literal space character would treat
+    the whole tab-separated form as an unknown command — split() with no
+    separator handles all whitespace."""
+    canned = [_delta("ok")]
+    target = tmp_path / "tabbed.md"
+    with _fake_server(canned) as (port, _payloads):
+        inputs = iter(["hi", f"/save\t{target}", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    assert target.exists(), (
+        f"/save with tab separator should write the file, "
+        f"got: {capsys.readouterr().out!r}"
+    )
+    assert "## User" in target.read_text(encoding="utf-8")
+
+
 def test_stream_chat_response_repetition_truncates_at_cutoff_in_one_chunk(
     monkeypatch,
 ):
