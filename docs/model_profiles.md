@@ -16,17 +16,17 @@ Workload columns are `chat / json_array / tool_loop / code_edit`.
 | `bonsai-1.7b` |  | ✓ | 🔴 avoid | 123/120/123/119 | 0.71↓ / 1.30↑ / 0.88↓ / 1.05↑ |
 | `bonsai-4b` |  | ✓ | 🔴 avoid | 65/64/—/65 | 0.73↓ / 0.80↓ / — / 1.01· |
 | `bonsai-8b` |  | ✓ | 🔴 avoid | 40/42/—/39 | 0.78↓ / 1.27↑ / — / 1.18↑ |
-| `deepseek-r1-32b` |  | ✓ | — | — | — |
+| `deepseek-r1-32b` |  | ✓ | ⚪ neutral | 32/34/34/34 | 1.03· / 0.99· / 0.98· / 1.00· |
 | `deepseek-r1-8b` |  | ✓ | 🔴 avoid | 197/420/—/489 | 1.03· / 0.96· / — / 0.29↓ |
 | `deepseek-v4-flash` |  | ✓ | — | — | — |
 | `deepseek-v4-flash-2bit` |  | ✓ | — | — | — |
 | `deepseek-v4-flash-4bit` |  | ✓ | — | — | — |
 | `deepseek-v4-flash-8bit` |  | ✓ | — | — | — |
 | `devstral-24b` |  | ✓ | — | — | — |
-| `devstral-v2-24b` |  | ✓ | — | — | — |
+| `devstral-v2-24b` |  | ✓ | ⚪ neutral | 46/45/—/45 | 0.99· / 1.01· / — / 1.03· |
 | `gemma-3n-e4b` |  | ✓ | — | — | — |
 | `gemma-4-26b` |  | ✓ | 🔴 avoid | —/353/—/— | — / 0.20↓ / — / — |
-| `gemma-4-31b` |  | ✓ | — | — | — |
+| `gemma-4-31b` |  | ✓ | 🔴 avoid | 143/101/—/216 | 1.47↑ / 0.67↓ / — / 1.00· |
 | `gemma3-12b` |  | ✓ | — | — | — |
 | `gemma3-1b` |  | ✓ | — | — | — |
 | `gemma3-27b` |  | ✓ | ❓ unknown | —/—/—/— | — |
@@ -35,7 +35,7 @@ Workload columns are `chat / json_array / tool_loop / code_edit`.
 | `gpt-oss-20b` |  | ✓ | — | — | — |
 | `granite4-tiny` | ✓ |  | n/a (hybrid) | — | — |
 | `hermes3-8b` |  | ✓ | 🔴 avoid | 109/115/108/113 | 0.61↓ / 0.98· / 0.59↓ / 0.58↓ |
-| `hermes4-70b` |  | ✓ | — | — | — |
+| `hermes4-70b` |  | ✓ | 🔴 avoid | 16/16/19/17 | 0.69↓ / 1.08↑ / 0.75↓ / 0.68↓ |
 | `kimi-48b` |  | ✓ | — | — | — |
 | `kimi-k2.5` |  | ✓ | — | — | — |
 | `llama3-3b` |  | ✓ | 🔴 avoid | 168/186/—/— | 0.59↓ / 0.88↓ / — / — |
@@ -46,8 +46,8 @@ Workload columns are `chat / json_array / tool_loop / code_edit`.
 | `nemotron-nano` | ✓ |  | n/a (hybrid) | — | — |
 | `phi4-14b` |  | ✓ | 🔴 avoid | 129/130/129/122 | 0.66↓ / 0.94↓ / 0.67↓ / 0.87↓ |
 | `qwen3-coder` | ✓ |  | n/a (hybrid) | — | — |
-| `qwen3-coder-30b` |  | ✓ | ⚪ neutral | 56/60/88/61 | 1.05· / 1.40↑ / 1.01· / 1.07↑ |
-| `qwen3-vl-30b` |  | ✓ | — | — | — |
+| `qwen3-coder-30b` |  | ✓ | 🔴 avoid | 88/87/75/64 | 0.87↓ / 0.99· / 1.04· / 0.93↓ |
+| `qwen3-vl-30b` |  | ✓ | ⚪ neutral | 38/39/—/37 | 1.05· / 1.03· / — / 0.99· |
 | `qwen3-vl-4b` |  | ✓ | — | — | — |
 | `qwen3-vl-8b` |  | ✓ | ⚪ neutral | 55/54/—/50 | 0.99· / 1.03· / — / 1.02· |
 | `qwen3.5-122b` | ✓ |  | n/a (hybrid) | — | — |
@@ -107,10 +107,11 @@ Workload columns are `chat / json_array / tool_loop / code_edit`.
 - **HF path:** `mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit`
 - **Parsers:** tool=`deepseek`, reasoning=`deepseek_r1`
 - **Architecture:** hybrid=False, supports_spec_decode=True
-- **SuffixDecoding:** no bench data
-- **Recipe:** suffix-decode=off, spec-decode=on
-  - flags: `--enable-auto-tool-choice --tool-call-parser deepseek --reasoning-parser deepseek_r1`
-  - ⚠ suffix-decoding tier unknown — bench has not run yet
+- **SuffixDecoding:** tier=`neutral` (source: `evals/results/suffix_deepseek-r1-32b_v2.json`)
+  - vanilla TPS (chat/json/tool/code): `32/34/34/34`
+  - speedup: `1.03· / 0.99· / 0.98· / 1.00·`
+- **Recipe:** suffix-decode=on, spec-decode=on
+  - flags: `--enable-auto-tool-choice --tool-call-parser deepseek --reasoning-parser deepseek_r1 --enable-suffix-decoding`
 
 ### `deepseek-r1-8b`
 
@@ -182,10 +183,12 @@ Workload columns are `chat / json_array / tool_loop / code_edit`.
 - **HF path:** `mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit`
 - **Parsers:** tool=`hermes`, reasoning=`—`
 - **Architecture:** hybrid=False, supports_spec_decode=True
-- **SuffixDecoding:** no bench data
-- **Recipe:** suffix-decode=off, spec-decode=on
-  - flags: `--enable-auto-tool-choice --tool-call-parser hermes`
-  - ⚠ suffix-decoding tier unknown — bench has not run yet
+- **SuffixDecoding:** tier=`neutral` (source: `evals/results/suffix_devstral-v2-24b_v2.json`)
+  - vanilla TPS (chat/json/tool/code): `46/45/—/45`
+  - speedup: `0.99· / 1.01· / — / 1.03·`
+  - skipped workloads: tool_loop: vanilla all runs rejected
+- **Recipe:** suffix-decode=on, spec-decode=on
+  - flags: `--enable-auto-tool-choice --tool-call-parser hermes --enable-suffix-decoding`
 
 ### `gemma-3n-e4b`
 
@@ -215,10 +218,13 @@ Workload columns are `chat / json_array / tool_loop / code_edit`.
 - **HF path:** `mlx-community/gemma-4-31b-it-4bit`
 - **Parsers:** tool=`gemma4`, reasoning=`gemma4`
 - **Architecture:** hybrid=False, supports_spec_decode=True
-- **SuffixDecoding:** no bench data
+- **SuffixDecoding:** tier=`avoid` (source: `evals/results/suffix_gemma-4-31b_v2.json`)
+  - vanilla TPS (chat/json/tool/code): `143/101/—/216`
+  - speedup: `1.47↑ / 0.67↓ / — / 1.00·`
+  - skipped workloads: tool_loop: vanilla all runs rejected
 - **Recipe:** suffix-decode=off, spec-decode=on
   - flags: `--enable-auto-tool-choice --tool-call-parser gemma4 --reasoning-parser gemma4`
-  - ⚠ suffix-decoding tier unknown — bench has not run yet
+  - ⚠ suffix-decoding hurts on this model (verify-forward overhead exceeds drafter gain) — leave disabled
 
 ### `gemma3-12b`
 
@@ -318,10 +324,12 @@ Workload columns are `chat / json_array / tool_loop / code_edit`.
 - **HF path:** `lmstudio-community/Hermes-4-70B-MLX-4bit`
 - **Parsers:** tool=`hermes`, reasoning=`—`
 - **Architecture:** hybrid=False, supports_spec_decode=True
-- **SuffixDecoding:** no bench data
+- **SuffixDecoding:** tier=`avoid` (source: `evals/results/suffix_hermes4-70b_v2.json`)
+  - vanilla TPS (chat/json/tool/code): `16/16/19/17`
+  - speedup: `0.69↓ / 1.08↑ / 0.75↓ / 0.68↓`
 - **Recipe:** suffix-decode=off, spec-decode=on
   - flags: `--enable-auto-tool-choice --tool-call-parser hermes`
-  - ⚠ suffix-decoding tier unknown — bench has not run yet
+  - ⚠ suffix-decoding hurts on this model (verify-forward overhead exceeds drafter gain) — leave disabled
 
 ### `kimi-48b`
 
@@ -443,23 +451,26 @@ Workload columns are `chat / json_array / tool_loop / code_edit`.
 - **HF path:** `mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit`
 - **Parsers:** tool=`hermes`, reasoning=`—`
 - **Architecture:** hybrid=False, supports_spec_decode=True
-- **SuffixDecoding:** tier=`neutral` (source: `evals/results/suffix_qwen3-coder-30b.json`)
-  - vanilla TPS (chat/json/tool/code): `56/60/88/61`
-  - speedup: `1.05· / 1.40↑ / 1.01· / 1.07↑`
+- **SuffixDecoding:** tier=`avoid` (source: `evals/results/suffix_qwen3-coder-30b_v2.json`)
+  - vanilla TPS (chat/json/tool/code): `88/87/75/64`
+  - speedup: `0.87↓ / 0.99· / 1.04· / 0.93↓`
 - **Speed (eval bench):** TTFT warm `0.027s`, decode short/long `42/74` tok/s, RAM active `44.9GB` — 2026-03-04
 - **Eval scores:** tool 27/30 (0.90) · coding 9/10 (0.90) · reasoning 7/10 (0.70) · general 7/10 (0.70)
-- **Recipe:** suffix-decode=on, spec-decode=on
-  - flags: `--enable-auto-tool-choice --tool-call-parser hermes --enable-suffix-decoding`
+- **Recipe:** suffix-decode=off, spec-decode=on
+  - flags: `--enable-auto-tool-choice --tool-call-parser hermes`
+  - ⚠ suffix-decoding hurts on this model (verify-forward overhead exceeds drafter gain) — leave disabled
 
 ### `qwen3-vl-30b`
 
 - **HF path:** `mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit`
 - **Parsers:** tool=`hermes`, reasoning=`qwen3`
 - **Architecture:** hybrid=False, supports_spec_decode=True
-- **SuffixDecoding:** no bench data
-- **Recipe:** suffix-decode=off, spec-decode=on
-  - flags: `--enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3`
-  - ⚠ suffix-decoding tier unknown — bench has not run yet
+- **SuffixDecoding:** tier=`neutral` (source: `evals/results/suffix_qwen3-vl-30b_v2.json`)
+  - vanilla TPS (chat/json/tool/code): `38/39/—/37`
+  - speedup: `1.05· / 1.03· / — / 0.99·`
+  - skipped workloads: tool_loop: vanilla all runs rejected
+- **Recipe:** suffix-decode=on, spec-decode=on
+  - flags: `--enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3 --enable-suffix-decoding`
 
 ### `qwen3-vl-4b`
 

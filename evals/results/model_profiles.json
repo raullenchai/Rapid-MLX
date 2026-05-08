@@ -180,12 +180,27 @@
       "is_hybrid": false,
       "supports_spec_decode": true,
       "suffix": {
-        "tier": null,
-        "vanilla_tps": {},
-        "suffix_tps": {},
-        "speedups": {},
+        "tier": "neutral",
+        "vanilla_tps": {
+          "chat": 32.3,
+          "json_array": 33.6,
+          "tool_loop": 34.3,
+          "code_edit": 33.8
+        },
+        "suffix_tps": {
+          "chat": 33.4,
+          "json_array": 33.2,
+          "tool_loop": 33.7,
+          "code_edit": 33.9
+        },
+        "speedups": {
+          "chat": 1.032,
+          "json_array": 0.986,
+          "tool_loop": 0.984,
+          "code_edit": 1.002
+        },
         "skipped": {},
-        "source_file": null
+        "source_file": "evals/results/suffix_deepseek-r1-32b_v2.json"
       },
       "speed": {
         "ttft_cold_s": null,
@@ -205,16 +220,15 @@
         "eval_date": null
       },
       "recipe": {
-        "enable_suffix_decoding": false,
+        "enable_suffix_decoding": true,
         "enable_spec_decoding": true,
         "recommended_flags": [
           "--enable-auto-tool-choice",
           "--tool-call-parser deepseek",
-          "--reasoning-parser deepseek_r1"
+          "--reasoning-parser deepseek_r1",
+          "--enable-suffix-decoding"
         ],
-        "warnings": [
-          "suffix-decoding tier unknown — bench has not run yet"
-        ]
+        "warnings": []
       }
     },
     {
@@ -522,12 +536,28 @@
       "is_hybrid": false,
       "supports_spec_decode": true,
       "suffix": {
-        "tier": null,
-        "vanilla_tps": {},
-        "suffix_tps": {},
-        "speedups": {},
-        "skipped": {},
-        "source_file": null
+        "tier": "neutral",
+        "vanilla_tps": {
+          "chat": 46.1,
+          "json_array": 45.4,
+          "tool_loop": null,
+          "code_edit": 45.4
+        },
+        "suffix_tps": {
+          "chat": 45.8,
+          "json_array": 46.1,
+          "tool_loop": null,
+          "code_edit": 46.7
+        },
+        "speedups": {
+          "chat": 0.992,
+          "json_array": 1.015,
+          "code_edit": 1.029
+        },
+        "skipped": {
+          "tool_loop": "vanilla all runs rejected"
+        },
+        "source_file": "evals/results/suffix_devstral-v2-24b_v2.json"
       },
       "speed": {
         "ttft_cold_s": null,
@@ -547,15 +577,14 @@
         "eval_date": null
       },
       "recipe": {
-        "enable_suffix_decoding": false,
+        "enable_suffix_decoding": true,
         "enable_spec_decoding": true,
         "recommended_flags": [
           "--enable-auto-tool-choice",
-          "--tool-call-parser hermes"
+          "--tool-call-parser hermes",
+          "--enable-suffix-decoding"
         ],
-        "warnings": [
-          "suffix-decoding tier unknown — bench has not run yet"
-        ]
+        "warnings": []
       }
     },
     {
@@ -671,12 +700,28 @@
       "is_hybrid": false,
       "supports_spec_decode": true,
       "suffix": {
-        "tier": null,
-        "vanilla_tps": {},
-        "suffix_tps": {},
-        "speedups": {},
-        "skipped": {},
-        "source_file": null
+        "tier": "avoid",
+        "vanilla_tps": {
+          "chat": 143.3,
+          "json_array": 101.1,
+          "tool_loop": null,
+          "code_edit": 216.0
+        },
+        "suffix_tps": {
+          "chat": 210.4,
+          "json_array": 67.7,
+          "tool_loop": null,
+          "code_edit": 215.2
+        },
+        "speedups": {
+          "chat": 1.468,
+          "json_array": 0.67,
+          "code_edit": 0.996
+        },
+        "skipped": {
+          "tool_loop": "vanilla all runs rejected"
+        },
+        "source_file": "evals/results/suffix_gemma-4-31b_v2.json"
       },
       "speed": {
         "ttft_cold_s": null,
@@ -704,7 +749,7 @@
           "--reasoning-parser gemma4"
         ],
         "warnings": [
-          "suffix-decoding tier unknown — bench has not run yet"
+          "suffix-decoding hurts on this model (verify-forward overhead exceeds drafter gain) — leave disabled"
         ]
       }
     },
@@ -1164,12 +1209,27 @@
       "is_hybrid": false,
       "supports_spec_decode": true,
       "suffix": {
-        "tier": null,
-        "vanilla_tps": {},
-        "suffix_tps": {},
-        "speedups": {},
+        "tier": "avoid",
+        "vanilla_tps": {
+          "chat": 16.4,
+          "json_array": 16.3,
+          "tool_loop": 19.3,
+          "code_edit": 16.7
+        },
+        "suffix_tps": {
+          "chat": 11.4,
+          "json_array": 17.6,
+          "tool_loop": 14.5,
+          "code_edit": 11.4
+        },
+        "speedups": {
+          "chat": 0.695,
+          "json_array": 1.08,
+          "tool_loop": 0.751,
+          "code_edit": 0.679
+        },
         "skipped": {},
-        "source_file": null
+        "source_file": "evals/results/suffix_hermes4-70b_v2.json"
       },
       "speed": {
         "ttft_cold_s": null,
@@ -1196,7 +1256,7 @@
           "--tool-call-parser hermes"
         ],
         "warnings": [
-          "suffix-decoding tier unknown — bench has not run yet"
+          "suffix-decoding hurts on this model (verify-forward overhead exceeds drafter gain) — leave disabled"
         ]
       }
     },
@@ -1731,27 +1791,27 @@
       "is_hybrid": false,
       "supports_spec_decode": true,
       "suffix": {
-        "tier": "neutral",
+        "tier": "avoid",
         "vanilla_tps": {
-          "chat": 56.5,
-          "json_array": 59.6,
-          "tool_loop": 88.0,
-          "code_edit": 61.2
+          "chat": 87.9,
+          "json_array": 86.6,
+          "tool_loop": 74.6,
+          "code_edit": 64.4
         },
         "suffix_tps": {
-          "chat": 59.3,
-          "json_array": 83.1,
-          "tool_loop": 89.3,
-          "code_edit": 65.6
+          "chat": 76.9,
+          "json_array": 85.6,
+          "tool_loop": 77.5,
+          "code_edit": 59.8
         },
         "speedups": {
-          "chat": 1.049,
-          "json_array": 1.395,
-          "tool_loop": 1.014,
-          "code_edit": 1.072
+          "chat": 0.874,
+          "json_array": 0.988,
+          "tool_loop": 1.039,
+          "code_edit": 0.929
         },
         "skipped": {},
-        "source_file": "evals/results/suffix_qwen3-coder-30b.json"
+        "source_file": "evals/results/suffix_qwen3-coder-30b_v2.json"
       },
       "speed": {
         "ttft_cold_s": 0.473,
@@ -1787,14 +1847,15 @@
         "eval_date": "2026-03-04"
       },
       "recipe": {
-        "enable_suffix_decoding": true,
+        "enable_suffix_decoding": false,
         "enable_spec_decoding": true,
         "recommended_flags": [
           "--enable-auto-tool-choice",
-          "--tool-call-parser hermes",
-          "--enable-suffix-decoding"
+          "--tool-call-parser hermes"
         ],
-        "warnings": []
+        "warnings": [
+          "suffix-decoding hurts on this model (verify-forward overhead exceeds drafter gain) — leave disabled"
+        ]
       }
     },
     {
@@ -1805,12 +1866,28 @@
       "is_hybrid": false,
       "supports_spec_decode": true,
       "suffix": {
-        "tier": null,
-        "vanilla_tps": {},
-        "suffix_tps": {},
-        "speedups": {},
-        "skipped": {},
-        "source_file": null
+        "tier": "neutral",
+        "vanilla_tps": {
+          "chat": 37.7,
+          "json_array": 39.1,
+          "tool_loop": null,
+          "code_edit": 36.7
+        },
+        "suffix_tps": {
+          "chat": 39.5,
+          "json_array": 40.3,
+          "tool_loop": null,
+          "code_edit": 36.4
+        },
+        "speedups": {
+          "chat": 1.046,
+          "json_array": 1.031,
+          "code_edit": 0.993
+        },
+        "skipped": {
+          "tool_loop": "vanilla all runs rejected"
+        },
+        "source_file": "evals/results/suffix_qwen3-vl-30b_v2.json"
       },
       "speed": {
         "ttft_cold_s": null,
@@ -1830,16 +1907,15 @@
         "eval_date": null
       },
       "recipe": {
-        "enable_suffix_decoding": false,
+        "enable_suffix_decoding": true,
         "enable_spec_decoding": true,
         "recommended_flags": [
           "--enable-auto-tool-choice",
           "--tool-call-parser hermes",
-          "--reasoning-parser qwen3"
+          "--reasoning-parser qwen3",
+          "--enable-suffix-decoding"
         ],
-        "warnings": [
-          "suffix-decoding tier unknown — bench has not run yet"
-        ]
+        "warnings": []
       }
     },
     {
