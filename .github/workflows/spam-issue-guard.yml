@@ -1,0 +1,93 @@
+name: Spam issue guard
+
+# Background: ``blank_issues_enabled: false`` in ``.github/ISSUE_TEMPLATE/config.yml``
+# only hides the "Open a blank issue" link in the picker UI — it does NOT block
+# direct ``/issues/new`` URL hits or the REST API. Spam waves on this repo
+# (May 2026) opened ~15 issues that bypassed the picker entirely; every one
+# came in with no labels and no template fields filled.
+#
+# Issue forms (the ``.yml`` templates) auto-apply a label on submission, so any
+# new issue with zero labels was almost certainly NOT submitted via a form.
+# We use that as the spam signal: zero labels + non-member author → close, lock,
+# label ``spam-suspected``. False-positive risk on legitimate API users is
+# accepted because the close message tells them how to recover.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    # OWNER / MEMBER / COLLABORATOR can open label-less issues legitimately
+    # (e.g. via ``gh issue create`` without ``--label``). Only gate on
+    # external authors to keep maintainer ergonomics.
+    if: >-
+      github.event.issue.author_association != 'OWNER' &&
+      github.event.issue.author_association != 'MEMBER' &&
+      github.event.issue.author_association != 'COLLABORATOR'
+    steps:
+      - name: Close + lock if no template label present
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const templateLabels = new Set([
+              'bug',
+              'enhancement',
+              'performance',
+              'benchmark',
+              'model-support',
+            ]);
+            const hasTemplateLabel = issue.labels.some(l => templateLabels.has(l.name));
+            if (hasTemplateLabel) {
+              core.info(`Issue #${issue.number} has template label — leaving open.`);
+              return;
+            }
+
+            core.info(`Issue #${issue.number} has no template label — closing as suspected spam.`);
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: [
+                "This issue was opened without using one of the project's issue templates.",
+                "",
+                "We require the templates because they ask for the minimum context (version, hardware, serve command, reproduction) needed to act on a report. Issues that bypass the templates are usually spam, so this one is being closed automatically.",
+                "",
+                "**If this is a real issue:** please re-open via https://github.com/raullenchai/Rapid-MLX/issues/new/choose and pick the template that matches (Bug Report / Performance Issue / Feature Request / Model Support / Benchmark Report). A maintainer will re-open it from there.",
+              ].join("\n"),
+            });
+
+            // ``addLabels`` will 404 if the label hasn't been pre-created on
+            // the repo. Don't let that block the close+lock — the comment is
+            // the user-facing signal; the label is just for triage filtering.
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: ['spam-suspected'],
+              });
+            } catch (err) {
+              core.warning(`Could not add 'spam-suspected' label (create it on the repo to enable triage filtering): ${err.message}`);
+            }
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              state: 'closed',
+              state_reason: 'not_planned',
+            });
+
+            await github.rest.issues.lock({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              lock_reason: 'spam',
+            });
