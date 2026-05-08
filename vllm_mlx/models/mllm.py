@@ -122,7 +122,14 @@ class FileSizeExceededError(Exception):
 class UnsafeRemoteURLError(ValueError):
     """Raised when a remote media URL targets an unsafe destination."""
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        public_message: str = "Remote media URL is not allowed",
+    ) -> None:
+        super().__init__(message)
+        self.public_message = public_message
 
 
 @dataclass

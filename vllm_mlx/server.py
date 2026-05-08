@@ -167,6 +167,7 @@ from .model_registry import (
     load_registry_config,
 )
 from .metrics import metrics as _metrics
+from .models.mllm import UnsafeRemoteURLError, _validate_url_safety, is_url
 from .reasoning import get_parser as get_reasoning_parser
 from .tool_parsers import ToolParserManager, get_parser_stop_tokens
 
@@ -264,6 +265,8 @@ def _prepare_chat_messages(
     request_messages: list[Message | dict],
 ) -> tuple[list[dict], list, list, list, bool]:
     """Normalize messages and collect media once for both stream/non-stream paths."""
+    _validate_remote_media_urls(request_messages)
+
     is_mllm = bool(getattr(engine, "is_mllm", False))
     preserve_native = bool(getattr(engine, "preserve_native_tool_format", False))
 
@@ -330,6 +333,52 @@ def _prepare_chat_messages(
                 break
 
     return messages, images, videos, audios, has_media
+
+
+def _iter_remote_media_urls(messages: list[Message | dict]):
+    """Yield remote media URLs from OpenAI-style multimodal message content."""
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else msg.content
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if hasattr(item, "model_dump"):
+                item = item.model_dump(exclude_none=True)
+            elif hasattr(item, "dict"):
+                item = {k: v for k, v in item.dict().items() if v is not None}
+            if not isinstance(item, dict):
+                continue
+
+            item_type = item.get("type", "")
+            media_value = None
+            if item_type == "image_url":
+                media_value = item.get("image_url", {})
+            elif item_type == "video_url":
+                media_value = item.get("video_url", {})
+            elif item_type == "audio_url":
+                media_value = item.get("audio_url", {})
+            elif item_type in {"image", "video", "audio"}:
+                media_value = item.get(item_type, item.get("url", ""))
+
+            if isinstance(media_value, dict):
+                media_value = media_value.get("url", "")
+            if isinstance(media_value, str) and is_url(media_value):
+                yield media_value
+
+
+def _validate_remote_media_urls(messages: list[Message | dict]) -> None:
+    """Validate remote media URLs during request preparation."""
+    for url in _iter_remote_media_urls(messages):
+        _validate_url_safety(url)
+
+
+def _raise_remote_media_http_error(exc: UnsafeRemoteURLError) -> None:
+    """Log internal URL-safety detail while returning a generic client error."""
+    logger.warning(
+        "Blocked unsafe remote media URL: %s",
+        _sanitize_log_text(exc, limit=500),
+    )
+    raise HTTPException(status_code=400, detail=exc.public_message) from exc
 
 
 def _prepare_json_logits_processor(
@@ -2010,6 +2059,8 @@ def _build_response_object(
 
 def _prepare_responses_request(
     request: ResponsesRequest,
+    *,
+    validate_remote_media: bool = True,
 ) -> tuple[BaseEngine, ChatCompletionRequest, list[dict], dict]:
     """Prepare a Responses request for execution on the chat engine."""
     _validate_model_name(request.model)
@@ -2023,6 +2074,9 @@ def _prepare_responses_request(
             f"{len(request.input) if isinstance(request.input, list) else 1} "
             f"tools={len(request.tools)}"
         )
+
+    if validate_remote_media:
+        _validate_remote_media_urls(chat_request.messages)
 
     messages, images, videos, audios = extract_multimodal_content(
         chat_request.messages,
@@ -2047,6 +2101,13 @@ def _prepare_responses_request(
         chat_kwargs["videos"] = videos
 
     return engine, chat_request, messages, chat_kwargs
+
+
+def _prepare_streaming_responses_request(
+    request: ResponsesRequest,
+) -> tuple[BaseEngine, ChatCompletionRequest, list[dict], dict]:
+    """Prepare a streaming Responses request after eager URL validation."""
+    return _prepare_responses_request(request, validate_remote_media=False)
 
 
 async def _run_responses_request(
@@ -2107,7 +2168,9 @@ async def _run_responses_request(
 
 async def _stream_responses_request(request: ResponsesRequest) -> AsyncIterator[str]:
     """Execute a Responses API request and stream SSE events incrementally."""
-    engine, chat_request, messages, chat_kwargs = _prepare_responses_request(request)
+    engine, chat_request, messages, chat_kwargs = _prepare_streaming_responses_request(
+        request
+    )
 
     response_id = _new_response_item_id("resp")
     sequence = 1
@@ -4499,11 +4562,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
     release_on_exit = True
     try:
-        prepared = _prepare_chat_completion_invocation(
-            engine,
-            request,
-            effective_max_tokens,
-        )
+        try:
+            prepared = _prepare_chat_completion_invocation(
+                engine,
+                request,
+                effective_max_tokens,
+            )
+        except UnsafeRemoteURLError as exc:
+            tracker.finish(result="client_error")
+            _raise_remote_media_http_error(exc)
 
         if request.stream:
             response = StreamingResponse(
@@ -4685,15 +4752,21 @@ def _get_engine_tokenizer(engine) -> object | None:
 )
 async def create_response(request: ResponsesRequest, raw_request: Request):
     """Create a Responses API response."""
-    if request.stream:
-        return StreamingResponse(
-            _disconnect_guard(_stream_responses_request(request), raw_request),
-            media_type="text/event-stream",
-        )
+    try:
+        if request.stream:
+            chat_request = _responses_request_to_chat_request(request)
+            _validate_remote_media_urls(chat_request.messages)
+            return StreamingResponse(
+                _disconnect_guard(_stream_responses_request(request), raw_request),
+                media_type="text/event-stream",
+            )
 
-    response_object, _persisted_messages = await _run_responses_request(
-        request, raw_request
-    )
+        response_object, _persisted_messages = await _run_responses_request(
+            request, raw_request
+        )
+    except UnsafeRemoteURLError as exc:
+        _raise_remote_media_http_error(exc)
+
     if response_object is None:
         return Response(status_code=499)
 
@@ -4821,6 +4894,22 @@ def _convert_anthropic_stop_reason(openai_reason: str | None) -> str:
     return mapping.get(openai_reason or "", "end_turn")
 
 
+def _prepare_anthropic_endpoint_invocation(
+    engine: BaseEngine,
+    openai_request: ChatCompletionRequest,
+    effective_max_tokens: int,
+) -> PreparedChatInvocation:
+    """Prepare Anthropic invocation and convert URL-safety errors to 400s."""
+    try:
+        return _prepare_anthropic_invocation(
+            engine,
+            openai_request,
+            effective_max_tokens,
+        )
+    except UnsafeRemoteURLError as exc:
+        _raise_remote_media_http_error(exc)
+
+
 @app.post(
     "/v1/messages", dependencies=[Depends(verify_api_key), Depends(check_rate_limit)]
 )
@@ -4889,7 +4978,7 @@ async def create_anthropic_message(
     if engine is None:
         return Response(status_code=499)
     release_on_exit = True
-    prepared = _prepare_anthropic_invocation(
+    prepared = _prepare_anthropic_endpoint_invocation(
         engine,
         openai_request,
         effective_max_tokens,

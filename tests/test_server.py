@@ -2577,6 +2577,130 @@ class TestReasoningAndToolCallsNonStreaming:
         assert response.status_code == 200
         assert extract_calls["count"] == 1
 
+    def test_chat_completion_sanitizes_remote_media_safety_errors(
+        self, client, monkeypatch
+    ):
+        """Unsafe remote media URLs should return a generic public error."""
+        import vllm_mlx.server as server
+
+        class FakeEngine:
+            model_name = "fake-mllm"
+            is_mllm = True
+            preserve_native_tool_format = False
+
+            async def chat(self, messages, **kwargs):  # pragma: no cover
+                raise AssertionError("unsafe URL should fail during preparation")
+
+        async def fake_acquire(_raw_request, **_kwargs):
+            return FakeEngine()
+
+        async def fake_release(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(server, "_acquire_default_engine_for_request", fake_acquire)
+        monkeypatch.setattr(server, "_release_engine_for_request", fake_release)
+        monkeypatch.setattr(server, "_model_name", "test-model")
+        monkeypatch.setattr(server, "_default_timeout", 30.0)
+        monkeypatch.setattr(server, "_default_max_tokens", 128)
+        monkeypatch.setattr(server, "_api_key", None)
+        monkeypatch.setattr(
+            server,
+            "_rate_limiter",
+            server.RateLimiter(requests_per_minute=60, enabled=False),
+        )
+
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "describe this"},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": "http://169.254.169.254/latest/meta-data/"
+                                },
+                            },
+                        ],
+                    }
+                ],
+                "max_tokens": 8,
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Remote media URL is not allowed"
+        assert "169.254.169.254" not in response.text
+
+    def test_anthropic_message_sanitizes_remote_media_safety_errors(
+        self, client, monkeypatch
+    ):
+        """Anthropic preparation should sanitize URL-safety failures too."""
+        import vllm_mlx.server as server
+
+        class FakeEngine:
+            model_name = "fake-mllm"
+            is_mllm = True
+            preserve_native_tool_format = False
+
+            async def chat(self, messages, **kwargs):  # pragma: no cover
+                raise AssertionError("unsafe URL should fail during preparation")
+
+        async def fake_acquire(_raw_request, **_kwargs):
+            return FakeEngine()
+
+        async def fake_release(*_args, **_kwargs):
+            return None
+
+        def fake_anthropic_to_openai(_anthropic_request):
+            return server.ChatCompletionRequest(
+                model="test-model",
+                messages=[
+                    server.Message(
+                        role="user",
+                        content=[
+                            {"type": "text", "text": "describe this"},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": "http://169.254.169.254/latest/meta-data/"
+                                },
+                            },
+                        ],
+                    )
+                ],
+                max_tokens=8,
+            )
+
+        monkeypatch.setattr(server, "_acquire_default_engine_for_request", fake_acquire)
+        monkeypatch.setattr(server, "_release_engine_for_request", fake_release)
+        monkeypatch.setattr(server, "anthropic_to_openai", fake_anthropic_to_openai)
+        monkeypatch.setattr(server, "_model_name", "test-model")
+        monkeypatch.setattr(server, "_default_timeout", 30.0)
+        monkeypatch.setattr(server, "_default_max_tokens", 128)
+        monkeypatch.setattr(server, "_api_key", None)
+        monkeypatch.setattr(
+            server,
+            "_rate_limiter",
+            server.RateLimiter(requests_per_minute=60, enabled=False),
+        )
+
+        response = client.post(
+            "/v1/messages",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "describe this"}],
+                "max_tokens": 8,
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Remote media URL is not allowed"
+        assert "169.254.169.254" not in response.text
+
 
 class TestChatCompletionStreamingModeSwitching:
     """Endpoint-level regression tests for stream/non-stream mode switching."""

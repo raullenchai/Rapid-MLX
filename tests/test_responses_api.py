@@ -152,6 +152,50 @@ class TestResponsesEndpoint:
             "enable_thinking": False
         }
 
+    def test_streaming_responses_validates_remote_media_once(self, client, monkeypatch):
+        import vllm_mlx.server as srv
+
+        engine = _mock_engine()
+        engine._stream_outputs = [_stream_output("Hello there", finish_reason="stop")]
+        srv._engine = engine
+
+        validate_calls = []
+
+        def fake_validate(messages):
+            validate_calls.append(messages)
+
+        def fake_responses_to_chat(_request):
+            return srv.ChatCompletionRequest(
+                model="test-model",
+                messages=[
+                    srv.Message(
+                        role="user",
+                        content=[
+                            {"type": "text", "text": "describe this"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "https://example.com/image.png"},
+                            },
+                        ],
+                    )
+                ],
+                max_tokens=8,
+                stream=True,
+            )
+
+        monkeypatch.setattr(srv, "_validate_remote_media_urls", fake_validate)
+        monkeypatch.setattr(
+            srv, "_responses_request_to_chat_request", fake_responses_to_chat
+        )
+
+        resp = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": "describe this", "stream": True},
+        )
+
+        assert resp.status_code == 200
+        assert len(validate_calls) == 1
+
     def test_responses_request_kwargs_override_server_defaults(self, client):
         import vllm_mlx.server as srv
 

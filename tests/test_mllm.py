@@ -170,6 +170,17 @@ class TestMLLMHelperFunctions:
 
         _validate_url_safety("https://8.8.8.8/image.jpg")
 
+    def test_unsafe_remote_url_error_has_safe_public_message(self):
+        """Public safety errors should not disclose resolved hosts or IPs."""
+        from vllm_mlx.models.mllm import UnsafeRemoteURLError, _validate_url_safety
+
+        with pytest.raises(UnsafeRemoteURLError) as exc_info:
+            _validate_url_safety("http://169.254.169.254/latest/meta-data/")
+
+        assert "169.254.169.254" in str(exc_info.value)
+        assert exc_info.value.public_message == "Remote media URL is not allowed"
+        assert "169.254.169.254" not in exc_info.value.public_message
+
     def test_request_with_safe_redirects_blocks_unsafe_redirect(self, monkeypatch):
         """Test that redirect hops are validated before a second request."""
         from vllm_mlx.models import mllm
