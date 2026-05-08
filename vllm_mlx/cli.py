@@ -898,12 +898,23 @@ def ps_command(_args):
 
 
 def _spawn_chat_server(
-    model: str, log_path: str, served_name: str | None = None
+    model: str,
+    log_path: str,
+    served_name: str | None = None,
+    *,
+    register_in: list | None = None,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
 
-    Returns (Popen handle, base_url). The caller must register cleanup —
-    `chat_command` does so via atexit + signal handlers.
+    Returns (Popen handle, base_url).
+
+    ``register_in`` is an optional list (typically the chat REPL's
+    ``_active_procs``). When provided, the new ``Popen`` is appended to it
+    *immediately* after construction — narrowing the SIGTERM-orphan race
+    that exists between ``Popen()`` returning and the caller registering
+    the handle. Caller-side ``register_in.append(proc)`` would still leave
+    one Python statement of unprotected window; doing it inside this
+    function closes that window for the caller.
 
     If ``served_name`` is given, it is passed via ``--served-model-name`` so
     the spawned server exposes the alias as the API model name (e.g. user
@@ -939,6 +950,10 @@ def _spawn_chat_server(
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+    # Register first so a SIGTERM landing between here and the caller's
+    # next statement still tears the child down.
+    if register_in is not None:
+        register_in.append(proc)
     # Stash the log handle and path on the proc object so the chat REPL
     # can close+unlink them when the proc is torn down (fixes the file
     # descriptor + tempfile leak across `/model` swaps).
@@ -1247,15 +1262,22 @@ def _stream_chat_response(
                 if in_reasoning:
                     sys.stdout.write(f"{RESET}\n  " if is_tty else "\n")
                     in_reasoning = False
-                _emit_with_inline_md(piece)
-                full += piece
+                # Detect repetition BEFORE emitting. If a single coalesced
+                # delta contains the cutoff inside it (server batched many
+                # repeated tokens into one chunk), find the position and
+                # only emit the prefix up to that token — otherwise the
+                # user sees the full degenerate dump before the abort
+                # message lands.
+                #
                 # Rolling counter: each new whitespace-separated token in
                 # this delta either extends the current consecutive run
                 # or resets it. Aborts only on a single token repeated
                 # ``REPEAT_LIMIT`` times in a row, not on diverse-but-
                 # repetitive content like ``[0, 0, 0, ...]`` or markdown
                 # tables.
-                for tok in piece.split():
+                cutoff_idx: int | None = None
+                tokens = piece.split()
+                for i, tok in enumerate(tokens):
                     if tok == repeat_last:
                         repeat_run += 1
                     else:
@@ -1263,7 +1285,31 @@ def _stream_chat_response(
                         repeat_run = 1
                     if repeat_run >= REPEAT_LIMIT:
                         repetition_aborted = True
+                        cutoff_idx = i
                         break
+                if cutoff_idx is not None:
+                    # Find the byte position in ``piece`` corresponding to
+                    # the start of the cutoff token, so we can emit only
+                    # the prefix. ``str.split()`` collapses runs of
+                    # whitespace, so we walk the original text token-by-
+                    # token to recover the offset.
+                    pos = 0
+                    seen = 0
+                    while seen < cutoff_idx and pos < len(piece):
+                        # Skip leading whitespace.
+                        while pos < len(piece) and piece[pos].isspace():
+                            pos += 1
+                        # Skip the token itself.
+                        while pos < len(piece) and not piece[pos].isspace():
+                            pos += 1
+                        seen += 1
+                    prefix = piece[:pos]
+                    if prefix:
+                        _emit_with_inline_md(prefix)
+                        full += prefix
+                else:
+                    _emit_with_inline_md(piece)
+                    full += piece
                 if repetition_aborted:
                     break
     _close_open_md_spans()
@@ -1408,8 +1454,12 @@ def chat_command(args):
         # If main() resolved an alias, expose the alias as the API model name
         # so the chat request body matches what the user typed.
         original = getattr(args, "_original_alias", None)
-        proc, base_url = _spawn_chat_server(args.model, log_path, served_name=original)
-        _active_procs.append(proc)
+        proc, base_url = _spawn_chat_server(
+            args.model,
+            log_path,
+            served_name=original,
+            register_in=_active_procs,
+        )
 
         try:
             _wait_for_chat_server(base_url, proc, timeout_s=args.ready_timeout)
@@ -1607,15 +1657,17 @@ def chat_command(args):
             prefix="rapid-mlx-chat-", suffix=".log", delete=False
         ).name
         print(f"  Starting server {DIM}(log: {new_log_path}){RESET} ...")
+        # ``register_in=_active_procs`` makes the candidate visible to
+        # ``_cleanup`` *inside* ``_spawn_chat_server`` — before the
+        # readiness wait, before any further Python statement runs in
+        # this scope. A SIGTERM/Ctrl-C during the (possibly multi-second)
+        # load tears the child down via the cleanup walk.
         new_proc, new_base_url = _spawn_chat_server(
-            resolved, new_log_path, served_name=new_alias
+            resolved,
+            new_log_path,
+            served_name=new_alias,
+            register_in=_active_procs,
         )
-        # Register the candidate in the cleanup set IMMEDIATELY — before
-        # the readiness wait. A SIGTERM/Ctrl-C during the (possibly
-        # multi-second) load otherwise orphans this process: it isn't
-        # bound to the outer ``proc`` yet and was previously invisible
-        # to ``_cleanup``.
-        _active_procs.append(new_proc)
         try:
             _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
         except (RuntimeError, TimeoutError) as exc:
@@ -1663,37 +1715,41 @@ def chat_command(args):
                 continue
             is_heredoc = True
         if not is_heredoc:
-            if line in ("exit", "quit", "/exit", "/quit"):
+            # Parse the leading word as the command and dispatch on
+            # *exact* match. ``startswith("/save")`` would otherwise treat
+            # ``/savefoo`` as ``/save`` (with arg ``foo``), silently
+            # writing a file from a typo. Same for ``/modelfoo``.
+            cmd, _, rest = line.partition(" ")
+            rest = rest.strip()
+            if cmd in ("exit", "quit", "/exit", "/quit"):
                 break
-            if line in ("/help", "/?"):
+            if cmd in ("/help", "/?"):
                 _print_help()
                 continue
-            if line in ("/reset", "/clear"):
+            if cmd in ("/reset", "/clear"):
                 messages = (
                     [{"role": "system", "content": args.system}] if args.system else []
                 )
                 print(f"  {DIM}(history cleared){RESET}\n")
                 continue
-            if line.startswith("/save"):
-                parts = line.split(maxsplit=1)
-                if len(parts) < 2:
+            if cmd == "/save":
+                if not rest:
                     print(f"  {YELLOW}Usage: /save <path>{RESET}\n")
                 else:
-                    _save_conversation(parts[1])
+                    _save_conversation(rest)
                 continue
-            if line.startswith("/model"):
-                parts = line.split(maxsplit=1)
-                if len(parts) < 2:
+            if cmd == "/model":
+                if not rest:
                     print(
                         f"  {YELLOW}Usage: /model <alias>{RESET}  "
                         f"{DIM}(see `rapid-mlx models`){RESET}\n"
                     )
                 else:
-                    _switch_model(parts[1].strip())
+                    _switch_model(rest)
                 continue
-            if line.startswith("/"):
+            if cmd.startswith("/"):
                 print(
-                    f"  {YELLOW}Unknown command: {line.split()[0]}{RESET}  "
+                    f"  {YELLOW}Unknown command: {cmd}{RESET}  "
                     f"{DIM}(type /help){RESET}\n"
                 )
                 continue

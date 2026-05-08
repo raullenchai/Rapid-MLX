@@ -842,9 +842,11 @@ def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys)
         def kill(self):
             self._terminated = True
 
-    def _fake_spawn(model, log_path, served_name=None):
+    def _fake_spawn(model, log_path, served_name=None, *, register_in=None):
         proc = _FakeProc(model)
         spawned.append(proc)
+        if register_in is not None:
+            register_in.append(proc)
         return proc, f"http://127.0.0.1:{port}"
 
     wait_calls = {"n": 0}
@@ -888,4 +890,70 @@ def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys)
     # the first as history.
     assert any(m["content"] == "first turn" for m in payloads[1]["messages"]), (
         "second-turn payload lost the first turn after the failed /model swap"
+    )
+
+
+def test_chat_command_slash_command_dispatch_uses_exact_match(
+    monkeypatch, tmp_path, capsys
+):
+    """``/savefoo bar`` (typo) must NOT match ``/save``. ``startswith``
+    matched the prefix and silently wrote a file from a typo. Exact-token
+    parsing now treats the unknown command like any other slash typo and
+    surfaces the help."""
+    canned = [_delta("ack")]
+    target = tmp_path / "should_not_appear.md"
+    with _fake_server(canned) as (port, payloads):
+        # Three inputs: a typo of /save, a typo of /model, then exit. None
+        # of the typos must trigger the corresponding command.
+        inputs = iter(
+            [
+                f"/savefoo {target}",
+                "/modelfoo qwen3.5-4b",
+                "exit",
+            ]
+        )
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    out = capsys.readouterr().out
+    assert not target.exists(), "/savefoo must NOT trigger /save"
+    assert "Unknown command: /savefoo" in out
+    assert "Unknown command: /modelfoo" in out
+    # Neither typo should have reached the server as a chat turn either —
+    # they're slash-prefixed, so the /-handler swallows them with a hint.
+    assert payloads == [], (
+        f"slash typos must be swallowed by the dispatcher, "
+        f"not forwarded to the server. payloads={payloads}"
+    )
+
+
+def test_stream_chat_response_repetition_truncates_at_cutoff_in_one_chunk(
+    monkeypatch,
+):
+    """If a single SSE delta coalesces many repeated tokens (servers do
+    batch under load), the abort message must land before the user sees
+    the full 50-token wall — emit the prefix up to the cutoff, abort,
+    then explain. Round-3 codex finding: previously the entire chunk
+    was emitted before the rolling counter detected the run."""
+    # 60 copies of the same single token in ONE delta — well past the
+    # REPEAT_LIMIT=25 threshold.
+    big_chunk = (" Barley" * 60).strip() + " "
+    canned = [_delta(big_chunk)]
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch.object(sys, "stdout", io.StringIO()) as buf,
+    ):
+        full = cli._stream_chat_response(
+            f"http://127.0.0.1:{port}",
+            {"model": "x", "messages": [], "stream": True},
+            timeout_s=10,
+        )
+    rendered = buf.getvalue()
+    # Only the prefix up to the cutoff should land; not all 60 copies.
+    barley_count = full.count("Barley")
+    assert barley_count < 60, (
+        f"emitted full degenerate chunk before abort detected ({barley_count}/60)"
+    )
+    # And the abort hint did print.
+    assert "repeating" in rendered or "repetition" in rendered, (
+        "expected the repetition-abort hint to be visible"
     )
