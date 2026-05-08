@@ -1020,8 +1020,15 @@ def chat_command(args):
     # The rapid-mlx server's ChatCompletionRequest exposes a top-level
     # ``enable_thinking`` field — ``chat_template_kwargs`` is not a recognized
     # request field and would be silently dropped.
+    #
+    # Default thinking OFF in the REPL. Reasoning models (Qwen3.5/3.6, etc.)
+    # otherwise emit raw chain-of-thought to stdout AND, on the default
+    # qwen3.5-4b model, degenerate into infinite repetition until max-tokens
+    # truncates the response — producing zero usable output for a brand-new
+    # user. ``--think`` opts back in for users who explicitly want to see
+    # reasoning traces; ``--no-think`` is preserved as the legacy form.
     extra: dict = {}
-    if args.no_think:
+    if not args.think:
         extra["enable_thinking"] = False
 
     import requests
@@ -1851,9 +1858,13 @@ Examples:
         help="System prompt prepended to the conversation",
     )
     chat_parser.add_argument(
-        "--no-think",
-        action="store_true",
-        help="Disable thinking mode for reasoning models (Qwen3 enable_thinking=False)",
+        "--think",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable thinking/reasoning mode (default: off in chat REPL — "
+        "reasoning models like Qwen3.5 otherwise leak raw chain-of-thought "
+        "and can loop until max-tokens). Use --think to surface reasoning, "
+        "--no-think is also accepted for back-compat.",
     )
     chat_parser.add_argument(
         "--max-tokens",

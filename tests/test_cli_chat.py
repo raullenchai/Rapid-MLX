@@ -201,7 +201,9 @@ def test_chat_command_repl_multi_turn(monkeypatch, capsys):
         ns.base_url = f"http://127.0.0.1:{port}"
         ns.port = None
         ns.system = None
-        ns.no_think = False
+        ns.think = (
+            True  # request the server-default behavior — no enable_thinking field sent
+        )
         ns.max_tokens = 50
         ns.temperature = 0.0
         ns.ready_timeout = 5
@@ -228,7 +230,7 @@ def test_chat_command_system_prompt_prepended(monkeypatch):
         ns.base_url = f"http://127.0.0.1:{port}"
         ns.port = None
         ns.system = "be terse"
-        ns.no_think = False
+        ns.think = True  # server-default thinking behavior
         ns.max_tokens = 50
         ns.temperature = 0.0
         ns.ready_timeout = 5
@@ -239,10 +241,15 @@ def test_chat_command_system_prompt_prepended(monkeypatch):
     assert payloads[0]["messages"][1] == {"role": "user", "content": "q1"}
 
 
-def test_chat_command_no_think_sets_top_level_enable_thinking(monkeypatch):
-    """`--no-think` must set the top-level ``enable_thinking`` request field
-    that the rapid-mlx server actually honors. Sending nested
-    ``chat_template_kwargs`` would be silently dropped."""
+def test_chat_command_default_thinking_off_sends_enable_thinking_false(monkeypatch):
+    """Chat REPL defaults to thinking OFF.
+
+    Reasoning models like Qwen3.5 otherwise leak raw chain-of-thought into
+    the user-visible REPL output, and on the default qwen3.5-4b model
+    degenerate into infinite repetition until max-tokens — producing zero
+    usable output for a brand-new user. Pinning the default here so a
+    refactor doesn't silently restore the broken behavior shipped in 0.6.26.
+    """
     canned = [_delta("ok")]
     with _fake_server(canned) as (port, payloads):
         inputs = iter(["q", "exit"])
@@ -251,7 +258,7 @@ def test_chat_command_no_think_sets_top_level_enable_thinking(monkeypatch):
         ns.base_url = f"http://127.0.0.1:{port}"
         ns.port = None
         ns.system = None
-        ns.no_think = True
+        ns.think = False  # default
         ns.max_tokens = 50
         ns.temperature = 0.0
         ns.ready_timeout = 5
@@ -261,6 +268,42 @@ def test_chat_command_no_think_sets_top_level_enable_thinking(monkeypatch):
     assert payloads[0].get("enable_thinking") is False
     # The unsupported nested form must NOT be present.
     assert "chat_template_kwargs" not in payloads[0]
+
+
+def test_chat_command_explicit_think_omits_enable_thinking_field(monkeypatch):
+    """``--think`` opts back into reasoning mode. We omit the
+    ``enable_thinking`` field entirely so the server falls back to its
+    own default (which is True on Qwen3-family templates)."""
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (port, payloads):
+        inputs = iter(["q", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        ns = type("Args", (), {})()
+        ns.base_url = f"http://127.0.0.1:{port}"
+        ns.port = None
+        ns.system = None
+        ns.think = True
+        ns.max_tokens = 50
+        ns.temperature = 0.0
+        ns.ready_timeout = 5
+        ns.response_timeout = 5
+        ns.model = "qwen3.5-4b"
+        cli.chat_command(ns)
+    assert "enable_thinking" not in payloads[0]
+
+
+def test_chat_subcommand_accepts_legacy_no_think_flag():
+    """``--no-think`` is preserved via argparse BooleanOptionalAction so
+    users with prior shell history don't break on upgrade. Behavior matches
+    the new default (thinking off)."""
+    captured: list = []
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "--no-think"]),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+    assert len(captured) == 1
+    assert captured[0].think is False
 
 
 def test_chat_command_survives_connection_failure(monkeypatch, capsys):
@@ -281,7 +324,7 @@ def test_chat_command_survives_connection_failure(monkeypatch, capsys):
     ns.base_url = f"http://127.0.0.1:{dead_port}"
     ns.port = None
     ns.system = None
-    ns.no_think = False
+    ns.think = False
     ns.max_tokens = 50
     ns.temperature = 0.0
     ns.ready_timeout = 1
@@ -338,7 +381,7 @@ def test_chat_command_history_unchanged_on_http_error(monkeypatch):
         ns.base_url = f"http://127.0.0.1:{port}"
         ns.port = None
         ns.system = None
-        ns.no_think = False
+        ns.think = False
         ns.max_tokens = 50
         ns.temperature = 0.0
         ns.ready_timeout = 5
