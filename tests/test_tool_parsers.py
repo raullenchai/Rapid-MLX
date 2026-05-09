@@ -192,6 +192,87 @@ class TestQwenToolParser:
 
         assert not result.tools_called
 
+    def test_streaming_dedups_multi_tool_xml(self, parser):
+        """Regression for #181: streaming multi-tool XML emits each call once.
+
+        Pre-fix: every closing </tool_call> re-emitted ALL tool calls found
+        so far, with index recounted from 0. OpenAI client merge-by-index
+        then concatenated names ('readread') and args ('{}{}').
+        """
+        chunks = [
+            "<tool_call>",
+            '{"name":"read","arguments":{}}',
+            "</tool_call>",
+            "<tool_call>",
+            '{"name":"write","arguments":{}}',
+            "</tool_call>",
+        ]
+        emitted = []
+        prev = ""
+        for c in chunks:
+            cur = prev + c
+            r = parser.extract_tool_calls_streaming(
+                previous_text=prev,
+                current_text=cur,
+                delta_text=c,
+                request={"tools": []},
+            )
+            if r and "tool_calls" in r:
+                emitted.extend(r["tool_calls"])
+            prev = cur
+
+        assert len(emitted) == 2, f"expected 2 deltas, got {len(emitted)}"
+        assert [tc["function"]["name"] for tc in emitted] == ["read", "write"]
+        assert [tc["index"] for tc in emitted] == [0, 1]
+
+    def test_streaming_dedups_multi_tool_bracket(self, parser):
+        """Regression for #181: bracket format also dedups."""
+        chunks = [
+            '[Calling tool: read({"x":1})]',
+            '[Calling tool: write({"y":2})]',
+        ]
+        emitted = []
+        prev = ""
+        for c in chunks:
+            cur = prev + c
+            r = parser.extract_tool_calls_streaming(
+                previous_text=prev,
+                current_text=cur,
+                delta_text=c,
+                request={"tools": []},
+            )
+            if r and "tool_calls" in r:
+                emitted.extend(r["tool_calls"])
+            prev = cur
+
+        assert [tc["function"]["name"] for tc in emitted] == ["read", "write"]
+        assert [tc["index"] for tc in emitted] == [0, 1]
+
+    def test_streaming_single_tool_unchanged(self, parser):
+        """Regression guard: single tool case (the common path) still works."""
+        chunks = [
+            "<tool_call>",
+            '{"name":"only","arguments":{"k":"v"}}',
+            "</tool_call>",
+        ]
+        emitted = []
+        prev = ""
+        for c in chunks:
+            cur = prev + c
+            r = parser.extract_tool_calls_streaming(
+                previous_text=prev,
+                current_text=cur,
+                delta_text=c,
+                request={"tools": []},
+            )
+            if r and "tool_calls" in r:
+                emitted.extend(r["tool_calls"])
+            prev = cur
+
+        assert len(emitted) == 1
+        assert emitted[0]["function"]["name"] == "only"
+        assert emitted[0]["index"] == 0
+
 
 class TestLlamaToolParser:
     """Test the Llama tool parser."""
