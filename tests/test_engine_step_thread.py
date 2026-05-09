@@ -310,6 +310,54 @@ class TestBatchedEngineWarmup:
         assert captured.get("model_thread") == threading.current_thread().name
 
 
+class TestBatchedEngineGetStats:
+    """get_stats() must promote MLLMScheduler keys (Metal memory + the
+    batch_generator throughput dict) to the top level. /v1/status reads
+    from the top level — without this forwarding, generation_tps stays
+    invisible to monitoring even though the underlying counters tick.
+    """
+
+    def _make_engine(self, mllm_stats):
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._model_name = "test-model"
+        engine._is_mllm = False
+        engine._loaded = True
+        engine._stream_interval = 1
+        engine._engine = None
+        engine._mllm_scheduler = MagicMock()
+        engine._mllm_scheduler.get_stats = MagicMock(return_value=mllm_stats)
+        return engine
+
+    def test_get_stats_forwards_batch_generator(self):
+        bg = {"generation_tps": 42.0, "prompt_tps": 100.0}
+        engine = self._make_engine(
+            {
+                "metal_active_memory_gb": 1.0,
+                "batch_generator": bg,
+                "other_key": "ignored",
+            }
+        )
+
+        stats = engine.get_stats()
+
+        assert stats["batch_generator"] == bg
+        assert stats["metal_active_memory_gb"] == 1.0
+        # Non-promoted keys must not appear at top level.
+        assert "other_key" not in stats
+        # Full mllm_stats remains nested for debugging.
+        assert stats["mllm_scheduler"]["other_key"] == "ignored"
+
+    def test_get_stats_omits_missing_batch_generator(self):
+        engine = self._make_engine({"metal_active_memory_gb": 2.5})
+
+        stats = engine.get_stats()
+
+        assert "batch_generator" not in stats
+        assert stats["metal_active_memory_gb"] == 2.5
+
+
 class TestGuidedGenerationStepThread:
     """#170 regression: BatchedEngine.generate_with_schema must run
     _run_guided_generation on the mlx-step worker (the same thread that

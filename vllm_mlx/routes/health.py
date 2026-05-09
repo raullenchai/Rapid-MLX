@@ -92,7 +92,9 @@ async def status():
         return {"status": "not_loaded", "model": None, "requests": []}
 
     stats = cfg.engine.get_stats()
-    bg = stats.get("batch_generator") or {}
+    bg = stats.get("batch_generator")
+    if not isinstance(bg, dict):
+        bg = {}
 
     return {
         "status": "generating" if stats.get("running") else "idle",
@@ -104,8 +106,10 @@ async def status():
         "total_requests_processed": stats.get("num_requests_processed", 0),
         "total_prompt_tokens": stats.get("total_prompt_tokens", 0),
         "total_completion_tokens": stats.get("total_completion_tokens", 0),
-        "generation_tps": bg.get("generation_tps", 0),
-        "prompt_tps": bg.get("prompt_tps", 0),
+        # `or 0` collapses both missing and explicit-None to 0; dashboards
+        # that parse this expect a number, never null.
+        "generation_tps": bg.get("generation_tps") or 0,
+        "prompt_tps": bg.get("prompt_tps") or 0,
         "metal": {
             "active_memory_gb": stats.get("metal_active_memory_gb"),
             "peak_memory_gb": stats.get("metal_peak_memory_gb"),
