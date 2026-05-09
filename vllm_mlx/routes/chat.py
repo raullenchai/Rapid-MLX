@@ -31,6 +31,7 @@ from ..api.tool_calling import (
 )
 from ..api.utils import (
     clean_output_text,
+    decode_inline_tool_call_arguments,
     extract_json_from_response,
     extract_multimodal_content,
     sanitize_output,
@@ -244,6 +245,12 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                 msg_dict = {k: v for k, v in raw.items() if v is not None}
             messages.append(msg_dict)
         images, videos = [], []
+        # The non-MLLM branch decodes tool_call.function.arguments from JSON
+        # string to dict inside extract_multimodal_content() so chat templates
+        # that iterate args via .items() (e.g. GLM-4.6V) don't crash. The
+        # MLLM branch bypasses that helper, so call the shared decoder here.
+        if engine.preserve_native_tool_format:
+            decode_inline_tool_call_arguments(messages)
         logger.debug(f"MLLM: Processing {len(messages)} messages")
     else:
         messages, images, videos = extract_multimodal_content(

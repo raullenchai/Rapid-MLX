@@ -3,6 +3,7 @@
 Utility functions for text processing and model detection.
 """
 
+import json
 import logging
 import re
 
@@ -596,6 +597,28 @@ def is_mllm_model(model_name: str) -> bool:
 
 # Backwards compatibility alias
 is_vlm_model = is_mllm_model
+
+
+def decode_inline_tool_call_arguments(messages: list[dict]) -> None:
+    """Decode `tool_calls[].function.arguments` from JSON string to dict in-place.
+
+    The OpenAI API serializes tool-call arguments as a JSON-encoded string.
+    Some chat templates (GLM-4.6V, Qwen3 MLLM variants) iterate the arguments
+    dict via `.items()`/`|items` and crash on a string. The non-MLLM path
+    handles this inside `extract_multimodal_content()`; the MLLM branch
+    bypasses that helper, so callers in the MLLM path call this directly.
+
+    Mutates `messages` in-place. Malformed JSON is left untouched.
+    """
+    for msg in messages:
+        for tc in msg.get("tool_calls") or []:
+            func = tc.get("function") or {}
+            args = func.get("arguments")
+            if isinstance(args, str):
+                try:
+                    func["arguments"] = json.loads(args)
+                except (json.JSONDecodeError, ValueError):
+                    pass
 
 
 # =============================================================================
