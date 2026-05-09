@@ -10,21 +10,46 @@ The maintainer-side gauntlet that every PR — internal or external, AI-authored
 
 **The single most important question, and the cheapest to ask.** Before reading the diff, before running validation, before pulling the branch:
 
-> **What goes wrong for a real user if this PR doesn't merge?**
+> **What goes wrong for a real user — or for the repo's day-to-day maintenance — if this PR doesn't merge?**
 
-If you can't answer in one specific sentence — close the PR with thanks, don't merge it. "Increases test coverage" / "makes the code cleaner" / "good practice" / "future-proofs against possible refactor" are NOT answers. Acceptable answers look like:
+If you can't answer in one specific sentence — close the PR with thanks, don't merge it. Acceptable answers fall in two buckets:
+
+**User-visible value** (the strong case):
 
 - "Issue #X is open; this fixes the reported broken behavior for [user/agent doing Y]."
 - "Bench shows N% TPS regression on model M; this restores it."
 - "External CVE in dep X; this PR pins to the patched release."
 - "Maintainer-approved exploration in #X; advances the spike."
 
+**Concrete maintenance value** (the carveout, intentionally narrow):
+
+- Typo / broken link / docs clarification that confuses real readers.
+- Alias / metadata bookkeeping (`aliases.json`, `model_auto_config.py`) for a model someone wants to serve.
+- Deleting dead code that's been stale ≥ 6 months and demonstrably has no callers.
+- CI/tooling fixes whose absence is currently making maintainer toil.
+
+**NOT acceptable on their own:** "increases test coverage", "makes the code cleaner", "good practice", "future-proofs against a possible refactor", "matches the pattern used in file X". If the PR fits one of these and ONLY one of these, close it.
+
 This applies equally to **PRs you (the maintainer) authored yourself or via Claude**. Most of the gravity in this rule is on AI-authored PRs — agents over-generate refactor and coverage churn that costs real review time, real CI cycles, and real blast-radius risk while shipping zero user value. Be willing to close your own PR.
 
-If the PR is necessary but small enough that the value is borderline against the cost (CI minutes, your review time, contributor's iteration time, blast radius), prefer:
+If the PR is necessary but the value is borderline against the cost (CI minutes, your review time, contributor's iteration time, blast radius), prefer:
 
 - A code comment / TODO in the file noting the gap, instead of a separate PR
 - Bundling the change into the next inevitable touch of the same area
+
+### Exceptions: bot PRs, reverts, version bumps, hotfixes, embargoed security
+
+Not every PR runs the full gauntlet. Skip rules:
+
+| PR class | Step 0 | Steps 1-6 | Step 7 (supply chain) | Steps 8-9 | Steps 10-12 |
+|---|---|---|---|---|---|
+| Dependabot / version-bump bot | satisfied by the bump itself | codex single round on the diff | mandatory — read the dep CHANGELOG | unchanged | unchanged |
+| `chore: bump version to X.Y.Z` (release) | satisfied by linking the commits being shipped | n/a (just the version bump) | bundle-level audit at release time, see [`releasing.md`](releasing.md) | unchanged | unchanged |
+| Revert PR | must name the regression / commit being reverted | targeted tests for the affected area | n/a unless deps reverted | unchanged | unchanged |
+| Hotfix to broken main | satisfied if a regression issue is open or being filed | targeted tests + lint only; full unit can be skipped if main itself is broken | unchanged | n/a | merge fast, then run remaining gates as the follow-up issue |
+| Embargoed security fix | filed under coordinated-disclosure process; PR opens against private fork | full gauntlet but in private | mandatory | mandatory | merge with disclosure window |
+
+For first-time contributors learning the ropes: relax tone, not standards. Walk them through fixes instead of closing; that builds the contributor base.
 
 ## Step 1 — Pre-flight
 
@@ -35,29 +60,31 @@ If the PR is necessary but small enough that the value is borderline against the
   - **Surface-touching** (CLI flags, alias registry, `pyproject.toml`) → version-bump check fires; `make check` skip OK if no behavior change in generation path.
   - **Dev-only** (bench scripts, dev tooling, CI workflows, docs, tests) → `make check` skip OK; full unit + lint still required.
 
-- **Verify required PR-template fields** are filled:
-  - Necessity field non-empty and concrete (not "improve quality").
-  - AI-assistance disclosure honest (which files, which prompts; "fully human" or "Claude wrote test, I wrote impl" both fine — silence isn't).
-  - "I can explain every line on demand" affirmation present.
-
-  Missing fields aren't an auto-block, but they shift the burden — the maintainer reads more carefully. For external contributors, ask them to fill in before review.
+- **Verify required PR-template fields** are filled. If any are missing, **request fill-in before review begins** — don't silently start reading the diff with the contributor unaware of the gap. Required fields:
+  - Necessity field, non-empty and concrete (not "improve quality").
+  - AI-assistance disclosure: which files were AI-touched, the AI's role (wrote / reviewed / suggested fix), and how the human verified the output. **Don't ask for prompt transcripts** — too invasive and not useful for review.
+  - "I can explain every line on demand" affirmation. The standard is intent + risk + behavior of every non-generated change; for generated/boilerplate sections (lockfile churn, framework scaffold, vendored snippets) the contributor identifies them and explains how they were verified, not how each line works.
 
 ## Step 2 — Multi-round adversarial review (codex)
 
 Run codex review **iteratively until convergence**.
 
 - A round produces findings prioritized: P0 (must fix), P1 (should fix), P2 (nit/style).
-- **Every finding must be addressed.** Either fix it, or post a one-line dismissal in the PR thread explaining why the codex finding is incorrect / not worth acting on. Do not silently merge with open findings.
+- **Every finding must be addressed.** Either fix it, or post a dismissal in the PR thread. **Dismissal quality bar**:
+  - **P0/P1 dismissals**: must include concrete evidence (a counter-example, a code reference, a test that proves the finding wrong, or a documented design decision link). "This is wrong" without evidence is not a valid dismissal.
+  - **P2 dismissals**: a one-line rationale is fine.
+  - When in doubt, fix rather than dismiss — the failure mode is dismissed-then-shipped-then-broken.
 - **Convergence** = a round produces zero new P0 findings. Two consecutive convergent rounds is the gold standard; one round suffices for diffs ≤ ~50 lines.
 - Typical: 2-4 rounds for a non-trivial PR. If round 5 still finds new P0s, the PR scope is too large — split it.
 
 ## Step 3 — Test coverage
 
 - Every new behavior MUST have a new test. If a behavior is genuinely untestable, document why in the PR description (not just "hard to test").
-- Diff-aware: every modified `vllm_mlx/foo.py` should have a corresponding modified `tests/test_foo*.py` in the same PR.
-- **Test-must-fail-on-broken-code spot check.** For new tests on critical code paths (parsers, scheduler, security boundaries), the contributor or maintainer posts one-line evidence that the test catches a deliberate break:
-
-  > `Mutation: removed line 47 of foo.py → test_foo_bar fails as expected.`
+- Diff-aware: each behavior-changing production file should map to a named test file in the same PR, OR an explicit "no test because X" rationale. The naming heuristic `vllm_mlx/foo.py` → `tests/test_foo*.py` covers most cases but breaks down for shared fixtures, integration paths, and cross-parser tests — judgment over rule.
+- **Test-must-fail-on-broken-code spot check.** For new tests on critical code paths (parsers, scheduler, security boundaries, serialization), evidence the test catches a deliberate break must be in the PR. The bar:
+  - **Required content**: the exact mutation (one-line `sed`/`Edit` description, or a small diff hunk), the failing test name, and the failure assertion.
+  - **NOT acceptable**: "I broke a return statement and the test failed" — that's an obvious mutation that says little about what the test actually asserts. The mutation should be against the *contract* the test is pinning, not against any random line.
+  - **Maintainer reproduction**: for changes touching parsers, scheduler, or security boundaries, the maintainer reproduces the mutation locally before merge — don't trust it on faith for the high-blast-radius surfaces.
 
   This is the cheap manual version of mutation testing — closes the gap where Claude-written tests sometimes pass tautologically (assert-true-of-the-mock).
 
@@ -93,10 +120,18 @@ python3.12 -m pytest tests/ \
 
 The MLLM / video files need real Qwen3-VL weights and hang locally — the CI matrix covers them.
 
-**Pre-existing flakes** must be **proven** pre-existing by running the test on clean main:
+**Pre-existing flakes** must be **proven** pre-existing by running the test on clean main. The naive `git stash && pytest && git stash pop` pattern leaves work stashed if pytest fails — use a worktree or a `trap`-protected wrapper instead:
 
 ```bash
-git stash && python3.12 -m pytest <flake> -q && git stash pop
+# Option A: ephemeral worktree (safest)
+git worktree add /tmp/main-check raullenchai/main
+( cd /tmp/main-check && python3.12 -m pytest <flake> -q )
+git worktree remove /tmp/main-check
+
+# Option B: stash with guaranteed restore
+git stash push -u -m pr-flake-check && \
+  trap 'git stash pop' EXIT && \
+  python3.12 -m pytest <flake> -q
 ```
 
 Never assume — confirm. Document any confirmed pre-existing fails in the PR description.
@@ -104,10 +139,10 @@ Never assume — confirm. Document any confirmed pre-existing fails in the PR de
 ## Step 6 — pr_validate (recommended for substantive PRs)
 
 ```bash
-python3.12 -m scripts.pr_validate.runner <PR#> --verbose
+python3.12 -m scripts.pr_validate.pr_validate <PR#> --verbose
 ```
 
-Multi-step pipeline: `fetch → codex → supply_chain → lint → targeted_tests → full_unit → stress_e2e_bench`. See [`scripts/pr_validate/README.md`](../../scripts/pr_validate/README.md).
+Multi-step pipeline: `fetch → deepseek_review → supply_chain → lint → targeted_tests → full_unit → stress_e2e_bench`. See [`scripts/pr_validate/README.md`](../../scripts/pr_validate/README.md).
 
 ## Step 7 — Supply-chain audit
 
@@ -127,11 +162,15 @@ Skip rule:
 - **Touch inference code** → run, even if it takes ~10 min:
 
   ```bash
-  make check --model qwen3.5-4b   # smoke tier, ~3-5 min
-  make full                        # broader, ~1-2 hr — only when changes affect generation correctness
+  # make check runs against the default model (qwen3.5-4b) — ~10 min
+  make check
+  # make full runs across multiple models (~1-2 hr) — only when changes affect generation correctness
+  make full
+  # to override the model, call doctor directly (the make targets don't pass --model through):
+  python3 -m vllm_mlx.cli doctor check --model <alias>
   ```
 
-The bar is **0 regressions vs the per-model baseline** (`harness/baselines/`). Pre-existing fails (Test 10 streaming usage, `<|im_end|>` leak, thinking-toggle on qwen3.5-4b) are documented; new fails block merge.
+The bar is **0 regressions vs the per-model baseline in `harness/baselines/`** *for models that have committed baselines* (currently `qwen3.5-35b` and `qwen3.6-35b`). For models without baselines, document the chosen ad-hoc reference (e.g., "compared against output on commit X", "manual eyeball vs main"). Pre-existing fails (Test 10 streaming usage, `<|im_end|>` leak, thinking-toggle on qwen3.5-4b) are documented; new fails block merge.
 
 ## Step 9 — Anthropic-compat round-trip (gated on parser/router PRs)
 
@@ -154,9 +193,17 @@ Output must be a non-empty Anthropic-shaped response, no `!!!!!!` token-id-0 cor
 gh pr view <PR#> --repo raullenchai/Rapid-MLX --json mergeable,mergeStateStatus,statusCheckRollup
 ```
 
-Wait for `MERGEABLE (CLEAN)`. All checks must be `SUCCESS`. Never merge `UNSTABLE` (flaky) or `BLOCKED`. If a CI step fails, investigate root cause — never re-run hoping it'll pass.
+Wait for `MERGEABLE (CLEAN)`. All checks must be `SUCCESS`. Required checks: `lint`, `type-check`, `version-check`, `test-matrix (3.10/3.11/3.12)`, `test-apple-silicon`, `tests`.
 
-Required checks: `lint`, `type-check`, `version-check`, `test-matrix (3.10/3.11/3.12)`, `test-apple-silicon`, `tests`.
+**CI failure taxonomy** — different kinds of red are different problems:
+
+| Failure | Diagnosis signal | Action |
+|---|---|---|
+| **Code failure** (test asserts, lint errors, type errors, build break) | Failure reproduces locally on the PR branch | Fix the code. Never re-run. |
+| **Infra flake** (network timeout, runner crash, "lost connection to controller", external service 5xx) | Re-running same commit on same runner type produces a different result; failure mentions infra/network | OK to re-run **once** after pasting the failure log into the PR thread documenting the cause. Two consecutive infra fails = stop and investigate. |
+| **Cancelled** (user / GitHub cancelled, or job killed by another workflow's timeout) | `cancelled` not `failure` in API | Re-run; document the cause if it happens repeatedly. |
+| **Broken main** (every PR's CI is failing this check, including merges that already passed) | Same check failing on `main` itself or on multiple unrelated open PRs | Don't merge anything against the broken check until main is fixed. Open a separate hotfix PR for the broken check itself. |
+| **Pre-existing flake on PR's affected file** | Failure also reproduces on clean main | Document in PR description with the proof command. Doesn't block merge. |
 
 ## Step 11 — Final PR description audit
 
