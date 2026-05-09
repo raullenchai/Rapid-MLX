@@ -60,7 +60,6 @@ Earlier comparison against oMLX and Rapid MLX on the snake-only prompt (kept her
 | Qwen3.6-27B | All Turns | 13.94 tok/s | 13.49 tok/s | **26.47 tok/s** |
 | Qwen3.6-27B | Long | 20.35 tok/s | 28.02 tok/s | **38.60 tok/s** |
 | Qwen3.6-27B | Short | 9.67 tok/s | 7.42 tok/s | **20.40 tok/s** |
-
 | Qwen3.6-35B | All Turns | 49.60 tok/s | 27.73 tok/s | **64.85 tok/s** |
 | Qwen3.6-35B | Long | 76.77 tok/s | 26.52 tok/s | **117.40 tok/s** |
 | Qwen3.6-35B | Short | 35.11 tok/s | 29.18 tok/s | **52.50 tok/s** |
