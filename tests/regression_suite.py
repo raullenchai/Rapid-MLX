@@ -47,9 +47,12 @@ def stream_call(path, body):
                 lines.append(line)
                 if "[DONE]" not in line:
                     d = json.loads(line[5:].strip())
-                    delta = d["choices"][0].get("delta", {})
-                    if "content" in delta:
-                        text += delta["content"]
+                    # Trailing usage chunk (stream_options.include_usage) has
+                    # choices=[]; skip it for delta extraction.
+                    if d.get("choices"):
+                        delta = d["choices"][0].get("delta", {})
+                        if "content" in delta:
+                            text += delta["content"]
     return text, lines
 
 

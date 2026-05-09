@@ -37,7 +37,9 @@ chat() {
         -d "${body}" 2>/dev/null
 }
 
-# Helper: streaming request, collect all content deltas
+# Helper: streaming request, collect all content + reasoning_content deltas.
+# reasoning_content is included so length-based comparisons (e.g. test 4)
+# correctly measure thinking output that the reasoning parser routes there.
 stream_chat() {
     local body="$1"
     curl -sfN "${BASE}" \
@@ -53,10 +55,12 @@ for line in sys.stdin:
         continue
     try:
         d = json.loads(line)
-        delta = d.get('choices', [{}])[0].get('delta', {})
-        c = delta.get('content', '')
-        if c:
-            text += c
+        choices = d.get('choices') or []
+        if not choices:
+            continue
+        delta = choices[0].get('delta', {})
+        text += delta.get('content', '') or ''
+        text += delta.get('reasoning_content', '') or ''
     except: pass
 print(text)
 " 2>/dev/null
