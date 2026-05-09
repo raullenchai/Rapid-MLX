@@ -41,7 +41,16 @@ Most tests run without a model. Tests in `tests/test_event_loop.py` require a ru
 2. Make your changes with tests if applicable
 3. Run `ruff check` and `ruff format` before committing
 4. **Self-validate your PR** (see below) — saves a round trip with maintainers
-5. Open a PR against `main` with a clear description
+5. Open a PR against `main` with a clear description, filling in **all required sections of the PR template** (necessity, AI assistance disclosure, test plan)
+
+### Necessity & AI assistance — what we ask, why
+
+The PR template asks two questions up front: *why is this needed?* and *was AI used?* These aren't gatekeeping for the sake of it.
+
+- **Necessity** — Rapid-MLX auto-publishes to PyPI + Homebrew on every version-bump merge. Drive-by refactors and "increases coverage" PRs cost real review time and add real blast-radius risk for zero user value. We close PRs whose only justification is "looks cleaner". A concrete user-visible reason ("fixes #123", "restores N% TPS", "patches CVE") is what unlocks merge.
+- **AI assistance disclosure** — AI-authored code is welcome (we ship a lot of it ourselves). What we ask is honesty: which files / which prompts / how much was hand-edited. "Fully human" and "Claude wrote tests; I wrote the impl" are both fine. Silence is treated more cautiously than disclosure. The standard we hold all contributors to is the same one we hold ourselves to: **you must be able to explain every line of code in your PR on demand**. If you can't, don't submit it.
+
+The full maintainer-side gauntlet — what happens to your PR after you open it — is documented in [docs/development/pr_merge_sop.md](docs/development/pr_merge_sop.md).
 
 ## Self-Validating Your PR
 
