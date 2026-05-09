@@ -699,38 +699,74 @@ class TestToolSandboxAuditLogging:
 
 
 class TestToolSandboxHighRiskTools:
-    """Tests for high-risk tool detection."""
+    """Tests for high-risk tool block-by-default + allowlist opt-in."""
 
-    def test_high_risk_tool_warning(self, caplog):
-        """Test that high-risk tools trigger warning."""
-        import logging
-
+    def test_high_risk_execute_blocked_by_default(self):
+        """Tools matching 'execute' are blocked unless allowlisted."""
         sandbox = ToolSandbox()
-
-        with caplog.at_level(logging.WARNING):
+        with pytest.raises(MCPSecurityError, match="high-risk pattern 'execute'"):
             sandbox.validate_tool_execution(
                 tool_name="execute_command",
                 server_name="test",
                 arguments={"cmd": "ls"},
             )
 
-        assert "High-risk tool detected" in caplog.text
-        assert "execute" in caplog.text
-
-    def test_high_risk_shell_tool(self, caplog):
-        """Test that shell tools trigger warning."""
-        import logging
-
+    def test_high_risk_shell_blocked_by_default(self):
+        """Tools matching 'shell' are blocked unless allowlisted."""
         sandbox = ToolSandbox()
-
-        with caplog.at_level(logging.WARNING):
+        with pytest.raises(MCPSecurityError, match="high-risk pattern 'shell'"):
             sandbox.validate_tool_execution(
                 tool_name="run_shell",
                 server_name="test",
                 arguments={},
             )
 
-        assert "High-risk tool detected" in caplog.text
+    def test_high_risk_eval_blocked_by_default(self):
+        """Tools matching 'eval' are blocked unless allowlisted."""
+        sandbox = ToolSandbox()
+        with pytest.raises(MCPSecurityError, match="high-risk pattern 'eval'"):
+            sandbox.validate_tool_execution(
+                tool_name="eval_python",
+                server_name="test",
+                arguments={},
+            )
+
+    def test_allowlist_bare_name_unblocks(self):
+        """Adding the bare tool name to the allowlist permits execution."""
+        sandbox = ToolSandbox(allowed_high_risk_tools={"execute_command"})
+        sandbox.validate_tool_execution(
+            tool_name="execute_command",
+            server_name="test",
+            arguments={"cmd": "ls"},
+        )
+
+    def test_allowlist_namespaced_name_unblocks(self):
+        """Adding the namespaced tool name (server__tool) permits execution."""
+        sandbox = ToolSandbox(allowed_high_risk_tools={"trusted__execute_command"})
+        sandbox.validate_tool_execution(
+            tool_name="execute_command",
+            server_name="trusted",
+            arguments={"cmd": "ls"},
+        )
+
+    def test_allowlist_other_server_still_blocked(self):
+        """Allowlisting one namespaced name doesn't unblock another server."""
+        sandbox = ToolSandbox(allowed_high_risk_tools={"trusted__execute_command"})
+        with pytest.raises(MCPSecurityError):
+            sandbox.validate_tool_execution(
+                tool_name="execute_command",
+                server_name="untrusted",
+                arguments={"cmd": "ls"},
+            )
+
+    def test_non_high_risk_tool_unaffected(self):
+        """Tools that don't match any high-risk pattern still execute freely."""
+        sandbox = ToolSandbox()
+        sandbox.validate_tool_execution(
+            tool_name="read_file",
+            server_name="test",
+            arguments={"path": "/tmp/x"},
+        )
 
 
 class TestCustomBlockedPatterns:
@@ -760,3 +796,78 @@ class TestCustomBlockedPatterns:
                 server_name="server",
                 arguments={"path": "~/secret"},
             )
+
+
+class TestConfigDiscoveryNoCWD:
+    """Regression: ./mcp.json and ./mcp.yaml must NOT be auto-discovered.
+
+    Plant-in-CWD attack: an attacker who can drop a file in the victim's
+    working directory (shared dirs, /tmp, downloaded archives) could inject
+    arbitrary MCP server commands by relying on auto-discovery. Explicit
+    --mcp-config or VLLM_MLX_MCP_CONFIG env var still work.
+    """
+
+    def test_cwd_mcp_json_not_auto_discovered(self, tmp_path, monkeypatch):
+        from vllm_mlx.mcp.config import CONFIG_SEARCH_PATHS, load_mcp_config
+
+        monkeypatch.chdir(tmp_path)
+        # Plant a malicious-looking config in CWD
+        (tmp_path / "mcp.json").write_text(
+            '{"servers": {"evil": {"transport": "stdio", "command": "rm"}}}'
+        )
+
+        # Discovery should NOT pick it up
+        assert "./mcp.json" not in CONFIG_SEARCH_PATHS
+        assert "./mcp.yaml" not in CONFIG_SEARCH_PATHS
+
+        # And load_mcp_config() with no path returns empty config (file ignored)
+        config = load_mcp_config()
+        assert config.servers == {}
+
+    def test_explicit_path_still_works(self, tmp_path):
+        """Explicit --mcp-config path is the only way to load a CWD-local file."""
+        from vllm_mlx.mcp.config import load_mcp_config
+
+        cfg_file = tmp_path / "mcp.json"
+        cfg_file.write_text(
+            '{"servers": {"x": {"transport": "stdio", "command": "uvx"}}}'
+        )
+
+        config = load_mcp_config(str(cfg_file))
+        assert "x" in config.servers
+
+
+class TestAllowedHighRiskToolsConfig:
+    """Plumbing: allowed_high_risk_tools flows from config into MCPConfig."""
+
+    def test_default_empty(self):
+        from vllm_mlx.mcp.types import MCPConfig
+
+        cfg = MCPConfig()
+        assert cfg.allowed_high_risk_tools == []
+
+    def test_from_dict_reads_allowlist(self):
+        from vllm_mlx.mcp.types import MCPConfig
+
+        cfg = MCPConfig.from_dict(
+            {
+                "servers": {},
+                "allowed_high_risk_tools": ["trusted__execute_command", "run_shell"],
+            }
+        )
+        assert cfg.allowed_high_risk_tools == [
+            "trusted__execute_command",
+            "run_shell",
+        ]
+
+    def test_validate_config_rejects_non_list(self):
+        from vllm_mlx.mcp.config import validate_config
+
+        with pytest.raises(ValueError, match="allowed_high_risk_tools"):
+            validate_config({"servers": {}, "allowed_high_risk_tools": "not_a_list"})
+
+    def test_validate_config_rejects_non_strings(self):
+        from vllm_mlx.mcp.config import validate_config
+
+        with pytest.raises(ValueError, match="allowed_high_risk_tools"):
+            validate_config({"servers": {}, "allowed_high_risk_tools": [1, 2, 3]})
