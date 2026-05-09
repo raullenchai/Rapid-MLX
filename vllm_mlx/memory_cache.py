@@ -803,6 +803,22 @@ class MemoryAwarePrefixCache:
                     # Past the supersequence range
                     break
 
+        # --- Prefix match (try first — never requires trim, safe on hybrid models) ---
+        # Hybrid GatedDeltaNet/Mamba layers are non-trimmable. Prefix matches
+        # return the cache exactly as stored, no trim needed, so they are
+        # always safe. Trying prefix first lets us skip the supersequence/LCP
+        # paths (which would skip themselves on hybrid anyway) and return
+        # immediately when there is a usable prefix.
+        if best_match is not None:
+            self._entries.move_to_end(best_match.tokens)
+            self._stats.hits += 1
+            self._stats.tokens_saved += best_length
+            remaining = tokens[best_length:]
+            self._last_match_type = "prefix"
+            cache_out = copy.deepcopy(best_match.cache)
+            cache_out = self._decompress_cache(cache_out)
+            return cache_out, remaining
+
         # --- Supersequence match handling ---
         if best_super is not None:
             n_cached = len(best_super.tokens)
@@ -839,17 +855,6 @@ class MemoryAwarePrefixCache:
                 cache_out = copy.deepcopy(best_super.cache)
                 cache_out = self._decompress_cache(cache_out)
                 return cache_out, []
-
-        # --- Prefix match ---
-        if best_match is not None:
-            self._entries.move_to_end(best_match.tokens)
-            self._stats.hits += 1
-            self._stats.tokens_saved += best_length
-            remaining = tokens[best_length:]
-            self._last_match_type = "prefix"
-            cache_out = copy.deepcopy(best_match.cache)
-            cache_out = self._decompress_cache(cache_out)
-            return cache_out, remaining
 
         # --- LCP (Longest Common Prefix) for divergent sequences ---
         # This handles the agentic pattern: same system+context prefix

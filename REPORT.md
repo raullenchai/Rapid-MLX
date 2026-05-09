@@ -308,4 +308,53 @@ Discarded experiments:
 
 25 turns recorded. Short turns (`<500` tokens) avg `38.91 tok/s` (n=22). Long turns (`≥500` tokens) avg `105.10 tok/s` (n=3, including 2020 / 1710 / 581 token bursts). Pi exit `0` for all 3 prompts.
 
+---
+
+## Session 2 — Qwen3.6-27B agentic deep-tune (live)
+
+Goal: stack 9 hypotheses on top of the merged preset, one at a time, on the 27B agentic suite (`create a poem about cats`, `create the snake game using react and typescript`, `create a landing page using vite`). Keep only what improves perf without regressing wall time.
+
+Server: `lightning-mlx serve qwen3.6-27b --served-model-name local --port 8010 --log-level INFO`
+Pi: `PI_OFFLINE=1 pi --provider local --model local --no-context-files --no-session -p "<prompt>"`
+Cache cleared between independent baselines.
+
+| # | Experiment | Status | All-turn avg | Long-turn avg (≥500 tok) | Wall time | Decision |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| 0 | 27B baseline (current preset) | done | 9.95 tok/s | 28.25 tok/s (n=2) | 709 s | reference |
+| 1 | Prefix-first reorder | done | 6.48 tok/s | — (no long turns this run) | 484 s | **kept** — wall time −32% vs baseline; tok/s metric noisier (different turn distribution); cache still 100% MISS due to chat-template wrapping of assistant tokens, but reorder is a pure-efficiency win (skips supersequence check on every prefix hit) and changes no semantics |
+| 2 | `mtp_num_draft_tokens` 3→4 | done | 9.42 tok/s | 20.25 tok/s | 605 s | **discarded** — long-turn tok/s −28% (20.25 vs 28.25); MTP acceptance dropped 79-80% → 57-72% with draft=4; reverted to 3 |
+| 3 | SSE JSON precompute | done | n/a | n/a | n/a | **already implemented** — `_sse_prefix`/`_sse_suffix` pre-computed once per stream (chat.py:1076-1089), `_fast_sse_chunk()` reuses; only irreducible `json.dumps(text)` per token remains. No change needed |
+| 4 | Skip MTP primary-logits recompute | done | n/a | n/a | n/a | **invalid** — `verify_logits[:, 0, :]` = `P(* \| prompt+primary)` is required for accept/reject math; not the same as prior step's `P(* \| prompt)` used to sample primary. No skip possible without changing the algorithm |
+| 5 | Chunked-prefill removal (cosmetic) | done | n/a | n/a | n/a | **no-op already** — `--chunked-prefill-tokens` defaults to 0; preset doesn't enable it. No code change needed |
+| 8 | Prompt-lookup stacked on MTP | done | n/a | n/a | n/a | **deferred** — `PromptLookupDecoder` exists as drop-in replacement; stacking with MTP requires modifying `mtp_generate_step` accept/reject math to handle two draft sources simultaneously. Multi-day integration, out of scope here |
+| 10 | MTP draft-temp tuning (0.7→0.5) | done | 15.25 tok/s | 26.68 tok/s (n=4) | 643 s | **kept** — wall −9% vs baseline (643 vs 709), all-turn avg +53% (more long turns), short +22%; MTP acceptance still healthy at 77-78% (vs 79-80% baseline) |
+| 14 | `--kv-cache-quantization 4` default | done | 8.33 tok/s | 39.00 tok/s (n=1) | 484 s | **discarded** — all-turn tok/s −45% vs running best (v10 kept); the flag only quantizes the prefix-cache *storage*, and prefix cache has 0% HITs on hybrid Qwen3.6, so the compress/decompress is paid with no offsetting win. Wall-time looks better but reflects different turn distribution (only 1 long turn). Same regression pattern as TurboQuant in session 1 |
+| 15 | `--kv-cache-min-quantize-tokens 4096` | done | n/a | n/a | n/a | **n/a** — only meaningful if `--kv-cache-quantization` is on; that was discarded in #14, so this gate has nothing to gate |
+
+### Session 2 final state
+
+Two changes kept on top of the merged Session-1 preset:
+
+| File | Change | Effect |
+| --- | --- | --- |
+| `vllm_mlx/memory_cache.py` | Reorder `fetch()` so **prefix match returns first** (before supersequence and LCP) | Skips the supersequence/LCP paths whenever a usable prefix exists; pure-efficiency win, no semantics change. Cache hits on hybrid models still blocked by chat-template wrapping of assistant tokens (real fix is upstream — needs Marconi-style RNN-state snapshotting; deferred). |
+| `vllm_mlx/cli.py` | qwen3.6-27b/35b preset auto-sets `mtp_draft_temperature=0.5` (was 0.7 from CLI default) | Tighter draft distribution for tool-call XML scaffolding. MTP acceptance stays at 77-78% on 27B. Wall time on the 27B 3-prompt suite −9% vs baseline. |
+
+Discarded experiments (with reasons):
+
+- `mtp_num_draft_tokens 3→4` on 27B — acceptance dropped 79-80% → 57-72%, long-turn tok/s −28%.
+- `--kv-cache-quantization 4` default — only quantizes prefix-cache *storage*; with hybrid Qwen3.6 logging 0% prefix HITs, the compress/decompress is paid with no offsetting win (same root cause as TurboQuant in Session 1).
+
+No-op / not applicable:
+
+- SSE JSON precompute — already implemented at `chat.py:1076-1089`.
+- Skip MTP primary-logits recompute — invalid hypothesis: `verify_logits[:, 0, :]` is `P(* | prompt+primary)`, fundamentally different from prior step's `P(* | prompt)` used to sample primary; both required for accept/reject math.
+- Disable chunked-prefill for single-user — already disabled by default (`--chunked-prefill-tokens 0`).
+- `--kv-cache-min-quantize-tokens 4096` — gates a discarded feature.
+
+Deferred (out of scope for this session):
+
+- Prompt-lookup stacked on MTP — `PromptLookupDecoder` exists standalone (`speculative/prompt_lookup.py`); composing with MTP needs rewriting `mtp_generate_step` accept/reject math to handle two draft sources at once. Multi-day integration.
+- Marconi-style hybrid prefix-cache HIT (recurrent state snapshot at chunk boundaries) — would convert the current 0% HIT rate into real reuse on multi-turn agentic. Multi-week feature.
+
 

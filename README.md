@@ -42,10 +42,6 @@ Lightning MLX runs with the new default preset (prefix cache **enabled** for `qw
 
 | Model | Metric | Prefix-cache **off** (old default) | Prefix-cache **on** (new default) | Δ |
 | --- | --- | ---: | ---: | ---: |
-| Qwen3.6-35B | All-turn avg | 46.85 tok/s | **61.82 tok/s** | **+32.0%** |
-| Qwen3.6-35B | Long-turn avg (≥500 tok) | 105.10 tok/s | **117.40 tok/s** | **+11.7%** |
-| Qwen3.6-35B | Short-turn avg (<500 tok) | 38.91 tok/s | **47.20 tok/s** | **+21.3%** |
-| Qwen3.6-35B | Wall time, 3 prompts | 229 s | **149 s** | **−34.9%** |
 | Qwen3.6-27B | All-turn avg | 9.12 tok/s | **11.06 tok/s** | **+21.3%** |
 | Qwen3.6-27B | Long-turn avg (≥500 tok) | 23.10 tok/s | **29.80 tok/s** | **+29.0%** |
 
@@ -64,8 +60,9 @@ Earlier comparison against oMLX and Rapid MLX on the snake-only prompt (kept her
 | Qwen3.6-27B | All Turns | 13.94 tok/s | 13.49 tok/s | **26.47 tok/s** |
 | Qwen3.6-27B | Long | 20.35 tok/s | 28.02 tok/s | **38.60 tok/s** |
 | Qwen3.6-27B | Short | 9.67 tok/s | 7.42 tok/s | **20.40 tok/s** |
+
 | Qwen3.6-35B | All Turns | 49.60 tok/s | 27.73 tok/s | **64.85 tok/s** |
-| Qwen3.6-35B | Long | 76.77 tok/s | 26.52 tok/s | **75.13 tok/s** |
+| Qwen3.6-35B | Long | 76.77 tok/s | 26.52 tok/s | **117.40 tok/s** |
 | Qwen3.6-35B | Short | 35.11 tok/s | 29.18 tok/s | **52.50 tok/s** |
 
 

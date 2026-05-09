@@ -117,3 +117,6 @@ harness/runs/*
 !harness/runs/.gitkeep
 # Scorecard timestamped runs are local; only latest.md is tracked
 harness/scorecard/scorecard-*.md
+
+# Claude Code transient runtime files
+.claude/scheduled_tasks.lock

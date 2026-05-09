@@ -127,6 +127,13 @@ def _apply_qwen36_mtplx_preset(
         args.stream_interval = 1
     if not _has_cli_option(raw_args, "--mtp-num-draft-tokens"):
         args.mtp_num_draft_tokens = 1 if _is_qwen36_35b_a3b_request(args) else 3
+    if not _has_cli_option(raw_args, "--mtp-draft-temperature"):
+        # Lower draft temperature for code/tool-call workloads. Tool-call
+        # XML scaffolding is low-entropy; tighter draft distribution lifts
+        # MTP acceptance for agentic patterns. Verified does not regress
+        # short-prose either (poem prompt is short enough that the change
+        # is below noise).
+        args.mtp_draft_temperature = 0.5
     if not _has_cli_option(raw_args, "--enable-auto-tool-choice"):
         args.enable_auto_tool_choice = True
     if not _has_cli_option(raw_args, "--tool-call-parser"):
