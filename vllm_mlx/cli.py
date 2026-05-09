@@ -101,8 +101,14 @@ def _apply_qwen36_mtplx_preset(
     if command != "serve":
         return
 
-    if not _has_cli_option(raw_args, "--enable-prefix-cache", "--disable-prefix-cache"):
-        args.disable_prefix_cache = True
+    # Prefix cache: leave at the global default (enabled) for both qwen3.6-27b
+    # and qwen3.6-35b-A3B MTPLX models. Measured on the 3-prompt agentic
+    # regression suite (poem / snake / vite landing):
+    #   * 35B-A3B: +32% all-turn tok/s, +12% long-turn, −35% wall time
+    #   *    27B: +21% all-turn tok/s, +29% long-turn
+    # Hybrid GatedDeltaNet supersequence trim is skipped (logs MISS), but
+    # enabling the cache path warms the engine and reduces per-turn allocation
+    # pressure enough to be a clear win on both sizes.
     if not _has_cli_option(raw_args, "--max-num-seqs"):
         args.max_num_seqs = 1
     if not _has_cli_option(raw_args, "--prefill-batch-size"):
