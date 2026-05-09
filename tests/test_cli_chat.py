@@ -643,6 +643,114 @@ def test_stream_chat_response_no_false_positive_on_repeated_lists(monkeypatch):
     assert "repeating" not in buf.getvalue()
 
 
+def test_has_short_pattern_dominating_suffix_unit():
+    """Direct unit tests for the char-level repetition detector.
+
+    The token-level counter (whitespace-split) misses degenerate output
+    that has NO whitespace separator. This helper is the safety net.
+    """
+    # 1. The smoking-gun case: long suffix of one word, no separator.
+    assert cli._has_short_pattern_dominating_suffix("Barley" * 200)
+    # 2. Same word with a single-char separator also degenerate.
+    assert cli._has_short_pattern_dominating_suffix("Barley " * 200)
+    # 3. Single-char repetition.
+    assert cli._has_short_pattern_dominating_suffix("x" * 800)
+    # 4. Pattern partially through the window — still triggers once the
+    #    suffix is long enough to dominate.
+    prefix = "Here is a poem about hops, malt, and barley:\n\n"
+    assert cli._has_short_pattern_dominating_suffix(prefix + "BarleyBarley" * 100)
+    # 5. Long-cycle phrase loop (the "Roman Empire" bug found by the
+    #    chat-bug-hunt agent). A ~190-char clause repeating 4+ times
+    #    must trigger — the window is 600, so we need >2 reps to fill
+    #    it. Earlier ``pattern_max_len=30`` was too tight; KMP now
+    #    detects periods up to ``max_period=300``.
+    long_phrase = (
+        "saw the suicide of the last Republic in 44 BCE, "
+        "witnessed the rise of the First Triumvirate and the Gallic "
+        "Wars of the 1st century BCE, experienced the suicide of the "
+        "last Republic in 44 BCE, "
+    )
+    # The agent observed ~6500 chars of looping; 5 reps (~960 chars)
+    # comfortably exceeds the 600-char window.
+    assert cli._has_short_pattern_dominating_suffix(long_phrase * 5)
+    # 6. NOT triggered: short content (below window threshold).
+    assert not cli._has_short_pattern_dominating_suffix("Barley" * 10)
+    # 7. NOT triggered: diverse list content.
+    diverse = ", ".join(str(i) for i in range(300))  # well > 600 chars
+    assert not cli._has_short_pattern_dominating_suffix(diverse)
+    # 8. NOT triggered: legit prose at length. (Note: simple repetitions
+    #    of the same sentence DO count as periodic and would trigger —
+    #    that's correct, since "same sentence 20 times" is itself
+    #    degenerate output. We use truly varied prose here.)
+    diverse_prose = (
+        "Computers were built to free us from drudgery, yet we have "
+        "made them slaves of distraction. The pixel does not care "
+        "what wakes it; only the human does. To name a thing is to "
+        "begin to own it; to share that name is to lose half. Great "
+        "engineers prefer boring problems with consequential answers. "
+        "Sometimes the simplest tool is the one that survives, not "
+        "because it was clever, but because nobody could break it. "
+        "Latency is rude; jitter is hostile; both deserve apology. "
+        "If a feature ships without an off switch, the off switch "
+        "ships next quarter as a P0. Most production incidents begin "
+        "with a person who could not say no. The only fearless review "
+        "is the one before the merge."
+    )
+    assert not cli._has_short_pattern_dominating_suffix(diverse_prose)
+    # 9. NOT triggered: short identical-element list (15 zeros). This is
+    #    the round-1 false-positive case — keep it safe.
+    assert not cli._has_short_pattern_dominating_suffix(
+        "[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]"
+    )
+
+
+def test_chat_command_save_refuses_on_empty_conversation(monkeypatch, tmp_path, capsys):
+    """``/save`` against a fresh chat (no turns yet) must not create a
+    0-message file. Previously the empty file blocked subsequent saves
+    to the same path, since exclusive-mode open refuses overwrite."""
+    canned = [_delta("ack")]
+    target = tmp_path / "early-save.md"
+    with _fake_server(canned) as (port, _payloads):
+        # Save BEFORE sending any chat turn.
+        inputs = iter([f"/save {target}", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    out = capsys.readouterr().out
+    assert not target.exists(), "/save on empty conversation must not create a file"
+    assert "Nothing to save" in out, f"expected friendly empty-save hint; got {out!r}"
+
+
+def test_stream_chat_response_aborts_on_no_whitespace_repetition(monkeypatch):
+    """The new char-level guard must fire on the qwen3.5-4b regression
+    where the model emits ``BarleyBarleyBarley...`` with NO whitespace
+    separator. The whitespace-token guard cannot catch this — a single
+    chunk of 6000 chars splits to one token whose count is 1.
+
+    We feed a single delta carrying 1000 ``Barley`` repetitions. With
+    only the old guard the whole thing would dump and the abort would
+    never fire."""
+    canned = [_delta("Barley" * 1000)]
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch.object(sys, "stdout", io.StringIO()) as buf,
+    ):
+        full = cli._stream_chat_response(
+            f"http://127.0.0.1:{port}",
+            {"model": "x", "messages": [], "stream": True},
+            timeout_s=10,
+        )
+    rendered = buf.getvalue()
+    # Because the entire run is in one chunk and the char-guard runs
+    # AFTER ``full +=``, the chunk has been fully appended before the
+    # guard fires — so the abort message is what the user sees right
+    # after the dump. ``full`` therefore equals the input but the abort
+    # message MUST be present.
+    assert "Barley" in full
+    assert "repeating" in rendered or "repetition" in rendered, (
+        "char-level guard must fire on no-whitespace repetition"
+    )
+
+
 def test_stream_chat_response_aborts_on_repetition(monkeypatch):
     """The repetition guard must cut the stream when the model degenerates
     into the same token repeated 30+ times — otherwise the screen fills

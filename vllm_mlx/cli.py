@@ -1033,6 +1033,64 @@ def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
     )
 
 
+def _has_short_pattern_dominating_suffix(
+    text: str,
+    *,
+    window: int = 600,
+    max_period: int = 300,
+) -> bool:
+    """Return True if the trailing ``window`` chars of ``text`` are
+    periodic with a cycle length ≤``max_period``.
+
+    Catches the degenerate-model cases the rolling whitespace-token
+    counter in ``_stream_chat_response`` misses:
+
+    - ``"BarleyBarleyBarley..."`` (no whitespace separator) — the entire
+      suffix collapses to a single ``str.split()`` token whose count
+      never increments. Real qwen3.5-4b regression surfaced in the
+      0.6.28 onboarding test.
+    - Long-cycle phrase loops, e.g. a ~280-char clause that repeats
+      verbatim until ``max_tokens``. Surfaced when asked "describe the
+      entire history of the Roman Empire in one long unbroken sentence".
+
+    Implementation: compute the KMP failure function over the trailing
+    window. The smallest period of a string is ``len(s) - fail[-1]``.
+    A short period (≤``max_period``) means the window is dominated by
+    that repetition. KMP also catches *rotated* periods that an
+    anchored ``tail[:n]`` check would miss (e.g. when the model started
+    looping mid-window).
+
+    Cost is ``O(window)`` per call regardless of pattern length — much
+    cheaper than the prior ``O(window * pattern_max_len)`` anchored
+    scan, and cheap enough to run on every streaming chunk.
+
+    The defaults (window=600, max_period=300) leave room for legitimate
+    repetitive content like ``[0, 0, 0, ...]`` lists shorter than the
+    window. *Long* lists of truly identical values the user explicitly
+    asked for will get cut — a user hitting that false positive can
+    ``/reset`` and rephrase. The cost of NOT cutting genuine model
+    degeneracy (2000+ tokens of garbage) is far higher.
+    """
+    if len(text) < window:
+        return False
+    tail = text[-window:]
+    n = len(tail)
+    # KMP failure function: ``fail[i]`` = longest proper prefix of
+    # ``tail[: i + 1]`` that is also a suffix.
+    fail = [0] * n
+    for i in range(1, n):
+        j = fail[i - 1]
+        while j > 0 and tail[i] != tail[j]:
+            j = fail[j - 1]
+        if tail[i] == tail[j]:
+            j += 1
+        fail[i] = j
+    # Smallest period of ``tail``. ``period == n`` means no nontrivial
+    # period — content is aperiodic.
+    period = n - fail[-1]
+    return 0 < period <= max_period
+
+
 def _stream_chat_response(
     base_url: str,
     payload: dict,
@@ -1205,13 +1263,21 @@ def _stream_chat_response(
     # ----- Repetition guard ----------------------------------------------
     # Models occasionally degenerate into the same token repeated until
     # max_tokens — filling the screen with "Barley Barley Barley...".
-    # The earlier guard ("≤2 unique tokens in the last 30") fired on
-    # legitimate content like ``[0, 0, 0, 0, 0]``, markdown table
-    # separators ``| --- | --- |``, and any list of identical short
-    # numbers. The current criterion is stricter: the SAME token must
-    # repeat ≥``REPEAT_LIMIT`` times *consecutively*. Tracked in a
-    # rolling counter so cost is O(1) per chunk regardless of response
-    # length (the previous ``full.split()`` was O(n²)).
+    # Two complementary checks run per delta:
+    #
+    # 1. Whitespace-token-consecutive: the SAME whitespace-split token
+    #    repeats ≥``REPEAT_LIMIT`` times in a row. O(1) rolling counter.
+    #    Catches the common form ``"Barley Barley Barley..."``. Earlier
+    #    guards used "≤2 unique in last 30" but fired on legit content
+    #    like ``[0, 0, 0, ...]`` and markdown table separators, so the
+    #    bar is now stricter.
+    #
+    # 2. Character-level pattern check (``_has_short_pattern_dominating_
+    #    suffix``): the trailing window is dominated by a short repeating
+    #    pattern. Catches the form ``"BarleyBarleyBarley..."`` (no
+    #    whitespace separator), where ``piece.split()`` produces one
+    #    giant token whose count never increments — this was a real
+    #    qwen3.5-4b regression in 0.6.28 (issue surfaced post-release).
     REPEAT_LIMIT = 25
     repeat_last: str | None = None
     repeat_run = 0
@@ -1316,6 +1382,15 @@ def _stream_chat_response(
                 else:
                     _emit_with_inline_md(piece)
                     full += piece
+                # Char-level guard: catches no-whitespace degenerate
+                # output like ``"BarleyBarleyBarley..."`` that the
+                # whitespace-token counter misses (the entire chunk
+                # collapses to one giant token whose consecutive count
+                # never climbs). Cheap enough to run on every chunk.
+                if not repetition_aborted and _has_short_pattern_dominating_suffix(
+                    full
+                ):
+                    repetition_aborted = True
                 if repetition_aborted:
                     break
     _close_open_md_spans()
@@ -1556,6 +1631,16 @@ def chat_command(args):
         )
 
     def _save_conversation(path_arg: str):
+        # Refuse early on an empty conversation — otherwise we create a
+        # near-empty file then lock the user out of the same path on
+        # the next try (since exclusive-mode open refuses overwrite).
+        non_system = [m for m in messages if m.get("role") != "system"]
+        if not non_system:
+            print(
+                f"  {YELLOW}Nothing to save yet.{RESET} "
+                f"{DIM}(send a chat turn first){RESET}\n"
+            )
+            return
         path = os.path.expanduser(path_arg)
         # Auto-create parent directories; otherwise users see a confusing
         # "No such file or directory" for /save logs/2026-05/convo.md.
