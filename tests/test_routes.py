@@ -260,6 +260,34 @@ class TestHealthRoutes:
             assert data["model"] == "test-model"
             assert data["steps_executed"] == 500
             assert data["metal"]["active_memory_gb"] == 8.5
+            # generation_tps/prompt_tps default to 0 when batch_generator
+            # stats are absent (text-only batched engine path).
+            assert data["generation_tps"] == 0
+            assert data["prompt_tps"] == 0
+        finally:
+            self._restore_config(orig)
+
+    def test_status_exposes_batch_generator_throughput(self, mock_engine):
+        """Status surfaces generation_tps/prompt_tps from batch_generator stats.
+
+        Regression for the upstream bug where these counters existed in the
+        batch generator but never reached /v1/status because the engine
+        layer didn't forward the 'batch_generator' key.
+        """
+        mock_engine.get_stats.return_value = {
+            **mock_engine.get_stats.return_value,
+            "batch_generator": {
+                "prompt_tps": 142.7,
+                "generation_tps": 38.4,
+            },
+        }
+        orig = self._patch_config(engine=mock_engine, model_name="test-model")
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+            data = client.get("/v1/status").json()
+            assert data["generation_tps"] == 38.4
+            assert data["prompt_tps"] == 142.7
         finally:
             self._restore_config(orig)
 

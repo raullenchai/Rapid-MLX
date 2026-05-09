@@ -706,6 +706,44 @@ class TestAutoToolParser:
 
         assert not result.tools_called
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Read [the docs](https://example.test) before changing this.",
+            "The output array was [1, 2, 3], not a tool call.",
+            'Here is JSON: [{"label": "alpha", "score": 0.7}]',
+            "Use [square brackets] for optional text.",
+            "This prose mentions [read(file_path)] without JSON arguments.",
+        ],
+    )
+    def test_no_false_positive_for_ordinary_bracket_text(self, parser, text):
+        """Ordinary bracket text must remain content, not be auto-classified
+        as a tool call (port from upstream #485)."""
+        result = parser.extract_tool_calls(text)
+
+        assert not result.tools_called
+        assert result.content == text
+
+    @pytest.mark.parametrize(
+        "delta",
+        [
+            "See [the docs](https://example.test)",
+            "Values: [1, 2, 3]",
+            'JSON data: [{"label": "alpha"}]',
+            "Literal [square brackets] in text",
+        ],
+    )
+    def test_streaming_ordinary_brackets_emit_content(self, parser, delta):
+        """Streaming must not suppress ordinary bracket text as
+        in-progress markup (port from upstream #485)."""
+        result = parser.extract_tool_calls_streaming(
+            previous_text="",
+            current_text=delta,
+            delta_text=delta,
+        )
+
+        assert result == {"content": delta}
+
 
 class TestEdgeCases:
     """Test edge cases and error handling."""

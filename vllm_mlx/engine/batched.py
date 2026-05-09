@@ -930,11 +930,15 @@ class BatchedEngine(BaseEngine):
         if self._mllm_scheduler:
             mllm_stats = self._mllm_scheduler.get_stats()
             stats["mllm_scheduler"] = mllm_stats
-            # Promote Metal memory stats to top-level for /v1/status
+            # Promote Metal memory stats + batch_generator throughput to
+            # top-level for /v1/status. Without "batch_generator" forwarded,
+            # generation_tps/prompt_tps stay invisible to monitoring even
+            # though the underlying counters are populated.
             for key in (
                 "metal_active_memory_gb",
                 "metal_peak_memory_gb",
                 "metal_cache_memory_gb",
+                "batch_generator",
             ):
                 if key in mllm_stats:
                     stats[key] = mllm_stats[key]
