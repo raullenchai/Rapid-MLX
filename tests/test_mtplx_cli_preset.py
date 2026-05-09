@@ -98,7 +98,8 @@ def test_qwen36_35b_mtplx_serve_preset_uses_agentic_defaults():
     assert args.prefill_step_size == 2048
     assert args.mtp_num_draft_tokens == 1
     assert args.mtp_optimistic is False
-    assert args.no_thinking is True
+    # Thinking is enabled by default for 35B agentic correctness.
+    assert args.no_thinking is False
 
 
 def test_qwen36_mtplx_bench_preset_keeps_disabled_mtp():

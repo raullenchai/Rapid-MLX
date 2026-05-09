@@ -98,7 +98,11 @@ def test_verified_local_mtplx_qwen35b_path_uses_no_thinking_default(tmp_path):
     assert args.enable_auto_tool_choice is True
     assert args.tool_call_parser == "qwen3_coder_xml"
     assert args.reasoning_parser == "qwen3"
-    assert args.no_thinking is True
+    # Thinking is now ENABLED by default for 35B (was True before).
+    # With no_thinking=True the model emits <|im_end|> immediately
+    # after tool results and the agent loop dies; thinking enabled
+    # restores 100% agentic functionality with pi/Claude Code/etc.
+    assert args.no_thinking is False
     assert args.log_level == "WARNING"
     assert args.enable_tool_logits_bias is False
 

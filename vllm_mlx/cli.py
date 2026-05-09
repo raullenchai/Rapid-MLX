@@ -131,10 +131,14 @@ def _apply_qwen36_mtplx_preset(
         raw_args, "--log-level"
     ):
         args.log_level = "WARNING"
-    if _is_qwen36_35b_a3b_request(args) and not _has_cli_option(
-        raw_args, "--no-thinking", "--enable-thinking"
-    ):
-        args.no_thinking = True
+    # NOTE: Do NOT force no_thinking=True for qwen3.6-35b-A3B.
+    # The 35B MoE model requires thinking enabled for proper agentic
+    # tool-calling behavior — without it, the model emits <|im_end|>
+    # immediately after tool results and the agent loop terminates
+    # prematurely. Verified with `pi -p` 3-prompt regression suite
+    # (poem, snake game React/TS, vite landing page) — all 3 only
+    # succeed with thinking enabled. MTP acceptance stays at 83-95%
+    # regardless of thinking mode (perf is unaffected).
 
 def _apply_qwen36_35b_defaults(args: argparse.Namespace, raw_args: list[str]) -> None:
     if getattr(args, "command", None) != "serve" or not _is_qwen36_35b_a3b_request(
