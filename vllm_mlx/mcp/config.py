@@ -13,10 +13,12 @@ from .types import MCPConfig, MCPServerConfig
 
 logger = logging.getLogger(__name__)
 
-# Default config search paths
+# Default config search paths.
+# Intentionally excludes ./mcp.json and ./mcp.yaml: an attacker who can plant
+# a file in a victim's CWD (shared dirs, /tmp, downloaded archives) could
+# inject arbitrary MCP server commands/args. Use --mcp-config <path> or the
+# VLLM_MLX_MCP_CONFIG env var for explicit project-local configs.
 CONFIG_SEARCH_PATHS = [
-    "./mcp.json",
-    "./mcp.yaml",
     "~/.config/vllm-mlx/mcp.json",
     "~/.config/vllm-mlx/mcp.yaml",
 ]
@@ -32,8 +34,10 @@ def load_mcp_config(path: str | Path | None = None) -> MCPConfig:
     Search order:
     1. Explicit path argument
     2. VLLM_MLX_MCP_CONFIG environment variable
-    3. ./mcp.json or ./mcp.yaml (current directory)
-    4. ~/.config/vllm-mlx/mcp.json or mcp.yaml
+    3. ~/.config/vllm-mlx/mcp.json or mcp.yaml
+
+    CWD discovery (./mcp.json, ./mcp.yaml) is intentionally NOT searched —
+    see CONFIG_SEARCH_PATHS for rationale.
 
     Args:
         path: Optional explicit path to config file
@@ -144,10 +148,17 @@ def validate_config(data: dict[str, Any]) -> MCPConfig:
     if not isinstance(default_timeout, (int, float)) or default_timeout <= 0:
         raise ValueError("'default_timeout' must be a positive number")
 
+    allowed_high_risk_tools = data.get("allowed_high_risk_tools", [])
+    if not isinstance(allowed_high_risk_tools, list) or not all(
+        isinstance(t, str) for t in allowed_high_risk_tools
+    ):
+        raise ValueError("'allowed_high_risk_tools' must be a list of strings")
+
     return MCPConfig(
         servers=servers,
         max_tool_calls=max_tool_calls,
         default_timeout=default_timeout,
+        allowed_high_risk_tools=allowed_high_risk_tools,
     )
 
 

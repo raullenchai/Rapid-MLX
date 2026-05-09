@@ -97,6 +97,10 @@ class MCPConfig:
     servers: dict[str, MCPServerConfig] = field(default_factory=dict)
     max_tool_calls: int = 10
     default_timeout: float = 30.0
+    # Tools whose names match HIGH_RISK_TOOL_PATTERNS (execute, shell, eval,
+    # exec, system, run_command, subprocess) are blocked by default. Add the
+    # full namespaced tool name (e.g. "filesystem__execute") here to opt-in.
+    allowed_high_risk_tools: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MCPConfig":
@@ -110,6 +114,7 @@ class MCPConfig:
             servers=servers,
             max_tool_calls=data.get("max_tool_calls", 10),
             default_timeout=data.get("default_timeout", 30.0),
+            allowed_high_risk_tools=data.get("allowed_high_risk_tools", []),
         )
 
 

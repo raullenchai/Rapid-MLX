@@ -7,11 +7,15 @@ preserve_native_format parameter in extract_multimodal_content().
 
 import pytest
 
-from vllm_mlx.api.utils import extract_multimodal_content
+from vllm_mlx.api.utils import (
+    decode_inline_tool_call_arguments,
+    extract_multimodal_content,
+)
 from vllm_mlx.tool_parsers import (
     AutoToolParser,
     DeepSeekToolParser,
     FunctionaryToolParser,
+    Glm47ToolParser,
     GraniteToolParser,
     HarmonyToolParser,
     HermesToolParser,
@@ -39,6 +43,7 @@ class TestNativeToolFormatCapability:
             KimiToolParser,
             HermesToolParser,
             HarmonyToolParser,
+            Glm47ToolParser,
         ]
         for parser_cls in native_parsers:
             assert parser_cls.SUPPORTS_NATIVE_TOOL_FORMAT is True, (
@@ -76,6 +81,8 @@ class TestNativeToolFormatCapability:
             "kimi",
             "hermes",
             "harmony",
+            "glm47",
+            "glm4",
         ]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             assert parser_cls.supports_native_format() is True, (
@@ -367,3 +374,78 @@ class TestEdgeCases:
         assert len(images) == 1
         assert images[0] == "http://example.com/img.jpg"
         assert processed[1]["role"] == "tool"
+
+
+class TestDecodeInlineToolCallArguments:
+    """Helper called from the MLLM route — chat templates that iterate
+    tool_calls[].function.arguments crash if it's still a JSON string."""
+
+    def test_string_arguments_decoded_to_dict(self):
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Paris", "unit": "C"}',
+                        },
+                    }
+                ],
+            }
+        ]
+        decode_inline_tool_call_arguments(messages)
+        assert messages[0]["tool_calls"][0]["function"]["arguments"] == {
+            "city": "Paris",
+            "unit": "C",
+        }
+
+    def test_dict_arguments_left_alone(self):
+        original = {"city": "Paris"}
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "x", "arguments": original}}],
+            }
+        ]
+        decode_inline_tool_call_arguments(messages)
+        assert messages[0]["tool_calls"][0]["function"]["arguments"] is original
+
+    def test_malformed_json_left_as_string(self):
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "x", "arguments": "not json"}}],
+            }
+        ]
+        decode_inline_tool_call_arguments(messages)
+        assert messages[0]["tool_calls"][0]["function"]["arguments"] == "not json"
+
+    def test_messages_without_tool_calls_unchanged(self):
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "tool", "tool_call_id": "x", "content": "result"},
+        ]
+        decode_inline_tool_call_arguments(messages)
+        assert messages == [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "tool", "tool_call_id": "x", "content": "result"},
+        ]
+
+    def test_multiple_tool_calls_each_decoded(self):
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"function": {"name": "a", "arguments": '{"x": 1}'}},
+                    {"function": {"name": "b", "arguments": '{"y": 2}'}},
+                ],
+            }
+        ]
+        decode_inline_tool_call_arguments(messages)
+        assert messages[0]["tool_calls"][0]["function"]["arguments"] == {"x": 1}
+        assert messages[0]["tool_calls"][1]["function"]["arguments"] == {"y": 2}

@@ -405,6 +405,7 @@ class ToolSandbox:
         max_calls_per_minute: int = 60,
         audit_callback: Callable[[ToolExecutionAudit], None] | None = None,
         enabled: bool = True,
+        allowed_high_risk_tools: set[str] | None = None,
     ):
         """
         Initialize tool sandbox.
@@ -416,6 +417,10 @@ class ToolSandbox:
             max_calls_per_minute: Rate limit for tool calls (0 = unlimited).
             audit_callback: Optional callback for audit events.
             enabled: If False, sandbox checks are bypassed (dev mode only).
+            allowed_high_risk_tools: Set of tool names (bare or namespaced)
+                that are exempt from the high-risk-pattern block. Tools whose
+                names match HIGH_RISK_TOOL_PATTERNS (execute, shell, eval, …)
+                are blocked unless listed here.
         """
         self.allowed_tools = allowed_tools
         self.blocked_tools = blocked_tools or set()
@@ -425,6 +430,7 @@ class ToolSandbox:
         self.max_calls_per_minute = max_calls_per_minute
         self.audit_callback = audit_callback
         self.enabled = enabled
+        self.allowed_high_risk_tools = allowed_high_risk_tools or set()
 
         # Rate limiting state
         self._call_times: dict[str, list[float]] = defaultdict(list)
@@ -478,8 +484,8 @@ class ToolSandbox:
                     f"Tool '{tool_name}' is not in the allowed tools list"
                 )
 
-        # Check for high-risk tool patterns
-        self._check_high_risk_tool(tool_name)
+        # Check for high-risk tool patterns (block-by-default with allowlist)
+        self._check_high_risk_tool(tool_name, full_name)
 
         # Validate arguments
         self._validate_arguments(tool_name, arguments)
@@ -497,16 +503,31 @@ class ToolSandbox:
             or tool_name.lower() in self.blocked_tools
         )
 
-    def _check_high_risk_tool(self, tool_name: str) -> None:
-        """Check if tool matches high-risk patterns."""
+    def _check_high_risk_tool(self, tool_name: str, full_name: str) -> None:
+        """Block high-risk tools unless explicitly allowlisted.
+
+        Tools whose names match HIGH_RISK_TOOL_PATTERNS (shell, exec, eval,
+        run_command, …) can pivot a victim's workflow into arbitrary command
+        execution. They are blocked by default; opt-in by adding the bare or
+        namespaced tool name to ``allowed_high_risk_tools``.
+        """
         tool_lower = tool_name.lower()
         for pattern in HIGH_RISK_TOOL_PATTERNS:
-            if pattern in tool_lower:
-                logger.warning(
-                    f"High-risk tool detected: '{tool_name}' matches pattern '{pattern}'. "
-                    f"Ensure this tool is from a trusted MCP server."
+            if pattern not in tool_lower:
+                continue
+            if (
+                tool_name in self.allowed_high_risk_tools
+                or full_name in self.allowed_high_risk_tools
+            ):
+                logger.info(
+                    f"High-risk tool '{tool_name}' allowed via allowed_high_risk_tools"
                 )
-                break
+                return
+            raise MCPSecurityError(
+                f"Tool '{tool_name}' matches high-risk pattern '{pattern}' "
+                f"and is blocked by default. Add '{full_name}' (or '{tool_name}') "
+                f"to MCPConfig.allowed_high_risk_tools to opt in."
+            )
 
     def _validate_arguments(self, tool_name: str, arguments: dict[str, Any]) -> None:
         """Validate tool arguments for dangerous patterns."""

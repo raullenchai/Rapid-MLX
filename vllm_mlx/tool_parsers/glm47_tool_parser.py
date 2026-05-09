@@ -38,6 +38,12 @@ class Glm47ToolParser(ToolParser):
     Used when --enable-auto-tool-choice --tool-call-parser glm47 are set.
     """
 
+    # GLM-4.7 chat templates render `tool_calls` natively via the same
+    # <tool_call>…</tool_call> markup the parser emits, so feed previous-turn
+    # tool calls back to the model in their native form instead of converting
+    # them to a synthetic <function=…> string.
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
     # Match entire tool call block
     TOOL_CALL_PATTERN = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
