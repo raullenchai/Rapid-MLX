@@ -55,13 +55,14 @@ for line in sys.stdin:
         continue
     try:
         d = json.loads(line)
-        choices = d.get('choices') or []
-        if not choices:
-            continue
-        delta = choices[0].get('delta', {})
-        text += delta.get('content', '') or ''
-        text += delta.get('reasoning_content', '') or ''
-    except: pass
+    except json.JSONDecodeError:
+        continue
+    choices = d.get('choices') or []
+    if not choices:
+        continue
+    delta = choices[0].get('delta', {}) if isinstance(choices[0], dict) else {}
+    text += delta.get('content', '') or ''
+    text += delta.get('reasoning_content', '') or ''
 print(text)
 " 2>/dev/null
 }

@@ -43,16 +43,21 @@ def stream_call(path, body):
     with urllib.request.urlopen(req) as resp:
         for line in resp:
             line = line.decode().strip()
-            if line.startswith("data:"):
-                lines.append(line)
-                if "[DONE]" not in line:
-                    d = json.loads(line[5:].strip())
-                    # Trailing usage chunk (stream_options.include_usage) has
-                    # choices=[]; skip it for delta extraction.
-                    if d.get("choices"):
-                        delta = d["choices"][0].get("delta", {})
-                        if "content" in delta:
-                            text += delta["content"]
+            if not line.startswith("data:"):
+                continue
+            lines.append(line)
+            if "[DONE]" in line:
+                continue
+            try:
+                d = json.loads(line[5:].strip())
+            except json.JSONDecodeError:
+                continue
+            # Trailing usage chunk (stream_options.include_usage) has
+            # choices=[]; skip it for delta extraction.
+            if d.get("choices"):
+                delta = d["choices"][0].get("delta", {})
+                if "content" in delta:
+                    text += delta["content"]
     return text, lines
 
 
