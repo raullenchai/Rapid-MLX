@@ -118,6 +118,154 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
         pass
 
 
+def _check_memory_capacity(model_name: str) -> None:
+    """Pre-flight memory check — warn loudly if loading this model is
+    likely to push unified memory past the danger threshold.
+
+    On low-memory Apple Silicon (especially Mac mini M4 24 GB), loading
+    a model that forces unified memory past ~85% of total can trip the
+    iBoot AMCC async-abort firmware path and **kernel-panic the entire
+    machine** rather than raise a userspace OOM. See issue #324.
+
+    This check is best-effort: it warns the user, never aborts. If we
+    can't read the model size (offline / gated repo), or psutil isn't
+    importable, fall through silently — the existing loader paths still
+    surface real failures.
+
+    Working-set estimate is ``model_size * 1.5`` for a typical short
+    chat workload — covers KV cache, activations, and OS reserve.
+    Long-context (32k+) or high-concurrency serving pushes the
+    multiplier higher; the warning under-predicts in those modes
+    rather than over-predicts, so a user who configures aggressively
+    may still crash. We err on the side of warning earlier than later.
+
+    **Pressure formula uses already-used memory** rather than just
+    ``working / total``. The kernel panic fires on absolute unified-
+    memory pressure, so a 10 GB model on a 24 GB Mac that already has
+    8 GB used by macOS + Chrome lands at projected ``(8 + 15) / 24``
+    = 95.8% — kernel-panic territory. The naive formula would have
+    reported only 62.5% and stayed silent.
+    """
+    try:
+        import psutil
+    except Exception:
+        return
+
+    # Resolve model size in bytes — local path, then HF cache, then HF API.
+    model_size_bytes = 0
+    try:
+        if os.path.isdir(model_name):
+            for root, _dirs, files in os.walk(model_name):
+                for f in files:
+                    try:
+                        model_size_bytes += os.path.getsize(os.path.join(root, f))
+                    except OSError:
+                        continue
+        else:
+            from huggingface_hub import model_info, try_to_load_from_cache
+
+            cached = try_to_load_from_cache(model_name, "config.json")
+            if isinstance(cached, str) and os.path.exists(cached):
+                # Already-downloaded model: walk the snapshot directory.
+                snapshot_dir = os.path.dirname(cached)
+                for root, _dirs, files in os.walk(snapshot_dir):
+                    for f in files:
+                        try:
+                            model_size_bytes += os.path.getsize(os.path.join(root, f))
+                        except OSError:
+                            continue
+            else:
+                info = model_info(model_name, files_metadata=True)
+                model_size_bytes = sum(
+                    (s.size or 0)
+                    for s in (getattr(info, "siblings", None) or [])
+                    if hasattr(s, "size")
+                )
+    except Exception:
+        return  # Network / auth failure — fall through.
+
+    if model_size_bytes <= 0:
+        return
+
+    try:
+        vm = psutil.virtual_memory()
+        total_ram_bytes = vm.total
+        available_ram_bytes = vm.available
+    except Exception:
+        return
+
+    if total_ram_bytes <= 0:
+        return
+
+    # Projected post-load pressure: already-used + estimated working set.
+    # ``available`` is psutil's best estimate of "memory we can grab without
+    # swapping," which on macOS includes inactive + cached pages that the
+    # kernel will reclaim under pressure. ``total - available`` is therefore
+    # a tighter "currently-pinned" floor than ``total - free``.
+    estimated_working = int(model_size_bytes * 1.5)
+    used_ram_bytes = max(0, total_ram_bytes - available_ram_bytes)
+    projected_use = used_ram_bytes + estimated_working
+    ratio = projected_use / total_ram_bytes
+    if ratio < 0.65:
+        return  # Comfortable headroom — no warning.
+
+    model_gb = model_size_bytes / (1024**3)
+    working_gb = estimated_working / (1024**3)
+    used_gb = used_ram_bytes / (1024**3)
+    total_gb = total_ram_bytes / (1024**3)
+
+    is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    YELLOW = "\x1b[33m" if is_tty else ""
+    RED = "\x1b[31m" if is_tty else ""
+    BOLD = "\x1b[1m" if is_tty else ""
+    DIM = "\x1b[2m" if is_tty else ""
+    RESET = "\x1b[0m" if is_tty else ""
+
+    print()
+    if ratio >= 0.85:
+        print(
+            f"  {RED}{BOLD}!! Memory pressure warning:{RESET} "
+            f"this model is likely too large for your hardware."
+        )
+        print(
+            f"  {DIM}Continuing may trigger a macOS kernel panic "
+            f"(see issue #324).{RESET}"
+        )
+    else:
+        print(
+            f"  {YELLOW}{BOLD}Memory pressure note:{RESET} "
+            f"this model uses a large fraction of system RAM."
+        )
+    print()
+    print(f"    Model on disk:           {model_gb:>6.1f} GB")
+    print(
+        f"    Est. working set:        {working_gb:>6.1f} GB  "
+        f"{DIM}(model x 1.5 — short-chat workload; long-context serving will use more){RESET}"
+    )
+    print(f"    Currently used by OS:    {used_gb:>6.1f} GB")
+    print(
+        f"    Total system RAM:        {total_gb:>6.1f} GB  "
+        f"({ratio * 100:.0f}% projected utilization)"
+    )
+    print()
+    if ratio >= 0.85:
+        print("  Apple Silicon firmware can panic the whole system rather than")
+        print("  raise an OOM error when unified-memory pressure exceeds the")
+        print("  iBoot AMCC threshold. Recommended actions:")
+        print()
+        print("    - Close other apps to free RAM, or")
+        print("    - Pick a smaller model:    rapid-mlx models")
+        print(
+            "    - Or lower memory headroom: "
+            "rapid-mlx serve <model> --gpu-memory-utilization 0.75"
+        )
+    else:
+        print(
+            "  If you see crashes or kernel panics, try: --gpu-memory-utilization 0.85"
+        )
+    print()
+
+
 def _ensure_model_downloaded(model_name: str) -> None:
     """Pre-fetch a model in the foreground so HF's tqdm progress is visible.
 
@@ -497,6 +645,10 @@ def serve_command(args):
     # Check disk space before downloading model
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
 
+    # Pre-flight memory check — warn (don't abort) if model + working set
+    # would push unified memory past the kernel-panic threshold (issue #324).
+    _check_memory_capacity(args.model)
+
     # Load model with unified server
     try:
         load_model(
@@ -569,6 +721,7 @@ def bench_command(args):
     from .scheduler import SchedulerConfig
 
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
+    _check_memory_capacity(args.model)
 
     # Handle prefix cache flags
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
