@@ -1065,9 +1065,11 @@ def _has_short_pattern_dominating_suffix(
     suffix aligns with the pattern and the smallest-period check fires.
     A pure end-of-stream check would miss rotated cases.
 
-    Cost is ``O(window)`` per call regardless of pattern length — much
-    cheaper than the prior ``O(window * pattern_max_len)`` anchored
-    scan, and cheap enough to run on every streaming chunk.
+    Cost is ``O(window)`` time and memory per call regardless of
+    pattern length (the failure-function array is allocated each
+    invocation) — much cheaper than the prior
+    ``O(window * pattern_max_len)`` anchored scan, and cheap enough
+    to run on every streaming chunk.
 
     The defaults (window=600, max_period=300) leave room for legitimate
     repetitive content like ``[0, 0, 0, ...]`` lists shorter than the
@@ -1092,9 +1094,13 @@ def _has_short_pattern_dominating_suffix(
         fail[i] = j
     # Smallest period of ``tail``. Always >= 1 (fail[-1] <= n-1, since
     # ``fail`` is the longest *proper* prefix-suffix). ``period == n``
-    # means no nontrivial period — content is aperiodic.
+    # means no nontrivial period — the entire window is its own only
+    # period and content is aperiodic. Defaults guarantee
+    # ``max_period < window`` so this case never trips, but a caller
+    # with ``max_period >= window`` would otherwise see aperiodic
+    # strings flagged. Explicit ``period < n`` guard locks the contract.
     period = n - fail[-1]
-    return period <= max_period
+    return period < n and period <= max_period
 
 
 def _stream_chat_response(
