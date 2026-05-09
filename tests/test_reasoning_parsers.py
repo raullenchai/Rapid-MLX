@@ -1063,6 +1063,48 @@ class TestGemma4Streaming:
         assert self.parser._in_content is True
         assert self.parser._in_thought is False
 
+    @pytest.mark.parametrize(
+        "content_marker",
+        ["<|channel>content", "<|channel>final"],
+        ids=["content", "final"],
+    )
+    def test_delta_flip_pos_lands_on_content_marker_when_no_channel_close(
+        self, content_marker
+    ):
+        """Coverage follow-up to PR #307.
+
+        #307's parametrize covers the case where the delta also contains
+        ``<channel|>``, which always wins flip_pos as the earliest marker.
+        That meant flip_pos's ``<|channel>content`` and ``<|channel>final``
+        entries (gemma4_parser.py L115) had no test that picked them as the
+        winning marker. This test forces flip_pos to land on the content
+        marker by omitting ``<channel|>`` from the delta.
+
+        Mutation guard: removing either entry from the flip_pos tuple makes
+        the corresponding parametrize case fail because the post-marker bytes
+        leak into the same DeltaMessage as the pre-marker bytes via the
+        fallback whole-delta cleanup at the bottom of
+        ``extract_reasoning_streaming``.
+        """
+        prev = "<|channel>thought\nworking through it"
+        self.parser.extract_reasoning_streaming("", prev, prev)
+        assert self.parser._in_thought is True
+
+        delta = f" final guess{content_marker}\nThe answer is 42."
+        curr = prev + delta
+        result = self.parser.extract_reasoning_streaming(prev, curr, delta)
+        assert result.reasoning == " final guess", (
+            f"with no <channel|> in delta, flip_pos must land on "
+            f"{content_marker} and route pre-marker bytes to reasoning, got "
+            f"reasoning={result.reasoning!r}"
+        )
+        assert result.content == "The answer is 42.", (
+            f"post-{content_marker} bytes must land in content, got "
+            f"content={result.content!r}"
+        )
+        assert self.parser._in_content is True
+        assert self.parser._in_thought is False
+
     def test_delta_straddles_implicit_close_only(self):
         """Thought-close with no explicit content marker must still split,
         with the post-close bytes going to content (matches the original
