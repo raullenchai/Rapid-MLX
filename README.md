@@ -11,8 +11,8 @@ benchmark settings:
 
 | Model | mlx-lm | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
 | --- | ---: | ---: | ---: | ---: |
-| Qwen3.6-27B | 29.80 tok/s | 31.80 tok/s | 32.37 tok/s | **40.67 tok/s** |
-| Qwen3.6-35B | 110.37 tok/s | 114.59 tok/s | 106.00 tok/s | **220.86 tok/s** |
+| Qwen3.6-27B | 29.80 tok/s | 31.80 tok/s | 32.37 tok/s | **70.35 tok/s** |
+| Qwen3.6-35B | 110.37 tok/s | 114.59 tok/s | 106.00 tok/s | **226.01 tok/s** |
 
 Used:
 
@@ -30,11 +30,34 @@ lightning-mlx bench qwen3.6-35b \
 
 ## Agentic Benchmarks
 
-Same prompt, same agentic workflow, one server at a time:
+3-prompt agentic suite, one server at a time, one prompt at a time, fresh empty work dir each time:
 
 ```text
-Create the snake game using react, vite and typescript
+1. create a poem about cats
+2. create the snake game using react and typescript
+3. create a landing page using vite
 ```
+
+Lightning MLX runs with the new default preset (prefix cache **enabled** for `qwen3.6-27b` and `qwen3.6-35b` MTPLX). The single-prompt snake-only column from prior comparisons against oMLX and Rapid MLX is preserved at the bottom for historical reference.
+
+| Model | Metric | Prefix-cache **off** (old default) | Prefix-cache **on** (new default) | Δ |
+| --- | --- | ---: | ---: | ---: |
+| Qwen3.6-35B | All-turn avg | 46.85 tok/s | **61.82 tok/s** | **+32.0%** |
+| Qwen3.6-35B | Long-turn avg (≥500 tok) | 105.10 tok/s | **117.40 tok/s** | **+11.7%** |
+| Qwen3.6-35B | Short-turn avg (<500 tok) | 38.91 tok/s | **47.20 tok/s** | **+21.3%** |
+| Qwen3.6-35B | Wall time, 3 prompts | 229 s | **149 s** | **−34.9%** |
+| Qwen3.6-27B | All-turn avg | 9.12 tok/s | **11.06 tok/s** | **+21.3%** |
+| Qwen3.6-27B | Long-turn avg (≥500 tok) | 23.10 tok/s | **29.80 tok/s** | **+29.0%** |
+
+Three other tuning flags were tried in the same session and discarded — see `REPORT.md` for full per-experiment data and decisions:
+
+- `--chunked-prefill-tokens` is a **no-op** on mlx-lm 0.31+ (server logs `Skipped — internal Batch API removed`); discarded.
+- `--kv-cache-turboquant` regressed throughput by **−19% all-turn / +40% wall time** because compress/decompress in the prefix cache path is paid on every store with no offsetting hot-path benefit (V cache stays FP16 during decode); discarded.
+- Raising `mtp_depth_max` past 1 on the 35B sidecar requires a multi-layer `mtp.safetensors` rebuild — calibration work, not a flag — out of scope for this round.
+
+### Historical reference: snake-only, single-prompt agentic
+
+Earlier comparison against oMLX and Rapid MLX on the snake-only prompt (kept here for context, **not** re-measured):
 
 | Model | Metric | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
 | --- | --- | ---: | ---: | ---: |

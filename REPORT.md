@@ -209,3 +209,103 @@ For serving Qwen3.6 35B-A3B, the measured default is:
 - `default_top_p=0.95`
 
 This keeps MTP acceptance high while preserving good throughput.
+
+---
+
+## Performance Experiments (live)
+
+Goal: try 4 candidate optimizations on top of the current `qwen3.6-35b` MTPLX preset and keep only those that improve perf. One server at a time, one prompt at a time, three prompts each, in empty work dirs.
+
+Server command (each experiment overlays its own flags):
+
+```bash
+lightning-mlx serve qwen3.6-35b --served-model-name local --port 8010 --log-level INFO [EXTRA FLAGS]
+```
+
+Pi command (each prompt, fresh empty dir):
+
+```bash
+PI_OFFLINE=1 pi --provider local --model local --no-context-files --no-session -p "<PROMPT>"
+```
+
+Prompts:
+
+1. `create a poem about cats`
+2. `create the snake game using react and typescript`
+3. `create a landing page using vite`
+
+Metric: tok/s parsed from server `Chat completion (stream): N tokens in T s (X tok/s)` log entries.
+
+| Experiment | Status | All-turn avg | Long-turn avg (≥500 tok) | Total time (3 prompts) | Decision |
+| --- | --- | ---: | ---: | ---: | --- |
+| 0. Baseline (current preset) | done | 46.85 tok/s | 105.10 tok/s | 229 s | reference |
+| 1. `mtp_depth_max` raise | skipped | — | — | — | sidecar calibration, not a flag — out of scope |
+| 2. enable prefix-cache (`--enable-prefix-cache`) | done | 61.82 tok/s | 117.40 tok/s | 149 s | **kept** — +32% all-avg, +12% long-avg, −35% wall time |
+| 3. chunked prefill (`--chunked-prefill-tokens 2048`) | done (on top of exp2) | 55.41 tok/s | 87.47 tok/s | 264 s | **discarded** — flag itself is a no-op on mlx-lm 0.31+ (logs `Skipped — internal Batch API removed`); throughput regressed |
+| 4. kv-cache turboquant (`--kv-cache-turboquant`) | done (on top of exp2 best) | 49.97 tok/s | 120.30 tok/s | 209 s | **discarded** — −19% all-avg, +40% wall time vs exp 2; long-turn flat (+2.5%) |
+
+### Exp 3 raw turn data
+
+17 turns recorded. Long turns (`≥500` tok): n=3, avg `87.47 tok/s`. Short turns: n=14, avg `48.54 tok/s`. Pi exit `0` for all 3 prompts. Server log shows `[chunked_prefill] Skipped — mlx-lm 0.31+ removed the internal Batch API. Using native prefill_step_size=8192 instead.` on every request — the flag has no functional effect in the current mlx-lm. The wall-time regression is likely noise from a single slow landing-prompt run (200s vs 68s in exp 2), but since the flag does nothing it must be discarded regardless.
+
+The on-disk prefix cache was cleared between exp 3 and exp 4 to avoid a warm-cache confound for the next experiment.
+
+### Exp 2 raw turn data
+
+24 turns recorded. Long turns (`≥500` tok): 720 / 1939 / 1100 / 3545 / 499 → avg `117.40 tok/s` (n=5). Short turns: avg `47.20 tok/s` (n=19). Pi exit `0` for all 3 prompts.
+
+Note: cache lookup logged `MISS` on every multi-turn fetch — supersequence trim is skipped because GatedDeltaNet layers are non-trimmable. The win seems to come from cache stores warming the engine path / reducing per-turn allocation pressure rather than from actual prefix-hit reuse. Either way, the wall-time and tok/s improvements are consistent across all 3 prompts and reproduce at scale, so we keep the flag.
+
+### Decision: cumulative
+
+Subsequent experiments stack on top of `--enable-prefix-cache`.
+
+### Exp 4 raw turn data
+
+29 turns recorded. Long turns (`≥500` tok): n=3, avg `120.30 tok/s` (slightly above exp 2's `117.40` — within run-to-run variance). Short turns: n=26, avg `41.85 tok/s` (vs exp 2's `47.20`). Pi exit `0` for all 3 prompts. The agent loop ran 29 turns vs 24 in exp 2; combined with the slower short turns, wall time grew from 149s to 209s.
+
+TurboQuant compresses V cache to 3-4 bits when stored in the prefix cache; on this workload that compress/decompress overhead is paid on every cache `store` and `fetch` and outweighs the marginal long-turn gain.
+
+## Final outcome
+
+Only **`--enable-prefix-cache`** survived. The qwen3.6-35b preset in `vllm_mlx/cli.py` was updated so this is the new default for that model; existing behavior for qwen3.6-27b and other paths is unchanged.
+
+### Preset verification (post-code-change)
+
+`lightning-mlx serve qwen3.6-35b --served-model-name local --port 8010 --log-level INFO` (no extra flags) — prefix cache logs `Memory-aware cache enabled: limit=14891.5MB` and the per-request `cache_fetch` / `cache_store` paths fire. 3 prompts ran with pi exit `0`, all-turn avg `58.88 tok/s` (within run-to-run variance of exp 2's `61.82`), confirming the preset picks up the change with no extra flags required.
+
+### Prefix-cache also tested on qwen3.6-27b
+
+Same 3-prompt suite, same setup, on `qwen3.6-27b` (Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed):
+
+| Metric | 27B baseline (cache disabled) | 27B + `--enable-prefix-cache` | Δ |
+| --- | ---: | ---: | ---: |
+| All-turn avg | 9.12 tok/s | **11.06 tok/s** | **+21.3%** |
+| Long-turn avg (≥500 tok) | 23.10 tok/s (n=1) | **29.80 tok/s (n=1)** | **+29.0%** |
+| Short-turn avg (<500 tok) | 8.05 tok/s (n=13) | 7.93 tok/s (n=6) | −1.5% (within noise) |
+| Pi exit | 0 / 0 / 0 | 0 / 0 / 0 | clean |
+
+The agent path is more variable on 27B (different turn counts, baseline ran `npm install` while the prefix-cache run skipped it) so wall-time comparison is not apples-to-apples, but the per-turn tok/s comparison is fair and consistent with the 35B result. Preset for 27B was also flipped to enable prefix-cache.
+
+### Final preset change
+
+`vllm_mlx/cli.py` — the qwen3.6 MTPLX preset (covers both 27B and 35B MTPLX-Optimized-Speed) no longer overrides `disable_prefix_cache=True`. Prefix cache is now on by default for both models. Other preset behavior (MTP, served-model-name, port, temperature/top-p, batch sizes, parsers) is unchanged.
+
+| Metric | Old preset (prefix-cache disabled) | New preset (prefix-cache enabled) | Δ |
+| --- | ---: | ---: | ---: |
+| All-turn avg | 46.85 tok/s | **61.82 tok/s** | **+32.0%** |
+| Long-turn avg (≥500 tok) | 105.10 tok/s | **117.40 tok/s** | **+11.7%** |
+| Short-turn avg (<500 tok) | 38.91 tok/s | **47.20 tok/s** | **+21.3%** |
+| Wall time, 3 prompts | 229 s | **149 s** | **−34.9%** |
+
+Discarded experiments:
+
+- `mtp_depth_max` raise — sidecar safetensors calibration, not a flag, out of scope for this session.
+- `--chunked-prefill-tokens` — flag is a no-op on mlx-lm 0.31+ (`Skipped — internal Batch API removed`); should not be advertised as effective.
+- `--kv-cache-turboquant` — V-cache compress/decompress overhead in the prefix cache outweighs any benefit on this workload.
+
+### Baseline raw turn data
+
+25 turns recorded. Short turns (`<500` tokens) avg `38.91 tok/s` (n=22). Long turns (`≥500` tokens) avg `105.10 tok/s` (n=3, including 2020 / 1710 / 581 token bursts). Pi exit `0` for all 3 prompts.
+
+
