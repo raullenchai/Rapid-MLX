@@ -829,8 +829,14 @@ class TestConfigDiscoveryNoCWD:
         from vllm_mlx.mcp.config import load_mcp_config
 
         cfg_file = tmp_path / "mcp.json"
+        # skip_security_validation bypasses the PATH check so the test runs
+        # without depending on what's installed on the CI runner — this test
+        # only verifies discovery behavior, not security validation.
         cfg_file.write_text(
-            '{"servers": {"x": {"transport": "stdio", "command": "uvx"}}}'
+            '{"servers": {"x": {'
+            '"transport": "stdio", "command": "uvx", '
+            '"skip_security_validation": true'
+            "}}}"
         )
 
         config = load_mcp_config(str(cfg_file))
