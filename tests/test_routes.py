@@ -324,6 +324,28 @@ class TestHealthRoutes:
         finally:
             self._restore_config(orig)
 
+    def test_status_preserves_zero_float_throughput(self, mock_engine):
+        """A genuine 0.0 idle reading must stay a float. `or 0` would
+        collapse it to int 0; downstream schemas that require number-as-
+        float would reject the response."""
+        mock_engine.get_stats.return_value = {
+            **mock_engine.get_stats.return_value,
+            "batch_generator": {"prompt_tps": 0.0, "generation_tps": 0.0},
+        }
+        orig = self._patch_config(engine=mock_engine, model_name="test-model")
+        try:
+            data = TestClient(self._make_app()).get("/v1/status").json()
+            # JSON round-trip preserves int vs float: 0.0 → 0.0, 0 → 0.
+            # The stricter assertion is that the raw text contains "0.0".
+            r = TestClient(self._make_app()).get("/v1/status")
+            assert '"generation_tps":0.0' in r.text.replace(" ", "")
+            assert '"prompt_tps":0.0' in r.text.replace(" ", "")
+            # Sanity: numeric comparison still holds.
+            assert data["generation_tps"] == 0
+            assert data["prompt_tps"] == 0
+        finally:
+            self._restore_config(orig)
+
     def test_cache_clear_no_engine(self):
         """Cache clear returns 503 when no engine."""
         orig = self._patch_config(engine=None)
