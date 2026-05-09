@@ -273,6 +273,48 @@ class TestQwenToolParser:
         assert emitted[0]["function"]["name"] == "only"
         assert emitted[0]["index"] == 0
 
+    def test_streaming_malformed_first_tool_does_not_desync_indices(self, parser):
+        """Codex-flagged: a malformed JSON tool body must not shift indices.
+
+        Pre-fix code used raw close-marker counts as the dedup offset. If a
+        close marker appeared but the JSON inside failed to parse, the count
+        incremented but the emitted-call list didn't, so the next valid tool
+        would receive a wrong index (or be sliced away). We now base the
+        offset on len(prev_parsed.tool_calls) so malformed entries don't
+        desynchronise valid ones.
+        """
+        # NOT_JSON is an unquoted bareword: regex still isolates the {...}
+        # block but json.loads rejects it. Avoids the unrelated regex-fusion
+        # case where a stray '{' in body 1 swallows body 2.
+        chunks = [
+            "<tool_call>",
+            '{"name":"broken","arguments":NOT_JSON}',
+            "</tool_call>",
+            "<tool_call>",
+            '{"name":"valid","arguments":{}}',
+            "</tool_call>",
+        ]
+        emitted = []
+        prev = ""
+        for c in chunks:
+            cur = prev + c
+            r = parser.extract_tool_calls_streaming(
+                previous_text=prev,
+                current_text=cur,
+                delta_text=c,
+                request={"tools": []},
+            )
+            if r and "tool_calls" in r:
+                emitted.extend(r["tool_calls"])
+            prev = cur
+
+        # Malformed first tool is silently dropped; the valid second tool
+        # must still emit at index 0 (not 1, which would break OpenAI clients
+        # that expect contiguous indexing from 0).
+        assert len(emitted) == 1
+        assert emitted[0]["function"]["name"] == "valid"
+        assert emitted[0]["index"] == 0
+
 
 class TestLlamaToolParser:
     """Test the Llama tool parser."""

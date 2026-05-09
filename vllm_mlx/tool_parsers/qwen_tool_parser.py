@@ -139,33 +139,42 @@ class QwenToolParser(ToolParser):
         if not has_tool_marker:
             return {"content": delta_text}
 
-        # Count closes seen in current vs previous text. A "close" is either
-        # </tool_call> (XML form) or )] (bracket form). Both styles consume
-        # exactly one close per tool call, so a single counter works for the
-        # mixed case too.
-        prev_closes = previous_text.count("</tool_call>") + previous_text.count(")]")
-        cur_closes = current_text.count("</tool_call>") + current_text.count(")]")
+        # Use the count of *successfully parsed* tool calls in previous_text
+        # as the dedup offset, not raw close-marker count. If a malformed
+        # tool call slips past the close-marker counter but fails JSON parse,
+        # raw counts desync from emitted-call indices and later valid calls
+        # get wrong indices or get dropped. Re-parsing previous_text costs
+        # one extra extract per delta but stays correct under malformed input.
+        prev_close_count = previous_text.count("</tool_call>") + previous_text.count(
+            ")]"
+        )
+        cur_close_count = current_text.count("</tool_call>") + current_text.count(")]")
 
-        if cur_closes > prev_closes:
-            # New tool call(s) completed in this delta — parse and emit only
-            # the newly-completed ones, indexed past what we've already sent.
-            result = self.extract_tool_calls(current_text, request)
-            if result.tools_called:
-                new_calls = result.tool_calls[prev_closes:]
-                if new_calls:
-                    return {
-                        "tool_calls": [
-                            {
-                                "index": prev_closes + i,
-                                "id": tc["id"],
-                                "type": "function",
-                                "function": {
-                                    "name": tc["name"],
-                                    "arguments": tc["arguments"],
-                                },
-                            }
-                            for i, tc in enumerate(new_calls)
-                        ]
-                    }
+        if cur_close_count <= prev_close_count:
+            return None
 
-        return None
+        result = self.extract_tool_calls(current_text, request)
+        if not result.tools_called:
+            return None
+
+        prev_result = self.extract_tool_calls(previous_text, request)
+        prev_emitted = len(prev_result.tool_calls) if prev_result.tools_called else 0
+
+        new_calls = result.tool_calls[prev_emitted:]
+        if not new_calls:
+            return None
+
+        return {
+            "tool_calls": [
+                {
+                    "index": prev_emitted + i,
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                    },
+                }
+                for i, tc in enumerate(new_calls)
+            ]
+        }
