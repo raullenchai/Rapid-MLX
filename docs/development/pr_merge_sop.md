@@ -46,7 +46,7 @@ Not every PR runs the full gauntlet. Skip rules:
 | Dependabot / version-bump bot | satisfied by the bump itself | codex single round on the diff | mandatory — read the dep CHANGELOG | unchanged | unchanged |
 | `chore: bump version to X.Y.Z` (release) | satisfied by linking the commits being shipped | n/a (just the version bump) | bundle-level audit at release time, see [`releasing.md`](releasing.md) | unchanged | unchanged |
 | Revert PR | must name the regression / commit being reverted | targeted tests for the affected area | n/a unless deps reverted | unchanged | unchanged |
-| Hotfix to broken main | satisfied if a regression issue is open or being filed | targeted tests + lint only; full unit can be skipped if main itself is broken | unchanged | n/a | merge fast, then run remaining gates as the follow-up issue |
+| Hotfix to broken main | satisfied if a regression issue is open or being filed | targeted tests + lint only; full unit can be skipped if main itself is broken | unchanged | **only skip gates that are physically blocked by the broken-main condition** — if the touched surface is parser / router / inference, run Step 8 (doctor) and Step 9 (Anthropic-compat) targeted to the affected surface anyway, those are the *highest-value* gates for a hotfix | document each skipped gate inline in the PR; merge once unblocked gates pass; file follow-up issue for any deferred non-blocking gate |
 | Embargoed security fix | filed under coordinated-disclosure process; PR opens against private fork | full gauntlet but in private | mandatory | mandatory | merge with disclosure window |
 
 For first-time contributors learning the ropes: relax tone, not standards. Walk them through fixes instead of closing; that builds the contributor base.
@@ -120,19 +120,15 @@ python3.12 -m pytest tests/ \
 
 The MLLM / video files need real Qwen3-VL weights and hang locally — the CI matrix covers them.
 
-**Pre-existing flakes** must be **proven** pre-existing by running the test on clean main. The naive `git stash && pytest && git stash pop` pattern leaves work stashed if pytest fails — use a worktree or a `trap`-protected wrapper instead:
+**Pre-existing flakes** must be **proven** pre-existing by running the test on clean main. The naive `git stash && pytest && git stash pop` pattern leaves work stashed if pytest fails — use a worktree:
 
 ```bash
-# Option A: ephemeral worktree (safest)
 git worktree add /tmp/main-check raullenchai/main
 ( cd /tmp/main-check && python3.12 -m pytest <flake> -q )
 git worktree remove /tmp/main-check
-
-# Option B: stash with guaranteed restore
-git stash push -u -m pr-flake-check && \
-  trap 'git stash pop' EXIT && \
-  python3.12 -m pytest <flake> -q
 ```
+
+The worktree is the only safe pattern — `trap`-based stash recovery in an interactive shell delays the pop until the shell exits, leaving the working tree in an unexpected state for an indeterminate time. Don't use it.
 
 Never assume — confirm. Document any confirmed pre-existing fails in the PR description.
 
