@@ -702,6 +702,29 @@ def test_has_short_pattern_dominating_suffix_unit():
     assert not cli._has_short_pattern_dominating_suffix(
         "[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]"
     )
+    # 10. NOT triggered: aperiodic content longer than the window. The
+    #     KMP detector must not fire on text whose smallest period
+    #     exceeds ``max_period`` even when the window is full. We build
+    #     a 700-char string with deterministic but non-repeating content
+    #     (LCG-style hex digits — irregular enough that no short cycle
+    #     dominates).
+    import hashlib
+
+    aperiodic = "".join(hashlib.md5(str(i).encode()).hexdigest()[0] for i in range(700))
+    assert len(aperiodic) >= 700
+    assert not cli._has_short_pattern_dominating_suffix(aperiodic)
+    # 11. NOT triggered: a 400-char fully-random pattern repeated only
+    #     1.5x — period (~400) exceeds the 300-char ceiling, so the
+    #     detector must let it pass.
+    long_random = hashlib.sha256(b"seed").hexdigest()  # 64 hex
+    long_random = (long_random * 7)[:400]  # 400 unique-looking chars
+    assert not cli._has_short_pattern_dominating_suffix(long_random + long_random[:200])
+    # 12. Custom max_period override works: a 400-char repeating pattern
+    #     should trigger when max_period is bumped above its length.
+    pattern_400 = (hashlib.sha256(b"x").hexdigest() * 7)[:400]
+    assert cli._has_short_pattern_dominating_suffix(
+        pattern_400 * 3, window=600, max_period=450
+    )
 
 
 def test_chat_command_save_refuses_on_empty_conversation(monkeypatch, tmp_path, capsys):
@@ -749,6 +772,35 @@ def test_stream_chat_response_aborts_on_no_whitespace_repetition(monkeypatch):
     assert "repeating" in rendered or "repetition" in rendered, (
         "char-level guard must fire on no-whitespace repetition"
     )
+
+
+def test_stream_chat_response_token_guard_wins_when_both_eligible(monkeypatch):
+    """When a single chunk satisfies BOTH the token-level guard
+    (whitespace-separated repetition) AND the char-level guard
+    (KMP periodicity), the token-level guard must fire first and
+    cleanly slice mid-chunk — the char-level guard is a fallback,
+    not a duplicate firing path. ``"Barley " * 200`` triggers both;
+    we verify the cutoff is short (token-guard mid-chunk slice) and
+    NOT the full chunk dump (char-guard post-emit fire)."""
+    canned = [_delta("Barley " * 200)]
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch.object(sys, "stdout", io.StringIO()) as buf,
+    ):
+        full = cli._stream_chat_response(
+            f"http://127.0.0.1:{port}",
+            {"model": "x", "messages": [], "stream": True},
+            timeout_s=10,
+        )
+    # Token-level guard wins → mid-chunk slice → ``full`` should be
+    # well under the full 200-rep dump (1400 chars). Allow some
+    # slack since REPEAT_LIMIT controls the exact cutoff.
+    assert "Barley" in full
+    assert len(full) < 700, (
+        f"token-level guard must slice mid-chunk; got {len(full)} chars "
+        "— suspect char-level guard fired on the full chunk"
+    )
+    assert "repeating" in buf.getvalue() or "repetition" in buf.getvalue()
 
 
 def test_stream_chat_response_aborts_on_repetition(monkeypatch):

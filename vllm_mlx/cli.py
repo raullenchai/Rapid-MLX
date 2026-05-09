@@ -1054,11 +1054,16 @@ def _has_short_pattern_dominating_suffix(
       entire history of the Roman Empire in one long unbroken sentence".
 
     Implementation: compute the KMP failure function over the trailing
-    window. The smallest period of a string is ``len(s) - fail[-1]``.
-    A short period (≤``max_period``) means the window is dominated by
-    that repetition. KMP also catches *rotated* periods that an
-    anchored ``tail[:n]`` check would miss (e.g. when the model started
-    looping mid-window).
+    window. The smallest period of the *entire* window is
+    ``len(s) - fail[-1]``; a short period (≤``max_period``) means the
+    window is dominated by that repetition starting from offset 0.
+
+    Note: KMP itself does NOT detect periods that begin mid-window
+    (rotated patterns). Mid-window degeneracy gets caught because this
+    helper is invoked after every streaming chunk — once the model has
+    been looping long enough to fill the window, the rolling 600-char
+    suffix aligns with the pattern and the smallest-period check fires.
+    A pure end-of-stream check would miss rotated cases.
 
     Cost is ``O(window)`` per call regardless of pattern length — much
     cheaper than the prior ``O(window * pattern_max_len)`` anchored
@@ -1085,10 +1090,11 @@ def _has_short_pattern_dominating_suffix(
         if tail[i] == tail[j]:
             j += 1
         fail[i] = j
-    # Smallest period of ``tail``. ``period == n`` means no nontrivial
-    # period — content is aperiodic.
+    # Smallest period of ``tail``. Always >= 1 (fail[-1] <= n-1, since
+    # ``fail`` is the longest *proper* prefix-suffix). ``period == n``
+    # means no nontrivial period — content is aperiodic.
     period = n - fail[-1]
-    return 0 < period <= max_period
+    return period <= max_period
 
 
 def _stream_chat_response(
@@ -1387,6 +1393,14 @@ def _stream_chat_response(
                 # whitespace-token counter misses (the entire chunk
                 # collapses to one giant token whose consecutive count
                 # never climbs). Cheap enough to run on every chunk.
+                #
+                # Trade-off: runs *after* the chunk is already emitted,
+                # so the user sees one extra chunk of garbage before
+                # the abort message lands. We accept this — slicing
+                # mid-chunk would require re-running KMP per byte (or
+                # binary search) on every delta, and degenerate chunks
+                # are typically small (≤64 chars) since servers stream
+                # token-by-token.
                 if not repetition_aborted and _has_short_pattern_dominating_suffix(
                     full
                 ):
