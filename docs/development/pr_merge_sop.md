@@ -74,7 +74,7 @@ Run codex review **iteratively until convergence**.
   - **P0/P1 dismissals**: must include concrete evidence (a counter-example, a code reference, a test that proves the finding wrong, or a documented design decision link). "This is wrong" without evidence is not a valid dismissal.
   - **P2 dismissals**: a one-line rationale is fine.
   - When in doubt, fix rather than dismiss — the failure mode is dismissed-then-shipped-then-broken.
-- **Convergence** = a round produces zero new P0 findings. Two consecutive convergent rounds is the gold standard; one round suffices for diffs ≤ ~50 lines.
+- **Convergence** = a round produces zero new P0 **and** zero new P1 findings. Open P2s must be either addressed or explicitly dismissed per the rule above; a P2 backlog doesn't block convergence by itself but must be resolved before merge. Two consecutive convergent rounds is the gold standard; one round suffices for diffs ≤ ~50 lines.
 - Typical: 2-4 rounds for a non-trivial PR. If round 5 still finds new P0s, the PR scope is too large — split it.
 
 ## Step 3 — Test coverage
