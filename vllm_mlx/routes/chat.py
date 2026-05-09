@@ -446,8 +446,12 @@ def _looks_like_invalid_tool_continuation(text: str | None) -> bool:
 
 
 def _should_emit_reasoning(request: ChatCompletionRequest) -> bool:
-    """Expose reasoning only when the client explicitly asks for thinking output."""
-    return request.enable_thinking is True and not request.tools
+    """Stream reasoning by default. Off when --no-thinking or client opts out."""
+    if get_config().no_thinking:
+        return False
+    if request.enable_thinking is False:
+        return False
+    return True
 
 
 def _tool_turn_max_tokens(max_tokens: int | None) -> int:
