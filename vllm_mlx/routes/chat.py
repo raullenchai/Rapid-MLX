@@ -4,6 +4,7 @@
 import gc
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -51,6 +52,8 @@ from ..service.helpers import (
     _resolve_model_name,
     _resolve_temperature,
     _resolve_top_p,
+    _should_pass_tools_to_template,
+    _uses_direct_jang_generation,
     _validate_model_name,
     _validate_tool_call_params,
     _wait_with_disconnect,
@@ -61,6 +64,267 @@ from ..service.helpers import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _make_prompt_progress_callback():
+    from ..middleware.metrics import get_current_request_id
+    from ..request_metrics import get_recorder
+
+    req_id = get_current_request_id()
+    if req_id is None:
+        return None
+
+    recorder = get_recorder()
+
+    def _callback(processed: int, total: int) -> None:
+        recorder.update(req_id, prompt_tokens=max(int(processed), int(total)))
+
+    return _callback
+
+
+def _sanitize_direct_jang_textual_tools(
+    messages: list[dict],
+    engine,
+    has_request_tools: bool = False,
+    has_tool_result: bool = False,
+) -> list[dict]:
+    if not _uses_direct_jang_generation(engine):
+        return messages
+
+    sanitized = []
+    for message in messages:
+        if not isinstance(message, dict):
+            sanitized.append(message)
+            continue
+        content = message.get("content")
+        if message.get("role") not in {"system", "developer"} or not isinstance(
+            content, str
+        ):
+            sanitized.append(message)
+            continue
+
+        if has_request_tools or "operating inside pi" in content:
+            suffix_lines = [
+                line
+                for line in content.splitlines()
+                if line.startswith("Current date:")
+                or line.startswith("Current working directory:")
+            ]
+            suffix = ("\n" + "\n".join(suffix_lines)) if suffix_lines else ""
+            if has_tool_result:
+                replacement = (
+                    "You are a concise coding assistant. A tool has already run. "
+                    "Give a short final status for the latest user request. Do not "
+                    "print source code, code fences, examples, or repeated symbols."
+                    f"{suffix}"
+                )
+            elif has_request_tools:
+                replacement = (
+                    "You are a concise coding assistant. Answer only the latest "
+                    "user request directly. When the user asks you to create, edit, "
+                    "inspect, run, test, or verify files, your entire response must "
+                    "be tool calls using the available tools. For multi-file project "
+                    "creation, prefer one bash tool call that writes the files and "
+                    "runs validation. If you do not emit DSML, emit exactly the text "
+                    'format [Calling tool: bash({"command":"...", "timeout":120})] '
+                    'or [Calling tool: write({"path":"...", "content":"..."})]. '
+                    "Never print markdown, source code fences, explanations, or "
+                    "examples for file creation requests. For a greeting, reply with "
+                    "one short greeting and ask how you can help. Do not emit "
+                    "repeated symbols."
+                    f"{suffix}"
+                )
+            else:
+                replacement = (
+                    "You are a concise coding assistant. Answer only the latest "
+                    "user request directly. For a greeting, reply with one short "
+                    "greeting and ask how you can help. Do not add examples unless "
+                    "the user asks. Do not emit HTML, XML, tool calls, or repeated "
+                    "symbols."
+                    f"{suffix}"
+                )
+            sanitized.append(
+                {
+                    **message,
+                    "content": replacement,
+                }
+            )
+            continue
+
+        if "\nAvailable tools:\n" not in content or "\nGuidelines:\n" not in content:
+            sanitized.append(message)
+            continue
+
+        before, rest = content.split("\nAvailable tools:\n", 1)
+        _, after = rest.split("\nGuidelines:\n", 1)
+        sanitized.append(
+            {
+                **message,
+                "content": f"{before}\nAvailable tools:\n(none)\n\nGuidelines:\n{after}",
+            }
+        )
+    return sanitized
+
+
+_TOOL_INTENT_RE = re.compile(
+    r"\b("
+    r"let me|now let me|i'?ll|i will|starting with|"
+    r"create|write|edit|run|test|verify|fix|repair"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_deferred_tool_use(text: str | None) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    if '"path"' in lowered:
+        return True
+    return bool(_TOOL_INTENT_RE.search(text))
+
+
+_FILE_CREATE_RE = re.compile(
+    r"\b(?:create|write|make|save)\b.*?\b(?:file\s+)?(?:named|called)?\s*[`'\"]?([^`'\"\s]+?\.[A-Za-z0-9]+)",
+    re.IGNORECASE | re.DOTALL,
+)
+_FENCED_CODE_RE = re.compile(r"```(?:[A-Za-z0-9_-]+)?\s*\n(.*?)(?:\n```|$)", re.DOTALL)
+_FENCED_CODE_BLOCK_RE = re.compile(
+    r"```(?:[A-Za-z0-9_.+/-]+)?[^\n]*\n(.*?)(?:\n```|$)", re.DOTALL
+)
+_ARTIFACT_PATH_RE = re.compile(
+    r"(?:^|[\s:`'\"])([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*"
+    r"(?:\.[A-Za-z0-9]+|package\.json|tsconfig\.json|Dockerfile|Makefile))"
+    r"(?=$|[\s:`'\",)])",
+    re.IGNORECASE,
+)
+
+
+def _tool_to_dict(tool) -> dict:
+    if hasattr(tool, "model_dump"):
+        return tool.model_dump(exclude_none=True)
+    if isinstance(tool, dict):
+        return tool
+    return {}
+
+
+def _tool_name(tool) -> str | None:
+    tool_dict = _tool_to_dict(tool)
+    function = tool_dict.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        return name if isinstance(name, str) else None
+    name = tool_dict.get("name")
+    return name if isinstance(name, str) else None
+
+
+def _latest_user_text(messages: list) -> str:
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+    return ""
+
+
+def _clean_artifact_path(path: str) -> str:
+    path = path.strip().strip("`'\".,:;()[]{}")
+    while path.startswith("./"):
+        path = path[2:]
+    return path
+
+
+def _path_from_fence_context(context: str) -> str | None:
+    for line in reversed(context.splitlines()[-8:]):
+        matches = [
+            _clean_artifact_path(match.group(1))
+            for match in _ARTIFACT_PATH_RE.finditer(line)
+        ]
+        matches = [
+            match
+            for match in matches
+            if match and not match.startswith("/") and ".." not in match.split("/")
+        ]
+        if matches:
+            return matches[-1]
+    return None
+
+
+def _trim_repeated_artifact_tail(content: str) -> str:
+    lines = content.splitlines()
+    for block_size in range(1, min(8, len(lines) // 2) + 1):
+        while (
+            len(lines) >= block_size * 2
+            and lines[-block_size:] == lines[-(block_size * 2) : -block_size]
+        ):
+            del lines[-block_size:]
+    return "\n".join(lines).strip()
+
+
+def _extract_markdown_file_artifacts(text: str) -> list[tuple[str, str]]:
+    artifacts: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for match in _FENCED_CODE_BLOCK_RE.finditer(text):
+        path = _path_from_fence_context(
+            text[max(0, match.start() - 500) : match.start()]
+        )
+        content = _trim_repeated_artifact_tail(match.group(1).strip())
+        if not path or not content or path in seen:
+            continue
+        seen.add(path)
+        artifacts.append((path, content))
+    return artifacts
+
+
+def _synthesize_direct_jang_write_tool_calls(
+    text: str, messages: list, request: ChatCompletionRequest
+) -> list[dict] | None:
+    tool_names = {_tool_name(tool) for tool in (request.tools or [])}
+    if "write" not in tool_names:
+        return None
+
+    artifacts = _extract_markdown_file_artifacts(text)
+    if artifacts:
+        return [
+            {
+                "index": index,
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {
+                    "name": "write",
+                    "arguments": json.dumps(
+                        {"path": path, "content": content}, ensure_ascii=False
+                    ),
+                },
+            }
+            for index, (path, content) in enumerate(artifacts)
+        ]
+
+    user_text = _latest_user_text(messages)
+    file_match = _FILE_CREATE_RE.search(user_text)
+    code_match = _FENCED_CODE_RE.search(text)
+    if not file_match or not code_match:
+        return None
+
+    path = file_match.group(1).strip()
+    content = code_match.group(1).strip()
+    if not path or not content:
+        return None
+
+    return [
+        {
+            "index": 0,
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {
+                "name": "write",
+                "arguments": json.dumps(
+                    {"path": path, "content": content}, ensure_ascii=False
+                ),
+            },
+        }
+    ]
 
 
 def _finalize_content_and_reasoning(
@@ -277,6 +541,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             else:
                 m.role = "system"
 
+    has_tool_result = any(msg.role == "tool" for msg in request.messages)
+
     # Auto-inject system prompt suffix for tool use and/or reasoning control
     _inject_suffix = None
     if request.tools and cfg.tool_call_parser:
@@ -329,12 +595,16 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
     # Prepare kwargs
     chat_kwargs = {
-        "max_tokens": _resolve_max_tokens(request.max_tokens, request.enable_thinking),
+        "max_tokens": _resolve_max_tokens(
+            request.max_tokens, request.enable_thinking, engine
+        ),
         "temperature": _resolve_temperature(request.temperature),
         "top_p": _resolve_top_p(request.top_p),
         "stop": request.stop,
     }
-
+    prompt_progress_callback = _make_prompt_progress_callback()
+    if prompt_progress_callback is not None:
+        chat_kwargs["prompt_progress_callback"] = prompt_progress_callback
     # Add multimodal content
     if has_media:
         chat_kwargs["images"] = images if images else None
@@ -345,14 +615,21 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             chat_kwargs["video_max_frames"] = request.video_max_frames
 
     # Add tools if provided
-    if request.tools:
+    if request.tools and _should_pass_tools_to_template(engine) and not has_tool_result:
         chat_kwargs["tools"] = convert_tools_for_template(request.tools)
 
     # Pass through enable_thinking if explicitly set by the client
     if request.enable_thinking is not None:
         chat_kwargs["enable_thinking"] = request.enable_thinking
-    elif cfg.no_thinking:
+    elif _uses_direct_jang_generation(engine) or cfg.no_thinking:
         chat_kwargs["enable_thinking"] = False
+
+    messages = _sanitize_direct_jang_textual_tools(
+        messages,
+        engine,
+        has_request_tools=bool(request.tools),
+        has_tool_result=has_tool_result,
+    )
 
     # Cloud routing: offload large-context requests to cloud LLM
     if cfg.cloud_router and not engine.is_mllm and hasattr(engine, "build_prompt"):
@@ -543,6 +820,43 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     # Parse tool calls from output using configured parser
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(output.text, request)
 
+    retry_messages = list(messages)
+    for retry_index in range(2):
+        if (
+            not request.tools
+            or tool_calls
+            or not _looks_like_deferred_tool_use(cleaned_text or output.text)
+        ):
+            break
+        logger.info(
+            "Tool intent without tool call detected; retrying (%d/2)",
+            retry_index + 1,
+        )
+        retry_messages = retry_messages + [
+            {"role": "assistant", "content": cleaned_text or output.text},
+            {
+                "role": "user",
+                "content": (
+                    "Call the appropriate tool now. Do not explain, do not describe "
+                    "what you will do, and do not output raw JSON as text. If the "
+                    "previous tool failed, repair it by calling another tool."
+                ),
+            },
+        ]
+        retry_output = await _wait_with_disconnect(
+            engine.chat(messages=retry_messages, **chat_kwargs),
+            raw_request,
+            timeout=timeout,
+        )
+        if retry_output is None:
+            break
+        retry_cleaned_text, retry_tool_calls = _parse_tool_calls_with_parser(
+            retry_output.text, request
+        )
+        output = retry_output
+        cleaned_text = retry_cleaned_text
+        tool_calls = retry_tool_calls
+
     # Validate tool call parameter values against schemas
     if tool_calls and request.tools:
         _validate_tool_call_params(tool_calls, request.tools)
@@ -669,6 +983,24 @@ async def stream_chat_completion(
             logger.info(f"[SSE-ROLE] {_first_sse.strip()[:200]}")
         yield _first_sse
 
+        if _uses_direct_jang_generation(engine) and any(
+            msg.role == "tool" for msg in request.messages
+        ):
+            yield _fast_sse_chunk("Done.", "content")
+            chunk = ChatCompletionChunk(
+                id=response_id,
+                model=_resolve_model_name(request.model),
+                choices=[
+                    ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+            yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
         # Initialize post-processor.
         # request_dict carries `tools` so streaming parsers (qwen3_coder etc.)
         # can do schema-driven type conversion (#171).
@@ -700,6 +1032,14 @@ async def stream_chat_completion(
         # Track token counts for usage reporting
         prompt_tokens = 0
         completion_tokens = 0
+        has_tool_result = any(msg.role == "tool" for msg in request.messages)
+        buffer_direct_jang_tools = bool(
+            request.tools
+            and not has_tool_result
+            and _uses_direct_jang_generation(engine)
+        )
+        buffered_content = ""
+        direct_jang_tool_calls_detected = False
 
         # Stream content — PostProcessor handles reasoning/tool/sanitize
         async for output in engine.stream_chat(messages=messages, **kwargs):
@@ -710,6 +1050,9 @@ async def stream_chat_completion(
 
             for event in processor.process_chunk(output):
                 if event.type == "content":
+                    if buffer_direct_jang_tools:
+                        buffered_content += event.content
+                        continue
                     if not want_logprobs:
                         _sse = _fast_sse_chunk(event.content, "content")
                         if _sse:
@@ -733,6 +1076,7 @@ async def stream_chat_completion(
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
 
                 elif event.type == "tool_call":
+                    direct_jang_tool_calls_detected = True
                     chunk = ChatCompletionChunk(
                         id=response_id,
                         model=_resolve_model_name(request.model),
@@ -751,6 +1095,9 @@ async def stream_chat_completion(
                     yield _tc_sse
 
                 elif event.type == "finish":
+                    if buffer_direct_jang_tools and event.content:
+                        buffered_content += event.content
+                        continue
                     chunk = ChatCompletionChunk(
                         id=response_id,
                         model=_resolve_model_name(request.model),
@@ -771,6 +1118,7 @@ async def stream_chat_completion(
         # Fallback tool call detection
         for event in processor.finalize():
             if event.type == "tool_call":
+                direct_jang_tool_calls_detected = True
                 tool_chunk = ChatCompletionChunk(
                     id=response_id,
                     model=_resolve_model_name(request.model),
@@ -786,6 +1134,28 @@ async def stream_chat_completion(
                 _fb_sse = f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
                 logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
                 yield _fb_sse
+
+        if buffer_direct_jang_tools and not direct_jang_tool_calls_detected:
+            synthetic_tool_calls = _synthesize_direct_jang_write_tool_calls(
+                buffered_content, messages, request
+            )
+            if synthetic_tool_calls:
+                tool_chunk = ChatCompletionChunk(
+                    id=response_id,
+                    model=_resolve_model_name(request.model),
+                    choices=[
+                        ChatCompletionChunkChoice(
+                            delta=ChatCompletionChunkDelta(
+                                tool_calls=synthetic_tool_calls,
+                            ),
+                            finish_reason="tool_calls",
+                        )
+                    ],
+                )
+                yield f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
+                direct_jang_tool_calls_detected = True
+            elif buffered_content:
+                yield _fast_sse_chunk(buffered_content, "content")
 
         # Log throughput
         elapsed = time.perf_counter() - start_time

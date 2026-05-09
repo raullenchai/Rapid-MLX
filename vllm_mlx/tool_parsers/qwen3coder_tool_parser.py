@@ -53,6 +53,59 @@ def _get_arguments_config(func_name: str, tools: list[dict] | None) -> dict:
     return {}
 
 
+def _decode_json_like(value: Any) -> Any:
+    """Decode JSON-looking strings, including double-encoded values."""
+    if not isinstance(value, str):
+        return value
+
+    current: Any = value.strip()
+    for _ in range(3):
+        if not isinstance(current, str):
+            return current
+        stripped = current.strip()
+        if not stripped or stripped[0] not in '[{"':
+            return current
+        try:
+            parsed = json.loads(stripped)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return current
+        if parsed == current:
+            return parsed
+        current = parsed
+    return current
+
+
+def _schema_type(schema: Any) -> str | None:
+    """Infer a JSON schema type for tool argument conversion."""
+    if isinstance(schema, str):
+        return schema.strip().lower()
+    if not isinstance(schema, dict):
+        return None
+
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        schema_type = next((item for item in schema_type if item != "null"), None)
+    if isinstance(schema_type, str):
+        return schema_type.strip().lower()
+
+    for key in ("anyOf", "oneOf", "allOf"):
+        options = schema.get(key)
+        if not isinstance(options, list):
+            continue
+        for option in options:
+            option_type = _schema_type(option)
+            if option_type and option_type != "null":
+                return option_type
+
+    if "items" in schema:
+        return "array"
+    if "properties" in schema or "additionalProperties" in schema:
+        return "object"
+    if "enum" in schema:
+        return "string"
+    return None
+
+
 def _convert_param_value(
     param_value: str, param_name: str, param_config: dict, func_name: str
 ) -> Any:
@@ -61,13 +114,12 @@ def _convert_param_value(
         return None
 
     if param_name not in param_config:
-        return param_value
+        return _decode_json_like(param_value)
 
     cfg = param_config[param_name]
-    if isinstance(cfg, dict) and "type" in cfg:
-        param_type = str(cfg["type"]).strip().lower()
-    else:
-        param_type = "string"
+    param_type = _schema_type(cfg)
+    if param_type is None:
+        return _decode_json_like(param_value)
 
     if param_type in ("string", "str", "text", "varchar", "char", "enum"):
         return param_value
@@ -87,10 +139,9 @@ def _convert_param_value(
         if param_type in ("object", "array", "arr") or param_type.startswith(
             ("dict", "list")
         ):
-            try:
-                return json.loads(param_value)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+            decoded = _decode_json_like(param_value)
+            if decoded is not param_value:
+                return decoded
         try:
             return ast.literal_eval(param_value)
         except (ValueError, SyntaxError):
@@ -253,6 +304,8 @@ class Qwen3CoderToolParser(ToolParser):
     ) -> dict[str, Any] | None:
         if not previous_text:
             self._reset_streaming_state()
+            self._streaming_request = request
+        elif request is not None and self._streaming_request is None:
             self._streaming_request = request
 
         if not delta_text:

@@ -76,7 +76,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         output = await _wait_with_disconnect(
             engine.generate(
                 prompt=prompt,
-                max_tokens=_resolve_max_tokens(request.max_tokens),
+                max_tokens=_resolve_max_tokens(request.max_tokens, engine=engine),
                 temperature=_resolve_temperature(request.temperature),
                 top_p=_resolve_top_p(request.top_p),
                 stop=request.stop,
@@ -128,7 +128,7 @@ async def stream_completion(
     """Stream completion response."""
     async for output in engine.stream_generate(
         prompt=prompt,
-        max_tokens=_resolve_max_tokens(request.max_tokens),
+        max_tokens=_resolve_max_tokens(request.max_tokens, engine=engine),
         temperature=_resolve_temperature(request.temperature),
         top_p=_resolve_top_p(request.top_p),
         stop=request.stop,

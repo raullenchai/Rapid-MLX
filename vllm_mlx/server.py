@@ -363,6 +363,12 @@ def configure_cors(origins: list[str]) -> None:
     )
 
 
+# Per-request metrics recorder for /v1/requests and the TUI monitor
+from .middleware.metrics import MetricsMiddleware  # noqa: E402
+
+app.add_middleware(MetricsMiddleware)
+
+
 # Auth and rate limiting — moved to middleware/auth.py
 from .middleware.auth import (  # noqa: E402
     RateLimiter,  # noqa: F401

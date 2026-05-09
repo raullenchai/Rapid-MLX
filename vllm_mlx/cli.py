@@ -695,18 +695,89 @@ def serve_command(args):
     # Start server
     # Note: Metal shader warmup runs in the FastAPI lifespan hook (server.py)
     # so it works for all engine types.
-    print()
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
-    print(f"  Ready: http://{host_display}:{args.port}/v1")
-    print(f"  Docs:  http://{host_display}:{args.port}/docs")
-    print()
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        log_level=uvicorn_log_level,
-        timeout_keep_alive=30,
+
+    if getattr(args, "tui", False):
+        _run_with_tui(
+            app,
+            host=args.host,
+            host_display=host_display,
+            port=args.port,
+            log_level=uvicorn_log_level,
+        )
+    else:
+        print()
+        print(f"  Ready: http://{host_display}:{args.port}/v1")
+        print(f"  Docs:  http://{host_display}:{args.port}/docs")
+        print()
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level=uvicorn_log_level,
+            timeout_keep_alive=30,
+        )
+
+
+def _wait_for_server_ready(base_url: str, timeout_s: float = 600.0) -> None:
+    import json
+    import time
+    import urllib.error
+    import urllib.request
+
+    deadline = time.monotonic() + timeout_s
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"{base_url}/health", timeout=1.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if payload.get("status") == "healthy" and payload.get("model_loaded"):
+                return
+            last_error = f"health={payload!r}"
+        except (OSError, urllib.error.URLError, TimeoutError) as e:
+            last_error = str(e)
+        time.sleep(0.25)
+    raise TimeoutError(
+        f"Server did not become ready within {timeout_s:.0f}s: {last_error}"
     )
+
+
+def _run_with_tui(app, host: str, host_display: str, port: int, log_level) -> None:
+    """Run uvicorn in a background thread and the TUI in the foreground."""
+    import os
+    import threading
+
+    import uvicorn
+
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level=log_level,
+        timeout_keep_alive=30,
+        access_log=False,
+    )
+    server = uvicorn.Server(config)
+    # Signal handlers can only be installed from the main thread.
+    server.install_signal_handlers = lambda: None  # type: ignore[assignment]
+
+    server_thread = threading.Thread(target=server.run, daemon=True)
+    server_thread.start()
+
+    from .tui import run_monitor
+
+    tui_host = "127.0.0.1" if host == "0.0.0.0" else host
+    base_url = f"http://{tui_host}:{port}"
+    try:
+        _wait_for_server_ready(base_url)
+        print()
+        print(f"  Ready: http://{host_display}:{port}/v1")
+        print(f"  Docs:  http://{host_display}:{port}/docs")
+        print()
+        run_monitor(base_url, interval=1.0, pid=os.getpid())
+    finally:
+        server.should_exit = True
+        server_thread.join(timeout=5)
 
 
 def bench_command(args):
@@ -2707,6 +2778,11 @@ Examples:
         type=str,
         default=None,
         help="Pre-load an embedding model at startup (e.g. mlx-community/embeddinggemma-300m-6bit)",
+    )
+    serve_parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="Run a live full-screen monitor TUI alongside the server (q to quit).",
     )
     # Bench command
     bench_parser = subparsers.add_parser("bench", help="Run benchmark")

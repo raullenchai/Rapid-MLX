@@ -11,8 +11,10 @@ MLLMBatchGenerator. MLLM models only initialise the MLLM scheduler (not the
 LLM engine), so text-only requests must also be routed through it.
 """
 
+import asyncio
 import functools
 import logging
+import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -598,6 +600,16 @@ class BatchedEngine(BaseEngine):
         if not self._loaded:
             await self.start()
 
+        if self._should_use_direct_generate(images, videos):
+            return await self._direct_generate(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop,
+                prompt_progress_callback=kwargs.pop("prompt_progress_callback", None),
+            )
+
         if self._is_mllm and self._mllm_scheduler:
             # Use MLLM scheduler for all requests when model is multimodal.
             # MLLM models only initialise the _mllm_scheduler (not _engine),
@@ -646,6 +658,206 @@ class BatchedEngine(BaseEngine):
             finish_reason=output.finish_reason,
         )
 
+    def _should_use_direct_generate(
+        self,
+        images: list[str] | None = None,
+        videos: list[str] | None = None,
+    ) -> bool:
+        # TODO: Fix real batching for DeepSeek V4 JANGTQ instead of routing
+        # around it. The current mlx-lm BatchGenerator path corrupts DSV4
+        # JANGTQ output under rapid-mlx batching. A correct fix should compare
+        # BatchGenerator logits/output against mlx_lm.generate, then adapt cache
+        # offset handling, prompt-cache merge/extract, and RoPE position state
+        # until batched generation is bit-consistent with the direct path.
+        return (
+            not self._is_mllm
+            and not images
+            and not videos
+            and bool(getattr(self._tokenizer, "_rapid_mlx_direct_generate", False))
+        )
+
+    async def _direct_generate(
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        stop: list[str] | None,
+        prompt_progress_callback=None,
+    ) -> GenerationOutput:
+        loop = asyncio.get_running_loop()
+        runner = functools.partial(
+            self._run_direct_generate,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop,
+            prompt_progress_callback=prompt_progress_callback,
+        )
+        if self._model_load_executor is not None:
+            return await loop.run_in_executor(self._model_load_executor, runner)
+        return await asyncio.to_thread(runner)
+
+    def _run_direct_generate(
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        stop: list[str] | None,
+        prompt_progress_callback=None,
+    ) -> GenerationOutput:
+        from mlx_lm import generate as mlx_generate
+        from mlx_lm.sample_utils import make_sampler
+
+        sampler = (
+            make_sampler(temp=temperature, top_p=top_p) if temperature > 0 else None
+        )
+        kwargs = {
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "verbose": False,
+        }
+        if sampler is not None:
+            kwargs["sampler"] = sampler
+        if prompt_progress_callback is not None:
+            kwargs["prompt_progress_callback"] = prompt_progress_callback
+
+        text = mlx_generate(self._model, self._tokenizer, **kwargs)
+        if stop:
+            for stop_seq in stop:
+                if stop_seq and stop_seq in text:
+                    text = text.split(stop_seq, 1)[0]
+                    break
+        text = clean_output_text(text)
+        tokens = self._tokenizer.encode(text)
+
+        return GenerationOutput(
+            text=text,
+            tokens=tokens,
+            prompt_tokens=len(self._tokenizer.encode(prompt)),
+            completion_tokens=len(tokens),
+            finish_reason="stop",
+        )
+
+    async def _direct_stream_generate(
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        stop: list[str] | None,
+        prompt_progress_callback=None,
+    ) -> AsyncIterator[GenerationOutput]:
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[GenerationOutput | Exception | None] = asyncio.Queue()
+        cancel_event = threading.Event()
+
+        def enqueue(item: GenerationOutput | Exception | None) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, item)
+
+        def runner() -> None:
+            try:
+                for output in self._run_direct_stream_generate(
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    stop=stop,
+                    prompt_progress_callback=prompt_progress_callback,
+                    cancel_event=cancel_event,
+                ):
+                    enqueue(output)
+            except Exception as e:
+                enqueue(e)
+            finally:
+                enqueue(None)
+
+        if self._model_load_executor is not None:
+            self._model_load_executor.submit(runner)
+        else:
+            loop.run_in_executor(None, runner)
+
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        finally:
+            cancel_event.set()
+
+    def _run_direct_stream_generate(
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        stop: list[str] | None,
+        prompt_progress_callback=None,
+        cancel_event: threading.Event | None = None,
+    ):
+        from mlx_lm import stream_generate as mlx_stream_generate
+        from mlx_lm.sample_utils import make_sampler
+
+        sampler = (
+            make_sampler(temp=temperature, top_p=top_p) if temperature > 0 else None
+        )
+        kwargs = {
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+        }
+        if sampler is not None:
+            kwargs["sampler"] = sampler
+        if prompt_progress_callback is not None or cancel_event is not None:
+
+            def _prompt_progress(processed: int, total: int) -> None:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("Direct generation cancelled")
+                if prompt_progress_callback is not None:
+                    prompt_progress_callback(processed, total)
+
+            kwargs["prompt_progress_callback"] = _prompt_progress
+
+        full_text = ""
+        token_ids: list[int] = []
+        emitted_stop = False
+        for response in mlx_stream_generate(self._model, self._tokenizer, **kwargs):
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            segment = response.text or ""
+            full_text += segment
+            token_ids.append(int(response.token))
+
+            finish_reason = response.finish_reason
+            if stop:
+                for stop_seq in stop:
+                    stop_at = full_text.find(stop_seq) if stop_seq else -1
+                    if stop_at >= 0:
+                        keep_len = max(0, stop_at - (len(full_text) - len(segment)))
+                        segment = segment[:keep_len]
+                        finish_reason = "stop"
+                        emitted_stop = True
+                        break
+
+            if segment or finish_reason:
+                yield GenerationOutput(
+                    text=clean_output_text(full_text),
+                    new_text=segment,
+                    tokens=list(token_ids),
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.generation_tokens,
+                    finished=bool(finish_reason),
+                    finish_reason=finish_reason,
+                    logprobs=response.logprobs,
+                )
+
+            if emitted_stop:
+                break
+
     async def stream_generate(
         self,
         prompt: str,
@@ -675,6 +887,18 @@ class BatchedEngine(BaseEngine):
         """
         if not self._loaded:
             await self.start()
+
+        if self._should_use_direct_generate(images, videos):
+            async for output in self._direct_stream_generate(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop,
+                prompt_progress_callback=kwargs.pop("prompt_progress_callback", None),
+            ):
+                yield output
+            return
 
         if self._is_mllm and self._mllm_scheduler:
             # Use MLLM scheduler for all streaming when model is multimodal

@@ -61,6 +61,10 @@ vision = [
 embeddings = [
     "mlx-embeddings>=0.0.5",
 ]
+# JANG/JANGTQ model support via jang-tools.
+jang = [
+    "jang[mlx]>=2.1.5; python_version >= '3.11'",
+]
 # Gradio chat UI
 chat = [
     "gradio>=4.0.0",

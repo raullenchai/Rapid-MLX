@@ -275,10 +275,14 @@ def estimate_kv_cache_memory(cache: list[Any]) -> int:
     for layer_cache in cache:
         if layer_cache is None:
             continue
-        # TurboQuantKVCache: has values_compressed instead of values
-        from .turboquant import TurboQuantKVCache
+        # TurboQuantKVCache imports MLX at module import time. Keep this optional
+        # so memory-cache unit tests can run on non-MLX Linux CI with mock caches.
+        try:
+            from .turboquant import TurboQuantKVCache
+        except ImportError:
+            TurboQuantKVCache = None  # noqa: N806
 
-        if isinstance(layer_cache, TurboQuantKVCache):
+        if TurboQuantKVCache is not None and isinstance(layer_cache, TurboQuantKVCache):
             total_bytes += layer_cache.memory_bytes
             continue
         # Handle different cache object types

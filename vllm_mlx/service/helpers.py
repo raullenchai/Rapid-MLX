@@ -36,12 +36,24 @@ logger = logging.getLogger(__name__)
 # ── Fallback defaults ──────────────────────────────────────────────
 _FALLBACK_TEMPERATURE = 0.7
 _FALLBACK_TOP_P = 0.9
+_DIRECT_JANG_DEFAULT_MAX_TOKENS = 2048
 
 # Tool-use system prompt (auto-injected when tools are provided and parser is active)
 _TOOL_USE_SYSTEM_SUFFIX = (
     "\n\nIMPORTANT: When the user's request can be answered using the provided tools, "
     "you MUST use the appropriate tool immediately. Do NOT ask for clarification when "
     "a reasonable default exists. Do NOT explain what you will do — just do it. "
+    "If you say you will create, edit, inspect, run, test, or verify something, "
+    "you MUST call a tool in that same assistant message instead of ending the turn. "
+    "For multi-step coding tasks, continue calling tools until the files are created "
+    "and the requested checks have been run. "
+    "When calling tools, use only the tool-call format required by the model template; "
+    "never emit raw JSON tool calls, partial tool arguments, or file contents as normal "
+    "assistant text. "
+    "If many files are needed, prefer a single available code-execution or terminal "
+    "tool that writes the files and runs checks. "
+    "Tool arguments must match their JSON schema exactly; string parameters must be "
+    "strings, not objects. "
     "Be direct and concise in your responses. "
     "Do NOT think out loud or show your reasoning process. "
     "Give direct answers only — no preamble like 'The user asks...' or 'Let me think...'."
@@ -59,12 +71,30 @@ def _resolve_model_name(request_model: str | None) -> str:
     return request_model
 
 
+def _uses_direct_jang_generation(engine: BaseEngine | None) -> bool:
+    if engine is None or getattr(engine, "is_mllm", False):
+        return False
+    try:
+        tokenizer = getattr(engine, "tokenizer", None)
+    except Exception:
+        return False
+    return bool(getattr(tokenizer, "_rapid_mlx_direct_generate", False))
+
+
+def _should_pass_tools_to_template(engine: BaseEngine | None) -> bool:
+    return True
+
+
 def _resolve_max_tokens(
-    request_value: int | None, enable_thinking: bool | None = None
+    request_value: int | None,
+    enable_thinking: bool | None = None,
+    engine: BaseEngine | None = None,
 ) -> int:
     """Resolve max_tokens with thinking budget for reasoning models."""
     cfg = get_config()
     base = request_value if request_value is not None else cfg.default_max_tokens
+    if request_value is None and _uses_direct_jang_generation(engine):
+        base = min(base, _DIRECT_JANG_DEFAULT_MAX_TOKENS)
     if enable_thinking is False:
         return base
     if cfg.reasoning_parser_name and base > 0 and base < 4096:

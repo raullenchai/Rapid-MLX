@@ -7,8 +7,11 @@ that transformers doesn't recognize. This module provides fallback loading
 directly from tokenizer.json.
 """
 
+import importlib.util
 import json
 import logging
+import types
+from contextlib import contextmanager
 from pathlib import Path
 
 from .chat_templates import DEFAULT_CHATML_TEMPLATE, NEMOTRON_CHAT_TEMPLATE
@@ -56,6 +59,246 @@ def _register_vendored_archs() -> None:
 _VENDORED_MODEL_TYPES = {"deepseek_v4"}
 
 
+def _read_jang_config(model_name: str) -> dict | None:
+    """Return jang_config.json if the model declares JANG/JANGTQ weights."""
+    try:
+        local = Path(model_name)
+        if local.is_dir():
+            config_path = local / "jang_config.json"
+        else:
+            from huggingface_hub import hf_hub_download
+
+            config_path = Path(
+                hf_hub_download(repo_id=model_name, filename="jang_config.json")
+            )
+        if not config_path.exists():
+            return None
+        with open(config_path) as f:
+            return json.load(f)
+    except Exception as e:
+        logger.debug(f"_read_jang_config({model_name}) failed: {e}")
+        return None
+
+
+def _is_jang_model(model_name: str) -> bool:
+    return _read_jang_config(model_name) is not None
+
+
+def _resolve_model_path(model_name: str) -> Path:
+    local_path = Path(model_name)
+    if local_path.is_dir():
+        return local_path
+
+    from huggingface_hub import snapshot_download
+
+    return Path(snapshot_download(model_name))
+
+
+def _is_deepseek_v4_path(model_path: Path) -> bool:
+    try:
+        with open(model_path / "config.json") as f:
+            config = json.load(f)
+        return config.get("model_type") == "deepseek_v4"
+    except Exception as e:
+        logger.debug(f"_is_deepseek_v4_path({model_path}) failed: {e}")
+        return False
+
+
+@contextmanager
+def _patch_deepseek_v4_jangtq_tokenizer(model_path: Path):
+    """Bypass transformers AutoConfig for DSV4 while jang-tools expands EOS ids."""
+    if not _is_deepseek_v4_path(model_path):
+        yield
+        return
+
+    try:
+        from transformers import AutoTokenizer, PreTrainedTokenizerFast
+    except ImportError:
+        yield
+        return
+
+    original_from_pretrained = AutoTokenizer.from_pretrained
+    resolved_path = model_path.resolve()
+
+    def from_pretrained(name, *args, **kwargs):
+        try:
+            if Path(name).resolve() == resolved_path:
+                tokenizer_json = resolved_path / "tokenizer.json"
+                if tokenizer_json.exists():
+                    return PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_json))
+        except (OSError, RuntimeError):
+            pass
+        return original_from_pretrained(name, *args, **kwargs)
+
+    AutoTokenizer.from_pretrained = from_pretrained
+    try:
+        yield
+    finally:
+        AutoTokenizer.from_pretrained = original_from_pretrained
+
+
+def _apply_jang_tokenizer_metadata(model_path: Path, tokenizer):
+    tokenizer_config_path = model_path / "tokenizer_config.json"
+    if not tokenizer_config_path.exists():
+        return tokenizer
+
+    try:
+        with open(tokenizer_config_path) as f:
+            tokenizer_config = json.load(f)
+    except Exception as e:
+        logger.debug(f"Failed to read tokenizer config for {model_path}: {e}")
+        return tokenizer
+
+    chat_template = tokenizer_config.get("chat_template")
+    if chat_template and not getattr(tokenizer, "chat_template", None):
+        tokenizer.chat_template = chat_template
+
+    for attr, key in (
+        ("bos_token", "bos_token"),
+        ("eos_token", "eos_token"),
+        ("unk_token", "unk_token"),
+        ("pad_token", "pad_token"),
+    ):
+        value = tokenizer_config.get(key)
+        if value and not getattr(tokenizer, attr, None):
+            try:
+                setattr(tokenizer, attr, value)
+            except Exception:
+                logger.debug(f"Failed to set tokenizer.{attr} for {model_path}")
+
+    if _is_deepseek_v4_path(model_path):
+        _apply_deepseek_v4_chat_encoder(model_path, tokenizer)
+
+    return tokenizer
+
+
+def _apply_deepseek_v4_chat_encoder(model_path: Path, tokenizer):
+    encoding_path = model_path / "encoding" / "encoding_dsv4.py"
+    if not encoding_path.exists():
+        return
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"encoding_dsv4_{abs(hash(str(model_path.resolve())))}",
+            str(encoding_path),
+        )
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as e:
+        logger.debug(f"Failed to load DSV4 chat encoder for {model_path}: {e}")
+        return
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=None,
+        tools=None,
+        reasoning_effort=None,
+        **kwargs,
+    ):
+        prepared = [dict(message) for message in messages]
+        if tools:
+            if prepared and prepared[0].get("role") in {"system", "developer"}:
+                prepared[0] = {**prepared[0], "tools": tools}
+            else:
+                prepared.insert(0, {"role": "developer", "content": "", "tools": tools})
+
+        # DSV4 JANG bundles declare chat as their default mode.  rapid-mlx's
+        # shared helper auto-enables thinking for generic reasoning-capable
+        # models, so ignore that auto flag here unless a caller passes an
+        # explicit reasoning_effort.
+        thinking_mode = "thinking" if reasoning_effort else "chat"
+        prompt = module.encode_messages(
+            prepared,
+            thinking_mode=thinking_mode,
+            reasoning_effort=reasoning_effort,
+        )
+        if not add_generation_prompt:
+            for suffix in ("<｜Assistant｜><think>", "<｜Assistant｜></think>"):
+                if prompt.endswith(suffix):
+                    prompt = prompt[: -len(suffix)]
+                    break
+        if tokenize:
+            return self.encode(prompt, **kwargs)
+        return prompt
+
+    tokenizer.apply_chat_template = types.MethodType(apply_chat_template, tokenizer)
+    tokenizer._rapid_mlx_direct_generate = True
+
+
+def _patch_deepseek_v4_jangtq_rope_offset():
+    """Allow jang-tools DSV4 RoPE to accept MLX scalar offsets from batching."""
+    try:
+        from jang_tools.dsv4 import mlx_model
+    except ImportError:
+        return
+
+    rope_cls = getattr(mlx_model, "DeepseekV4RoPE", None)
+    if rope_cls is None or getattr(rope_cls, "_rapid_mlx_offset_patch", False):
+        return
+
+    original_call = rope_cls.__call__
+
+    def _as_python_int(value):
+        for convert in (int, lambda v: v.item(), lambda v: v.tolist()):
+            try:
+                converted = convert(value)
+                if isinstance(converted, list):
+                    converted = converted[0]
+                return int(converted)
+            except (AttributeError, IndexError, TypeError, ValueError):
+                continue
+        return value
+
+    def patched_call(self, x, offset=0, inverse=False, positions=None):
+        if positions is None and not isinstance(offset, (int, float)):
+            offset = _as_python_int(offset)
+        return original_call(
+            self, x, offset=offset, inverse=inverse, positions=positions
+        )
+
+    rope_cls.__call__ = patched_call
+    rope_cls._rapid_mlx_offset_patch = True
+
+
+def _load_jang_model(model_name: str):
+    jang_config = _read_jang_config(model_name) or {}
+    model_path = _resolve_model_path(model_name)
+
+    if jang_config.get("weight_format") == "mxtq":
+        try:
+            from jang_tools.load_jangtq import load_jangtq_model
+        except ImportError as e:
+            raise RuntimeError(
+                "JANGTQ/MXTQ model detected, but jang-tools is not installed. "
+                'Install the JANG extra with: pip install "rapid-mlx[jang]"'
+            ) from e
+
+        logger.info(f"Loading JANGTQ/MXTQ model with jang-tools: {model_path}")
+        with _patch_deepseek_v4_jangtq_tokenizer(model_path):
+            model, tokenizer = load_jangtq_model(model_path)
+        if _is_deepseek_v4_path(model_path):
+            _patch_deepseek_v4_jangtq_rope_offset()
+        return model, _apply_jang_tokenizer_metadata(model_path, tokenizer)
+
+    try:
+        from jang_tools.loader import load_jang_model
+    except ImportError as e:
+        raise RuntimeError(
+            "JANG model detected, but jang-tools is not installed. "
+            'Install the JANG extra with: pip install "rapid-mlx[jang]"'
+        ) from e
+
+    logger.info(f"Loading JANG model with jang-tools: {model_path}")
+    model, tokenizer = load_jang_model(model_path)
+    return model, _apply_jang_tokenizer_metadata(model_path, tokenizer)
+
+
 def _is_vendored_arch_model(model_name: str) -> bool:
     """Return True if model's config.json declares a model_type we vendor."""
     try:
@@ -93,6 +336,9 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
 
     _register_vendored_archs()
     tokenizer_config = tokenizer_config or {}
+
+    if _is_jang_model(model_name):
+        return _load_jang_model(model_name)
 
     # Check if model needs fallback (e.g., Nemotron)
     if _needs_tokenizer_fallback(model_name):
