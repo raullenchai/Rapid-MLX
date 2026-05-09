@@ -30,30 +30,9 @@ lightning-mlx bench qwen3.6-35b \
 
 ## Agentic Benchmarks
 
-3-prompt agentic suite, one server at a time, one prompt at a time, fresh empty work dir each time:
-
 ```text
-1. create a poem about cats
-2. create the snake game using react and typescript
-3. create a landing page using vite
+create the snake game using react and typescript
 ```
-
-Lightning MLX runs with the new default preset (prefix cache **enabled** for `qwen3.6-27b` and `qwen3.6-35b` MTPLX). The single-prompt snake-only column from prior comparisons against oMLX and Rapid MLX is preserved at the bottom for historical reference.
-
-| Model | Metric | Prefix-cache **off** (old default) | Prefix-cache **on** (new default) | Δ |
-| --- | --- | ---: | ---: | ---: |
-| Qwen3.6-27B | All-turn avg | 9.12 tok/s | **11.06 tok/s** | **+21.3%** |
-| Qwen3.6-27B | Long-turn avg (≥500 tok) | 23.10 tok/s | **29.80 tok/s** | **+29.0%** |
-
-Three other tuning flags were tried in the same session and discarded — see `REPORT.md` for full per-experiment data and decisions:
-
-- `--chunked-prefill-tokens` is a **no-op** on mlx-lm 0.31+ (server logs `Skipped — internal Batch API removed`); discarded.
-- `--kv-cache-turboquant` regressed throughput by **−19% all-turn / +40% wall time** because compress/decompress in the prefix cache path is paid on every store with no offsetting hot-path benefit (V cache stays FP16 during decode); discarded.
-- Raising `mtp_depth_max` past 1 on the 35B sidecar requires a multi-layer `mtp.safetensors` rebuild — calibration work, not a flag — out of scope for this round.
-
-### Historical reference: snake-only, single-prompt agentic
-
-Earlier comparison against oMLX and Rapid MLX on the snake-only prompt (kept here for context, **not** re-measured):
 
 | Model | Metric | oMLX | Rapid MLX | **Lightning MLX (MTPLX)** |
 | --- | --- | ---: | ---: | ---: |
@@ -67,24 +46,7 @@ Earlier comparison against oMLX and Rapid MLX on the snake-only prompt (kept her
 
 ## More Model Benchmarks
 
-The models below use the same benchmark positioning as upstream [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX): Mac Studio M3 Ultra, Apple MLX backend, and tok/s as decode throughput.
-
-| Model | lightning-mlx | Best Alternative | Speedup |
-| --- | ---: | ---: | ---: |
-| **Phi-4 Mini 14B** | **180 tok/s** | 77 tok/s mlx-lm / 56 tok/s Ollama | **2.3x** / **3.2x** |
-| **Qwen3.5 4B** | **160 tok/s** | 155 tok/s mlx-lm serve | **1.0x** |
-| **Nemotron-Nano 30B** | **141 tok/s** · 100% tools | - | - |
-| **DeepSeek V4 Flash 158B-A13B** (2-bit DQ) | **56 tok/s** | Only MLX engine, day-0 | - |
-| **DeepSeek V4 Flash 158B-A13B** (8-bit) | **31 tok/s** | Only MLX engine, day-0 | - |
-| **GPT-OSS 20B** | **127 tok/s** · 100% tools | 79 tok/s mlx-lm serve | **1.6x** |
-| **Qwen3.5 9B** | **108 tok/s** | 41 tok/s Ollama | **2.6x** |
-| **Kimi-Linear 48B** | **94 tok/s** · 100% tools | Only engine | - |
-| **Gemma 4 26B-A4B** | **85 tok/s** | 68 tok/s Ollama | **1.3x** |
-| **Gemma 4 E4B** | **83 tok/s** | - | - |
-| **Qwen3.5 35B-A3B** | **83 tok/s** · 100% tools | 75 tok/s oMLX | **1.1x** |
-| **Qwen3-Coder 80B** | **74 tok/s** · 100% tools | 69 tok/s mlx-lm serve | **1.1x** |
-| **Qwen3.5 122B** | **44 tok/s** · 100% tools | 43 tok/s mlx-lm serve | ~**1.0x** |
-| **Gemma 4 31B** | **31 tok/s** | - | - |
+You can check for more benchmarks (for non-optmized models) in [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX).
 
 ## Install
 
