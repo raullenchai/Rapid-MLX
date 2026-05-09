@@ -296,6 +296,7 @@ def serve_command(args):
     # Configure server security settings
     server._api_key = args.api_key
     server._default_timeout = args.timeout
+    server._idle_timeout = max(0.0, float(getattr(args, "idle_timeout", 0.0)))
     # Configure CORS
     cors_origins = args.cors_origins if args.cors_origins else ["*"]
     server.configure_cors(cors_origins)
@@ -378,6 +379,8 @@ def serve_command(args):
         features.append("gc-control")
     if args.pin_system_prompt:
         features.append("pin-system-prompt")
+    if getattr(args, "idle_timeout", 0) and args.idle_timeout > 0:
+        features.append(f"idle-unload: {int(args.idle_timeout)}s")
     if args.cors_origins:
         features.append(f"cors: {', '.join(args.cors_origins)}")
     if features:
@@ -1509,6 +1512,15 @@ Examples:
         type=float,
         default=300.0,
         help="Default request timeout in seconds (default: 300)",
+    )
+    serve_parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=60.0,
+        help="Unload model after N seconds of inactivity to free memory. "
+        "Next request triggers a reload (cold start cost). Prefix cache is "
+        "persisted to disk on unload and restored on reload. "
+        "0 = never unload. (default: 60)",
     )
     # Tool calling options
     serve_parser.add_argument(
