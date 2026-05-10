@@ -92,6 +92,9 @@ class RequestRecorder:
         non_streaming: bool = False,
         engine_gen_tps: float | None = None,
         engine_ttft: float | None = None,
+        mtp_enabled: bool = False,
+        mtp_accepted: int = 0,
+        mtp_rejected: int = 0,
     ) -> None:
         now = time.time()
         with self._lock:
@@ -150,6 +153,10 @@ class RequestRecorder:
             if has_engine_tps:
                 decode_tps = generation_tps
 
+            mtp_verified = int(mtp_accepted) + int(mtp_rejected)
+            mtp_acceptance_ratio = (
+                (int(mtp_accepted) / mtp_verified) if mtp_verified > 0 else None
+            )
             self._entries.append(
                 {
                     "request_id": entry["request_id"],
@@ -167,6 +174,10 @@ class RequestRecorder:
                     "finish_reason": finish_reason or ("error" if error else "stop"),
                     "message_preview": entry.get("message_preview") or "",
                     "error": error,
+                    "mtp_enabled": bool(mtp_enabled),
+                    "mtp_accepted": int(mtp_accepted),
+                    "mtp_rejected": int(mtp_rejected),
+                    "mtp_acceptance_ratio": mtp_acceptance_ratio,
                 }
             )
 

@@ -244,6 +244,7 @@ def _build_screen(
     )
 
     dflash_info = status.get("dflash") or {}
+    mtp_info = status.get("mtp") or {}
 
     running_requests = list(status.get("requests") or [])
     entries = list((requests_data or {}).get("entries") or [])
@@ -328,6 +329,43 @@ def _build_screen(
             + _row("hit/miss", f"{cache_hits}/{cache_misses}", mid, "cyan", tty_on)
             + gap
             + _row("hit rate", hit_rate, right, "white", tty_on)
+        )
+    if mtp_info:
+        mtp_enabled = bool(mtp_info.get("enabled"))
+        mtp_accepted = _integer(mtp_info.get("accepted", 0))
+        mtp_rejected = _integer(mtp_info.get("rejected", 0))
+        mtp_ratio = mtp_info.get("acceptance_ratio")
+        mtp_optimistic = bool(mtp_info.get("optimistic"))
+        if mtp_enabled:
+            mode_label = "optimistic" if mtp_optimistic else "verified"
+            mtp_state_text = f"on ({mode_label})"
+            mtp_state_color = "green"
+        else:
+            mtp_state_text = "off"
+            mtp_state_color = "dim"
+        if mtp_ratio is not None:
+            ratio_value = _num(mtp_ratio)
+            mtp_ratio_text = f"{ratio_value:.1%} {_bar(ratio_value, 1.0, 12)}"
+        else:
+            mtp_ratio_text = "n/a"
+        rows.append(
+            _row("MTP", mtp_state_text, left, mtp_state_color, tty_on)
+            + gap
+            + _row(
+                "MTP accept",
+                mtp_ratio_text,
+                mid,
+                "magenta",
+                tty_on,
+            )
+            + gap
+            + _row(
+                "MTP a/r",
+                f"{mtp_accepted}/{mtp_rejected}",
+                right,
+                "magenta",
+                tty_on,
+            )
         )
     if dflash_info:
         lifetime_ratio = _num(dflash_info.get("lifetime_acceptance_ratio", 0.0))
@@ -474,24 +512,44 @@ def _build_screen(
             if item.get("acceptance_ratio") is not None
         ]
         avg_accept = _mean(accept_values) if accept_values else None
+        mtp_active_entries = [
+            item for item in entries if item.get("mtp_enabled")
+        ]
+        mtp_total = len(mtp_active_entries)
+        mtp_ratio_values = [
+            _num(item.get("mtp_acceptance_ratio"))
+            for item in mtp_active_entries
+            if item.get("mtp_acceptance_ratio") is not None
+        ]
+        avg_mtp_ratio = _mean(mtp_ratio_values) if mtp_ratio_values else None
+
+        if avg_mtp_ratio is not None:
+            mtp_avg_text = f"{avg_mtp_ratio:.0%} ({mtp_total}/{len(entries)})"
+        elif mtp_total > 0:
+            mtp_avg_text = f"on ({mtp_total}/{len(entries)})"
+        else:
+            mtp_avg_text = "off"
+
         if avg_accept is not None:
-            header = "  input output   TTFT   prefill  tokens/s  acc/cyc"
+            header = "  input output   TTFT   prefill  tokens/s  acc/cyc       MTP"
             row = (
                 f"{avg_prompt:>7.1f} "
                 f"{avg_out:>6.1f} "
                 f"{avg_ttft:>6.2f}s "
                 f"{avg_prefill_tps:>9.1f} "
                 f"{avg_tokens_per_second:>8.1f} "
-                f"{avg_accept_tokens:>7.1f}"
+                f"{avg_accept_tokens:>7.1f}  "
+                f"{mtp_avg_text}"
             )
         else:
-            header = "  input output   TTFT   prefill  tokens/s"
+            header = "  input output   TTFT   prefill  tokens/s       MTP"
             row = (
                 f"{avg_prompt:>7.1f} "
                 f"{avg_out:>6.1f} "
                 f"{avg_ttft:>6.2f}s "
                 f"{avg_prefill_tps:>9.1f} "
-                f"{avg_tokens_per_second:>8.1f}"
+                f"{avg_tokens_per_second:>8.1f}  "
+                f"{mtp_avg_text}"
             )
         rows.append(_c(tty_on, "dim", _clamp(header, width)))
         rows.append(_clamp(row, width))
@@ -508,8 +566,11 @@ def _build_screen(
         any_accept = any(
             item.get("acceptance_ratio") is not None for item in recent_entries
         )
+        any_mtp = any(item.get("mtp_enabled") for item in recent_entries)
         if any_accept:
-            header = "  time      surface              input output  TTFT   prefill tokens/s path        acc/cyc block finish"
+            header = "  time      surface              input output  TTFT   prefill tokens/s path        acc/cyc block  MTP    finish"
+        elif any_mtp:
+            header = "  time      surface              input output  TTFT   prefill tokens/s  MTP    finish"
         else:
             header = "  time      surface              input output  TTFT   prefill tokens/s finish"
         rows.append(_c(tty_on, "dim", _clamp(header, width)))
@@ -531,6 +592,13 @@ def _build_screen(
                 f"{_entry_prefill_tps(item):>9.1f} "
                 f"{_entry_tokens_per_second(item):>8.1f} "
             )
+            mtp_ratio = item.get("mtp_acceptance_ratio")
+            if not item.get("mtp_enabled"):
+                mtp_cell = "  -  "
+            elif mtp_ratio is not None:
+                mtp_cell = f"{_num(mtp_ratio):>4.0%}"
+            else:
+                mtp_cell = " on  "
             if any_accept:
                 accept_s = f"{_avg_accept_tokens(item):>7.1f}"
                 block = item.get("block_size")
@@ -538,8 +606,12 @@ def _build_screen(
                 path_s = _spec_path(item)[:10].ljust(10)
                 row = (
                     base
-                    + f"{path_s}  {accept_s}  {block_s}  "
+                    + f"{path_s}  {accept_s}  {block_s}  {mtp_cell}  "
                     + str(item.get("finish_reason", "n/a"))[:8]
+                )
+            elif any_mtp:
+                row = (
+                    base + f"{mtp_cell}  " + str(item.get("finish_reason", "n/a"))[:12]
                 )
             else:
                 row = base + str(item.get("finish_reason", "n/a"))[:12]

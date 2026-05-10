@@ -84,9 +84,15 @@ class MetricsMiddleware:
         running_text_tokens = 0
         engine_gen_tps = 0.0
         engine_ttft: float | None = None
+        mtp_enabled_global = False
+        mtp_accepted_start = 0
+        mtp_rejected_start = 0
+        mtp_snapshot_taken = False
 
         def poll_engine_stats() -> None:
             nonlocal engine_gen_tps, engine_ttft
+            nonlocal mtp_enabled_global, mtp_accepted_start, mtp_rejected_start
+            nonlocal mtp_snapshot_taken
             try:
                 from ..config import get_config
 
@@ -103,8 +109,35 @@ class MetricsMiddleware:
                     ttft = request.get("ttft_s")
                     if ttft is not None and engine_ttft is None:
                         engine_ttft = float(ttft)
+                mtp_info = stats.get("mtp") or {}
+                if mtp_info and not mtp_snapshot_taken:
+                    mtp_enabled_global = bool(mtp_info.get("enabled"))
+                    mtp_accepted_start = int(mtp_info.get("accepted") or 0)
+                    mtp_rejected_start = int(mtp_info.get("rejected") or 0)
+                    mtp_snapshot_taken = True
             except Exception:
                 pass
+
+        def current_mtp_delta() -> tuple[bool, int, int]:
+            try:
+                from ..config import get_config
+
+                cfg = get_config()
+                if cfg.engine is None:
+                    return mtp_enabled_global, 0, 0
+                stats = cfg.engine.get_stats()
+                mtp_info = stats.get("mtp") or {}
+                if not mtp_info:
+                    return mtp_enabled_global, 0, 0
+                accepted = max(
+                    0, int(mtp_info.get("accepted") or 0) - mtp_accepted_start
+                )
+                rejected = max(
+                    0, int(mtp_info.get("rejected") or 0) - mtp_rejected_start
+                )
+                return bool(mtp_info.get("enabled")), accepted, rejected
+            except Exception:
+                return mtp_enabled_global, 0, 0
 
         def handle_payload(payload: dict) -> None:
             nonlocal first_token_seen, last_finish_reason
@@ -183,6 +216,7 @@ class MetricsMiddleware:
                             payload = _safe_json_loads(bytes(json_buffer))
                             if payload is not None:
                                 handle_payload(payload)
+                        mtp_enabled, mtp_accepted, mtp_rejected = current_mtp_delta()
                         recorder.finish(
                             req_id,
                             finish_reason=last_finish_reason,
@@ -193,6 +227,9 @@ class MetricsMiddleware:
                             if engine_gen_tps > 0
                             else None,
                             engine_ttft=engine_ttft,
+                            mtp_enabled=mtp_enabled,
+                            mtp_accepted=mtp_accepted,
+                            mtp_rejected=mtp_rejected,
                         )
             except Exception as exc:
                 logger.debug("metrics middleware error: %s", exc)
