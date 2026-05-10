@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for chat reasoning exposure defaults."""
 
+import pytest
+
 from vllm_mlx.api.models import ChatCompletionRequest, ToolDefinition
+from vllm_mlx.config import get_config
 from vllm_mlx.routes.chat import (
     _looks_like_deferred_tool_use,
     _should_emit_reasoning,
@@ -17,15 +20,22 @@ def _request(**kwargs) -> ChatCompletionRequest:
     )
 
 
-def test_reasoning_is_hidden_by_default():
-    assert _should_emit_reasoning(_request()) is False
+@pytest.fixture
+def reset_no_thinking():
+    cfg = get_config()
+    original = cfg.no_thinking
+    cfg.no_thinking = False
+    try:
+        yield cfg
+    finally:
+        cfg.no_thinking = original
 
 
-def test_reasoning_is_emitted_when_explicitly_requested_without_tools():
-    assert _should_emit_reasoning(_request(enable_thinking=True)) is True
+def test_reasoning_is_emitted_by_default(reset_no_thinking):
+    assert _should_emit_reasoning(_request()) is True
 
 
-def test_reasoning_stays_hidden_for_tool_requests():
+def test_reasoning_is_emitted_with_tools(reset_no_thinking):
     tool = ToolDefinition(
         function={
             "name": "bash",
@@ -33,8 +43,16 @@ def test_reasoning_stays_hidden_for_tool_requests():
             "parameters": {"type": "object", "properties": {}},
         }
     )
+    assert _should_emit_reasoning(_request(tools=[tool])) is True
 
-    assert _should_emit_reasoning(_request(enable_thinking=True, tools=[tool])) is False
+
+def test_reasoning_suppressed_when_client_opts_out(reset_no_thinking):
+    assert _should_emit_reasoning(_request(enable_thinking=False)) is False
+
+
+def test_reasoning_suppressed_when_server_no_thinking(reset_no_thinking):
+    reset_no_thinking.no_thinking = True
+    assert _should_emit_reasoning(_request(enable_thinking=True)) is False
 
 
 def test_calling_tool_equals_text_is_deferred_tool_use():

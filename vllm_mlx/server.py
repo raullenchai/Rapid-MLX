@@ -195,6 +195,15 @@ _no_thinking: bool = (
 _pin_system_prompt: bool = False  # Auto-pin system prompt prefix cache blocks
 _pinned_system_prompt_hash: str | None = None  # Hash of pinned system prompt
 
+# Concurrency cap (--max-concurrent): max in-flight inference requests.
+_max_concurrent: int = 0  # 0 = unlimited
+
+# Idle unload (--idle-timeout): unload model after N seconds of inactivity.
+_idle_timeout: float = 60.0  # 0 = disabled
+# Captured load_model() kwargs so the idle manager can reload with the same
+# config after an unload. Populated by load_model().
+_load_kwargs: dict | None = None
+
 
 def _configure_tool_logits_bias() -> None:
     """Install tool logits bias after tokenizer/scheduler are available."""
@@ -246,6 +255,80 @@ from .runtime.cache import (
 from .runtime.cache import (
     save_prefix_cache_to_disk as _save_prefix_cache_to_disk,
 )
+
+
+def _is_engine_loaded() -> bool:
+    """Cheap check used by IdleManager to decide whether to unload/reload."""
+    return _engine is not None
+
+
+async def _idle_unload() -> None:
+    """Persist prefix cache, stop engine, free memory.
+
+    Called by IdleManager when the model has been idle past --idle-timeout.
+    Leaves _load_kwargs intact so _idle_reload() can recreate the engine.
+    """
+    global _engine, _tool_logits_bias_configured
+
+    if _engine is None:
+        return
+
+    # Save prefix cache to disk before tearing down — restored on reload.
+    if hasattr(_engine, "save_cache_to_disk"):
+        try:
+            _save_prefix_cache_to_disk()
+        except Exception as e:
+            logger.warning(f"[idle] failed to persist prefix cache: {e}")
+
+    try:
+        await _engine.stop()
+    except Exception as e:
+        logger.warning(f"[idle] engine.stop() raised: {e}", exc_info=True)
+
+    # Drop registry entries pointing at this engine.
+    if _model_registry:
+        for entry in list(_model_registry.list_entries()):
+            if entry.engine is _engine:
+                _model_registry.remove(entry.model_name)
+
+    _engine = None
+    _tool_logits_bias_configured = False
+
+    cfg = get_config()
+    cfg.engine = None
+
+    # Best-effort: return memory to the OS.
+    try:
+        import mlx.core as mx
+
+        if mx.metal.is_available():
+            mx.metal.clear_cache()
+    except Exception:
+        pass
+    gc.collect()
+
+
+async def _idle_reload() -> None:
+    """Recreate the engine using captured load_kwargs and warm it up."""
+    global _engine
+
+    if _load_kwargs is None:
+        raise RuntimeError("idle reload requested but _load_kwargs is unset")
+
+    if _engine is not None:
+        return
+
+    load_model(**_load_kwargs)
+
+    if _engine is not None and hasattr(_engine, "_loaded") and not _engine._loaded:
+        await _engine.start()
+        _configure_tool_logits_bias()
+
+    if _engine is not None and hasattr(_engine, "load_cache_from_disk"):
+        try:
+            _load_prefix_cache_from_disk()
+        except Exception as e:
+            logger.warning(f"[idle] failed to load prefix cache: {e}")
 
 
 async def lifespan(app: FastAPI):
@@ -338,7 +421,23 @@ async def lifespan(app: FastAPI):
     if mcp_config:
         await init_mcp(mcp_config)
 
+    # Idle unload manager: starts a background task that periodically checks
+    # for inactivity and calls _idle_unload() once idle exceeds --idle-timeout.
+    from .runtime.idle_manager import get_idle_manager
+
+    _idle_mgr = get_idle_manager()
+    _idle_mgr.configure(
+        timeout=_idle_timeout,
+        reload_fn=_idle_reload,
+        unload_fn=_idle_unload,
+        is_loaded_fn=_is_engine_loaded,
+    )
+    _idle_mgr.start()
+
     yield
+
+    # Shutdown: stop idle loop first to avoid racing with lifespan teardown.
+    await _idle_mgr.stop()
 
     # Shutdown: Save cache to disk BEFORE stopping engine
     if _engine is not None and hasattr(_engine, "save_cache_to_disk"):
@@ -376,9 +475,18 @@ def configure_cors(origins: list[str]) -> None:
 
 
 # Per-request metrics recorder for /v1/requests and the TUI monitor
+from .middleware.concurrency import ConcurrencyMiddleware  # noqa: E402
+from .middleware.idle import IdleMiddleware  # noqa: E402
 from .middleware.metrics import MetricsMiddleware  # noqa: E402
 
 app.add_middleware(MetricsMiddleware)
+# ConcurrencyMiddleware caps in-flight inference requests (--max-concurrent).
+# Sits between Idle (outer, reloads model) and Metrics (inner, per-request
+# timings) — extra requests wait for a free slot AFTER the model is loaded.
+app.add_middleware(ConcurrencyMiddleware)
+# IdleMiddleware sits outside MetricsMiddleware: when the model is unloaded,
+# it must reload BEFORE the request hits any inference path.
+app.add_middleware(IdleMiddleware)
 
 
 # Auth and rate limiting — moved to middleware/auth.py
@@ -510,6 +618,23 @@ def load_model(
         _tool_parser_instance, \
         _cloud_router
 
+    global _load_kwargs
+    _load_kwargs = dict(
+        model_name=model_name,
+        scheduler_config=scheduler_config,
+        stream_interval=stream_interval,
+        max_tokens=max_tokens,
+        force_mllm=force_mllm,
+        gpu_memory_utilization=gpu_memory_utilization,
+        prefill_step_size=prefill_step_size,
+        cloud_model=cloud_model,
+        cloud_threshold=cloud_threshold,
+        cloud_api_base=cloud_api_base,
+        cloud_api_key=cloud_api_key,
+        served_model_name=served_model_name,
+        mtp=mtp,
+    )
+
     _default_max_tokens = max_tokens
     _model_path = model_name
     _model_name = served_model_name or model_name
@@ -600,6 +725,7 @@ def _sync_config() -> None:
     cfg.embedding_engine = _embedding_engine
     cfg.embedding_model_locked = _embedding_model_locked
     cfg.api_key = _api_key
+    cfg.max_concurrent = max(0, int(_max_concurrent))
     cfg.cloud_router = _cloud_router
     cfg.gc_control = _gc_control
     cfg.no_thinking = _no_thinking
@@ -767,6 +893,12 @@ Examples:
         help="Default request timeout in seconds (default: 300)",
     )
     parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=60.0,
+        help="Unload model after N seconds of inactivity (0 = disabled, default: 60)",
+    )
+    parser.add_argument(
         "--rate-limit",
         type=int,
         default=0,
@@ -868,10 +1000,11 @@ Examples:
     uvicorn_log_level = configure_logging(args.log_level)
 
     # Set global configuration
-    global _api_key, _default_timeout, _rate_limiter
+    global _api_key, _default_timeout, _rate_limiter, _idle_timeout
     global _default_temperature, _default_top_p
     _api_key = args.api_key
     _default_timeout = args.timeout
+    _idle_timeout = max(0.0, float(getattr(args, "idle_timeout", 0.0)))
     if args.default_temperature is not None:
         _default_temperature = args.default_temperature
     if args.default_top_p is not None:
