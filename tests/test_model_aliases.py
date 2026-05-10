@@ -3,6 +3,8 @@
 
 import os
 
+import pytest
+
 from vllm_mlx.model_aliases import list_aliases, resolve_model, suggest_similar
 
 
@@ -124,6 +126,27 @@ def test_suggest_similar_letter_fallback_skips_legit_looking_names():
     # ``gpt2`` has been pinned by test_suggest_similar_lets_legitimate_hf_ids_through;
     # this case adds the partial-family equivalent.
     assert suggest_similar("qwen-coder") == []
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("gemma4-27b", "gemma"),
+        ("Gemma4-27b", "gemma"),  # lowercased
+        ("gemma_4-27b", "gemma"),  # stops at non-letter
+        ("mistral24b", "mistral"),
+        ("qwen3.5-4b", "qwen"),  # stops at first digit
+        ("123abc", ""),  # leading non-letter → empty
+        ("", ""),  # empty input
+        ("ab", "ab"),  # short prefix (caller enforces ≥3 minimum)
+    ],
+)
+def test_letters_only_prefix(raw, expected):
+    """Direct coverage for the letter-only family extraction. Caller
+    (suggest_similar) enforces the 3-char minimum, so we don't here."""
+    from vllm_mlx.model_aliases import _letters_only_prefix
+
+    assert _letters_only_prefix(raw) == expected
 
 
 def test_popular_aliases_curated_list_resolves():
