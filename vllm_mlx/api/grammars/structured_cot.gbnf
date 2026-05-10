@@ -1,0 +1,12 @@
+# Vendored from https://github.com/andthattoo/structured-cot
+# (grammars/fsm_grammar.gbnf). MIT-licensed upstream.
+#
+# Terse structured plan for code reasoning — one line per section.
+# Each rule MUST be on a single line (llama.cpp GBNF parser doesn't accept
+# multi-line rule defs). Use hex escapes for the code section — llama.cpp
+# understands \x09, \x0A, \x0D and ranges; it does NOT understand \- or \+.
+
+root  ::= think code
+think ::= "<think>\n" "GOAL: " line "APPROACH: " line "EDGE: " line "</think>\n\n"
+line  ::= [^\n]+ "\n"
+code  ::= [\x09\x0A\x0D\x20-\x7E]+

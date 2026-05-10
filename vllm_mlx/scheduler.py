@@ -115,6 +115,58 @@ class SchedulerConfig:
     mtp_draft_temperature: float = 0.7  # Draft sampler temperature
     mtp_optimistic: bool = False  # Skip acceptance check for max speed
 
+    # N-gram (prompt-lookup) speculative decoding settings.
+    # Layered with MTP: n-gram drafts are tried first (zero-cost dict lookup);
+    # if no match, the MTP head provides the draft. Activated only inside
+    # `<think>...</think>` blocks by default — reasoning blocks are
+    # repetition-heavy (self-correction, hypothesis enumeration) and benefit
+    # most from wide n-gram drafts (K up to 4) per verify cycle.
+    enable_ngram: bool = False
+    ngram_num_draft_tokens: int = 4
+    ngram_size: int = 3
+    ngram_min_matches: int = 2
+    ngram_only_in_think: bool = True
+
+    # --- Advanced n-gram tuning ---
+    # Acceptance mode: "greedy" matches argmax of target distribution
+    # (high acceptance under low-entropy reasoning, slight loss of sample
+    # diversity); "probabilistic" uses the Leviathan/Chen prob-ratio test
+    # (lossless w.r.t. target sampling distribution).
+    ngram_acceptance_mode: str = "greedy"
+
+    # Confidence gate: require the n-gram + continuation to have appeared
+    # at least N times in history before drafting. 1 = no gate (use any
+    # match), 2-3 = filter out one-off matches.
+    ngram_min_occurrences: int = 1
+
+    # Adaptive K: scale draft length by occurrence count so weak matches
+    # only commit short drafts. K_cap = min(num_draft_tokens, freq + 1).
+    ngram_adaptive_k: bool = True
+
+    # Auto-disable: when MTP global running acceptance is above this
+    # threshold AND ngram running acceptance is below
+    # `ngram_auto_disable_min_ngram` after warmup, suppress ngram drafts.
+    # Set to 0.0 to disable. 0.85 is a reasonable default for strong MTP
+    # heads (Qwen3.6-35B-A3B has MTP ~95% on reasoning workloads).
+    ngram_auto_disable_mtp_threshold: float = 0.0
+    ngram_auto_disable_min_ngram: float = 0.50
+
+    # Hybrid verify: when ngram drafts the first K_ngram positions, also
+    # run the MTP head sequentially through them to produce ONE additional
+    # MTP-sourced draft at position K_ngram. Total verify width grows by 1.
+    ngram_hybrid_verify: bool = False
+
+    # Skip tool-call XML regions (text-level marker tracking). Required
+    # for Qwen3-style models where tool calls are multi-token BPE
+    # sequences and ngram tends to find structural-but-stale matches.
+    ngram_skip_tool_calls: bool = True
+
+    # Per-request self-tune: after the first 32 drafted tokens, disable
+    # drafting for the rest of THIS request when running acceptance is
+    # below threshold.
+    ngram_self_tune: bool = True
+    ngram_self_tune_disable_threshold: float = 0.30
+
 
 @dataclass
 class SchedulerOutput:
@@ -609,6 +661,12 @@ def _install_mtp(
     target_top_k: int = 0,
     draft_temperature: float = 0.7,
     stats: dict[str, int] | None = None,
+    ngram_drafters: dict[int, Any] | None = None,
+    ngram_num_drafts: int = 0,
+    ngram_acceptance_mode: str = "greedy",
+    ngram_hybrid_verify: bool = False,
+    ngram_auto_disable_mtp_threshold: float = 0.0,
+    ngram_auto_disable_min_ngram: float = 0.50,
 ) -> None:
     """
     Monkey-patch a BatchGenerator to use MTP (Multi-Token Prediction)
@@ -665,6 +723,33 @@ def _install_mtp(
     _deferred_drafts = {}
     _pending_primary_tokens = {}
     _persistent_mtp_caches = {}
+
+    # N-gram cross-step pending: previous step's deferred drafts (token IDs)
+    # captured by the _next wrapper before the new _step runs, so the new
+    # _step can feed them to the n-gram state in correct emission order
+    # before performing its lookup.
+    _ngram_pending: dict[int, list[int]] = {}
+
+    # ---- Auto-disable: when MTP is strong globally and ngram acceptance
+    # ---- is poor, suppress n-gram drafting to avoid wasted verify cycles.
+    _AUTO_DISABLE_MTP_WARMUP = 64
+    _AUTO_DISABLE_NGRAM_WARMUP = 32
+
+    def _ngram_auto_disable_active() -> bool:
+        if ngram_auto_disable_mtp_threshold <= 0:
+            return False
+        total_mtp = _mtp_stats.get("accepted", 0) + _mtp_stats.get("rejected", 0)
+        if total_mtp < _AUTO_DISABLE_MTP_WARMUP:
+            return False
+        mtp_rate = _mtp_stats["accepted"] / total_mtp
+        if mtp_rate < ngram_auto_disable_mtp_threshold:
+            return False
+        drafted = _mtp_stats.get("ngram_tokens_drafted", 0)
+        if drafted < _AUTO_DISABLE_NGRAM_WARMUP:
+            return False
+        accepted = _mtp_stats.get("ngram_tokens_accepted", 0)
+        ngram_rate = accepted / drafted
+        return ngram_rate < ngram_auto_disable_min_ngram
 
     # MTP stats — share scheduler-owned dict so counters survive batch
     # generator recreation between requests.
@@ -1094,12 +1179,60 @@ def _install_mtp(
                 primary_tokens = gen_self.fallback_sampler(logprobs)
                 primary_logprobs = list(logprobs)
 
+            # --- N-gram drafter: feed previous step's emissions, then look
+            # up with the just-sampled primary as a virtual tail token.
+            #
+            # Stream order between _step calls (per uid):
+            #   ..., P_{k-2}, D_{k-2}_*, P_{k-1}, D_{k-1}_*, P_k, D_k_*, ...
+            # By the time _step k runs, gen_self.tokens already contains
+            # everything through D_{k-2}_* (appended in _next k-1's augment
+            # phase). We add T_{k-1} (= input_tokens) and D_{k-1} (= the
+            # _ngram_pending dict captured by the _next wrapper before this
+            # _step) so the n-gram history matches the emission stream up
+            # through D_{k-1}. The lookup then queries with virtual P_k
+            # (just sampled this step) — drafts predict positions AFTER P_k,
+            # which is exactly what the verify pass evaluates.
+            #
+            # Only single-row batches are supported for now (variable-K
+            # drafts across rows would require padding + per-row accept).
+            ngram_state = None
+            ngram_draft_ids: list[int] | None = None
+            if (
+                ngram_drafters is not None
+                and batch_size == 1
+                and ngram_num_drafts > 0
+            ):
+                _uid = current_uids[0]
+                ngram_state = ngram_drafters.get(_uid)
+                if ngram_state is not None:
+                    try:
+                        _inp = int(input_tokens[0].item())
+                    except Exception:
+                        _inp = None
+                    if _inp is not None:
+                        ngram_state.feed_token(_inp)
+                    pending = _ngram_pending.pop(_uid, [])
+                    if pending:
+                        ngram_state.feed_many(pending)
+                    if (
+                        ngram_state.should_draft()
+                        and not _ngram_auto_disable_active()
+                    ):
+                        try:
+                            _primary_id = int(primary_tokens[0].item())
+                        except Exception:
+                            _primary_id = None
+                        if _primary_id is not None:
+                            cands = ngram_state.lookup_drafts_with_pending(
+                                _primary_id, max_k=ngram_num_drafts
+                            )
+                            if cands:
+                                ngram_draft_ids = list(cands[:ngram_num_drafts])
+
             try:
-                cycle_depth = max(1, int(num_draft_tokens))
                 draft_token_arrays = []
                 draft_distributions = []
-                draft_hidden = hidden_states[:, -1:, :]
-                next_token = primary_tokens
+                draft_sources: list[str] = []  # "ngram" or "mtp" per depth
                 persistent_mtp_uid = (
                     current_uids[0]
                     if batch_size == 1 and hasattr(model, "make_mtp_cache")
@@ -1117,30 +1250,87 @@ def _install_mtp(
                         else None
                     )
                 mtp_cache_start_offset = _cache_offset(mtp_cache)
-                for _depth_index in range(cycle_depth):
-                    draft_output = model.mtp_forward(
-                        draft_hidden,
-                        next_token[:, None],
-                        mtp_cache=mtp_cache,
-                        return_hidden=True,
-                    )
-                    if isinstance(draft_output, tuple):
-                        draft_logits_full, draft_hidden_full = draft_output
+
+                # Unified draft loop: at each depth we ALWAYS run the MTP
+                # head forward to keep its hidden state + cache consistent
+                # with the actually-emitted token sequence. At ngram depths
+                # we replace the MTP-sampled token with the n-gram-supplied
+                # one (and synthesize a delta distribution so the existing
+                # acceptance machinery keeps working). At MTP depths we use
+                # MTP's own sampled token. Hybrid verify simply means the
+                # loop runs one extra MTP depth after the ngram tail.
+                K_ngram = len(ngram_draft_ids) if ngram_draft_ids else 0
+                if K_ngram > 0:
+                    total_depth = K_ngram + (1 if ngram_hybrid_verify else 0)
+                else:
+                    total_depth = max(1, int(num_draft_tokens))
+
+                draft_hidden = hidden_states[:, -1:, :]
+                next_token = primary_tokens
+                vocab_size = int(logits.shape[-1])
+                for depth in range(total_depth):
+                    mtp_pred_logits = None
+                    next_hidden = None
+                    if hasattr(model, "mtp_forward"):
+                        try:
+                            draft_output = model.mtp_forward(
+                                draft_hidden,
+                                next_token[:, None],
+                                mtp_cache=mtp_cache,
+                                return_hidden=True,
+                            )
+                        except Exception:
+                            draft_output = None
+                        if isinstance(draft_output, tuple):
+                            mtp_logits_full, mtp_hidden_full = draft_output
+                            mtp_pred_logits = mtp_logits_full[:, -1, :]
+                            next_hidden = (
+                                mtp_hidden_full[:, -1:, :]
+                                if mtp_hidden_full is not None
+                                else None
+                            )
+                        elif draft_output is not None:
+                            mtp_pred_logits = draft_output[:, -1, :]
+
+                    if depth < K_ngram:
+                        # Ngram-supplied token at this depth. Synthesize a
+                        # delta distribution so acceptance_mask + residual
+                        # paths produce the prompt-lookup acceptance rule
+                        # (q = δ on the draft token).
+                        tok_id = ngram_draft_ids[depth]
+                        tok_arr = mx.array([tok_id], dtype=primary_tokens.dtype)
+                        delta = mx.full((1, vocab_size), -1e30)
+                        delta = mx.put_along_axis(
+                            delta,
+                            tok_arr[:, None],
+                            mx.zeros((1, 1)),
+                            axis=-1,
+                        )
+                        draft_token_arrays.append(tok_arr)
+                        draft_distributions.append(delta)
+                        draft_sources.append("ngram")
+                        next_token = tok_arr
+                    elif mtp_pred_logits is not None:
+                        # MTP-sampled token at this depth.
+                        draft_distribution = distribution_logprobs(
+                            mtp_pred_logits, _draft_params
+                        )
+                        draft_tokens = sample_from_logprobs(draft_distribution)
+                        draft_token_arrays.append(draft_tokens)
+                        draft_distributions.append(draft_distribution)
+                        draft_sources.append("mtp")
+                        next_token = draft_tokens
                     else:
-                        draft_logits_full = draft_output
-                        draft_hidden_full = None
-                    draft_logits = draft_logits_full[:, -1, :]
-                    draft_distribution = distribution_logprobs(
-                        draft_logits,
-                        _draft_params,
-                    )
-                    draft_tokens = sample_from_logprobs(draft_distribution)
-                    draft_token_arrays.append(draft_tokens)
-                    draft_distributions.append(draft_distribution)
-                    next_token = draft_tokens
-                    if draft_hidden_full is None:
+                        # No MTP head available beyond ngram drafts — stop.
                         break
-                    draft_hidden = draft_hidden_full[:, -1:, :]
+
+                    if next_hidden is None:
+                        # Cannot advance past this depth without a fresh
+                        # hidden; commit what we have and break.
+                        if depth < total_depth - 1:
+                            break
+                    else:
+                        draft_hidden = next_hidden
 
                 rnn_snapshots = {}
                 for ci, c in enumerate(gen_self.prompt_cache):
@@ -1170,6 +1360,7 @@ def _install_mtp(
                     verify_logits = verify_output
                     verify_hidden = None
 
+                _drafts_accepted_count = 0
                 if optimistic:
                     if verify_hidden is not None:
                         last_pos = len(draft_token_arrays)
@@ -1203,6 +1394,7 @@ def _install_mtp(
                                     draft_token_arrays
                                 )
                             ]
+                        _drafts_accepted_count = len(draft_token_arrays)
                     _mtp_stats["accepted"] += 1
                 else:
                     target_distributions = []
@@ -1235,11 +1427,31 @@ def _install_mtp(
                             verify_target_logits,
                             _target_params,
                         )
-                        accepted_mask = acceptance_mask(
-                            target_distribution,
-                            draft_distributions[depth_index],
-                            draft_tokens,
+                        # Greedy acceptance for ngram-sourced depths: accept
+                        # iff target_argmax matches the n-gram draft token.
+                        # This raises acceptance under low-entropy reasoning
+                        # at the cost of strictly preserving target sample
+                        # distribution (well-known prompt-lookup tradeoff).
+                        # MTP-sourced depths always use the lossless
+                        # probability-ratio rule.
+                        is_ngram_depth = (
+                            depth_index < len(draft_sources)
+                            and draft_sources[depth_index] == "ngram"
                         )
+                        if (
+                            ngram_acceptance_mode == "greedy"
+                            and is_ngram_depth
+                        ):
+                            target_argmax = mx.argmax(
+                                target_distribution, axis=-1
+                            )
+                            accepted_mask = target_argmax == draft_tokens
+                        else:
+                            accepted_mask = acceptance_mask(
+                                target_distribution,
+                                draft_distributions[depth_index],
+                                draft_tokens,
+                            )
                         mx.eval(accepted_mask, draft_tokens)
                         target_distributions.append(target_distribution)
                         accepted_masks.append(accepted_mask)
@@ -1282,6 +1494,7 @@ def _install_mtp(
                                 )
                             ]
                             _deferred_drafts[uid] = deferred
+                        _drafts_accepted_count = len(draft_token_arrays)
                         _mtp_stats["accepted"] += 1
                     else:
                         assert correction_distribution is not None
@@ -1355,6 +1568,7 @@ def _install_mtp(
                                 }
                             )
                             _deferred_drafts[uid] = deferred
+                        _drafts_accepted_count = accepted_count
                         _mtp_stats["rejected"] += 1
                         _mtp_stats["corrections"] += 1
             except Exception as e:
@@ -1367,7 +1581,27 @@ def _install_mtp(
                     _deferred_drafts.pop(uid, None)
                     _pending_primary_tokens.pop(uid, None)
                     _persistent_mtp_caches.pop(uid, None)
+                    _ngram_pending.pop(uid, None)
                 _mtp_stats["errors"] += 1
+                _drafts_accepted_count = 0
+
+            # --- Record n-gram acceptance stats. The deferred drafts will be
+            # fed to the n-gram state in the NEXT _step call (via the
+            # _ngram_pending capture in the _next wrapper) so emission order
+            # is preserved without double-feeds.
+            if ngram_state is not None and ngram_draft_ids is not None:
+                drafted = len(ngram_draft_ids)
+                accepted = min(_drafts_accepted_count, drafted)
+                ngram_state.record_outcome(drafted, accepted)
+                _mtp_stats["ngram_drafts"] = (
+                    _mtp_stats.get("ngram_drafts", 0) + 1
+                )
+                _mtp_stats["ngram_tokens_drafted"] = (
+                    _mtp_stats.get("ngram_tokens_drafted", 0) + drafted
+                )
+                _mtp_stats["ngram_tokens_accepted"] = (
+                    _mtp_stats.get("ngram_tokens_accepted", 0) + accepted
+                )
 
             gen_self._next_tokens = primary_tokens
             gen_self._next_logprobs = primary_logprobs
@@ -1400,10 +1634,38 @@ def _install_mtp(
                 _deferred_drafts.clear()
                 _pending_primary_tokens.clear()
                 _persistent_mtp_caches.clear()
+                _ngram_pending.clear()
             if len(gen_batch) > 0:
                 for uid in gen_batch.uids:
                     if uid in _deferred_drafts:
                         prev_deferred[uid] = _deferred_drafts.pop(uid)
+
+            # Capture token IDs from the previous step's deferred drafts so
+            # the upcoming _step (called via _inner_next) can feed them to
+            # the per-uid n-gram state in correct emission order. We do this
+            # here because the deferred items contain mx.array fields that
+            # we want to materialize once, not once per uid in _step.
+            if ngram_drafters is not None:
+                for uid, info in prev_deferred.items():
+                    if uid not in ngram_drafters:
+                        continue
+                    items = info if isinstance(info, list) else [info]
+                    pending_tokens: list[int] = []
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        if "token_array" in item:
+                            try:
+                                pending_tokens.append(int(item["token_array"].item()))
+                            except Exception:
+                                pass
+                        elif "token" in item:
+                            try:
+                                pending_tokens.append(int(item["token"]))
+                            except Exception:
+                                pass
+                    if pending_tokens:
+                        _ngram_pending[uid] = pending_tokens
 
             prompt_responses, generation_responses = self._inner_next()
             if not prev_deferred or not generation_responses:
@@ -1476,6 +1738,7 @@ def _install_mtp(
                     _pending_primary_tokens.pop(uid, None)
                     _deferred_drafts.pop(uid, None)
                     _persistent_mtp_caches.pop(uid, None)
+                    _ngram_pending.pop(uid, None)
                 keep = [
                     i for i, uid in enumerate(gen_batch.uids) if uid not in draft_end_uids
                 ]
@@ -1632,6 +1895,7 @@ class Scheduler:
         tokenizer: Any,
         config: SchedulerConfig | None = None,
         tool_logits_processor_factory: Any | None = None,
+        structured_cot_processor_factory: Any | None = None,
     ):
         """
         Initialize the scheduler.
@@ -1643,11 +1907,14 @@ class Scheduler:
             tool_logits_processor_factory: Optional callable that creates a
                 logits processor for tool call structural token biasing.
                 Called with no args, returns a processor or None.
+            structured_cot_processor_factory: Optional callable that creates a
+                logits processor enforcing structured CoT inside <think> blocks.
         """
         self.model = model
         self.tokenizer = tokenizer
         self.config = config or SchedulerConfig()
         self._tool_logits_processor_factory = tool_logits_processor_factory
+        self._structured_cot_processor_factory = structured_cot_processor_factory
 
         # Detect if tokenizer is a processor (MLLM) and get the actual tokenizer
         self._actual_tokenizer = self._get_actual_tokenizer(tokenizer)
@@ -1669,6 +1936,46 @@ class Scheduler:
         # BatchGenerator - the actual batching engine
         self.batch_generator: BatchGenerator | None = None
         self._current_sampler_params: tuple | None = None
+
+        # N-gram (prompt-lookup) per-request state, keyed by batch UID.
+        # Populated when a request is inserted into the batch generator and
+        # cleared on completion. Set to {} regardless of enable_ngram so the
+        # attribute is always available; _ngram_active guards the wiring.
+        self._ngram_drafters: dict[int, Any] = {}
+        self._ngram_think_start_id: int | None = None
+        self._ngram_think_end_id: int | None = None
+        # ngram drafting layers on top of MTP: skip everything when the
+        # model has no MTP head, otherwise per-request state is created
+        # but never consumed.
+        _ngram_requires_mtp = (
+            self.config.enable_ngram
+            and self.config.enable_mtp
+            and hasattr(model, "mtp")
+            and getattr(model, "mtp") is not None
+        )
+        self._ngram_active: bool = _ngram_requires_mtp
+        if self.config.enable_ngram:
+            try:
+                from .speculative.ngram_drafter import lookup_think_token_ids
+
+                self._ngram_think_start_id, self._ngram_think_end_id = (
+                    lookup_think_token_ids(self._actual_tokenizer)
+                )
+                if (
+                    self.config.ngram_only_in_think
+                    and self._ngram_think_start_id is None
+                    and self._ngram_think_end_id is None
+                ):
+                    logger.warning(
+                        "[ngram] only_in_think=True but tokenizer has no "
+                        "<think>/</think> tokens — n-gram drafting will be "
+                        "disabled. Pass --ngram-everywhere to force-enable "
+                        "across all output."
+                    )
+                    self._ngram_active = False
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning("[ngram] think-token lookup failed: %s", exc)
+                self._ngram_active = False
 
         # Lifetime MTP counters; persistent across batch generator recreation.
         self._mtp_global_stats: dict[str, int] = {
@@ -1921,12 +2228,36 @@ class Scheduler:
                     target_top_k=effective_top_k,
                     draft_temperature=self.config.mtp_draft_temperature,
                     stats=self._mtp_global_stats,
+                    ngram_drafters=(
+                        self._ngram_drafters
+                        if self.config.enable_ngram
+                        else None
+                    ),
+                    ngram_num_drafts=(
+                        self.config.ngram_num_draft_tokens
+                        if self.config.enable_ngram
+                        else 0
+                    ),
+                    ngram_acceptance_mode=self.config.ngram_acceptance_mode,
+                    ngram_hybrid_verify=self.config.ngram_hybrid_verify,
+                    ngram_auto_disable_mtp_threshold=(
+                        self.config.ngram_auto_disable_mtp_threshold
+                    ),
+                    ngram_auto_disable_min_ngram=(
+                        self.config.ngram_auto_disable_min_ngram
+                    ),
                 )
             else:
                 logger.warning(
                     "[MTP] --enable-mtp is set but model has no MTP head "
                     "(model.mtp is None). MTP will be disabled."
                 )
+        elif self.config.enable_ngram:
+            logger.warning(
+                "[ngram] --enable-ngram requires --enable-mtp on a model "
+                "with an MTP head. n-gram drafting is wired through the "
+                "MTP path; enabling without MTP has no effect."
+            )
 
         return bg
 
@@ -2505,6 +2836,7 @@ class Scheduler:
                 removed_from_batch = True
             del self.uid_to_request_id[uid]
             del self.request_id_to_uid[request_id]
+            self._ngram_drafters.pop(uid, None)
 
         if request_id in self.running:
             del self.running[request_id]
@@ -2591,10 +2923,17 @@ class Scheduler:
             # fall back to no-cache insert instead of crashing.
             # Create per-request logits processors
             request_logits_processors = None
+            processors: list[Any] = []
             if self._tool_logits_processor_factory:
                 processor = self._tool_logits_processor_factory()
                 if processor is not None:
-                    request_logits_processors = [[processor]]
+                    processors.append(processor)
+            if self._structured_cot_processor_factory:
+                cot_processor = self._structured_cot_processor_factory()
+                if cot_processor is not None:
+                    processors.append(cot_processor)
+            if processors:
+                request_logits_processors = [processors]
 
             # Per-request sampler (temperature/top_p may differ per request).
             # Without this, all requests use the BatchGenerator's default
@@ -2644,6 +2983,41 @@ class Scheduler:
                 request._decoder = IncrementalDecoder(self._actual_tokenizer)
                 self.running[request.request_id] = request
                 scheduled.append(request)
+
+                # Register per-request n-gram drafter (seeded with prompt
+                # tokens). Guarded by _ngram_active so we don't allocate
+                # state when there's no MTP head to wire it into, when
+                # the gate would never open, etc.
+                if (
+                    self._ngram_active
+                    and request.prompt_token_ids is not None
+                ):
+                    from .speculative.ngram_drafter import NgramRequestState
+
+                    try:
+                        self._ngram_drafters[uid] = NgramRequestState(
+                            prompt_tokens=request.prompt_token_ids,
+                            think_start_id=self._ngram_think_start_id,
+                            think_end_id=self._ngram_think_end_id,
+                            num_draft_tokens=self.config.ngram_num_draft_tokens,
+                            ngram_size=self.config.ngram_size,
+                            min_matches=self.config.ngram_min_matches,
+                            only_in_think=self.config.ngram_only_in_think,
+                            min_occurrences=self.config.ngram_min_occurrences,
+                            adaptive_k=self.config.ngram_adaptive_k,
+                            skip_tool_calls=self.config.ngram_skip_tool_calls,
+                            self_tune=self.config.ngram_self_tune,
+                            self_tune_disable_threshold=(
+                                self.config.ngram_self_tune_disable_threshold
+                            ),
+                            tokenizer=self._actual_tokenizer,
+                        )
+                    except Exception as exc:  # pragma: no cover — defensive
+                        logger.warning(
+                            "[ngram] drafter init failed for request=%s: %s",
+                            request.request_id[:12],
+                            exc,
+                        )
 
                 self.total_prompt_tokens += request.num_prompt_tokens
                 cache_info = (
@@ -2921,6 +3295,8 @@ class Scheduler:
                 if uid in self.uid_to_request_id:
                     del self.uid_to_request_id[uid]
                 del self.request_id_to_uid[request_id]
+                # Drop per-request n-gram drafter state (if any).
+                self._ngram_drafters.pop(uid, None)
 
             # Track as finished
             self.finished_req_ids.add(request_id)
@@ -2951,6 +3327,7 @@ class Scheduler:
         # Clear UID mappings
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
+        self._ngram_drafters.clear()
 
         logger.info("Cache recovery completed")
 
@@ -2982,6 +3359,7 @@ class Scheduler:
         # Clear UID mappings (batch generator is gone)
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
+        self._ngram_drafters.clear()
 
         # Release Metal memory
         mx.clear_cache()
@@ -3256,6 +3634,9 @@ class Scheduler:
         accepted = self._mtp_global_stats["accepted"]
         rejected = self._mtp_global_stats["rejected"]
         verified = accepted + rejected
+        ngram_drafts = self._mtp_global_stats.get("ngram_drafts", 0)
+        ngram_drafted = self._mtp_global_stats.get("ngram_tokens_drafted", 0)
+        ngram_accepted = self._mtp_global_stats.get("ngram_tokens_accepted", 0)
         stats["mtp"] = {
             "enabled": bool(self.config.enable_mtp),
             "optimistic": bool(self.config.mtp_optimistic),
@@ -3264,6 +3645,16 @@ class Scheduler:
             "corrections": self._mtp_global_stats["corrections"],
             "errors": self._mtp_global_stats["errors"],
             "acceptance_ratio": (accepted / verified) if verified > 0 else None,
+            # N-gram cycles share the MTP install path, so report counters
+            # alongside MTP under a flat namespace consumed by the metrics
+            # middleware.
+            "ngram_enabled": bool(self._ngram_active),
+            "ngram_drafts": ngram_drafts,
+            "ngram_tokens_drafted": ngram_drafted,
+            "ngram_tokens_accepted": ngram_accepted,
+            "ngram_acceptance_ratio": (
+                (ngram_accepted / ngram_drafted) if ngram_drafted > 0 else None
+            ),
         }
         return stats
 
@@ -3293,6 +3684,7 @@ class Scheduler:
         self.completed_request_infos.clear()
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
+        self._ngram_drafters.clear()
         self._detokenizer_pool.clear()
         self._close_batch_generator()
         self._current_sampler_params = None

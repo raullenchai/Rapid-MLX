@@ -1,0 +1,11 @@
+# Vendored from https://github.com/andthattoo/structured-cot
+# (grammars/fsm_grammar_lcb_plan.gbnf). MIT-licensed upstream.
+#
+# Richer LiveCodeBench plan, but permissive answer region.
+# This isolates whether GOAL/STATE/ALGO/EDGE/VERIFY helps harder tasks without
+# also constraining Python formatting.
+
+root ::= think code
+think ::= "<think>\n" "GOAL: " line "STATE: " line "ALGO: " line "EDGE: " line "VERIFY: " line "</think>\n\n"
+line ::= [^\n]+ "\n"
+code ::= [\x09\x0A\x0D\x20-\x7E]+

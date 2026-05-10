@@ -8,6 +8,7 @@
   "qwen3.6-27b": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
   "qwen3.6-27b-8bit": "unsloth/Qwen3.6-27B-MLX-8bit",
   "qwen3.6-35b": "samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed",
+  "qwen3.6-35b-8bit": "samuelfaj/Qwen3.6-35B-A3B-8bit-MTPLX-Optimized-Speed",
   "qwen3.6-35b-6bit": "mlx-community/Qwen3.6-35B-A3B-6bit",
   "deepseek-v4-flash": "mlx-community/DeepSeek-V4-Flash-8bit",
   "deepseek-v4-flash-2bit": "mlx-community/DeepSeek-V4-Flash-2bit-DQ",

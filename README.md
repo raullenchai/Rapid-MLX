@@ -48,6 +48,19 @@ create the snake game using react and typescript
 
 You can check for more benchmarks (for non-optmized models) in [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX).
 
+## N-gram Speculation (Qwen3.6-35B-A3B)
+
+On the 35B-A3B preset, n-gram (prompt-lookup) drafting is layered on top of MTP for **+18% throughput** on mixed reasoning + tool-use workloads (vs. MTP-only). Auto-enabled for `qwen3.6-35b` and `qwen3.6-35b-8bit`.
+
+Highlights:
+
+- **`<think>`-aware** and **`<tool_call>`-aware** state machines: drafts everywhere by default but skips inside `<tool_call>...</tool_call>` regions where structure repeats but content varies.
+- **Adaptive K** based on n-gram match confidence (prior occurrence count): wide drafts for strong matches, narrow drafts for weak ones.
+- **Hybrid verify**: append one MTP-head draft after the n-gram tail to capture extra ground when n-gram drafts all accept.
+- **Self-tuning**: per-request running acceptance suppresses drafting on bad fits; global auto-disable when MTP is already strong (≥0.85) and n-gram is weak (≤0.50). Guarantees no regression vs. the MTP-only baseline.
+
+Tunable via `--enable-ngram` / `--disable-ngram` and `--ngram-*` flags on `lightning-mlx serve` and `bench`.
+
 ## Install
 
 ```bash
@@ -81,7 +94,10 @@ Best optimized models:
 ```bash
 lightning-mlx serve qwen3.6-27b
 lightning-mlx serve qwen3.6-35b
+lightning-mlx serve qwen3.6-35b-8bit
 ```
+
+`qwen3.6-35b-8bit` mirrors the `qwen3.6-35b` preset (MTP, n-gram, port 8010, tool/reasoning parsers) but routes to the 8-bit MTPLX-optimized weights for higher quality on memory-rich Macs.
 
 Local model path works too:
 
@@ -147,6 +163,7 @@ curl http://localhost:8010/v1/chat/completions \
 
 - **2.75x faster short agentic turns** in the benchmark fixture.
 - **1.96x higher all-turn throughput** versus the MLX baseline.
+- **+18% throughput on Qwen3.6-35B-A3B** with n-gram + MTP stacked speculation.
 - **Successful artifact generation** where baseline timed out.
 - **OpenAI-compatible API** for local tools, agents, editors, and CLIs.
 - **Apple Silicon first**: built around MLX and local Mac inference.

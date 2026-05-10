@@ -95,6 +95,10 @@ class RequestRecorder:
         mtp_enabled: bool = False,
         mtp_accepted: int = 0,
         mtp_rejected: int = 0,
+        ngram_enabled: bool = False,
+        ngram_drafts: int = 0,
+        ngram_tokens_drafted: int = 0,
+        ngram_tokens_accepted: int = 0,
     ) -> None:
         now = time.time()
         with self._lock:
@@ -157,6 +161,11 @@ class RequestRecorder:
             mtp_acceptance_ratio = (
                 (int(mtp_accepted) / mtp_verified) if mtp_verified > 0 else None
             )
+            ngram_drafted = int(ngram_tokens_drafted)
+            ngram_accepted_ = int(ngram_tokens_accepted)
+            ngram_acceptance_ratio = (
+                (ngram_accepted_ / ngram_drafted) if ngram_drafted > 0 else None
+            )
             self._entries.append(
                 {
                     "request_id": entry["request_id"],
@@ -178,6 +187,16 @@ class RequestRecorder:
                     "mtp_accepted": int(mtp_accepted),
                     "mtp_rejected": int(mtp_rejected),
                     "mtp_acceptance_ratio": mtp_acceptance_ratio,
+                    "ngram_enabled": bool(ngram_enabled),
+                    "ngram_cycles": int(ngram_drafts),
+                    "ngram_tokens_drafted": ngram_drafted,
+                    "ngram_tokens_accepted": ngram_accepted_,
+                    "ngram_acceptance_ratio": ngram_acceptance_ratio,
+                    # Reuse the existing speculative_* keys read by tui._spec_path
+                    # so the spec path label flips to "ngram <cycles>" when the
+                    # request actually used n-gram drafts.
+                    "speculative_proposed_tokens": ngram_drafted,
+                    "speculative_accepted_tokens": ngram_accepted_,
                 }
             )
 

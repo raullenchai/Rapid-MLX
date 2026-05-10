@@ -21,6 +21,8 @@ _QWEN36_MTPLX_MODEL = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed"
 _QWEN36_MTPLX_MARKER = "Qwen3.6-27B-MTPLX-Optimized-Speed"
 _QWEN36_35B_MTPLX_MODEL = "samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed"
 _QWEN36_35B_MTPLX_MARKER = "Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed"
+_QWEN36_35B_8BIT_MTPLX_MODEL = "samuelfaj/Qwen3.6-35B-A3B-8bit-MTPLX-Optimized-Speed"
+_QWEN36_35B_8BIT_MTPLX_MARKER = "Qwen3.6-35B-A3B-8bit-MTPLX-Optimized-Speed"
 _QWEN36_35B_A3B_MARKER = "Qwen3.6-35B-A3B"
 
 
@@ -38,9 +40,16 @@ def _is_qwen36_mtplx_request(args: argparse.Namespace) -> bool:
     return (
         original_alias == "qwen3.6-27b"
         or original_alias == "qwen3.6-35b"
-        or model in (_QWEN36_MTPLX_MODEL, _QWEN36_35B_MTPLX_MODEL)
+        or original_alias == "qwen3.6-35b-8bit"
+        or model
+        in (
+            _QWEN36_MTPLX_MODEL,
+            _QWEN36_35B_MTPLX_MODEL,
+            _QWEN36_35B_8BIT_MTPLX_MODEL,
+        )
         or _QWEN36_MTPLX_MARKER in model
         or _QWEN36_35B_MTPLX_MARKER in model
+        or _QWEN36_35B_8BIT_MTPLX_MARKER in model
         or _is_local_mtplx_qwen_model(model)
     )
 
@@ -152,6 +161,69 @@ def _apply_qwen36_mtplx_preset(
     # (poem, snake game React/TS, vite landing page) — all 3 only
     # succeed with thinking enabled. MTP acceptance stays at 83-95%
     # regardless of thinking mode (perf is unaffected).
+
+    # ---- N-gram preset (35B-A3B only).
+    # On the 35B-A3B model with strong native MTP (~95% baseline accept),
+    # n-gram-layered speculation reaches +18% throughput in mixed
+    # reasoning + tool-use workloads vs. MTP-only (measured on the
+    # agentic regression suite). The configuration below mirrors that
+    # winning combination:
+    #
+    #   - K=6 wide drafts, capped per-cycle by adaptive K based on the
+    #     n-gram match's prior occurrence count (avoids wasted verify
+    #     slots on weak matches).
+    #   - min_occurrences=2: filter one-off matches.
+    #   - greedy acceptance: ngram-source depths accept on argmax match,
+    #     which raises hit rate at low temperatures without disturbing
+    #     MTP-source acceptance (those still use Leviathan/Chen).
+    #   - hybrid verify: append one MTP-head draft after the ngram tail
+    #     to capture extra ground when ngram drafts all accept.
+    #   - everywhere + skip-tool-calls: draft inside <think> AND content
+    #     but skip Qwen3 tool-call XML (where structure repeats but
+    #     content varies, so ngram matches are stale).
+    #   - auto-disable + self-tune: when MTP is strong globally and
+    #     ngram is weak, suppress n-gram drafting; per-request, disable
+    #     drafting once running acceptance proves bad. Together these
+    #     guarantee no regression vs. the MTP-only baseline.
+    if _is_qwen36_35b_a3b_request(args):
+        if hasattr(args, "enable_ngram") and _has_cli_option(
+            raw_args, "--disable-ngram"
+        ):
+            args.enable_ngram = False
+        elif hasattr(args, "enable_ngram") and not _has_cli_option(
+            raw_args, "--enable-ngram"
+        ):
+            args.enable_ngram = True
+        if not _has_cli_option(raw_args, "--ngram-num-draft-tokens"):
+            args.ngram_num_draft_tokens = 6
+        if not _has_cli_option(raw_args, "--ngram-min-occurrences"):
+            args.ngram_min_occurrences = 2
+        if not _has_cli_option(raw_args, "--ngram-acceptance-mode"):
+            args.ngram_acceptance_mode = "greedy"
+        if not _has_cli_option(
+            raw_args, "--ngram-hybrid-verify", "--no-ngram-hybrid-verify"
+        ):
+            args.ngram_hybrid_verify = True
+        if not _has_cli_option(
+            raw_args, "--ngram-only-in-think", "--ngram-everywhere"
+        ):
+            args.ngram_only_in_think = False  # everywhere
+        if not _has_cli_option(
+            raw_args, "--ngram-skip-tool-calls", "--no-ngram-skip-tool-calls"
+        ):
+            args.ngram_skip_tool_calls = True
+        if not _has_cli_option(
+            raw_args, "--ngram-self-tune", "--no-ngram-self-tune"
+        ):
+            args.ngram_self_tune = True
+        if not _has_cli_option(
+            raw_args, "--ngram-self-tune-disable-threshold"
+        ):
+            args.ngram_self_tune_disable_threshold = 0.30
+        if not _has_cli_option(raw_args, "--ngram-auto-disable-mtp-threshold"):
+            args.ngram_auto_disable_mtp_threshold = 0.85
+        if not _has_cli_option(raw_args, "--ngram-auto-disable-min-ngram"):
+            args.ngram_auto_disable_min_ngram = 0.50
 
 def _apply_qwen36_35b_defaults(args: argparse.Namespace, raw_args: list[str]) -> None:
     if getattr(args, "command", None) != "serve" or not _is_qwen36_35b_a3b_request(
@@ -328,6 +400,17 @@ def serve_command(args):
         server._tool_call_parser = None
         server._enable_tool_logits_bias = False
 
+    # Configure structured CoT
+    structured_cot_arg = getattr(args, "structured_cot", None)
+    if structured_cot_arg is None:
+        server._structured_cot_path = None
+    elif structured_cot_arg == "__default__":
+        from .api.structured_cot import DEFAULT_GRAMMAR_PATH
+
+        server._structured_cot_path = str(DEFAULT_GRAMMAR_PATH)
+    else:
+        server._structured_cot_path = str(structured_cot_arg)
+
     # Configure generation defaults
     if args.default_temperature is not None:
         server._default_temperature = args.default_temperature
@@ -453,6 +536,21 @@ def serve_command(args):
         mtp_num_draft_tokens=args.mtp_num_draft_tokens,
         mtp_draft_temperature=args.mtp_draft_temperature,
         mtp_optimistic=args.mtp_optimistic,
+        # N-gram (prompt-lookup) speculative decoding
+        enable_ngram=args.enable_ngram,
+        ngram_num_draft_tokens=args.ngram_num_draft_tokens,
+        ngram_size=args.ngram_size,
+        ngram_min_matches=args.ngram_min_matches,
+        ngram_only_in_think=args.ngram_only_in_think,
+        ngram_acceptance_mode=args.ngram_acceptance_mode,
+        ngram_min_occurrences=args.ngram_min_occurrences,
+        ngram_adaptive_k=args.ngram_adaptive_k,
+        ngram_auto_disable_mtp_threshold=args.ngram_auto_disable_mtp_threshold,
+        ngram_auto_disable_min_ngram=args.ngram_auto_disable_min_ngram,
+        ngram_hybrid_verify=args.ngram_hybrid_verify,
+        ngram_skip_tool_calls=args.ngram_skip_tool_calls,
+        ngram_self_tune=args.ngram_self_tune,
+        ngram_self_tune_disable_threshold=args.ngram_self_tune_disable_threshold,
         # KV cache quantization
         kv_cache_quantization=args.kv_cache_quantization,
         kv_cache_quantization_bits=args.kv_cache_quantization_bits,
@@ -472,6 +570,33 @@ def serve_command(args):
             "MTP: enabled, "
             f"draft_tokens={args.mtp_num_draft_tokens}, "
             f"draft_temp={args.mtp_draft_temperature}"
+        )
+    if args.enable_ngram:
+        gate = (
+            "in <think> only"
+            if args.ngram_only_in_think
+            else "everywhere"
+        )
+        tool_gate = (
+            "skip-tool-calls" if args.ngram_skip_tool_calls else "incl-tool-calls"
+        )
+        adaptive = "adaptive-K" if args.ngram_adaptive_k else "fixed-K"
+        autodis = (
+            f"auto-disable@MTP>={args.ngram_auto_disable_mtp_threshold}"
+            if args.ngram_auto_disable_mtp_threshold > 0
+            else "no-auto-disable"
+        )
+        hybrid = " hybrid" if args.ngram_hybrid_verify else ""
+        print(
+            "N-gram: enabled, "
+            f"K={args.ngram_num_draft_tokens}, "
+            f"n={args.ngram_size}, "
+            f"min_matches={args.ngram_min_matches}, "
+            f"min_occ={args.ngram_min_occurrences}, "
+            f"accept={args.ngram_acceptance_mode}, "
+            f"{adaptive}, {gate}, {tool_gate}, "
+            f"self-tune={'on' if args.ngram_self_tune else 'off'}, "
+            f"{autodis}{hybrid}"
         )
     print(f"Stream interval: {args.stream_interval} tokens")
     if args.use_paged_cache:
@@ -651,6 +776,21 @@ def bench_command(args):
             mtp_num_draft_tokens=args.mtp_num_draft_tokens,
             mtp_draft_temperature=args.mtp_draft_temperature,
             mtp_optimistic=args.mtp_optimistic,
+            # N-gram (prompt-lookup) speculative decoding
+            enable_ngram=args.enable_ngram,
+            ngram_num_draft_tokens=args.ngram_num_draft_tokens,
+            ngram_size=args.ngram_size,
+            ngram_min_matches=args.ngram_min_matches,
+            ngram_only_in_think=args.ngram_only_in_think,
+            ngram_acceptance_mode=args.ngram_acceptance_mode,
+            ngram_min_occurrences=args.ngram_min_occurrences,
+            ngram_adaptive_k=args.ngram_adaptive_k,
+            ngram_auto_disable_mtp_threshold=args.ngram_auto_disable_mtp_threshold,
+            ngram_auto_disable_min_ngram=args.ngram_auto_disable_min_ngram,
+            ngram_hybrid_verify=args.ngram_hybrid_verify,
+            ngram_skip_tool_calls=args.ngram_skip_tool_calls,
+            ngram_self_tune=args.ngram_self_tune,
+            ngram_self_tune_disable_threshold=args.ngram_self_tune_disable_threshold,
             # KV cache quantization
             kv_cache_quantization=args.kv_cache_quantization,
             kv_cache_quantization_bits=args.kv_cache_quantization_bits,
@@ -1013,6 +1153,7 @@ def models_command(_args):
         "qwen3.5-35b": ("37 GB", "83 tok/s", "48GB+ Mac"),
         "qwen3.5-122b": ("65 GB", "57 tok/s", "96GB+ Mac"),
         "qwen3.6-35b": ("20 GB", "94 tok/s", "32GB+ Mac"),
+        "qwen3.6-35b-8bit": ("38 GB", "—", "64GB+ Mac"),
         "qwen3-coder": ("45 GB", "74 tok/s", "64GB+ Mac"),
         "gemma-4-26b": ("14.4 GB", "85 tok/s", "24GB+ Mac"),
         "gemma-4-31b": ("17 GB", "31 tok/s", "32GB+ Mac"),
@@ -1478,6 +1619,155 @@ Examples:
         help="Skip MTP acceptance check for maximum speed. "
         "~5-10%% wrong tokens. Best for chat, not for code.",
     )
+    # N-gram (prompt-lookup) speculative decoding — layered with MTP.
+    serve_parser.add_argument(
+        "--enable-ngram",
+        action="store_true",
+        default=False,
+        help="Enable n-gram (prompt-lookup) speculative decoding layered "
+        "before MTP. Drafts up to K tokens per verify cycle from repeating "
+        "patterns in prompt+history; falls back to MTP head when no match. "
+        "Gated to <think> blocks by default.",
+    )
+    serve_parser.add_argument(
+        "--disable-ngram",
+        action="store_true",
+        default=False,
+        help="Disable auto-enabled n-gram preset (overrides model presets "
+        "that turn ngram on by default).",
+    )
+    serve_parser.add_argument(
+        "--ngram-num-draft-tokens",
+        type=int,
+        default=4,
+        help="Number of n-gram draft tokens per verify cycle (default: 4).",
+    )
+    serve_parser.add_argument(
+        "--ngram-size",
+        type=int,
+        default=3,
+        help="N-gram size used for prompt-lookup matching (default: 3).",
+    )
+    serve_parser.add_argument(
+        "--ngram-min-matches",
+        type=int,
+        default=2,
+        help="Minimum continuation tokens required for an n-gram match to "
+        "fire (default: 2).",
+    )
+    serve_parser.add_argument(
+        "--ngram-only-in-think",
+        dest="ngram_only_in_think",
+        action="store_true",
+        default=True,
+        help="Restrict n-gram drafting to <think>...</think> blocks "
+        "(default: True).",
+    )
+    serve_parser.add_argument(
+        "--ngram-everywhere",
+        dest="ngram_only_in_think",
+        action="store_false",
+        help="Disable the <think>-block gate; draft n-gram across all "
+        "outputs.",
+    )
+    # --- Advanced n-gram tuning (greedy / confidence / hybrid / auto-disable
+    # / tool-call skip / self-tune).
+    serve_parser.add_argument(
+        "--ngram-acceptance-mode",
+        choices=["greedy", "probabilistic"],
+        default="greedy",
+        help="Acceptance rule for ngram-sourced drafts. 'greedy' accepts "
+        "iff target argmax matches the draft (higher accept rate, slight "
+        "loss of sample diversity). 'probabilistic' uses the lossless "
+        "Leviathan/Chen prob-ratio test (default: greedy).",
+    )
+    serve_parser.add_argument(
+        "--ngram-min-occurrences",
+        type=int,
+        default=1,
+        help="Require the n-gram + continuation to have appeared at least N "
+        "times in history before drafting (default: 1 = no filter).",
+    )
+    serve_parser.add_argument(
+        "--ngram-adaptive-k",
+        dest="ngram_adaptive_k",
+        action="store_true",
+        default=True,
+        help="Scale draft length by occurrence count: K_cap = min(K, "
+        "freq+1). Default on.",
+    )
+    serve_parser.add_argument(
+        "--no-ngram-adaptive-k",
+        dest="ngram_adaptive_k",
+        action="store_false",
+        help="Disable adaptive K; always draft up to --ngram-num-draft-tokens.",
+    )
+    serve_parser.add_argument(
+        "--ngram-auto-disable-mtp-threshold",
+        type=float,
+        default=0.0,
+        help="When MTP global running acceptance is at or above this "
+        "threshold AND ngram running acceptance is below "
+        "--ngram-auto-disable-min-ngram, suppress n-gram drafts. "
+        "0.0 disables (default).",
+    )
+    serve_parser.add_argument(
+        "--ngram-auto-disable-min-ngram",
+        type=float,
+        default=0.50,
+        help="Lower bound on ngram running acceptance below which the "
+        "auto-disable kicks in (default: 0.50).",
+    )
+    serve_parser.add_argument(
+        "--ngram-hybrid-verify",
+        dest="ngram_hybrid_verify",
+        action="store_true",
+        default=False,
+        help="When ngram supplies the first K_ngram drafts, also append "
+        "ONE additional MTP-head draft at position K_ngram (verify width "
+        "= K_ngram+1). Auto-enabled by the qwen3.6-35b preset.",
+    )
+    serve_parser.add_argument(
+        "--no-ngram-hybrid-verify",
+        dest="ngram_hybrid_verify",
+        action="store_false",
+        help="Disable the auto-enabled hybrid verify (e.g. to compare "
+        "pure-ngram drafting against ngram + trailing MTP head).",
+    )
+    serve_parser.add_argument(
+        "--ngram-skip-tool-calls",
+        dest="ngram_skip_tool_calls",
+        action="store_true",
+        default=True,
+        help="Skip n-gram drafting inside <tool_call>...</tool_call> "
+        "regions (Qwen3-style XML tool calls). Default on.",
+    )
+    serve_parser.add_argument(
+        "--no-ngram-skip-tool-calls",
+        dest="ngram_skip_tool_calls",
+        action="store_false",
+        help="Allow n-gram drafting inside tool-call regions.",
+    )
+    serve_parser.add_argument(
+        "--ngram-self-tune",
+        dest="ngram_self_tune",
+        action="store_true",
+        default=True,
+        help="Per-request self-tune: after warmup, suppress drafting on "
+        "requests whose running acceptance is below threshold.",
+    )
+    serve_parser.add_argument(
+        "--no-ngram-self-tune",
+        dest="ngram_self_tune",
+        action="store_false",
+        help="Disable per-request self-tune.",
+    )
+    serve_parser.add_argument(
+        "--ngram-self-tune-disable-threshold",
+        type=float,
+        default=0.30,
+        help="Per-request self-tune disable threshold (default: 0.30).",
+    )
     # Prefill step size
     serve_parser.add_argument(
         "--prefill-step-size",
@@ -1580,6 +1870,21 @@ Examples:
         default=False,
         help="Bias logits toward structural tool call tokens for faster generation. "
         "Only active when --tool-call-parser is also set. Currently supports minimax.",
+    )
+    # Structured chain-of-thought (https://andthattoo.dev/blog/structured_cot).
+    # Optional path to a custom GBNF grammar; default = bundled fsm_grammar.gbnf.
+    serve_parser.add_argument(
+        "--structured-cot",
+        nargs="?",
+        const="__default__",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Constrain the model's <think> block to a structured plan. "
+            "Pass without a value to use the bundled default grammar "
+            "(fsm_grammar.gbnf from andthattoo/structured-cot), or pass a "
+            "path to a custom GBNF file."
+        ),
     )
     # Reasoning parser options - choices loaded dynamically from registry
     from .reasoning import list_parsers
@@ -1747,6 +2052,117 @@ Examples:
         action="store_true",
         default=False,
         help="Skip MTP acceptance check for maximum speed.",
+    )
+    # N-gram (prompt-lookup) — same flags as serve.
+    bench_parser.add_argument(
+        "--enable-ngram",
+        action="store_true",
+        default=False,
+        help="Enable n-gram (prompt-lookup) speculative decoding layered "
+        "before MTP.",
+    )
+    bench_parser.add_argument(
+        "--ngram-num-draft-tokens",
+        type=int,
+        default=4,
+        help="Number of n-gram draft tokens per verify cycle (default: 4).",
+    )
+    bench_parser.add_argument(
+        "--ngram-size",
+        type=int,
+        default=3,
+        help="N-gram size used for prompt-lookup matching (default: 3).",
+    )
+    bench_parser.add_argument(
+        "--ngram-min-matches",
+        type=int,
+        default=2,
+        help="Minimum continuation tokens required for an n-gram match to "
+        "fire (default: 2).",
+    )
+    bench_parser.add_argument(
+        "--ngram-only-in-think",
+        dest="ngram_only_in_think",
+        action="store_true",
+        default=True,
+        help="Restrict n-gram drafting to <think>...</think> blocks "
+        "(default: True).",
+    )
+    bench_parser.add_argument(
+        "--ngram-everywhere",
+        dest="ngram_only_in_think",
+        action="store_false",
+        help="Disable the <think>-block gate; draft n-gram across all "
+        "outputs.",
+    )
+    bench_parser.add_argument(
+        "--ngram-acceptance-mode",
+        choices=["greedy", "probabilistic"],
+        default="greedy",
+    )
+    bench_parser.add_argument(
+        "--ngram-min-occurrences",
+        type=int,
+        default=1,
+    )
+    bench_parser.add_argument(
+        "--ngram-adaptive-k",
+        dest="ngram_adaptive_k",
+        action="store_true",
+        default=True,
+    )
+    bench_parser.add_argument(
+        "--no-ngram-adaptive-k",
+        dest="ngram_adaptive_k",
+        action="store_false",
+    )
+    bench_parser.add_argument(
+        "--ngram-auto-disable-mtp-threshold",
+        type=float,
+        default=0.0,
+    )
+    bench_parser.add_argument(
+        "--ngram-auto-disable-min-ngram",
+        type=float,
+        default=0.50,
+    )
+    bench_parser.add_argument(
+        "--ngram-hybrid-verify",
+        dest="ngram_hybrid_verify",
+        action="store_true",
+        default=False,
+    )
+    bench_parser.add_argument(
+        "--no-ngram-hybrid-verify",
+        dest="ngram_hybrid_verify",
+        action="store_false",
+    )
+    bench_parser.add_argument(
+        "--ngram-skip-tool-calls",
+        dest="ngram_skip_tool_calls",
+        action="store_true",
+        default=True,
+    )
+    bench_parser.add_argument(
+        "--no-ngram-skip-tool-calls",
+        dest="ngram_skip_tool_calls",
+        action="store_false",
+    )
+    bench_parser.add_argument(
+        "--ngram-self-tune",
+        dest="ngram_self_tune",
+        action="store_true",
+        default=True,
+    )
+    bench_parser.add_argument(
+        "--no-ngram-self-tune",
+        dest="ngram_self_tune",
+        action="store_false",
+    )
+    bench_parser.add_argument(
+        "--ngram-self-tune-disable-threshold",
+        type=float,
+        default=0.30,
     )
     bench_parser.add_argument(
         "--enable-prefix-cache",

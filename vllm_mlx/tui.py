@@ -193,7 +193,13 @@ def _spec_path(item: dict) -> str:
         return "dflash" if proposed > 0 or steps > 0 else "-"
     if mode in {"target-fallback", "target-prefix-cache"}:
         return "-"
-    return mode or "-"
+    if mode:
+        return mode
+    # No explicit speculative mode; surface ngram cycles when the request
+    # exercised the prompt-lookup path layered atop MTP.
+    if ngram_cycles > 0:
+        return f"ngram {ngram_cycles}"
+    return "-"
 
 
 def _build_screen(
@@ -367,6 +373,41 @@ def _build_screen(
                 tty_on,
             )
         )
+
+        ngram_enabled = bool(mtp_info.get("ngram_enabled"))
+        ngram_drafts = _integer(mtp_info.get("ngram_drafts", 0))
+        ngram_drafted = _integer(mtp_info.get("ngram_tokens_drafted", 0))
+        ngram_accepted = _integer(mtp_info.get("ngram_tokens_accepted", 0))
+        ngram_ratio = mtp_info.get("ngram_acceptance_ratio")
+        if ngram_enabled or ngram_drafts > 0:
+            ngram_state_text = "on" if ngram_enabled else "off (history)"
+            ngram_state_color = "green" if ngram_enabled else "dim"
+            if ngram_ratio is not None:
+                ratio_value = _num(ngram_ratio)
+                ngram_ratio_text = (
+                    f"{ratio_value:.1%} {_bar(ratio_value, 1.0, 12)}"
+                )
+            else:
+                ngram_ratio_text = "n/a"
+            rows.append(
+                _row("ngram", ngram_state_text, left, ngram_state_color, tty_on)
+                + gap
+                + _row(
+                    "ngram accept",
+                    ngram_ratio_text,
+                    mid,
+                    "magenta",
+                    tty_on,
+                )
+                + gap
+                + _row(
+                    "ngram a/d",
+                    f"{ngram_accepted}/{ngram_drafted} ({ngram_drafts} cyc)",
+                    right,
+                    "magenta",
+                    tty_on,
+                )
+            )
     if dflash_info:
         lifetime_ratio = _num(dflash_info.get("lifetime_acceptance_ratio", 0.0))
         spec_mode = str(dflash_info.get("mode") or "dflash")
@@ -530,8 +571,27 @@ def _build_screen(
         else:
             mtp_avg_text = "off"
 
+        ngram_active_entries = [
+            item
+            for item in entries
+            if _integer(item.get("ngram_cycles", 0)) > 0
+        ]
+        ngram_total = len(ngram_active_entries)
+        ngram_ratio_values = [
+            _num(item.get("ngram_acceptance_ratio"))
+            for item in ngram_active_entries
+            if item.get("ngram_acceptance_ratio") is not None
+        ]
+        avg_ngram_ratio = _mean(ngram_ratio_values) if ngram_ratio_values else None
+        if avg_ngram_ratio is not None:
+            ngram_avg_text = f"{avg_ngram_ratio:.0%} ({ngram_total}/{len(entries)})"
+        elif any(item.get("ngram_enabled") for item in entries):
+            ngram_avg_text = "on (no fire)"
+        else:
+            ngram_avg_text = "off"
+
         if avg_accept is not None:
-            header = "  input output   TTFT   prefill  tokens/s  acc/cyc       MTP"
+            header = "  input output   TTFT   prefill  tokens/s  acc/cyc       MTP            ngram"
             row = (
                 f"{avg_prompt:>7.1f} "
                 f"{avg_out:>6.1f} "
@@ -539,17 +599,19 @@ def _build_screen(
                 f"{avg_prefill_tps:>9.1f} "
                 f"{avg_tokens_per_second:>8.1f} "
                 f"{avg_accept_tokens:>7.1f}  "
-                f"{mtp_avg_text}"
+                f"{mtp_avg_text:<14} "
+                f"{ngram_avg_text}"
             )
         else:
-            header = "  input output   TTFT   prefill  tokens/s       MTP"
+            header = "  input output   TTFT   prefill  tokens/s       MTP            ngram"
             row = (
                 f"{avg_prompt:>7.1f} "
                 f"{avg_out:>6.1f} "
                 f"{avg_ttft:>6.2f}s "
                 f"{avg_prefill_tps:>9.1f} "
                 f"{avg_tokens_per_second:>8.1f}  "
-                f"{mtp_avg_text}"
+                f"{mtp_avg_text:<14} "
+                f"{ngram_avg_text}"
             )
         rows.append(_c(tty_on, "dim", _clamp(header, width)))
         rows.append(_clamp(row, width))
@@ -567,8 +629,13 @@ def _build_screen(
             item.get("acceptance_ratio") is not None for item in recent_entries
         )
         any_mtp = any(item.get("mtp_enabled") for item in recent_entries)
+        any_ngram = any(
+            _integer(item.get("ngram_cycles", 0)) > 0 for item in recent_entries
+        )
         if any_accept:
-            header = "  time      surface              input output  TTFT   prefill tokens/s path        acc/cyc block  MTP    finish"
+            header = "  time      surface              input output  TTFT   prefill tokens/s path        acc/cyc block  MTP   ngram   finish"
+        elif any_mtp and any_ngram:
+            header = "  time      surface              input output  TTFT   prefill tokens/s  MTP   ngram   finish"
         elif any_mtp:
             header = "  time      surface              input output  TTFT   prefill tokens/s  MTP    finish"
         else:
@@ -599,6 +666,14 @@ def _build_screen(
                 mtp_cell = f"{_num(mtp_ratio):>4.0%}"
             else:
                 mtp_cell = " on  "
+            ngram_cycles = _integer(item.get("ngram_cycles", 0))
+            ngram_ratio = item.get("ngram_acceptance_ratio")
+            if ngram_cycles > 0 and ngram_ratio is not None:
+                ngram_cell = f"{_num(ngram_ratio):>3.0%}/{ngram_cycles:<3}"
+            elif item.get("ngram_enabled"):
+                ngram_cell = "  -    "
+            else:
+                ngram_cell = "  -    "
             if any_accept:
                 accept_s = f"{_avg_accept_tokens(item):>7.1f}"
                 block = item.get("block_size")
@@ -606,8 +681,14 @@ def _build_screen(
                 path_s = _spec_path(item)[:10].ljust(10)
                 row = (
                     base
-                    + f"{path_s}  {accept_s}  {block_s}  {mtp_cell}  "
+                    + f"{path_s}  {accept_s}  {block_s}  {mtp_cell}  {ngram_cell}  "
                     + str(item.get("finish_reason", "n/a"))[:8]
+                )
+            elif any_mtp and any_ngram:
+                row = (
+                    base
+                    + f"{mtp_cell}  {ngram_cell}  "
+                    + str(item.get("finish_reason", "n/a"))[:12]
                 )
             elif any_mtp:
                 row = (

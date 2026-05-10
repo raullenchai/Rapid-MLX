@@ -92,6 +92,7 @@ class EngineConfig:
     stream_interval: int = 1  # Tokens to batch before streaming (1=every token)
     gpu_memory_utilization: float = 0.90  # Fraction of device memory for allocation
     tool_logits_processor_factory: Any | None = None  # Factory for tool logits bias
+    structured_cot_processor_factory: Any | None = None  # Factory for structured CoT
 
 
 class EngineCore:
@@ -146,6 +147,7 @@ class EngineCore:
             tokenizer=tokenizer,
             config=scheduler_config,
             tool_logits_processor_factory=self.config.tool_logits_processor_factory,
+            structured_cot_processor_factory=self.config.structured_cot_processor_factory,
         )
 
         # Output collectors for low-latency streaming (vLLM pattern)

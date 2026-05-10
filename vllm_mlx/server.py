@@ -182,6 +182,10 @@ _tool_parser_instance = None  # Instantiated parser
 _enable_tool_logits_bias: bool = False  # Jump-forward decoding for tool calls
 _tool_logits_bias_configured: bool = False
 
+# Structured CoT (constrain <think> reasoning to a GBNF grammar).
+_structured_cot_path: str | None = None  # None = disabled, else absolute grammar path
+_structured_cot_configured: bool = False
+
 # Cloud routing (offload large-context requests to cloud LLM)
 _cloud_router = None  # CloudRouter instance when --cloud-model is set
 
@@ -244,6 +248,44 @@ def _configure_tool_logits_bias() -> None:
         logger.info(f"Tool logits bias enabled for parser: {_tool_call_parser}")
     except Exception as e:
         logger.warning(f"Failed to set up tool logits bias: {e}")
+
+
+def _configure_structured_cot() -> None:
+    """Install structured CoT logits processor after engine is up."""
+    global _structured_cot_configured
+
+    if _structured_cot_configured or not _structured_cot_path:
+        return
+    if _engine is None:
+        return
+
+    try:
+        from .api.structured_cot import make_structured_cot_factory
+
+        tokenizer = getattr(_engine, "tokenizer", None) or getattr(
+            _engine, "_tokenizer", None
+        )
+        if tokenizer is None:
+            logger.warning("structured-cot requested but tokenizer unavailable")
+            return
+
+        factory = make_structured_cot_factory(tokenizer, _structured_cot_path)
+
+        if hasattr(_engine, "_structured_cot_processor_factory"):
+            _engine._structured_cot_processor_factory = factory
+
+        core = getattr(_engine, "_engine", None)
+        if core is not None:
+            if hasattr(core, "config"):
+                core.config.structured_cot_processor_factory = factory
+            scheduler = getattr(getattr(core, "engine", None), "scheduler", None)
+            if scheduler is not None:
+                scheduler._structured_cot_processor_factory = factory
+
+        _structured_cot_configured = True
+        logger.info(f"Structured CoT enabled (grammar={_structured_cot_path})")
+    except Exception as e:
+        logger.warning(f"Failed to set up structured CoT: {e}")
 
 
 from .runtime.cache import (  # noqa: E402
@@ -323,6 +365,7 @@ async def _idle_reload() -> None:
     if _engine is not None and hasattr(_engine, "_loaded") and not _engine._loaded:
         await _engine.start()
         _configure_tool_logits_bias()
+        _configure_structured_cot()
 
     if _engine is not None and hasattr(_engine, "load_cache_from_disk"):
         try:
@@ -344,6 +387,7 @@ async def lifespan(app: FastAPI):
     if _engine is not None and hasattr(_engine, "_loaded") and not _engine._loaded:
         await _engine.start()
         _configure_tool_logits_bias()
+        _configure_structured_cot()
 
     # Warmup: generate one token to trigger Metal shader compilation.
     # Runs here (not in CLI) so all engine types are fully started first.
@@ -676,6 +720,7 @@ def load_model(
 
     # Best effort here; lifespan repeats this after the tokenizer is loaded.
     _configure_tool_logits_bias()
+    _configure_structured_cot()
 
     logger.info(f"Default max tokens: {_default_max_tokens}")
 

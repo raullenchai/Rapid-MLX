@@ -196,6 +196,7 @@ class BatchedEngine(BaseEngine):
         self._gpu_memory_utilization = gpu_memory_utilization
         self._is_mllm = force_mllm or is_mllm_model(model_name)
         self._tool_logits_processor_factory = None
+        self._structured_cot_processor_factory = None
 
         self._model = None
         self._processor = None  # For MLLM
@@ -436,6 +437,7 @@ class BatchedEngine(BaseEngine):
             stream_interval=self._stream_interval,
             gpu_memory_utilization=self._gpu_memory_utilization,
             tool_logits_processor_factory=self._tool_logits_processor_factory,
+            structured_cot_processor_factory=self._structured_cot_processor_factory,
         )
 
         # Create async engine and hand it the EXISTING model-load executor
@@ -1121,6 +1123,7 @@ class BatchedEngine(BaseEngine):
             scheduler_config=scheduler_config,
             stream_interval=self._stream_interval,
             tool_logits_processor_factory=self._tool_logits_processor_factory,
+            structured_cot_processor_factory=self._structured_cot_processor_factory,
         )
 
         # Create async engine with shared model

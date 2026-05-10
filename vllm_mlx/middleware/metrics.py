@@ -88,11 +88,15 @@ class MetricsMiddleware:
         mtp_accepted_start = 0
         mtp_rejected_start = 0
         mtp_snapshot_taken = False
+        ngram_drafts_start = 0
+        ngram_drafted_start = 0
+        ngram_accepted_start = 0
 
         def poll_engine_stats() -> None:
             nonlocal engine_gen_tps, engine_ttft
             nonlocal mtp_enabled_global, mtp_accepted_start, mtp_rejected_start
             nonlocal mtp_snapshot_taken
+            nonlocal ngram_drafts_start, ngram_drafted_start, ngram_accepted_start
             try:
                 from ..config import get_config
 
@@ -114,6 +118,13 @@ class MetricsMiddleware:
                     mtp_enabled_global = bool(mtp_info.get("enabled"))
                     mtp_accepted_start = int(mtp_info.get("accepted") or 0)
                     mtp_rejected_start = int(mtp_info.get("rejected") or 0)
+                    ngram_drafts_start = int(mtp_info.get("ngram_drafts") or 0)
+                    ngram_drafted_start = int(
+                        mtp_info.get("ngram_tokens_drafted") or 0
+                    )
+                    ngram_accepted_start = int(
+                        mtp_info.get("ngram_tokens_accepted") or 0
+                    )
                     mtp_snapshot_taken = True
             except Exception:
                 pass
@@ -138,6 +149,35 @@ class MetricsMiddleware:
                 return bool(mtp_info.get("enabled")), accepted, rejected
             except Exception:
                 return mtp_enabled_global, 0, 0
+
+        def current_ngram_delta() -> tuple[bool, int, int, int]:
+            """Return (enabled, drafts, drafted, accepted) since request start."""
+            try:
+                from ..config import get_config
+
+                cfg = get_config()
+                if cfg.engine is None:
+                    return False, 0, 0, 0
+                stats = cfg.engine.get_stats()
+                mtp_info = stats.get("mtp") or {}
+                if not mtp_info:
+                    return False, 0, 0, 0
+                drafts = max(
+                    0, int(mtp_info.get("ngram_drafts") or 0) - ngram_drafts_start
+                )
+                drafted = max(
+                    0,
+                    int(mtp_info.get("ngram_tokens_drafted") or 0)
+                    - ngram_drafted_start,
+                )
+                accepted = max(
+                    0,
+                    int(mtp_info.get("ngram_tokens_accepted") or 0)
+                    - ngram_accepted_start,
+                )
+                return bool(mtp_info.get("ngram_enabled")), drafts, drafted, accepted
+            except Exception:
+                return False, 0, 0, 0
 
         def handle_payload(payload: dict) -> None:
             nonlocal first_token_seen, last_finish_reason
@@ -217,6 +257,12 @@ class MetricsMiddleware:
                             if payload is not None:
                                 handle_payload(payload)
                         mtp_enabled, mtp_accepted, mtp_rejected = current_mtp_delta()
+                        (
+                            ngram_enabled,
+                            ngram_drafts,
+                            ngram_drafted,
+                            ngram_accepted,
+                        ) = current_ngram_delta()
                         recorder.finish(
                             req_id,
                             finish_reason=last_finish_reason,
@@ -230,6 +276,10 @@ class MetricsMiddleware:
                             mtp_enabled=mtp_enabled,
                             mtp_accepted=mtp_accepted,
                             mtp_rejected=mtp_rejected,
+                            ngram_enabled=ngram_enabled,
+                            ngram_drafts=ngram_drafts,
+                            ngram_tokens_drafted=ngram_drafted,
+                            ngram_tokens_accepted=ngram_accepted,
                         )
             except Exception as exc:
                 logger.debug("metrics middleware error: %s", exc)
