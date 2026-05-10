@@ -698,6 +698,9 @@ def serve_command(args):
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
     print(f"  Ready: http://{host_display}:{args.port}/v1")
     print(f"  Docs:  http://{host_display}:{args.port}/docs")
+    from vllm_mlx._version_check import print_staleness_warning_if_any
+
+    print_staleness_warning_if_any()
     print()
     uvicorn.run(
         app,
@@ -1721,6 +1724,10 @@ def chat_command(args):
             sys.exit(1)
         print(f"  {GREEN}✓ Ready.{RESET}\n")
 
+    from vllm_mlx._version_check import print_staleness_warning_if_any
+
+    print_staleness_warning_if_any()
+
     print(
         f"  {BOLD}Chat{RESET} — "
         f"{DIM}type {RESET}{BOLD}/help{RESET}{DIM} for commands, "
@@ -2201,6 +2208,68 @@ def agents_command(args):
     print()
     print(instructions)
     print()
+
+
+def upgrade_command(args):
+    """Detect install method and (optionally) run the right upgrade command."""
+    import subprocess
+
+    from vllm_mlx._version_check import (
+        _installed_version,
+        _parse_version,
+        detect_install_method,
+        get_latest_version,
+    )
+
+    current = _installed_version() or "dev"
+    print()
+    print(f"  Current:  rapid-mlx {current}")
+
+    latest = get_latest_version(force_refresh=True)
+    if latest is None:
+        print("  Latest:   (could not reach GitHub — check your network)\n")
+        sys.exit(1)
+    print(f"  Latest:   rapid-mlx {latest}")
+
+    cur = _parse_version(current)
+    lat = _parse_version(latest)
+    if cur is not None and lat is not None and cur >= lat:
+        print("\n  ✓ Already up to date.\n")
+        return
+
+    info = detect_install_method()
+    print(f"  Install:  {info.method} ({info.binary_path or 'unknown path'})")
+    print(f"  Command:  {info.upgrade_command}")
+    print()
+
+    if info.method == "unknown":
+        print(
+            "  Could not auto-detect install method — run the command above manually.\n"
+        )
+        return
+
+    if args.yes:
+        confirmed = True
+    else:
+        try:
+            answer = input("  Run now? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        confirmed = answer in {"y", "yes"}
+
+    if not confirmed:
+        print("  Skipped — run the command above when ready.\n")
+        return
+
+    print()
+    try:
+        result = subprocess.run(info.upgrade_command, shell=True, check=False)
+    except KeyboardInterrupt:
+        print("\n  Interrupted.\n")
+        sys.exit(130)
+    print()
+    sys.exit(result.returncode)
 
 
 def main():
@@ -2839,6 +2908,18 @@ Examples:
     )
     subparsers.add_parser("ps", help="List running rapid-mlx servers")
 
+    # Upgrade — detect install method and run the right upgrade command
+    upgrade_parser = subparsers.add_parser(
+        "upgrade",
+        help="Upgrade rapid-mlx to the latest PyPI version",
+    )
+    upgrade_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt and run the upgrade immediately.",
+    )
+
     # Chat — interactive REPL backed by a (spawned or existing) server
     chat_parser = subparsers.add_parser(
         "chat", help="Interactive chat REPL with a model"
@@ -3045,6 +3126,8 @@ Examples:
         rm_command(args)
     elif args.command == "ps":
         ps_command(args)
+    elif args.command == "upgrade":
+        upgrade_command(args)
     elif args.command == "chat":
         chat_command(args)
     elif args.command == "info":
