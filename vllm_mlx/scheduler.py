@@ -608,6 +608,7 @@ def _install_mtp(
     target_min_p: float = 0.0,
     target_top_k: int = 0,
     draft_temperature: float = 0.7,
+    stats: dict[str, int] | None = None,
 ) -> None:
     """
     Monkey-patch a BatchGenerator to use MTP (Multi-Token Prediction)
@@ -665,8 +666,13 @@ def _install_mtp(
     _pending_primary_tokens = {}
     _persistent_mtp_caches = {}
 
-    # MTP stats
-    _mtp_stats = {"accepted": 0, "rejected": 0, "corrections": 0, "errors": 0}
+    # MTP stats — share scheduler-owned dict so counters survive batch
+    # generator recreation between requests.
+    _mtp_stats = (
+        stats
+        if stats is not None
+        else {"accepted": 0, "rejected": 0, "corrections": 0, "errors": 0}
+    )
 
     def _mtp_step(
         input_tokens,
@@ -1664,6 +1670,14 @@ class Scheduler:
         self.batch_generator: BatchGenerator | None = None
         self._current_sampler_params: tuple | None = None
 
+        # Lifetime MTP counters; persistent across batch generator recreation.
+        self._mtp_global_stats: dict[str, int] = {
+            "accepted": 0,
+            "rejected": 0,
+            "corrections": 0,
+            "errors": 0,
+        }
+
         # Prefix cache for KV state reuse
         self.prefix_cache: PrefixCacheManager | None = None
         self.memory_aware_cache: MemoryAwarePrefixCache | None = None
@@ -1906,6 +1920,7 @@ class Scheduler:
                     target_min_p=sampling_params.min_p,
                     target_top_k=effective_top_k,
                     draft_temperature=self.config.mtp_draft_temperature,
+                    stats=self._mtp_global_stats,
                 )
             else:
                 logger.warning(
@@ -3237,6 +3252,19 @@ class Scheduler:
             stats["memory_aware_cache"] = self.memory_aware_cache.get_stats()
         elif self.prefix_cache is not None:
             stats["prefix_cache"] = self.prefix_cache.get_stats()
+
+        accepted = self._mtp_global_stats["accepted"]
+        rejected = self._mtp_global_stats["rejected"]
+        verified = accepted + rejected
+        stats["mtp"] = {
+            "enabled": bool(self.config.enable_mtp),
+            "optimistic": bool(self.config.mtp_optimistic),
+            "accepted": accepted,
+            "rejected": rejected,
+            "corrections": self._mtp_global_stats["corrections"],
+            "errors": self._mtp_global_stats["errors"],
+            "acceptance_ratio": (accepted / verified) if verified > 0 else None,
+        }
         return stats
 
     def get_cache_stats(self) -> dict[str, Any] | None:
