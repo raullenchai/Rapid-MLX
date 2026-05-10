@@ -114,8 +114,10 @@ def maybe_prompt_for_consent(
                 "to be re-prompted)."
             )
         print()
-    except Exception:
-        # Belt-and-braces: telemetry consent is *never* a reason for the
-        # CLI to fail. Catch everything (including SystemExit-via-input),
-        # swallow it, and let the actual subcommand run.
+    except (OSError, EOFError, KeyboardInterrupt):
+        # Telemetry consent is *never* a reason for the CLI to fail —
+        # but only swallow the failure modes we actually expect: I/O on
+        # an unwritable home, terminal weirdness, or user Ctrl-C during
+        # input. Programming errors (AttributeError, TypeError, ...)
+        # propagate so they get noticed in development.
         return

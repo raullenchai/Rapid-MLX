@@ -704,14 +704,14 @@ Rapid-MLX **can** send anonymous usage data to help us prioritise the right mode
 - Subcommand names (`serve` / `chat` / `agents` / `bench` / `doctor`)
 - Model alias names (`qwen3.5-9b`) or canonical HF repo IDs (`mlx-community/...`) — local paths are redacted to `<local>`
 - Bucketed counts: prompt/completion tokens, TTFT, tokens/sec — never exact values
-- Error categories + a hash fingerprint of the failure site (module:function:lineno only — never the message text)
+- Error categories + a hash fingerprint of the failure site (exception class name + per-frame `file:function:lineno` only — never the message text or absolute paths)
 - OS, arch, Apple chip name, RAM (rounded to GB), Python major.minor
 
 ### What we never collect
 
 - Prompts, completions, tool-call arguments, file contents, or any user-generated text
 - Local file paths, working directory, or model paths beyond their HF repo ID
-- IPs (a Cloudflare Worker strips them before forwarding) or hostnames
+- IPs or hostnames (Phase 2 will route through a Cloudflare Worker that strips IPs before forwarding to the aggregator; Phase 1 ships no transport at all)
 - API keys, environment variable values, auth headers
 - Stack trace messages or argument values
 

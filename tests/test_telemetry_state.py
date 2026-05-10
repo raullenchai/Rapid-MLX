@@ -188,3 +188,54 @@ def test_consent_file_atomic_write(fake_home):
     record_consent(True, rapid_mlx_version="0.6.33")
     leftover = consent_path().with_suffix(consent_path().suffix + ".tmp")
     assert not leftover.exists()
+
+
+def test_record_consent_cleans_up_stale_tmp(fake_home):
+    """Simulate an interrupted previous write by pre-planting a .tmp.
+    record_consent must overwrite it cleanly and leave nothing behind."""
+    import yaml
+
+    from vllm_mlx.telemetry.state import (
+        consent_path,
+        get_consent_state,
+        record_consent,
+    )
+
+    cpath = consent_path()
+    cpath.parent.mkdir(parents=True, exist_ok=True)
+    stale = cpath.with_suffix(cpath.suffix + ".tmp")
+    stale.write_text("partial: junk\nthis is not valid")
+    assert stale.exists()
+
+    record_consent(True, rapid_mlx_version="0.6.33")
+    assert not stale.exists(), "stale .tmp should be cleaned up"
+    state = get_consent_state()
+    assert state is not None
+    assert state.consent is True
+    # And the real consent file is well-formed YAML.
+    parsed = yaml.safe_load(cpath.read_text())
+    assert parsed["consent"] is True
+
+
+def test_schema_version_mismatch_treated_as_unprompted(fake_home):
+    """A consent file with a schema_version we don't recognize must
+    be treated as 'never prompted' so the user gets re-asked under
+    whatever the current disclosure copy is. Forward-compat for
+    Phase 2+."""
+    import yaml
+
+    from vllm_mlx.telemetry.state import consent_path, get_consent_state
+
+    cpath = consent_path()
+    cpath.parent.mkdir(parents=True, exist_ok=True)
+    cpath.write_text(
+        yaml.safe_dump(
+            {
+                "consent": True,
+                "prompted_at": "2026-05-10T00:00:00Z",
+                "prompted_version": "0.6.33",
+                "schema_version": 99,  # future-version we don't know
+            }
+        )
+    )
+    assert get_consent_state() is None

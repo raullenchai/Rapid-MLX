@@ -86,10 +86,27 @@ def test_preview_emits_valid_json_payload(fake_home):
     r = _run_cli("telemetry", "preview", home=fake_home)
     assert r.returncode == 0, r.stderr
 
-    # Pull out the JSON object — output has framing text around it.
-    start = r.stdout.find("{")
-    end = r.stdout.rfind("}") + 1
-    payload = json.loads(r.stdout[start:end])
+    # Anchor on the first line containing ``"schema_version"`` so we
+    # don't get confused by stray ``{`` in framing text (e.g. a path
+    # like ``/some/{template}/dir`` would break naive parsing).
+    lines = r.stdout.splitlines()
+    schema_idx = next(
+        (i for i, line in enumerate(lines) if '"schema_version"' in line),
+        None,
+    )
+    assert schema_idx is not None, f"no schema_version line in:\n{r.stdout}"
+    open_idx = next(i for i in range(schema_idx, -1, -1) if lines[i].strip() == "{")
+    # Track brace depth so the nested platform/session sub-objects'
+    # ``}`` don't fool us into closing the envelope early.
+    depth = 0
+    close_idx = None
+    for i in range(open_idx, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if depth == 0:
+            close_idx = i
+            break
+    assert close_idx is not None, "could not find matching close brace"
+    payload = json.loads("\n".join(lines[open_idx : close_idx + 1]))
     assert payload["schema_version"] == 1
     assert "client_id" in payload
     assert payload["session_id"].startswith("preview-")

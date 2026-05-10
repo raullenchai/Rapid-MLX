@@ -156,6 +156,18 @@ def test_hash_flag_names_handles_equals_form():
     assert all("8000" not in name for name in result)
 
 
+def test_hash_flag_names_value_with_equals():
+    """``--filter=key=value`` — value contains ``=``. The flag name is
+    everything before the FIRST ``=``; the rest (incl. inner ``=``) is
+    the value and must be dropped wholesale."""
+    argv = ["--filter=key=value", "--header=X-Trace=abc123"]
+    result = hash_flag_names(argv)
+    assert result == ["filter", "header"]
+    # No part of either value survives.
+    for needle in ("key", "value", "X-Trace", "abc123"):
+        assert needle not in result
+
+
 def test_hash_flag_names_short_flags():
     argv = ["-V", "-y", "--verbose"]
     assert hash_flag_names(argv) == ["V", "verbose", "y"]
@@ -214,6 +226,31 @@ def test_fingerprint_traceback_omits_message_text():
     # The hex-only check is the strongest guarantee — the function
     # returns a sha256 prefix, so anything non-hex is a bug.
     assert all(c in "0123456789abcdef" for c in fp)
+
+
+def test_fingerprint_traceback_excludes_exception_module_path():
+    """A custom exception from ``foo.bar.baz.MyError`` must not have
+    its full module path become part of the hash input — that would
+    leak which third-party packages the user has installed.
+
+    We test indirectly: two exception classes with the same NAME but
+    different MODULE paths must produce the same fingerprint when
+    raised from the same site. If the implementation included
+    ``__module__``, the hashes would diverge.
+    """
+    # Build two distinct classes both named ``CustomError`` in different
+    # synthetic modules. Real-world analogue: two third-party packages
+    # both shipping a ``ConnectionError``.
+    err1 = type("CustomError", (Exception,), {"__module__": "pkg_a.sub"})
+    err2 = type("CustomError", (Exception,), {"__module__": "pkg_b.deep.nested"})
+
+    def trigger(cls) -> str:
+        try:
+            raise cls("x")
+        except Exception as e:
+            return fingerprint_traceback(e)
+
+    assert trigger(err1) == trigger(err2)
 
 
 def test_fingerprint_traceback_omits_local_paths():

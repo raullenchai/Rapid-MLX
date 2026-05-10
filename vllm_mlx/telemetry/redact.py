@@ -17,6 +17,7 @@ import hashlib
 import platform
 import re
 import traceback
+from functools import lru_cache
 from pathlib import Path
 
 # ---------------------------------------------------------------- bucketing
@@ -108,10 +109,18 @@ def normalize_model_path(path: str) -> str:
     """
     if not path:
         return "<empty>"
-    # Local-path heuristics: anything that looks like a filesystem path.
+    # Local-path heuristics, layered from cheap-string to robust-Path:
+    # the early returns keep the common HF-ID case fast.
     if path.startswith(("/", "./", "../", "~/")) or "\\" in path:
         return "<local>"
     if path.startswith("file://"):
+        return "<local>"
+    # Catch Windows drive-letter forms (``C:Users\...``, ``C:\\...``)
+    # and UNC paths that the cheap prefix check above misses.
+    try:
+        if Path(path).is_absolute():
+            return "<local>"
+    except (TypeError, ValueError, OSError):
         return "<local>"
     # Any ``/`` that survives must be the org/name separator and the
     # whole string must match the repo-ID pattern.
@@ -159,19 +168,24 @@ def hash_flag_names(argv: list[str]) -> list[str]:
 
 
 def fingerprint_traceback(exc: BaseException) -> str:
-    """Hash a traceback's *module paths only* — never message text.
+    """Hash a traceback's *frame paths only* — never message text, never
+    the exception's full module path.
 
-    We use the qualified frame paths (filename + function name + line
-    number) joined with the exception's class name. Crucially, we do NOT
-    include ``str(exc)`` — exception messages routinely contain user
-    input ("could not open /Users/alice/secret.txt").
+    We include only the bare exception class name (``ValueError``, not
+    ``transformers.models.llama.ModelError``) plus per-frame
+    ``basename:function:lineno``. Crucially we do NOT include ``str(exc)``
+    — exception messages routinely contain user input ("could not open
+    /Users/alice/secret.txt").
 
     Returns a 16-hex-char prefix of sha256 — enough to distinguish ~10^9
     distinct sites with negligible collision risk, short enough to
     eyeball in a dashboard.
     """
     tb = traceback.TracebackException.from_exception(exc)
-    parts: list[str] = [exc.__class__.__module__ + ":" + exc.__class__.__name__]
+    # Bare class name only — not ``__module__`` — so the fingerprint
+    # input does not reveal which third-party packages the user has
+    # installed (a soft fingerprint we don't need).
+    parts: list[str] = [exc.__class__.__name__]
     for frame in tb.stack:
         # frame.filename is an absolute path — strip the directory part
         # to avoid leaking the user's home. We keep the basename + the
@@ -186,11 +200,14 @@ def fingerprint_traceback(exc: BaseException) -> str:
 # ---------------------------------------------------------------- platform
 
 
+@lru_cache(maxsize=1)
 def _read_chip_brand() -> str:
     """Best-effort Apple Silicon chip name (e.g. ``"Apple M3 Ultra"``).
 
     Falls back to ``platform.processor()`` on non-Darwin or when sysctl
-    is unavailable. Never raises.
+    is unavailable. Never raises. Cached because chip identity does not
+    change at runtime and Phase 2 will call ``platform_info()`` per
+    event — without the cache that's a subprocess fork per request.
     """
     if platform.system() != "Darwin":
         return platform.processor() or "unknown"

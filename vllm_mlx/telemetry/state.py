@@ -44,6 +44,11 @@ import yaml
 
 ENV_VAR = "RAPID_MLX_TELEMETRY"
 
+# Bump when the on-disk consent file format changes incompatibly. A
+# stored record with a smaller schema_version is treated as "never
+# prompted" so the user gets re-asked under the new disclosure copy.
+CURRENT_CONSENT_SCHEMA_VERSION = 1
+
 
 def _default_telemetry_dir() -> Path:
     """Resolved at call time so ``HOME`` overrides in tests take effect."""
@@ -98,6 +103,13 @@ def get_consent_state() -> ConsentState | None:
     schema_version = data.get("schema_version", 1)
     if not isinstance(schema_version, int):
         schema_version = 1
+    # Treat unknown / older schema versions as "never prompted" so a
+    # disclosure-copy bump in a future release re-asks every user under
+    # the new wording. Forward-compat (newer file from a downgraded
+    # rapid-mlx) hits the same path — safer to re-prompt than to honor
+    # a record we don't fully understand.
+    if schema_version != CURRENT_CONSENT_SCHEMA_VERSION:
+        return None
     return ConsentState(
         consent=consent,
         prompted_at=prompted_at,
@@ -130,6 +142,12 @@ def record_consent(consent: bool, *, rapid_mlx_version: str) -> ConsentState:
     # write-then-rename so a SIGINT mid-write can't leave a half-file
     # that get_consent_state() would silently treat as "never prompted"
     tmp = path.with_suffix(path.suffix + ".tmp")
+    # Clean up any leftover .tmp from a previous interrupted write so
+    # we never start out with a partial file under our chosen name.
+    try:
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
     tmp.write_text(yaml.safe_dump(payload, sort_keys=True))
     try:
         os.chmod(tmp, 0o600)
