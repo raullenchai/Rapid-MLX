@@ -215,7 +215,23 @@ def test_detect_install_method_brew(monkeypatch):
     info = vc.detect_install_method()
     assert info.method == "brew"
     assert info.upgrade_command == "brew upgrade raullenchai/tap/rapid-mlx"
+    assert info.upgrade_argv == ["brew", "upgrade", "raullenchai/tap/rapid-mlx"]
     assert info.binary_path == fake_binary
+
+
+def test_detect_install_method_brew_linux(monkeypatch):
+    """Linux Homebrew installs to ``/home/linuxbrew/.linuxbrew/`` — must
+    detect there too, otherwise Linux-via-brew users get the pip command."""
+    fake_binary = "/home/linuxbrew/.linuxbrew/bin/rapid-mlx"
+    fake_realpath = "/home/linuxbrew/.linuxbrew/Cellar/rapid-mlx/0.6.20/bin/rapid-mlx"
+    monkeypatch.setattr("shutil.which", lambda _name: fake_binary)
+    monkeypatch.setattr(
+        "os.path.realpath",
+        lambda p: fake_realpath if p == fake_binary else p,
+    )
+
+    info = vc.detect_install_method()
+    assert info.method == "brew"
 
 
 def test_detect_install_method_install_sh(tmp_path, monkeypatch):
@@ -259,6 +275,8 @@ def test_detect_install_method_install_sh_via_symlink(tmp_path, monkeypatch):
     info = vc.detect_install_method()
     assert info.method == "install_sh"
     assert "install.sh" in info.upgrade_command
+    # Pipe needs a shell — wrapped as ``bash -c <pipe>``, never `shell=True`.
+    assert info.upgrade_argv[:2] == ["bash", "-c"]
 
 
 def test_detect_install_method_pip_uses_sys_executable(monkeypatch):
@@ -267,13 +285,25 @@ def test_detect_install_method_pip_uses_sys_executable(monkeypatch):
     same Python env that's currently running the CLI (matters when the
     user has multiple python3 installs).
     """
+    import sys
+
     monkeypatch.setattr("shutil.which", lambda _name: "/some/other/path/rapid-mlx")
     monkeypatch.setattr("os.path.realpath", lambda p: p)
 
     info = vc.detect_install_method()
     assert info.method == "pip"
-    assert info.upgrade_command.startswith(sys_executable())
+    assert info.upgrade_command.startswith(sys.executable)
     assert info.upgrade_command.endswith("-m pip install --upgrade rapid-mlx")
+    # argv form is shell-safe even if sys.executable contains spaces — that
+    # was a P0 in deepseek review (subprocess shell=True path injection).
+    assert info.upgrade_argv == [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "rapid-mlx",
+    ]
 
 
 def test_detect_install_method_no_binary_falls_back_to_pip(monkeypatch):
@@ -285,9 +315,3 @@ def test_detect_install_method_no_binary_falls_back_to_pip(monkeypatch):
     info = vc.detect_install_method()
     assert info.method == "pip"
     assert info.binary_path is None
-
-
-def sys_executable() -> str:
-    import sys
-
-    return sys.executable

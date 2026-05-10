@@ -204,18 +204,29 @@ def print_staleness_warning_if_any() -> None:
 class InstallInfo:
     """Detected install method + the right upgrade command to run.
 
+    ``upgrade_argv`` is the form actually executed (``subprocess.run`` with
+    no shell), avoiding the injection risk from interpolating
+    ``sys.executable`` (or any other path that might contain spaces) into a
+    shell-parsed string. ``upgrade_command`` is the cosmetic form printed
+    to the user before they confirm.
+
     Plain class (not dataclass) so the module stays stdlib-only — staleness
     helper is loaded on every CLI startup, so we keep its import surface
     minimal.
     """
 
-    __slots__ = ("method", "upgrade_command", "binary_path")
+    __slots__ = ("method", "upgrade_command", "upgrade_argv", "binary_path")
 
     def __init__(
-        self, method: str, upgrade_command: str, binary_path: str | None = None
+        self,
+        method: str,
+        upgrade_command: str,
+        upgrade_argv: list[str],
+        binary_path: str | None = None,
     ) -> None:
-        self.method = method  # one of: brew, pip, install_sh, unknown
+        self.method = method  # one of: brew, pip, install_sh
         self.upgrade_command = upgrade_command
+        self.upgrade_argv = upgrade_argv
         self.binary_path = binary_path
 
 
@@ -223,9 +234,11 @@ def detect_install_method() -> InstallInfo:
     """Detect how rapid-mlx was installed and return the right upgrade command.
 
     Detection order:
-      1. brew — ``rapid-mlx`` realpath under ``/Cellar/rapid-mlx`` or
-         ``/opt/homebrew/`` triggers ``brew upgrade raullenchai/tap/rapid-mlx``.
-      2. install.sh — binary under ``~/.local/bin`` triggers a re-run of
+      1. brew — ``rapid-mlx`` realpath under ``/Cellar/rapid-mlx``,
+         ``/opt/homebrew/`` (macOS) or ``/home/linuxbrew/`` (Linux brew)
+         triggers ``brew upgrade raullenchai/tap/rapid-mlx``.
+      2. install.sh — binary under ``~/.local/bin`` (or realpath under
+         the install.sh venv at ``~/.rapid-mlx/``) triggers a re-run of
          the install.sh script.
       3. pip (default) — uses ``sys.executable -m pip install --upgrade``
          so the upgrade lands in the same env that's currently running
@@ -236,10 +249,12 @@ def detect_install_method() -> InstallInfo:
     binary = shutil.which("rapid-mlx")
     if binary:
         normalized = os.path.realpath(binary)
-        if "/Cellar/rapid-mlx" in normalized or "/opt/homebrew/" in normalized:
+        brew_markers = ("/Cellar/rapid-mlx", "/opt/homebrew/", "/home/linuxbrew/")
+        if any(m in normalized for m in brew_markers):
             return InstallInfo(
                 method="brew",
                 upgrade_command="brew upgrade raullenchai/tap/rapid-mlx",
+                upgrade_argv=["brew", "upgrade", "raullenchai/tap/rapid-mlx"],
                 binary_path=binary,
             )
         # install.sh creates ``~/.rapid-mlx`` (venv) and symlinks the
@@ -249,17 +264,29 @@ def detect_install_method() -> InstallInfo:
         local_bin = str(Path.home() / ".local" / "bin")
         rapid_mlx_dir = str(Path.home() / ".rapid-mlx")
         if binary.startswith(local_bin) or normalized.startswith(rapid_mlx_dir):
+            install_sh_pipe = (
+                "curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash"
+            )
             return InstallInfo(
                 method="install_sh",
-                upgrade_command=(
-                    "curl -fsSL "
-                    "https://raullenchai.github.io/Rapid-MLX/install.sh | bash"
-                ),
+                upgrade_command=install_sh_pipe,
+                # Pipe needs a shell — use bash -c explicitly rather than
+                # ``shell=True`` (no ambient $SHELL coupling, no PATH-based
+                # shell-injection surface beyond the literal string we control).
+                upgrade_argv=["bash", "-c", install_sh_pipe],
                 binary_path=binary,
             )
 
     return InstallInfo(
         method="pip",
         upgrade_command=f"{sys.executable} -m pip install --upgrade rapid-mlx",
+        upgrade_argv=[
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "rapid-mlx",
+        ],
         binary_path=binary,
     )

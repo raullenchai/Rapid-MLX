@@ -2264,7 +2264,11 @@ def upgrade_command(args):
 
     print()
     try:
-        result = subprocess.run(info.upgrade_command, shell=True, check=False)
+        # Use argv form (shell=False) so paths with spaces in
+        # ``sys.executable`` (or any other argv entry) can't be reinterpreted
+        # as shell separators. install.sh's pipe is wrapped as ``bash -c``
+        # in upgrade_argv, so we still get the pipe semantics it needs.
+        result = subprocess.run(info.upgrade_argv, check=False)
     except KeyboardInterrupt:
         print("\n  Interrupted.\n")
         sys.exit(130)
@@ -2911,7 +2915,7 @@ Examples:
     # Upgrade — detect install method and run the right upgrade command
     upgrade_parser = subparsers.add_parser(
         "upgrade",
-        help="Upgrade rapid-mlx to the latest PyPI version",
+        help="Upgrade rapid-mlx to the latest version (brew / pip / install.sh)",
     )
     upgrade_parser.add_argument(
         "-y",
