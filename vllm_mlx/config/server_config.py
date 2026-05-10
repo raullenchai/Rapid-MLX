@@ -59,6 +59,10 @@ class ServerConfig:
     # --- Auth ---
     api_key: str | None = None
 
+    # --- Concurrency cap ---
+    max_concurrent: int = 0  # 0 = unlimited
+    concurrency_semaphore: asyncio.Semaphore | None = None
+
     # --- Cloud routing ---
     cloud_router: Any = None
 

@@ -195,6 +195,9 @@ _no_thinking: bool = (
 _pin_system_prompt: bool = False  # Auto-pin system prompt prefix cache blocks
 _pinned_system_prompt_hash: str | None = None  # Hash of pinned system prompt
 
+# Concurrency cap (--max-concurrent): max in-flight inference requests.
+_max_concurrent: int = 0  # 0 = unlimited
+
 # Idle unload (--idle-timeout): unload model after N seconds of inactivity.
 _idle_timeout: float = 60.0  # 0 = disabled
 # Captured load_model() kwargs so the idle manager can reload with the same
@@ -472,10 +475,15 @@ def configure_cors(origins: list[str]) -> None:
 
 
 # Per-request metrics recorder for /v1/requests and the TUI monitor
+from .middleware.concurrency import ConcurrencyMiddleware  # noqa: E402
 from .middleware.idle import IdleMiddleware  # noqa: E402
 from .middleware.metrics import MetricsMiddleware  # noqa: E402
 
 app.add_middleware(MetricsMiddleware)
+# ConcurrencyMiddleware caps in-flight inference requests (--max-concurrent).
+# Sits between Idle (outer, reloads model) and Metrics (inner, per-request
+# timings) — extra requests wait for a free slot AFTER the model is loaded.
+app.add_middleware(ConcurrencyMiddleware)
 # IdleMiddleware sits outside MetricsMiddleware: when the model is unloaded,
 # it must reload BEFORE the request hits any inference path.
 app.add_middleware(IdleMiddleware)
@@ -717,6 +725,7 @@ def _sync_config() -> None:
     cfg.embedding_engine = _embedding_engine
     cfg.embedding_model_locked = _embedding_model_locked
     cfg.api_key = _api_key
+    cfg.max_concurrent = max(0, int(_max_concurrent))
     cfg.cloud_router = _cloud_router
     cfg.gc_control = _gc_control
     cfg.no_thinking = _no_thinking

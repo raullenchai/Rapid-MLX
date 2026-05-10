@@ -297,6 +297,7 @@ def serve_command(args):
     server._api_key = args.api_key
     server._default_timeout = args.timeout
     server._idle_timeout = max(0.0, float(getattr(args, "idle_timeout", 0.0)))
+    server._max_concurrent = max(0, int(getattr(args, "max_concurrent", 0)))
     # Configure CORS
     cors_origins = args.cors_origins if args.cors_origins else ["*"]
     server.configure_cors(cors_origins)
@@ -373,6 +374,8 @@ def serve_command(args):
         features.append("auth: on")
     if args.rate_limit > 0:
         features.append(f"rate-limit: {args.rate_limit}/min")
+    if getattr(args, "max_concurrent", 0) and args.max_concurrent > 0:
+        features.append(f"max-concurrent: {args.max_concurrent}")
     if args.cloud_model:
         features.append(f"cloud: {args.cloud_model}")
     if gc_control:
@@ -1238,6 +1241,13 @@ Examples:
     )
     serve_parser.add_argument(
         "--max-num-seqs", type=int, default=256, help="Max concurrent sequences"
+    )
+    serve_parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=0,
+        help="Cap in-flight HTTP inference requests (0 = unlimited). "
+        "Excess requests queue (await) until a slot frees.",
     )
     serve_parser.add_argument(
         "--prefill-batch-size", type=int, default=8, help="Prefill batch size"
