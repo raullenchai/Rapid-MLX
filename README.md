@@ -695,6 +695,53 @@ Result: PASS
 
 ---
 
+## Telemetry
+
+Rapid-MLX **can** send anonymous usage data to help us prioritise the right models and catch regressions. **It is off by default and never starts collecting without your explicit opt-in.**
+
+### What we collect (only if you opt in)
+
+- Subcommand names (`serve` / `chat` / `agents` / `bench` / `doctor`)
+- Model alias names (`qwen3.5-9b`) or canonical HF repo IDs (`mlx-community/...`) — local paths are redacted to `<local>`
+- Bucketed counts: prompt/completion tokens, TTFT, tokens/sec — never exact values
+- Error categories + a hash fingerprint of the failure site (module:function:lineno only — never the message text)
+- OS, arch, Apple chip name, RAM (rounded to GB), Python major.minor
+
+### What we never collect
+
+- Prompts, completions, tool-call arguments, file contents, or any user-generated text
+- Local file paths, working directory, or model paths beyond their HF repo ID
+- IPs (a Cloudflare Worker strips them before forwarding) or hostnames
+- API keys, environment variable values, auth headers
+- Stack trace messages or argument values
+
+### Manage it
+
+```bash
+rapid-mlx telemetry status     # show current state and why
+rapid-mlx telemetry preview    # print the exact JSON payload that would be sent
+rapid-mlx telemetry enable     # opt in
+rapid-mlx telemetry disable    # opt out
+rapid-mlx telemetry reset      # delete consent + client-id files (re-prompts on next run)
+```
+
+### Force-disable in scripts / CI
+
+Either of these always wins, regardless of stored consent:
+
+```bash
+RAPID_MLX_TELEMETRY=0 rapid-mlx serve qwen3.5-9b
+rapid-mlx --no-telemetry serve qwen3.5-9b
+```
+
+There is intentionally **no env-var equivalent for force-on** — opting in must be an explicit one-time `rapid-mlx telemetry enable`. CI agents will never silently contribute.
+
+### Where the code lives
+
+Everything is in [`vllm_mlx/telemetry/`](vllm_mlx/telemetry/) — read it. Phase 1 (this release) ships the consent mechanism and CLI surface; **no network code is in the codebase yet**. Phase 2 will add the transport behind the same opt-in gate; the schema is documented in [`vllm_mlx/telemetry/schema.py`](vllm_mlx/telemetry/schema.py). Tracking issue: [#236](https://github.com/raullenchai/Rapid-MLX/issues/236).
+
+---
+
 ## Development
 
 ### Quick start

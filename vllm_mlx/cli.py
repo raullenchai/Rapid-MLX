@@ -2279,6 +2279,102 @@ def upgrade_command(args):
     sys.exit(result.returncode)
 
 
+def telemetry_command(args) -> None:
+    """Manage anonymous usage telemetry — see Issue #236.
+
+    Five actions: ``status`` / ``enable`` / ``disable`` / ``preview`` /
+    ``reset``. Defaults to ``status`` when no action given so users can
+    type ``rapid-mlx telemetry`` and immediately see what's set up.
+    """
+    # Imports kept inside the function so the telemetry package is only
+    # loaded when actually needed — keeps `--help` and unrelated
+    # subcommands cheap.
+    import json
+
+    from vllm_mlx import __version__ as rapid_mlx_version
+    from vllm_mlx.telemetry import (
+        consent_source,
+        get_consent_state,
+        get_or_create_client_id,
+        is_enabled,
+        record_consent,
+        reset_state,
+    )
+    from vllm_mlx.telemetry.schema import sample_preview_payload
+    from vllm_mlx.telemetry.state import client_id_path, consent_path
+
+    action = getattr(args, "telemetry_action", None) or "status"
+    cli_no = getattr(args, "no_telemetry", False)
+
+    if action == "status":
+        state = get_consent_state()
+        print()
+        print(
+            f"  Telemetry: {'ENABLED' if is_enabled(cli_no_telemetry=cli_no) else 'disabled'}"
+        )
+        print(f"  Source:    {consent_source(cli_no_telemetry=cli_no)}")
+        if state is not None:
+            print(
+                f"  Consent:   {state.consent} (recorded {state.prompted_at}, "
+                f"by rapid-mlx {state.prompted_version})"
+            )
+        else:
+            print("  Consent:   never prompted")
+        print(f"  Files:     {consent_path()}")
+        print(f"             {client_id_path()}")
+        print()
+        print("  Subcommands:  enable | disable | preview | reset")
+        print()
+        return
+
+    if action == "enable":
+        record_consent(True, rapid_mlx_version=rapid_mlx_version)
+        # Generate the client_id eagerly so `preview` immediately after
+        # has a real id to show.
+        get_or_create_client_id()
+        print()
+        print("  Telemetry: ENABLED. Thanks for helping us prioritise.")
+        print("  Disable anytime with `rapid-mlx telemetry disable`.")
+        print("  Preview what we'd send: `rapid-mlx telemetry preview`.")
+        print()
+        return
+
+    if action == "disable":
+        record_consent(False, rapid_mlx_version=rapid_mlx_version)
+        print()
+        print("  Telemetry: disabled. No data will be sent.")
+        print("  Re-enable anytime with `rapid-mlx telemetry enable`.")
+        print()
+        return
+
+    if action == "preview":
+        cid = get_or_create_client_id()
+        payload = sample_preview_payload(
+            client_id=cid, rapid_mlx_version=rapid_mlx_version
+        )
+        print()
+        print("  Sample payload (this is exactly the shape we send):")
+        print()
+        print(json.dumps(payload.to_dict(), indent=2))
+        print()
+        if not is_enabled(cli_no_telemetry=cli_no):
+            print("  Telemetry is currently disabled — nothing is actually sent.")
+            print()
+        return
+
+    if action == "reset":
+        reset_state()
+        print()
+        print("  Removed consent + client-id files. Next interactive run re-prompts.")
+        print()
+        return
+
+    # Unknown action — argparse choices=[] would have caught this earlier
+    # in normal flow; defensive guard for future maintainers.
+    print(f"  Unknown telemetry action: {action!r}")
+    sys.exit(1)
+
+
 def main():
     from importlib.metadata import version as pkg_version
 
@@ -2299,6 +2395,12 @@ Examples:
     )
     parser.add_argument(
         "--version", "-V", action="version", version=f"rapid-mlx {_version}"
+    )
+    parser.add_argument(
+        "--no-telemetry",
+        action="store_true",
+        help="Disable anonymous usage telemetry for this run "
+        "(equivalent to RAPID_MLX_TELEMETRY=0).",
     )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
@@ -3073,7 +3175,48 @@ Examples:
         "Ignored with a warning for smoke / benchmark tiers.",
     )
 
+    # Telemetry subcommand — opt-in anonymous usage data (Issue #236).
+    # See vllm_mlx/telemetry/ for what we collect / don't collect, and
+    # the README "Telemetry" section for the user-facing summary.
+    telemetry_parser = subparsers.add_parser(
+        "telemetry",
+        help="Manage anonymous usage telemetry (opt-in)",
+    )
+    telemetry_subparsers = telemetry_parser.add_subparsers(
+        dest="telemetry_action",
+        help="Telemetry actions",
+    )
+    telemetry_subparsers.add_parser(
+        "status", help="Show whether telemetry is enabled and why"
+    )
+    telemetry_subparsers.add_parser(
+        "enable", help="Opt in to anonymous usage telemetry"
+    )
+    telemetry_subparsers.add_parser(
+        "disable", help="Opt out of anonymous usage telemetry"
+    )
+    telemetry_subparsers.add_parser(
+        "preview",
+        help="Print a sample payload showing exactly what telemetry would send",
+    )
+    telemetry_subparsers.add_parser(
+        "reset",
+        help="Delete the consent + client-id files (next run re-prompts)",
+    )
+
     args = parser.parse_args()
+
+    # First-run consent prompt — fires at most once per machine, only on
+    # interactive subcommands when stdin is a tty. Safe no-op otherwise.
+    # Must run *before* heavy subcommand work so the user sees the
+    # disclosure before any model load logs scroll past.
+    if getattr(args, "command", None) is not None:
+        from vllm_mlx.telemetry import maybe_prompt_for_consent
+
+        maybe_prompt_for_consent(
+            args.command,
+            cli_no_telemetry=getattr(args, "no_telemetry", False),
+        )
 
     # Resolve model aliases before dispatch.
     #
@@ -3146,6 +3289,8 @@ Examples:
         if getattr(args, "models", None):
             args.models = [m.strip() for m in args.models.split(",") if m.strip()]
         doctor_command(args)
+    elif args.command == "telemetry":
+        telemetry_command(args)
     else:
         parser.print_help()
         sys.exit(1)
