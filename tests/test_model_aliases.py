@@ -91,3 +91,51 @@ def test_suggest_similar_matches_partial_family_token():
     no exact ``hermes-foo`` separator pattern."""
     suggestions = suggest_similar("hermes")
     assert "hermes3-8b" in suggestions, suggestions
+
+
+# --- Letter-only fallback (separator-mismatched names) ----------------
+
+
+def test_suggest_similar_letter_fallback_handles_separator_mismatch():
+    """Real bug from the field: ``rapid-mlx chat gemma4-27b`` returned
+    zero suggestions because the strict family parser sees ``gemma4`` and
+    no alias starts with ``gemma4`` (we have ``gemma-4-26b`` and
+    ``gemma3-27b``). The letter-only fallback must catch this — extract
+    ``gemma`` and match the whole gemma family."""
+    suggestions = suggest_similar("gemma4-27b")
+    assert suggestions, "letter-only fallback must produce gemma family suggestions"
+    # All suggestions must be in the gemma family — no llama / qwen leakage.
+    for s in suggestions:
+        assert s.startswith("gemma"), s
+
+
+def test_suggest_similar_letter_fallback_collapsed_separator():
+    """User collapses our hyphen — ``mistral24b`` should still suggest
+    ``mistral-24b``, not return []."""
+    assert "mistral-24b" in suggest_similar("mistral24b")
+
+
+def test_suggest_similar_letter_fallback_skips_legit_looking_names():
+    """When the input has no size/quant suffix tokens (i.e., looks
+    structurally like a legit single-segment HF repo ID), suggest_similar
+    must return [] — not bait-and-switch ``gpt2`` to ``gpt-oss-20b`` or
+    ``qwen-coder`` to ``qwen3-coder``. The CLI layer's POPULAR_ALIASES
+    fallback handles those cases at presentation time."""
+    # ``gpt2`` has been pinned by test_suggest_similar_lets_legitimate_hf_ids_through;
+    # this case adds the partial-family equivalent.
+    assert suggest_similar("qwen-coder") == []
+
+
+def test_popular_aliases_curated_list_resolves():
+    """Every entry in POPULAR_ALIASES (used as the user-facing
+    'try one of these' fallback when zero fuzzy matches) must be a real
+    alias in aliases.json — otherwise the error message is a lie."""
+    from vllm_mlx.model_aliases import POPULAR_ALIASES
+
+    aliases = list_aliases()
+    missing = [a for a in POPULAR_ALIASES if a not in aliases]
+    assert not missing, (
+        f"POPULAR_ALIASES references non-existent aliases: {missing}. "
+        f"Update vllm_mlx/model_aliases.py POPULAR_ALIASES tuple after "
+        f"removing or renaming aliases."
+    )

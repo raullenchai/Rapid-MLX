@@ -17,6 +17,27 @@ import os
 import sys
 
 
+def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
+    """Print fuzzy suggestions + a curated popular-models hint.
+
+    Replaces the older "Did you mean: X?" + "Run `rapid-mlx models`" pattern
+    that left users empty-handed when no close fuzzy match existed
+    (e.g. ``rapid-mlx chat gemma4-27b`` returned zero suggestions, told the
+    user to run another command, and gave no hint of what was actually
+    supported). Now: always show *something* — fuzzy matches when we have
+    them, curated popular aliases when we don't.
+    """
+    from vllm_mlx.model_aliases import POPULAR_ALIASES, list_aliases, suggest_similar
+
+    suggestions = suggest_similar(name)
+    if suggestions:
+        print(f"  Did you mean: {', '.join(suggestions)}?")
+    else:
+        print(f"  Try one of: {', '.join(POPULAR_ALIASES)}")
+    print(f"  Run `rapid-mlx models` to see all {len(list_aliases())} aliases,")
+    print(f"  or pass a full path like: {full_path_example}")
+
+
 def _check_disk_space(model_name: str, force: bool = False) -> None:
     """Verify there's enough disk space to download the model.
 
@@ -676,16 +697,10 @@ def serve_command(args):
             "404" in str(e) or "not found" in str(e).lower()
         )
         if is_404:
-            from vllm_mlx.model_aliases import suggest_similar
-
             shown = getattr(args, "_original_alias", args.model)
             print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
-            suggestions = suggest_similar(shown)
-            if suggestions:
-                print(f"  Did you mean: {', '.join(suggestions)}?")
-            print("  Run `rapid-mlx models` to see available aliases,")
-            print(
-                "  or use a full HuggingFace path like: mlx-community/Qwen3.5-9B-4bit"
+            _print_unknown_model_help(
+                shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
             )
         else:
             print(f"\n  Error loading model: {e}")
@@ -741,16 +756,10 @@ def bench_command(args):
                 "404" in str(e) or "not found" in str(e).lower()
             )
             if is_404:
-                from vllm_mlx.model_aliases import suggest_similar
-
                 shown = getattr(args, "_original_alias", args.model)
                 print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
-                suggestions = suggest_similar(shown)
-                if suggestions:
-                    print(f"  Did you mean: {', '.join(suggestions)}?")
-                print("  Run `rapid-mlx models` to see available aliases,")
-                print(
-                    "  or use a full HuggingFace path like: mlx-community/Qwen3.5-9B-4bit"
+                _print_unknown_model_help(
+                    shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
                 )
             else:
                 print(f"\n  Error loading model: {e}")
@@ -932,16 +941,10 @@ def pull_command(args):
             "404" in str(e) or "not found" in str(e).lower()
         )
         if is_404:
-            from vllm_mlx.model_aliases import suggest_similar
-
             shown = getattr(args, "_original_alias", repo_id)
             print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
-            suggestions = suggest_similar(shown)
-            if suggestions:
-                print(f"  Did you mean: {', '.join(suggestions)}?")
-            print("  Run `rapid-mlx models` to see available aliases,")
-            print(
-                "  or use a full HuggingFace path like: mlx-community/Qwen3.5-9B-4bit"
+            _print_unknown_model_help(
+                shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
             )
             sys.exit(1)
         raise
@@ -3085,7 +3088,7 @@ Examples:
         and args.model
         and getattr(args, "command", None) != "doctor"
     ):
-        from vllm_mlx.model_aliases import resolve_model, suggest_similar
+        from vllm_mlx.model_aliases import resolve_model
 
         resolved = resolve_model(args.model)
         if resolved != args.model:
@@ -3099,11 +3102,9 @@ Examples:
             print(
                 f"\n  Error: '{args.model}' is not a known alias or HuggingFace path."
             )
-            suggestions = suggest_similar(args.model)
-            if suggestions:
-                print(f"  Did you mean: {', '.join(suggestions)}?")
-            print("  Run `rapid-mlx models` to see all aliases,")
-            print("  or pass a full path like: mlx-community/Qwen3.5-9B-4bit")
+            _print_unknown_model_help(
+                args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
+            )
             sys.exit(1)
 
     if args.command == "serve":

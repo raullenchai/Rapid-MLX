@@ -198,33 +198,98 @@ def _family_prefix(name: str) -> str:
     return "-".join(parts)
 
 
+def _letters_only_prefix(name: str) -> str:
+    """Extract the leading ``[a-z]+`` run from ``name`` (lowercased).
+
+    Used as a fallback family hint when the dash-aware ``_family_prefix``
+    returns nothing useful — handles cases where the user collapses or
+    inserts separators we don't use (``gemma4-27b`` → ``gemma``, matches
+    our ``gemma-4-*`` and ``gemma3-*`` aliases; ``mistral24b`` →
+    ``mistral``, matches ``mistral-24b``).
+    """
+    out = []
+    for ch in name.lower():
+        if ch.isalpha():
+            out.append(ch)
+        else:
+            break
+    return "".join(out)
+
+
 def suggest_similar(name: str, n: int = 3, cutoff: float = 0.5) -> list[str]:
     """Return up to ``n`` aliases similar to ``name`` for typo suggestions.
 
-    Family-aware: only suggests aliases that share a family prefix with the
-    input. This keeps the wrong-family bait-and-switch (typing
-    ``deepseek-v4-27b`` and being told ``deepseek-r1-32b``) from happening,
-    and also prevents legitimate single-segment HuggingFace IDs like
-    ``gpt2`` or ``bert-base-uncased`` from spuriously matching.
+    Family-aware in two passes:
+    1. **Strict family match** — uses ``_family_prefix`` (drops trailing
+       size/quant tokens). Keeps the wrong-family bait-and-switch (typing
+       ``deepseek-v4-27b`` and being told ``deepseek-r1-32b``) from
+       happening, and prevents legitimate single-segment HuggingFace IDs
+       like ``gpt2`` or ``bert-base-uncased`` from spuriously matching.
+    2. **Letter-only prefix fallback** — if step 1 finds nothing, retry
+       using the ``[a-z]+`` prefix (e.g. ``gemma4-27b`` → ``gemma``). The
+       cutoff is dropped here because we already filtered by family
+       overlap; difflib just orders by closeness within the family.
 
-    Behaviour:
-    - Multi-segment family (``fam`` contains ``-``): match aliases that
-      start with ``fam-`` or are exactly ``fam``.
-    - Single-segment family (``hermes``, ``qwen3.5``, ``gpt2``): match
-      aliases whose name starts with ``fam``. Requires ``fam`` to be at
-      least 3 chars to avoid one- or two-letter false positives.
-    - No same-family match: return ``[]`` (let the loader's 404 handle it).
+    Returns ``[]`` only when neither pass finds anything in the same
+    letter family — at which point the caller should show a curated
+    "popular models" fallback rather than leave the user empty-handed.
     """
-    fam = _family_prefix(name)
-    if not fam:
-        return []
     aliases = list(_load().keys())
-    if "-" in fam:
-        same_fam = [a for a in aliases if a.startswith(fam + "-") or a == fam]
-    else:
-        if len(fam) < 3:
-            return []
-        same_fam = [a for a in aliases if a.startswith(fam)]
-    if not same_fam:
+
+    # Pass 1: strict family prefix.
+    fam = _family_prefix(name)
+    same_fam: list[str] = []
+    if fam:
+        if "-" in fam:
+            same_fam = [a for a in aliases if a.startswith(fam + "-") or a == fam]
+        elif len(fam) >= 3:
+            same_fam = [a for a in aliases if a.startswith(fam)]
+        if same_fam:
+            # If we found candidates in the same strict family, trust the
+            # cutoff — even if it filters everything out. The cutoff
+            # rejecting ``gpt2`` against ``gpt-oss-20b`` is the
+            # legitimate-HF-ID guarantee at work; the letter-only
+            # fallback below would override that and is wrong here.
+            return difflib.get_close_matches(name, same_fam, n=n, cutoff=cutoff)
+
+    # Pass 2: letter-only prefix fallback. Gated to inputs where the
+    # strict family parser *had to strip something* (signal that the user
+    # typed a name following our size/quant naming convention) — handles
+    # ``gemma4-27b`` (fam stripped to ``gemma4``, no exact match) and
+    # ``mistral24b`` (fam stripped to empty by the trailing ``-b``-ish
+    # token). Untouched inputs like ``gpt2``, ``bert-base-uncased`` or
+    # ``qwen-coder`` skip this fallback so legit single-segment HF repo
+    # IDs aren't bait-and-switched.
+    if fam == name:
         return []
-    return difflib.get_close_matches(name, same_fam, n=n, cutoff=cutoff)
+    letter_fam = _letters_only_prefix(name)
+    if len(letter_fam) < 3:
+        return []
+    same_letter_fam = [a for a in aliases if _letters_only_prefix(a) == letter_fam]
+    if not same_letter_fam:
+        return []
+    # Within a family, order by similarity to the typed name. No cutoff —
+    # any same-letter-family alias is a sane suggestion.
+    ranked = sorted(
+        same_letter_fam,
+        key=lambda a: difflib.SequenceMatcher(None, name, a).ratio(),
+        reverse=True,
+    )
+    return ranked[:n]
+
+
+# Curated "what should a brand-new user try" list. Surfaced when the user
+# typed a name we couldn't match to anything (or even fuzzy-match within a
+# family). Hand-picked rather than auto-generated so it always leads with
+# the small/fast tier and one well-known representative per category —
+# auto-generation would spit out alphabetic noise like ``bonsai-*`` first.
+POPULAR_ALIASES: tuple[str, ...] = (
+    "qwen3.5-4b",  # default smoke / small
+    "qwen3.5-9b",  # mid-size general
+    "qwen3.6-27b",  # latest hybrid family
+    "qwen3-coder-30b",  # coding
+    "gemma3-12b",  # gemma family rep
+    "llama3-3b",  # tiny llama
+    "mistral-24b",  # mistral
+    "deepseek-r1-32b",  # reasoning
+)
