@@ -1,7 +1,7 @@
 {
-  "model": "qwen3.5-35b-a3b-4bit",
-  "quantization": "4bit",
-  "parser": "hermes",
+  "model": "qwen3.6-35b-a3b-ud-4bit",
+  "quantization": "4bit-ud",
+  "parser": "qwen3_coder_xml",
   "hardware": "Apple M3 Ultra (256GB)",
   "hardware_detail": {
     "chip": "Apple M3 Ultra",
@@ -9,19 +9,19 @@
     "os": "macOS-26.3.1-arm64-arm-64bit"
   },
   "date": "2026-05-10",
-  "timestamp": "2026-05-10T04:00:09Z",
+  "timestamp": "2026-05-10T04:11:31Z",
   "server": "http://localhost:18001",
   "server_flags": "--port 18001",
   "model_path": null,
   "engine": "batched",
-  "notes": "Tier-1 alias add via PR #348",
+  "notes": "Tier-1 alias add via PR #348 (Unsloth Dynamic 4-bit, top MLX 3.6 by dl)",
   "speed": {
-    "ttft_cold_s": 0.357,
-    "ttft_warm_s": 0.223,
-    "decode_short_tps": 18.0,
-    "decode_long_tps": 49.1,
-    "ram_active_gb": 20.1,
-    "ram_peak_gb": 20.1
+    "ttft_cold_s": 0.504,
+    "ttft_warm_s": 0.333,
+    "decode_short_tps": 16.3,
+    "decode_long_tps": 29.1,
+    "ram_active_gb": 21.3,
+    "ram_peak_gb": 21.3
   },
   "tool_calling": {
     "score": 0.97,
@@ -37,7 +37,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.25,
+        "elapsed_s": 1.72,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -51,7 +51,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.58,
+        "elapsed_s": 2.14,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -65,7 +65,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.41,
+        "elapsed_s": 2.24,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -79,7 +79,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.75,
+        "elapsed_s": 2.54,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -93,7 +93,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 0.5,
-        "elapsed_s": 1.7,
+        "elapsed_s": 2.5,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -107,7 +107,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.33,
+        "elapsed_s": 1.8,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -121,7 +121,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.4,
+        "elapsed_s": 1.9,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -135,7 +135,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.74,
+        "elapsed_s": 2.59,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -149,7 +149,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.6,
+        "elapsed_s": 2.31,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -163,7 +163,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.72,
+        "elapsed_s": 2.32,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -177,7 +177,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.75,
+        "elapsed_s": 2.53,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -188,12 +188,12 @@
         "description": "Complex args — exec with piped command",
         "category": "complex_args",
         "tool_detected": true,
-        "correct_name": true,
+        "correct_name": false,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.32,
-        "fully_correct": true,
-        "steps_passed": 1,
+        "elapsed_s": 1.82,
+        "fully_correct": false,
+        "steps_passed": 0,
         "steps_total": 1
       },
       {
@@ -205,7 +205,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 2.1,
+        "elapsed_s": 3.19,
         "fully_correct": true,
         "steps_passed": 1,
         "steps_total": 1
@@ -223,7 +223,7 @@
         "expected_count": 2,
         "actual_count": 2,
         "fully_correct": true,
-        "elapsed_s": 1.94
+        "elapsed_s": 2.81
       },
       {
         "id": "tc15",
@@ -238,7 +238,7 @@
         "expected_count": 3,
         "actual_count": 3,
         "fully_correct": true,
-        "elapsed_s": 3.08
+        "elapsed_s": 4.45
       },
       {
         "id": "tc16",
@@ -253,7 +253,7 @@
         "expected_count": 2,
         "actual_count": 2,
         "fully_correct": true,
-        "elapsed_s": 2.38
+        "elapsed_s": 3.44
       },
       {
         "id": "tc17",
@@ -268,7 +268,7 @@
         "expected_count": 2,
         "actual_count": 2,
         "fully_correct": true,
-        "elapsed_s": 1.87
+        "elapsed_s": 2.67
       },
       {
         "id": "tc18",
@@ -278,7 +278,7 @@
         "fully_correct": true,
         "no_tool_called": true,
         "has_content": true,
-        "elapsed_s": 0.88
+        "elapsed_s": 1.15
       },
       {
         "id": "tc19",
@@ -288,7 +288,7 @@
         "fully_correct": true,
         "no_tool_called": true,
         "has_content": true,
-        "elapsed_s": 2.52
+        "elapsed_s": 2.95
       },
       {
         "id": "tc20",
@@ -298,7 +298,7 @@
         "fully_correct": true,
         "no_tool_called": true,
         "has_content": true,
-        "elapsed_s": 0.88
+        "elapsed_s": 1.31
       },
       {
         "id": "tc21",
@@ -309,7 +309,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.32,
+        "elapsed_s": 2.13,
         "fully_correct": true,
         "steps_passed": 2,
         "steps_total": 2
@@ -323,7 +323,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.18,
+        "elapsed_s": 1.79,
         "fully_correct": true,
         "steps_passed": 2,
         "steps_total": 2
@@ -337,7 +337,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.26,
+        "elapsed_s": 1.92,
         "fully_correct": true,
         "steps_passed": 3,
         "steps_total": 3
@@ -351,7 +351,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.43,
+        "elapsed_s": 5.43,
         "fully_correct": true,
         "steps_passed": 3,
         "steps_total": 3
@@ -364,7 +364,7 @@
         "fully_correct": true,
         "no_tool_called": true,
         "has_content": true,
-        "elapsed_s": 1.67
+        "elapsed_s": 2.27
       },
       {
         "id": "tc26",
@@ -374,19 +374,20 @@
         "fully_correct": true,
         "no_tool_called": true,
         "has_content": true,
-        "elapsed_s": 1.29
+        "elapsed_s": 2.29
       },
       {
         "id": "tc27",
         "level": 4,
         "description": "Error recovery — permission denied, model should explain or retry",
         "category": "error_recovery",
-        "tool_detected": false,
-        "correct_name": false,
-        "valid_json_args": false,
-        "arg_score": 0.0,
-        "elapsed_s": 3.31,
-        "fully_correct": false
+        "tool_detected": true,
+        "correct_name": true,
+        "valid_json_args": true,
+        "arg_score": 1.0,
+        "elapsed_s": 1.95,
+        "recovery_text": true,
+        "fully_correct": true
       },
       {
         "id": "tc28",
@@ -397,7 +398,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.44,
+        "elapsed_s": 1.96,
         "recovery_tool_called": false,
         "recovery_text": true,
         "fully_correct": true
@@ -411,7 +412,7 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.33,
+        "elapsed_s": 1.81,
         "fully_correct": true,
         "steps_passed": 2,
         "steps_total": 2
@@ -425,12 +426,12 @@
         "correct_name": true,
         "valid_json_args": true,
         "arg_score": 1.0,
-        "elapsed_s": 1.36,
+        "elapsed_s": 3.5,
         "fully_correct": true,
         "steps_passed": 2,
         "steps_total": 2
       }
     ]
   },
-  "total_eval_time_s": 72.4
+  "total_eval_time_s": 113.6
 }
