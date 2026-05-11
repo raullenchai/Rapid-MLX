@@ -1386,8 +1386,8 @@ Examples:
     serve_parser.add_argument(
         "--max-concurrent",
         type=int,
-        default=0,
-        help="Cap in-flight HTTP inference requests (0 = unlimited). "
+        default=1,
+        help="Cap in-flight HTTP inference requests (0 = unlimited, default: 1). "
         "Excess requests queue (await) until a slot frees.",
     )
     serve_parser.add_argument(

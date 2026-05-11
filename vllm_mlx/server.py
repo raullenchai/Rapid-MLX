@@ -152,7 +152,7 @@ _model_alias: str | None = None  # Short alias used to start the model (if any)
 _model_path: str | None = (
     None  # Actual model path (for cache dir, not affected by --served-model-name)
 )
-_default_max_tokens: int = 4096
+_default_max_tokens: int = 32768
 _thinking_token_budget: int = 2048  # Extra tokens added for thinking models
 _default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes)
 _default_temperature: float | None = None  # Set via --default-temperature
@@ -200,7 +200,7 @@ _pin_system_prompt: bool = False  # Auto-pin system prompt prefix cache blocks
 _pinned_system_prompt_hash: str | None = None  # Hash of pinned system prompt
 
 # Concurrency cap (--max-concurrent): max in-flight inference requests.
-_max_concurrent: int = 0  # 0 = unlimited
+_max_concurrent: int = 1  # 0 = unlimited
 
 # Idle unload (--idle-timeout): unload model after N seconds of inactivity.
 _idle_timeout: float = 60.0  # 0 = disabled

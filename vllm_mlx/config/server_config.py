@@ -32,7 +32,7 @@ class ServerConfig:
     inference_lock: asyncio.Lock | None = None
 
     # --- Defaults ---
-    default_max_tokens: int = 4096
+    default_max_tokens: int = 32768
     thinking_token_budget: int = 2048
     default_timeout: float = 300.0
     default_temperature: float | None = None
@@ -60,7 +60,7 @@ class ServerConfig:
     api_key: str | None = None
 
     # --- Concurrency cap ---
-    max_concurrent: int = 0  # 0 = unlimited
+    max_concurrent: int = 1  # 0 = unlimited
     concurrency_semaphore: asyncio.Semaphore | None = None
 
     # --- Cloud routing ---
