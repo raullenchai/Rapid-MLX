@@ -113,6 +113,102 @@ async def test_engine_loop_fails_in_flight_requests_on_step_exception():
     assert final.error and ("Metal" in final.error or "metal" in final.error.lower())
 
 
+@pytest.mark.asyncio
+async def test_stream_outputs_raises_on_error_field():
+    """Streaming path: when the engine loop puts a final RequestOutput with
+    ``error`` into the collector, ``stream_outputs`` must surface it as
+    InferenceAbortedError instead of silently yielding a terminal chunk —
+    otherwise streaming HTTP handlers would emit an empty SSE close instead
+    of a 503 (#353 DeepSeek round 1 P0)."""
+    engine = _make_engine()
+
+    rid = "stream-test-1"
+    engine._output_collectors[rid] = RequestOutputCollector(aggregate=True)
+
+    # Push the error output the engine loop would have produced.
+    engine._output_collectors[rid].put(
+        RequestOutput(
+            request_id=rid,
+            finished=True,
+            finish_reason="error",
+            error="Inference aborted: RuntimeError: Metal command buffer error",
+        )
+    )
+
+    raised = None
+    yields = []
+    try:
+        async for chunk in engine.stream_outputs(rid):
+            yields.append(chunk)
+    except InferenceAbortedError as exc:
+        raised = exc
+
+    assert raised is not None, "stream_outputs must raise InferenceAbortedError"
+    assert "Metal" in str(raised)
+    assert yields == [], (
+        "stream_outputs must not yield the error chunk before raising — "
+        "otherwise streaming clients receive a malformed terminal frame"
+    )
+
+
+@pytest.mark.asyncio
+async def test_engine_loop_backs_off_on_persistent_failures():
+    """When step() fails repeatedly the loop must back off — otherwise the
+    retry cadence floods logs at ~10 Hz and burns CPU spinning on a stuck
+    Metal state (#353 DeepSeek round 1 P0). We exercise this by measuring
+    how long the loop takes to complete N failures past the burst cap."""
+    engine = _make_engine()
+
+    fail_count = {"n": 0}
+
+    class _AlwaysFailScheduler:
+        def has_requests(self):
+            return True
+
+        def step(self):
+            fail_count["n"] += 1
+            raise RuntimeError("Metal command buffer error: persistent")
+
+        def add_request(self, *_a, **_kw):
+            pass
+
+        def abort_request(self, *_a, **_kw):
+            return True
+
+        def remove_finished_request(self, *_a, **_kw):
+            pass
+
+    engine.scheduler = _AlwaysFailScheduler()
+    engine._running = True
+
+    import time as _time
+
+    loop_task = asyncio.create_task(engine._engine_loop())
+    try:
+        # Run for 0.6 s. With the 0.1 s fast retry cadence, that would let
+        # ~6 step() calls through; with the 1 s slow cadence after the
+        # 10-failure burst, we'd be at most ~11. Verifying we don't exceed
+        # ~20 ensures backoff is actually engaged (no-backoff would yield
+        # 60+ failures over the same window).
+        start = _time.perf_counter()
+        await asyncio.sleep(0.6)
+        elapsed = _time.perf_counter() - start
+    finally:
+        engine._running = False
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+
+    # The exact count is timing-sensitive but a generous ceiling pins the
+    # contract: backoff must keep the retry rate well below "every 100 ms".
+    assert fail_count["n"] <= 20, (
+        f"engine loop attempted step() {fail_count['n']} times in "
+        f"{elapsed:.2f}s — backoff is not engaging on persistent failures"
+    )
+
+
 def test_metal_message_detection_patterns():
     """Pin the substring matchers used to flag Metal errors — if these
     drift, the recovery path silently downgrades to the generic branch
