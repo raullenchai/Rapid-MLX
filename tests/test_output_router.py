@@ -257,6 +257,51 @@ class TestToolCallRouting:
         assert event.channel == Channel.CONTENT
 
 
+class TestFinalize:
+    """Test end-of-stream state draining."""
+
+    def test_finalize_emits_incomplete_tool_call(self, router):
+        """Unclosed TOOL_CALL state is drained as a TOOL_CALL event."""
+        router.feed(48)  # <|tool_call>
+        router.feed(6639)  # call
+        router.feed(236787)  # :
+        router.feed(828)  # get
+        router.feed(236779)  # _
+        router.feed(19323)  # weather
+        router.feed(236782)  # {
+        router.feed(13319)  # city
+        router.feed(236787)  # :
+        router.feed(52)  # <|"|>
+        router.feed(89265)  # Tokyo
+        router.feed(52)  # <|"|>
+        router.feed(236783)  # }
+
+        event = router.finalize()
+        assert event is not None
+        assert event.channel == Channel.TOOL_CALL
+        assert "get_weather" in event.text
+        assert "Tokyo" in event.text
+        assert router.state == RouterState.CONTENT
+        assert router._tool_tokens == []
+        assert router.finalize() is None
+
+    def test_finalize_drains_pending_harmony_analysis_message(self):
+        """Harmony analysis content is preserved if <|message|> is missing."""
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+
+        router.feed(200005)  # <|channel|>
+        router.feed(35644)  # analysis
+        router.feed(2)  # Reason
+        router.feed(3)  # ing
+
+        event = router.finalize()
+        assert event is not None
+        assert event.channel == Channel.REASONING
+        assert event.text == "Reasoning"
+        assert router.state == RouterState.CONTENT
+
+
 class TestOrphanTokens:
     """Test handling of orphaned/leaked special tokens."""
 
@@ -611,6 +656,7 @@ class TestStateReset:
         assert router._tool_tokens == []
         assert router._pending_channel_style is None
         assert router._pending_message_channel is None
+        assert router._pending_control_tokens == []
 
     def test_multiple_requests(self, router):
         """Router works correctly across multiple reset cycles."""

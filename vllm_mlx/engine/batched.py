@@ -14,6 +14,7 @@ LLM engine), so text-only requests must also be routed through it.
 import functools
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 from ..api.tool_calling import convert_tools_for_template
@@ -53,9 +54,18 @@ def _probe_mllm_cache_type(language_model: Any) -> str | None:
     return type(sample).__name__
 
 
+_CHANNEL_TO_STRING = {
+    Channel.CONTENT: "content",
+    Channel.REASONING: "reasoning",
+    Channel.TOOL_CALL: "tool_call",
+}
+
+_OUTPUT_ROUTER_ALLOWLIST = {"gemma4", "harmony"}
+
+
 def _channel_name(channel: Channel) -> str:
     """Convert router channel enum values to GenerationOutput.channel strings."""
-    return channel.name.lower()
+    return _CHANNEL_TO_STRING[channel]
 
 
 def _compute_metal_cache_limit(soft_limit_bytes: int) -> int:
@@ -936,27 +946,100 @@ class BatchedEngine(BaseEngine):
 
     def _create_output_router(self) -> OutputRouter | None:
         """Create a per-request token router for supported tokenizer formats."""
-        tokenizer = self.tokenizer
-        if tokenizer is None:
-            return None
         try:
-            return OutputRouter.from_tokenizer(tokenizer)
+            tokenizer = self.tokenizer
+            if tokenizer is None:
+                return None
+            router = OutputRouter.from_tokenizer(tokenizer)
+            if router is None:
+                return None
+            if router.map.format_tag not in _OUTPUT_ROUTER_ALLOWLIST:
+                return None
+            return router
+        # Unsupported tokenizers are expected to fall through to the legacy
+        # parser path; construction failures indicate the same non-router path.
         except Exception as e:
             logger.debug("OutputRouter unavailable for this request: %s", e)
             return None
+
+    def _make_routed_output(
+        self,
+        source: GenerationOutput,
+        event,
+        *,
+        new_text: str | None = None,
+        finished: bool = False,
+        finish_reason: str | None = None,
+    ) -> GenerationOutput:
+        return GenerationOutput(
+            text=source.text,
+            new_text=event.text if new_text is None else new_text,
+            tokens=[event.token_id] if event.token_id is not None else [],
+            prompt_tokens=source.prompt_tokens,
+            completion_tokens=source.completion_tokens,
+            finished=finished,
+            finish_reason=finish_reason,
+            logprobs=None,
+            channel=_channel_name(event.channel),
+        )
+
+    def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:
+        return GenerationOutput(
+            text=source.text,
+            new_text="",
+            tokens=[],
+            prompt_tokens=source.prompt_tokens,
+            completion_tokens=source.completion_tokens,
+            finished=True,
+            finish_reason=source.finish_reason,
+            logprobs=source.logprobs,
+            channel=None,
+        )
+
+    def _finalize_output_router(
+        self,
+        router: OutputRouter,
+        source: GenerationOutput,
+    ) -> GenerationOutput | None:
+        try:
+            event = router.finalize()
+        except Exception as e:
+            # Unlike unavailable routers, mid-stream/finalize failures mean a
+            # selected router broke after consuming request bytes; warn loudly.
+            logger.warning("OutputRouter finalize failed; falling back: %s", e)
+            return None
+        if event is None:
+            return None
+        return self._make_routed_output(
+            source,
+            event,
+            finished=True,
+            finish_reason=source.finish_reason,
+        )
 
     async def _stream_with_output_router(
         self,
         outputs: AsyncIterator[GenerationOutput],
         router: OutputRouter | None,
     ) -> AsyncIterator[GenerationOutput]:
-        """Attach semantic channels to streamed chat tokens when supported."""
+        """Attach semantic channels to streamed chat tokens when supported.
+
+        This intentionally emits one GenerationOutput per routed token, even
+        when an upstream flush contains multiple tokens, so downstream
+        postprocessing sees clean channel boundaries. For the common
+        stream_interval=1 case, preserve the scheduler's incremental
+        detokenizer text instead of re-decoding the token in the router.
+        """
         if router is None:
             async for output in outputs:
                 yield output
             return
 
         async for output in outputs:
+            if router is None:
+                yield output
+                continue
+
             token_ids = output.tokens
             if not token_ids:
                 yield output
@@ -968,44 +1051,41 @@ class BatchedEngine(BaseEngine):
                     event = router.feed(token_id)
                     if event is None:
                         continue
+                    event_text = output.new_text if len(token_ids) == 1 else event.text
                     routed_outputs.append(
-                        GenerationOutput(
-                            text=output.text,
-                            new_text=event.text,
-                            tokens=[event.token_id],
-                            prompt_tokens=output.prompt_tokens,
-                            completion_tokens=output.completion_tokens,
-                            finished=False,
-                            finish_reason=None,
-                            logprobs=output.logprobs,
-                            channel=_channel_name(event.channel),
+                        self._make_routed_output(
+                            output,
+                            event,
+                            new_text=event_text,
                         )
                     )
             except Exception as e:
+                # Unlike unavailable routers, mid-stream failures mean a
+                # selected router broke after consuming request bytes; warn
+                # loudly and disable routing for the rest of this request.
                 logger.warning(
                     "OutputRouter failed; falling back to legacy parsers: %s", e
                 )
+                router = None
                 yield output
                 continue
 
             if not routed_outputs:
                 if output.finished:
-                    yield GenerationOutput(
-                        text=output.text,
-                        new_text="",
-                        tokens=[],
-                        prompt_tokens=output.prompt_tokens,
-                        completion_tokens=output.completion_tokens,
-                        finished=True,
-                        finish_reason=output.finish_reason,
-                        logprobs=output.logprobs,
-                        channel=None,
-                    )
+                    finalized = self._finalize_output_router(router, output)
+                    yield finalized or self._routed_finish_sentinel(output)
                 continue
 
             if output.finished:
-                routed_outputs[-1].finished = True
-                routed_outputs[-1].finish_reason = output.finish_reason
+                finalized = self._finalize_output_router(router, output)
+                if finalized is None:
+                    routed_outputs[-1] = replace(
+                        routed_outputs[-1],
+                        finished=True,
+                        finish_reason=output.finish_reason,
+                    )
+                else:
+                    routed_outputs.append(finalized)
 
             for routed in routed_outputs:
                 yield routed

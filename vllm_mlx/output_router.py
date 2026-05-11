@@ -59,6 +59,8 @@ class RouterEvent:
 class TokenMap:
     """Special token ID mappings for a model family."""
 
+    format_tag: str = ""
+
     # Channel control (Gemma 4 style)
     channel_start: int | None = None  # <|channel> = 100
     channel_end: int | None = None  # <channel|> = 101
@@ -126,6 +128,7 @@ class OutputRouter:
         self._tool_tokens: list[int] = []  # accumulated tool call token IDs
         self._pending_channel_style: str | None = None
         self._pending_message_channel: Channel | None = None
+        self._pending_control_tokens: list[int] = []
 
     def reset(self):
         """Reset state for a new request."""
@@ -133,6 +136,7 @@ class OutputRouter:
         self._tool_tokens = []
         self._pending_channel_style = None
         self._pending_message_channel = None
+        self._pending_control_tokens = []
 
     def feed(self, token_id: int) -> RouterEvent | None:
         """
@@ -153,12 +157,14 @@ class OutputRouter:
             self.state = RouterState.AWAITING_CHANNEL_TYPE
             self._pending_channel_style = "harmony"
             self._pending_message_channel = None
+            self._pending_control_tokens = []
             return None
 
         if token_id == m.harmony_end or token_id == m.harmony_return:
             self.state = RouterState.CONTENT
             self._pending_channel_style = None
             self._pending_message_channel = None
+            self._pending_control_tokens = []
             return None
 
         if token_id in (m.harmony_start, m.harmony_call, m.harmony_constrain):
@@ -176,6 +182,7 @@ class OutputRouter:
         # === Channel start: transition to AWAITING_CHANNEL_TYPE ===
         if token_id == m.channel_start:
             self.state = RouterState.AWAITING_CHANNEL_TYPE
+            self._pending_control_tokens = []
             return None  # suppress <|channel>
 
         # === Channel type word: set state based on which channel ===
@@ -192,6 +199,7 @@ class OutputRouter:
 
                 self.state = RouterState.CONTENT
                 self._pending_channel_style = None
+                self._pending_control_tokens = []
                 text = self.tokenizer.decode([token_id])
                 return RouterEvent(Channel.CONTENT, token_id, text)
 
@@ -204,6 +212,7 @@ class OutputRouter:
             else:
                 # Unknown channel type — treat as content
                 self.state = RouterState.CONTENT
+                self._pending_control_tokens = []
                 text = self.tokenizer.decode([token_id])
                 return RouterEvent(Channel.CONTENT, token_id, text)
 
@@ -217,6 +226,9 @@ class OutputRouter:
                 )
                 self._pending_channel_style = None
                 self._pending_message_channel = None
+                self._pending_control_tokens = []
+            else:
+                self._pending_control_tokens.append(token_id)
             return None
 
         if token_id == m.harmony_message:
@@ -264,6 +276,41 @@ class OutputRouter:
         else:
             return RouterEvent(Channel.CONTENT, token_id, text)
 
+    def finalize(self) -> RouterEvent | None:
+        """Drain any buffered state at stream end.
+
+        This is best-effort: complete channel transitions are still handled by
+        feed(), while finalize() preserves buffered tool calls or pending
+        Harmony pre-message text that would otherwise be dropped.
+        """
+        if self.state == RouterState.TOOL_CALL and self._tool_tokens:
+            token_id = self._tool_tokens[-1]
+            text = self.tokenizer.decode(self._tool_tokens)
+            self.state = RouterState.CONTENT
+            self._tool_tokens = []
+            return RouterEvent(Channel.TOOL_CALL, token_id, text)
+
+        if self.state in (
+            RouterState.AWAITING_CHANNEL_TYPE,
+            RouterState.AWAITING_MESSAGE,
+        ):
+            if self._pending_control_tokens:
+                channel = self._pending_message_channel or Channel.CONTENT
+                token_id = self._pending_control_tokens[-1]
+                text = self.tokenizer.decode(self._pending_control_tokens)
+                self.state = RouterState.CONTENT
+                self._pending_channel_style = None
+                self._pending_message_channel = None
+                self._pending_control_tokens = []
+                if text.strip():
+                    return RouterEvent(channel, token_id, text)
+            else:
+                self.state = RouterState.CONTENT
+                self._pending_channel_style = None
+                self._pending_message_channel = None
+
+        return None
+
     def feed_sequence(self, token_ids: list[int]) -> dict[str, str]:
         """
         Feed a complete token sequence and return separated channels.
@@ -279,6 +326,15 @@ class OutputRouter:
             event = self.feed(tid)
             if event is None:
                 continue
+            if event.channel == Channel.CONTENT:
+                content += event.text
+            elif event.channel == Channel.REASONING:
+                reasoning += event.text
+            elif event.channel == Channel.TOOL_CALL:
+                tool_calls.append(event.text)
+
+        event = self.finalize()
+        if event is not None:
             if event.channel == Channel.CONTENT:
                 content += event.text
             elif event.channel == Channel.REASONING:
@@ -305,6 +361,7 @@ class OutputRouter:
         # Gemma 4 detection: look for <|channel> and <|tool_call>
         if "<|channel>" in vocab and "<|tool_call>" in vocab:
             token_map = TokenMap(
+                format_tag="gemma4",
                 channel_start=vocab.get("<|channel>"),
                 channel_end=vocab.get("<channel|>"),
                 thought_word=vocab.get("thought"),
@@ -335,6 +392,7 @@ class OutputRouter:
         # GPT-OSS/Harmony detection: channel/message special tokens.
         if "<|channel|>" in vocab and "<|message|>" in vocab:
             token_map = TokenMap(
+                format_tag="harmony",
                 harmony_channel=vocab.get("<|channel|>"),
                 harmony_message=vocab.get("<|message|>"),
                 harmony_start=vocab.get("<|start|>"),
@@ -360,6 +418,7 @@ class OutputRouter:
         # for Qwen3 (which has neither in its vocab).
         if "<think>" in vocab and "</think>" in vocab:
             token_map = TokenMap(
+                format_tag="think",
                 think_start=vocab.get("<think>"),
                 think_end=vocab.get("</think>"),
                 bos=vocab.get("<｜begin▁of▁sentence｜>") or vocab.get("<bos>"),
