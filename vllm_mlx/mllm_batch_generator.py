@@ -682,11 +682,20 @@ class MLLMBatchGenerator:
 
         sample_cache = per_request_caches[0][0]
         if not isinstance(sample_cache, (KVCache, RotatingKVCache)):
+            # Two distinct causes land here:
+            #   1. Hybrid/linear-attention backbone (ArraysCache /
+            #      MambaCache) — see GitHub #352. Should be caught at
+            #      startup by the probe in BatchedEngine._start_mllm.
+            #   2. --kv-cache-quantization explicitly enabled on a
+            #      non-hybrid MLLM.
+            # Name both so the runtime message isn't misleading when
+            # quantization is NOT the cause.
             raise ValueError(
                 f"MLLM continuous batching requires KVCache or RotatingKVCache "
-                f"but got {type(sample_cache).__name__}. Disable "
-                f"--kv-cache-quantization when using multimodal models with "
-                f"--continuous-batching."
+                f"but got {type(sample_cache).__name__}. Either the language "
+                f"backbone is hybrid/linear-attention (drop --mllm or pick a "
+                f"non-hybrid VLM), or --kv-cache-quantization was enabled "
+                f"(disable it for multimodal models with continuous batching)."
             )
 
         try:

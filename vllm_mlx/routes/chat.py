@@ -522,8 +522,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     except HTTPException:
         raise
     except Exception as e:
+        from ..request import InferenceAbortedError
+
         err_msg = str(e)
         err_type = type(e).__name__
+        if isinstance(e, InferenceAbortedError):
+            # Engine aborted the request (e.g. Metal runtime error caught
+            # in the engine loop). 503 — the server is still up and a
+            # smaller request may succeed (#353).
+            raise HTTPException(status_code=503, detail=err_msg)
         if (
             "TemplateError" in err_type
             or "template" in err_msg.lower()

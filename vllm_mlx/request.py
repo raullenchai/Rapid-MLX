@@ -185,6 +185,16 @@ class Request:
         return self.request_id == other.request_id
 
 
+class InferenceAbortedError(RuntimeError):
+    """Raised when the engine aborts an in-flight request due to a runtime
+    failure (e.g. a Metal command-buffer error caught in the engine loop).
+
+    Distinguished from generic ``RuntimeError`` so HTTP handlers can map it
+    to a 503 instead of a 500 — the server may still be healthy enough to
+    handle a retry against a smaller request.
+    """
+
+
 @dataclass
 class RequestOutput:
     """
@@ -208,6 +218,10 @@ class RequestOutput:
     completion_tokens: int = 0
     # Per-token log-probabilities (mx.array of shape [vocab_size] for current token)
     logprobs: Any = None
+    # Set when the engine aborts the request before completion (e.g. Metal
+    # runtime error caught in the engine loop). HTTP layer converts this to
+    # 503. Plain finish reasons (stop / length / etc.) leave this as None.
+    error: str | None = None
 
     @property
     def usage(self) -> dict[str, int]:

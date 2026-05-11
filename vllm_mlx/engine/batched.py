@@ -24,6 +24,34 @@ from .base import BaseEngine, GenerationOutput
 logger = logging.getLogger(__name__)
 
 
+def _probe_mllm_cache_type(language_model: Any) -> str | None:
+    """Return the offending cache type name when ``language_model`` is
+    incompatible with MLLM continuous batching, or None if it's fine.
+
+    "Incompatible" means ``make_prompt_cache`` returns something other than
+    a list of ``KVCache`` / ``RotatingKVCache`` — currently ArraysCache (hybrid
+    Qwen3.5/3.6, etc.) or MambaCache (Nemotron, Granite4). Returning a name
+    instead of a bool lets the caller put the actual class in the error
+    message (#352).
+
+    The probe is best-effort; if mlx-lm raises before producing a cache list
+    we return None and let the runtime path surface the real error instead
+    of masking it with a misleading hybrid-incompat message.
+    """
+    from mlx_lm.models.cache import KVCache, RotatingKVCache, make_prompt_cache
+
+    try:
+        test_cache = make_prompt_cache(language_model)
+    except Exception:
+        return None
+    if not test_cache:
+        return None
+    sample = test_cache[0]
+    if isinstance(sample, (KVCache, RotatingKVCache)):
+        return None
+    return type(sample).__name__
+
+
 def _compute_metal_cache_limit(soft_limit_bytes: int) -> int:
     """Pick a Metal free-cache size that scales with the device's working set.
 
@@ -312,6 +340,27 @@ class BatchedEngine(BaseEngine):
 
         self._model = self._mllm_instance.model
         self._processor = self._mllm_instance.processor
+
+        # Fail fast at startup if the language backbone is a hybrid model
+        # (linear-attention or recurrent layers, producing ArraysCache /
+        # MambaCache). MLLM continuous batching builds a BatchKVCache via
+        # KVCache.merge(), which requires standard KVCache or RotatingKVCache;
+        # otherwise the first request raises ValueError mid-prefill.
+        # Catching it now means a clear startup error instead of the user
+        # seeing "Batch generation failed" on their very first image request
+        # (GitHub #352, Qwen3.6-35B-A3B + --mllm).
+        language_model = getattr(self._model, "language_model", self._model)
+        cache_type = self._model_load_executor.submit(
+            _probe_mllm_cache_type, language_model
+        ).result()
+        if cache_type is not None:
+            raise RuntimeError(
+                f"Model '{self._model_name}' uses a hybrid/linear-attention "
+                f"language backbone ({cache_type}), which is incompatible "
+                f"with --mllm continuous batching (requires standard KVCache "
+                f"or RotatingKVCache). Drop --mllm for text-only use, or pick "
+                f"a non-hybrid VLM (Qwen3-VL, Gemma-3, etc.). See #352."
+            )
 
         # Create MLLM scheduler config with batch generator support
         if self._scheduler_config and hasattr(self._scheduler_config, "max_num_seqs"):
