@@ -72,6 +72,18 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     total_completion_tokens = 0
     total_prompt_tokens = 0
 
+    extended_kwargs: dict = {}
+    for _name in (
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "presence_penalty",
+        "frequency_penalty",
+    ):
+        _value = getattr(request, _name, None)
+        if _value is not None:
+            extended_kwargs[_name] = _value
+
     for i, prompt in enumerate(prompts):
         output = await _wait_with_disconnect(
             engine.generate(
@@ -80,6 +92,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 temperature=_resolve_temperature(request.temperature),
                 top_p=_resolve_top_p(request.top_p),
                 stop=request.stop,
+                **extended_kwargs,
             ),
             raw_request,
             timeout=timeout,
@@ -126,12 +139,25 @@ async def stream_completion(
     request: CompletionRequest,
 ) -> AsyncIterator[str]:
     """Stream completion response."""
+    extended_kwargs: dict = {}
+    for _name in (
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "presence_penalty",
+        "frequency_penalty",
+    ):
+        _value = getattr(request, _name, None)
+        if _value is not None:
+            extended_kwargs[_name] = _value
+
     async for output in engine.stream_generate(
         prompt=prompt,
         max_tokens=_resolve_max_tokens(request.max_tokens),
         temperature=_resolve_temperature(request.temperature),
         top_p=_resolve_top_p(request.top_p),
         stop=request.stop,
+        **extended_kwargs,
     ):
         data = {
             "id": f"cmpl-{uuid.uuid4().hex[:8]}",

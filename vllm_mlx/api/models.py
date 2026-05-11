@@ -192,6 +192,15 @@ class ChatCompletionRequest(BaseModel):
         None  # Streaming options (include_usage, etc.)
     )
     stop: list[str] | None = None
+    # Extended OpenAI-compatible sampling parameters. Without these declared,
+    # Pydantic drops them on parse (#355). top_k / min_p flow through to the
+    # mlx-lm sampler; repetition_penalty / presence_penalty / frequency_penalty
+    # flow through to mlx-lm's make_logits_processors().
+    top_k: int | None = None
+    min_p: float | None = None
+    repetition_penalty: float | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
     # Tool calling
     tools: list[ToolDefinition] | None = None
     tool_choice: str | dict | None = None  # "auto", "none", or specific tool
@@ -284,6 +293,13 @@ class CompletionRequest(BaseModel):
     max_tokens: int | None = None
     stream: bool = False
     stop: list[str] | None = None
+    # Extended OpenAI-compatible sampling parameters — see #355 + the
+    # matching block on ChatCompletionRequest for wiring + caveats.
+    top_k: int | None = None
+    min_p: float | None = None
+    repetition_penalty: float | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
     # Logprobs
     logprobs: bool | None = None
     top_logprobs: int | None = None  # 0-20, per OpenAI spec

@@ -674,11 +674,29 @@ class BatchedEngine(BaseEngine):
         # Use LLM engine for text-only (non-MLLM models)
         from ..request import SamplingParams
 
+        # Extended sampling params (#355). The route handler only forwards
+        # keys it has explicit client values for, so any field absent from
+        # kwargs falls back to SamplingParams' own defaults. All five
+        # extended fields are wired into the scheduler — top_k via the
+        # sampler, repetition/presence/frequency_penalty via mlx-lm's
+        # make_logits_processors().
+        _sp_kwargs = {
+            k: kwargs.pop(k)
+            for k in (
+                "top_k",
+                "min_p",
+                "repetition_penalty",
+                "presence_penalty",
+                "frequency_penalty",
+            )
+            if k in kwargs
+        }
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
             stop=stop or [],
+            **_sp_kwargs,
         )
 
         output = await self._engine.generate(
@@ -753,11 +771,24 @@ class BatchedEngine(BaseEngine):
         # Use LLM engine for text-only
         from ..request import SamplingParams
 
+        # Extended sampling params (#355) — see generate() for rationale.
+        _sp_kwargs = {
+            k: kwargs.pop(k)
+            for k in (
+                "top_k",
+                "min_p",
+                "repetition_penalty",
+                "presence_penalty",
+                "frequency_penalty",
+            )
+            if k in kwargs
+        }
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
             stop=stop or [],
+            **_sp_kwargs,
         )
 
         prefix_boundary = kwargs.pop("prefix_boundary", 0)

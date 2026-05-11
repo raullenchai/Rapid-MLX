@@ -57,7 +57,13 @@ class SamplingParams:
     top_p: float = 0.9
     top_k: int = 0  # 0 means disabled
     min_p: float = 0.0
+    # Penalty knobs (#355) — applied via mlx-lm make_logits_processors().
+    # `repetition_penalty` is the legacy multiplicative variant used by mlx-lm
+    # (1.0 = disabled). `presence_penalty` and `frequency_penalty` are the
+    # additive variants from the OpenAI API (0.0 = disabled).
     repetition_penalty: float = 1.0
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
     stop: list[str] | None = None
     stop_token_ids: list[int] | None = None
 
