@@ -6,11 +6,16 @@ Tests clean_output_text, is_mllm_model, and extract_multimodal_content
 from vllm_mlx/api/utils.py. No MLX dependency.
 """
 
+import json
+
 from vllm_mlx.api.models import ContentPart, ImageUrl, Message
 from vllm_mlx.api.utils import (
     MLLM_PATTERNS,
     SPECIAL_TOKENS_PATTERN,
+    _check_legacy_string_patterns,
+    _config_indicates_vlm,
     _content_to_text,
+    _try_read_config_json,
     clean_output_text,
     extract_multimodal_content,
     is_mllm_model,
@@ -191,6 +196,110 @@ class TestIsMllmModel:
 
     def test_all_patterns_defined(self):
         assert len(MLLM_PATTERNS) > 20
+
+
+class TestIsMllmModelConfigPriority:
+    """Tests that config.json takes priority over the legacy substring matcher.
+
+    Regression coverage for issue #516: a local path with a triggering
+    substring (e.g. "vl-") used to be misrouted to the MLLM loader even when
+    the model itself was text-only. With config.json inspection in front,
+    the model's own metadata wins.
+    """
+
+    @staticmethod
+    def _write_config(tmp_path, name, payload):
+        model_dir = tmp_path / name
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(json.dumps(payload))
+        return model_dir
+
+    def test_text_only_config_overrides_triggering_path(self, tmp_path):
+        # Path basename contains "vl-" which would match the legacy pattern,
+        # but the model declares itself as text-only via config.json.
+        model_dir = self._write_config(
+            tmp_path,
+            "qwen3-vl-derived",
+            {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]},
+        )
+        assert _check_legacy_string_patterns(str(model_dir)) is True
+        assert is_mllm_model(str(model_dir)) is False
+
+    def test_vlm_config_under_neutral_path(self, tmp_path):
+        model_dir = self._write_config(
+            tmp_path,
+            "my-model",
+            {
+                "model_type": "qwen2_vl",
+                "architectures": ["Qwen2VLForConditionalGeneration"],
+            },
+        )
+        assert _check_legacy_string_patterns(str(model_dir)) is False
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_vision_config_key_indicates_vlm(self, tmp_path):
+        model_dir = self._write_config(
+            tmp_path,
+            "exotic-vlm",
+            {"model_type": "custom", "vision_config": {"hidden_size": 768}},
+        )
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_audio_config_key_indicates_vlm(self, tmp_path):
+        model_dir = self._write_config(
+            tmp_path,
+            "audio-model",
+            {"model_type": "custom_audio", "audio_config": {"sample_rate": 16000}},
+        )
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_missing_config_falls_back_to_string_matcher(self, tmp_path):
+        # No config.json present, so detection falls back to the legacy
+        # matcher against the input string.
+        model_dir = tmp_path / "Qwen3-VL-7B"
+        model_dir.mkdir()
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_malformed_config_falls_back_gracefully(self, tmp_path):
+        model_dir = tmp_path / "broken-vl-model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text("{not valid json")
+        # Falls back to legacy matcher; basename has "vl-" → True.
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_oversized_config_falls_back_gracefully(self, tmp_path):
+        model_dir = tmp_path / "huge-config-vl-model"
+        model_dir.mkdir()
+        # 2 MB of payload exceeds the 1 MB cap.
+        (model_dir / "config.json").write_text("x" * (2 * 1024 * 1024))
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_hf_repo_id_uses_legacy_matcher(self):
+        # HF repo IDs are not local dirs, so config inspection short-circuits
+        # and the legacy matcher decides. This preserves prior behaviour.
+        assert is_mllm_model("Qwen/Qwen3-32B") is False
+        assert is_mllm_model("mlx-community/Qwen3-VL-4B-Instruct-3bit") is True
+
+    def test_try_read_config_json_returns_none_for_repo_id(self):
+        assert _try_read_config_json("Qwen/Qwen3-32B") is None
+
+    def test_try_read_config_json_returns_none_for_missing_dir(self, tmp_path):
+        assert _try_read_config_json(str(tmp_path / "does-not-exist")) is None
+
+    def test_config_indicates_vlm_recognises_llava(self):
+        assert (
+            _config_indicates_vlm({"architectures": ["LlavaForConditionalGeneration"]})
+            is True
+        )
+
+    def test_config_indicates_vlm_rejects_text_only_qwen3(self):
+        assert _config_indicates_vlm({"architectures": ["Qwen3ForCausalLM"]}) is False
+
+    def test_config_indicates_vlm_handles_missing_architectures(self):
+        assert _config_indicates_vlm({"model_type": "qwen3"}) is False
+
+    def test_config_indicates_vlm_handles_non_list_architectures(self):
+        assert _config_indicates_vlm({"architectures": "Qwen3ForCausalLM"}) is False
 
 
 class TestExtractMultimodalContent:

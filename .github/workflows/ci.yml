@@ -83,6 +83,18 @@ jobs:
             tests/test_anthropic_models.py \
             tests/test_anthropic_adapter.py \
             tests/test_harmony_parsers.py \
+            tests/test_endpoint_model_policies.py \
+            tests/test_gemma4_openai_format.py \
+            tests/test_gemma4_streaming_edge.py \
+            tests/test_gemma4_tool_parser.py \
+            tests/test_minimax_tool_calling.py \
+            tests/test_qwen3_xml_parser.py \
+            tests/test_qwen3_xml_registration.py \
+            tests/test_qwen3_xml_streaming_chunks.py \
+            tests/test_streaming_fence_stripper.py \
+            tests/test_streaming_think_router.py \
+            tests/test_streaming_tool_filter.py \
+            tests/test_tool_call_promotion.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
@@ -135,6 +147,11 @@ jobs:
             tests/test_batching.py \
             tests/test_continuous_batching.py \
             tests/test_memory_cache_mlx.py \
+            tests/test_normalize_messages.py \
+            tests/test_responses_api.py \
+            tests/test_thinking_aware_processor.py \
+            tests/test_tool_choice_forced.py \
+            tests/test_tool_choice_none.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"
