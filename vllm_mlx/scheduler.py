@@ -2670,8 +2670,44 @@ class Scheduler:
                 logprobs=response.logprobs,
             )
 
+            # Check text-based stop sequences. ``SamplingParams.stop`` is a
+            # list of user-supplied strings (OpenAI-API contract); mlx-lm's
+            # BatchGenerator only honours ``stop_token_ids``, so we have to
+            # match-and-truncate on the decoded output here. MLLMScheduler
+            # has had the equivalent check since launch; the text scheduler
+            # was silently dropping ``request.stop`` until #354 / regression
+            # tests 1, 2, 4, 5 surfaced the gap.
+            #
+            # Known limitations (carried over from MLLMScheduler; proper
+            # fix needs a streaming lookahead buffer — out of scope here):
+            # if the stop marker straddles the previous-token boundary,
+            # the prefix that landed in the streamed surface has already
+            # been sent to the client. ``output_text`` is correctly
+            # truncated; streaming clients see the prefix.
+            finish_reason = response.finish_reason
+            stop_trimmed = False
+            stop_params = request.sampling_params.stop or []
+            if finish_reason is None and stop_params:
+                decoded_so_far = self._decode_tokens(request.output_token_ids)
+                for stop_str in stop_params:
+                    if stop_str and stop_str in decoded_so_far:
+                        finish_reason = "stop"
+                        idx = decoded_so_far.index(stop_str)
+                        trimmed_total = decoded_so_far[:idx]
+                        request.output_text = trimmed_total
+                        stop_trimmed = True
+                        # Adjust new_text so streaming clients only see the
+                        # valid prefix, never the stop marker itself.
+                        prev_text = self._decode_tokens(request.output_token_ids[:-1])
+                        if len(trimmed_total) > len(prev_text):
+                            output.new_text = trimmed_total[len(prev_text) :]
+                        else:
+                            output.new_text = ""
+                        break
+
             # Check if finished
-            if response.finish_reason is not None:
+            if finish_reason is not None:
+                response.finish_reason = finish_reason
                 if response.finish_reason == "stop":
                     request.set_finished(RequestStatus.FINISHED_STOPPED)
                 elif response.finish_reason == "length":
@@ -2681,15 +2717,25 @@ class Scheduler:
                 output.finish_reason = response.finish_reason
                 finished_ids.add(request_id)
 
-                # Decode full output using decoder if available (ensures
-                # any held-back multi-byte chars are flushed)
-                decoder = getattr(request, "_decoder", None)
-                if decoder is not None:
-                    output.output_text = decoder.get_full_text()
+                if stop_trimmed:
+                    # request.output_text was already truncated to the prefix
+                    # before the stop string — using that as the final output
+                    # preserves the truncation; re-decoding here would put the
+                    # stop marker back in.
+                    output.output_text = request.output_text
+                    self._cleanup_detokenizer(request_id)
                 else:
-                    output.output_text = self._decode_tokens(request.output_token_ids)
-                request.output_text = output.output_text
-                self._cleanup_detokenizer(request_id)
+                    # Decode full output using decoder if available (ensures
+                    # any held-back multi-byte chars are flushed)
+                    decoder = getattr(request, "_decoder", None)
+                    if decoder is not None:
+                        output.output_text = decoder.get_full_text()
+                    else:
+                        output.output_text = self._decode_tokens(
+                            request.output_token_ids
+                        )
+                    request.output_text = output.output_text
+                    self._cleanup_detokenizer(request_id)
 
                 # Extract cache for future reuse (critical for agentic multi-turn)
                 if hasattr(response, "prompt_cache"):
