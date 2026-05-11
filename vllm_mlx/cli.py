@@ -25,6 +25,13 @@ _QWEN36_35B_8BIT_MTPLX_MODEL = "samuelfaj/Qwen3.6-35B-A3B-8bit-MTPLX-Optimized-S
 _QWEN36_35B_8BIT_MTPLX_MARKER = "Qwen3.6-35B-A3B-8bit-MTPLX-Optimized-Speed"
 _QWEN36_35B_A3B_MARKER = "Qwen3.6-35B-A3B"
 
+_ORNSTEIN_35B_ALIASES = {
+    "ornstein3.6-35-saber-4bit",
+    "ornstein3.6-35-saber",
+    "ornstein3.6-35-saber-8bit",
+}
+_ORNSTEIN_35B_MARKER = "Ornstein3.6-35B-A3B-SABER"
+
 
 def _has_cli_option(raw_args: list[str], *option_names: str) -> bool:
     for arg in raw_args:
@@ -224,6 +231,91 @@ def _apply_qwen36_mtplx_preset(
             args.ngram_auto_disable_mtp_threshold = 0.85
         if not _has_cli_option(raw_args, "--ngram-auto-disable-min-ngram"):
             args.ngram_auto_disable_min_ngram = 0.50
+
+def _is_ornstein_35b_request(args: argparse.Namespace) -> bool:
+    original_alias = getattr(args, "_original_alias", None)
+    model = str(getattr(args, "model", "") or "")
+    return (
+        original_alias in _ORNSTEIN_35B_ALIASES
+        or _ORNSTEIN_35B_MARKER in model
+    )
+
+
+def _apply_ornstein_mtplx_preset(
+    args: argparse.Namespace, raw_args: list[str]
+) -> None:
+    """Apply Ornstein3.6-35B-A3B-SABER MTPLX preset.
+
+    Mirrors the documented serve command for the ornstein3.6-35b{,-4bit,-8bit}
+    aliases. Each flag only fires when the user did not pass it explicitly,
+    so anything on the command line wins over the preset.
+    """
+    if not _is_ornstein_35b_request(args):
+        return
+    if getattr(args, "command", None) != "serve":
+        return
+
+    if hasattr(args, "enable_mtp") and _has_cli_option(raw_args, "--disable-mtp"):
+        args.enable_mtp = False
+    elif hasattr(args, "enable_mtp") and not _has_cli_option(raw_args, "--enable-mtp"):
+        args.enable_mtp = True
+
+    if not _has_cli_option(raw_args, "--prefill-step-size"):
+        args.prefill_step_size = 32768
+    if not _has_cli_option(raw_args, "--max-concurrent"):
+        args.max_concurrent = 3
+    if not _has_cli_option(raw_args, "--max-num-seqs"):
+        args.max_num_seqs = 1
+    if not _has_cli_option(raw_args, "--prefill-batch-size"):
+        args.prefill_batch_size = 1
+    if not _has_cli_option(raw_args, "--completion-batch-size"):
+        args.completion_batch_size = 1
+    if not _has_cli_option(raw_args, "--stream-interval"):
+        args.stream_interval = 1
+    if not _has_cli_option(raw_args, "--default-temperature"):
+        args.default_temperature = 0.6
+    if not _has_cli_option(raw_args, "--default-top-p"):
+        args.default_top_p = 0.95
+    if not _has_cli_option(raw_args, "--enable-auto-tool-choice"):
+        args.enable_auto_tool_choice = True
+
+    if hasattr(args, "enable_ngram") and _has_cli_option(
+        raw_args, "--disable-ngram"
+    ):
+        args.enable_ngram = False
+    elif hasattr(args, "enable_ngram") and not _has_cli_option(
+        raw_args, "--enable-ngram"
+    ):
+        args.enable_ngram = True
+    if not _has_cli_option(raw_args, "--ngram-num-draft-tokens"):
+        args.ngram_num_draft_tokens = 6
+    if not _has_cli_option(raw_args, "--ngram-min-occurrences"):
+        args.ngram_min_occurrences = 2
+    if not _has_cli_option(raw_args, "--ngram-acceptance-mode"):
+        args.ngram_acceptance_mode = "greedy"
+    if not _has_cli_option(
+        raw_args, "--ngram-hybrid-verify", "--no-ngram-hybrid-verify"
+    ):
+        args.ngram_hybrid_verify = True
+    if not _has_cli_option(
+        raw_args, "--ngram-only-in-think", "--ngram-everywhere"
+    ):
+        args.ngram_only_in_think = False
+    if not _has_cli_option(
+        raw_args, "--ngram-skip-tool-calls", "--no-ngram-skip-tool-calls"
+    ):
+        args.ngram_skip_tool_calls = True
+    if not _has_cli_option(
+        raw_args, "--ngram-self-tune", "--no-ngram-self-tune"
+    ):
+        args.ngram_self_tune = True
+    if not _has_cli_option(raw_args, "--ngram-self-tune-disable-threshold"):
+        args.ngram_self_tune_disable_threshold = 0.30
+    if not _has_cli_option(raw_args, "--ngram-auto-disable-mtp-threshold"):
+        args.ngram_auto_disable_mtp_threshold = 0.85
+    if not _has_cli_option(raw_args, "--ngram-auto-disable-min-ngram"):
+        args.ngram_auto_disable_min_ngram = 0.50
+
 
 def _apply_qwen36_35b_defaults(args: argparse.Namespace, raw_args: list[str]) -> None:
     if getattr(args, "command", None) != "serve" or not _is_qwen36_35b_a3b_request(
@@ -2415,6 +2507,7 @@ Examples:
             args.model = resolved
 
     _apply_qwen36_mtplx_preset(args, raw_args)
+    _apply_ornstein_mtplx_preset(args, raw_args)
     _apply_qwen36_35b_defaults(args, raw_args)
 
     if args.command == "serve":

@@ -101,9 +101,21 @@ def _resolve_model_name(request_model: str | None) -> str:
 def _resolve_max_tokens(
     request_value: int | None, enable_thinking: bool | None = None
 ) -> int:
-    """Resolve max_tokens with thinking budget for reasoning models."""
+    """Resolve max_tokens with thinking budget for reasoning models.
+
+    cfg.default_max_tokens acts as both the fallback when the client omits
+    max_tokens AND a hard cap on client-supplied values. Clients that ask
+    for more get clamped — prevents oversized KV reservations that trigger
+    Metal OOM on Apple Silicon.
+    """
     cfg = get_config()
-    base = request_value if request_value is not None else cfg.default_max_tokens
+    cap = cfg.default_max_tokens
+    if request_value is None:
+        base = cap
+    elif request_value <= 0:
+        base = request_value
+    else:
+        base = min(request_value, cap)
     if enable_thinking is False:
         return base
     if cfg.reasoning_parser_name and base > 0 and base < 4096:

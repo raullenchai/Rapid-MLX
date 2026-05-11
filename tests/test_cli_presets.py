@@ -4,7 +4,12 @@
 import json
 from argparse import Namespace
 
-from vllm_mlx.cli import _apply_qwen36_35b_defaults, _apply_qwen36_mtplx_preset
+from vllm_mlx.cli import (
+    _apply_ornstein_mtplx_preset,
+    _apply_qwen36_35b_defaults,
+    _apply_qwen36_mtplx_preset,
+)
+from vllm_mlx.model_aliases import resolve_model
 
 
 def _serve_args(model: str, original_alias: str | None = None) -> Namespace:
@@ -204,6 +209,130 @@ def test_qwen36_preset_respects_explicit_overrides():
     assert args.served_model_name == "custom"
     assert args.disable_prefix_cache is False
     assert args.enable_mtp is True
+
+
+def _ornstein_serve_args(model: str, original_alias: str | None = None) -> Namespace:
+    return Namespace(
+        command="serve",
+        model=model,
+        _original_alias=original_alias,
+        enable_mtp=False,
+        disable_mtp=False,
+        enable_ngram=False,
+        disable_ngram=False,
+        prefill_step_size=8192,
+        max_concurrent=1,
+        max_num_seqs=256,
+        prefill_batch_size=8,
+        completion_batch_size=32,
+        stream_interval=1,
+        default_temperature=None,
+        default_top_p=None,
+        enable_auto_tool_choice=False,
+        ngram_num_draft_tokens=0,
+        ngram_min_occurrences=0,
+        ngram_acceptance_mode=None,
+        ngram_hybrid_verify=False,
+        ngram_only_in_think=True,
+        ngram_skip_tool_calls=False,
+        ngram_self_tune=False,
+        ngram_self_tune_disable_threshold=0.0,
+        ngram_auto_disable_mtp_threshold=0.0,
+        ngram_auto_disable_min_ngram=0.0,
+    )
+
+
+def test_ornstein_aliases_resolve_to_hf_paths():
+    assert (
+        resolve_model("ornstein3.6-35-saber-4bit")
+        == "samuelfaj/Ornstein3.6-35B-A3B-SABER-4bit-MTPLX-Optimized-Speed"
+    )
+    assert (
+        resolve_model("ornstein3.6-35-saber")
+        == "samuelfaj/Ornstein3.6-35B-A3B-SABER-6bit-MTPLX-Optimized-Speed"
+    )
+    assert (
+        resolve_model("ornstein3.6-35-saber-8bit")
+        == "samuelfaj/Ornstein3.6-35B-A3B-SABER-8bit-MTPLX-Optimized-Speed"
+    )
+
+
+def test_ornstein_alias_applies_full_mtplx_ngram_preset():
+    args = _ornstein_serve_args(
+        "samuelfaj/Ornstein3.6-35B-A3B-SABER-6bit-MTPLX-Optimized-Speed",
+        original_alias="ornstein3.6-35-saber",
+    )
+
+    _apply_ornstein_mtplx_preset(args, ["serve", "ornstein3.6-35-saber"])
+
+    assert args.enable_mtp is True
+    assert args.prefill_step_size == 32768
+    assert args.max_concurrent == 3
+    assert args.max_num_seqs == 1
+    assert args.prefill_batch_size == 1
+    assert args.completion_batch_size == 1
+    assert args.stream_interval == 1
+    assert args.default_temperature == 0.6
+    assert args.default_top_p == 0.95
+    assert args.enable_auto_tool_choice is True
+    assert args.enable_ngram is True
+    assert args.ngram_num_draft_tokens == 6
+    assert args.ngram_min_occurrences == 2
+    assert args.ngram_acceptance_mode == "greedy"
+    assert args.ngram_hybrid_verify is True
+    assert args.ngram_only_in_think is False
+    assert args.ngram_skip_tool_calls is True
+    assert args.ngram_self_tune is True
+    assert args.ngram_self_tune_disable_threshold == 0.30
+    assert args.ngram_auto_disable_mtp_threshold == 0.85
+    assert args.ngram_auto_disable_min_ngram == 0.50
+
+
+def test_ornstein_preset_respects_user_overrides():
+    args = _ornstein_serve_args(
+        "samuelfaj/Ornstein3.6-35B-A3B-SABER-8bit-MTPLX-Optimized-Speed",
+        original_alias="ornstein3.6-35-saber-8bit",
+    )
+    args.prefill_step_size = 4096
+    args.max_concurrent = 8
+    args.default_temperature = 0.2
+
+    _apply_ornstein_mtplx_preset(
+        args,
+        [
+            "serve",
+            "ornstein3.6-35-saber-8bit",
+            "--prefill-step-size",
+            "4096",
+            "--max-concurrent",
+            "8",
+            "--default-temperature",
+            "0.2",
+            "--disable-mtp",
+            "--disable-ngram",
+        ],
+    )
+
+    assert args.prefill_step_size == 4096
+    assert args.max_concurrent == 8
+    assert args.default_temperature == 0.2
+    assert args.enable_mtp is False
+    assert args.enable_ngram is False
+
+
+def test_ornstein_preset_triggers_on_hf_marker_without_alias():
+    args = _ornstein_serve_args(
+        "samuelfaj/Ornstein3.6-35B-A3B-SABER-4bit-MTPLX-Optimized-Speed"
+    )
+
+    _apply_ornstein_mtplx_preset(
+        args,
+        ["serve", "samuelfaj/Ornstein3.6-35B-A3B-SABER-4bit-MTPLX-Optimized-Speed"],
+    )
+
+    assert args.enable_mtp is True
+    assert args.enable_ngram is True
+    assert args.prefill_step_size == 32768
 
 
 def test_qwen36_preset_respects_disable_mtp():
