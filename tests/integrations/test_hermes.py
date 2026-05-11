@@ -555,59 +555,65 @@ def test_hermes_patch_file():
 
 
 # =============================================================================
-# Main
+# Main — runs at module load so the doctor harness (which loads this file
+# via importlib.util.spec_from_file_location → exec_module) can read the
+# populated `results` dict. Was previously gated on `__name__ == "__main__"`,
+# which the harness's exec_module path never satisfies (module name becomes
+# `specific_test_test_hermes`), so all tests silently skipped and the harness
+# reported "No test results found". See vllm_mlx/agents/testing.py L1117.
 # =============================================================================
 
-if __name__ == "__main__":
-    print("Rapid-MLX Hermes Integration Tests")
-    print(f"Server: {BASE_URL}")
-    print(f"Model:  {MODEL_ID}")
-    print(f"Hermes: {HERMES_BIN}")
-    print(f"{'=' * 60}")
+print("Rapid-MLX Hermes Integration Tests")
+print(f"Server: {BASE_URL}")
+print(f"Model:  {MODEL_ID}")
+print(f"Hermes: {HERMES_BIN}")
+print(f"{'=' * 60}")
 
-    t0 = time.time()
+t0 = time.time()
 
-    # API-level tests (always run)
-    run_test("api_plain_chat", test_api_plain_chat)
-    run_test("api_single_tool_call", test_api_single_tool_call)
-    run_test("api_tool_choice", test_api_tool_choice)
-    run_test("api_multi_turn_tool", test_api_multi_turn_tool)
-    run_test("api_no_tool_leak", test_api_no_tool_leak)
-    run_test("api_many_tools", test_api_many_tools)
-    run_test("api_streaming_tool_call", test_api_streaming_tool_call)
-    run_test("api_no_tool_needed", test_api_no_tool_needed)
-    run_test("api_parallel_tool_calls", test_api_parallel_tool_calls)
-    run_test("api_stress_no_leak", test_api_stress_no_leak)
+# API-level tests (always run — no hermes binary required)
+run_test("api_plain_chat", test_api_plain_chat)
+run_test("api_single_tool_call", test_api_single_tool_call)
+run_test("api_tool_choice", test_api_tool_choice)
+run_test("api_multi_turn_tool", test_api_multi_turn_tool)
+run_test("api_no_tool_leak", test_api_no_tool_leak)
+run_test("api_many_tools", test_api_many_tools)
+run_test("api_streaming_tool_call", test_api_streaming_tool_call)
+run_test("api_no_tool_needed", test_api_no_tool_needed)
+run_test("api_parallel_tool_calls", test_api_parallel_tool_calls)
+run_test("api_stress_no_leak", test_api_stress_no_leak)
 
-    # Hermes E2E tests (require hermes binary)
-    if os.path.exists(HERMES_BIN):
-        ensure_hermes_config()
-        run_test("hermes_chat", test_hermes_chat)
-        run_test("hermes_read_file", test_hermes_read_file)
-        run_test("hermes_terminal", test_hermes_terminal)
-        run_test("hermes_search", test_hermes_search)
-        run_test("hermes_multi_step", test_hermes_multi_step)
+# Hermes E2E tests (require hermes binary)
+if os.path.exists(HERMES_BIN):
+    ensure_hermes_config()
+    run_test("hermes_chat", test_hermes_chat)
+    run_test("hermes_read_file", test_hermes_read_file)
+    run_test("hermes_terminal", test_hermes_terminal)
+    run_test("hermes_search", test_hermes_search)
+    run_test("hermes_multi_step", test_hermes_multi_step)
 
-        # Deep agentic tests
-        run_test("hermes_write_and_run", test_hermes_write_and_run)
-        run_test("hermes_code_with_tests", test_hermes_code_with_tests)
-        run_test("hermes_code_review", test_hermes_code_review)
-        run_test("hermes_git_analysis", test_hermes_git_analysis)
-        run_test("hermes_patch_file", test_hermes_patch_file)
-    else:
-        print(f"\n⚠️ Skipping Hermes E2E tests: {HERMES_BIN} not found")
+    # Deep agentic tests
+    run_test("hermes_write_and_run", test_hermes_write_and_run)
+    run_test("hermes_code_with_tests", test_hermes_code_with_tests)
+    run_test("hermes_code_review", test_hermes_code_review)
+    run_test("hermes_git_analysis", test_hermes_git_analysis)
+    run_test("hermes_patch_file", test_hermes_patch_file)
+else:
+    print(f"\n⚠️ Skipping Hermes E2E tests: {HERMES_BIN} not found")
 
-    elapsed = time.time() - t0
-    passed = sum(1 for v in results.values() if v == "PASS")
-    failed = sum(1 for v in results.values() if v != "PASS")
+elapsed = time.time() - t0
+passed = sum(1 for v in results.values() if v == "PASS")
+failed = sum(1 for v in results.values() if v != "PASS")
 
-    print(f"\n{'=' * 60}")
-    print(f"Results: {passed}/{len(results)} passed ({elapsed:.1f}s)")
-    print(f"Model:   {MODEL_ID}")
-    print(f"{'=' * 60}")
-    for name, status in results.items():
-        icon = "✅" if status == "PASS" else "❌"
-        print(f"  {icon} {name}: {status}")
+print(f"\n{'=' * 60}")
+print(f"Results: {passed}/{len(results)} passed ({elapsed:.1f}s)")
+print(f"Model:   {MODEL_ID}")
+print(f"{'=' * 60}")
+for name, status in results.items():
+    icon = "✅" if status == "PASS" else "❌"
+    print(f"  {icon} {name}: {status}")
 
-    if failed:
-        sys.exit(1)
+# When run as a standalone script, exit non-zero on any failure. Under the
+# harness, sys.exit is patched out so this only matters for manual runs.
+if __name__ == "__main__" and failed:
+    sys.exit(1)
