@@ -193,14 +193,19 @@ def _apply_qwen36_mtplx_preset(
     #     drafting once running acceptance proves bad. Together these
     #     guarantee no regression vs. the MTP-only baseline.
     if _is_qwen36_35b_a3b_request(args):
+        # N-gram default OFF for Qwen3.6-35B-A3B. Empirical: MTP-only
+        # (~107 tok/s, 71% MTP accept) beats MTP+ngram (~90 tok/s, 44%
+        # MTP accept) on this model. N-gram still selectable via
+        # explicit --enable-ngram; tuning defaults below remain wired so
+        # opt-in users keep reasonable behavior.
         if hasattr(args, "enable_ngram") and _has_cli_option(
-            raw_args, "--disable-ngram"
-        ):
-            args.enable_ngram = False
-        elif hasattr(args, "enable_ngram") and not _has_cli_option(
             raw_args, "--enable-ngram"
         ):
             args.enable_ngram = True
+        elif hasattr(args, "enable_ngram") and not _has_cli_option(
+            raw_args, "--disable-ngram"
+        ):
+            args.enable_ngram = False
         if not _has_cli_option(raw_args, "--ngram-num-draft-tokens"):
             args.ngram_num_draft_tokens = 6
         if not _has_cli_option(raw_args, "--ngram-min-occurrences"):
@@ -279,14 +284,19 @@ def _apply_ornstein_mtplx_preset(
     if not _has_cli_option(raw_args, "--enable-auto-tool-choice"):
         args.enable_auto_tool_choice = True
 
+    # N-gram default OFF for Ornstein3.6-35B-A3B-SABER. Empirical on
+    # Qwen3.6-35B-A3B (same backbone): MTP-only beats MTP+ngram on this
+    # workload (107 tok/s vs 90 tok/s; MTP accept 71% vs 44%). N-gram
+    # still selectable via explicit --enable-ngram; tuning defaults
+    # below remain wired so opt-in users keep reasonable behavior.
     if hasattr(args, "enable_ngram") and _has_cli_option(
-        raw_args, "--disable-ngram"
-    ):
-        args.enable_ngram = False
-    elif hasattr(args, "enable_ngram") and not _has_cli_option(
         raw_args, "--enable-ngram"
     ):
         args.enable_ngram = True
+    elif hasattr(args, "enable_ngram") and not _has_cli_option(
+        raw_args, "--disable-ngram"
+    ):
+        args.enable_ngram = False
     if not _has_cli_option(raw_args, "--ngram-num-draft-tokens"):
         args.ngram_num_draft_tokens = 6
     if not _has_cli_option(raw_args, "--ngram-min-occurrences"):

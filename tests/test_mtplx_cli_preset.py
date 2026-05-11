@@ -163,14 +163,15 @@ def test_scheduler_default_prefill_step_size_is_sustained():
     assert SchedulerConfig().prefill_step_size == 8192
 
 
-def test_qwen36_35b_serve_preset_enables_ngram_with_tuned_defaults():
+def test_qwen36_35b_serve_preset_keeps_ngram_off_with_tuned_defaults():
     args = _serve_args(model=_QWEN36_35B_MTPLX_MODEL)
 
     _apply_qwen36_mtplx_preset(args, ["serve", _QWEN36_35B_MTPLX_MODEL])
 
-    # N-gram is auto-enabled for 35B-A3B with the validated agentic
-    # configuration.
-    assert args.enable_ngram is True
+    # N-gram default OFF for 35B-A3B: empirical benchmarks show MTP-only
+    # outperforms MTP+ngram on this model (~107 tok/s vs ~90 tok/s, MTP
+    # accept 71% vs 44%). Tuning defaults still wired for opt-in users.
+    assert args.enable_ngram is False
     assert args.ngram_num_draft_tokens == 6
     assert args.ngram_min_occurrences == 2
     assert args.ngram_acceptance_mode == "greedy"
@@ -183,15 +184,15 @@ def test_qwen36_35b_serve_preset_enables_ngram_with_tuned_defaults():
     assert args.ngram_auto_disable_min_ngram == 0.50
 
 
-def test_qwen36_35b_serve_preset_disable_ngram_flag_overrides():
+def test_qwen36_35b_serve_preset_enable_ngram_flag_overrides():
     args = _serve_args(model=_QWEN36_35B_MTPLX_MODEL)
 
     _apply_qwen36_mtplx_preset(
         args,
-        ["serve", _QWEN36_35B_MTPLX_MODEL, "--disable-ngram"],
+        ["serve", _QWEN36_35B_MTPLX_MODEL, "--enable-ngram"],
     )
 
-    assert args.enable_ngram is False
+    assert args.enable_ngram is True
 
 
 def test_qwen36_35b_serve_preset_keeps_explicit_ngram_overrides():

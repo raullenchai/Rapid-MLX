@@ -275,7 +275,8 @@ def test_ornstein_alias_applies_full_mtplx_ngram_preset():
     assert args.default_temperature == 0.6
     assert args.default_top_p == 0.95
     assert args.enable_auto_tool_choice is True
-    assert args.enable_ngram is True
+    # N-gram default OFF for Ornstein (MTP-only outperforms on this model).
+    assert args.enable_ngram is False
     assert args.ngram_num_draft_tokens == 6
     assert args.ngram_min_occurrences == 2
     assert args.ngram_acceptance_mode == "greedy"
@@ -331,7 +332,8 @@ def test_ornstein_preset_triggers_on_hf_marker_without_alias():
     )
 
     assert args.enable_mtp is True
-    assert args.enable_ngram is True
+    # N-gram default OFF (MTP-only is faster on this model).
+    assert args.enable_ngram is False
     assert args.prefill_step_size == 32768
 
 

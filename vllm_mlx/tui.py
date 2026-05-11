@@ -633,13 +633,13 @@ def _build_screen(
             _integer(item.get("ngram_cycles", 0)) > 0 for item in recent_entries
         )
         if any_accept:
-            header = "  time      surface              input output  TTFT   prefill tokens/s path        acc/cyc block  MTP   ngram   finish"
+            header = "  time      surface              input output  TTFT   total   prefill tokens/s path        acc/cyc block  MTP   ngram   finish"
         elif any_mtp and any_ngram:
-            header = "  time      surface              input output  TTFT   prefill tokens/s  MTP   ngram   finish"
+            header = "  time      surface              input output  TTFT   total   prefill tokens/s  MTP   ngram   finish"
         elif any_mtp:
-            header = "  time      surface              input output  TTFT   prefill tokens/s  MTP    finish"
+            header = "  time      surface              input output  TTFT   total   prefill tokens/s  MTP    finish"
         else:
-            header = "  time      surface              input output  TTFT   prefill tokens/s finish"
+            header = "  time      surface              input output  TTFT   total   prefill tokens/s finish"
         rows.append(_c(tty_on, "dim", _clamp(header, width)))
         for item in reversed(recent_entries):
             ts = item.get("finished_at") or 0
@@ -650,12 +650,14 @@ def _build_screen(
             surface = str(item.get("surface", "n/a"))[-18:].ljust(18)
             ttft = _entry_ttft(item)
             ttft_s = "  -  " if ttft is None else f"{ttft:>5.2f}"
+            total_s = f"{_entry_elapsed(item):>6.2f}s"
             base = (
                 f"  {when}  "
                 f"{surface} "
                 f"{_integer(item.get('prompt_tokens', 0)):>7} "
                 f"{_integer(item.get('generated_tokens', 0)):>6} "
                 f"{ttft_s} "
+                f"{total_s} "
                 f"{_entry_prefill_tps(item):>9.1f} "
                 f"{_entry_tokens_per_second(item):>8.1f} "
             )
@@ -748,12 +750,13 @@ def _build_screen(
             ("acceptance_ratio" in r) or ("block_size" in r) for r in running_requests
         )
         if any_dflash:
-            header = "  id            phase       input output  TTFT   prefill tokens/s path        acc/cyc block"
+            header = "  id            phase       input output  TTFT   total   prefill tokens/s path        acc/cyc block"
         else:
             header = (
-                "  id            phase       input output  TTFT   prefill tokens/s max"
+                "  id            phase       input output  TTFT   total   prefill tokens/s max"
             )
         rows.append(_c(tty_on, "dim", _clamp(header, width)))
+        now_active = time.time()
         for item in running_requests[:4]:
             rid = str(item.get("request_id") or "")[-12:].ljust(12)
             phase = str(item.get("phase") or item.get("status") or "")[:10].ljust(10)
@@ -761,6 +764,11 @@ def _build_screen(
             otoks = _integer(item.get("completion_tokens", 0))
             ttft = _entry_ttft(item)
             ttft_s = "  -  " if ttft is None else f"{ttft:>5.2f}"
+            started_at = _num(item.get("started_at", 0.0))
+            live_elapsed = (
+                max(0.0, now_active - started_at) if started_at > 0 else 0.0
+            )
+            total_s = f"{live_elapsed:>6.2f}s"
             if any_dflash:
                 bs = _integer(item.get("block_size", 0))
                 path_s = _spec_path(item)[:10].ljust(10)
@@ -768,6 +776,7 @@ def _build_screen(
                 row = (
                     f"  {rid} {phase} "
                     f"{ptoks:>7} {otoks:>6} {ttft_s} "
+                    f"{total_s} "
                     f"{_entry_prefill_tps(item):>9.1f} "
                     f"{_entry_tokens_per_second(item):>8.1f} "
                     f"{path_s} {accept_s:>7.1f} {bs:>5}"
@@ -777,6 +786,7 @@ def _build_screen(
                 row = (
                     f"  {rid} {phase} "
                     f"{ptoks:>7} {otoks:>6} {ttft_s} "
+                    f"{total_s} "
                     f"{_entry_prefill_tps(item):>9.1f} "
                     f"{_entry_tokens_per_second(item):>8.1f} "
                     f"{mx:>5}"

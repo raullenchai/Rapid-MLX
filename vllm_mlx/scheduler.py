@@ -12,6 +12,7 @@ The scheduler follows vLLM's design with:
 """
 
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -1087,6 +1088,10 @@ def _install_mtp(
             if not gen_self.uids:
                 return [], []
 
+            _t_step_start = time.perf_counter()
+            _step_verify_width = 0
+            _step_K_ngram = 0
+
             gen_self._current_tokens = gen_self._next_tokens
             gen_self._current_logprobs = gen_self._next_logprobs
             input_tokens = gen_self._current_tokens
@@ -1260,6 +1265,7 @@ def _install_mtp(
                 # MTP's own sampled token. Hybrid verify simply means the
                 # loop runs one extra MTP depth after the ngram tail.
                 K_ngram = len(ngram_draft_ids) if ngram_draft_ids else 0
+                _step_K_ngram = K_ngram
                 if K_ngram > 0:
                     total_depth = K_ngram + (1 if ngram_hybrid_verify else 0)
                 else:
@@ -1349,6 +1355,7 @@ def _install_mtp(
                     + [tokens[:, None] for tokens in draft_token_arrays],
                     axis=1,
                 )
+                _step_verify_width = int(verify_input.shape[1])
                 verify_output = model(
                     verify_input,
                     cache=gen_self.prompt_cache,
@@ -1610,6 +1617,24 @@ def _install_mtp(
             tokens_out = input_tokens.tolist()
             for token_list, token in zip(gen_self.tokens, tokens_out):
                 token_list.append(token)
+
+            # ---- Per-step timing instrumentation (bucketed by ngram-active).
+            # Bucket key: "ngram" if K_ngram>0 else "no_ngram". Tracks wall ms,
+            # call count, and verify width to compare cost-per-step under
+            # different speculative configurations.
+            _t_step_ms = (time.perf_counter() - _t_step_start) * 1000.0
+            _bucket = "ngram" if _step_K_ngram > 0 else "no_ngram"
+            _mtp_stats[f"step_ms_{_bucket}"] = (
+                _mtp_stats.get(f"step_ms_{_bucket}", 0.0) + _t_step_ms
+            )
+            _mtp_stats[f"step_count_{_bucket}"] = (
+                _mtp_stats.get(f"step_count_{_bucket}", 0) + 1
+            )
+            _mtp_stats[f"verify_width_sum_{_bucket}"] = (
+                _mtp_stats.get(f"verify_width_sum_{_bucket}", 0)
+                + _step_verify_width
+            )
+
             total = _mtp_stats["accepted"] + _mtp_stats["rejected"]
             if total > 0 and total % 256 == 0:
                 logger.info(
@@ -1620,6 +1645,22 @@ def _install_mtp(
                     _mtp_stats["corrections"],
                     _mtp_stats["errors"],
                     (_mtp_stats["accepted"] / total) * 100,
+                )
+                _n_ng = _mtp_stats.get("step_count_ngram", 0)
+                _n_no = _mtp_stats.get("step_count_no_ngram", 0)
+                _ms_ng = _mtp_stats.get("step_ms_ngram", 0.0)
+                _ms_no = _mtp_stats.get("step_ms_no_ngram", 0.0)
+                _w_ng = _mtp_stats.get("verify_width_sum_ngram", 0)
+                _w_no = _mtp_stats.get("verify_width_sum_no_ngram", 0)
+                avg_ng = (_ms_ng / _n_ng) if _n_ng > 0 else 0.0
+                avg_no = (_ms_no / _n_no) if _n_no > 0 else 0.0
+                wavg_ng = (_w_ng / _n_ng) if _n_ng > 0 else 0.0
+                wavg_no = (_w_no / _n_no) if _n_no > 0 else 0.0
+                logger.info(
+                    "[timing] ngram steps N=%d avg=%.2fms width=%.1f | "
+                    "no-ngram steps N=%d avg=%.2fms width=%.1f",
+                    _n_ng, avg_ng, wavg_ng,
+                    _n_no, avg_no, wavg_no,
                 )
             return tokens_out, gen_self._current_logprobs
 
