@@ -101,6 +101,10 @@ def _filtered_serve_args(raw_args: list[str]) -> list[str]:
         if arg.startswith("--daemon="):
             continue
         filtered.append(arg)
+    # Daemon always reclaims its port: inject --force so the child kills any
+    # stale process holding the port before binding.
+    if "--force" not in filtered:
+        filtered.append("--force")
     return filtered
 
 

@@ -723,16 +723,126 @@ def serve_command(args):
     # Check port availability before loading model (avoid wasting RAM on conflict)
     import socket
 
-    _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        _sock.bind((args.host, args.port))
-        _sock.close()
-    except OSError:
-        print(f"\n  Error: Port {args.port} is already in use.")
-        print(
-            f"  Try a different port: lightning-mlx serve {args.model} --port {args.port + 1}"
-        )
-        sys.exit(1)
+    def _try_bind() -> bool:
+        # Match uvicorn semantics: enable SO_REUSEADDR so a freshly-killed
+        # listener in TIME_WAIT does not cause a false-positive conflict.
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((args.host, args.port))
+            return True
+        except OSError:
+            return False
+        finally:
+            try:
+                s.close()
+            except OSError:
+                pass
+
+    def _pids_on_port(port: int) -> list[str]:
+        import shutil
+        import subprocess
+
+        lsof = shutil.which("lsof")
+        if lsof is None:
+            return []
+        try:
+            out = subprocess.run(
+                [lsof, "-tiTCP:%d" % port],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return []
+        return [p for p in out.stdout.split() if p.isdigit()]
+
+    if not _try_bind():
+        if getattr(args, "force", False):
+            import os as _os
+            import signal as _signal
+            import time
+
+            current_pid = _os.getpid()
+            pids = [p for p in _pids_on_port(args.port) if int(p) != current_pid]
+            if not pids:
+                print(
+                    f"  --force: no process found on port {args.port} "
+                    f"(lsof returned nothing — port may be held by socket in "
+                    f"TIME_WAIT or lsof not installed)"
+                )
+            else:
+                print(
+                    f"  --force: pid(s) on port {args.port}: {','.join(pids)} "
+                    f"— sending SIGTERM"
+                )
+                for pid in pids:
+                    try:
+                        _os.kill(int(pid), _signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError) as e:
+                        print(f"    SIGTERM pid {pid} failed: {e}")
+
+                # Wait up to 2s for graceful shutdown.
+                gone = False
+                for _ in range(20):
+                    remaining = [
+                        p for p in _pids_on_port(args.port) if int(p) != current_pid
+                    ]
+                    if not remaining:
+                        gone = True
+                        break
+                    time.sleep(0.1)
+
+                if not gone:
+                    remaining = [
+                        p for p in _pids_on_port(args.port) if int(p) != current_pid
+                    ]
+                    if remaining:
+                        print(
+                            f"  --force: still alive after SIGTERM: "
+                            f"{','.join(remaining)} — sending SIGKILL"
+                        )
+                        for pid in remaining:
+                            try:
+                                _os.kill(int(pid), _signal.SIGKILL)
+                            except (ProcessLookupError, PermissionError) as e:
+                                print(f"    SIGKILL pid {pid} failed: {e}")
+
+            # Wait for the socket to actually free up.
+            bound = False
+            for _ in range(30):
+                if _try_bind():
+                    bound = True
+                    break
+                time.sleep(0.1)
+
+            if not bound:
+                remaining = _pids_on_port(args.port)
+                print(
+                    f"\n  Error: Port {args.port} still in use after --force."
+                )
+                if remaining:
+                    print(f"  Remaining pid(s): {','.join(remaining)}")
+                    print(
+                        "  Hint: the holder may be owned by another user — "
+                        "try running with sudo, or pick a different --port."
+                    )
+                else:
+                    print(
+                        "  No process holds the port now, but bind still fails. "
+                        "Likely SO_REUSEADDR mismatch or another bind on the "
+                        f"same host:port ({args.host}:{args.port})."
+                    )
+                sys.exit(1)
+        else:
+            print(f"\n  Error: Port {args.port} is already in use.")
+            print(
+                f"  Try a different port: lightning-mlx serve {args.model} --port {args.port + 1}"
+            )
+            print(
+                f"  Or pass --force to kill whatever is holding port {args.port}."
+            )
+            sys.exit(1)
 
     # Check disk space before downloading model
     _check_disk_space(args.model)
@@ -1465,6 +1575,12 @@ Examples:
         "--host", type=str, default="0.0.0.0", help="Host to bind"
     )
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
+    serve_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Kill any process holding --port before starting the server.",
+    )
     serve_parser.add_argument(
         "--log-level",
         type=str,
