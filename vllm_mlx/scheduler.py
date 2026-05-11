@@ -3326,6 +3326,20 @@ class Scheduler:
                         if not callable(keys_attr) and not callable(values_attr):
                             mx.eval(keys_attr, values_attr)
 
+            # Release request-level refs to the full KV state now that the
+            # cache has been stored (per-block slices live on blocks) and
+            # evaluated. Without this, request._extracted_cache and
+            # request.prompt_cache pin GB-scale Metal buffers per request,
+            # and the paged BlockCacheEntry duplicates the full original
+            # cache_data list, causing unbounded Metal memory growth over
+            # time as requests accumulate.
+            if request is not None:
+                if self.block_aware_cache is not None:
+                    self.block_aware_cache.release_full_cache_data(request_id)
+                request._extracted_cache = None
+                request.prompt_cache = None
+                request.block_table = None
+
             # Remove from running
             if request_id in self.running:
                 del self.running[request_id]

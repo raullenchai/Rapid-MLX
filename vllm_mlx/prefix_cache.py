@@ -793,6 +793,23 @@ class BlockAwarePrefixCache:
             self.paged_cache.delete_block_table(request_id)
             logger.debug(f"Released cache for {request_id}")
 
+    def release_full_cache_data(self, request_id: str) -> None:
+        """
+        Drop the redundant full-prompt KV tensor reference held by the request's
+        entry, while keeping the entry and per-block slices alive for future
+        prefix sharing.
+
+        store_cache copies the full original ``cache_data`` into the
+        ``BlockCacheEntry`` for legacy ``get_cache_for_generation`` callers.
+        Production generation reads cache via ``reconstruct_cache`` from
+        per-block slices, so the entry-level full copy is unused once the
+        request finishes and pins gigabytes of Metal memory per request.
+        Caller should invoke this after the request is done.
+        """
+        entry = self._request_tables.get(request_id)
+        if entry is not None:
+            entry.cache_data = None
+
     def fork_cache(
         self,
         source_request_id: str,

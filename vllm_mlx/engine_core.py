@@ -471,6 +471,11 @@ class EngineCore:
         self._stream_states.pop(request_id, None)
         self._finished_events.pop(request_id, None)
         self.scheduler.remove_finished_request(request_id)
+        # Release Metal buffers held by the dropped request's tensors. The
+        # request finalize/cleanup paths in the scheduler already null
+        # request fields; this is the final backstop covering abort and
+        # non-streaming code paths.
+        mx.clear_cache()
 
     async def stream_outputs(
         self,

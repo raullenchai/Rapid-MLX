@@ -595,6 +595,23 @@ class MLLMScheduler:
     def _cleanup_finished(self, finished_ids: set[str]) -> None:
         """Clean up finished requests."""
         for request_id in finished_ids:
+            request = self.requests.get(request_id)
+
+            # Release request-level refs to multimodal tensors and KV state
+            # before dropping the request. Pixel values, attention masks, and
+            # image grid metadata are mx.arrays that can be large (hundreds of
+            # MB per image batch), and prompt_cache pins the full KV cache.
+            # Nullify here so Metal buffer pool can be reclaimed by the
+            # subsequent mx.clear_cache().
+            if request is not None:
+                request.pixel_values = None
+                request.attention_mask = None
+                request.image_grid_thw = None
+                request.multimodal_kwargs = None
+                request.prompt_cache = None
+                if hasattr(request, "_extracted_cache"):
+                    request._extracted_cache = None
+
             # Remove from running
             if request_id in self.running:
                 del self.running[request_id]
@@ -609,6 +626,11 @@ class MLLMScheduler:
             # Track as finished
             self.finished_req_ids.add(request_id)
             self.requests.pop(request_id, None)
+
+        # Free Metal command buffers after cleanup so the multimodal/KV
+        # tensors dropped above are actually released back to the pool.
+        if finished_ids:
+            mx.clear_cache()
 
     def _step_no_queue(self) -> MLLMSchedulerOutput:
         """Execute one scheduling step WITHOUT queue distribution.
