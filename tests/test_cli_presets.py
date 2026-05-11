@@ -266,7 +266,8 @@ def test_ornstein_alias_applies_full_mtplx_ngram_preset():
     _apply_ornstein_mtplx_preset(args, ["serve", "ornstein3.6-35-saber"])
 
     assert args.enable_mtp is True
-    assert args.prefill_step_size == 32768
+    # Preset no longer overrides prefill_step_size; value untouched (input was 8192).
+    assert args.prefill_step_size == 8192
     assert args.max_concurrent == 3
     assert args.max_num_seqs == 1
     assert args.prefill_batch_size == 1
@@ -334,7 +335,8 @@ def test_ornstein_preset_triggers_on_hf_marker_without_alias():
     assert args.enable_mtp is True
     # N-gram default OFF (MTP-only is faster on this model).
     assert args.enable_ngram is False
-    assert args.prefill_step_size == 32768
+    # Preset no longer overrides prefill_step_size; value untouched (input was 8192).
+    assert args.prefill_step_size == 8192
 
 
 def test_qwen36_preset_respects_disable_mtp():

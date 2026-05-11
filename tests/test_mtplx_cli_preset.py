@@ -94,7 +94,8 @@ def test_qwen36_mtplx_bench_preset_enables_mtp():
 
     assert args.enable_mtp is True
     assert args.disable_prefix_cache is True
-    assert args.prefill_step_size == 8192
+    # Preset no longer overrides prefill_step_size; value untouched (input was 2048).
+    assert args.prefill_step_size == 2048
     assert args.mtp_num_draft_tokens == 3
     assert args.mtp_optimistic is True
     assert args.max_num_seqs == 1
@@ -160,7 +161,7 @@ def test_qwen36_mtplx_preset_keeps_explicit_prefill_step_size():
 
 
 def test_scheduler_default_prefill_step_size_is_sustained():
-    assert SchedulerConfig().prefill_step_size == 8192
+    assert SchedulerConfig().prefill_step_size == 4096
 
 
 def test_qwen36_35b_serve_preset_keeps_ngram_off_with_tuned_defaults():

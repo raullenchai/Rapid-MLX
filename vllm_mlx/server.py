@@ -633,7 +633,7 @@ def load_model(
     max_tokens: int = 32768,
     force_mllm: bool = False,
     gpu_memory_utilization: float = 0.90,
-    prefill_step_size: int = 2048,
+    prefill_step_size: int = 4096,
     cloud_model: str | None = None,
     cloud_threshold: int = 20000,
     cloud_api_base: str | None = None,
@@ -651,7 +651,7 @@ def load_model(
         max_tokens: Default max tokens for generation
         force_mllm: Force loading as MLLM even if not auto-detected
         gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
-        prefill_step_size: Tokens to process per prefill chunk (default: 2048)
+        prefill_step_size: Tokens to process per prefill chunk (default: 4096)
         mtp: Enable native MTP speculative decoding
     """
     global \
@@ -1011,8 +1011,8 @@ Examples:
     parser.add_argument(
         "--prefill-step-size",
         type=int,
-        default=2048,
-        help="Tokens to process per prefill chunk (default: 2048). "
+        default=4096,
+        help="Tokens to process per prefill chunk (default: 4096). "
         "Larger values may improve TTFT on Apple Silicon with sufficient memory.",
     )
     parser.add_argument(

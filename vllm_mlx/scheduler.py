@@ -69,7 +69,7 @@ class SchedulerConfig:
     # BatchGenerator settings
     prefill_batch_size: int = 8
     completion_batch_size: int = 32
-    prefill_step_size: int = 8192
+    prefill_step_size: int = 4096
 
     # Prefix cache settings
     enable_prefix_cache: bool = True

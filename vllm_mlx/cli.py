@@ -106,8 +106,6 @@ def _apply_qwen36_mtplx_preset(
             args.prefill_batch_size = 1
         if not _has_cli_option(raw_args, "--completion-batch-size"):
             args.completion_batch_size = 1
-        if not _has_cli_option(raw_args, "--prefill-step-size"):
-            args.prefill_step_size = 8192
         if not _has_cli_option(raw_args, "--mtp-num-draft-tokens"):
             args.mtp_num_draft_tokens = 3
         if not _has_cli_option(raw_args, "--mtp-optimistic"):
@@ -265,8 +263,6 @@ def _apply_ornstein_mtplx_preset(
     elif hasattr(args, "enable_mtp") and not _has_cli_option(raw_args, "--enable-mtp"):
         args.enable_mtp = True
 
-    if not _has_cli_option(raw_args, "--prefill-step-size"):
-        args.prefill_step_size = 32768
     if not _has_cli_option(raw_args, "--max-concurrent"):
         args.max_concurrent = 3
     if not _has_cli_option(raw_args, "--max-num-seqs"):
@@ -1990,9 +1986,9 @@ Examples:
     serve_parser.add_argument(
         "--prefill-step-size",
         type=int,
-        default=8192,
+        default=4096,
         help="Chunk size for prompt prefill processing. Larger values use more memory "
-        "but can improve prefill throughput. (default: 8192)",
+        "but can improve prefill throughput. (default: 4096)",
     )
     # MCP options
     serve_parser.add_argument(
@@ -2238,8 +2234,8 @@ Examples:
     bench_parser.add_argument(
         "--prefill-step-size",
         type=int,
-        default=8192,
-        help="Chunk size for prompt prefill processing (default: 8192)",
+        default=4096,
+        help="Chunk size for prompt prefill processing (default: 4096)",
     )
     bench_parser.add_argument(
         "--enable-mtp",
