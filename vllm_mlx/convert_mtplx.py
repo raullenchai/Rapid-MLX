@@ -112,6 +112,8 @@ def _load_mtp_tensors(model: Path, weight_map: dict[str, str]) -> dict[str, Any]
 
 
 def _normalize_qwen36_mtp(raw: dict[str, Any]) -> dict[str, Any]:
+    if "mtp.layers.0.mlp.experts.gate_up_proj" not in raw:
+        return _normalize_qwen36_dense_mtp(raw)
     required = {
         "mtp.fc.weight",
         "mtp.layers.0.input_layernorm.weight",
@@ -199,6 +201,34 @@ def _normalize_qwen36_mtp(raw: dict[str, Any]) -> dict[str, Any]:
         ],
         "mtp.pre_fc_norm_hidden.weight": raw["mtp.pre_fc_norm_hidden.weight"],
     }
+    _shift_qwen36_mtp_norms(converted)
+    return converted
+
+
+def _normalize_qwen36_dense_mtp(raw: dict[str, Any]) -> dict[str, Any]:
+    required = {
+        "mtp.fc.weight",
+        "mtp.layers.0.input_layernorm.weight",
+        "mtp.layers.0.mlp.down_proj.weight",
+        "mtp.layers.0.mlp.gate_proj.weight",
+        "mtp.layers.0.mlp.up_proj.weight",
+        "mtp.layers.0.post_attention_layernorm.weight",
+        "mtp.layers.0.self_attn.k_norm.weight",
+        "mtp.layers.0.self_attn.k_proj.weight",
+        "mtp.layers.0.self_attn.o_proj.weight",
+        "mtp.layers.0.self_attn.q_norm.weight",
+        "mtp.layers.0.self_attn.q_proj.weight",
+        "mtp.layers.0.self_attn.v_proj.weight",
+        "mtp.norm.weight",
+        "mtp.pre_fc_norm_embedding.weight",
+        "mtp.pre_fc_norm_hidden.weight",
+    }
+    missing = sorted(required - set(raw))
+    if missing:
+        raise ConvertMTPLXError(
+            "Missing required Qwen3.6 dense MTP tensors: " + ", ".join(missing)
+        )
+    converted = {key: raw[key] for key in required}
     _shift_qwen36_mtp_norms(converted)
     return converted
 
