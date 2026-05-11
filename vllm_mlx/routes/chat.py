@@ -342,6 +342,20 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         "stop": request.stop,
     }
 
+    # Extended sampling params (#355) — only forward when the client
+    # explicitly set the field. Forwarding None would override the
+    # engine's own SamplingParams defaults with garbage.
+    for _name in (
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "presence_penalty",
+        "frequency_penalty",
+    ):
+        _value = getattr(request, _name, None)
+        if _value is not None:
+            chat_kwargs[_name] = _value
+
     # Add multimodal content
     if has_media:
         chat_kwargs["images"] = images if images else None

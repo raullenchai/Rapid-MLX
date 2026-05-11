@@ -19,7 +19,7 @@ from typing import Any
 
 import mlx.core as mx
 from mlx_lm.generate import BatchGenerator
-from mlx_lm.sample_utils import make_sampler
+from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer
 
 from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
@@ -1756,6 +1756,7 @@ class Scheduler:
             temp=sampling_params.temperature,
             top_p=sampling_params.top_p,
             min_p=sampling_params.min_p,
+            top_k=sampling_params.top_k,
         )
 
         stop_tokens = self._get_stop_tokens()
@@ -2041,6 +2042,7 @@ class Scheduler:
             sampling_params.temperature,
             sampling_params.top_p,
             sampling_params.min_p,
+            sampling_params.top_k,
         )
 
         # Create new generator if needed or if sampling params changed
@@ -2537,19 +2539,51 @@ class Scheduler:
             # (e.g. stale entry after BatchGenerator recreation),
             # fall back to no-cache insert instead of crashing.
             # Create per-request logits processors
-            request_logits_processors = None
+            request_processors: list = []
             if self._tool_logits_processor_factory:
                 processor = self._tool_logits_processor_factory()
                 if processor is not None:
-                    request_logits_processors = [[processor]]
+                    request_processors.append(processor)
+            # Penalty knobs (#355) — only add the processor when at least
+            # one penalty is non-default. mlx-lm's make_logits_processors
+            # returns an empty list when all knobs are at defaults, but
+            # constructing it unconditionally would still allocate the
+            # context-tracking arrays for every request.
+            sp = request.sampling_params
+            if (
+                sp.repetition_penalty != 1.0
+                or sp.presence_penalty != 0.0
+                or sp.frequency_penalty != 0.0
+            ):
+                request_processors.extend(
+                    make_logits_processors(
+                        repetition_penalty=(
+                            sp.repetition_penalty
+                            if sp.repetition_penalty != 1.0
+                            else None
+                        ),
+                        presence_penalty=(
+                            sp.presence_penalty if sp.presence_penalty != 0.0 else None
+                        ),
+                        frequency_penalty=(
+                            sp.frequency_penalty
+                            if sp.frequency_penalty != 0.0
+                            else None
+                        ),
+                    )
+                )
+            request_logits_processors = (
+                [request_processors] if request_processors else None
+            )
 
-            # Per-request sampler (temperature/top_p may differ per request).
-            # Without this, all requests use the BatchGenerator's default
-            # sampler (argmax), ignoring the requested temperature.
+            # Per-request sampler (temperature/top_p/top_k/min_p may differ
+            # per request). Without this, all requests use the BatchGenerator's
+            # default sampler (argmax), ignoring the requested temperature.
             request_sampler = make_sampler(
                 temp=request.sampling_params.temperature,
                 top_p=request.sampling_params.top_p,
                 min_p=request.sampling_params.min_p,
+                top_k=request.sampling_params.top_k,
             )
 
             try:
