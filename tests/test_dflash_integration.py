@@ -726,6 +726,72 @@ def test_run_dflash_server_raises_when_mlx_vlm_missing(monkeypatch) -> None:
         )
 
 
+@_skip_without_mlx_vlm
+def test_run_dflash_server_loads_models_on_executor_thread(monkeypatch) -> None:
+    """Model + drafter MUST load on the ``_dflash_executor`` worker
+    thread, never on the main thread.
+
+    Regression guard for the v0.6.36 hotfix: mlx-lm 0.31.3+ keeps the GPU
+    Stream in thread-local storage. If ``load()`` runs on the main thread
+    but ``generate()`` runs on the executor, mlx-vlm raises ``RuntimeError:
+    There is no Stream(gpu, N) in current thread`` on the first request.
+    Pinning load to the same executor that owns generate keeps streams
+    reachable for the process lifetime.
+
+    Mocks ``load`` / ``load_runtime`` to record which thread they run on,
+    and patches ``uvicorn.run`` to a no-op so the test doesn't bind a port.
+    """
+    import threading
+
+    from vllm_mlx.speculative.dflash import server as srv
+
+    load_thread: dict[str, str | None] = {"load": None, "load_runtime": None}
+
+    def _fake_load(_repo):
+        load_thread["load"] = threading.current_thread().name
+        return MagicMock(), MagicMock()
+
+    def _fake_load_runtime(_repo):
+        load_thread["load_runtime"] = threading.current_thread().name
+        return MagicMock()
+
+    # Patch the imports at the point of use inside ``run_dflash_server``.
+    import mlx_vlm as _mlx_vlm
+
+    monkeypatch.setattr(_mlx_vlm, "load", _fake_load)
+    monkeypatch.setattr(srv, "load_runtime", _fake_load_runtime)
+
+    # No-op uvicorn so we don't bind a port; return immediately after load.
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: None)
+
+    srv.run_dflash_server(
+        main_model_repo="mlx-community/Qwen3.5-27B-8bit",
+        drafter_repo="z-lab/Qwen3.5-27B-DFlash",
+        host="127.0.0.1",
+        port=58998,
+        served_model_name="qwen3.5-27b-8bit",
+        default_max_tokens=512,
+        cors_origins=["*"],
+        uvicorn_log_level="info",
+    )
+
+    # Both must have run on the dflash worker thread (prefix set when the
+    # ThreadPoolExecutor was constructed at module load).
+    assert load_thread["load"] is not None, "load() was not called"
+    assert load_thread["load_runtime"] is not None, "load_runtime() was not called"
+    assert load_thread["load"].startswith("dflash-worker"), (
+        f"model load must run on dflash-worker thread, ran on "
+        f"{load_thread['load']!r} — Stream(gpu, N) would not be visible "
+        f"to generate() on the executor."
+    )
+    assert load_thread["load_runtime"].startswith("dflash-worker"), (
+        f"drafter load must run on dflash-worker thread, ran on "
+        f"{load_thread['load_runtime']!r}."
+    )
+
+
 # =============================================================================
 # End-to-end — heavy. Requires:
 #   - ``RAPID_MLX_DFLASH_E2E=1`` env var (opt-in; CI doesn't set it)

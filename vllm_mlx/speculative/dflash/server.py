@@ -627,12 +627,22 @@ def run_dflash_server(
     import uvicorn
     from mlx_vlm import load
 
-    logger.info("DFlash: loading main model via mlx-vlm: %s", main_model_repo)
-    t0 = time.perf_counter()
-    model, processor = load(main_model_repo)
-    logger.info("DFlash: main model loaded in %.1fs", time.perf_counter() - t0)
+    # CRITICAL: load model + drafter on the dedicated DFlash executor
+    # thread (not the main thread). mlx-lm 0.31.3+ keeps GPU streams in
+    # thread-local storage, so weights loaded on thread A cannot be
+    # evaluated on thread B — generate() raises ``RuntimeError: There
+    # is no Stream(gpu, N) in current thread``. By pinning load AND all
+    # subsequent generate() calls to the same single-worker executor,
+    # streams stay reachable for the lifetime of the process.
+    def _load_all():
+        t0 = time.perf_counter()
+        m, p = load(main_model_repo)
+        logger.info("DFlash: main model loaded in %.1fs", time.perf_counter() - t0)
+        rt = load_runtime(drafter_repo)
+        return m, p, rt
 
-    runtime = load_runtime(drafter_repo)
+    logger.info("DFlash: loading main model via mlx-vlm: %s", main_model_repo)
+    model, processor, runtime = _dflash_executor.submit(_load_all).result()
 
     app = _build_app(
         model=model,
