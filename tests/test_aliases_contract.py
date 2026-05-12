@@ -45,10 +45,13 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "tool_call_parser",
         "reasoning_parser",
         "is_hybrid",
+        "is_moe",
         "supports_spec_decode",
         "default_max_tokens",
         "suffix_decoding_tier",
         "suffix_bench_speedup",
+        "supports_dflash",
+        "dflash_draft_model",
     }
 )
 
@@ -301,6 +304,119 @@ def test_negative_control_unregistered_parser_is_caught() -> None:
     # And a positive control: a real parser must exist (so the test
     # itself wouldn't trivially pass for the wrong reason).
     assert any(p in valid for p in ("hermes", "qwen3_coder_xml", "minimax"))
+
+
+# =============================================================================
+# DFlash speculative-decoding contract (issue #264)
+# =============================================================================
+
+
+@pytest.mark.parametrize("alias", _alias_ids())
+def test_dflash_requires_drafter(alias: str) -> None:
+    """If ``supports_dflash=True``, ``dflash_draft_model`` MUST be set.
+    A half-populated DFlash alias would silently fall back to AR at
+    server-start time and look like an unexplained perf regression."""
+    profile = list_profiles()[alias]
+    if profile.supports_dflash:
+        assert profile.dflash_draft_model, (
+            f"{alias}: supports_dflash=True but dflash_draft_model is empty"
+        )
+        assert "/" in profile.dflash_draft_model, (
+            f"{alias}: dflash_draft_model={profile.dflash_draft_model!r} "
+            f"must be 'org/repo' format"
+        )
+
+
+@pytest.mark.parametrize("alias", _alias_ids())
+def test_dflash_excludes_moe_architectures(alias: str) -> None:
+    """``is_moe=True`` MUST NOT pair with ``supports_dflash=True``. PoC on
+    Qwen3.6-35B-A3B (MoE hybrid) measured 0.76-0.82× regression
+    regardless of precision — DFlash drafters' hidden-state fusion
+    misfires on expert-routing churn (accept_len floors at ~1.5).
+    Re-enabling this combination would ship the regression to users."""
+    profile = list_profiles()[alias]
+    if profile.is_moe:
+        assert not profile.supports_dflash, (
+            f"{alias}: is_moe=True but supports_dflash=True — DFlash "
+            f"acceptance collapses on MoE due to expert-routing churn. "
+            f"Confirmed regression on Qwen3.6-35B-A3B; do not enable on "
+            f"MoE aliases."
+        )
+
+
+@pytest.mark.parametrize("alias", _alias_ids())
+def test_dflash_excludes_4bit_precision(alias: str) -> None:
+    """DFlash on a 4-bit MLX main model regresses (PoC: 0.63-0.96× on
+    Qwen3.5-4B-MLX-4bit, accept_len 2.35-3.88). 4-bit AR is already at
+    memory-bandwidth floor; drafter overhead dominates. Pattern is
+    detected from the HF path naming convention (``-4bit`` suffix or
+    ``-4bit-`` infix), which is how mlx-community publishes quantized
+    variants."""
+    profile = list_profiles()[alias]
+    if not profile.supports_dflash:
+        return
+    hf = profile.hf_path
+    is_4bit = (
+        "-4bit" in hf
+        or hf.endswith("-4bit")
+        or "4bit-" in hf
+        or "mxfp4" in hf.lower()
+        or "nvfp4" in hf.lower()
+    )
+    assert not is_4bit, (
+        f"{alias}: supports_dflash=True but hf_path={hf!r} looks like a "
+        f"4-bit quantized variant. DFlash regresses on 4-bit precision "
+        f"(accept rate collapses). Use an 8-bit or higher quantization."
+    )
+
+
+def test_dflash_eligible_aliases_have_qwen35_36_drafter() -> None:
+    """DFlash drafters published today are Qwen-family-specific. Any
+    eligible alias must point at a ``z-lab/Qwen3.5-*-DFlash`` or
+    ``z-lab/Qwen3.6-*-DFlash`` drafter. Catches an accidental copy-paste
+    that swaps the drafter to an incompatible model."""
+    valid_drafter_prefixes = (
+        "z-lab/Qwen3.5-",
+        "z-lab/Qwen3.6-",
+    )
+    for alias, profile in list_profiles().items():
+        if not profile.supports_dflash:
+            continue
+        d = profile.dflash_draft_model or ""
+        ok = any(d.startswith(p) for p in valid_drafter_prefixes)
+        assert d.endswith("-DFlash") and ok, (
+            f"{alias}: dflash_draft_model={d!r} doesn't match the "
+            f"expected ``z-lab/Qwen3.5-*-DFlash`` or "
+            f"``z-lab/Qwen3.6-*-DFlash`` shape. If you've validated a "
+            f"new drafter family, update this allow-list."
+        )
+
+
+def test_negative_control_dflash_on_moe_is_caught() -> None:
+    """A future PR adding ``is_moe=true`` + ``supports_dflash=true`` must
+    be rejected by ``test_dflash_excludes_moe_architectures``."""
+    from vllm_mlx.model_aliases import AliasProfile
+
+    bad = AliasProfile(
+        hf_path="fake/MoE-Model",
+        is_moe=True,
+        supports_dflash=True,
+        dflash_draft_model="z-lab/Qwen3.6-35B-A3B-DFlash",
+    )
+    caught = bad.is_moe and bad.supports_dflash
+    assert caught, "the MoE-DFlash exclusion guard would miss this"
+
+
+def test_negative_control_dflash_missing_drafter_is_caught() -> None:
+    """``supports_dflash=True`` without ``dflash_draft_model`` must be
+    rejected at JSON load time by ``_coerce``."""
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="dflash_draft_model"):
+        _coerce(
+            "fake-alias",
+            {"hf_path": "fake/Model", "supports_dflash": True},
+        )
 
 
 def test_default_max_tokens_is_positive_or_none() -> None:

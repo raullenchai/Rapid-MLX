@@ -28,6 +28,12 @@ from dataclasses import dataclass
 # - ``avoid``:   benched, regression on at least one canonical workload
 VALID_SUFFIX_TIERS: frozenset[str] = frozenset({"unknown", "neutral", "good", "avoid"})
 
+
+# Canonical name for the DFlash speculative-decoding drafter kind. Kept
+# as a module constant so eligibility checks, CLI flag handlers, and
+# alias validation all reference the same string.
+DFLASH_KIND: str = "dflash"
+
 _aliases: dict[str, "AliasProfile"] | None = None
 # Reverse index: hf_path → first alias that references it. Built once
 # alongside ``_aliases`` so reverse lookups in ``resolve_profile`` are
@@ -53,6 +59,14 @@ class AliasProfile:
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
     is_hybrid: bool = False
+    # MoE / sparse-expert architecture (A3B, A10B, A17B Qwen3.5/3.6 variants,
+    # plus future Mixtral/Granite-MoE families). Tracked separately from
+    # ``is_hybrid`` because the two attributes gate different downstream
+    # paths — hybrid affects ArraysCache/GDN rollback, MoE affects DFlash
+    # acceptance rate (the drafter's hidden-state fusion misfires on
+    # expert-routing churn; PoC measured 0.76-0.82× regression regardless
+    # of precision on Qwen3.6-35B-A3B).
+    is_moe: bool = False
     supports_spec_decode: bool = True
     default_max_tokens: int | None = None
     # SuffixDecoding eligibility — populated from cross-model bench (issue #269).
@@ -62,6 +76,15 @@ class AliasProfile:
     # pairs (tuple, not dict, so frozen dataclass instances stay safely shareable).
     suffix_decoding_tier: str = "unknown"
     suffix_bench_speedup: tuple[tuple[str, float], ...] | None = None
+    # DFlash speculative-decoding eligibility (issue #264). Explicit opt-in
+    # per alias rather than auto-derived because the PoC showed
+    # precision-dependent regressions: 4-bit kills acceptance even on dense
+    # models. Aliases keep ``supports_dflash=False`` until benched to win
+    # by ≥1.3× on the canonical Fibonacci/Quicksort/HashTable prompts.
+    # ``dflash_draft_model`` is the matching drafter HF path (e.g.
+    # ``z-lab/Qwen3.5-27B-DFlash``); required if ``supports_dflash=True``.
+    supports_dflash: bool = False
+    dflash_draft_model: str | None = None
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
@@ -110,15 +133,32 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     tier = value.get("suffix_decoding_tier", "unknown")
     if not isinstance(tier, str):
         raise ValueError(f"alias {alias!r}: suffix_decoding_tier must be a string")
+    supports_dflash = bool(value.get("supports_dflash", False))
+    dflash_draft_model = value.get("dflash_draft_model")
+    if supports_dflash and not dflash_draft_model:
+        # Fail loud here, not at server-start — a half-populated DFlash
+        # alias would silently fall back to AR and look like a perf bug.
+        raise ValueError(
+            f"alias {alias!r}: supports_dflash=true requires "
+            f"dflash_draft_model to be set"
+        )
+    if dflash_draft_model is not None and not isinstance(dflash_draft_model, str):
+        raise ValueError(
+            f"alias {alias!r}: dflash_draft_model must be a string, "
+            f"got {type(dflash_draft_model).__name__}"
+        )
     return AliasProfile(
         hf_path=hf_path,
         tool_call_parser=value.get("tool_call_parser"),
         reasoning_parser=value.get("reasoning_parser"),
         is_hybrid=bool(value.get("is_hybrid", False)),
+        is_moe=bool(value.get("is_moe", False)),
         supports_spec_decode=bool(value.get("supports_spec_decode", True)),
         default_max_tokens=value.get("default_max_tokens"),
         suffix_decoding_tier=tier,
         suffix_bench_speedup=speedup,
+        supports_dflash=supports_dflash,
+        dflash_draft_model=dflash_draft_model,
     )
 
 

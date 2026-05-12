@@ -97,6 +97,14 @@ class EngineConfig:
     stream_interval: int = 1  # Tokens to batch before streaming (1=every token)
     gpu_memory_utilization: float = 0.90  # Fraction of device memory for allocation
     tool_logits_processor_factory: Any | None = None  # Factory for tool logits bias
+    # DFlash speculative decoding (issue #264). When True, the engine
+    # loads ``dflash_draft_model`` and runs DFlash for B=1 requests on
+    # eligible aliases. B>1 transparently falls back to AR until phase-2
+    # batched support lands. Eligibility is verified by
+    # ``vllm_mlx.speculative.dflash.check`` at server-start time —
+    # invalid combinations error out before any weights load.
+    enable_dflash: bool = False
+    dflash_draft_model: str | None = None
 
 
 class EngineCore:

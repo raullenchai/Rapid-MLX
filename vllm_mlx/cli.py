@@ -486,6 +486,38 @@ def serve_command(args):
     else:
         server._reasoning_parser = None
 
+    # DFlash eligibility gate fires here, BEFORE the startup banner —
+    # so the user sees a clean error rather than an optimistic "DFlash
+    # enabled" feature line followed by an exit. Cheap (just reads
+    # aliases.json + checks the module spec); no model load yet.
+    if args.enable_dflash:
+        from .model_aliases import resolve_profile
+        from .speculative.dflash import DFlashUnavailable, check
+        from .speculative.dflash.eligibility import have_runtime
+
+        _alias_name = getattr(args, "_original_alias", None) or args.model
+        _profile = resolve_profile(_alias_name)
+        if _profile is None:
+            print(
+                f"\n  Error: --enable-dflash requires a known alias, got "
+                f"{_alias_name!r}. DFlash eligibility is recorded per-alias "
+                f"in aliases.json; ad-hoc HuggingFace paths can't be "
+                f"validated. Try ``rapid-mlx info qwen3.5-27b-8bit``.\n"
+            )
+            sys.exit(1)
+        try:
+            check(_profile, alias=_alias_name)
+        except DFlashUnavailable as e:
+            print(f"\n  Error: {e}\n")
+            sys.exit(1)
+        if not have_runtime():
+            print(
+                "\n  Error: --enable-dflash requires mlx-vlm 0.5.0+ for the "
+                "DFlash drafter hooks. Install with: "
+                "``pip install 'rapid-mlx[dflash]'``.\n"
+            )
+            sys.exit(1)
+
     # Startup summary
     print()
     print("  Rapid-MLX")
@@ -510,6 +542,8 @@ def serve_command(args):
         features.append("pin-system-prompt")
     if args.cors_origins:
         features.append(f"cors: {', '.join(args.cors_origins)}")
+    if args.enable_dflash:
+        features.append("dflash: single-user")
     if features:
         print(f"  Features: {', '.join(features)}")
     print(f"  Model: {args.model}")
@@ -539,7 +573,9 @@ def serve_command(args):
     if getattr(args, "draft_model", None):
         print(
             "\n  ⚠ --draft-model is deprecated and has no effect."
-            "\n    For speculative decoding, use --enable-mtp (requires model with MTP head).\n"
+            "\n    For DFlash speculative decoding, use --enable-dflash "
+            "(requires a DFlash-eligible alias). "
+            "For MTP, use --enable-mtp (requires a model with MTP head).\n"
         )
     if getattr(args, "specprefill", False):
         print("\n  ⚠ --specprefill is deprecated and has no effect.\n")
@@ -558,6 +594,14 @@ def serve_command(args):
             "\n  Error: --suffix-decoding and --enable-mtp are mutually "
             "exclusive (both monkey-patch the BatchGenerator step). "
             "Pick one.\n"
+        )
+        sys.exit(1)
+    if args.enable_dflash and (args.suffix_decoding or args.enable_mtp):
+        print(
+            "\n  Error: --enable-dflash cannot combine with --suffix-decoding "
+            "or --enable-mtp. DFlash runs a dedicated single-user server "
+            "that bypasses BatchedEngine; other spec-decode methods only "
+            "apply to the BatchedEngine path.\n"
         )
         sys.exit(1)
 
@@ -668,6 +712,32 @@ def serve_command(args):
     # Pre-flight memory check — warn (don't abort) if model + working set
     # would push unified memory past the kernel-panic threshold (issue #324).
     _check_memory_capacity(args.model)
+
+    # DFlash fork: when --enable-dflash is set, skip BatchedEngine entirely
+    # and run the dedicated DFlash server. The eligibility check above has
+    # already validated the alias, so by here we have a known-good profile.
+    if args.enable_dflash:
+        from .model_aliases import resolve_profile
+        from .speculative.dflash.server import run_dflash_server
+
+        _alias_name = getattr(args, "_original_alias", None) or args.model
+        _profile = resolve_profile(_alias_name)
+        # The eligibility check at top of serve_command guarantees this
+        # passes — assert to be defensive against future refactors.
+        assert _profile is not None and _profile.supports_dflash, (
+            f"DFlash profile invariant violated for {_alias_name!r}"
+        )
+        run_dflash_server(
+            main_model_repo=_profile.hf_path,
+            drafter_repo=_profile.dflash_draft_model,  # validated non-None by _coerce
+            host=args.host,
+            port=args.port,
+            served_model_name=args.served_model_name or _alias_name,
+            default_max_tokens=args.max_tokens,
+            cors_origins=cors_origins,
+            uvicorn_log_level=uvicorn_log_level,
+        )
+        return
 
     # Load model with unified server
     try:
@@ -2100,13 +2170,16 @@ def info_command(args):
     Stage 1 (regex match) only — does NOT load the model, so this is fast
     and works without weights. Stage 2 (ArraysCache probe) is skipped.
     """
-    from vllm_mlx.model_aliases import resolve_model
+    from vllm_mlx.model_aliases import resolve_model, resolve_profile
     from vllm_mlx.model_auto_config import (
         detect_model_config,
         format_profile_table,
     )
 
     name = args.model
+    # Preserve the user-typed alias so DFlash eligibility (which is
+    # keyed by alias, not hf_path) can render with the right name.
+    original_alias = name
     resolved = resolve_model(name)
     if resolved and resolved != name:
         print(f"  alias: {name} → {resolved}")
@@ -2116,8 +2189,84 @@ def info_command(args):
     print()
     print(format_profile_table(name, cfg))
     print()
+
+    # DFlash eligibility — render the report so users can see which
+    # gates pass/fail without consulting the docs. Skipped for unknown
+    # models since AliasProfile is alias-keyed.
+    profile = resolve_profile(original_alias)
+    if profile is not None:
+        _print_dflash_status(original_alias, profile)
+
     if cfg is None:
         print("  No pattern matched — runtime probe will run when the model loads.")
+        print()
+
+
+def _print_dflash_status(alias: str, profile) -> None:
+    """Render a 3-row DFlash status block for ``rapid-mlx info <alias>``.
+
+    Shows each gate (declared support / not MoE / not 4-bit / drafter
+    present) so a user who tried ``--enable-dflash`` and got a vague
+    error can see exactly which gate they're tripping.
+    """
+    from vllm_mlx.speculative.dflash.eligibility import (
+        _looks_like_4bit,
+        have_runtime,
+        report,
+    )
+
+    r = report(profile, alias=alias)
+    inner = 60
+    sep = "─" * inner
+
+    def _row(text: str) -> str:
+        return f"│ {text:<{inner}} │"
+
+    def _yes(ok: bool, msg_ok: str, msg_no: str) -> str:
+        return ("✓ " + msg_ok) if ok else ("✗ " + msg_no)
+
+    rows = [
+        (
+            "Declared support",
+            _yes(profile.supports_dflash, "yes (supports_dflash=true)", "no"),
+        ),
+        ("Not MoE", _yes(not profile.is_moe, "yes (dense)", "no (MoE)")),
+        (
+            "Precision ≥8-bit",
+            _yes(
+                not _looks_like_4bit(profile.hf_path),
+                "yes",
+                "no (4-bit/mxfp4/nvfp4)",
+            ),
+        ),
+        (
+            "Drafter declared",
+            _yes(
+                bool(profile.dflash_draft_model),
+                profile.dflash_draft_model or "yes",
+                "no (dflash_draft_model unset)",
+            ),
+        ),
+        (
+            "mlx-vlm 0.5.0+",
+            _yes(have_runtime(), "installed", "missing (need rapid-mlx[dflash])"),
+        ),
+    ]
+
+    eligible = not r.reasons and have_runtime()
+    summary = "✓ eligible" if eligible else "✗ ineligible"
+
+    top = "┌" + "─" * (inner + 2) + "┐"
+    bot = "└" + "─" * (inner + 2) + "┘"
+
+    body = [top, _row(f"DFlash eligibility: {summary}"), _row(sep)]
+    for k, v in rows:
+        body.append(_row(f"{k:<18}: {v}"))
+    body.append(bot)
+    print("\n".join(body))
+    print()
+    if eligible:
+        print(f"  Start with: rapid-mlx serve {alias} --enable-dflash")
         print()
 
 
@@ -2567,6 +2716,21 @@ Examples:
         type=str,
         default=None,
         help=argparse.SUPPRESS,
+    )
+    # DFlash — block-diffusion drafter speculative decoding (z-lab / mlx-vlm).
+    # Currently single-user serial mode; runs a dedicated DFlash server that
+    # bypasses BatchedEngine. Eligible aliases declare ``supports_dflash=true``
+    # in aliases.json (dense, ≥8-bit, drafter available — qwen3.5-27b-8bit
+    # is the only validated one today). PoC: 1.83–2.18× on Qwen3.5-27B-8bit.
+    serve_parser.add_argument(
+        "--enable-dflash",
+        action="store_true",
+        default=False,
+        help="Enable DFlash speculative decoding (block-diffusion drafter, "
+        "single-user serial mode). Requires a DFlash-eligible alias "
+        "(see ``rapid-mlx info <alias>``). Loads the drafter from the "
+        "alias's ``dflash_draft_model`` field. Install with "
+        "``pip install 'rapid-mlx[dflash]'``.",
     )
     serve_parser.add_argument(
         "--num-draft-tokens",

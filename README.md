@@ -581,6 +581,20 @@ Large-context requests auto-route to a cloud LLM (GPT-5, Claude, etc.) when loca
 
 Vision, audio (STT/TTS), video understanding, and text embeddings — all through the same OpenAI-compatible API.
 
+### DFlash Speculative Decoding (Qwen3.5/3.6, single-user)
+
+For dense, ≥8-bit Qwen3.5/3.6 aliases — z-lab's block-diffusion drafter (via mlx-vlm) gives a ~2× speedup on single-stream code/long-form generation.
+
+```bash
+pip install 'rapid-mlx[dflash]'
+rapid-mlx info qwen3.5-27b-8bit       # check per-gate eligibility
+rapid-mlx serve qwen3.5-27b-8bit --enable-dflash
+```
+
+Measured on Qwen3.5-27B-8bit (M3 Ultra): **2.18× (fibonacci) / 2.02× (quicksort) / 1.83× (hash table)** vs autoregressive. Acceptance rate floors out on 4-bit and MoE models, so DFlash is gated to validated aliases — run `rapid-mlx info <alias>` to see which pass.
+
+**v1 limitations**: DFlash mode runs a dedicated single-user server (mlx-vlm doesn't expose a batched DFlash kernel yet). Tool calling, MCP, and embeddings aren't available in DFlash mode — restart without `--enable-dflash` for those.
+
 Also: logprobs API, structured JSON output (`response_format`), continuous batching, KV cache quantization (`--kv-cache-quantization`), and [2100+ tests](tests/).
 
 ---
@@ -615,6 +629,7 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 | `--kv-cache-turboquant` | TurboQuant V-cache compression (3-4 bit, 86% savings on dense models) | off |
 | `--kv-cache-quantization` | Quantize prefix cache entries for memory savings | off |
 | `--enable-prefix-cache` | Cache common prefixes across requests | off |
+| `--enable-dflash` | DFlash speculative decoding for eligible aliases (single-user, ~2× speedup) | off |
 | `--gpu-memory-utilization` | Fraction of device memory to use (0.0-1.0) | `0.90` |
 
 ### Cloud Routing

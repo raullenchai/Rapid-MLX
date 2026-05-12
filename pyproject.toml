@@ -51,11 +51,20 @@ dependencies = [
 [project.optional-dependencies]
 # Vision/multimodal models (Gemma 4, Qwen-VL, etc.) — adds ~322 MB
 # Required for any model with vision input. Text-only models work without this.
+# 0.5.0+ also unlocks DFlash speculative decoding (see [dflash] extras).
 vision = [
-    "mlx-vlm>=0.5.0",  # 0.5.0: gemma4 multi-image + tool-parser fixes, TurboQuant race-condition fix (relevant to our [vision] users), and a new continuous-batching guard. No breaking VL changes.
+    "mlx-vlm>=0.5.0",  # 0.5.0: gemma4 multi-image + tool-parser fixes, TurboQuant race-condition fix, continuous-batching guard. Also unlocks DFlash spec-decode hooks (see [dflash] extras).
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
+]
+# DFlash speculative decoding for Qwen3.5/3.6 dense 8-bit models
+# (issue #264). Adds ~1-4 GB at runtime (drafter weights) and depends on
+# mlx-vlm's spec-decode runtime. Text-only — does NOT pull torch/cv2 like
+# the vision extras do. Only enable if you serve a DFlash-eligible alias
+# (e.g. qwen3.5-27b-8bit) with --enable-dflash.
+dflash = [
+    "mlx-vlm>=0.5.0",
 ]
 # Embedding endpoint
 embeddings = [
@@ -80,6 +89,7 @@ all = [
     "pytz>=2024.1",
     # embeddings
     "mlx-embeddings>=0.0.5",
+    # dflash (text-only path covered by mlx-vlm above; listed for clarity)
 ]
 dev = [
     "pytest>=7.0.0",
