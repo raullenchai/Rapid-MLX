@@ -8,15 +8,16 @@ messages at server-start, never as silent regressions at request time.
 Gates derived from PoC bench data (see issue #264):
   - Alias must declare ``supports_dflash=True`` (explicit opt-in)
   - Alias must NOT be ``is_moe=True`` (MoE acceptance floors at ~1.5)
-  - Main model must be 8-bit or higher (4-bit regresses; gate by hf_path
-    naming convention, double-checked at load time by inspecting the
-    quantization config)
+  - Main model must be 8-bit or higher; detected from the HF path
+    naming convention (``-4bit``/``mxfp4``/``nvfp4`` suffixes used by
+    mlx-community). A custom-named 4-bit repo would slip through this
+    heuristic — for v1 we accept that risk since every supported alias
+    is curated; load-time quant-config inspection is a phase-2 item.
   - Drafter HF path must be reachable (no auth-gated repo without token)
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 from vllm_mlx.model_aliases import AliasProfile
@@ -51,9 +52,11 @@ def _looks_like_4bit(hf_path: str) -> bool:
     error and a unit-test guard share one rule.
     """
     lowered = hf_path.lower()
-    if "-4bit" in lowered or lowered.endswith("-4bit"):
-        return True
-    if "4bit-" in lowered:
+    # Anchor the 4-bit infix on a leading hyphen so a model name like
+    # "Foo-4bit-attention" (where "4bit-" is part of the architecture
+    # tag rather than the quant suffix) doesn't get falsely flagged.
+    # "-4bit" handles both the trailing form and any mid-name segment.
+    if "-4bit" in lowered:
         return True
     if "mxfp4" in lowered or "nvfp4" in lowered:
         return True
@@ -97,6 +100,26 @@ def report(profile: AliasProfile, alias: str | None = None) -> EligibilityReport
     )
 
 
+def eligible_aliases() -> list[str]:
+    """Return alias names whose AliasProfile currently passes every
+    DFlash gate. Computed from the live ``aliases.json`` registry so
+    error messages don't go stale as more aliases are validated.
+
+    Kept tolerant: any import or registry error returns an empty list
+    rather than raising, since this is only used to enrich error text.
+    """
+    try:
+        from vllm_mlx.model_aliases import list_profiles
+
+        return sorted(
+            name
+            for name, profile in list_profiles().items()
+            if not report(profile).reasons
+        )
+    except Exception:  # noqa: BLE001 — diagnostic helper, never fatal
+        return []
+
+
 def check(profile: AliasProfile, alias: str | None = None) -> None:
     """Raise ``DFlashUnavailable`` with an actionable message if any
     eligibility gate fails. Returns ``None`` on success."""
@@ -105,11 +128,18 @@ def check(profile: AliasProfile, alias: str | None = None) -> None:
         return
     header = f"DFlash unavailable for {alias!r}" if alias else "DFlash unavailable"
     bullet = "\n  - ".join(r.reasons)
-    raise DFlashUnavailable(
-        f"{header}:\n  - {bullet}\n\n"
-        "Eligible aliases today: qwen3.5-27b-8bit. Run "
-        "`rapid-mlx info <alias>` to inspect per-alias DFlash status."
-    )
+    eligible = eligible_aliases()
+    if eligible:
+        suffix = (
+            f"Eligible aliases today: {', '.join(eligible)}. Run "
+            "`rapid-mlx info <alias>` to inspect per-alias DFlash status."
+        )
+    else:
+        suffix = (
+            "No aliases currently pass every DFlash gate. Run "
+            "`rapid-mlx info <alias>` to inspect per-alias DFlash status."
+        )
+    raise DFlashUnavailable(f"{header}:\n  - {bullet}\n\n{suffix}")
 
 
 def have_runtime() -> bool:
@@ -129,15 +159,3 @@ def have_runtime() -> bool:
         return spec is not None
     except (ImportError, AttributeError):
         return False
-
-
-# Bypass-toggle for tests that need to exercise gates without a real
-# drafter on disk. Tests set this via monkeypatch; production code never
-# reads the env directly.
-DFLASH_SKIP_RUNTIME_CHECK_ENV = "RAPID_MLX_DFLASH_SKIP_RUNTIME_CHECK"
-
-
-def runtime_check_skipped() -> bool:
-    """Honour ``RAPID_MLX_DFLASH_SKIP_RUNTIME_CHECK=1`` for tests that
-    only exercise eligibility logic without actually loading weights."""
-    return os.environ.get(DFLASH_SKIP_RUNTIME_CHECK_ENV, "") in ("1", "true", "yes")

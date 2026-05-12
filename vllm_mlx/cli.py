@@ -486,6 +486,19 @@ def serve_command(args):
     else:
         server._reasoning_parser = None
 
+    # DFlash mutual-exclusion gate fires BEFORE the startup banner so
+    # the user sees a clean error instead of an optimistic "Features:
+    # dflash" line immediately followed by an exit. The deeper SchedulerConfig
+    # mutex (suffix vs. mtp) stays below since it doesn't involve DFlash.
+    if args.enable_dflash and (args.suffix_decoding or args.enable_mtp):
+        print(
+            "\n  Error: --enable-dflash cannot combine with --suffix-decoding "
+            "or --enable-mtp. DFlash runs a dedicated single-user server "
+            "that bypasses BatchedEngine; other spec-decode methods only "
+            "apply to the BatchedEngine path.\n"
+        )
+        sys.exit(1)
+
     # DFlash eligibility gate fires here, BEFORE the startup banner —
     # so the user sees a clean error rather than an optimistic "DFlash
     # enabled" feature line followed by an exit. Cheap (just reads
@@ -517,6 +530,44 @@ def serve_command(args):
                 "``pip install 'rapid-mlx[dflash]'``.\n"
             )
             sys.exit(1)
+
+        # Warn about flags that BatchedEngine honours but the DFlash
+        # server doesn't — better to surface this once at startup than
+        # to let users wonder why their tuning has no effect. Inspected
+        # against the actual argparse Namespace so we only mention flags
+        # the user explicitly set away from their default.
+        _GPU_MEM_DEFAULT = 0.90  # keep in sync with the serve_parser default
+        _dflash_ignored: list[str] = []
+        if getattr(args, "enable_prefix_cache", False):
+            _dflash_ignored.append("--enable-prefix-cache")
+        if getattr(args, "kv_cache_quantization", None):
+            _dflash_ignored.append("--kv-cache-quantization")
+        # gpu-memory-utilization defaults to 0.90 (not None) in the serve
+        # parser, so an ``is not None`` check would fire on every invocation.
+        # Compare to the real default — only warn when the user explicitly
+        # tuned it. Tolerate a tiny float-equality slack for safety.
+        _gpu_mem = getattr(args, "gpu_memory_utilization", _GPU_MEM_DEFAULT)
+        if _gpu_mem is not None and abs(_gpu_mem - _GPU_MEM_DEFAULT) > 1e-6:
+            _dflash_ignored.append("--gpu-memory-utilization")
+        if getattr(args, "enable_auto_tool_choice", False):
+            _dflash_ignored.append("--enable-auto-tool-choice")
+        if getattr(args, "tool_call_parser", None):
+            _dflash_ignored.append("--tool-call-parser")
+        if getattr(args, "reasoning_parser", None):
+            _dflash_ignored.append("--reasoning-parser")
+        if getattr(args, "embedding_model", None):
+            _dflash_ignored.append("--embedding-model")
+        if getattr(args, "mcp_config", None):
+            _dflash_ignored.append("--mcp-config")
+        if _dflash_ignored:
+            print(
+                "\n  ⚠ The following flags are ignored under --enable-dflash"
+                "\n    (DFlash uses a dedicated single-user server that bypasses"
+                "\n    BatchedEngine):"
+                f"\n      {', '.join(_dflash_ignored)}"
+                "\n    Drop them from your serve command, or run without"
+                "\n    --enable-dflash if you need them.\n"
+            )
 
     # Startup summary
     print()
@@ -589,19 +640,12 @@ def serve_command(args):
         sys.exit(1)
 
     # Mutual exclusion: only one spec-decode method may wrap _step at a time.
+    # (The DFlash-vs-{suffix,mtp} check is upstream, before the banner.)
     if args.suffix_decoding and args.enable_mtp:
         print(
             "\n  Error: --suffix-decoding and --enable-mtp are mutually "
             "exclusive (both monkey-patch the BatchGenerator step). "
             "Pick one.\n"
-        )
-        sys.exit(1)
-    if args.enable_dflash and (args.suffix_decoding or args.enable_mtp):
-        print(
-            "\n  Error: --enable-dflash cannot combine with --suffix-decoding "
-            "or --enable-mtp. DFlash runs a dedicated single-user server "
-            "that bypasses BatchedEngine; other spec-decode methods only "
-            "apply to the BatchedEngine path.\n"
         )
         sys.exit(1)
 

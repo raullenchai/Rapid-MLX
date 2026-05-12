@@ -177,5 +177,12 @@ def test_default_qwen3_5_27b_alias_fails_check_with_4bit_reason() -> None:
 
     profile = resolve_profile("qwen3.5-27b")
     assert profile is not None
-    with pytest.raises(DFlashUnavailable):
+    # Match-string: capture both reasons (4-bit + not-opted-in). The
+    # bare ``raises`` would pass even if the gate silently degraded to
+    # the generic message, defeating the point of this regression test.
+    with pytest.raises(DFlashUnavailable) as excinfo:
         check(profile, alias="qwen3.5-27b")
+    msg = str(excinfo.value)
+    assert "4-bit" in msg, (
+        f"4-bit hint missing from DFlashUnavailable message; got:\n{msg}"
+    )

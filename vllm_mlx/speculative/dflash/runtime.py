@@ -40,17 +40,27 @@ class DFlashRuntime:
 
     def reset_accept_lens(self) -> None:
         """Clear the per-round acceptance counters between requests so
-        metric reports don't pool acceptance across sessions."""
+        metric reports don't pool acceptance across sessions. Tolerant
+        of mlx-vlm versions that might rename / change the type of the
+        attribute — silently no-ops if it isn't a list (the public
+        contract of mlx-vlm 0.5.0's drafter has it as ``list[int]``,
+        but the upstream API is not yet declared stable)."""
         accept_lens = getattr(self.drafter, "accept_lens", None)
-        if accept_lens is not None:
+        if isinstance(accept_lens, list):
             accept_lens.clear()
+        elif accept_lens is not None:
+            logger.warning(
+                "DFlash drafter.accept_lens has unexpected type %s; "
+                "metrics may pool across requests",
+                type(accept_lens).__name__,
+            )
 
     def accept_lens_snapshot(self) -> list[int]:
         """Return a copy of the current accept-len list. Cheap; used by
         the metrics endpoint to compute mean accept per request without
         racing with the in-progress generator."""
         accept_lens = getattr(self.drafter, "accept_lens", None)
-        if accept_lens is None:
+        if not isinstance(accept_lens, list):
             return []
         return list(accept_lens)
 

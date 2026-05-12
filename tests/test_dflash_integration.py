@@ -18,10 +18,22 @@ Two tiers of coverage here:
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from unittest.mock import MagicMock
 
 import pytest
+
+# Several "unit-ish" tests below monkey-patch ``mlx_vlm`` symbols
+# (stream_generate / prompt_utils.apply_chat_template) to exercise the
+# server path without loading any weights. They still require mlx_vlm
+# to be importable — i.e. the ``[dflash]`` (or ``[vision]``) extras
+# present. Gate them so a minimal install runs the rest of the suite.
+_MLX_VLM_AVAILABLE = importlib.util.find_spec("mlx_vlm") is not None
+_skip_without_mlx_vlm = pytest.mark.skipif(
+    not _MLX_VLM_AVAILABLE,
+    reason="mlx_vlm not installed (DFlash test path needs [dflash] extras)",
+)
 
 # =============================================================================
 # CLI flag plumbing — argparse adds --enable-dflash + the eligibility check
@@ -231,6 +243,410 @@ def test_chat_completions_rejects_empty_messages() -> None:
     assert r.status_code == 400
 
 
+@_skip_without_mlx_vlm
+def test_stream_completion_surfaces_generator_exception(monkeypatch) -> None:
+    """When ``mlx_vlm.stream_generate`` raises mid-stream, the SSE
+    response must finish cleanly with an OpenAI-style error block + a
+    final ``[DONE]`` event — never leave the client hanging.
+
+    Regression guard for the DeepSeek-flagged unhandled-exception path
+    in ``_next_chunk`` (was only catching ``StopIteration``)."""
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.dflash import server as srv
+    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+
+    class _BoomGen:
+        """Sync generator that yields once, then raises — mirrors the
+        shape of mlx-vlm ``stream_generate`` so the production iter
+        loop exercises both the happy and error branches."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self.calls += 1
+            if self.calls == 1:
+
+                class _Chunk:
+                    text = "hello"
+                    token = 1
+                    prompt_tokens = 7
+                    generation_tokens = 1
+
+                return _Chunk()
+            raise RuntimeError("simulated mlx-vlm failure")
+
+    def _fake_stream_generate(*args, **kwargs):
+        return _BoomGen()
+
+    # Patch the symbol where it's looked up — mlx_vlm.stream_generate.
+    # The server imports it lazily inside ``_stream_completion``, so we
+    # patch the source module not a re-export.
+    import mlx_vlm
+
+    monkeypatch.setattr(mlx_vlm, "stream_generate", _fake_stream_generate)
+
+    runtime = DFlashRuntime(
+        drafter=MagicMock(),
+        kind="dflash",
+        drafter_repo="z-lab/Qwen3.5-27B-DFlash",
+    )
+    # Mock processor / model so _render_prompt doesn't try to invoke
+    # mlx-vlm chat templating. apply_chat_template is patched at the
+    # source too.
+    import mlx_vlm.prompt_utils
+
+    monkeypatch.setattr(
+        mlx_vlm.prompt_utils,
+        "apply_chat_template",
+        lambda *a, **kw: "rendered prompt",
+    )
+
+    app = srv._build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=runtime,
+        served_model_name="qwen3.5-27b-8bit",
+        default_max_tokens=64,
+        cors_origins=["*"],
+    )
+    client = TestClient(app)
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    ) as resp:
+        assert resp.status_code == 200
+        body = b"".join(resp.iter_bytes()).decode()
+
+    # The stream must terminate with a ``[DONE]`` marker — proves the
+    # response coroutine didn't crash mid-flight.
+    assert "data: [DONE]" in body, (
+        "stream must end with [DONE] even when the upstream generator "
+        f"raises; body was:\n{body}"
+    )
+    # The final delta block must carry the error block + finish_reason=error.
+    assert '"finish_reason": "error"' in body
+    assert "dflash_runtime_error" in body
+    assert "simulated mlx-vlm failure" in body
+    # And the one happy chunk that *did* arrive before the raise must
+    # still appear in the stream.
+    assert '"content": "hello"' in body
+
+
+# =============================================================================
+# finish_reason: must report "length" on token-budget hit (OpenAI clients
+# distinguish "stop" from "length"; presenting "stop" for a truncated
+# reply misleads downstream tools that auto-continue on truncation).
+# =============================================================================
+
+
+@_skip_without_mlx_vlm
+def test_stream_completion_surfaces_constructor_exception(monkeypatch) -> None:
+    """If ``stream_generate`` raises at *construction* time (before
+    yielding the first chunk — e.g. OOM, missing mlx-vlm kernel), the
+    SSE response must finish with an error block + ``[DONE]``, not
+    propagate out of the async generator and leave the client hanging.
+    Regression guard for round-7 review finding."""
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest, Message
+    from vllm_mlx.speculative.dflash import server as srv
+
+    def _exploding_stream_generate(*a, **kw):
+        raise RuntimeError("simulated OOM at generator construction")
+
+    import mlx_vlm as _mlx_vlm
+
+    monkeypatch.setattr(_mlx_vlm, "stream_generate", _exploding_stream_generate)
+
+    req = ChatCompletionRequest(
+        model="qwen3.5-27b-8bit",
+        messages=[Message(role="user", content="ping")],
+        stream=True,
+    )
+    gen_iter = srv._stream_completion(
+        prompt="ping",
+        request=req,
+        served_model_name="qwen3.5-27b-8bit",
+        gen_kwargs={"max_tokens": 4},
+        model=MagicMock(),
+        processor=MagicMock(),
+    )
+
+    async def _drain() -> list[bytes]:
+        return [b async for b in gen_iter]
+
+    chunks = asyncio.run(_drain())
+    body = b"".join(chunks).decode()
+    # Must still get a clean [DONE] terminator + the error block.
+    assert "data: [DONE]" in body, (
+        f"constructor-time crash must still terminate the stream; got:\n{body}"
+    )
+    assert '"finish_reason": "error"' in body
+    assert "dflash_runtime_error" in body
+    assert "simulated OOM at generator construction" in body
+
+
+@_skip_without_mlx_vlm
+def test_stream_completion_reports_length_when_max_tokens_hit(monkeypatch) -> None:
+    """When ``generation_tokens >= max_tokens``, the final SSE event must
+    carry ``finish_reason="length"``. mlx-vlm's GenerationResult doesn't
+    expose finish_reason itself, so the server infers it from token-count
+    vs budget. Regression guard for round-5 review finding."""
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest, Message
+    from vllm_mlx.speculative.dflash import server as srv
+
+    class _Chunk:
+        text = "x"
+        token = 1
+        prompt_tokens = 3
+        generation_tokens = 4  # equals max_tokens below
+
+    def _gen():
+        yield _Chunk()
+
+    import mlx_vlm as _mlx_vlm
+
+    monkeypatch.setattr(_mlx_vlm, "stream_generate", lambda *a, **kw: _gen())
+
+    req = ChatCompletionRequest(
+        model="qwen3.5-27b-8bit",
+        messages=[Message(role="user", content="ping")],
+        stream=True,
+    )
+    gen_iter = srv._stream_completion(
+        prompt="ping",
+        request=req,
+        served_model_name="qwen3.5-27b-8bit",
+        gen_kwargs={"max_tokens": 4},  # budget hit
+        model=MagicMock(),
+        processor=MagicMock(),
+    )
+
+    async def _drain() -> list[bytes]:
+        return [b async for b in gen_iter]
+
+    chunks = asyncio.run(_drain())
+    body = b"".join(chunks).decode()
+    # The penultimate SSE event carries the final finish_reason — must be
+    # "length", not "stop", since we hit the token budget.
+    assert '"finish_reason": "length"' in body, (
+        f"max_tokens hit should report finish_reason=length; got:\n{body}"
+    )
+    assert '"finish_reason": "stop"' not in body, (
+        f"must not also emit finish_reason=stop on the final event; got:\n{body}"
+    )
+
+
+@_skip_without_mlx_vlm
+def test_stream_completion_reports_stop_when_eos_lands_at_max_tokens(
+    monkeypatch,
+) -> None:
+    """Edge case from round-13 review: if the model emits EOS at exactly
+    ``max_tokens``, the stop was natural (the model would have stopped
+    even with a larger budget). Reporting "length" would mislead clients
+    that auto-continue on truncation. The token-id disambiguation must
+    correctly classify this as "stop"."""
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest, Message
+    from vllm_mlx.speculative.dflash import server as srv
+
+    class _Chunk:
+        text = "done"
+        token = 7  # we'll make this the EOS token id below
+        prompt_tokens = 3
+        generation_tokens = 4  # equals max_tokens — would otherwise be "length"
+
+    def _gen():
+        yield _Chunk()
+
+    import mlx_vlm as _mlx_vlm
+
+    monkeypatch.setattr(_mlx_vlm, "stream_generate", lambda *a, **kw: _gen())
+
+    # Processor's tokenizer reports eos_token_id == 7 — matches the
+    # chunk's token, so the heuristic must override "length" → "stop".
+    processor = MagicMock()
+    processor.tokenizer.eos_token_id = 7
+
+    req = ChatCompletionRequest(
+        model="qwen3.5-27b-8bit",
+        messages=[Message(role="user", content="ping")],
+        stream=True,
+    )
+    gen_iter = srv._stream_completion(
+        prompt="ping",
+        request=req,
+        served_model_name="qwen3.5-27b-8bit",
+        gen_kwargs={"max_tokens": 4},
+        model=MagicMock(),
+        processor=processor,
+    )
+
+    async def _drain() -> list[bytes]:
+        return [b async for b in gen_iter]
+
+    chunks = asyncio.run(_drain())
+    body = b"".join(chunks).decode()
+    assert '"finish_reason": "stop"' in body, (
+        "EOS at exactly max_tokens must be classified as stop, not length; "
+        f"got:\n{body}"
+    )
+    assert '"finish_reason": "length"' not in body, (
+        f"must not also emit length when last token is EOS; got:\n{body}"
+    )
+
+
+@_skip_without_mlx_vlm
+def test_non_stream_completion_reports_length_when_max_tokens_hit(
+    monkeypatch,
+) -> None:
+    """Same length-vs-stop distinction in the non-stream path."""
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest, Message
+    from vllm_mlx.speculative.dflash import server as srv
+
+    class _Result:
+        text = "xxxx"
+        prompt_tokens = 3
+        generation_tokens = 4  # equals max_tokens below
+
+    import mlx_vlm as _mlx_vlm
+
+    monkeypatch.setattr(_mlx_vlm, "generate", lambda *a, **kw: _Result())
+
+    req = ChatCompletionRequest(
+        model="qwen3.5-27b-8bit",
+        messages=[Message(role="user", content="ping")],
+        stream=False,
+    )
+    resp = asyncio.run(
+        srv._non_stream_completion(
+            prompt="ping",
+            request=req,
+            served_model_name="qwen3.5-27b-8bit",
+            gen_kwargs={"max_tokens": 4},
+            model=MagicMock(),
+            processor=MagicMock(),
+        )
+    )
+    assert resp.choices[0].finish_reason == "length", (
+        f"max_tokens hit should report finish_reason=length, "
+        f"got {resp.choices[0].finish_reason!r}"
+    )
+
+
+# =============================================================================
+# Thread-affinity contract — every mlx-vlm call must land on the dedicated
+# single-thread executor. mlx-lm 0.31.3+ keeps GPU Stream in thread-local
+# storage; hand-off across worker threads crashes mid-generation with
+# "There is no Stream(gpu, N) in current thread". A regression here would
+# only surface in production (no Stream error in mock tests), so we pin
+# the invariant via the executor's identity.
+# =============================================================================
+
+
+@_skip_without_mlx_vlm
+def test_stream_completion_pins_to_dedicated_executor(monkeypatch) -> None:
+    """``_stream_completion`` must submit every mlx-vlm call (generator
+    construction + each ``next(gen)``) to the module-level single-thread
+    ``_dflash_executor`` — never to the default ThreadPoolExecutor
+    (which has N workers and would tear apart mlx's thread-local Stream).
+
+    The spy counts submissions on the pinned executor; a regression
+    that routed work to the default executor would zero the counter."""
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest, Message
+    from vllm_mlx.speculative.dflash import server as srv
+
+    # Runtime spy on ``_dflash_executor.submit`` — counts the actual
+    # submissions during a real ``_stream_completion`` invocation.
+    submit_count = [0]
+    real_submit = srv._dflash_executor.submit
+
+    def _count_submit(fn, *args, **kwargs):
+        submit_count[0] += 1
+        return real_submit(fn, *args, **kwargs)
+
+    monkeypatch.setattr(srv._dflash_executor, "submit", _count_submit)
+
+    class _OneChunk:
+        text = "hi"
+        generation_tokens = 1
+        prompt_tokens = 2
+
+    def _gen():
+        yield _OneChunk()
+
+    import mlx_vlm as _mlx_vlm
+
+    monkeypatch.setattr(_mlx_vlm, "stream_generate", lambda *a, **kw: _gen())
+
+    req = ChatCompletionRequest(
+        model="qwen3.5-27b-8bit",
+        messages=[Message(role="user", content="ping")],
+        stream=True,
+    )
+    gen_iter = srv._stream_completion(
+        prompt="ping",
+        request=req,
+        served_model_name="qwen3.5-27b-8bit",
+        gen_kwargs={"max_tokens": 8},
+        model=MagicMock(),
+        processor=MagicMock(),
+    )
+
+    async def _drain() -> None:
+        async for _ in gen_iter:
+            pass
+
+    asyncio.run(_drain())
+
+    # Expect at least 2 submits: one for ``_make_gen`` (construct the
+    # generator on the worker) and at least one for ``_next_chunk``.
+    assert submit_count[0] >= 2, (
+        f"_dflash_executor.submit only called {submit_count[0]} time(s); "
+        "expected ≥2 (one for generator construction + one per next()). "
+        "Thread affinity contract violated."
+    )
+
+
+def test_dflashruntime_accept_lens_tolerates_wrong_type(caplog) -> None:
+    """If a future mlx-vlm renames ``accept_lens`` or changes its type,
+    we must not crash on reset — degrade to a warning + no-op. Verifies
+    the isinstance guard added after the round-4 review."""
+    import logging
+
+    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+
+    drafter = MagicMock()
+    drafter.accept_lens = 42  # not a list
+    rt = DFlashRuntime(drafter=drafter, kind="dflash", drafter_repo="fake/repo")
+
+    with caplog.at_level(logging.WARNING, logger="vllm_mlx.speculative.dflash.runtime"):
+        rt.reset_accept_lens()
+    assert any("unexpected type" in rec.message for rec in caplog.records), (
+        "reset_accept_lens should warn (not crash) when accept_lens isn't a list"
+    )
+    # Snapshot also degrades gracefully — empty list, not raise.
+    assert rt.accept_lens_snapshot() == []
+
+
 # =============================================================================
 # Eligibility error surfaces (CLI startup) — the gate must fail fast
 # with an actionable error before the user wastes 5 min downloading weights.
@@ -286,6 +702,26 @@ def test_dflash_e2e_chat_completion_smoke() -> None:
 
     if not have_runtime():
         pytest.skip("mlx-vlm 0.5.0+ not installed")
+
+    # Cache-presence gate — if a curious dev sets RAPID_MLX_DFLASH_E2E=1
+    # but doesn't have the weights, ``mlx_vlm.load`` would silently
+    # start a multi-GB HuggingFace download (no progress visible from
+    # pytest). Skip with a precise reason so they know how to bring the
+    # test into reach instead of waiting on a stuck process.
+    from huggingface_hub import try_to_load_from_cache
+
+    _required_repos = (
+        "mlx-community/Qwen3.5-27B-8bit",
+        "z-lab/Qwen3.5-27B-DFlash",
+    )
+    for repo in _required_repos:
+        cfg = try_to_load_from_cache(repo, "config.json")
+        if not cfg:
+            pytest.skip(
+                f"DFlash e2e: {repo} not cached locally. Run "
+                f"`huggingface-cli download {repo}` before re-running "
+                "with RAPID_MLX_DFLASH_E2E=1."
+            )
 
     from fastapi.testclient import TestClient
     from mlx_vlm import load

@@ -356,13 +356,11 @@ def test_dflash_excludes_4bit_precision(alias: str) -> None:
     if not profile.supports_dflash:
         return
     hf = profile.hf_path
-    is_4bit = (
-        "-4bit" in hf
-        or hf.endswith("-4bit")
-        or "4bit-" in hf
-        or "mxfp4" in hf.lower()
-        or "nvfp4" in hf.lower()
-    )
+    # Case-insensitive AND anchored on the "-4bit" form so the test
+    # matches ``eligibility._looks_like_4bit`` exactly. Drift between
+    # the two would let an alias green-light here but crash at boot.
+    hf_lc = hf.lower()
+    is_4bit = "-4bit" in hf_lc or "mxfp4" in hf_lc or "nvfp4" in hf_lc
     assert not is_4bit, (
         f"{alias}: supports_dflash=True but hf_path={hf!r} looks like a "
         f"4-bit quantized variant. DFlash regresses on 4-bit precision "
@@ -394,8 +392,11 @@ def test_dflash_eligible_aliases_have_qwen35_36_drafter() -> None:
 
 def test_negative_control_dflash_on_moe_is_caught() -> None:
     """A future PR adding ``is_moe=true`` + ``supports_dflash=true`` must
-    be rejected by ``test_dflash_excludes_moe_architectures``."""
+    be rejected by the eligibility gate. Exercises the actual gate path
+    (not just the data structure) so a regression that quietly removes
+    the MoE check in ``eligibility.check`` fails this test."""
     from vllm_mlx.model_aliases import AliasProfile
+    from vllm_mlx.speculative.dflash import DFlashUnavailable, check
 
     bad = AliasProfile(
         hf_path="fake/MoE-Model",
@@ -403,8 +404,8 @@ def test_negative_control_dflash_on_moe_is_caught() -> None:
         supports_dflash=True,
         dflash_draft_model="z-lab/Qwen3.6-35B-A3B-DFlash",
     )
-    caught = bad.is_moe and bad.supports_dflash
-    assert caught, "the MoE-DFlash exclusion guard would miss this"
+    with pytest.raises(DFlashUnavailable, match="MoE"):
+        check(bad, alias="fake-moe-alias")
 
 
 def test_negative_control_dflash_missing_drafter_is_caught() -> None:

@@ -133,7 +133,21 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     tier = value.get("suffix_decoding_tier", "unknown")
     if not isinstance(tier, str):
         raise ValueError(f"alias {alias!r}: suffix_decoding_tier must be a string")
-    supports_dflash = bool(value.get("supports_dflash", False))
+
+    # Strict bool coercion — bare ``bool(...)`` treats the string
+    # ``"false"`` as True and silently flips a careful maintainer's
+    # intent. Validate the JSON type explicitly so a typo in
+    # aliases.json fails loud at load time.
+    def _strict_bool(key: str, default: bool) -> bool:
+        raw = value.get(key, default)
+        if not isinstance(raw, bool):
+            raise ValueError(
+                f"alias {alias!r}: {key} must be a JSON boolean, "
+                f"got {type(raw).__name__}={raw!r}"
+            )
+        return raw
+
+    supports_dflash = _strict_bool("supports_dflash", False)
     dflash_draft_model = value.get("dflash_draft_model")
     if supports_dflash and not dflash_draft_model:
         # Fail loud here, not at server-start — a half-populated DFlash
@@ -151,9 +165,9 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         hf_path=hf_path,
         tool_call_parser=value.get("tool_call_parser"),
         reasoning_parser=value.get("reasoning_parser"),
-        is_hybrid=bool(value.get("is_hybrid", False)),
-        is_moe=bool(value.get("is_moe", False)),
-        supports_spec_decode=bool(value.get("supports_spec_decode", True)),
+        is_hybrid=_strict_bool("is_hybrid", False),
+        is_moe=_strict_bool("is_moe", False),
+        supports_spec_decode=_strict_bool("supports_spec_decode", True),
         default_max_tokens=value.get("default_max_tokens"),
         suffix_decoding_tier=tier,
         suffix_bench_speedup=speedup,

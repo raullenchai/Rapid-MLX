@@ -32,6 +32,8 @@ running ``rapid-mlx serve qwen3.5-27b-8bit --enable-dflash`` to get a
 from __future__ import annotations
 
 import asyncio
+import atexit
+import concurrent.futures
 import json
 import logging
 import time
@@ -65,6 +67,28 @@ logger = logging.getLogger(__name__)
 _dflash_lock = asyncio.Lock()
 
 
+# Dedicated single-thread executor so every mlx-vlm call (drafter loading,
+# generate, stream_generate's ``next``) executes on ONE thread for the
+# lifetime of the process. Reason: mlx-lm 0.31.3+ keeps the GPU Stream
+# in thread-local storage; iterating a generator across threads (which
+# would happen if we used the default ThreadPoolExecutor with N workers)
+# trips "There is no Stream(gpu, N) in current thread" mid-stream. Pinning
+# to one worker preserves thread affinity and matches the serial-only
+# contract enforced by ``_dflash_lock``.
+_dflash_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="dflash-worker"
+)
+
+
+@atexit.register
+def _shutdown_dflash_executor() -> None:
+    """Drain the DFlash worker on interpreter exit. Python registers an
+    implicit atexit for ThreadPoolExecutor, but registering ours
+    explicitly makes shutdown order deterministic and silences
+    "unfinished thread" warnings during graceful uvicorn termination."""
+    _dflash_executor.shutdown(wait=False, cancel_futures=True)
+
+
 def _build_app(
     *,
     model: Any,
@@ -76,9 +100,17 @@ def _build_app(
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
 
-    All globals (``model``, ``processor``, ``runtime``) are captured by
-    closure here rather than module-level so a future caller could host
-    multiple DFlash instances side-by-side without state collision.
+    Per-app state (``model``, ``processor``, ``runtime``,
+    ``served_model_name``) is captured by closure so a single Python
+    process could in principle host multiple ``_build_app`` instances
+    against different models without per-request state collision.
+
+    Note: ``_dflash_lock`` and ``_dflash_executor`` are *module-level*
+    by design — every DFlash invocation must serialise through the
+    same single-thread worker because mlx's GPU Stream is thread-local
+    (see the ``_dflash_executor`` docstring at module top). A future
+    multi-model deployment would still share that worker; one model
+    can't run while another's generator is mid-step.
     """
     app = FastAPI(title="rapid-mlx (DFlash)")
     app.add_middleware(
@@ -188,15 +220,31 @@ def _render_prompt(processor: Any, model: Any, request: ChatCompletionRequest) -
         content = m.content
         if isinstance(content, list):
             # Multimodal payload — DFlash server is text-only. Collapse
-            # text parts; ignore image/video parts (a 400 might surprise
-            # users sending mixed content; better to silently degrade).
+            # text parts; non-text parts (image/audio/video) are
+            # dropped. A 400 would surprise users mid-prompt, but a
+            # silent drop hides "why is my model ignoring the image?"
+            # debugging — so we degrade with a visible WARN log per
+            # request that hits this path.
             text_pieces = []
+            dropped_kinds: list[str] = []
             for part in content:
                 part_type = part.type if hasattr(part, "type") else part.get("type", "")
                 if part_type == "text":
                     text_pieces.append(
                         part.text if hasattr(part, "text") else part.get("text", "")
                     )
+                elif part_type:
+                    dropped_kinds.append(part_type)
+            if dropped_kinds:
+                logger.warning(
+                    "DFlash server is text-only; dropped %d non-text "
+                    "content part(s) of type(s) %s. The request will be "
+                    "served using text parts only — switch to the standard "
+                    "server (no --enable-dflash) for full multimodal "
+                    "support.",
+                    len(dropped_kinds),
+                    sorted(set(dropped_kinds)),
+                )
             content = "".join(text_pieces)
         messages.append({"role": m.role, "content": content})
 
@@ -241,44 +289,180 @@ async def _stream_completion(
     finish_reason = "stop"
     total_completion_tokens = 0
     prompt_tokens = 0
+    # Track the last token id to disambiguate "hit max_tokens but the
+    # final token was actually EOS" — without this we'd falsely flag a
+    # natural-stop response as truncated when it lands on exactly the
+    # budget. None means "no token observed yet".
+    last_token_id: int | None = None
+
+    # Track max_tokens so we can report ``finish_reason="length"`` when
+    # generation was truncated (OpenAI clients distinguish "stop"
+    # = natural end / stop sequence from "length" = token-budget hit;
+    # presenting "stop" for a truncated reply misleads downstream tools).
+    _max_tokens = gen_kwargs.get("max_tokens")
+
+    # Resolve the model's EOS token id (best-effort). Used by the
+    # length-vs-stop disambiguation below; falls back to None when the
+    # processor doesn't expose a tokenizer (the heuristic then degrades
+    # to pure token-count comparison).
+    _eos_ids: set[int] = set()
+    _tok = getattr(processor, "tokenizer", processor)
+    _eos = getattr(_tok, "eos_token_id", None)
+    if isinstance(_eos, int):
+        _eos_ids.add(_eos)
+    elif isinstance(_eos, (list, tuple, set)):
+        _eos_ids.update(int(t) for t in _eos if isinstance(t, int))
+
+    error_message: str | None = None
 
     async with _dflash_lock:
         # mlx-vlm's stream_generate is a sync generator — run it in a
         # thread pool so we don't block the FastAPI event loop. Iterate
-        # by polling with ``run_in_executor`` per chunk.
-        loop = asyncio.get_event_loop()
-        gen = stream_generate(model, processor, prompt, **gen_kwargs)
+        # by polling with ``run_in_executor`` per chunk. We're already
+        # inside a coroutine, so use ``get_running_loop`` (the 3.10+
+        # idiom; ``get_event_loop`` is deprecated for in-coroutine use).
+        # The executor MUST be ``_dflash_executor`` (single-thread) so
+        # consecutive ``next(gen)`` calls land on the same worker —
+        # mlx's GPU Stream is thread-local and a hand-off across worker
+        # threads would crash mid-generation.
+        loop = asyncio.get_running_loop()
 
+        # Create the generator on the same worker that will drive it,
+        # not on the event-loop thread — otherwise the first ``next``
+        # crosses a thread boundary just like the rest.
+        #
+        # Wrap construction in a sentinel pattern too: if
+        # ``stream_generate`` raises at setup time (OOM, missing kernel,
+        # bad arg) the exception would otherwise propagate out of the
+        # async generator and leave the SSE client hanging without a
+        # ``[DONE]``. Surfacing it as an error SSE keeps the contract
+        # the same as the mid-stream error path below.
+        def _make_gen():
+            try:
+                return stream_generate(model, processor, prompt, **gen_kwargs)
+            except Exception as e:  # noqa: BLE001 — surface upstream; outer code converts to error SSE
+                return e
+
+        gen_or_err = await loop.run_in_executor(_dflash_executor, _make_gen)
+        if isinstance(gen_or_err, Exception):
+            logger.exception(
+                "DFlash stream_generate raised at construction: %s",
+                gen_or_err,
+                exc_info=gen_or_err,
+            )
+            error_message = f"{type(gen_or_err).__name__}: {gen_or_err}"
+            finish_reason = "error"
+            gen = None
+        else:
+            gen = gen_or_err
+
+        # Sentinels distinguish "generator exhausted" (None) from
+        # "generator raised mid-stream" (an Exception instance). Catching
+        # only StopIteration would let any other mlx-vlm error propagate
+        # through run_in_executor, abort the response coroutine, and
+        # leave the SSE client hanging without a final ``[DONE]`` — the
+        # client then either times out or holds the connection forever.
         def _next_chunk():
             try:
                 return next(gen)
             except StopIteration:
                 return None
+            except Exception as e:  # noqa: BLE001 — surface upstream; loop converts to error SSE
+                return e
 
-        while True:
-            chunk = await loop.run_in_executor(None, _next_chunk)
-            if chunk is None:
-                break
-            if not chunk.text:
-                continue
-            total_completion_tokens = chunk.generation_tokens
-            prompt_tokens = chunk.prompt_tokens
-            piece = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": served_model_name,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"content": chunk.text},
-                        "finish_reason": None,
-                    }
-                ],
-            }
-            yield f"data: {json.dumps(piece)}\n\n".encode()
+        try:
+            while gen is not None:
+                chunk = await loop.run_in_executor(_dflash_executor, _next_chunk)
+                if chunk is None:
+                    break
+                if isinstance(chunk, Exception):
+                    logger.exception(
+                        "DFlash stream_generate raised mid-stream: %s",
+                        chunk,
+                        exc_info=chunk,
+                    )
+                    error_message = f"{type(chunk).__name__}: {chunk}"
+                    finish_reason = "error"
+                    break
+                # Always sync token counts from the chunk — even when text
+                # is empty (mlx-vlm occasionally emits trailing flush
+                # chunks carrying the final token counters but no
+                # incremental text). Skipping the update would leave the
+                # final usage block with stale numbers.
+                total_completion_tokens = chunk.generation_tokens
+                prompt_tokens = chunk.prompt_tokens
+                _ct = getattr(chunk, "token", None)
+                if isinstance(_ct, int):
+                    last_token_id = _ct
+                if not chunk.text:
+                    continue
+                piece = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": served_model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": chunk.text},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(piece)}\n\n".encode()
+        finally:
+            # On client disconnect (CancelledError) or any other exit
+            # from the loop, drain the generator so its GPU state is
+            # released *before* the lock unblocks the next request.
+            # Without this the abandoned generator's KV cache lingers
+            # until GC runs, transiently doubling memory and risking a
+            # mid-step crash if the next request triggers reallocation.
+            # Routed through ``_dflash_executor`` for thread affinity.
+            if gen is not None:
+                _gen_to_close = gen
 
-    # Final chunk — finish_reason + usage
+                def _close_gen():
+                    try:
+                        _gen_to_close.close()
+                    except Exception:  # noqa: BLE001 — cleanup is best-effort
+                        logger.debug(
+                            "DFlash generator close raised; ignoring",
+                            exc_info=True,
+                        )
+
+                # ``run_in_executor`` may itself observe cancellation;
+                # shield so the cleanup completes before propagating
+                # the cancellation up.
+                try:
+                    await asyncio.shield(
+                        loop.run_in_executor(_dflash_executor, _close_gen)
+                    )
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    # Length-truncation detection — mlx-vlm's GenerationResult has no
+    # ``finish_reason`` field, so we infer "length" by comparing the
+    # completion token count to the budget. Only set when we exited the
+    # loop normally (StopIteration), not when the generator errored or
+    # produced fewer tokens (natural stop).
+    #
+    # Subtle case: if the model emitted EOS exactly at ``max_tokens``,
+    # the stop was natural and reporting "length" would mislead clients
+    # into auto-continuing (only to get an immediate EOS again). Check
+    # the last token id against the resolved EOS set to keep the
+    # classification honest in this edge case.
+    if (
+        finish_reason == "stop"
+        and _max_tokens is not None
+        and total_completion_tokens >= _max_tokens
+        and last_token_id not in _eos_ids
+    ):
+        finish_reason = "length"
+
+    # Final chunk — finish_reason + usage. If we broke out of the loop
+    # because the underlying generator raised, attach an OpenAI-style
+    # error block so the client gets a readable failure instead of
+    # silent truncation.
     final = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -291,6 +475,8 @@ async def _stream_completion(
             "total_tokens": prompt_tokens + total_completion_tokens,
         },
     }
+    if error_message is not None:
+        final["error"] = {"type": "dflash_runtime_error", "message": error_message}
     yield f"data: {json.dumps(final)}\n\n".encode()
     yield b"data: [DONE]\n\n"
 
@@ -312,13 +498,53 @@ async def _non_stream_completion(
     created = int(time.time())
 
     async with _dflash_lock:
-        loop = asyncio.get_event_loop()
-        # mlx-vlm's ``generate`` blocks; offload to thread to keep the
-        # FastAPI event loop free for concurrent (queued) requests.
-        result = await loop.run_in_executor(
-            None,
-            lambda: generate(model, processor, prompt, **gen_kwargs),
+        loop = asyncio.get_running_loop()
+
+        # mlx-vlm's ``generate`` blocks; offload to the dedicated
+        # single-thread DFlash executor so every mlx-vlm call lands on
+        # the same worker (matches ``_stream_completion`` — see the
+        # _dflash_executor comment at module top).
+        #
+        # Wrap in a sentinel pattern so generate-time errors (OOM, bad
+        # arg, drafter mismatch) come back as a clean HTTP 500 with a
+        # readable detail string rather than a raw stack trace. Mirrors
+        # the stream path's error handling.
+        def _generate_safely():
+            try:
+                return generate(model, processor, prompt, **gen_kwargs)
+            except Exception as e:  # noqa: BLE001 — surface as HTTPException below
+                return e
+
+        result = await loop.run_in_executor(_dflash_executor, _generate_safely)
+
+    if isinstance(result, Exception):
+        logger.exception(
+            "DFlash non-stream generate raised: %s", result, exc_info=result
         )
+        raise HTTPException(
+            status_code=500,
+            detail=f"DFlash runtime error: {type(result).__name__}: {result}",
+        )
+
+    # OpenAI distinguishes "stop" (natural end / stop sequence) from
+    # "length" (token-budget hit). mlx-vlm doesn't surface that on
+    # GenerationResult, so infer from token-count vs requested budget.
+    #
+    # Known v1 limitation: unlike the streaming path which can read
+    # ``chunk.token`` and check against EOS, ``mlx_vlm.generate``
+    # returns only the concatenated text + token counts. If the model
+    # emits EOS at exactly ``max_tokens`` the non-stream response will
+    # still report ``finish_reason="length"`` (false truncation). A
+    # client that auto-continues will issue one more request that
+    # immediately returns EOS — annoying but not corrupt. Fix requires
+    # an upstream mlx-vlm change to expose the final token id; tracked
+    # as a v2 follow-up.
+    _max_tokens = gen_kwargs.get("max_tokens")
+    finish_reason = (
+        "length"
+        if _max_tokens is not None and result.generation_tokens >= _max_tokens
+        else "stop"
+    )
 
     return ChatCompletionResponse(
         id=completion_id,
@@ -329,7 +555,7 @@ async def _non_stream_completion(
             ChatCompletionChoice(
                 index=0,
                 message=AssistantMessage(role="assistant", content=result.text),
-                finish_reason="stop",
+                finish_reason=finish_reason,
             )
         ],
         usage=Usage(
@@ -360,11 +586,42 @@ def run_dflash_server(
     AR — exactly the kind of "silent regression" the eligibility gate
     is meant to prevent. We surface a clear error if mlx-vlm is missing
     or too old.
+
+    Eligibility re-check: even though the CLI's ``serve_command`` gates
+    on the alias before calling here, a *programmatic* caller (e.g. a
+    notebook or test harness) can bypass the CLI entirely. We re-run
+    the path-detectable gates (4-bit quant via repo-name heuristic;
+    non-empty drafter). MoE detection requires the AliasProfile (an
+    ``is_moe`` flag aliases.json maintains by hand) and is therefore
+    only enforced via the CLI entrypoint — callers serving an
+    arbitrary ``main_model_repo`` programmatically are responsible for
+    not pointing it at a MoE model. Documented in CALLERS.md.
     """
     if not have_runtime():
         raise RuntimeError(
             "DFlash server requires mlx-vlm 0.5.0+ — install with "
             "``pip install 'rapid-mlx[dflash]'``."
+        )
+
+    # Belt-and-suspenders eligibility re-check for programmatic callers
+    # (the CLI's serve_command already gates on the alias upstream, but
+    # we don't want to depend on it being the only entrypoint).
+    from .eligibility import (
+        DFlashUnavailable,
+        _looks_like_4bit,  # noqa: PLC2701 — internal helper
+    )
+
+    if _looks_like_4bit(main_model_repo):
+        raise DFlashUnavailable(
+            f"DFlash cannot run on a 4-bit quantized model "
+            f"(main_model_repo={main_model_repo!r}); upstream PoC measured "
+            "regression to 0.63-0.96× on Qwen3.5-4B-MLX-4bit. Use the "
+            "8-bit variant."
+        )
+    if not drafter_repo:
+        raise DFlashUnavailable(
+            "DFlash requires a non-empty drafter_repo — pass the DFlash "
+            "drafter HF path (e.g. 'z-lab/Qwen3.5-27B-DFlash')."
         )
 
     import uvicorn
