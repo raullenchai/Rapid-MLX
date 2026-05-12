@@ -16,6 +16,18 @@ import json
 import os
 from dataclasses import dataclass
 
+# Canonical enum for ``suffix_decoding_tier``. Kept here so the contract
+# test (tests/test_aliases_contract.py) and any future loader / CLI
+# renderer share one source of truth — drift between the two has shipped
+# silently before (an alias with tier=``good`` would have been a no-op if
+# the loader's allow-list and the CLI's display map disagreed).
+#
+# - ``unknown``: not benched yet (default)
+# - ``neutral``: benched, mixed results, no recommendation either way
+# - ``good``:    benched, clearly profitable, hint user to enable
+# - ``avoid``:   benched, regression on at least one canonical workload
+VALID_SUFFIX_TIERS: frozenset[str] = frozenset({"unknown", "neutral", "good", "avoid"})
+
 _aliases: dict[str, "AliasProfile"] | None = None
 # Reverse index: hf_path → first alias that references it. Built once
 # alongside ``_aliases`` so reverse lookups in ``resolve_profile`` are
