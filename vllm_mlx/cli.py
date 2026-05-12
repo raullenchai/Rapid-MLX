@@ -1001,13 +1001,15 @@ def models_command(_args):
 
     # Widths sized to fit the longest values currently in aliases.json:
     # alias 22 (qwen3.5-122b-mxfp4 etc.), tool 16 (qwen3_coder_xml + 1 pad),
-    # reasoning 12 (deepseek_r1 + 1 pad), spec 10 ("✗ hybrid"), tier 11.
+    # reasoning 12 (deepseek_r1 + 1 pad), spec 10 ("✗ hybrid"), tier 11,
+    # dflash 7 ("✓ ready"/"—").
     cols = (
         ("Alias", 22),
         ("Tools", 16),
         ("Reasoning", 12),
         ("Spec-Decode", 10),
         ("Suffix Tier", 11),
+        ("DFlash", 7),
     )
     width = sum(w for _, w in cols) + len(cols) - 1
     sep = "  " + "─" * width
@@ -1028,7 +1030,16 @@ def models_command(_args):
         else:
             spec = "✓" if p.supports_spec_decode else "✗"
             tier = p.suffix_decoding_tier
-        row = f"  {alias:<22} {tools:<16} {reasoning:<12} {spec:<10} {tier:<11}"
+        # DFlash column — eligible aliases show ✓, everything else "—" so
+        # the visual scan immediately surfaces what supports it. We don't
+        # re-run the eligibility gate here (which would also check that
+        # mlx-vlm 0.5.0+ is installed) — that's a runtime concern; the
+        # registry column is pure declarative state.
+        dflash = "✓" if p.supports_dflash else "—"
+        row = (
+            f"  {alias:<22} {tools:<16} {reasoning:<12} "
+            f"{spec:<10} {tier:<11} {dflash:<7}"
+        )
         print(row)
 
     print(sep)
@@ -2220,11 +2231,16 @@ def info_command(args):
         format_profile_table,
     )
 
+    # ``main()`` (cli.py:~3400) pre-resolves ``args.model`` from alias →
+    # HF path before dispatch, stashing the user-typed alias on
+    # ``args._original_alias``. Pull from that first so DFlash
+    # eligibility (alias-keyed) and the start-command hint render with
+    # the alias the user actually typed, not the resolved HF repo.
+    original_alias = getattr(args, "_original_alias", None) or args.model
     name = args.model
-    # Preserve the user-typed alias so DFlash eligibility (which is
-    # keyed by alias, not hf_path) can render with the right name.
-    original_alias = name
-    resolved = resolve_model(name)
+    resolved = (
+        resolve_model(name) if not getattr(args, "_original_alias", None) else None
+    )
     if resolved and resolved != name:
         print(f"  alias: {name} → {resolved}")
         name = resolved

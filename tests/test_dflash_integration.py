@@ -106,6 +106,60 @@ def test_info_dflash_marks_4bit_alias_ineligible(capsys) -> None:
     assert "ineligible" in captured.out
 
 
+def test_info_dflash_start_with_uses_alias_not_hf_path(capsys) -> None:
+    """``main()`` resolves alias → HF path before dispatch, stashing the
+    user-typed alias on ``args._original_alias``. The ``Start with`` hint
+    in the DFlash block must render the *alias*, not the resolved HF
+    repo — copy-pasting the resolved path back into ``rapid-mlx serve``
+    breaks the alias-keyed eligibility check."""
+    from vllm_mlx.cli import info_command
+
+    # Mirror main()'s pre-resolve: model = HF path, _original_alias = alias.
+    args = type(
+        "Args",
+        (),
+        {
+            "model": "mlx-community/Qwen3.5-27B-8bit",
+            "_original_alias": "qwen3.5-27b-8bit",
+        },
+    )()
+    info_command(args)
+    captured = capsys.readouterr()
+    assert "rapid-mlx serve qwen3.5-27b-8bit --enable-dflash" in captured.out
+    # The HF path must not show up in the start-with hint.
+    assert "rapid-mlx serve mlx-community/" not in captured.out
+
+
+def test_models_listing_renders_dflash_column(capsys) -> None:
+    """``rapid-mlx models`` must show a ``DFlash`` column so users can
+    scan eligibility at a glance. The known-good alias renders ✓; a
+    non-DFlash alias renders —."""
+    from vllm_mlx.cli import models_command
+
+    models_command(None)
+    captured = capsys.readouterr()
+    # Header
+    assert "DFlash" in captured.out
+    # The qwen3.5-27b-8bit row must show ✓ in its DFlash column. We can't
+    # anchor on exact column offsets (table widths may shift), so look
+    # for the alias and the marker on the same line.
+    lines = captured.out.splitlines()
+    eligible_row = next(
+        (line for line in lines if "qwen3.5-27b-8bit " in line),
+        None,
+    )
+    assert eligible_row is not None, "qwen3.5-27b-8bit row missing"
+    assert "✓" in eligible_row, f"DFlash column should be ✓: {eligible_row!r}"
+
+    # A non-DFlash alias renders — in the DFlash column.
+    ineligible_row = next(
+        (line for line in lines if "qwen3.5-4b " in line),
+        None,
+    )
+    assert ineligible_row is not None, "qwen3.5-4b row missing"
+    assert "—" in ineligible_row, f"DFlash column should be —: {ineligible_row!r}"
+
+
 # =============================================================================
 # Server-app construction — _build_app with mocks. Verifies the FastAPI
 # surface and the lock + serial dispatch logic without loading weights.
