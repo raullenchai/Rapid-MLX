@@ -52,7 +52,7 @@ dependencies = [
 # Vision/multimodal models (Gemma 4, Qwen-VL, etc.) — adds ~322 MB
 # Required for any model with vision input. Text-only models work without this.
 vision = [
-    "mlx-vlm>=0.4.4",  # 0.4.4+ required for Gemma 4 support
+    "mlx-vlm>=0.5.0",  # 0.5.0: gemma4 multi-image + tool-parser fixes, TurboQuant race-condition fix (relevant to our [vision] users), and a new continuous-batching guard. No breaking VL changes.
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
@@ -71,7 +71,7 @@ chat = [
 # pip install .[all] and editable installs.
 all = [
     # vision
-    "mlx-vlm>=0.4.4",
+    "mlx-vlm>=0.5.0",
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
