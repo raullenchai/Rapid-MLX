@@ -4,6 +4,24 @@
 
 It's [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) with [MTPLX](https://github.com/youssofal/MTPLX/) inspired work.
 
+## New Models
+
+Check out:
+
+```bash
+lightning-mlx serve ornstein3.6-35-saber
+lightning-mlx serve ornstein3.6-35-saber-4bit
+lightning-mlx serve ornstein3.6-35-saber-8bit
+
+lightning-mlx serve qwen3.6-35-nsc-ace-saber
+lightning-mlx serve qwen3.6-35-nsc-ace-saber-4bit
+lightning-mlx serve qwen3.6-35-nsc-ace-saber-8bit
+```
+
+**❤️ I really recommend:**
+`lightning-mlx serve qwen3.6-35-nsc-ace-saber`
+
+
 ## Raw Decode Benchmarks
 
 The Lightning MLX MTPLX raw-decode rows were run with explicit max-performance
