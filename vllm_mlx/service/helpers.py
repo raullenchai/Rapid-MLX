@@ -171,6 +171,32 @@ def _resolve_frequency_penalty(request_value: float | None) -> float | None:
     return float(value) if value is not None else None
 
 
+def build_extended_sampling_kwargs(request) -> dict:
+    """Resolve top_k / min_p / penalties through the 4-layer cascade.
+
+    Shared by chat / completions / anthropic routes. Only forwards values
+    the cascade actually produced — leaving a key absent lets the engine
+    apply its own SamplingParams default, whereas forwarding ``None``
+    would override it with garbage.
+
+    ``request`` is a pydantic model; missing attributes are tolerated
+    so the helper can be reused from request shapes that don't expose
+    every extended param.
+    """
+    kwargs: dict = {}
+    for name, resolver in (
+        ("top_k", _resolve_top_k),
+        ("min_p", _resolve_min_p),
+        ("repetition_penalty", _resolve_repetition_penalty),
+        ("presence_penalty", _resolve_presence_penalty),
+        ("frequency_penalty", _resolve_frequency_penalty),
+    ):
+        value = resolver(getattr(request, name, None))
+        if value is not None:
+            kwargs[name] = value
+    return kwargs
+
+
 # ── Usage / logprobs ───────────────────────────────────────────────
 
 

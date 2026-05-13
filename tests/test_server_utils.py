@@ -329,6 +329,57 @@ class TestResolveCascade:
         cfg.alias_recommended_sampling = {"min_p": 0.1}
         assert server._resolve_min_p(0.0) == 0.0
 
+    def test_zero_request_temperature_wins_over_overlays(self):
+        """``temperature=0.0`` from the request must win over alias /
+        generation_config overlays — deterministic decoding is a real use."""
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.alias_recommended_sampling = {"temperature": 0.6}
+        cfg.generation_config_sampling = {"temperature": 1.0}
+        assert server._resolve_temperature(0.0) == 0.0
+
+    def test_zero_request_top_p_wins_over_overlays(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.alias_recommended_sampling = {"top_p": 0.95}
+        assert server._resolve_top_p(0.0) == 0.0
+
+    def test_temperature_fallback_when_overlays_empty(self):
+        """Empty (non-None) overlay dicts must still hit the hard fallback."""
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.alias_recommended_sampling = {}
+        cfg.generation_config_sampling = {}
+        assert server._resolve_temperature(None) == server._FALLBACK_TEMPERATURE
+        assert server._resolve_top_p(None) == server._FALLBACK_TOP_P
+
+    def test_top_k_via_alias_overlay(self):
+        """Coverage for the alias-layer path (sibling of gen-config test)."""
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.alias_recommended_sampling = {"top_k": 64}
+        assert server._resolve_top_k(None) == 64
+        assert isinstance(server._resolve_top_k(None), int)
+
+    def test_top_k_float_in_alias_coerced_to_int(self):
+        """AliasProfile stores everything as float; resolver must cast back."""
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.alias_recommended_sampling = {"top_k": 20.0}
+        result = server._resolve_top_k(None)
+        assert result == 20
+        assert isinstance(result, int)
+
 
 # ---------------------------------------------------------------------------
 # get_usage

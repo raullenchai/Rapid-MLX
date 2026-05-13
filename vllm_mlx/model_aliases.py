@@ -184,24 +184,21 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "presence_penalty",
             "frequency_penalty",
         }
-        try:
-            items: list[tuple[str, float]] = []
-            for k, v in raw_sampling.items():
-                if k not in _ALLOWED_SAMPLING_KEYS:
-                    raise ValueError(
-                        f"alias {alias!r}: recommended_sampling has "
-                        f"unsupported key {k!r}; allowed: "
-                        f"{sorted(_ALLOWED_SAMPLING_KEYS)}"
-                    )
-                if isinstance(v, bool) or not isinstance(v, (int, float)):
-                    raise ValueError(
-                        f"alias {alias!r}: recommended_sampling[{k!r}] "
-                        f"must be a number, got {type(v).__name__}"
-                    )
-                items.append((k, float(v)))
-            recommended_sampling = tuple(sorted(items)) if items else None
-        except ValueError:
-            raise
+        items: list[tuple[str, float]] = []
+        for k, v in raw_sampling.items():
+            if k not in _ALLOWED_SAMPLING_KEYS:
+                raise ValueError(
+                    f"alias {alias!r}: recommended_sampling has "
+                    f"unsupported key {k!r}; allowed: "
+                    f"{sorted(_ALLOWED_SAMPLING_KEYS)}"
+                )
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise ValueError(
+                    f"alias {alias!r}: recommended_sampling[{k!r}] "
+                    f"must be a number, got {type(v).__name__}"
+                )
+            items.append((k, float(v)))
+        recommended_sampling = tuple(sorted(items)) if items else None
     else:
         raise ValueError(
             f"alias {alias!r}: recommended_sampling must be an object, "

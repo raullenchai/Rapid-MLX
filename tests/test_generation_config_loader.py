@@ -153,6 +153,61 @@ class TestLoadGenerationConfigSampling:
             load_generation_config_sampling("mlx-community/NeverDownloaded-4bit") == {}
         )
 
+    def test_hf_hub_refs_main_resolution(self, tmp_path, monkeypatch):
+        """Prefer ``refs/main`` SHA over a sorted-first stale snapshot."""
+        hub = tmp_path / "hf"
+        repo = hub / "models--mlx-community--Fakemodel-4bit"
+        (repo / "refs").mkdir(parents=True)
+        (repo / "refs" / "main").write_text("zzzcurrentsha\n")
+
+        # Stale snapshot — would win on sorted() but shouldn't.
+        old_snap = repo / "snapshots" / "aaa000oldstale"
+        old_snap.mkdir(parents=True)
+        (old_snap / "generation_config.json").write_text(
+            json.dumps({"temperature": 99.9})
+        )
+
+        # Canonical snapshot
+        new_snap = repo / "snapshots" / "zzzcurrentsha"
+        new_snap.mkdir(parents=True)
+        (new_snap / "generation_config.json").write_text(
+            json.dumps({"temperature": 0.6, "top_p": 0.95})
+        )
+
+        monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+        assert load_generation_config_sampling("mlx-community/Fakemodel-4bit") == {
+            "temperature": 0.6,
+            "top_p": 0.95,
+        }
+
+    def test_hf_hub_refs_main_stale_falls_back_to_snapshot_scan(
+        self, tmp_path, monkeypatch
+    ):
+        """If refs/main points at a SHA no longer on disk, scan snapshots."""
+        hub = tmp_path / "hf"
+        repo = hub / "models--mlx-community--Fakemodel-4bit"
+        (repo / "refs").mkdir(parents=True)
+        (repo / "refs" / "main").write_text("missing_sha\n")
+        snap = repo / "snapshots" / "actuallypresent"
+        snap.mkdir(parents=True)
+        (snap / "generation_config.json").write_text(json.dumps({"top_p": 0.8}))
+        monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+        assert load_generation_config_sampling("mlx-community/Fakemodel-4bit") == {
+            "top_p": 0.8
+        }
+
+    def test_top_k_fractional_float_dropped(self, tmp_path):
+        """``top_k`` must be a whole number; fractions hide bad configs."""
+        d = _write(tmp_path, {"top_k": 20.5, "top_p": 0.9})
+        assert load_generation_config_sampling(d) == {"top_p": 0.9}
+
+    def test_top_k_integer_float_normalized_to_int(self, tmp_path):
+        """``top_k: 20.0`` is a JSON whole number; pass through as int."""
+        d = _write(tmp_path, {"top_k": 20.0})
+        result = load_generation_config_sampling(d)
+        assert result == {"top_k": 20}
+        assert isinstance(result["top_k"], int)
+
     def test_local_directory_with_no_config(self, tmp_path):
         # Has weights file but no generation_config.json
         (tmp_path / "model.safetensors").write_text("dummy")

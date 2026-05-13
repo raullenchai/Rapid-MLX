@@ -35,10 +35,29 @@ from ..service.helpers import (
     _disconnect_guard,
     _parse_tool_calls_with_parser,
     _resolve_max_tokens,
+    _resolve_temperature,
+    _resolve_top_p,
     _validate_model_name,
     _wait_with_disconnect,
+    build_extended_sampling_kwargs,
     get_engine,
 )
+
+
+def _resolved_sampling_kwargs(openai_request) -> dict:
+    """Resolve every sampling param through the 4-layer cascade.
+
+    Anthropic-compat receives an ``openai_request`` shape after adapter
+    translation. Mirror the chat/completions routes so ``/v1/messages``
+    users get the same alias / generation_config defaults.
+    """
+    out = {
+        "temperature": _resolve_temperature(openai_request.temperature),
+        "top_p": _resolve_top_p(openai_request.top_p),
+    }
+    out.update(build_extended_sampling_kwargs(openai_request))
+    return out
+
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +150,7 @@ async def create_anthropic_message(
             openai_request.max_tokens,
             getattr(openai_request, "enable_thinking", None),
         ),
-        "temperature": openai_request.temperature,
-        "top_p": openai_request.top_p,
+        **_resolved_sampling_kwargs(openai_request),
     }
 
     if openai_request.tools:
@@ -333,8 +351,7 @@ async def _stream_anthropic_messages(
             openai_request.max_tokens,
             getattr(openai_request, "enable_thinking", None),
         ),
-        "temperature": openai_request.temperature,
-        "top_p": openai_request.top_p,
+        **_resolved_sampling_kwargs(openai_request),
     }
 
     if openai_request.tools:

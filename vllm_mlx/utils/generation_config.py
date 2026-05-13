@@ -92,6 +92,14 @@ def load_generation_config_sampling(model_path: str | None) -> dict[str, float |
         if value != value or value in (float("inf"), float("-inf")):
             # NaN / +-inf
             continue
+        if key == "top_k":
+            # ``top_k`` is an integer count; silently truncating a fractional
+            # value (e.g. 20.5 → 20) hides a malformed config. Drop it
+            # unless it parses as a whole number.
+            if isinstance(value, float) and not value.is_integer():
+                continue
+            out[key] = int(value)
+            continue
         out[key] = value
 
     if out:
@@ -119,18 +127,35 @@ def _resolve_config_path(model_path: str) -> str | None:
         hub = os.environ.get("HF_HUB_CACHE") or os.path.expanduser(
             "~/.cache/huggingface/hub"
         )
-        repo_dir = os.path.join(
-            hub, "models--" + model_path.replace("/", "--"), "snapshots"
-        )
+        cache_root = os.path.join(hub, "models--" + model_path.replace("/", "--"))
+        # Prefer the canonical revision from ``refs/main`` so a stale
+        # snapshot pulled months ago doesn't shadow the current
+        # generation_config. Falls through to a snapshot scan if the
+        # ref file is missing or the resolved SHA is no longer on disk.
+        ref_path = os.path.join(cache_root, "refs", "main")
+        if os.path.isfile(ref_path):
+            try:
+                with open(ref_path) as fh:
+                    sha = fh.read().strip()
+            except OSError:
+                sha = ""
+            if sha:
+                candidate = os.path.join(
+                    cache_root, "snapshots", sha, "generation_config.json"
+                )
+                if os.path.isfile(candidate):
+                    return candidate
+
+        # Snapshot scan fallback — multiple snapshots can co-exist
+        # (different revisions pulled over time). Each is a symlink farm
+        # so generation_config.json is identical across them in practice;
+        # any one with the file is acceptable.
+        repo_dir = os.path.join(cache_root, "snapshots")
         if os.path.isdir(repo_dir):
             try:
                 snapshots = sorted(os.listdir(repo_dir))
             except OSError:
                 return None
-            # Multiple snapshots can co-exist (different revisions pulled
-            # over time). Each is a symlink farm to the same blob, so
-            # generation_config.json is identical across them in
-            # practice; just pick the first that has one.
             for snap in snapshots:
                 candidate = os.path.join(repo_dir, snap, "generation_config.json")
                 if os.path.isfile(candidate):
