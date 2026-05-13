@@ -12,6 +12,7 @@ LLM engine), so text-only requests must also be routed through it.
 """
 
 import functools
+import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -24,6 +25,45 @@ from ..utils.chat_template import apply_chat_template as shared_apply_chat_templ
 from .base import BaseEngine, GenerationOutput
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_tool_call_arguments_for_template(messages: list[dict]) -> list[dict]:
+    """Normalize OpenAI tool-call replay for templates expecting mappings.
+
+    OpenAI's API contract has ``message.tool_calls[i].function.arguments`` as a
+    JSON string, but many chat templates iterate that field as a mapping
+    (e.g., ``{% for k, v in tool_call.function.arguments.items() %}``) and
+    blow up on a string. Parse the JSON string back into a dict before
+    handing the message list to ``apply_chat_template``; wrap non-mapping
+    parsed values (``["a","b"]`` etc.) so the template still gets a dict.
+
+    Returns a deep-copied, mutated message list; the original is left alone
+    so the API surface (where ``arguments`` must remain a string) is intact.
+    """
+    normalized = json.loads(json.dumps(messages, default=str))
+    for message in normalized:
+        if message.get("role") != "assistant":
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            arguments = function.get("arguments")
+            if not isinstance(arguments, str):
+                continue
+            try:
+                parsed = json.loads(arguments)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                parsed = {"value": arguments}
+            if not isinstance(parsed, dict):
+                parsed = {"value": parsed}
+            function["arguments"] = parsed
+    return normalized
 
 
 def _probe_mllm_cache_type(language_model: Any) -> str | None:
@@ -568,6 +608,8 @@ class BatchedEngine(BaseEngine):
             num_images: Number of images (triggers MLLM message preparation).
             enable_thinking: Whether to enable thinking mode (None = auto).
         """
+        messages = _normalize_tool_call_arguments_for_template(messages)
+
         # Choose the best template applicator.
         # For MLLM models, the processor handles special vision tokens.
         # For text-only models, the tokenizer is sufficient.
