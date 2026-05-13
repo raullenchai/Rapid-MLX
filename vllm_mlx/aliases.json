@@ -352,7 +352,7 @@
   "kimi-k2.5": {
     "hf_path": "mlx-community/Kimi-K2.5-3bit",
     "tool_call_parser": "kimi",
-    "reasoning_parser": null,
+    "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "supports_spec_decode": true
   },
@@ -371,7 +371,7 @@
   "hermes4-70b": {
     "hf_path": "lmstudio-community/Hermes-4-70B-MLX-4bit",
     "tool_call_parser": "hermes",
-    "reasoning_parser": null,
+    "reasoning_parser": "glm4",
     "is_hybrid": false,
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
@@ -461,7 +461,7 @@
   "nemotron-30b": {
     "hf_path": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
     "tool_call_parser": "hermes",
-    "reasoning_parser": null,
+    "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true
@@ -469,14 +469,14 @@
   "nemotron-nano": {
     "hf_path": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
     "tool_call_parser": "hermes",
-    "reasoning_parser": null,
+    "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true
   },
   "bonsai-1.7b": {
     "hf_path": "prism-ml/Bonsai-1.7B-unpacked",
-    "tool_call_parser": null,
+    "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
@@ -490,7 +490,7 @@
   },
   "bonsai-4b": {
     "hf_path": "prism-ml/Bonsai-4B-unpacked",
-    "tool_call_parser": null,
+    "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
@@ -503,7 +503,7 @@
   },
   "bonsai-8b": {
     "hf_path": "prism-ml/Bonsai-8B-unpacked",
-    "tool_call_parser": null,
+    "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,

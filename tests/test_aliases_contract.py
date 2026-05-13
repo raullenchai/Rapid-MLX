@@ -420,6 +420,55 @@ def test_negative_control_dflash_missing_drafter_is_caught() -> None:
         )
 
 
+def test_audit_batch_reasoning_parser_wirings() -> None:
+    """Pin the Model Onboarding SOP audit fixes for reasoning_parser
+    on nemotron / kimi-k2.5 / hermes4 aliases. Each was previously
+    ``null`` despite the model emitting ``<think>``/``</think>``
+    blocks — without the parser, those blocks leak into
+    ``message.content``.
+
+    Parser choice rationale:
+    - nemotron-30b/nano + kimi-k2.5 use a Qwen3-style template that
+      INJECTS ``<think>`` into the prompt (gated by ``enable_thinking``
+      / ``thinking`` flag). ``qwen3`` parser's ``finalize_streaming``
+      correction handles the "no </think> ever appeared → emit as
+      content" case correctly.
+    - hermes4-70b: the chat template does NOT inject ``<think>``;
+      the model decides autonomously. Same contract as GLM-4 → reuse
+      ``glm4`` parser (no-tags-yet → content semantics).
+    """
+    profiles = list_profiles()
+    expected = {
+        "nemotron-30b": "qwen3",
+        "nemotron-nano": "qwen3",
+        "kimi-k2.5": "qwen3",
+        "hermes4-70b": "glm4",
+    }
+    for alias, parser in expected.items():
+        assert alias in profiles, f"{alias} missing from aliases.json"
+        assert profiles[alias].reasoning_parser == parser, (
+            f"{alias}: reasoning_parser must be {parser!r} per audit. "
+            f"Got {profiles[alias].reasoning_parser!r}."
+        )
+
+
+def test_audit_batch_bonsai_tool_call_parser_wired() -> None:
+    """Pin the Model Onboarding SOP audit fix for the Bonsai family.
+    The chat template emits ``<tool_call>...</tool_call>`` blocks
+    (hermes pattern); leaving ``tool_call_parser=null`` made every
+    tool call land in ``message.content`` as plain text. Verified the
+    template format directly against
+    https://huggingface.co/prism-ml/Bonsai-1.7B-unpacked.
+    """
+    profiles = list_profiles()
+    for alias in ("bonsai-1.7b", "bonsai-4b", "bonsai-8b"):
+        assert alias in profiles, f"{alias} missing from aliases.json"
+        assert profiles[alias].tool_call_parser == "hermes", (
+            f"{alias}: tool_call_parser must be 'hermes' per audit. "
+            f"Got {profiles[alias].tool_call_parser!r}."
+        )
+
+
 def test_deepseek_v4_flash_family_wires_deepseek_r1_reasoning_parser() -> None:
     """The DeepSeek-V4-Flash chat template emits ``<think>...</think>``
     blocks (gated by ``thinking_mode``). Without ``reasoning_parser`` set,
