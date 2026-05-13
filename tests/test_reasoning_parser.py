@@ -1043,3 +1043,143 @@ class TestDeepSeekNoTagThreshold:
         # Reset should clear it
         parser.reset_state()
         assert not parser._saw_any_tag
+
+
+class TestGlm4Parser:
+    """Tests for the GLM-4 reasoning parser.
+
+    Ported from upstream waybarrios/vllm-mlx#295's TestGlm4Parser, adapted
+    to our base class shape (``_saw_any_tag`` flag vs upstream's
+    ``_phase`` enum). The behavioural contract is the same.
+
+    Key contract: GLM-4's chat template does NOT inject ``<think>`` in
+    the prompt, so an output with no tags at all is pure content. The
+    base class default ("no tags seen yet → treat as reasoning") is
+    wrong here and the parser must override it.
+    """
+
+    @pytest.fixture
+    def parser(self):
+        from vllm_mlx.reasoning import get_parser
+
+        return get_parser("glm4")()
+
+    def test_registry_includes_glm4(self):
+        from vllm_mlx.reasoning import list_parsers
+
+        assert "glm4" in list_parsers()
+
+    # ---- Non-streaming ----
+
+    def test_extract_with_both_tags(self, parser):
+        """Standard case: both tags present."""
+        output = "<think>Let me analyze this</think>The answer is 42."
+        reasoning, content = parser.extract_reasoning(output)
+        assert reasoning == "Let me analyze this"
+        assert content == "The answer is 42."
+
+    def test_no_tags_returns_content(self, parser):
+        """Critical GLM-4 contract: no tags at all means pure content.
+
+        This is the divergence from Qwen3. If a future refactor reverts
+        this behaviour, ``<think>`` blocks would still be parsed but
+        no-thinking turns would have their text misclassified as
+        reasoning, leaking into ``message.reasoning`` instead of
+        ``message.content``.
+        """
+        output = "Just a regular response."
+        reasoning, content = parser.extract_reasoning(output)
+        assert reasoning is None
+        assert content == output
+
+    def test_implicit_mode_only_closing_tag(self, parser):
+        """Agent-injected mode: only ``</think>`` in output."""
+        output = "reasoning text</think>content text"
+        reasoning, content = parser.extract_reasoning(output)
+        assert reasoning == "reasoning text"
+        assert content == "content text"
+
+    def test_strips_box_tags_pure_content(self, parser):
+        """GLM-4.6V wraps content in <|begin_of_box|>...<|end_of_box|>."""
+        output = "<|begin_of_box|>Paris<|end_of_box|>"
+        reasoning, content = parser.extract_reasoning(output)
+        assert reasoning is None
+        assert content == "Paris"
+
+    def test_strips_box_tags_with_thinking(self, parser):
+        """Box tags should not survive into either field, even when
+        interleaved with think tags."""
+        output = (
+            "<think><|begin_of_box|>analysis</think>"
+            "<|begin_of_box|>answer<|end_of_box|>"
+        )
+        reasoning, content = parser.extract_reasoning(output)
+        assert reasoning == "analysis"
+        assert content == "answer"
+
+    # ---- Streaming ----
+
+    def test_streaming_no_tags_emits_content(self, parser):
+        """The signature GLM-4 streaming contract: no tags → content."""
+        parser.reset_state()
+        result = parser.extract_reasoning_streaming("", "Hello", "Hello")
+        assert result is not None
+        assert result.content == "Hello"
+        assert result.reasoning is None
+
+    def test_streaming_with_thinking(self, parser):
+        """Standard streaming: <think>...</think> then content."""
+        parser.reset_state()
+        tokens = ["<think>", "analyze", "</think>", "answer"]
+        accumulated = ""
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        for token in tokens:
+            prev = accumulated
+            accumulated += token
+            result = parser.extract_reasoning_streaming(prev, accumulated, token)
+            if result is None:
+                continue
+            if result.reasoning:
+                reasoning_parts.append(result.reasoning)
+            if result.content:
+                content_parts.append(result.content)
+        assert "analyze" in "".join(reasoning_parts)
+        assert "answer" in "".join(content_parts)
+
+    def test_streaming_strips_box_tags(self, parser):
+        """Box tags should be removed from streaming content."""
+        parser.reset_state()
+        tokens = ["<|begin_of_box|>", "Paris", "<|end_of_box|>"]
+        accumulated = ""
+        content_parts: list[str] = []
+        for token in tokens:
+            prev = accumulated
+            accumulated += token
+            result = parser.extract_reasoning_streaming(prev, accumulated, token)
+            if result is not None and result.content:
+                content_parts.append(result.content)
+        full = "".join(content_parts)
+        assert "Paris" in full
+        assert "<|begin_of_box|>" not in full
+        assert "<|end_of_box|>" not in full
+
+    def test_streaming_pure_box_tag_delta_returns_none(self, parser):
+        """A delta that contains only a box tag yields no message —
+        prevents an empty content chunk on the wire."""
+        parser.reset_state()
+        result = parser.extract_reasoning_streaming(
+            "", "<|begin_of_box|>", "<|begin_of_box|>"
+        )
+        assert result is None
+
+    def test_streaming_state_resets(self, parser):
+        """Once tags have been seen, state persists until ``reset_state``."""
+        parser.reset_state()
+        parser.extract_reasoning_streaming("", "<think>x", "<think>x")
+        assert parser._saw_any_tag
+        parser.reset_state()
+        assert not parser._saw_any_tag
+        # And after reset, the no-tags-yet branch fires again as content
+        result = parser.extract_reasoning_streaming("", "fresh", "fresh")
+        assert result is not None and result.content == "fresh"

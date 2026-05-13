@@ -269,14 +269,14 @@
   "glm4.7-9b": {
     "hf_path": "mlx-community/GLM-4.7-4bit",
     "tool_call_parser": "glm47",
-    "reasoning_parser": null,
+    "reasoning_parser": "glm4",
     "is_hybrid": false,
     "supports_spec_decode": true
   },
   "glm4.5-air": {
     "hf_path": "mlx-community/GLM-4.5-Air-0111-4bit",
     "tool_call_parser": "glm47",
-    "reasoning_parser": null,
+    "reasoning_parser": "glm4",
     "is_hybrid": false,
     "supports_spec_decode": true
   },
