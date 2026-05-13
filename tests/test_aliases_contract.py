@@ -518,6 +518,60 @@ def test_deepseek_v4_flash_family_wires_deepseek_r1_reasoning_parser() -> None:
         )
 
 
+def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
+    """Pin replacement paths for aliases that previously pointed at HF
+    repos that no longer exist (or never existed).
+
+    Three aliases shipped with hf_paths that 404 on HuggingFace —
+    ``rapid-mlx serve <alias>`` would download-fail at first user
+    contact. Each replacement was selected by manually browsing the
+    mlx-community namespace for an extant repo of the same family.
+
+    The substring guards below ensure a future "revert that aliases
+    change" commit doesn't quietly restore the broken path.
+    """
+    profiles = list_profiles()
+    # qwen3-vl-4b: stale ``-MLX-`` suffix not used by upstream uploads
+    assert "MLX-4bit" not in profiles["qwen3-vl-4b"].hf_path, (
+        "qwen3-vl-4b previously pointed at "
+        "mlx-community/Qwen3-VL-4B-Instruct-MLX-4bit which 404s; the "
+        "current upload is Qwen3-VL-4B-Instruct-4bit (no '-MLX-' suffix)."
+    )
+    # devstral-24b: ``2503`` snapshot was never re-uploaded as MLX-4bit;
+    # 2505/2507 are the canonical Devstral-Small v1 releases.
+    assert "2503" not in profiles["devstral-24b"].hf_path, (
+        "devstral-24b previously pointed at Devstral-Small-2503-MLX-4bit "
+        "which 404s. Use the 2507 (or 2505) MLX 4-bit upload."
+    )
+    # glm4.5-air: ``-0111-`` date suffix was a community-only tag that
+    # got rolled into the default release.
+    assert "0111" not in profiles["glm4.5-air"].hf_path, (
+        "glm4.5-air previously pointed at GLM-4.5-Air-0111-4bit which "
+        "404s. The current canonical upload is GLM-4.5-Air-4bit."
+    )
+    # glm4.7-9b previously pointed at the full GLM-4.7 (355B MoE,
+    # ~185 GB at 4-bit) — the alias name implies a 9B model. The
+    # correct upload is the Flash variant (~16 GB).
+    assert "Flash" in profiles["glm4.7-9b"].hf_path, (
+        "glm4.7-9b must point at the GLM-4.7-Flash upload, not the full "
+        "GLM-4.7 (355B MoE) which is ~12x larger and won't fit on most "
+        "user disks."
+    )
+    # gpt-oss-20b previously pointed at mlx-community/GPT-OSS-20B-4bit
+    # which 404s; the canonical mlx-community release uses the
+    # MXFP4-Q8 hybrid quantization.
+    assert profiles["gpt-oss-20b"].hf_path != "mlx-community/GPT-OSS-20B-4bit", (
+        "gpt-oss-20b must not regress to the 404 path; current canonical "
+        "upload is mlx-community/gpt-oss-20b-MXFP4-Q8."
+    )
+    # kimi-48b previously pointed at mlx-community/Kimi-K2-Instruct-Q4_0-MLX
+    # (404). The replacement Kimi-K2-Instruct-4bit is large
+    # (~540 GB) but is the actual mlx-community Kimi K2 Instruct release.
+    assert "Q4_0" not in profiles["kimi-48b"].hf_path, (
+        "kimi-48b must not regress to the Q4_0 path which 404s."
+    )
+
+
 def test_default_max_tokens_is_positive_or_none() -> None:
     """``default_max_tokens`` is None or a positive int. A negative or
     zero default would make every request return empty completions."""

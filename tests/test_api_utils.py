@@ -302,6 +302,85 @@ class TestIsMllmModelConfigPriority:
         assert _config_indicates_vlm({"architectures": "Qwen3ForCausalLM"}) is False
 
 
+class TestIsMllmModelHubOverride:
+    """Verifies the hub config override for substring false-positives.
+
+    The legacy substring matcher catches family names like ``gemma-3`` /
+    ``gemma3`` which are correct for the vision variants (4b/12b/27b) but
+    misclassify the text-only 1B (``Gemma3ForCausalLM``, no
+    ``vision_config``). Detection now fetches just ``config.json`` from
+    the repo and lets the model's own metadata override a substring
+    false-positive — but only in the True → False direction, so repos
+    whose names lack a VLM token retain their existing text routing
+    even if their config exposes a vision branch.
+    """
+
+    def test_text_only_config_overrides_substring_match(self, monkeypatch):
+        from vllm_mlx.api import utils as utils_mod
+
+        # Substring "gemma-3" would flag this as MLLM. Hub config says
+        # Gemma3ForCausalLM (text-only) → override to False.
+        monkeypatch.setattr(
+            utils_mod,
+            "_try_read_hub_config_json",
+            lambda name: {"architectures": ["Gemma3ForCausalLM"]},
+        )
+        assert is_mllm_model("mlx-community/gemma-3-1b-it-4bit") is False
+
+    def test_vlm_config_keeps_substring_match(self, monkeypatch):
+        from vllm_mlx.api import utils as utils_mod
+
+        # Substring "gemma-3" matches and hub config also says VLM.
+        monkeypatch.setattr(
+            utils_mod,
+            "_try_read_hub_config_json",
+            lambda name: {
+                "architectures": ["Gemma3ForConditionalGeneration"],
+                "vision_config": {"hidden_size": 1024},
+            },
+        )
+        assert is_mllm_model("mlx-community/gemma-3-27b-it-4bit") is True
+
+    def test_hub_unreachable_falls_back_to_substring(self, monkeypatch):
+        from vllm_mlx.api import utils as utils_mod
+
+        # Substring matches; hub call returns None (404, gated, offline).
+        # Should preserve the legacy True result.
+        monkeypatch.setattr(utils_mod, "_try_read_hub_config_json", lambda name: None)
+        assert is_mllm_model("mlx-community/gemma-3-4b-it-4bit") is True
+
+    def test_no_substring_match_skips_hub_call(self, monkeypatch):
+        from vllm_mlx.api import utils as utils_mod
+
+        # Repos whose names don't match MLLM_PATTERNS short-circuit to
+        # False without consulting the hub — preserves existing routing
+        # for models like Qwen3.5/3.6 whose configs happen to expose a
+        # vision branch even though we've always routed them as text.
+        called = []
+
+        def spy(name):
+            called.append(name)
+            return {"vision_config": {}}
+
+        monkeypatch.setattr(utils_mod, "_try_read_hub_config_json", spy)
+        assert is_mllm_model("mlx-community/Qwen3.5-4B-MLX-4bit") is False
+        assert called == [], (
+            "hub config should not be consulted when substring rules out MLLM"
+        )
+
+    def test_hub_helper_rejects_local_path_lookalikes(self):
+        from vllm_mlx.api.utils import _try_read_hub_config_json
+
+        # Defensive: hub helper must not interpret local-path-like strings
+        # as repo IDs and trigger a network call.
+        assert _try_read_hub_config_json("/abs/path/model") is None
+        assert _try_read_hub_config_json("./relative/model") is None
+        assert _try_read_hub_config_json("../up/model") is None
+        assert _try_read_hub_config_json("~/cache/model") is None
+        # No slash at all → not a repo ID shape.
+        assert _try_read_hub_config_json("just-a-name") is None
+
+
 class TestExtractMultimodalContent:
     """Tests for extract_multimodal_content function."""
 

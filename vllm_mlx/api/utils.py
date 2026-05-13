@@ -5,6 +5,7 @@ Utility functions for text processing and model detection.
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -651,6 +652,53 @@ def _try_read_config_json(name_or_path: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _try_read_hub_config_json(model_name: str) -> dict | None:
+    """Read a cached config.json for an HF repo ID without going online.
+
+    Looks up the repo in the local ``huggingface_hub`` cache via
+    ``try_to_load_from_cache``. If the model has already been downloaded
+    (or even just had its config fetched), the file is on disk and we
+    can read it authoritatively. If nothing is cached, returns None —
+    the caller falls back to legacy substring matching rather than
+    making a network call. Never raises; never reaches the network.
+
+    Only runs for inputs that look like repo IDs (``owner/name``), so
+    arbitrary strings and local-path lookalikes can't accidentally
+    trigger a cache lookup.
+    """
+    if not isinstance(model_name, str) or "/" not in model_name:
+        return None
+    if model_name.startswith(("/", "./", "../", "~")):
+        return None
+
+    try:
+        from huggingface_hub import _CACHED_NO_EXIST, try_to_load_from_cache
+    except ImportError:
+        return None
+
+    try:
+        cached = try_to_load_from_cache(model_name, "config.json")
+    except Exception:
+        return None
+    if cached is None or cached is _CACHED_NO_EXIST:
+        return None
+    if not isinstance(cached, (str, os.PathLike)):
+        return None
+
+    try:
+        config_path = Path(cached)
+        if not config_path.is_file():
+            return None
+        if config_path.stat().st_size > _MAX_CONFIG_JSON_BYTES:
+            return None
+        with config_path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None
+
+    return data if isinstance(data, dict) else None
+
+
 def _config_indicates_vlm(config: dict) -> bool:
     """Inspect a parsed config.json dict for multimodal markers."""
     archs = config.get("architectures") or []
@@ -683,17 +731,27 @@ def _check_legacy_string_patterns(model_name: str) -> bool:
 def is_mllm_model(model_name: str) -> bool:
     """Check if a model name or path indicates a multimodal language model.
 
-    Two complementary validations are run:
+    Three complementary validations are run, in order:
 
-    1. config.json inspection: when ``model_name`` resolves to a local
-       directory containing a readable config.json, inspect the model's
-       own metadata (``architectures`` field, ``vision_config``,
-       ``audio_config``, etc.). Authoritative when available because it
-       reflects what the model actually is, not how it is named on disk.
+    1. Local config.json inspection: when ``model_name`` resolves to a
+       local directory containing a readable config.json, inspect the
+       model's own metadata (``architectures`` field, ``vision_config``,
+       ``audio_config``, etc.). Authoritative when available.
 
-    2. Legacy substring match against ``MLLM_PATTERNS``: applied when no
-       config.json is reachable (e.g., a HuggingFace repo ID before the
-       weights are downloaded). Preserves the historical behaviour.
+    2. Legacy substring match against ``MLLM_PATTERNS``: when no local
+       config is reachable, the historical name-based heuristic decides.
+
+    3. Cached-config override (false-positive correction): when the
+       legacy substring says "MLLM" but the repo's own config (already
+       in the local HF cache from a prior download or warmup call)
+       disagrees (e.g. ``mlx-community/gemma-3-1b-it-4bit`` matches the
+       ``gemma-3`` substring yet ships as ``Gemma3ForCausalLM`` with no
+       ``vision_config``), the cached config wins and the result flips
+       to False. The cache lookup is purely local — no network call,
+       so tests don't slow down or flake on HF outages. We deliberately
+       only override the True → False direction: the False direction is
+       preserved as-is so existing text-routed models with vision-capable
+       architectures keep their routing.
 
     Args:
         model_name: HuggingFace repo ID or local filesystem path.
@@ -704,7 +762,17 @@ def is_mllm_model(model_name: str) -> bool:
     config = _try_read_config_json(model_name)
     if config is not None:
         return _config_indicates_vlm(config)
-    return _check_legacy_string_patterns(model_name)
+
+    legacy = _check_legacy_string_patterns(model_name)
+    if not legacy:
+        return False
+
+    # Substring says "MLLM" — verify via the repo's own config and let it
+    # override a name-based false positive (e.g. text-only Gemma 3 1B).
+    hub_config = _try_read_hub_config_json(model_name)
+    if hub_config is not None and not _config_indicates_vlm(hub_config):
+        return False
+    return True
 
 
 # Backwards compatibility alias
