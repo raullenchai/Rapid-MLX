@@ -2,11 +2,14 @@
 """Health, status, and cache management endpoints."""
 
 import gc
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..config import get_config
 from ..middleware.auth import verify_api_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(verify_api_key)])
 
@@ -67,6 +70,49 @@ async def health_ready():
     if not cfg.ready:
         raise HTTPException(status_code=503, detail="model loading")
     return {"ready": True, "model": cfg.model_name}
+
+
+@router.post("/v1/requests/{request_id}/cancel")
+async def cancel_request(request_id: str):
+    """Cancel an active or queued request.
+
+    The ``request_id`` is the ``chatcmpl-xxx`` ID returned in the first SSE
+    streaming chunk (or in the non-streaming response body). Returns 404 if
+    the request is not found, has already finished, or the loaded engine
+    does not implement abort.
+    """
+    cfg = get_config()
+    if cfg.engine is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    try:
+        aborted = await cfg.engine.abort_request(request_id)
+    except Exception as exc:  # pragma: no cover - engine-side errors are rare
+        logger.exception("Failed to cancel request %s", request_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to cancel request {request_id}: {exc}",
+        ) from exc
+
+    if not aborted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Request not found or cancellation is unsupported: {request_id}",
+        )
+
+    logger.info("[cancel_request] accepted request_id=%s", request_id)
+    return {
+        "object": "request.cancel",
+        "id": request_id,
+        "cancelled": True,
+        "model": cfg.model_name,
+    }
+
+
+@router.delete("/v1/requests/{request_id}")
+async def delete_request(request_id: str):
+    """OpenAI-style alias for cancelling an active or queued request."""
+    return await cancel_request(request_id)
 
 
 @router.post("/v1/cache/clear")

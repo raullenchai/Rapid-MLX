@@ -209,3 +209,7 @@ class BaseEngine(ABC):
     def get_cache_stats(self) -> dict[str, Any] | None:
         """Get cache statistics. Override in subclasses."""
         return None
+
+    async def abort_request(self, request_id: str) -> bool:
+        """Abort an active or queued request when the engine supports it."""
+        return False

@@ -1242,6 +1242,27 @@ class BatchedEngine(BaseEngine):
             return self._engine.get_cache_stats()
         return None
 
+    async def abort_request(self, request_id: str) -> bool:
+        """Abort an active or queued batched request by request ID.
+
+        Routes to whichever backend is loaded:
+        - MLLMScheduler.abort_request is sync (returns bool).
+        - AsyncEngineCore.abort_request is async (returns coroutine).
+
+        Returns ``True`` when the engine accepted the abort, ``False`` if no
+        backend is available or the request was already finished/not found.
+        """
+        import inspect
+
+        if self._mllm_scheduler is not None:
+            return self._mllm_scheduler.abort_request(request_id)
+        if self._engine is not None and hasattr(self._engine, "abort_request"):
+            result = self._engine.abort_request(request_id)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        return False
+
     def save_cache_to_disk(self, cache_dir: str) -> bool:
         """Save prefix cache to disk for persistence across restarts."""
         if self._engine:
