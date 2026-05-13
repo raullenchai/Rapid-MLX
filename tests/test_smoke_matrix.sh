@@ -67,6 +67,40 @@ print(text)
 " 2>/dev/null
 }
 
+# Helper: streaming request, return content and reasoning_content lengths
+# separately on a single line as "<content_len>|<reasoning_len>". Used by
+# test 4 to verify the reasoning parser is actually splitting thinking
+# tokens into ``reasoning_content`` — combined length is unreliable because
+# some models compensate for disabled thinking by writing longer answers
+# in ``content`` (e.g. qwen3.5-4b on simple math drops thinking ratio
+# below the previous 1.5x heuristic).
+stream_chat_split() {
+    local body="$1"
+    curl -sfN "${BASE}" \
+        -H "Content-Type: application/json" \
+        -d "${body}" 2>/dev/null \
+    | sed -n 's/^data: //p' \
+    | python3 -c "
+import sys, json
+content = reasoning = ''
+for line in sys.stdin:
+    line = line.strip()
+    if not line or line == '[DONE]':
+        continue
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    choices = d.get('choices') or []
+    if not choices:
+        continue
+    delta = choices[0].get('delta', {}) if isinstance(choices[0], dict) else {}
+    content += delta.get('content', '') or ''
+    reasoning += delta.get('reasoning_content', '') or ''
+print(f'{len(content)}|{len(reasoning)}')
+" 2>/dev/null
+}
+
 check() {
     local name="$1"
     local result="$2"
@@ -159,23 +193,31 @@ check "has answer" "$NOTHINK_TEXT" "4"
 echo ""
 
 # ---------------------------------------------------------------
-# 4. enable_thinking=true (default) vs false — verify difference
-#    The server strips <think> from non-streaming, so we test via
-#    streaming and check that <think> appears when enabled.
+# 4. enable_thinking=true (default) vs false — verify the reasoning
+#    parser actually separates thinking tokens into reasoning_content.
+#
+#    Earlier versions of this test compared combined content+reasoning
+#    length and required thinking-on to be 1.5x longer than thinking-off.
+#    That's unreliable: when thinking is disabled, smaller models often
+#    compensate by writing a longer step-by-step answer in ``content``,
+#    which collapses the ratio below 1.5x even though the toggle is
+#    working correctly. The deterministic signal is the split itself:
+#    thinking-on should produce reasoning_content deltas; thinking-off
+#    must not.
 # ---------------------------------------------------------------
-echo "[4/5] enable_thinking=true vs false (streaming)"
-THINK_STREAM=$(stream_chat '{
+echo "[4/5] enable_thinking=true vs false (streaming, parser split)"
+THINK_SPLIT=$(stream_chat_split '{
     "model": "default",
     "messages": [{"role": "user", "content": "What is 17 * 23?"}],
     "max_tokens": 500,
     "temperature": 0,
     "stream": true
 }')
-echo "    thinking=default (first 120): ${THINK_STREAM:0:120}"
-# When thinking is active, stream content starts with <think> or
-# contains thinking markers. The key test: default response is
-# LONGER than no-think response (thinking adds tokens).
-NOTHINK_STREAM=$(stream_chat '{
+THINK_CONTENT_LEN=${THINK_SPLIT%|*}
+THINK_REASONING_LEN=${THINK_SPLIT#*|}
+echo "    thinking=default: content=${THINK_CONTENT_LEN} reasoning=${THINK_REASONING_LEN}"
+
+NOTHINK_SPLIT=$(stream_chat_split '{
     "model": "default",
     "messages": [{"role": "user", "content": "What is 17 * 23?"}],
     "max_tokens": 500,
@@ -183,22 +225,25 @@ NOTHINK_STREAM=$(stream_chat '{
     "stream": true,
     "enable_thinking": false
 }')
-echo "    thinking=false (first 120): ${NOTHINK_STREAM:0:120}"
-# The thinking response should be significantly longer
-THINK_LEN=${#THINK_STREAM}
-NOTHINK_LEN=${#NOTHINK_STREAM}
-echo "    lengths: thinking=${THINK_LEN} vs nothink=${NOTHINK_LEN}"
-RATIO_OK=$(python3 -c "
-t, n = $THINK_LEN, $NOTHINK_LEN
-# Thinking response should be at least 2x longer
-if n > 0 and t > n * 1.5:
-    print('THINKING_LONGER')
-elif t > 0 and n == 0:
-    print('THINKING_LONGER')
+NOTHINK_CONTENT_LEN=${NOTHINK_SPLIT%|*}
+NOTHINK_REASONING_LEN=${NOTHINK_SPLIT#*|}
+echo "    thinking=false:   content=${NOTHINK_CONTENT_LEN} reasoning=${NOTHINK_REASONING_LEN}"
+
+SPLIT_OK=$(python3 -c "
+tc, tr = $THINK_CONTENT_LEN, $THINK_REASONING_LEN
+nc, nr = $NOTHINK_CONTENT_LEN, $NOTHINK_REASONING_LEN
+# Thinking on: parser must route some thinking tokens into
+# reasoning_content. The absolute floor is intentionally small (10
+# chars) so the test passes even when a model thinks tersely.
+# Thinking off: reasoning_content MUST be empty — anything non-zero
+# means the chat template's enable_thinking=false directive was ignored
+# and the parser saw a <think> block it shouldn't have.
+if tr >= 10 and nr == 0 and (tc + tr) > 0 and (nc + nr) > 0:
+    print('THINKING_SPLIT_OK')
 else:
-    print('SAME_OR_SHORTER')
+    print('SPLIT_BROKEN')
 " 2>/dev/null)
-check "thinking produces longer output" "$RATIO_OK" "THINKING_LONGER"
+check "thinking toggle splits reasoning_content correctly" "$SPLIT_OK" "THINKING_SPLIT_OK"
 echo ""
 
 # ---------------------------------------------------------------
