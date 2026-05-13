@@ -452,6 +452,30 @@ def test_audit_batch_reasoning_parser_wirings() -> None:
         )
 
 
+def test_bonsai_family_wires_glm4_reasoning_parser() -> None:
+    """The Bonsai chat template (verified at
+    https://huggingface.co/prism-ml/Bonsai-1.7B-unpacked/resolve/main/chat_template.jinja)
+    injects an empty ``<think>\\n\\n</think>`` block when
+    ``add_generation_prompt=True`` — the model's actual output stream
+    then contains only content, no tags. The base class' "no tags
+    yet, treat as reasoning" default would misclassify every Bonsai
+    token; the ``glm4`` parser overrides exactly that branch.
+
+    If a downstream user enables thinking via ``reasoning_content``
+    on a prior assistant turn, the model may emit real
+    ``<think>...</think>`` blocks; the same glm4 parser splits those
+    correctly. Net effect: glm4 is strictly safer than null with
+    zero behavioural downside for non-thinking turns.
+    """
+    profiles = list_profiles()
+    for alias in ("bonsai-1.7b", "bonsai-4b", "bonsai-8b"):
+        assert alias in profiles, f"{alias} missing from aliases.json"
+        assert profiles[alias].reasoning_parser == "glm4", (
+            f"{alias}: reasoning_parser must be 'glm4' per audit. "
+            f"Got {profiles[alias].reasoning_parser!r}."
+        )
+
+
 def test_audit_batch_bonsai_tool_call_parser_wired() -> None:
     """Pin the Model Onboarding SOP audit fix for the Bonsai family.
     The chat template emits ``<tool_call>...</tool_call>`` blocks

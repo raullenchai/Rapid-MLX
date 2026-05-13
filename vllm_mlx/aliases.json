@@ -477,7 +477,7 @@
   "bonsai-1.7b": {
     "hf_path": "prism-ml/Bonsai-1.7B-unpacked",
     "tool_call_parser": "hermes",
-    "reasoning_parser": null,
+    "reasoning_parser": "glm4",
     "is_hybrid": false,
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
@@ -491,7 +491,7 @@
   "bonsai-4b": {
     "hf_path": "prism-ml/Bonsai-4B-unpacked",
     "tool_call_parser": "hermes",
-    "reasoning_parser": null,
+    "reasoning_parser": "glm4",
     "is_hybrid": false,
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
@@ -504,7 +504,7 @@
   "bonsai-8b": {
     "hf_path": "prism-ml/Bonsai-8B-unpacked",
     "tool_call_parser": "hermes",
-    "reasoning_parser": null,
+    "reasoning_parser": "glm4",
     "is_hybrid": false,
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
