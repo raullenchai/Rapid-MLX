@@ -580,11 +580,20 @@ class MLLMBatchGenerator:
         Returns:
             Logits from the forward pass
         """
-        # Build model call kwargs
+        # Build model call kwargs.
+        #
+        # ``pixel_values`` must be passed *even when None* — some mlx-vlm
+        # model classes (notably ``Gemma3ForConditionalGeneration``)
+        # declare it as a required positional kwarg in ``__call__``, so
+        # omitting it raises ``TypeError: missing 1 required positional
+        # argument: 'pixel_values'`` for every text-only request. The
+        # inner ``get_input_embeddings`` already handles ``None`` (text
+        # path skips the vision tower); the signature is just stricter
+        # than the implementation. Other vision families
+        # (Gemma3n / Qwen3-VL / LLaVA) keep working unchanged because
+        # their signatures already mark ``pixel_values`` Optional.
         kwargs = dict(request.extra_kwargs)
-
-        if request.pixel_values is not None:
-            kwargs["pixel_values"] = request.pixel_values
+        kwargs["pixel_values"] = request.pixel_values
         if request.attention_mask is not None:
             kwargs["attention_mask"] = request.attention_mask
         if request.image_grid_thw is not None:
