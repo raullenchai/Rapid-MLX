@@ -29,15 +29,54 @@ async def _warmup_engine(engine, sampling_params) -> None:
 
 
 @pytest.fixture(scope="module")
-def model_and_tokenizer():
-    """Load model once for all tests in this module."""
-    try:
-        from mlx_lm import load
+def mlx_executor():
+    """Single mlx-step worker thread, initialized via ``_init_mlx_step_thread``.
 
-        model, tokenizer = load(TEST_MODEL)
-        return model, tokenizer
-    except Exception as e:
-        pytest.skip(f"Could not load model {TEST_MODEL}: {e}")
+    Tests share one executor across the module so model weights, KV caches,
+    and BatchGenerator state all live on the same thread-local MLX stream.
+    Without this, ``mlx_lm.load`` materializes weight arrays on the test
+    thread (stream gpu, 1) and the engine's per-test executor thread cannot
+    ``mx.eval`` them, raising ``RuntimeError: There is no Stream(gpu, N) in
+    current thread.`` See ``_init_mlx_step_thread`` for the underlying
+    constraint.
+    """
+    import concurrent.futures
+
+    from vllm_mlx.engine_core import _init_mlx_step_thread
+
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="mlx-step-test",
+        initializer=_init_mlx_step_thread,
+    )
+    try:
+        yield executor
+    finally:
+        executor.shutdown(wait=True)
+
+
+@pytest.fixture(scope="module")
+def model_and_tokenizer(mlx_executor):
+    """Load the test model on the shared mlx-step worker thread.
+
+    Loading on the worker (rather than the test thread) tags every weight
+    array with the worker's MLX stream, so any ``mx.eval`` from the same
+    worker — including downstream KV-cache eval inside ``BatchGenerator`` —
+    succeeds. See ``mlx_executor`` for context.
+    """
+
+    def _load():
+        try:
+            from mlx_lm import load
+
+            return load(TEST_MODEL)
+        except Exception as e:  # pragma: no cover - environment-dependent
+            return e
+
+    result = mlx_executor.submit(_load).result()
+    if isinstance(result, Exception):
+        pytest.skip(f"Could not load model {TEST_MODEL}: {result}")
+    return result
 
 
 @pytest.fixture
@@ -52,7 +91,9 @@ class TestDeterministicSingleRequest:
     """Test single request determinism."""
 
     @pytest.mark.asyncio
-    async def test_same_prompt_same_output(self, model_and_tokenizer, sampling_params):
+    async def test_same_prompt_same_output(
+        self, model_and_tokenizer, mlx_executor, sampling_params
+    ):
         """Same prompt should produce same output with temp=0."""
         from vllm_mlx import AsyncEngineCore, EngineConfig, SchedulerConfig
 
@@ -69,7 +110,9 @@ class TestDeterministicSingleRequest:
 
         outputs = []
         for _ in range(3):  # Run 3 times
-            async with AsyncEngineCore(model, tokenizer, config) as engine:
+            async with AsyncEngineCore(
+                model, tokenizer, config, executor=mlx_executor
+            ) as engine:
                 await asyncio.sleep(0.05)
                 request_id = await engine.add_request(prompt, sampling_params)
 
@@ -83,13 +126,15 @@ class TestDeterministicSingleRequest:
         assert outputs[0] == outputs[1] == outputs[2], f"Outputs differ: {outputs}"
 
     @pytest.mark.asyncio
-    async def test_token_streaming_order(self, model_and_tokenizer, sampling_params):
+    async def test_token_streaming_order(
+        self, model_and_tokenizer, mlx_executor, sampling_params
+    ):
         """Tokens should stream in order."""
         from vllm_mlx import AsyncEngineCore
 
         model, tokenizer = model_and_tokenizer
 
-        async with AsyncEngineCore(model, tokenizer) as engine:
+        async with AsyncEngineCore(model, tokenizer, executor=mlx_executor) as engine:
             await asyncio.sleep(0.05)
             request_id = await engine.add_request(
                 "Count from 1 to 5:",
@@ -132,7 +177,7 @@ class TestDeterministicConcurrentRequests:
         strict=False,
     )
     @pytest.mark.asyncio
-    async def test_concurrent_same_prompt(self, model_and_tokenizer):
+    async def test_concurrent_same_prompt(self, model_and_tokenizer, mlx_executor):
         """Multiple concurrent requests with same prompt should get same output."""
         from vllm_mlx import (
             AsyncEngineCore,
@@ -153,7 +198,9 @@ class TestDeterministicConcurrentRequests:
         params = SamplingParams(max_tokens=10, temperature=0.0)
         prompt = "The capital of France is"
 
-        async with AsyncEngineCore(model, tokenizer, config) as engine:
+        async with AsyncEngineCore(
+            model, tokenizer, config, executor=mlx_executor
+        ) as engine:
             await asyncio.sleep(0.05)
             await _warmup_engine(engine, params)
 
@@ -176,7 +223,9 @@ class TestDeterministicConcurrentRequests:
             assert all(r == results[0] for r in results), f"Outputs differ: {results}"
 
     @pytest.mark.asyncio
-    async def test_concurrent_different_prompts(self, model_and_tokenizer):
+    async def test_concurrent_different_prompts(
+        self, model_and_tokenizer, mlx_executor
+    ):
         """Different prompts should get different (but deterministic) outputs."""
         from vllm_mlx import (
             AsyncEngineCore,
@@ -203,7 +252,9 @@ class TestDeterministicConcurrentRequests:
         # Run twice to verify determinism
         all_results = []
         for run in range(2):
-            async with AsyncEngineCore(model, tokenizer, config) as engine:
+            async with AsyncEngineCore(
+                model, tokenizer, config, executor=mlx_executor
+            ) as engine:
                 await asyncio.sleep(0.05)
                 await _warmup_engine(engine, params)
 
@@ -231,7 +282,9 @@ class TestBatchingPerformance:
     """Test that batching improves throughput."""
 
     @pytest.mark.asyncio
-    async def test_batched_faster_than_sequential(self, model_and_tokenizer):
+    async def test_batched_faster_than_sequential(
+        self, model_and_tokenizer, mlx_executor
+    ):
         """Batched requests should not be catastrophically slower than sequential.
 
         This is a regression guard, not a perf benchmark. The threshold
@@ -265,7 +318,9 @@ class TestBatchingPerformance:
         async def run_sequential():
             """Run requests one at a time (after warmup)."""
             total_tokens = 0
-            async with AsyncEngineCore(model, tokenizer, config) as engine:
+            async with AsyncEngineCore(
+                model, tokenizer, config, executor=mlx_executor
+            ) as engine:
                 await asyncio.sleep(0.05)
                 await _warmup_engine(engine, params)
 
@@ -279,7 +334,9 @@ class TestBatchingPerformance:
 
         async def run_batched():
             """Run requests concurrently (after warmup)."""
-            async with AsyncEngineCore(model, tokenizer, config) as engine:
+            async with AsyncEngineCore(
+                model, tokenizer, config, executor=mlx_executor
+            ) as engine:
                 await asyncio.sleep(0.05)
                 await _warmup_engine(engine, params)
 
@@ -329,14 +386,14 @@ class TestRequestManagement:
     """Test request lifecycle management."""
 
     @pytest.mark.asyncio
-    async def test_abort_request(self, model_and_tokenizer):
+    async def test_abort_request(self, model_and_tokenizer, mlx_executor):
         """Test aborting a request mid-generation."""
         from vllm_mlx import AsyncEngineCore, SamplingParams
 
         model, tokenizer = model_and_tokenizer
         params = SamplingParams(max_tokens=100, temperature=0.0)
 
-        async with AsyncEngineCore(model, tokenizer) as engine:
+        async with AsyncEngineCore(model, tokenizer, executor=mlx_executor) as engine:
             await asyncio.sleep(0.05)
 
             # Start a long request
@@ -359,7 +416,7 @@ class TestRequestManagement:
             assert stats["active_requests"] == 0
 
     @pytest.mark.asyncio
-    async def test_engine_stats(self, model_and_tokenizer):
+    async def test_engine_stats(self, model_and_tokenizer, mlx_executor):
         """Test engine statistics tracking."""
         from vllm_mlx import (
             AsyncEngineCore,
@@ -373,7 +430,9 @@ class TestRequestManagement:
 
         params = SamplingParams(max_tokens=5, temperature=0.0)
 
-        async with AsyncEngineCore(model, tokenizer, config) as engine:
+        async with AsyncEngineCore(
+            model, tokenizer, config, executor=mlx_executor
+        ) as engine:
             await asyncio.sleep(0.05)
 
             # Initial stats
@@ -398,7 +457,7 @@ class TestSchedulerPolicy:
     """Test scheduler policies."""
 
     @pytest.mark.asyncio
-    async def test_fcfs_ordering(self, model_and_tokenizer):
+    async def test_fcfs_ordering(self, model_and_tokenizer, mlx_executor):
         """Test that FCFS policy processes requests in order."""
         from vllm_mlx import (
             AsyncEngineCore,
@@ -418,7 +477,9 @@ class TestSchedulerPolicy:
 
         params = SamplingParams(max_tokens=3, temperature=0.0)
 
-        async with AsyncEngineCore(model, tokenizer, config) as engine:
+        async with AsyncEngineCore(
+            model, tokenizer, config, executor=mlx_executor
+        ) as engine:
             await asyncio.sleep(0.05)
 
             # Add requests with small delay
@@ -451,14 +512,14 @@ class TestEdgeCases:
     """Test edge cases and error handling."""
 
     @pytest.mark.asyncio
-    async def test_empty_prompt(self, model_and_tokenizer):
+    async def test_empty_prompt(self, model_and_tokenizer, mlx_executor):
         """Test handling of empty prompt."""
         from vllm_mlx import AsyncEngineCore, SamplingParams
 
         model, tokenizer = model_and_tokenizer
         params = SamplingParams(max_tokens=5, temperature=0.0)
 
-        async with AsyncEngineCore(model, tokenizer) as engine:
+        async with AsyncEngineCore(model, tokenizer, executor=mlx_executor) as engine:
             await asyncio.sleep(0.05)
 
             rid = await engine.add_request("", params)
@@ -469,14 +530,14 @@ class TestEdgeCases:
                     break
 
     @pytest.mark.asyncio
-    async def test_very_short_max_tokens(self, model_and_tokenizer):
+    async def test_very_short_max_tokens(self, model_and_tokenizer, mlx_executor):
         """Test with max_tokens=1."""
         from vllm_mlx import AsyncEngineCore, SamplingParams
 
         model, tokenizer = model_and_tokenizer
         params = SamplingParams(max_tokens=1, temperature=0.0)
 
-        async with AsyncEngineCore(model, tokenizer) as engine:
+        async with AsyncEngineCore(model, tokenizer, executor=mlx_executor) as engine:
             await asyncio.sleep(0.05)
 
             rid = await engine.add_request("Hello", params)
@@ -491,7 +552,7 @@ class TestEdgeCases:
             assert token_count == 1
 
     @pytest.mark.asyncio
-    async def test_multiple_start_stop(self, model_and_tokenizer):
+    async def test_multiple_start_stop(self, model_and_tokenizer, mlx_executor):
         """Test starting and stopping engine multiple times."""
         from vllm_mlx import AsyncEngineCore, SamplingParams
 
@@ -499,7 +560,9 @@ class TestEdgeCases:
         params = SamplingParams(max_tokens=3, temperature=0.0)
 
         for _ in range(3):
-            async with AsyncEngineCore(model, tokenizer) as engine:
+            async with AsyncEngineCore(
+                model, tokenizer, executor=mlx_executor
+            ) as engine:
                 await asyncio.sleep(0.05)
 
                 rid = await engine.add_request("Test:", params)

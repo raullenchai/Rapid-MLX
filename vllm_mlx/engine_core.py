@@ -187,6 +187,12 @@ class EngineCore:
         # executor — the asyncio loop thread does not own a stream and will
         # raise "There is no Stream(gpu, N) in current thread."
         self._mlx_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        # True when we created the executor in ``start()`` and own its
+        # lifecycle; False when the caller supplied an existing executor
+        # (e.g. tests that load the model on the worker thread first to
+        # avoid the cross-thread Stream(gpu, N) error). Caller-owned
+        # executors are NOT shut down by ``stop()``.
+        self._owns_executor: bool = False
 
         # Per-model capability profile. Runtime probe acts as the safety
         # net for unknown hybrid arches; regex-based defaults from
@@ -258,12 +264,14 @@ class EngineCore:
 
         if executor is not None:
             self._mlx_executor = executor
+            self._owns_executor = False
         else:
             self._mlx_executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="mlx-step",
                 initializer=_init_mlx_step_thread,
             )
+            self._owns_executor = True
         self._running = True
         self._start_time = time.time()
         self._task = asyncio.create_task(self._engine_loop())
@@ -289,8 +297,10 @@ class EngineCore:
                 self._run_on_step_thread(self.scheduler._close_batch_generator)
             except Exception as e:
                 logger.debug(f"Error closing BatchGenerator on worker: {e}")
-            self._mlx_executor.shutdown(wait=True)
+            if self._owns_executor:
+                self._mlx_executor.shutdown(wait=True)
             self._mlx_executor = None
+            self._owns_executor = False
         logger.info("Engine stopped")
 
     def _run_on_step_thread(self, func, *args, **kwargs):
@@ -1004,11 +1014,14 @@ class AsyncEngineCore:
         model: Any,
         tokenizer: Any,
         config: EngineConfig | None = None,
+        *,
+        executor: concurrent.futures.ThreadPoolExecutor | None = None,
     ):
         self.engine = EngineCore(model, tokenizer, config)
+        self._executor = executor
 
     async def __aenter__(self) -> "AsyncEngineCore":
-        await self.engine.start()
+        await self.engine.start(executor=self._executor)
         return self
 
     async def __aexit__(self, *args) -> None:
