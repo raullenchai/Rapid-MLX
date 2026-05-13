@@ -117,7 +117,17 @@ class TestDetectModelConfig:
         config = detect_model_config(model_path)
         assert config is not None
         assert config.tool_call_parser == "deepseek"
-        assert config.reasoning_parser is None
+        # V4-Flash chat template emits `<think>...</think>` blocks gated
+        # by ``thinking_mode``; ``deepseek_r1`` handles that format. The
+        # base ``deepseek-ai/DeepSeek-V4`` path is resolved via family
+        # detection (no aliases.json entry), so it currently gets no
+        # reasoning_parser — only the MLX variants benefit from the
+        # alias wiring. Track both shapes here so a refactor that flips
+        # the family default has to update this test consciously.
+        if model_path == "deepseek-ai/DeepSeek-V4":
+            assert config.reasoning_parser is None
+        else:
+            assert config.reasoning_parser == "deepseek_r1"
         assert config.is_hybrid is False
         assert config.supports_spec_decode is True
 

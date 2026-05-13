@@ -420,6 +420,31 @@ def test_negative_control_dflash_missing_drafter_is_caught() -> None:
         )
 
 
+def test_deepseek_v4_flash_family_wires_deepseek_r1_reasoning_parser() -> None:
+    """The DeepSeek-V4-Flash chat template emits ``<think>...</think>``
+    blocks (gated by ``thinking_mode``). Without ``reasoning_parser`` set,
+    that text leaks into ``choices[0].message.content`` as user-visible
+    chain-of-thought. Pin the wiring so a future PR can't silently revert
+    it to ``null``.
+
+    Verified format source:
+    https://huggingface.co/mlx-community/DeepSeek-V4-Flash-4bit/resolve/main/chat_template.jinja
+    """
+    profiles = list_profiles()
+    family = [
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-2bit",
+        "deepseek-v4-flash-4bit",
+        "deepseek-v4-flash-8bit",
+    ]
+    for alias in family:
+        assert alias in profiles, f"{alias} missing from aliases.json"
+        assert profiles[alias].reasoning_parser == "deepseek_r1", (
+            f"{alias}: reasoning_parser must be 'deepseek_r1' (V4-Flash emits "
+            f"`<think>` blocks). Got {profiles[alias].reasoning_parser!r}."
+        )
+
+
 def test_default_max_tokens_is_positive_or_none() -> None:
     """``default_max_tokens`` is None or a positive int. A negative or
     zero default would make every request return empty completions."""
