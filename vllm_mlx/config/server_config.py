@@ -44,6 +44,22 @@ class ServerConfig:
     default_temperature: float | None = None
     default_top_p: float | None = None
     default_top_k: int | None = None
+    default_min_p: float | None = None
+    default_repetition_penalty: float | None = None
+    default_presence_penalty: float | None = None
+    default_frequency_penalty: float | None = None
+
+    # --- Sampling overlay (layers 3 & 4 of the resolve chain) ---
+    # Resolve order for every sampling param:
+    #   1. request body
+    #   2. CLI --default-* flag (``default_temperature``, etc.)
+    #   3. AliasProfile.recommended_sampling   (this dict)
+    #   4. generation_config.json from model snapshot   (this dict)
+    #   5. hard-coded fallback (only temperature + top_p)
+    # Both overlays are populated by ``server.load_model()`` once the
+    # model path is known. Empty dicts when unset.
+    alias_recommended_sampling: dict[str, float | int] | None = None
+    generation_config_sampling: dict[str, float | int] | None = None
 
     # --- Tool calling ---
     enable_auto_tool_choice: bool = False

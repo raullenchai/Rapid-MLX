@@ -108,13 +108,18 @@ from .service.helpers import (  # noqa: F401 — re-export for backward compat
     _FALLBACK_TOP_P,
     _TOOL_USE_SYSTEM_SUFFIX,
     _build_usage,
+    _cascade,
     _disconnect_guard,
     _extract_token_logprob,
     _inject_json_instruction,
     _maybe_pin_system_prompt,
     _parse_tool_calls_with_parser,
+    _resolve_frequency_penalty,
     _resolve_max_tokens,
+    _resolve_min_p,
     _resolve_model_name,
+    _resolve_presence_penalty,
+    _resolve_repetition_penalty,
     _resolve_temperature,
     _resolve_top_k,
     _resolve_top_p,
@@ -175,6 +180,16 @@ _default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes
 _default_temperature: float | None = None  # Set via --default-temperature
 _default_top_p: float | None = None  # Set via --default-top-p
 _default_top_k: int | None = None  # Set via --default-top-k
+_default_min_p: float | None = None  # Set via --default-min-p
+_default_repetition_penalty: float | None = None  # Set via --default-repetition-penalty
+_default_presence_penalty: float | None = None  # Set via --default-presence-penalty
+_default_frequency_penalty: float | None = None  # Set via --default-frequency-penalty
+
+# Sampling overlays populated from the model's AliasProfile +
+# generation_config.json once the path is known (load_model). Both stay
+# as None pre-load; the resolve helpers tolerate missing dicts.
+_alias_recommended_sampling: dict[str, float | int] | None = None
+_generation_config_sampling: dict[str, float | int] | None = None
 
 
 # Global MCP manager
@@ -499,12 +514,34 @@ def load_model(
         _model_path, \
         _default_max_tokens, \
         _tool_parser_instance, \
-        _cloud_router
+        _cloud_router, \
+        _alias_recommended_sampling, \
+        _generation_config_sampling
 
     _default_max_tokens = max_tokens
     _model_path = model_name
     _model_name = served_model_name or model_name
     _tool_parser_instance = None
+
+    # Populate the sampling overlays now that we know which model we're
+    # serving. Both are best-effort — an alias without curated sampling
+    # or a model missing generation_config.json simply contributes an
+    # empty layer to the cascade in service/helpers.py.
+    from .model_aliases import resolve_profile
+    from .utils.generation_config import load_generation_config_sampling
+
+    _alias_recommended_sampling = None
+    # resolve_profile handles both alias-name and HF-path lookups, so a
+    # single call suffices regardless of which form load_model was passed.
+    _profile = resolve_profile(_model_alias or model_name)
+    if _profile is not None and _profile.recommended_sampling:
+        _alias_recommended_sampling = dict(_profile.recommended_sampling)
+    try:
+        gen_cfg = load_generation_config_sampling(model_name)
+    except Exception as _e:  # pragma: no cover — defensive belt-and-suspenders
+        logger.debug(f"generation_config load failed (non-fatal): {_e}")
+        gen_cfg = {}
+    _generation_config_sampling = gen_cfg or None
 
     # Initialize cloud router if --cloud-model is set
     if cloud_model:
@@ -632,6 +669,12 @@ def _sync_config() -> None:
     cfg.default_temperature = _default_temperature
     cfg.default_top_p = _default_top_p
     cfg.default_top_k = _default_top_k
+    cfg.default_min_p = _default_min_p
+    cfg.default_repetition_penalty = _default_repetition_penalty
+    cfg.default_presence_penalty = _default_presence_penalty
+    cfg.default_frequency_penalty = _default_frequency_penalty
+    cfg.alias_recommended_sampling = _alias_recommended_sampling
+    cfg.generation_config_sampling = _generation_config_sampling
     cfg.enable_auto_tool_choice = _enable_auto_tool_choice
     cfg.tool_call_parser = _tool_call_parser
     cfg.tool_parser_instance = _tool_parser_instance

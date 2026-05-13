@@ -20,8 +20,12 @@ from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
     _disconnect_guard,
+    _resolve_frequency_penalty,
     _resolve_max_tokens,
+    _resolve_min_p,
     _resolve_model_name,
+    _resolve_presence_penalty,
+    _resolve_repetition_penalty,
     _resolve_temperature,
     _resolve_top_k,
     _resolve_top_p,
@@ -34,6 +38,40 @@ from ..service.helpers import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _build_extended_sampling_kwargs(request: CompletionRequest) -> dict:
+    """Resolve extended sampling params (top_k/min_p/penalties) through the
+    request → CLI → alias → generation_config cascade.
+
+    Only forward values that resolved to something concrete — leaving a
+    key absent lets the engine apply its own SamplingParams default,
+    whereas forwarding ``None`` would override it with garbage.
+    """
+    kwargs: dict = {}
+    for name, resolver, req_value in (
+        ("top_k", _resolve_top_k, request.top_k),
+        ("min_p", _resolve_min_p, getattr(request, "min_p", None)),
+        (
+            "repetition_penalty",
+            _resolve_repetition_penalty,
+            getattr(request, "repetition_penalty", None),
+        ),
+        (
+            "presence_penalty",
+            _resolve_presence_penalty,
+            getattr(request, "presence_penalty", None),
+        ),
+        (
+            "frequency_penalty",
+            _resolve_frequency_penalty,
+            getattr(request, "frequency_penalty", None),
+        ),
+    ):
+        value = resolver(req_value)
+        if value is not None:
+            kwargs[name] = value
+    return kwargs
 
 
 @router.post(
@@ -73,19 +111,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     total_completion_tokens = 0
     total_prompt_tokens = 0
 
-    extended_kwargs: dict = {}
-    for _name in (
-        "min_p",
-        "repetition_penalty",
-        "presence_penalty",
-        "frequency_penalty",
-    ):
-        _value = getattr(request, _name, None)
-        if _value is not None:
-            extended_kwargs[_name] = _value
-    _top_k = _resolve_top_k(request.top_k)
-    if _top_k is not None:
-        extended_kwargs["top_k"] = _top_k
+    extended_kwargs = _build_extended_sampling_kwargs(request)
 
     for i, prompt in enumerate(prompts):
         output = await _wait_with_disconnect(
@@ -142,19 +168,7 @@ async def stream_completion(
     request: CompletionRequest,
 ) -> AsyncIterator[str]:
     """Stream completion response."""
-    extended_kwargs: dict = {}
-    for _name in (
-        "min_p",
-        "repetition_penalty",
-        "presence_penalty",
-        "frequency_penalty",
-    ):
-        _value = getattr(request, _name, None)
-        if _value is not None:
-            extended_kwargs[_name] = _value
-    _top_k = _resolve_top_k(request.top_k)
-    if _top_k is not None:
-        extended_kwargs["top_k"] = _top_k
+    extended_kwargs = _build_extended_sampling_kwargs(request)
 
     async for output in engine.stream_generate(
         prompt=prompt,

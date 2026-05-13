@@ -37,6 +37,32 @@ logger = logging.getLogger(__name__)
 _FALLBACK_TEMPERATURE = 0.7
 _FALLBACK_TOP_P = 0.9
 
+
+def _cascade(cli_value, alias_key: str, gen_key: str | None = None):
+    """Layers 3+4 of the sampling resolve chain.
+
+    Returns the first set value among:
+      * ``cli_value`` — already-resolved CLI default (layer 2)
+      * ``cfg.alias_recommended_sampling[alias_key]`` (layer 3)
+      * ``cfg.generation_config_sampling[gen_key or alias_key]`` (layer 4)
+
+    Returns ``None`` when nothing is set; the caller decides whether to
+    apply a hard-coded fallback (temperature / top_p) or forward
+    ``None`` to the engine (top_k / min_p / penalties).
+    """
+    if cli_value is not None:
+        return cli_value
+    cfg = get_config()
+    alias = cfg.alias_recommended_sampling or {}
+    if alias_key in alias:
+        return alias[alias_key]
+    gen = cfg.generation_config_sampling or {}
+    key2 = gen_key or alias_key
+    if key2 in gen:
+        return gen[key2]
+    return None
+
+
 # Tool-use system prompt (auto-injected when tools are provided and parser is active)
 _TOOL_USE_SYSTEM_SUFFIX = (
     "\n\nIMPORTANT: When the user's request can be answered using the provided tools, "
@@ -73,38 +99,76 @@ def _resolve_max_tokens(
 
 
 def _resolve_temperature(request_value: float | None) -> float:
-    """Resolve temperature: request > CLI default > fallback."""
+    """Resolve temperature: request > CLI > alias > generation_config > fallback."""
     if request_value is not None:
         return request_value
     cfg = get_config()
-    if cfg.default_temperature is not None:
-        return cfg.default_temperature
+    value = _cascade(cfg.default_temperature, "temperature")
+    if value is not None:
+        return float(value)
     return _FALLBACK_TEMPERATURE
 
 
 def _resolve_top_p(request_value: float | None) -> float:
-    """Resolve top_p: request > CLI default > fallback."""
+    """Resolve top_p: request > CLI > alias > generation_config > fallback."""
     if request_value is not None:
         return request_value
     cfg = get_config()
-    if cfg.default_top_p is not None:
-        return cfg.default_top_p
+    value = _cascade(cfg.default_top_p, "top_p")
+    if value is not None:
+        return float(value)
     return _FALLBACK_TOP_P
 
 
 def _resolve_top_k(request_value: int | None) -> int | None:
-    """Resolve top_k: request > CLI default > None (engine default).
+    """Resolve top_k: request > CLI > alias > generation_config > None.
 
     Unlike temperature/top_p, top_k has no application-level fallback —
-    when both the request and the CLI default are unset, returning None
-    signals "do not forward" so the engine's own SamplingParams default
-    applies (matching the existing behavior of the extended-sampling
-    forwarding loop).
+    returning None signals "do not forward" so the engine's own
+    SamplingParams default applies (matching the existing behavior of
+    the extended-sampling forwarding loop).
     """
     if request_value is not None:
         return request_value
     cfg = get_config()
-    return cfg.default_top_k
+    value = _cascade(cfg.default_top_k, "top_k")
+    return int(value) if value is not None else None
+
+
+def _resolve_min_p(request_value: float | None) -> float | None:
+    """Resolve min_p: request > CLI > alias > generation_config > None."""
+    if request_value is not None:
+        return request_value
+    cfg = get_config()
+    value = _cascade(cfg.default_min_p, "min_p")
+    return float(value) if value is not None else None
+
+
+def _resolve_repetition_penalty(request_value: float | None) -> float | None:
+    """Resolve repetition_penalty: request > CLI > alias > generation_config > None."""
+    if request_value is not None:
+        return request_value
+    cfg = get_config()
+    value = _cascade(cfg.default_repetition_penalty, "repetition_penalty")
+    return float(value) if value is not None else None
+
+
+def _resolve_presence_penalty(request_value: float | None) -> float | None:
+    """Resolve presence_penalty: request > CLI > alias > generation_config > None."""
+    if request_value is not None:
+        return request_value
+    cfg = get_config()
+    value = _cascade(cfg.default_presence_penalty, "presence_penalty")
+    return float(value) if value is not None else None
+
+
+def _resolve_frequency_penalty(request_value: float | None) -> float | None:
+    """Resolve frequency_penalty: request > CLI > alias > generation_config > None."""
+    if request_value is not None:
+        return request_value
+    cfg = get_config()
+    value = _cascade(cfg.default_frequency_penalty, "frequency_penalty")
+    return float(value) if value is not None else None
 
 
 # ── Usage / logprobs ───────────────────────────────────────────────

@@ -463,6 +463,14 @@ def serve_command(args):
         server._default_top_p = args.default_top_p
     if args.default_top_k is not None:
         server._default_top_k = args.default_top_k
+    if args.default_min_p is not None:
+        server._default_min_p = args.default_min_p
+    if args.default_repetition_penalty is not None:
+        server._default_repetition_penalty = args.default_repetition_penalty
+    if args.default_presence_penalty is not None:
+        server._default_presence_penalty = args.default_presence_penalty
+    if args.default_frequency_penalty is not None:
+        server._default_frequency_penalty = args.default_frequency_penalty
 
     # Configure reasoning parser
     if args.reasoning_parser:
@@ -3083,6 +3091,30 @@ Examples:
         type=int,
         default=None,
         help="Override default top_k for all requests (default: use model default)",
+    )
+    serve_parser.add_argument(
+        "--default-min-p",
+        type=float,
+        default=None,
+        help="Override default min_p for all requests (default: use model default)",
+    )
+    serve_parser.add_argument(
+        "--default-repetition-penalty",
+        type=float,
+        default=None,
+        help="Override default repetition_penalty for all requests (default: use model default)",
+    )
+    serve_parser.add_argument(
+        "--default-presence-penalty",
+        type=float,
+        default=None,
+        help="Override default presence_penalty for all requests (default: use model default)",
+    )
+    serve_parser.add_argument(
+        "--default-frequency-penalty",
+        type=float,
+        default=None,
+        help="Override default frequency_penalty for all requests (default: use model default)",
     )
     # Cloud routing options
     serve_parser.add_argument(

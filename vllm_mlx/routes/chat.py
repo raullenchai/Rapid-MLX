@@ -48,8 +48,12 @@ from ..service.helpers import (
     _inject_json_instruction,
     _maybe_pin_system_prompt,
     _parse_tool_calls_with_parser,
+    _resolve_frequency_penalty,
     _resolve_max_tokens,
+    _resolve_min_p,
     _resolve_model_name,
+    _resolve_presence_penalty,
+    _resolve_repetition_penalty,
     _resolve_temperature,
     _resolve_top_k,
     _resolve_top_p,
@@ -343,21 +347,33 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         "stop": request.stop,
     }
 
-    # Extended sampling params (#355) — only forward when the client
-    # explicitly set the field. Forwarding None would override the
+    # Extended sampling params — resolve through the request → CLI →
+    # alias → generation_config cascade. Only forward when the cascade
+    # actually produced a value; forwarding None would override the
     # engine's own SamplingParams defaults with garbage.
-    for _name in (
-        "min_p",
-        "repetition_penalty",
-        "presence_penalty",
-        "frequency_penalty",
-    ):
-        _value = getattr(request, _name, None)
+    _extended_resolvers = (
+        ("top_k", _resolve_top_k, request.top_k),
+        ("min_p", _resolve_min_p, getattr(request, "min_p", None)),
+        (
+            "repetition_penalty",
+            _resolve_repetition_penalty,
+            getattr(request, "repetition_penalty", None),
+        ),
+        (
+            "presence_penalty",
+            _resolve_presence_penalty,
+            getattr(request, "presence_penalty", None),
+        ),
+        (
+            "frequency_penalty",
+            _resolve_frequency_penalty,
+            getattr(request, "frequency_penalty", None),
+        ),
+    )
+    for _name, _resolver, _req in _extended_resolvers:
+        _value = _resolver(_req)
         if _value is not None:
             chat_kwargs[_name] = _value
-    _top_k = _resolve_top_k(request.top_k)
-    if _top_k is not None:
-        chat_kwargs["top_k"] = _top_k
 
     # Add multimodal content
     if has_media:

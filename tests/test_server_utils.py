@@ -170,6 +170,167 @@ class TestResolveTopK:
 
 
 # ---------------------------------------------------------------------------
+# Resolve cascade: alias overlay + generation_config overlay
+# ---------------------------------------------------------------------------
+
+
+class TestResolveCascade:
+    """Verify the 4-layer resolve chain:
+
+        request  >  CLI default  >  alias overlay  >  generation_config
+
+    Documented in service/helpers.py::_cascade. We exercise it through
+    the public resolve_* helpers because that's the contract route
+    handlers actually consume.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_config(self):
+        """Snapshot/restore the global ServerConfig so cases don't leak."""
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        snap = {
+            "default_temperature": cfg.default_temperature,
+            "default_top_p": cfg.default_top_p,
+            "default_top_k": cfg.default_top_k,
+            "default_min_p": cfg.default_min_p,
+            "default_repetition_penalty": cfg.default_repetition_penalty,
+            "default_presence_penalty": cfg.default_presence_penalty,
+            "default_frequency_penalty": cfg.default_frequency_penalty,
+            "alias_recommended_sampling": cfg.alias_recommended_sampling,
+            "generation_config_sampling": cfg.generation_config_sampling,
+        }
+        for k in snap:
+            setattr(cfg, k, None)
+        yield
+        for k, v in snap.items():
+            setattr(cfg, k, v)
+
+    def test_temperature_alias_overrides_generation_config(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.alias_recommended_sampling = {"temperature": 0.5}
+        cfg.generation_config_sampling = {"temperature": 1.0}
+        assert server._resolve_temperature(None) == 0.5
+
+    def test_temperature_generation_config_used_when_alias_missing(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.generation_config_sampling = {"temperature": 0.6}
+        assert server._resolve_temperature(None) == 0.6
+
+    def test_temperature_cli_default_overrides_overlays(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.default_temperature = 0.9
+        cfg.alias_recommended_sampling = {"temperature": 0.5}
+        cfg.generation_config_sampling = {"temperature": 1.0}
+        assert server._resolve_temperature(None) == 0.9
+
+    def test_temperature_request_overrides_everything(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.default_temperature = 0.9
+        cfg.alias_recommended_sampling = {"temperature": 0.5}
+        cfg.generation_config_sampling = {"temperature": 1.0}
+        assert server._resolve_temperature(0.1) == 0.1
+
+    def test_top_p_cascade(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.generation_config_sampling = {"top_p": 0.95}
+        assert server._resolve_top_p(None) == 0.95
+        cfg.alias_recommended_sampling = {"top_p": 0.8}
+        assert server._resolve_top_p(None) == 0.8
+
+    def test_top_k_int_coercion_through_overlay(self):
+        """top_k from JSON arrives as int; cascade must preserve type."""
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.generation_config_sampling = {"top_k": 20}
+        assert server._resolve_top_k(None) == 20
+        assert isinstance(server._resolve_top_k(None), int)
+
+    def test_min_p_cascade(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        # Layer 4 only
+        cfg.generation_config_sampling = {"min_p": 0.05}
+        assert server._resolve_min_p(None) == 0.05
+        # Layer 3 wins
+        cfg.alias_recommended_sampling = {"min_p": 0.1}
+        assert server._resolve_min_p(None) == 0.1
+        # Layer 2 wins
+        cfg.default_min_p = 0.2
+        assert server._resolve_min_p(None) == 0.2
+        # Layer 1 wins
+        assert server._resolve_min_p(0.3) == 0.3
+
+    def test_repetition_penalty_returns_none_when_nothing_set(self):
+        from vllm_mlx import server
+
+        assert server._resolve_repetition_penalty(None) is None
+
+    def test_repetition_penalty_alias_layer(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.alias_recommended_sampling = {"repetition_penalty": 1.1}
+        assert server._resolve_repetition_penalty(None) == 1.1
+
+    def test_presence_penalty_request_layer(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.alias_recommended_sampling = {"presence_penalty": 0.5}
+        # request value wins even when negative
+        assert server._resolve_presence_penalty(-0.2) == -0.2
+
+    def test_frequency_penalty_no_signal_returns_none(self):
+        from vllm_mlx import server
+
+        assert server._resolve_frequency_penalty(None) is None
+
+    def test_overlay_dict_can_be_empty(self):
+        """Empty overlay dicts must be treated as "no value at this layer"."""
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.alias_recommended_sampling = {}
+        cfg.generation_config_sampling = {}
+        assert server._resolve_top_k(None) is None
+        assert server._resolve_min_p(None) is None
+
+    def test_zero_request_value_is_forwarded(self):
+        """0 is a valid request signal for min_p/penalties — must not be
+        confused with "unset" by the cascade."""
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.alias_recommended_sampling = {"min_p": 0.1}
+        assert server._resolve_min_p(0.0) == 0.0
+
+
+# ---------------------------------------------------------------------------
 # get_usage
 # ---------------------------------------------------------------------------
 
