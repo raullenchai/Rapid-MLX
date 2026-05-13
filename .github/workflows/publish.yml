@@ -23,8 +23,34 @@ jobs:
           python -m pip install --upgrade pip
           pip install build
 
-      - name: Build package
-        run: python -m build
+      - name: Build package (retry on magic-byte collision)
+        # PyPI's _is_valid_dist_file rejects any file where both
+        # zipfile.is_zipfile() and tarfile.is_tarfile() return True
+        # (https://github.com/pypi/warehouse/blob/main/warehouse/forklift/legacy.py).
+        # Compressed output is non-deterministic; ~rare rebuilds emit
+        # bytes that coincidentally match the other format's magic.
+        # We rebuild up to 5 times until neither artifact collides.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            rm -rf dist/ build/
+            python -m build
+            if python3 -c "
+          import glob, sys, tarfile, zipfile
+          ok = True
+          for f in sorted(glob.glob('dist/*')):
+              z = zipfile.is_zipfile(f); t = tarfile.is_tarfile(f)
+              print(f'  {f}: zip={z} tar={t}')
+              if z and t: ok = False
+          sys.exit(0 if ok else 2)
+          "; then
+              echo "Build attempt $attempt: clean (no PyPI magic-byte collision)"
+              exit 0
+            fi
+            echo "Build attempt $attempt: magic-byte collision detected, rebuilding..."
+          done
+          echo "ERROR: 5 builds in a row hit PyPI's zip+tar collision check"
+          exit 1
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -44,7 +70,12 @@ jobs:
           path: dist/
 
       - name: Publish to PyPI
+        # skip-existing lets the workflow recover from a partial upload
+        # (e.g. wheel succeeded but sdist 400'd) without needing a fresh
+        # version bump on retry.
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   update-homebrew:
     needs: publish
