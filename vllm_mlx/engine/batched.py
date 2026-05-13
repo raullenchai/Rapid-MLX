@@ -613,11 +613,24 @@ class BatchedEngine(BaseEngine):
         # Choose the best template applicator.
         # For MLLM models, the processor handles special vision tokens.
         # For text-only models, the tokenizer is sufficient.
+        #
+        # Subtlety: some MLLM processors (notably ``Gemma3nProcessor`` and
+        # ``Gemma3Processor`` as loaded by ``mlx_vlm.load``) expose
+        # ``apply_chat_template`` as a method but ship ``chat_template=None``
+        # at the processor layer — only the inner tokenizer carries the
+        # Jinja template. Calling ``processor.apply_chat_template`` then
+        # raises ``ValueError: Cannot use apply_chat_template because this
+        # processor does not have a chat template.`` and every request
+        # returns zero tokens. The inner tokenizer's template understands
+        # the same image/audio content types (it's the source the processor
+        # would have copied from), so falling back to it is safe for both
+        # text-only and vision requests.
         template_applicator = None
         if (
             self._is_mllm
             and self._processor
             and hasattr(self._processor, "apply_chat_template")
+            and getattr(self._processor, "chat_template", None)
         ):
             template_applicator = self._processor
         elif hasattr(self.tokenizer, "apply_chat_template"):
