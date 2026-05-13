@@ -24,11 +24,17 @@ _QWEN36_35B_MTPLX_MARKER = "Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed"
 _QWEN36_35B_8BIT_MTPLX_MODEL = "samuelfaj/Qwen3.6-35B-A3B-8bit-MTPLX-Optimized-Speed"
 _QWEN36_35B_8BIT_MTPLX_MARKER = "Qwen3.6-35B-A3B-8bit-MTPLX-Optimized-Speed"
 _QWEN36_35B_A3B_MARKER = "Qwen3.6-35B-A3B"
+_QWOPUS36_35B_A3B_MARKER = "Qwopus3.6-35B-A3B"
+_QWOPUS36_35B_ALIASES = {
+    "qwopus3.6-35b-4bit",
+    "qwopus3.6-35b",
+    "qwopus3.6-35b-8bit",
+}
 
 _ORNSTEIN_35B_ALIASES = {
-    "ornstein3.6-35-saber-4bit",
-    "ornstein3.6-35-saber",
-    "ornstein3.6-35-saber-8bit",
+    "ornstein3.6-35b-saber-4bit",
+    "ornstein3.6-35b-saber",
+    "ornstein3.6-35b-saber-8bit",
 }
 _ORNSTEIN_35B_MARKER = "Ornstein3.6-35B-A3B-SABER"
 
@@ -57,6 +63,8 @@ def _is_qwen36_mtplx_request(args: argparse.Namespace) -> bool:
         or _QWEN36_MTPLX_MARKER in model
         or _QWEN36_35B_MTPLX_MARKER in model
         or _QWEN36_35B_8BIT_MTPLX_MARKER in model
+        or _QWOPUS36_35B_A3B_MARKER in model
+        or original_alias in _QWOPUS36_35B_ALIASES
         or _is_local_mtplx_qwen_model(model)
     )
 
@@ -78,7 +86,12 @@ def _is_local_mtplx_qwen_model(model: str) -> bool:
 
 def _is_qwen36_35b_a3b_request(args: argparse.Namespace) -> bool:
     model = str(getattr(args, "model", "") or "")
-    return _QWEN36_35B_A3B_MARKER in model
+    original_alias = getattr(args, "_original_alias", None)
+    return (
+        _QWEN36_35B_A3B_MARKER in model
+        or _QWOPUS36_35B_A3B_MARKER in model
+        or original_alias in _QWOPUS36_35B_ALIASES
+    )
 
 
 def _apply_qwen36_mtplx_preset(

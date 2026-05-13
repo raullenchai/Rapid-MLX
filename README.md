@@ -9,17 +9,13 @@ It's [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) with [MTPLX](https://
 Check out:
 
 ```bash
-lightning-mlx serve ornstein3.6-35-saber
-lightning-mlx serve ornstein3.6-35-saber-4bit
-lightning-mlx serve ornstein3.6-35-saber-8bit
-
-lightning-mlx serve qwen3.6-35-nsc-ace-saber
-lightning-mlx serve qwen3.6-35-nsc-ace-saber-4bit
-lightning-mlx serve qwen3.6-35-nsc-ace-saber-8bit
+lightning-mlx serve qwopus3.6-35b
+lightning-mlx serve ornstein3.6-35b-saber
+lightning-mlx serve qwen3.6-35b-nsc-ace-saber
 ```
 
 **❤️ I really recommend:**
-`lightning-mlx serve qwen3.6-35-nsc-ace-saber`
+`lightning-mlx serve qwen3.6-35b-nsc-ace-saber`
 
 
 ## Raw Decode Benchmarks

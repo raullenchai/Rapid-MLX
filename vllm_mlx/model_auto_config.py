@@ -49,6 +49,14 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
         ),
     ),
+    # Qwopus 3.6 (Qwen3.6 base) — XML tool format like qwen3.6
+    (
+        re.compile(r"qwopus3\.6", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="qwen3_coder_xml",
+            reasoning_parser="qwen3",
+        ),
+    ),
     # Qwopus (Qwen3.5 distilled with Claude Opus reasoning)
     (
         re.compile(r"qwopus", re.IGNORECASE),

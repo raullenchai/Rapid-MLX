@@ -244,15 +244,15 @@ def _ornstein_serve_args(model: str, original_alias: str | None = None) -> Names
 
 def test_ornstein_aliases_resolve_to_hf_paths():
     assert (
-        resolve_model("ornstein3.6-35-saber-4bit")
+        resolve_model("ornstein3.6-35b-saber-4bit")
         == "samuelfaj/Ornstein3.6-35B-A3B-SABER-4bit-MTPLX-Optimized-Speed"
     )
     assert (
-        resolve_model("ornstein3.6-35-saber")
+        resolve_model("ornstein3.6-35b-saber")
         == "samuelfaj/Ornstein3.6-35B-A3B-SABER-6bit-MTPLX-Optimized-Speed"
     )
     assert (
-        resolve_model("ornstein3.6-35-saber-8bit")
+        resolve_model("ornstein3.6-35b-saber-8bit")
         == "samuelfaj/Ornstein3.6-35B-A3B-SABER-8bit-MTPLX-Optimized-Speed"
     )
 
@@ -260,10 +260,10 @@ def test_ornstein_aliases_resolve_to_hf_paths():
 def test_ornstein_alias_applies_full_mtplx_ngram_preset():
     args = _ornstein_serve_args(
         "samuelfaj/Ornstein3.6-35B-A3B-SABER-6bit-MTPLX-Optimized-Speed",
-        original_alias="ornstein3.6-35-saber",
+        original_alias="ornstein3.6-35b-saber",
     )
 
-    _apply_ornstein_mtplx_preset(args, ["serve", "ornstein3.6-35-saber"])
+    _apply_ornstein_mtplx_preset(args, ["serve", "ornstein3.6-35b-saber"])
 
     assert args.enable_mtp is True
     # Preset no longer overrides prefill_step_size; value untouched (input was 8192).
@@ -293,7 +293,7 @@ def test_ornstein_alias_applies_full_mtplx_ngram_preset():
 def test_ornstein_preset_respects_user_overrides():
     args = _ornstein_serve_args(
         "samuelfaj/Ornstein3.6-35B-A3B-SABER-8bit-MTPLX-Optimized-Speed",
-        original_alias="ornstein3.6-35-saber-8bit",
+        original_alias="ornstein3.6-35b-saber-8bit",
     )
     args.prefill_step_size = 4096
     args.max_concurrent = 8
@@ -303,7 +303,7 @@ def test_ornstein_preset_respects_user_overrides():
         args,
         [
             "serve",
-            "ornstein3.6-35-saber-8bit",
+            "ornstein3.6-35b-saber-8bit",
             "--prefill-step-size",
             "4096",
             "--max-concurrent",
