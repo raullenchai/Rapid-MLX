@@ -394,7 +394,7 @@ The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monit
 | **Llama / Hermes** | `llama3-1b`, `-3b`, `hermes3-8b`, `hermes4-70b` | |
 | **GLM** | `glm4.5-air`, `glm4.7-9b` | |
 | **GPT-OSS** | `gpt-oss-20b` | Harmony native |
-| **MiniMax / Kimi** | `minimax-m2.5`, `kimi-48b`, `kimi-k2.5` | |
+| **MiniMax / Kimi** | `minimax-m2.5`, `minimax-m2.7`, `minimax-m2.7-8bit`, `kimi-48b`, `kimi-k2.5` | |
 | **Mistral / Devstral** | `mistral-24b`, `devstral-24b`, `devstral-v2-24b`, `ministral-3b` | |
 | **Other** | `phi4-14b`, `smollm3-3b`, `nemotron-30b` / `-nano`, `bonsai-1.7b/4b/8b`, `granite4-tiny` | |
 
@@ -454,7 +454,7 @@ Parsers are **auto-detected from the model name** — you don't need to specify 
 | DeepSeek R1 (older) | `deepseek` | `deepseek_r1` | With reasoning |
 | DeepSeek V3 / V2.5 | `deepseek` | *(none)* | No reasoning parser |
 | GLM-4.7 | `glm47` | *(none)* | 100% tool calling |
-| MiniMax-M2.5 | `minimax` | `minimax` | XML tool format |
+| MiniMax-M2.5 / M2.7 | `minimax` | `minimax` | XML tool format |
 | GPT-OSS | `harmony` | `harmony` | Native format |
 | Kimi-Linear | `kimi` | *(none)* | Kimi tool format |
 | Llama 3.x | `llama` | *(none)* | JSON tool format |
