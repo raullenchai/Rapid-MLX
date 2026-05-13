@@ -6,6 +6,7 @@ Utility functions for text processing and model detection.
 import json
 import logging
 import re
+from pathlib import Path
 
 from .models import Message
 
@@ -581,18 +582,129 @@ MLLM_PATTERNS = [
 ]
 
 
-def is_mllm_model(model_name: str) -> bool:
+# Config.json keys that, when present, indicate a multimodal model.
+_VLM_CONFIG_KEYS = (
+    "vision_config",
+    "audio_config",
+    "vision_tower",
+    "mm_vision_tower",
+    "image_token_id",
+    "image_token_index",
+    "audio_token_id",
+    "audio_token_index",
+)
+
+# Substrings (case-insensitive) inside `architectures` entries that identify VLMs.
+# Covers both ForConditionalGeneration VLMs (Qwen2VL, LLaVA, PaliGemma, Mllama, etc.)
+# and the few VLMs that use ForCausalLM (Phi3V, Molmo, CogVLM, InternVL).
+_VLM_ARCHITECTURE_KEYWORDS = (
+    "VLForCondition",
+    "VLForCausal",
+    "VisionForCondition",
+    "VisionForCausal",
+    "MultiModalityCausalLM",
+    "Llava",
+    "Idefics",
+    "PaliGemma",
+    "Pixtral",
+    "Molmo",
+    "Phi3V",
+    "Phi4V",
+    "CogVLM",
+    "InternVL",
+    "DeepseekVL",
+    "Mllama",
+    "Gemma3ForConditional",
+    "Gemma4ForConditional",
+)
+
+# Defensive cap on config.json size to bound parsing cost.
+_MAX_CONFIG_JSON_BYTES = 1 * 1024 * 1024
+
+
+def _try_read_config_json(name_or_path: str) -> dict | None:
+    """Read config.json from a local model directory.
+
+    Returns None when the input is not a local directory, the directory has
+    no config.json, the file is too large, or it cannot be parsed.
     """
-    Check if model name indicates a multimodal language model.
+    try:
+        candidate = Path(name_or_path)
+    except (TypeError, ValueError):
+        return None
 
-    Args:
-        model_name: HuggingFace model name or local path
+    if not candidate.is_dir():
+        return None
 
-    Returns:
-        True if model is detected as MLLM/VLM
+    config_path = candidate / "config.json"
+    if not config_path.is_file():
+        return None
+
+    try:
+        if config_path.stat().st_size > _MAX_CONFIG_JSON_BYTES:
+            return None
+        with config_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None
+
+    return data if isinstance(data, dict) else None
+
+
+def _config_indicates_vlm(config: dict) -> bool:
+    """Inspect a parsed config.json dict for multimodal markers."""
+    archs = config.get("architectures") or []
+    if isinstance(archs, list):
+        for arch in archs:
+            if not isinstance(arch, str):
+                continue
+            arch_lower = arch.lower()
+            for keyword in _VLM_ARCHITECTURE_KEYWORDS:
+                if keyword.lower() in arch_lower:
+                    return True
+
+    for key in _VLM_CONFIG_KEYS:
+        if key in config:
+            return True
+
+    return False
+
+
+def _check_legacy_string_patterns(model_name: str) -> bool:
+    """Validation 1: substring match of MLLM_PATTERNS against the input string.
+
+    Kept for HF repo IDs (where no local config.json is reachable) and as
+    a fallback when config.json cannot be read.
     """
     model_lower = model_name.lower()
     return any(pattern.lower() in model_lower for pattern in MLLM_PATTERNS)
+
+
+def is_mllm_model(model_name: str) -> bool:
+    """Check if a model name or path indicates a multimodal language model.
+
+    Two complementary validations are run:
+
+    1. config.json inspection: when ``model_name`` resolves to a local
+       directory containing a readable config.json, inspect the model's
+       own metadata (``architectures`` field, ``vision_config``,
+       ``audio_config``, etc.). Authoritative when available because it
+       reflects what the model actually is, not how it is named on disk.
+
+    2. Legacy substring match against ``MLLM_PATTERNS``: applied when no
+       config.json is reachable (e.g., a HuggingFace repo ID before the
+       weights are downloaded). Preserves the historical behaviour.
+
+    Args:
+        model_name: HuggingFace repo ID or local filesystem path.
+
+    Returns:
+        True if the model is detected as multimodal (MLLM/VLM).
+    """
+    config = _try_read_config_json(model_name)
+    if config is not None:
+        return _config_indicates_vlm(config)
+    return _check_legacy_string_patterns(model_name)
 
 
 # Backwards compatibility alias
