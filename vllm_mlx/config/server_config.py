@@ -43,6 +43,7 @@ class ServerConfig:
     default_timeout: float = 300.0
     default_temperature: float | None = None
     default_top_p: float | None = None
+    default_top_k: int | None = None
 
     # --- Tool calling ---
     enable_auto_tool_choice: bool = False

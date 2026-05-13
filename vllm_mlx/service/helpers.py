@@ -92,6 +92,21 @@ def _resolve_top_p(request_value: float | None) -> float:
     return _FALLBACK_TOP_P
 
 
+def _resolve_top_k(request_value: int | None) -> int | None:
+    """Resolve top_k: request > CLI default > None (engine default).
+
+    Unlike temperature/top_p, top_k has no application-level fallback —
+    when both the request and the CLI default are unset, returning None
+    signals "do not forward" so the engine's own SamplingParams default
+    applies (matching the existing behavior of the extended-sampling
+    forwarding loop).
+    """
+    if request_value is not None:
+        return request_value
+    cfg = get_config()
+    return cfg.default_top_k
+
+
 # ── Usage / logprobs ───────────────────────────────────────────────
 
 

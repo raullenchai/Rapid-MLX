@@ -51,6 +51,7 @@ from ..service.helpers import (
     _resolve_max_tokens,
     _resolve_model_name,
     _resolve_temperature,
+    _resolve_top_k,
     _resolve_top_p,
     _validate_model_name,
     _validate_tool_call_params,
@@ -346,7 +347,6 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     # explicitly set the field. Forwarding None would override the
     # engine's own SamplingParams defaults with garbage.
     for _name in (
-        "top_k",
         "min_p",
         "repetition_penalty",
         "presence_penalty",
@@ -355,6 +355,9 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         _value = getattr(request, _name, None)
         if _value is not None:
             chat_kwargs[_name] = _value
+    _top_k = _resolve_top_k(request.top_k)
+    if _top_k is not None:
+        chat_kwargs["top_k"] = _top_k
 
     # Add multimodal content
     if has_media:

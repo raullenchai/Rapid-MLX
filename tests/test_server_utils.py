@@ -110,6 +110,65 @@ class TestResolveTopP:
             cfg.default_top_p = old
 
 
+class TestResolveTopK:
+    """Tests for _resolve_top_k function.
+
+    Unlike temperature/top_p, top_k has no application-level fallback:
+    when both the request and CLI default are unset, the helper returns
+    None so the caller skips forwarding and the engine's own
+    SamplingParams default applies.
+    """
+
+    def test_request_value_takes_priority(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        old = cfg.default_top_k
+        try:
+            cfg.default_top_k = 20
+            assert server._resolve_top_k(50) == 50
+        finally:
+            cfg.default_top_k = old
+
+    def test_cli_default_used_when_request_none(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        old = cfg.default_top_k
+        try:
+            cfg.default_top_k = 20
+            assert server._resolve_top_k(None) == 20
+        finally:
+            cfg.default_top_k = old
+
+    def test_returns_none_when_nothing_set(self):
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        old = cfg.default_top_k
+        try:
+            cfg.default_top_k = None
+            assert server._resolve_top_k(None) is None
+        finally:
+            cfg.default_top_k = old
+
+    def test_zero_request_value_is_forwarded(self):
+        """top_k=0 is a valid disable-top-k signal in some samplers."""
+        from vllm_mlx import server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        old = cfg.default_top_k
+        try:
+            cfg.default_top_k = 20
+            assert server._resolve_top_k(0) == 0
+        finally:
+            cfg.default_top_k = old
+
+
 # ---------------------------------------------------------------------------
 # get_usage
 # ---------------------------------------------------------------------------
