@@ -600,6 +600,15 @@ class MLLMBatchGenerator:
         output = self.model(input_ids, cache=cache, **kwargs)
         request.vision_encoded = True
 
+        # Release preprocessed vision inputs now that they have been encoded
+        # into the KV cache.  pixel_values can be hundreds of MB for multi-
+        # image requests; holding them pins Metal buffers for the entire
+        # generation duration (issue #442).
+        request.pixel_values = None
+        request.attention_mask = None
+        request.image_grid_thw = None
+        request.extra_kwargs.clear()
+
         # Handle LanguageModelOutput or plain tensor
         if hasattr(output, "logits"):
             return output.logits
@@ -715,6 +724,16 @@ class MLLMBatchGenerator:
         y = mx.array(first_tokens)
 
         self._stats.prompt_time += time.perf_counter() - tic
+
+        # Release preprocessed vision inputs for all requests now that
+        # they have been encoded into the batch KV cache.  pixel_values,
+        # input_ids, etc. can be hundreds of MB per request; holding them
+        # for the entire generation duration pins Metal buffers (issue #442).
+        for req in requests:
+            req.pixel_values = None
+            req.attention_mask = None
+            req.image_grid_thw = None
+            req.extra_kwargs.clear()
 
         return MLLMBatch(
             uids=[req.uid for req in requests],
