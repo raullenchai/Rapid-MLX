@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from vllm_mlx.persistence import PersistenceError, install_autostart, uninstall_autostart
+
 APP_DIR = Path.home() / ".lightning-mlx"
 DAEMON_DIR = APP_DIR / "daemons"
 LOG_DIR = APP_DIR / "logs"
@@ -93,6 +95,20 @@ def _base_url(host: str, port: int) -> str:
     return f"http://{display_host}:{port}"
 
 
+def _is_persistent(args: argparse.Namespace, raw_args: list[str]) -> bool:
+    """`--daemon` defaults to persistent. `--daemon=non-persist` (or `=ephemeral`)
+    opts out. Tolerates `args.daemon` being bool, str, or None."""
+    value = getattr(args, "daemon", None)
+    if isinstance(value, str) and value.lower() in {"non-persist", "ephemeral", "no", "false", "0"}:
+        return False
+    for arg in raw_args:
+        if arg.startswith("--daemon="):
+            val = arg.split("=", 1)[1].lower()
+            if val in {"non-persist", "ephemeral", "no", "false", "0"}:
+                return False
+    return True
+
+
 def _filtered_serve_args(raw_args: list[str]) -> list[str]:
     filtered: list[str] = []
     for arg in raw_args:
@@ -109,14 +125,18 @@ def _filtered_serve_args(raw_args: list[str]) -> list[str]:
 
 
 def start_daemon(args: argparse.Namespace, raw_args: list[str]) -> dict[str, Any]:
-    """Start a detached supervisor for a serve command and return its record."""
-    import subprocess
+    """Start a detached supervisor for a serve command and return its record.
 
+    Persistent mode (default for ``--daemon``) installs a launchd/systemd unit
+    so the supervisor restarts at user login / system boot. Use
+    ``--daemon=non-persist`` for the original in-process detached mode.
+    """
     _ensure_dirs()
     daemon_id = uuid.uuid4().hex[:12]
     log_path = LOG_DIR / f"{daemon_id}.log"
     stop_path = DAEMON_DIR / f"{daemon_id}.stop"
     record_path = _record_path(daemon_id)
+    persistent = _is_persistent(args, raw_args)
 
     command = [
         sys.executable,
@@ -143,8 +163,27 @@ def start_daemon(args: argparse.Namespace, raw_args: list[str]) -> dict[str, Any
         "log_path": str(log_path),
         "stop_path": str(stop_path),
         "record_path": str(record_path),
+        "persistent": persistent,
     }
+    # Remove any leftover stop marker from a previous lifecycle; otherwise
+    # launchd/systemd would start the supervisor and it would exit immediately.
+    if stop_path.exists():
+        try:
+            stop_path.unlink()
+        except OSError:
+            pass
     _atomic_write_json(record_path, record)
+
+    if persistent:
+        try:
+            install_autostart(record)
+        except Exception as exc:
+            try:
+                record_path.unlink()
+            except OSError:
+                pass
+            raise DaemonError(f"Failed to install autostart: {exc}") from exc
+        return record
 
     supervisor_cmd = [
         sys.executable,
@@ -194,6 +233,15 @@ def list_daemons(clean_stale: bool = True) -> list[DaemonMatch]:
         if alive:
             live.append(match)
             continue
+        # Persistent daemons are owned by launchd/systemd; a dead supervisor pid
+        # just means a relaunch is in flight. Surface them as "pending" instead
+        # of marking them stale.
+        if record.get("persistent"):
+            record["state"] = "pending"
+            record["updated_at"] = _now()
+            _atomic_write_json(match.path, record)
+            live.append(DaemonMatch(record=record, path=match.path))
+            continue
         if clean_stale:
             record["state"] = "stale"
             record["updated_at"] = _now()
@@ -230,6 +278,16 @@ def resolve_daemon(target: str) -> DaemonMatch:
 def stop_daemon(target: str, timeout_s: float = 10.0) -> dict[str, Any]:
     match = resolve_daemon(target)
     record = match.record
+    # Uninstall autostart BEFORE signaling so launchd/systemd can't restart
+    # the supervisor we are about to kill.
+    if record.get("persistent"):
+        try:
+            uninstall_autostart(str(record["id"]))
+        except Exception:
+            pass
+        record["persistent"] = False
+        record["updated_at"] = _now()
+        _atomic_write_json(match.path, record)
     Path(str(record["stop_path"])).write_text("stop\n", encoding="utf-8")
     _signal_pid(record.get("supervisor_pid"), signal.SIGTERM)
     deadline = _now() + timeout_s

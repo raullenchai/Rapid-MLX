@@ -1421,7 +1421,7 @@ def daemon_kill_command(args):
     print(
         "Stopped "
         f"{record.get('original_alias') or record.get('model')} "
-        f"(pid {record.get('supervisor_pid')})."
+        f"(pid {record.get('supervisor_pid') or 'pending'})."
     )
 
 
@@ -2223,8 +2223,15 @@ Examples:
     )
     serve_parser.add_argument(
         "--daemon",
-        action="store_true",
-        help="Run the server under a detached supervisor and return immediately.",
+        nargs="?",
+        const="persist",
+        default=None,
+        help=(
+            "Run the server under a detached supervisor and return immediately. "
+            "Default installs a per-user autostart (launchd on macOS, systemd "
+            "--user on Linux) so the daemon restarts on login/boot. "
+            "Use --daemon=non-persist for the original in-session detached mode."
+        ),
     )
     # Bench command
     bench_parser = subparsers.add_parser("bench", help="Run benchmark")
@@ -2647,16 +2654,31 @@ Examples:
 
     if args.command == "serve":
         if getattr(args, "daemon", False):
-            from vllm_mlx.daemon import start_daemon
+            from vllm_mlx.daemon import DaemonError, start_daemon
 
-            record = start_daemon(args, raw_args)
+            try:
+                record = start_daemon(args, raw_args)
+            except DaemonError as exc:
+                print(f"Error: {exc}")
+                sys.exit(1)
+            pid_text = record.get("supervisor_pid") or "pending"
             print(
                 "Started daemon "
                 f"{record.get('original_alias') or record.get('model')} "
-                f"(pid {record['supervisor_pid']})."
+                f"(pid {pid_text})."
             )
             print(f"URL: {record['base_url']}/v1")
             print(f"Log: {record['log_path']}")
+            if record.get("persistent"):
+                print(
+                    "Autostart installed — daemon will restart on login/boot. "
+                    "Use `lightning-mlx kill` to remove."
+                )
+                if sys.platform.startswith("linux"):
+                    print(
+                        "Hint (Linux): run `loginctl enable-linger $USER` once "
+                        "if you want the daemon to keep running after logout."
+                    )
         else:
             serve_command(args)
     elif args.command == "bench":

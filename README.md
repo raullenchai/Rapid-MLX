@@ -127,6 +127,10 @@ lightning-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit --daemon
 
 Daemon mode starts a detached supervisor, writes logs under `~/.lightning-mlx/logs/`, and restarts the server if the model process exits unexpectedly.
 
+By default the daemon is **boot-persistent**: lightning-mlx installs a per-user autostart (a `~/Library/LaunchAgents/com.lightning-mlx.<id>.plist` on macOS, or a `~/.config/systemd/user/lightning-mlx-<id>.service` on Linux) so the supervisor restarts at login / system boot. `lightning-mlx kill` removes the autostart and stops the daemon. Use `--daemon=non-persist` to keep the original in-session detached behavior (process dies on reboot).
+
+On Linux, run `loginctl enable-linger $USER` once if you want user services to keep running after logout.
+
 ```bash
 lightning-mlx status
 lightning-mlx tui <PID-or-model-name>

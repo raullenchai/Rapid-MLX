@@ -79,18 +79,29 @@ def test_start_daemon_filters_daemon_flag_and_records_metadata(daemon_dirs, monk
         port=8000,
     )
 
+    # Use non-persist to exercise the in-process Popen path; persistent mode is
+    # covered by a dedicated test that mocks install_autostart.
+    args.daemon = "non-persist"
     record = daemon.start_daemon(
         args,
-        ["serve", "mlx-community/Qwen3.5-4B-MLX-4bit", "--daemon", "--port", "8000"],
+        [
+            "serve",
+            "mlx-community/Qwen3.5-4B-MLX-4bit",
+            "--daemon=non-persist",
+            "--port",
+            "8000",
+        ],
     )
 
     assert record["supervisor_pid"] == 4321
     assert record["base_url"] == "http://127.0.0.1:8000"
     assert "--daemon" not in record["command"]
-    assert record["command"][-3:] == [
+    assert all(not c.startswith("--daemon=") for c in record["command"])
+    assert record["command"][-4:] == [
         "mlx-community/Qwen3.5-4B-MLX-4bit",
         "--port",
         "8000",
+        "--force",
     ]
     assert started["cmd"][:3] == [daemon.sys.executable, "-m", "vllm_mlx.daemon"]
     assert started["kwargs"]["start_new_session"] is True
@@ -157,6 +168,137 @@ def test_list_daemons_marks_dead_records_stale(daemon_dirs, monkeypatch):
     assert daemon._read_json(path)["state"] == "stale"
 
 
+def test_list_daemons_keeps_persistent_dead_as_pending(daemon_dirs, monkeypatch):
+    record = _record("one", supervisor_pid=100)
+    record["persistent"] = True
+    path = _write_record(record)
+    monkeypatch.setattr(daemon, "_pid_alive", lambda pid: False)
+
+    matches = daemon.list_daemons()
+    assert len(matches) == 1
+    assert matches[0].record["state"] == "pending"
+    assert daemon._read_json(path)["state"] == "pending"
+
+
+def test_start_daemon_persistent_installs_autostart_and_skips_popen(daemon_dirs, monkeypatch):
+    installed = {}
+    popen_calls = []
+
+    def fake_install(record):
+        installed["record"] = record
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append(args)
+        raise AssertionError("Popen must not be called for persistent daemons")
+
+    monkeypatch.setattr(daemon, "install_autostart", fake_install)
+    monkeypatch.setattr(daemon.subprocess, "Popen", fake_popen)
+
+    args = Namespace(
+        model="mlx-community/Qwen3.5-4B-MLX-4bit",
+        _original_alias=None,
+        served_model_name=None,
+        host="127.0.0.1",
+        port=8000,
+        daemon="persist",
+    )
+    record = daemon.start_daemon(
+        args,
+        ["serve", "mlx-community/Qwen3.5-4B-MLX-4bit", "--daemon"],
+    )
+
+    assert record["persistent"] is True
+    assert installed["record"]["id"] == record["id"]
+    assert popen_calls == []
+    assert record["supervisor_pid"] is None
+
+
+def test_start_daemon_non_persist_uses_popen_and_skips_install(daemon_dirs, monkeypatch):
+    install_calls = []
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            self.pid = 9999
+
+    def fake_popen(cmd, **kwargs):
+        return FakePopen(cmd, **kwargs)
+
+    monkeypatch.setattr(daemon, "install_autostart", lambda r: install_calls.append(r))
+    monkeypatch.setattr(daemon.subprocess, "Popen", fake_popen)
+
+    args = Namespace(
+        model="mlx-community/Qwen3.5-4B-MLX-4bit",
+        _original_alias=None,
+        served_model_name=None,
+        host="127.0.0.1",
+        port=8000,
+        daemon="non-persist",
+    )
+    record = daemon.start_daemon(
+        args,
+        ["serve", "mlx-community/Qwen3.5-4B-MLX-4bit", "--daemon=non-persist"],
+    )
+
+    assert record["persistent"] is False
+    assert record["supervisor_pid"] == 9999
+    assert install_calls == []
+
+
+def test_start_daemon_persistent_install_failure_removes_record_and_raises(daemon_dirs, monkeypatch):
+    def fake_install(record):
+        raise daemon.PersistenceError("launchctl not found")
+
+    def fail_popen(*args, **kwargs):
+        raise AssertionError("Popen must not be called when install fails")
+
+    monkeypatch.setattr(daemon, "install_autostart", fake_install)
+    monkeypatch.setattr(daemon.subprocess, "Popen", fail_popen)
+
+    args = Namespace(
+        model="mlx-community/Qwen3.5-4B-MLX-4bit",
+        _original_alias=None,
+        served_model_name=None,
+        host="127.0.0.1",
+        port=8000,
+        daemon="persist",
+    )
+
+    with pytest.raises(daemon.DaemonError, match="Failed to install autostart"):
+        daemon.start_daemon(
+            args,
+            ["serve", "mlx-community/Qwen3.5-4B-MLX-4bit", "--daemon"],
+        )
+
+    # No orphan record files left behind.
+    assert list(daemon.DAEMON_DIR.glob("*.json")) == []
+
+
+def test_stop_daemon_uninstalls_autostart_before_killing(daemon_dirs, tmp_path, monkeypatch):
+    alive = {100}
+    stop_path = tmp_path / "daemon.stop"
+    record = _record("one", supervisor_pid=100)
+    record["stop_path"] = str(stop_path)
+    record["persistent"] = True
+    _write_record(record)
+
+    order = []
+    monkeypatch.setattr(daemon, "_pid_alive", lambda pid: int(pid or 0) in alive)
+    monkeypatch.setattr(daemon, "uninstall_autostart", lambda did: order.append(("uninstall", did)))
+
+    def fake_signal(pid, sig):
+        order.append(("signal", int(pid)))
+        alive.discard(int(pid))
+        return True
+
+    monkeypatch.setattr(daemon, "_signal_pid", fake_signal)
+
+    daemon.stop_daemon("100")
+
+    # Uninstall must happen before any signal so launchd/systemd cannot restart.
+    assert order[0] == ("uninstall", "one")
+    assert ("signal", 100) in order
+
+
 def test_supervisor_restarts_failed_child_until_stop_marker(daemon_dirs, tmp_path, monkeypatch):
     record = _record("one", supervisor_pid=0)
     record["log_path"] = str(tmp_path / "daemon.log")
@@ -204,6 +346,7 @@ def test_cli_serve_daemon_dispatches_without_loading_server(monkeypatch, capsys)
             "supervisor_pid": 1234,
             "base_url": "http://127.0.0.1:8000",
             "log_path": "/tmp/lightning.log",
+            "persistent": True,
         }
 
     monkeypatch.setattr(daemon, "start_daemon", fake_start_daemon)
@@ -221,9 +364,44 @@ def test_cli_serve_daemon_dispatches_without_loading_server(monkeypatch, capsys)
     cli.main()
 
     out = capsys.readouterr().out
-    assert captured["args"].daemon is True
+    assert captured["args"].daemon  # truthy = enabled
     assert captured["raw_args"][-1] == "--daemon"
     assert "Started daemon mlx-community/Qwen3.5-4B-MLX-4bit (pid 1234)." in out
+
+
+def test_cli_serve_daemon_non_persist_dispatches(monkeypatch):
+    from vllm_mlx import cli
+
+    captured = {}
+
+    def fake_start_daemon(args, raw_args):
+        captured["args"] = args
+        captured["raw_args"] = raw_args
+        return {
+            "model": args.model,
+            "original_alias": None,
+            "supervisor_pid": 1234,
+            "base_url": "http://127.0.0.1:8000",
+            "log_path": "/tmp/lightning.log",
+            "persistent": False,
+        }
+
+    monkeypatch.setattr(daemon, "start_daemon", fake_start_daemon)
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        [
+            "lightning-mlx",
+            "serve",
+            "mlx-community/Qwen3.5-4B-MLX-4bit",
+            "--daemon=non-persist",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["args"].daemon == "non-persist"
+    assert "--daemon=non-persist" in captured["raw_args"]
 
 
 def test_cli_dispatches_status_kill_and_tui(monkeypatch):
