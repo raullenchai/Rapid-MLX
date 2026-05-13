@@ -11,7 +11,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/tests-2100%2B-brightgreen.svg" alt="Tests"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/tests-3200%2B-brightgreen.svg" alt="Tests"></a>
   <a href="https://support.apple.com/en-us/HT211814"><img src="https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple" alt="Apple Silicon"></a>
   <a href="https://github.com/raullenchai/Rapid-MLX/stargazers"><img src="https://img.shields.io/github/stars/raullenchai/Rapid-MLX?style=social" alt="GitHub stars"></a>
 </p>
@@ -98,7 +98,7 @@ git clone https://github.com/raullenchai/Rapid-MLX.git
 cd Rapid-MLX && pip install -e .
 ```
 
-**Vision models** (adds torch + torchvision, ~2.5 GB extra):
+**Vision models** (adds mlx-vlm + opencv + torch, ~322 MB extra):
 ```bash
 pip install 'rapid-mlx[vision]'
 ```
@@ -376,6 +376,32 @@ The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monit
 
 > **4bit vs 8bit:** 4bit models are compressed to use less memory (recommended for most users). 8bit models are higher quality but need more RAM. "mxfp4" is a high-quality 4bit format.
 
+### Full model lineup
+
+58 short aliases across 21 families ship in v0.6.37. Run `rapid-mlx models` for the live list with quant tier, MoE / hybrid flags, and DFlash eligibility.
+
+<details>
+<summary><strong>Show all 58 aliases by family</strong></summary>
+
+| Family | Aliases | Notable |
+|---|---|---|
+| **Qwen3.5** | `qwen3.5-4b`, `-9b`, `-27b`, `-27b-8bit` ✨, `-35b`, `-35b-4bit`, `-122b`, `-122b-8bit` | DeltaNet hybrid; **27b-8bit = DFlash** |
+| **Qwen3.6** | `qwen3.6-27b`, `-27b-8bit` ✨, `-27b-ud`, `-35b`, `-35b-6bit`, `-35b-8bit`, `-35b-dwq`, `-35b-ud` | 262K ctx, 256 MoE experts; **27b-8bit = DFlash** |
+| **Qwen3** | `qwen3-coder`, `qwen3-coder-30b`, `qwen3-vl-4b`, `-8b`, `-30b` | Coding + vision |
+| **Qwopus** | `qwopus-9b`, `qwopus-27b`, `qwopus-27b-8bit` | 92 MHI on tool calling |
+| **DeepSeek** | `deepseek-r1-8b`, `-32b`, `deepseek-v4-flash` (2/4/8-bit) | R1 reasoning + V4 Flash 158B-A13B day-0 |
+| **Gemma** | `gemma-3n-e4b`, `gemma-4-26b`, `-31b`, `gemma3-1b`, `-12b`, `-27b` | Vision-capable (gemma-4) |
+| **Llama / Hermes** | `llama3-1b`, `-3b`, `hermes3-8b`, `hermes4-70b` | |
+| **GLM** | `glm4.5-air`, `glm4.7-9b` | |
+| **GPT-OSS** | `gpt-oss-20b` | Harmony native |
+| **MiniMax / Kimi** | `minimax-m2.5`, `kimi-48b`, `kimi-k2.5` | |
+| **Mistral / Devstral** | `mistral-24b`, `devstral-24b`, `devstral-v2-24b`, `ministral-3b` | |
+| **Other** | `phi4-14b`, `smollm3-3b`, `nemotron-30b` / `-nano`, `bonsai-1.7b/4b/8b`, `granite4-tiny` | |
+
+✨ = DFlash speculative decoding enabled by default. `rapid-mlx info <alias>` shows per-alias capabilities.
+
+</details>
+
 ### Copy-paste commands
 
 Pick the one that matches your Mac. Short aliases work — run `rapid-mlx models` to see all available models.
@@ -532,9 +558,11 @@ Qwen3.5 uses Gated DeltaNet (75% RNN) + full attention (25% KV). Other engines r
 | **DeltaNet state snapshots** | Deep-copy RNN state at prefix boundary, restore in ~0.1ms | Qwen3.5 (4B, 9B, 27B, 35B, 122B), Qwen3-Coder-Next |
 | **Hybrid cache sync** | Keep trimmable KV + non-trimmable RNN layers in sync | Qwen3.5 (Gated DeltaNet + attention) |
 | **Tool logits bias** | Jump-forward decoding — bias logits toward structured tokens | All models with `--enable-tool-logits-bias` |
-| **Auto tool recovery** | Detect broken text-format tool calls, convert to structured | All 18 parser formats (incl. Gemma 4) |
+| **Auto tool recovery** | Detect broken text-format tool calls, convert to structured | All 17 parser formats (incl. Gemma 4) |
 | **TurboQuant V-cache** | Rotate + Lloyd-Max compress V cache (86% savings on dense models) | All models with `--kv-cache-turboquant` |
 | **KV cache quantization** | Quantize prefix cache entries to reduce memory | All models with `--kv-cache-quantization` |
+| **DFlash speculative decoding** | Block-diffusion drafter, parallel draft + verify | `qwen3.5-27b-8bit`, `qwen3.6-27b-8bit` (single-user) |
+| **SuffixDecoding** | Drafter-free, statistical n-gram lookup speculative decoding | All BatchedEngine models with `--suffix-decoding` |
 | **Prefill chunking** | Configurable step size for large-prompt throughput | All models |
 | **Cloud routing** | Offload high-token requests to cloud LLM when local is slow | All models with `--cloud-model` |
 
@@ -581,9 +609,14 @@ Large-context requests auto-route to a cloud LLM (GPT-5, Claude, etc.) when loca
 
 Vision, audio (STT/TTS), video understanding, and text embeddings — all through the same OpenAI-compatible API.
 
-### DFlash Speculative Decoding (Qwen3.5/3.6, single-user)
+### DFlash Speculative Decoding (single-user)
 
-For dense, ≥8-bit Qwen3.5/3.6 aliases — z-lab's block-diffusion drafter (via mlx-vlm) gives a ~2× speedup on single-stream code/long-form generation.
+z-lab's block-diffusion drafter (via mlx-vlm) accelerates single-stream generation on validated Qwen3.5/3.6 27B aliases. Currently enabled by default on:
+
+| Alias | Drafter | Avg speedup | Min / Max |
+|---|---|---|---|
+| `qwen3.6-27b-8bit` | `z-lab/Qwen3.6-27B-DFlash` | **1.49×** | 1.06× / 2.07× |
+| `qwen3.5-27b-8bit` | `z-lab/Qwen3.5-27B-DFlash` | **1.31×** | 0.59× / 2.15× |
 
 ```bash
 pip install 'rapid-mlx[dflash]'
@@ -591,11 +624,11 @@ rapid-mlx info qwen3.5-27b-8bit       # check per-gate eligibility
 rapid-mlx serve qwen3.5-27b-8bit --enable-dflash
 ```
 
-Measured on Qwen3.5-27B-8bit (M3 Ultra): **2.18× (fibonacci) / 2.02× (quicksort) / 1.83× (hash table)** vs autoregressive. Acceptance rate floors out on 4-bit and MoE models, so DFlash is gated to validated aliases — run `rapid-mlx info <alias>` to see which pass.
+**Workload sensitivity**: speedup varies by entropy. Coding / math / summarization typically see **1.5-2.7×**; high-entropy creative writing and long-form chat can dip to **0.6-0.9×** because the drafter's training distribution diverges from open-ended generation. This is a known pattern in spec-decode literature ([arXiv 2604.14682](https://arxiv.org/abs/2604.14682), [AdaEDL](https://arxiv.org/abs/2410.18351)) — not a bug. Other Qwen3.5/3.6 sizes (35B-A3B MoE, 122B-A10B MoE) were benched and rejected because their average speedup was below the gate.
 
 **v1 limitations**: DFlash mode runs a dedicated single-user server (mlx-vlm doesn't expose a batched DFlash kernel yet). Tool calling, MCP, and embeddings aren't available in DFlash mode — restart without `--enable-dflash` for those.
 
-Also: logprobs API, structured JSON output (`response_format`), continuous batching, KV cache quantization (`--kv-cache-quantization`), and [2100+ tests](tests/).
+Also: logprobs API, structured JSON output (`response_format`), continuous batching, KV cache quantization (`--kv-cache-quantization`), and [3200+ tests](tests/).
 
 ---
 
@@ -629,7 +662,9 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 | `--kv-cache-turboquant` | TurboQuant V-cache compression (3-4 bit, 86% savings on dense models) | off |
 | `--kv-cache-quantization` | Quantize prefix cache entries for memory savings | off |
 | `--enable-prefix-cache` | Cache common prefixes across requests | off |
-| `--enable-dflash` | DFlash speculative decoding for eligible aliases (single-user, ~2× speedup) | off |
+| `--enable-dflash` | DFlash speculative decoding (single-user; `qwen3.5-27b-8bit` / `qwen3.6-27b-8bit`) | off |
+| `--suffix-decoding` | Drafter-free n-gram speculative decoding (BatchedEngine path) | off |
+| `--enable-mtp` | MTP head speculative decoding (requires MTP-trained model) | off |
 | `--gpu-memory-utilization` | Fraction of device memory to use (0.0-1.0) | `0.90` |
 
 ### Cloud Routing
@@ -666,8 +701,6 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 **Other issues?** Run `rapid-mlx doctor` for self-diagnostics.
 
 **Slow first response** — Two different causes: (1) Qwen3.5 models reason before answering — add `--no-thinking` to skip reasoning for faster responses, or (2) cold start on long prompts — add `--prefill-step-size 8192` to speed up processing. Subsequent turns hit prompt cache and are 10-30x faster.
-
-**Server hangs after client disconnect** — Fixed in v0.3.0+. Upgrade to latest.
 
 </details>
 
@@ -776,7 +809,7 @@ Two layers: **user-facing doctor** (ships with pip) and **dev test suite** (sour
 | Command | What | Time | Needs server? |
 |---------|------|------|---------------|
 | `make lint` | ruff lint | ~10s | No |
-| `make test` | pytest unit suite (2000+ tests) | ~30s | No |
+| `make test` | pytest unit suite (3200+ tests) | ~30s | No |
 | `make smoke` | lint + unit | ~1 min | No |
 | `make stress` | 8-scenario stress test | ~5 min | Yes |
 | `make soak` | 10-min agent soak test | 10 min | Yes |
@@ -799,7 +832,7 @@ python scripts/dev_test.py full               # everything
 
 ```bash
 make check              # 1 model (~10 min, auto starts server)
-make full               # 3 models + 11 agent profiles (~1 hr)
+make full               # 3 models + 12 agent profiles (~1 hr)
 make benchmark          # all local models (overnight)
 ```
 
@@ -807,7 +840,7 @@ make benchmark          # all local models (overnight)
 
 ```
 vllm_mlx/
-  server.py              # App factory + model loading + CLI (1047 lines)
+  server.py              # App factory + model loading + CLI entry
   config/                # ServerConfig singleton
   service/
     helpers.py           # Shared request helpers
@@ -819,8 +852,9 @@ vllm_mlx/
     health.py, models.py, embeddings.py, audio.py, mcp_routes.py
   engine/                # BatchedEngine (continuous batching)
   reasoning/             # 7 reasoning parsers (Qwen3, DeepSeek, MiniMax, ...)
-  tool_parsers/          # 20+ tool call parsers
-  agents/                # 11 agent profiles (YAML)
+  tool_parsers/          # 17 tool call parsers
+  speculative/           # DFlash, SuffixDecoding, MTP drafters
+  agents/                # 12 agent profiles (YAML)
   runtime/               # Model registry, cache persistence
   doctor/                # User self-diagnostic
 scripts/                 # Dev-only (NOT shipped with pip)
@@ -828,7 +862,7 @@ scripts/                 # Dev-only (NOT shipped with pip)
   stress_test.py         # 8-scenario stress test
   agent_soak_test.py     # 10-min agent soak test
   cross_model_stress.py  # Multi-model validation
-tests/                   # pytest unit tests (2000+)
+tests/                   # pytest unit tests (3200+)
 harness/                 # Regression baselines + thresholds
 ```
 
@@ -838,9 +872,11 @@ harness/                 # Regression baselines + thresholds
 
 | Technique | Expected Gain | Status |
 |-----------|---------------|--------|
-| [Standard Speculative Decode](https://arxiv.org/abs/2302.01318) — draft model acceleration | 1.5-2.3x decode | Not started |
-| [EAGLE-3](https://arxiv.org/abs/2503.01840) — feature-level draft on Metal | 3-6.5x decode | Not started |
-| [ReDrafter](https://arxiv.org/abs/2403.09919) — Apple's RNN draft head | 1.4-1.5x decode | Not started |
+| [DFlash](https://arxiv.org/abs/2602.06036) — block-diffusion drafter, single-user | 1.3-2× decode | **Shipping** (qwen3.5-27b-8bit, qwen3.6-27b-8bit) |
+| [SuffixDecoding](https://arxiv.org/abs/2411.04975) — drafter-free n-gram speculative | 1.1-1.5× decode | Shipping (`--suffix-decoding`, per-model tier sweep ongoing) |
+| MTP — Multi-Token Prediction head | 1.4-1.7× decode | Experimental (requires MTP-trained checkpoint) |
+| [EAGLE-3](https://arxiv.org/abs/2503.01840) — feature-level draft on Metal | 3-6.5× decode | Not started |
+| [ReDrafter](https://arxiv.org/abs/2403.09919) — Apple's RNN draft head | 1.4-1.5× decode | Not started |
 
 ---
 

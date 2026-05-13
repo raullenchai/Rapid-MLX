@@ -97,6 +97,7 @@ def _build_app(
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
+    no_thinking: bool = False,
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
 
@@ -160,12 +161,40 @@ def _build_app(
                     "tools."
                 ),
             )
+        # Surface unsupported params explicitly rather than silently
+        # ignoring — silent-drop is the bug class that makes users think
+        # they got logprobs / JSON-schema / etc. when they didn't.
+        if request.logprobs:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "logprobs is not supported in DFlash mode. Restart "
+                    "without --enable-dflash."
+                ),
+            )
+        if request.response_format is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "response_format (structured output) is not supported "
+                    "in DFlash mode. Restart without --enable-dflash."
+                ),
+            )
 
         # Render chat messages into a single prompt string via mlx-vlm's
         # processor. We pass through the model's chat template so the
         # tokenizer-side reasoning/tool markers match what the model was
         # trained on; no rapid-mlx-side prompt mutation happens here.
-        prompt = _render_prompt(processor, model, request)
+        #
+        # Resolve enable_thinking precedence: server --no-thinking wins;
+        # else request-level enable_thinking; else None (template default).
+        if no_thinking:
+            enable_thinking: bool | None = False
+        else:
+            enable_thinking = request.enable_thinking
+        prompt = _render_prompt(
+            processor, model, request, enable_thinking=enable_thinking
+        )
 
         max_tokens = (
             request.max_tokens if request.max_tokens is not None else default_max_tokens
@@ -206,12 +235,24 @@ def _build_app(
     return app
 
 
-def _render_prompt(processor: Any, model: Any, request: ChatCompletionRequest) -> str:
+def _render_prompt(
+    processor: Any,
+    model: Any,
+    request: ChatCompletionRequest,
+    *,
+    enable_thinking: bool | None = None,
+) -> str:
     """Apply the model's chat template via mlx-vlm's helper.
 
     mlx-vlm's ``apply_chat_template`` mirrors mlx-lm's but accepts the
     multimodal kwargs the VLM models need (we pass ``num_images=0`` since
     DFlash-eligible aliases are text-only Qwen3.5/3.6 variants today).
+
+    ``enable_thinking`` resolution (caller-side; we just thread through):
+      None  → defer to mlx-vlm default (Qwen3 family = True).
+      True  → force chain-of-thought on.
+      False → force chain-of-thought off (server --no-thinking or per-
+              request ``enable_thinking=false`` body field).
     """
     from mlx_vlm.prompt_utils import apply_chat_template
 
@@ -248,13 +289,17 @@ def _render_prompt(processor: Any, model: Any, request: ChatCompletionRequest) -
             content = "".join(text_pieces)
         messages.append({"role": m.role, "content": content})
 
+    # Preserve historic default (enable_thinking=True) when neither the
+    # server-level --no-thinking nor a per-request body override is set,
+    # to keep behaviour stable for callers that never opt out.
+    effective_thinking = True if enable_thinking is None else enable_thinking
     return apply_chat_template(
         processor,
         model.config,
         messages,
         num_images=0,
         num_audios=0,
-        enable_thinking=True,
+        enable_thinking=effective_thinking,
     )
 
 
@@ -576,6 +621,7 @@ def run_dflash_server(
     default_max_tokens: int,
     cors_origins: list[str],
     uvicorn_log_level: str,
+    no_thinking: bool = False,
 ) -> None:
     """Load the model + DFlash drafter via mlx-vlm and start uvicorn.
 
@@ -651,6 +697,7 @@ def run_dflash_server(
         served_model_name=served_model_name,
         default_max_tokens=default_max_tokens,
         cors_origins=cors_origins,
+        no_thinking=no_thinking,
     )
 
     print()

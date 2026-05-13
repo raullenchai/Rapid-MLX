@@ -297,6 +297,184 @@ def test_chat_completions_rejects_empty_messages() -> None:
     assert r.status_code == 400
 
 
+def test_chat_completions_rejects_logprobs() -> None:
+    """DFlash v1 doesn't surface per-token logprobs. Silent-drop would let
+    callers think they got logprobs back. Reject with a 400 instead."""
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from vllm_mlx.speculative.dflash.server import _build_app
+
+    runtime = DFlashRuntime(
+        drafter=MagicMock(),
+        kind="dflash",
+        drafter_repo="z-lab/Qwen3.5-27B-DFlash",
+    )
+    app = _build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=runtime,
+        served_model_name="qwen3.5-27b-8bit",
+        default_max_tokens=512,
+        cors_origins=["*"],
+    )
+    client = TestClient(app)
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "logprobs": True,
+        },
+    )
+    assert r.status_code == 400
+    assert "logprobs" in r.json()["detail"].lower()
+
+
+def test_chat_completions_rejects_response_format() -> None:
+    """DFlash v1 has no structured-output enforcement. Silent-drop would
+    mean a JSON-schema request gets free-form text with no surfaced error."""
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from vllm_mlx.speculative.dflash.server import _build_app
+
+    runtime = DFlashRuntime(
+        drafter=MagicMock(),
+        kind="dflash",
+        drafter_repo="z-lab/Qwen3.5-27B-DFlash",
+    )
+    app = _build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=runtime,
+        served_model_name="qwen3.5-27b-8bit",
+        default_max_tokens=512,
+        cors_origins=["*"],
+    )
+    client = TestClient(app)
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_object"},
+        },
+    )
+    assert r.status_code == 400
+    assert "response_format" in r.json()["detail"].lower()
+
+
+def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: dict):
+    """Drive a chat request through ``_build_app`` and capture the
+    ``enable_thinking`` kwarg the route passed to ``apply_chat_template``.
+
+    Skip actually running the model — the route short-circuits as soon
+    as it tries to build the gen_kwargs, which is fine since we only
+    care about the chat-template render path.
+    """
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from vllm_mlx.speculative.dflash.server import _build_app
+
+    captured: dict = {}
+
+    import mlx_vlm.prompt_utils as _prompt_utils
+
+    def _spy(processor, config, messages, **kw):
+        captured.update(kw)
+        return "stub prompt"
+
+    monkeypatch.setattr(_prompt_utils, "apply_chat_template", _spy)
+
+    # Stub the streaming generator so the request doesn't try to load
+    # weights. We only need the route to reach _render_prompt, which is
+    # *before* generation kicks off.
+    import mlx_vlm as _mlx_vlm
+
+    def _empty_gen(*a, **kw):
+        if False:
+            yield None  # pragma: no cover — generator shell
+
+    monkeypatch.setattr(_mlx_vlm, "stream_generate", _empty_gen)
+
+    runtime = DFlashRuntime(
+        drafter=MagicMock(),
+        kind="dflash",
+        drafter_repo="z-lab/Qwen3.5-27B-DFlash",
+    )
+    app = _build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=runtime,
+        served_model_name="qwen3.5-27b-8bit",
+        default_max_tokens=64,
+        cors_origins=["*"],
+        no_thinking=no_thinking,
+    )
+    client = TestClient(app)
+    # Stream=True so the request reaches _render_prompt then exits via
+    # the (now-empty) generator without needing a real mlx_vlm runtime.
+    with client.stream("POST", "/v1/chat/completions", json=request_body) as resp:
+        b"".join(resp.iter_bytes())
+    return captured
+
+
+@_skip_without_mlx_vlm
+def test_no_thinking_server_flag_forces_enable_thinking_false(monkeypatch) -> None:
+    """``--no-thinking`` server-side must force ``enable_thinking=False``
+    on the chat template even when the request didn't ask for it. This
+    is the v0.6.37 regression fix: DFlash hardcoded True regardless."""
+    captured = _capture_enable_thinking(
+        monkeypatch,
+        no_thinking=True,
+        request_body={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    )
+    assert captured.get("enable_thinking") is False, (
+        "--no-thinking must override the chat-template default; got "
+        f"enable_thinking={captured.get('enable_thinking')!r}"
+    )
+
+
+@_skip_without_mlx_vlm
+def test_request_enable_thinking_false_honored(monkeypatch) -> None:
+    """Per-request ``enable_thinking=false`` body field must reach the
+    chat template even when the server didn't set ``--no-thinking``."""
+    captured = _capture_enable_thinking(
+        monkeypatch,
+        no_thinking=False,
+        request_body={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "enable_thinking": False,
+        },
+    )
+    assert captured.get("enable_thinking") is False
+
+
+@_skip_without_mlx_vlm
+def test_enable_thinking_default_preserved(monkeypatch) -> None:
+    """When neither --no-thinking nor request enable_thinking is set,
+    the historic default (True) must still reach the chat template so
+    existing Qwen3 callers see no behaviour change."""
+    captured = _capture_enable_thinking(
+        monkeypatch,
+        no_thinking=False,
+        request_body={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    )
+    assert captured.get("enable_thinking") is True
+
+
 @_skip_without_mlx_vlm
 def test_stream_completion_surfaces_generator_exception(monkeypatch) -> None:
     """When ``mlx_vlm.stream_generate`` raises mid-stream, the SSE

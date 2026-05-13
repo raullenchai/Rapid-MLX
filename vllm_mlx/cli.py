@@ -780,6 +780,7 @@ def serve_command(args):
             default_max_tokens=args.max_tokens,
             cors_origins=cors_origins,
             uvicorn_log_level=uvicorn_log_level,
+            no_thinking=args.no_thinking,
         )
         return
 
