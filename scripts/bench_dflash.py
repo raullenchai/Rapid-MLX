@@ -196,39 +196,46 @@ def start_server(model: str, port: int, dflash: bool) -> ServerHandle:
 
     logger.info("  starting server: port=%d dflash=%s", port, dflash)
     logf = open(log_path, "w")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=logf,
-        stderr=subprocess.STDOUT,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+    except Exception:
+        logf.close()
+        raise
 
     base_url = f"http://127.0.0.1:{port}/v1"
     # 15 min: cold-cache model load + Metal kernel compile + drafter load
     deadline = time.time() + 900
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            logf.close()
-            logger.error("  server exited; tail of %s:", log_path)
+    try:
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                logger.error("  server exited; tail of %s:", log_path)
+                try:
+                    with open(log_path) as f:
+                        tail_lines = f.readlines()[-30:]
+                    for line in tail_lines:
+                        logger.error("    %s", line.rstrip())
+                except OSError as e:
+                    logger.error("    (could not read log: %s)", e)
+                raise RuntimeError("server died during startup")
             try:
-                with open(log_path) as f:
-                    tail_lines = f.readlines()[-30:]
-                for line in tail_lines:
-                    logger.error("    %s", line.rstrip())
-            except OSError as e:
-                logger.error("    (could not read log: %s)", e)
-            raise RuntimeError("server died during startup")
-        try:
-            r = httpx.get(f"{base_url}/models", timeout=2.0)
-            if r.status_code == 200:
-                logger.info("  server up at %s", base_url)
-                return ServerHandle(proc=proc, base_url=base_url, model=model)
-        except Exception:
-            pass
-        time.sleep(2)
+                r = httpx.get(f"{base_url}/models", timeout=2.0)
+                if r.status_code == 200:
+                    logger.info("  server up at %s", base_url)
+                    return ServerHandle(proc=proc, base_url=base_url, model=model)
+            except Exception:
+                pass
+            time.sleep(2)
 
-    proc.kill()
-    raise RuntimeError(f"server did not become ready within deadline (port={port})")
+        proc.kill()
+        raise RuntimeError(f"server did not become ready within deadline (port={port})")
+    except BaseException:
+        logf.close()
+        raise
 
 
 # ---- Workload execution ---------------------------------------------------
@@ -282,6 +289,10 @@ def run_workload(
         json=payload,
         timeout=300.0,
     ) as r:
+        # Surface 4xx/5xx as a proper error rather than treating the
+        # error body as a stream of decoded events (would silently
+        # produce a 0-token run otherwise).
+        r.raise_for_status()
         for line in r.iter_lines():
             if not line or not line.startswith("data: "):
                 continue
@@ -474,14 +485,21 @@ def main(argv: list[str] | None = None) -> int:
 
     median_speedup = median(speedup.values()) if speedup else None
 
+    # Boolean ship/no-ship is the load-bearing signal; the human-readable
+    # ``decision`` string is just for the scorecard. Keeping them separate
+    # avoids string-shape coupling in callers / exit codes.
     if code_median is None:
+        ship = False
         decision = "DO NOT SHIP (no valid code workloads)"
     elif code_median < args.gate:
+        ship = False
         decision = "DO NOT SHIP"
     elif non_code_regress:
+        ship = False
         regressed = ", ".join(f"{k} {v:.2f}x" for k, v in non_code_regress.items())
         decision = f"DO NOT SHIP (non-code regression: {regressed})"
     else:
+        ship = True
         decision = "SHIP (supports_dflash=true)"
 
     def _serialize_runs(raw: dict[str, list[WorkloadRun]]) -> dict[str, list[dict]]:
@@ -554,7 +572,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("  decision: %s", decision)
     logger.info("  written: %s", output)
 
-    return 0 if decision.startswith("SHIP") else 1
+    return 0 if ship else 1
 
 
 if __name__ == "__main__":

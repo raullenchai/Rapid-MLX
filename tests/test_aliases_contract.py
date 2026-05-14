@@ -24,6 +24,7 @@ Adding a new alias?
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -390,9 +391,11 @@ def test_dflash_eligible_aliases_have_qwen35_36_drafter() -> None:
         d = profile.dflash_draft_model or ""
         ok = any(d.startswith(p) for p in valid_drafter_prefixes)
         # ``DFlash`` may appear at end of repo name OR before a tag
-        # suffix (``-b16``, ``-UltraChat``, etc.). Both are accepted as
-        # long as the prefix is on the curated allow-list.
-        has_marker = "DFlash" in d
+        # suffix (``-b16``, ``-UltraChat``, etc.). Anchored on ``-`` /
+        # end-of-string so we don't accept ``-notDFlash-utils`` or
+        # other strings where ``DFlash`` is just a substring of an
+        # unrelated word.
+        has_marker = bool(re.search(r"(?:^|-)DFlash(?:$|-)", d))
         assert has_marker and ok, (
             f"{alias}: dflash_draft_model={d!r} doesn't match the "
             f"expected ``z-lab/{{Qwen3,Qwen3.5,Qwen3.6,gemma-4,LLaMA3.1}}-*"
