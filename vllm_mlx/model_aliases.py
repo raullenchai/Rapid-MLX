@@ -197,6 +197,16 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                     f"alias {alias!r}: recommended_sampling[{k!r}] "
                     f"must be a number, got {type(v).__name__}"
                 )
+            if k == "top_k":
+                # ``top_k`` is an integer count; silently truncating
+                # 20.5 → 20 would hide a typo in a hand-edited
+                # aliases.json. Mirror the same guard the loader at
+                # utils/generation_config.py applies to the JSON layer.
+                if isinstance(v, float) and not v.is_integer():
+                    raise ValueError(
+                        f"alias {alias!r}: recommended_sampling['top_k'] "
+                        f"must be a whole number, got {v!r}"
+                    )
             items.append((k, float(v)))
         recommended_sampling = tuple(sorted(items)) if items else None
     else:

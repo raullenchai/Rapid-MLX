@@ -289,25 +289,43 @@ class TestAnthropicToOpenai:
         assert result.messages[0].role == "system"
         assert result.messages[0].content == "Be concise."
 
-    def test_temperature_default(self):
+    def test_temperature_default_forwards_none(self):
+        """Adapter MUST forward None so the server-side cascade fires.
+
+        Hard-coding 0.7 here would short-circuit
+        ``service.helpers._resolve_temperature`` at layer 1, robbing
+        Anthropic-compat clients of alias / generation_config overlays.
+        """
         req = self._make_request()
         result = anthropic_to_openai(req)
-        assert result.temperature == 0.7
+        assert result.temperature is None
 
     def test_temperature_explicit(self):
         req = self._make_request(temperature=0.3)
         result = anthropic_to_openai(req)
         assert result.temperature == 0.3
 
-    def test_top_p_default(self):
+    def test_top_p_default_forwards_none(self):
+        """Same contract as temperature — see above."""
         req = self._make_request()
         result = anthropic_to_openai(req)
-        assert result.top_p == 0.9
+        assert result.top_p is None
 
     def test_top_p_explicit(self):
         req = self._make_request(top_p=0.5)
         result = anthropic_to_openai(req)
         assert result.top_p == 0.5
+
+    def test_top_k_forwarded(self):
+        """AnthropicRequest exposes top_k; the adapter must forward it."""
+        req = self._make_request(top_k=20)
+        result = anthropic_to_openai(req)
+        assert result.top_k == 20
+
+    def test_top_k_default_forwards_none(self):
+        req = self._make_request()
+        result = anthropic_to_openai(req)
+        assert result.top_k is None
 
     def test_stop_sequences(self):
         req = self._make_request(stop_sequences=["END", "STOP"])

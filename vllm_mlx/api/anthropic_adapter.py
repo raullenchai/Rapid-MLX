@@ -86,8 +86,14 @@ def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
         model=request.model,
         messages=messages,
         max_tokens=request.max_tokens,
-        temperature=request.temperature if request.temperature is not None else 0.7,
-        top_p=request.top_p if request.top_p is not None else 0.9,
+        # Forward None when the Anthropic client omits the field so the
+        # server-side sampling cascade (request > CLI > alias overlay >
+        # generation_config.json > fallback) can fire. Hard-coding 0.7
+        # / 0.9 here would short-circuit the cascade at layer 1 and rob
+        # Anthropic-compat clients of the model author's curated defaults.
+        temperature=request.temperature,
+        top_p=request.top_p,
+        top_k=request.top_k,
         stream=request.stream,
         stop=request.stop_sequences,
         tools=tools,
