@@ -100,14 +100,14 @@ def test_orphan_aliases_now_covered() -> None:
 def test_list_aliases_returns_legacy_string_view() -> None:
     """Old callers (doctor harness, tests) expect ``{alias: hf_path}``."""
     aliases = list_aliases()
-    assert len(aliases) == 58
+    assert len(aliases) == 64
     assert all(isinstance(p, str) for p in aliases.values())
     assert aliases["qwen3.5-4b"] == "mlx-community/Qwen3.5-4B-MLX-4bit"
 
 
 def test_list_profiles_returns_rich_dataclass_view() -> None:
     profiles = list_profiles()
-    assert len(profiles) == 58
+    assert len(profiles) == 64
     p = profiles["qwen3.5-4b"]
     assert isinstance(p, AliasProfile)
     assert p.hf_path == "mlx-community/Qwen3.5-4B-MLX-4bit"
@@ -298,7 +298,7 @@ def test_qwen35_family_aliases_share_hybrid_flag() -> None:
     schema enables."""
     profiles = list_profiles()
     family = {a: p for a, p in profiles.items() if a.startswith("qwen3.5-")}
-    assert len(family) == 8
+    assert len(family) == 10
     flags = {(p.is_hybrid, p.supports_spec_decode) for p in family.values()}
     assert flags == {(True, False)}, (
         f"qwen3.5-* family disagrees on capability flags: {flags}"
