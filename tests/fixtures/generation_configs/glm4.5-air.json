@@ -1,0 +1,10 @@
+{
+  "_from_model_config": true,
+  "eos_token_id": [
+    151329,
+    151336,
+    151338
+  ],
+  "pad_token_id": 151329,
+  "transformers_version": "4.54.0"
+}

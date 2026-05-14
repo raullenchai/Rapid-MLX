@@ -499,7 +499,9 @@
     "is_hybrid": false,
     "supports_spec_decode": true,
     "recommended_sampling": {
-      "temperature": 1.0
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
     }
   },
   "gemma3-1b": {

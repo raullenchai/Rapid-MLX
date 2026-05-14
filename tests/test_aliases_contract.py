@@ -588,23 +588,35 @@ def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
 # haven't been audited yet (most of the missing-locally bucket).
 _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     # Devstral 1.x — Mistral code-tuned model card example uses 0.15
-    # for interactive coding. Same pattern in Devstral 2 (no shipped
-    # gen_config either).
+    # for interactive coding (see model card on huggingface.co/mistralai).
+    # Devstral 2.x ships the same empty stub; same pattern applies.
     "devstral-24b": {"temperature": 0.15},
     "devstral-v2-24b": {"temperature": 0.15},
-    # Gemma 3 / 4 family — Google's docs recommend (1.0, 0.95, 64).
-    # gemma-3n-E4B ships top_p/top_k but no temperature; the 27b and
-    # all 3-12b / 3-1b / 4-26b / 4-31b ship empty stubs.
+    # Gemma 3 family — Google's Gemma docs recommend
+    # (temperature=1.0, top_p=0.95, top_k=64) for the chat-tuned models.
+    # All of gemma-3-1b / gemma-3-12b / gemma-3-27b ship an empty stub
+    # locally (`_from_model_config: true` plus eos/pad tokens only).
     "gemma3-1b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma3-12b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma3-27b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-3n-e4b": {"temperature": 1.0},  # top_p/top_k come from upstream
+    # gemma-3n-E4B ships top_p=0.95 and top_k=64 upstream but no
+    # temperature. We bake in the full triple anyway (matches the
+    # rest of the Gemma family) so a future mlx-community re-quant
+    # that drops generation_config.json doesn't silently regress to
+    # the framework fallback (0.7 / 0.9).
+    "gemma-3n-e4b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    # Gemma 4 — official Google sampling guidance hasn't been
+    # published yet at the time of writing; we extrapolate from the
+    # Gemma 3 family card. Revisit when an official Gemma 4 doc lands.
     "gemma-4-26b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma-4-31b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    # GLM family — THUDM model cards recommend (0.6, 0.95) for chat.
-    # GLM-4.5-Air ships an empty stub; GLM-4.7-Flash ships only
-    # ``temperature: 1.0`` so we only add the missing top_p.
+    # GLM-4.5-Air — THUDM publishes two recommendations: temperature=0.6
+    # for *thinking* mode, ~1.0 for non-thinking. The alias has
+    # reasoning_parser=glm4 → thinking IS the default response path,
+    # so 0.6 is the right pick. (Users who want non-thinking can pass
+    # temperature explicitly per-request.)
     "glm4.5-air": {"temperature": 0.6, "top_p": 0.95},
+    # GLM-4.7-Flash ships temperature=1.0 upstream; we add only top_p.
     "glm4.7-9b": {"top_p": 0.95},
 }
 
@@ -634,34 +646,68 @@ def test_curated_recommended_sampling_matches_pinned_values() -> None:
         )
 
 
-def test_curated_aliases_do_not_contradict_local_generation_config() -> None:
-    """For every curated alias whose ``generation_config.json`` is also
-    available in the local HF cache, the curated value must not
-    *contradict* what the model author shipped. (Filling a gap is
-    fine; flipping a non-empty value is a red flag.)
+def test_curated_aliases_do_not_contradict_fixture_generation_config() -> None:
+    """For each curated alias with a checked-in upstream snapshot under
+    ``tests/fixtures/generation_configs/<alias>.json``, the curated
+    value must not *contradict* what the model author shipped.
+    Gap-filling is fine; flipping a non-empty value is a red flag and
+    means the curation needs explicit justification.
 
-    Skips when no local snapshot is present — the test is gated on
-    evidence, not network access.
+    The fixtures are byte-for-byte copies of the upstream JSON pulled
+    from the local HF cache at curation time. They're committed so the
+    test runs deterministically on a fresh CI runner (no HF cache
+    required) and so future re-quants that change upstream values
+    surface as a fixture mismatch rather than silently shifting which
+    layer of the cascade wins.
+
+    To refresh after an upstream update:
+      cp ~/.cache/huggingface/hub/models--<repo>/snapshots/<sha>/generation_config.json \\
+         tests/fixtures/generation_configs/<alias>.json
+    Then re-verify the curated value still matches the new upstream.
     """
+    import tempfile
+
     from vllm_mlx.utils.generation_config import load_generation_config_sampling
 
+    fixture_dir = Path(__file__).parent / "fixtures" / "generation_configs"
     profiles = list_profiles()
+
+    coverage = 0
     for alias in _CURATED_RECOMMENDED_SAMPLING:
+        fixture = fixture_dir / f"{alias}.json"
+        if not fixture.is_file():
+            continue  # no fixture yet — alias is "trust the curation"
+        coverage += 1
+        # Stage the fixture in a temp dir so the loader (which expects
+        # a model directory with ``generation_config.json`` inside)
+        # exercises the same parsing path the cascade uses at runtime.
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "generation_config.json").write_bytes(fixture.read_bytes())
+            shipped = load_generation_config_sampling(td)
+
         profile = profiles[alias]
-        shipped = load_generation_config_sampling(profile.hf_path)
-        if not shipped:
-            continue  # no local snapshot or empty stub — nothing to contradict
         curated = dict(profile.recommended_sampling or ())
         for key, shipped_value in shipped.items():
             if key not in curated:
                 continue  # curated is silent on this key — upstream wins
             assert curated[key] == shipped_value, (
                 f"{alias}: curated recommended_sampling[{key!r}]="
-                f"{curated[key]} contradicts upstream "
-                f"generation_config.json[{key!r}]={shipped_value}. "
-                f"Either remove the curated key (upstream wins) or "
-                f"document why upstream is wrong."
+                f"{curated[key]} contradicts upstream fixture "
+                f"{fixture.name}[{key!r}]={shipped_value}. "
+                f"Either drop the curated key (let upstream win) or "
+                f"document why upstream is wrong in the comment above "
+                f"_CURATED_RECOMMENDED_SAMPLING."
             )
+
+    # Sanity floor: if every fixture got removed by accident, the test
+    # would silently become a no-op. Pin a minimum coverage of 3 so a
+    # bulk-delete of the fixtures directory is caught at PR time.
+    assert coverage >= 3, (
+        f"Only {coverage} curated aliases have a fixture under "
+        f"{fixture_dir}; expected ≥3. Did the fixtures directory get "
+        f"deleted? Restore the *.json files referenced by "
+        f"_CURATED_RECOMMENDED_SAMPLING."
+    )
 
 
 def test_default_max_tokens_is_positive_or_none() -> None:
