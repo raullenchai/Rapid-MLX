@@ -161,6 +161,10 @@ class ServerHandle:
     proc: subprocess.Popen
     base_url: str
     model: str
+    # File the child's stdout/stderr is piped into. Held for the
+    # lifetime of the server so the OS keeps the descriptor open for
+    # writes from the child; closed in stop() once the process exits.
+    logf: object = None
 
     def stop(self) -> None:
         try:
@@ -169,6 +173,12 @@ class ServerHandle:
         except subprocess.TimeoutExpired:
             self.proc.kill()
             self.proc.wait()
+        finally:
+            if self.logf is not None:
+                try:
+                    self.logf.close()
+                except Exception:
+                    pass
 
 
 def start_server(model: str, port: int, dflash: bool) -> ServerHandle:
@@ -226,7 +236,9 @@ def start_server(model: str, port: int, dflash: bool) -> ServerHandle:
                 r = httpx.get(f"{base_url}/models", timeout=2.0)
                 if r.status_code == 200:
                     logger.info("  server up at %s", base_url)
-                    return ServerHandle(proc=proc, base_url=base_url, model=model)
+                    return ServerHandle(
+                        proc=proc, base_url=base_url, model=model, logf=logf
+                    )
             except Exception:
                 pass
             time.sleep(2)
