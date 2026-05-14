@@ -222,6 +222,11 @@
     "suffix_decoding_tier": "avoid",
     "suffix_bench_speedup": {
       "json_array": 0.203
+    },
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
     }
   },
   "gemma-4-31b": {
@@ -235,6 +240,11 @@
       "chat": 1.468,
       "json_array": 0.67,
       "code_edit": 0.996
+    },
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
     }
   },
   "gemma3-12b": {
@@ -242,7 +252,12 @@
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
   },
   "phi4-14b": {
     "hf_path": "mlx-community/phi-4-mini-instruct-4bit",
@@ -277,6 +292,9 @@
       "json_array": 0.736,
       "tool_loop": 0.697,
       "code_edit": 0.65
+    },
+    "recommended_sampling": {
+      "temperature": 0.15
     }
   },
   "glm4.7-9b": {
@@ -291,6 +309,9 @@
       "json_array": 1.337,
       "tool_loop": 0.859,
       "code_edit": 0.699
+    },
+    "recommended_sampling": {
+      "top_p": 0.95
     }
   },
   "glm4.5-air": {
@@ -305,6 +326,10 @@
       "json_array": 0.688,
       "tool_loop": 0.715,
       "code_edit": 0.787
+    },
+    "recommended_sampling": {
+      "temperature": 0.6,
+      "top_p": 0.95
     }
   },
   "gpt-oss-20b": {
@@ -447,6 +472,9 @@
       "chat": 0.992,
       "json_array": 1.015,
       "code_edit": 1.029
+    },
+    "recommended_sampling": {
+      "temperature": 0.15
     }
   },
   "qwen3-coder-30b": {
@@ -469,7 +497,10 @@
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0
+    }
   },
   "gemma3-1b": {
     "hf_path": "mlx-community/gemma-3-1b-it-4bit",
@@ -482,6 +513,11 @@
       "chat": 0.91,
       "json_array": 1.106,
       "tool_loop": 1.106
+    },
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
     }
   },
   "gemma3-27b": {
@@ -489,7 +525,12 @@
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,
-    "supports_spec_decode": true
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
   },
   "nemotron-30b": {
     "hf_path": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",

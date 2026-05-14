@@ -52,6 +52,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "suffix_bench_speedup",
         "supports_dflash",
         "dflash_draft_model",
+        "recommended_sampling",
     }
 )
 
@@ -570,6 +571,97 @@ def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
     assert "Q4_0" not in profiles["kimi-48b"].hf_path, (
         "kimi-48b must not regress to the Q4_0 path which 404s."
     )
+
+
+# Curated ``recommended_sampling`` overrides — one entry per alias whose
+# upstream ``generation_config.json`` is an empty stub (e.g. Gemma 3 /
+# GLM-4.5-Air ship only eos/pad tokens) or partial (GLM-4.7 ships only
+# ``temperature``). Each entry is a gap-fill against the model card,
+# never a contradiction of upstream values.
+#
+# Pinned in a test so a future bulk edit to ``aliases.json`` can't
+# silently drop or mutate one of these without the author looking up
+# the model card again and confirming the value still applies.
+#
+# Phase 2 ships 10 entries; the other 48 aliases either inherit usable
+# values from ``generation_config.json`` (Qwen3 family, Qwen3-VL) or
+# haven't been audited yet (most of the missing-locally bucket).
+_CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
+    # Devstral 1.x — Mistral code-tuned model card example uses 0.15
+    # for interactive coding. Same pattern in Devstral 2 (no shipped
+    # gen_config either).
+    "devstral-24b": {"temperature": 0.15},
+    "devstral-v2-24b": {"temperature": 0.15},
+    # Gemma 3 / 4 family — Google's docs recommend (1.0, 0.95, 64).
+    # gemma-3n-E4B ships top_p/top_k but no temperature; the 27b and
+    # all 3-12b / 3-1b / 4-26b / 4-31b ship empty stubs.
+    "gemma3-1b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma3-12b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma3-27b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-3n-e4b": {"temperature": 1.0},  # top_p/top_k come from upstream
+    "gemma-4-26b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-31b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    # GLM family — THUDM model cards recommend (0.6, 0.95) for chat.
+    # GLM-4.5-Air ships an empty stub; GLM-4.7-Flash ships only
+    # ``temperature: 1.0`` so we only add the missing top_p.
+    "glm4.5-air": {"temperature": 0.6, "top_p": 0.95},
+    "glm4.7-9b": {"top_p": 0.95},
+}
+
+
+def test_curated_recommended_sampling_matches_pinned_values() -> None:
+    """Pin every curated ``recommended_sampling`` override against the
+    table above so a stray bulk edit to ``aliases.json`` can't silently
+    drop or mutate a value. If you intentionally change a value, update
+    this test too — that's the prompt to re-verify against the model
+    card you originally consulted."""
+    profiles = list_profiles()
+    for alias, expected in _CURATED_RECOMMENDED_SAMPLING.items():
+        assert alias in profiles, f"{alias}: missing from aliases.json"
+        actual_tuple = profiles[alias].recommended_sampling
+        assert actual_tuple is not None, (
+            f"{alias}: recommended_sampling was curated but is now None; "
+            f"either restore the entry or remove it from "
+            f"_CURATED_RECOMMENDED_SAMPLING in this test."
+        )
+        actual = dict(actual_tuple)
+        assert actual == expected, (
+            f"{alias}: recommended_sampling drifted.\n"
+            f"  expected: {expected}\n"
+            f"  actual:   {actual}\n"
+            f"If this is intentional, update _CURATED_RECOMMENDED_SAMPLING "
+            f"and re-verify against the model card."
+        )
+
+
+def test_curated_aliases_do_not_contradict_local_generation_config() -> None:
+    """For every curated alias whose ``generation_config.json`` is also
+    available in the local HF cache, the curated value must not
+    *contradict* what the model author shipped. (Filling a gap is
+    fine; flipping a non-empty value is a red flag.)
+
+    Skips when no local snapshot is present — the test is gated on
+    evidence, not network access.
+    """
+    from vllm_mlx.utils.generation_config import load_generation_config_sampling
+
+    profiles = list_profiles()
+    for alias in _CURATED_RECOMMENDED_SAMPLING:
+        profile = profiles[alias]
+        shipped = load_generation_config_sampling(profile.hf_path)
+        if not shipped:
+            continue  # no local snapshot or empty stub — nothing to contradict
+        curated = dict(profile.recommended_sampling or ())
+        for key, shipped_value in shipped.items():
+            if key not in curated:
+                continue  # curated is silent on this key — upstream wins
+            assert curated[key] == shipped_value, (
+                f"{alias}: curated recommended_sampling[{key!r}]="
+                f"{curated[key]} contradicts upstream "
+                f"generation_config.json[{key!r}]={shipped_value}. "
+                f"Either remove the curated key (upstream wins) or "
+                f"document why upstream is wrong."
+            )
 
 
 def test_default_max_tokens_is_positive_or_none() -> None:
