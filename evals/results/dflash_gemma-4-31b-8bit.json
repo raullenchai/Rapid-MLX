@@ -1,0 +1,272 @@
+{
+  "model": "gemma-4-31b-8bit",
+  "max_tokens": 256,
+  "runs": 3,
+  "gate": 1.3,
+  "non_code_floor": 1.0,
+  "base_tps": {
+    "fibonacci": 19.0,
+    "quicksort": 18.9,
+    "hashtable": 18.9,
+    "sortedlist": 18.9,
+    "chat": 19.0
+  },
+  "dflash_tps": {
+    "fibonacci": 54.6,
+    "quicksort": 32.7,
+    "hashtable": 41.6,
+    "sortedlist": 33.1,
+    "chat": 13.5
+  },
+  "speedup": {
+    "fibonacci": 2.87,
+    "quicksort": 1.725,
+    "hashtable": 2.202,
+    "sortedlist": 1.756,
+    "chat": 0.71
+  },
+  "code_median": 1.979,
+  "non_code_speedups": {
+    "chat": 0.71
+  },
+  "median_speedup": 1.756,
+  "skipped": {},
+  "decision": "DO NOT SHIP (non-code regression: chat 0.71x)",
+  "bypass_moe_gate": false,
+  "raw_runs": {
+    "base": {
+      "fibonacci": [
+        {
+          "tps": 19.1,
+          "completion_tokens": 185,
+          "decode_time": 9.674,
+          "total_time": 10.189,
+          "rejected_reason": null
+        },
+        {
+          "tps": 19.0,
+          "completion_tokens": 185,
+          "decode_time": 9.722,
+          "total_time": 10.254,
+          "rejected_reason": null
+        },
+        {
+          "tps": 19.0,
+          "completion_tokens": 185,
+          "decode_time": 9.745,
+          "total_time": 10.275,
+          "rejected_reason": null
+        }
+      ],
+      "quicksort": [
+        {
+          "tps": 18.9,
+          "completion_tokens": 256,
+          "decode_time": 13.555,
+          "total_time": 14.203,
+          "rejected_reason": null
+        },
+        {
+          "tps": 18.9,
+          "completion_tokens": 256,
+          "decode_time": 13.514,
+          "total_time": 14.159,
+          "rejected_reason": null
+        },
+        {
+          "tps": 19.1,
+          "completion_tokens": 256,
+          "decode_time": 13.435,
+          "total_time": 14.072,
+          "rejected_reason": null
+        }
+      ],
+      "hashtable": [
+        {
+          "tps": 18.9,
+          "completion_tokens": 256,
+          "decode_time": 13.537,
+          "total_time": 14.072,
+          "rejected_reason": null
+        },
+        {
+          "tps": 18.9,
+          "completion_tokens": 256,
+          "decode_time": 13.538,
+          "total_time": 14.075,
+          "rejected_reason": null
+        },
+        {
+          "tps": 18.9,
+          "completion_tokens": 256,
+          "decode_time": 13.545,
+          "total_time": 14.075,
+          "rejected_reason": null
+        }
+      ],
+      "sortedlist": [
+        {
+          "tps": 18.9,
+          "completion_tokens": 256,
+          "decode_time": 13.566,
+          "total_time": 14.22,
+          "rejected_reason": null
+        },
+        {
+          "tps": 19.0,
+          "completion_tokens": 256,
+          "decode_time": 13.509,
+          "total_time": 14.154,
+          "rejected_reason": null
+        },
+        {
+          "tps": 18.8,
+          "completion_tokens": 256,
+          "decode_time": 13.582,
+          "total_time": 14.218,
+          "rejected_reason": null
+        }
+      ],
+      "chat": [
+        {
+          "tps": 19.0,
+          "completion_tokens": 122,
+          "decode_time": 6.411,
+          "total_time": 6.812,
+          "rejected_reason": null
+        },
+        {
+          "tps": 19.0,
+          "completion_tokens": 122,
+          "decode_time": 6.405,
+          "total_time": 6.799,
+          "rejected_reason": null
+        },
+        {
+          "tps": 19.0,
+          "completion_tokens": 122,
+          "decode_time": 6.407,
+          "total_time": 6.813,
+          "rejected_reason": null
+        }
+      ]
+    },
+    "dflash": {
+      "fibonacci": [
+        {
+          "tps": 54.6,
+          "completion_tokens": 185,
+          "decode_time": 3.387,
+          "total_time": 3.878,
+          "rejected_reason": null
+        },
+        {
+          "tps": 54.5,
+          "completion_tokens": 185,
+          "decode_time": 3.392,
+          "total_time": 3.885,
+          "rejected_reason": null
+        },
+        {
+          "tps": 54.7,
+          "completion_tokens": 185,
+          "decode_time": 3.382,
+          "total_time": 3.874,
+          "rejected_reason": null
+        }
+      ],
+      "quicksort": [
+        {
+          "tps": 32.7,
+          "completion_tokens": 256,
+          "decode_time": 7.828,
+          "total_time": 8.442,
+          "rejected_reason": null
+        },
+        {
+          "tps": 32.7,
+          "completion_tokens": 256,
+          "decode_time": 7.835,
+          "total_time": 8.449,
+          "rejected_reason": null
+        },
+        {
+          "tps": 32.7,
+          "completion_tokens": 256,
+          "decode_time": 7.84,
+          "total_time": 8.457,
+          "rejected_reason": null
+        }
+      ],
+      "hashtable": [
+        {
+          "tps": 41.7,
+          "completion_tokens": 256,
+          "decode_time": 6.142,
+          "total_time": 6.637,
+          "rejected_reason": null
+        },
+        {
+          "tps": 41.6,
+          "completion_tokens": 256,
+          "decode_time": 6.148,
+          "total_time": 6.64,
+          "rejected_reason": null
+        },
+        {
+          "tps": 41.6,
+          "completion_tokens": 256,
+          "decode_time": 6.147,
+          "total_time": 6.641,
+          "rejected_reason": null
+        }
+      ],
+      "sortedlist": [
+        {
+          "tps": 33.1,
+          "completion_tokens": 256,
+          "decode_time": 7.725,
+          "total_time": 8.342,
+          "rejected_reason": null
+        },
+        {
+          "tps": 33.2,
+          "completion_tokens": 256,
+          "decode_time": 7.718,
+          "total_time": 8.334,
+          "rejected_reason": null
+        },
+        {
+          "tps": 33.1,
+          "completion_tokens": 256,
+          "decode_time": 7.726,
+          "total_time": 8.341,
+          "rejected_reason": null
+        }
+      ],
+      "chat": [
+        {
+          "tps": 13.5,
+          "completion_tokens": 122,
+          "decode_time": 9.024,
+          "total_time": 9.51,
+          "rejected_reason": null
+        },
+        {
+          "tps": 13.5,
+          "completion_tokens": 122,
+          "decode_time": 9.028,
+          "total_time": 9.515,
+          "rejected_reason": null
+        },
+        {
+          "tps": 13.5,
+          "completion_tokens": 122,
+          "decode_time": 9.021,
+          "total_time": 9.508,
+          "rejected_reason": null
+        }
+      ]
+    }
+  }
+}

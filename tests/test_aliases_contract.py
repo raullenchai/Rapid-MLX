@@ -370,24 +370,34 @@ def test_dflash_excludes_4bit_precision(alias: str) -> None:
 
 
 def test_dflash_eligible_aliases_have_qwen35_36_drafter() -> None:
-    """DFlash drafters published today are Qwen-family-specific. Any
-    eligible alias must point at a ``z-lab/Qwen3.5-*-DFlash`` or
-    ``z-lab/Qwen3.6-*-DFlash`` drafter. Catches an accidental copy-paste
-    that swaps the drafter to an incompatible model."""
+    """DFlash drafters today are published by ``z-lab/`` for Qwen3,
+    Qwen3.5, Qwen3.6, Gemma-4 and LLaMA-3.1 families. Any eligible
+    alias must point at one of these prefixes and bear the ``DFlash``
+    marker (the ``-b16`` / ``-UltraChat`` / etc. suffix is permitted —
+    z-lab uses it for training-data and precision tags). Catches an
+    accidental copy-paste that swaps the drafter to an incompatible
+    model."""
     valid_drafter_prefixes = (
+        "z-lab/Qwen3-",
         "z-lab/Qwen3.5-",
         "z-lab/Qwen3.6-",
+        "z-lab/gemma-4-",
+        "z-lab/LLaMA3.1-",
     )
     for alias, profile in list_profiles().items():
         if not profile.supports_dflash:
             continue
         d = profile.dflash_draft_model or ""
         ok = any(d.startswith(p) for p in valid_drafter_prefixes)
-        assert d.endswith("-DFlash") and ok, (
+        # ``DFlash`` may appear at end of repo name OR before a tag
+        # suffix (``-b16``, ``-UltraChat``, etc.). Both are accepted as
+        # long as the prefix is on the curated allow-list.
+        has_marker = "DFlash" in d
+        assert has_marker and ok, (
             f"{alias}: dflash_draft_model={d!r} doesn't match the "
-            f"expected ``z-lab/Qwen3.5-*-DFlash`` or "
-            f"``z-lab/Qwen3.6-*-DFlash`` shape. If you've validated a "
-            f"new drafter family, update this allow-list."
+            f"expected ``z-lab/{{Qwen3,Qwen3.5,Qwen3.6,gemma-4,LLaMA3.1}}-*"
+            f"DFlash*`` shape. If you've validated a new drafter family, "
+            f"update this allow-list."
         )
 
 

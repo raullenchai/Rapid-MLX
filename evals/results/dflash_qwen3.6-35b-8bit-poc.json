@@ -1,0 +1,219 @@
+{
+  "model": "qwen3.6-35b-8bit-poc",
+  "max_tokens": 256,
+  "runs": 3,
+  "gate": 1.3,
+  "base_tps": {
+    "fibonacci": 72.9,
+    "quicksort": 72.9,
+    "hashtable": 72.4,
+    "sortedlist": null
+  },
+  "dflash_tps": {
+    "fibonacci": 60.3,
+    "quicksort": 69.2,
+    "hashtable": 64.7,
+    "sortedlist": 64.7
+  },
+  "speedup": {
+    "fibonacci": 0.827,
+    "quicksort": 0.95,
+    "hashtable": 0.894
+  },
+  "median_speedup": 0.894,
+  "skipped": {
+    "sortedlist": "baseline all runs rejected"
+  },
+  "decision": "DO NOT SHIP",
+  "bypass_moe_gate": false,
+  "raw_runs": {
+    "base": {
+      "fibonacci": [
+        {
+          "tps": 72.9,
+          "completion_tokens": 2304,
+          "decode_time": 31.591,
+          "total_time": 31.591,
+          "rejected_reason": null
+        },
+        {
+          "tps": 73.4,
+          "completion_tokens": 2304,
+          "decode_time": 31.383,
+          "total_time": 31.383,
+          "rejected_reason": null
+        },
+        {
+          "tps": 72.7,
+          "completion_tokens": 2304,
+          "decode_time": 31.709,
+          "total_time": 31.709,
+          "rejected_reason": null
+        }
+      ],
+      "quicksort": [
+        {
+          "tps": 74.0,
+          "completion_tokens": 2304,
+          "decode_time": 31.127,
+          "total_time": 31.127,
+          "rejected_reason": null
+        },
+        {
+          "tps": 72.9,
+          "completion_tokens": 2304,
+          "decode_time": 31.623,
+          "total_time": 31.623,
+          "rejected_reason": null
+        },
+        {
+          "tps": 72.7,
+          "completion_tokens": 2304,
+          "decode_time": 31.68,
+          "total_time": 31.68,
+          "rejected_reason": null
+        }
+      ],
+      "hashtable": [
+        {
+          "tps": 74.5,
+          "completion_tokens": 2304,
+          "decode_time": 30.947,
+          "total_time": 30.947,
+          "rejected_reason": null
+        },
+        {
+          "tps": 72.4,
+          "completion_tokens": 2304,
+          "decode_time": 31.835,
+          "total_time": 31.835,
+          "rejected_reason": null
+        },
+        {
+          "tps": 72.4,
+          "completion_tokens": 2304,
+          "decode_time": 31.802,
+          "total_time": 31.802,
+          "rejected_reason": null
+        }
+      ],
+      "sortedlist": [
+        {
+          "tps": null,
+          "completion_tokens": 2304,
+          "decode_time": 0.202,
+          "total_time": 31.189,
+          "rejected_reason": "decode_time<0.5s"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 2304,
+          "decode_time": 0.197,
+          "total_time": 32.026,
+          "rejected_reason": "decode_time<0.5s"
+        },
+        {
+          "tps": null,
+          "completion_tokens": 2304,
+          "decode_time": 0.188,
+          "total_time": 31.816,
+          "rejected_reason": "decode_time<0.5s"
+        }
+      ]
+    },
+    "dflash": {
+      "fibonacci": [
+        {
+          "tps": 60.4,
+          "completion_tokens": 256,
+          "decode_time": 4.239,
+          "total_time": 4.363,
+          "rejected_reason": null
+        },
+        {
+          "tps": 60.3,
+          "completion_tokens": 256,
+          "decode_time": 4.243,
+          "total_time": 4.367,
+          "rejected_reason": null
+        },
+        {
+          "tps": 60.3,
+          "completion_tokens": 256,
+          "decode_time": 4.244,
+          "total_time": 4.367,
+          "rejected_reason": null
+        }
+      ],
+      "quicksort": [
+        {
+          "tps": 69.2,
+          "completion_tokens": 256,
+          "decode_time": 3.698,
+          "total_time": 3.828,
+          "rejected_reason": null
+        },
+        {
+          "tps": 69.2,
+          "completion_tokens": 256,
+          "decode_time": 3.697,
+          "total_time": 3.826,
+          "rejected_reason": null
+        },
+        {
+          "tps": 69.2,
+          "completion_tokens": 256,
+          "decode_time": 3.697,
+          "total_time": 3.826,
+          "rejected_reason": null
+        }
+      ],
+      "hashtable": [
+        {
+          "tps": 64.8,
+          "completion_tokens": 256,
+          "decode_time": 3.95,
+          "total_time": 4.077,
+          "rejected_reason": null
+        },
+        {
+          "tps": 64.7,
+          "completion_tokens": 256,
+          "decode_time": 3.954,
+          "total_time": 4.077,
+          "rejected_reason": null
+        },
+        {
+          "tps": 64.7,
+          "completion_tokens": 256,
+          "decode_time": 3.954,
+          "total_time": 4.078,
+          "rejected_reason": null
+        }
+      ],
+      "sortedlist": [
+        {
+          "tps": 64.7,
+          "completion_tokens": 256,
+          "decode_time": 3.955,
+          "total_time": 4.095,
+          "rejected_reason": null
+        },
+        {
+          "tps": 64.8,
+          "completion_tokens": 256,
+          "decode_time": 3.953,
+          "total_time": 4.093,
+          "rejected_reason": null
+        },
+        {
+          "tps": 64.7,
+          "completion_tokens": 256,
+          "decode_time": 3.959,
+          "total_time": 4.099,
+          "rejected_reason": null
+        }
+      ]
+    }
+  }
+}

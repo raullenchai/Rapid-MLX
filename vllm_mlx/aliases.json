@@ -6,11 +6,27 @@
     "is_hybrid": true,
     "supports_spec_decode": false
   },
+  "qwen3.5-4b-8bit": {
+    "hf_path": "mlx-community/Qwen3.5-4B-8bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": false,
+    "supports_spec_decode": false
+  },
   "qwen3.5-9b": {
     "hf_path": "mlx-community/Qwen3.5-9B-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
+    "supports_spec_decode": false
+  },
+  "qwen3.5-9b-8bit": {
+    "hf_path": "mlx-community/Qwen3.5-9B-8bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": false,
     "supports_spec_decode": false
   },
   "qwen3.5-27b": {
@@ -153,6 +169,30 @@
     "is_hybrid": false,
     "supports_spec_decode": true
   },
+  "qwen3-4b-8bit": {
+    "hf_path": "mlx-community/Qwen3-4B-8bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "qwen3-8b-8bit": {
+    "hf_path": "mlx-community/Qwen3-8B-8bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "llama-3.1-8b-8bit": {
+    "hf_path": "mlx-community/Meta-Llama-3.1-8B-Instruct-8bit",
+    "tool_call_parser": "llama",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
   "qwen3-coder": {
     "hf_path": "lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
     "tool_call_parser": "hermes",
@@ -241,6 +281,19 @@
       "json_array": 0.67,
       "code_edit": 0.996
     },
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "gemma-4-31b-8bit": {
+    "hf_path": "mlx-community/gemma-4-31b-it-8bit",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
     "recommended_sampling": {
       "temperature": 1.0,
       "top_p": 0.95,
