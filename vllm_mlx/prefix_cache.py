@@ -758,7 +758,11 @@ class BlockAwarePrefixCache:
                     # concatenated/reconstructed.
                     return None
 
-                seq_len = keys.shape[seq_axis] if hasattr(keys, "shape") else 0
+                # Take the min over both tensors. ``keys`` and ``values``
+                # share a seq axis by contract, but a paranoid floor avoids
+                # an IndexError if one is shorter than the other (e.g. a
+                # partially-written cache during a torn shutdown).
+                seq_len = min(keys.shape[seq_axis], values.shape[seq_axis])
 
                 if end_idx > seq_len:
                     # Requested range extends beyond available data
