@@ -726,3 +726,41 @@ class TestBlockAwarePrefixCache:
         stats = cache.get_stats()
         # After clear, null block is still allocated (vLLM style)
         assert stats["allocated_blocks"] == 1  # only null block
+
+    def test_slices_3d_kv_along_seq_axis(self):
+        """3D KV state (Qwen3.5-style ``(n_kv_heads, seq, head_dim)``) must
+        be sliced along seq (axis 1), not axis 2 (which is ``head_dim``).
+        Regression for upstream waybarrios#286 — pre-fix, the 4D-hardcoded
+        slice ``keys[:, :, start:end, :]`` crashed on 3D state and dropped
+        the whole entry, masking the issue. ``reconstruct_cache`` still
+        refuses 3D state because mlx_lm's ``KVCache`` accessors hard-code
+        ``shape[2]`` for seq; hosting 3D state there would silently corrupt
+        downstream generation."""
+        import mlx.core as mx
+        from mlx_lm.models.cache import KVCache
+
+        from vllm_mlx.paged_cache import PagedCacheManager
+        from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+
+        paged_manager = PagedCacheManager(block_size=4, max_blocks=10)
+        cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
+
+        kv_keys = mx.arange(2 * 8 * 3).reshape(2, 8, 3)
+        kv_values = mx.arange(1000, 1000 + (2 * 8 * 3)).reshape(2, 8, 3)
+        layer_state = {
+            "state": (kv_keys, kv_values),
+            "meta_state": "",
+            "class_ref": KVCache,
+            "class_name": "KVCache",
+        }
+
+        sliced = cache._extract_block_tensor_slice([layer_state], 0, 4)
+        assert sliced is not None and len(sliced) == 1
+        sliced_keys, sliced_values = sliced[0]
+        assert sliced_keys.tolist() == kv_keys[:, :4, :].tolist()
+        assert sliced_values.tolist() == kv_values[:, :4, :].tolist()
+        assert cache._cache_state_seq_axis((kv_keys, kv_values)) == 1
+        four_d = mx.zeros((1, 2, 8, 3))
+        assert cache._cache_state_seq_axis((four_d, four_d)) == 2
+        assert cache._cache_state_seq_axis((four_d,)) is None
+        assert cache._cache_state_seq_axis((four_d, mx.zeros((2, 8)))) is None

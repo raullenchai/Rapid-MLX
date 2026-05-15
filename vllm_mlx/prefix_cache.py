@@ -689,6 +689,39 @@ class BlockAwarePrefixCache:
 
         return block_table
 
+    def _cache_state_seq_axis(self, state: Any) -> int | None:
+        """Return the sequence axis for cache states that support block concat.
+
+        Supports two KV-cache layouts emitted by mlx-lm:
+        - 4D ``(batch, n_kv_heads, seq, head_dim)`` → seq_axis = 2
+        - 3D ``(n_kv_heads, seq, head_dim)`` (Qwen3.5-style) → seq_axis = 1
+
+        Returns ``None`` for unsupported shapes (e.g. mixed dims across keys/
+        values, scalars, MambaCache state tuples).
+        """
+        if not isinstance(state, (list, tuple)) or not state:
+            return None
+
+        ndims = {
+            len(tensor.shape)
+            for tensor in state
+            if tensor is not None and hasattr(tensor, "shape")
+        }
+        if len(ndims) != 1:
+            return None
+
+        ndim = next(iter(ndims))
+        # KV-cache state is always (keys, values); anything else is some
+        # other cache class (Mamba conv state + recurrent state, etc.).
+        if len(state) != 2:
+            return None
+        if ndim == 4:
+            return 2
+        # Qwen3.5-style KV caches use (n_kv_heads, seq, head_dim).
+        if ndim == 3:
+            return 1
+        return None
+
     def _extract_block_tensor_slice(
         self,
         cache_data: list[dict[str, Any]],
@@ -717,26 +750,36 @@ class BlockAwarePrefixCache:
 
                 keys, values = layer_state["state"]
 
-                # KV cache shape: (batch, n_kv_heads, seq_len, head_dim)
-                # Slice along seq_len dimension (axis 2)
-                seq_len = keys.shape[2] if hasattr(keys, "shape") else 0
+                seq_axis = self._cache_state_seq_axis((keys, values))
+                if seq_axis is None:
+                    # Unsupported layout (e.g. Mamba/DeltaNet state tuple in
+                    # a hybrid model). Bail out entirely — a partial slice
+                    # list would silently corrupt the cache when later
+                    # concatenated/reconstructed.
+                    return None
+
+                seq_len = keys.shape[seq_axis] if hasattr(keys, "shape") else 0
 
                 if end_idx > seq_len:
                     # Requested range extends beyond available data
                     logger.debug(
                         f"Block slice [{start_idx}:{end_idx}] exceeds seq_len {seq_len}"
                     )
-                    # Use whatever is available
                     actual_end = min(end_idx, seq_len)
                     if start_idx >= actual_end:
                         continue
-                    keys_slice = keys[:, :, start_idx:actual_end, :]
-                    values_slice = values[:, :, start_idx:actual_end, :]
                 else:
-                    keys_slice = keys[:, :, start_idx:end_idx, :]
-                    values_slice = values[:, :, start_idx:end_idx, :]
+                    actual_end = end_idx
 
-                block_slices.append((keys_slice, values_slice))
+                # Build a slice tuple that addresses only the seq axis; all
+                # other axes pass through. Avoids hardcoding rank (3D vs 4D).
+                key_slices: list[slice] = [slice(None)] * len(keys.shape)
+                val_slices: list[slice] = [slice(None)] * len(values.shape)
+                key_slices[seq_axis] = slice(start_idx, actual_end)
+                val_slices[seq_axis] = slice(start_idx, actual_end)
+                block_slices.append(
+                    (keys[tuple(key_slices)], values[tuple(val_slices)])
+                )
 
             return block_slices if block_slices else None
 
@@ -886,10 +929,23 @@ class BlockAwarePrefixCache:
                 if not layer_keys:
                     continue
 
-                # Concatenate along sequence dimension (axis 2)
-                # Shape: (batch, n_kv_heads, seq_len, head_dim)
-                concat_keys = mx.concatenate(layer_keys, axis=2)
-                concat_values = mx.concatenate(layer_values, axis=2)
+                # Only 4D ``(batch, n_kv_heads, seq, head_dim)`` states can
+                # be hosted by mlx_lm's ``KVCache`` — its accessors are hard-
+                # coded to ``shape[2]`` for seq. 3D states (Qwen3.5-style
+                # ``(n_kv_heads, seq, head_dim)``) come from non-standard
+                # caches and would be silently misinterpreted as 4D here,
+                # corrupting any subsequent generation off this prefix.
+                seq_axis = self._cache_state_seq_axis((layer_keys[0], layer_values[0]))
+                if seq_axis != 2:
+                    logger.warning(
+                        "Cache layer has non-4D KV shape "
+                        f"({getattr(layer_keys[0], 'shape', '?')}); skipping "
+                        "reconstruction — mlx_lm.KVCache requires 4D layout."
+                    )
+                    return None
+
+                concat_keys = mx.concatenate(layer_keys, axis=seq_axis)
+                concat_values = mx.concatenate(layer_values, axis=seq_axis)
 
                 # Create KVCache object
                 # Try to use mlx_lm's KVCache.from_state if available
@@ -898,23 +954,22 @@ class BlockAwarePrefixCache:
 
                     # Create new cache and set its state
                     cache = KVCache()
-                    seq_len = concat_keys.shape[2]
 
                     # Set internal state directly
                     # KVCache stores keys/values and offset
                     cache.keys = concat_keys
                     cache.values = concat_values
-                    cache.offset = seq_len
+                    cache.offset = concat_keys.shape[seq_axis]
 
                     reconstructed_caches.append(cache)
 
                 except ImportError:
                     # Fallback: create a simple cache-like object
                     class SimpleKVCache:
-                        def __init__(self, keys, values):
+                        def __init__(self, keys, values, offset: int):
                             self.keys = keys
                             self.values = values
-                            self.offset = keys.shape[2]
+                            self.offset = offset
 
                         @property
                         def state(self):
@@ -924,7 +979,9 @@ class BlockAwarePrefixCache:
                         def meta_state(self):
                             return (str(self.offset),)
 
-                    cache = SimpleKVCache(concat_keys, concat_values)
+                    cache = SimpleKVCache(
+                        concat_keys, concat_values, concat_keys.shape[seq_axis]
+                    )
                     reconstructed_caches.append(cache)
 
             if not reconstructed_caches:
