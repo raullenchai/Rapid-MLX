@@ -5,6 +5,7 @@ Tests for structured output (JSON Schema) functionality.
 Tests the JSON parsing, validation, and response_format handling.
 """
 
+import importlib.util
 import json
 
 import pytest
@@ -16,6 +17,8 @@ from vllm_mlx.api.tool_calling import (
     parse_json_output,
     validate_json_schema,
 )
+
+_MLX_AVAILABLE = importlib.util.find_spec("mlx") is not None
 
 
 class TestValidateJsonSchema:
@@ -377,6 +380,10 @@ class TestStructuredOutputIntegration:
         assert isinstance(data["colors"], list)
 
 
+@pytest.mark.skipif(
+    not _MLX_AVAILABLE,
+    reason="routes.chat transitively imports mlx (skipped on no-MLX CI)",
+)
 class TestStripBackslashBeforeUnicode:
     """Cherry-picked from upstream waybarrios#525.
 
