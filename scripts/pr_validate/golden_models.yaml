@@ -1,5 +1,21 @@
 # Golden-model registry for stress + bench.
 #
+# Precision policy (project-wide): correctness tests run on **8-bit**
+# (or higher). The pipeline catches engine bugs in rapid-mlx; we don't
+# want quant noise on 4-bit models producing failures that look like
+# rapid-mlx bugs but are actually model-capability ceilings. Reserved
+# 4-bit runs (perf benches) live in dedicated scripts:
+#   - scripts/bench_dflash.py
+#   - scripts/bench_suffix_decoding_integrated.py
+#   - harness/runs/ (when explicitly targeting 4-bit user reality)
+# A documented example of the 4-bit pitfall this policy avoids:
+# Qwen3.6-27B-4bit + thinking + multi-tool composition reliably
+# generates a 4000-token natural-language ramble without ever emitting
+# a valid <tool_call> XML (proven 2026-05-15). The 8-bit variant emits
+# both calls in 286 tokens. Identical engine code; quant noise was the
+# only variable. Keep new candidates 8-bit unless the family has no
+# 8-bit option (very rare today on mlx-community / unsloth).
+#
 # Each family is a logical model line (Qwen3, Qwen3.5, MiniMax …). The
 # pipeline picks ONE candidate per family — the highest-quality one
 # whose `ram_gb_required` fits on the current machine (with some
@@ -39,8 +55,18 @@ families:
 
   - family: qwen3.6
     candidates:
-      - id: mlx-community/Qwen3.6-27B-4bit
-        ram_gb_required: 18
+      # 8-bit, same principle as Qwen3.5-35B-A3B-8bit above: correctness
+      # tests need a precision where the model itself ~never errs so
+      # failures cleanly attribute to rapid-mlx. The 4-bit variant has
+      # a documented multi-tool capability deficit (proven empirically
+      # 2026-05-15: Qwen3.6-27B-4bit + thinking + 2-tool composition →
+      # 4000-token natural-language ramble, no <tool_call> XML emitted;
+      # identical task on 8-bit emits both tool calls in 286 tokens).
+      # Performance measurements against the 4-bit variant belong in
+      # `bench_dflash` / `bench_suffix_decoding_integrated` / harness
+      # benchmarks, not in the correctness gate.
+      - id: unsloth/Qwen3.6-27B-MLX-8bit
+        ram_gb_required: 32
         quality_tier: golden
 
 # Gemma 4 was previously listed here for orthogonal coverage (different
@@ -85,7 +111,7 @@ families:
 overrides:
   "mlx-community/Qwen3.5-35B-A3B-8bit":
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
-  "mlx-community/Qwen3.6-27B-4bit":
+  "unsloth/Qwen3.6-27B-MLX-8bit":
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
 
 # Agent integrations — each is a tests/integrations/ test_X.py script
