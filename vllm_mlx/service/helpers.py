@@ -171,6 +171,57 @@ def _resolve_frequency_penalty(request_value: float | None) -> float | None:
     return float(value) if value is not None else None
 
 
+def _extract_thinking_from_request(request) -> bool | None:
+    """Read enable_thinking from a request without consulting global config.
+
+    Order (first wins):
+      1. ``request.chat_template_kwargs["enable_thinking"]`` (OpenAI ext spec)
+      2. ``request.enable_thinking`` (top-level field, our extension)
+      3. ``None`` (caller decides — usually means "template default")
+
+    Pulled out so the dflash route can share the request-side precedence
+    without inheriting the OpenAI/anthropic ``cfg.no_thinking`` consult
+    (dflash's "no_thinking" lives in a closure, not the singleton).
+    Single source of truth for the string-bool tolerance below.
+    """
+    ctk = getattr(request, "chat_template_kwargs", None)
+    if isinstance(ctk, dict) and "enable_thinking" in ctk:
+        v = ctk["enable_thinking"]
+        if isinstance(v, bool):
+            return v
+        # Tolerate JSON string forms ("true"/"false") for client friendliness.
+        if isinstance(v, str):
+            lowered = v.strip().lower()
+            if lowered == "true":
+                return True
+            if lowered == "false":
+                return False
+    return getattr(request, "enable_thinking", None)
+
+
+def _resolve_enable_thinking(request) -> bool | None:
+    """Resolve enable_thinking precedence for OpenAI/anthropic routes.
+
+    Order (first wins):
+      1. server ``--no-thinking`` (cfg.no_thinking) → ``False``
+      2. ``request.chat_template_kwargs["enable_thinking"]`` (OpenAI ext spec)
+      3. ``request.enable_thinking`` (top-level field, our extension)
+      4. ``None`` (template default)
+
+    Reported as #387: passing ``chat_template_kwargs={"enable_thinking":false}``
+    used to be silently dropped because the request model didn't declare the
+    field. Both this helper and the model field were added together.
+
+    The dflash route does NOT call this helper — it has its own
+    closure-scoped ``no_thinking`` and skips the cfg consult. See
+    ``vllm_mlx/speculative/dflash/server.py`` for that path.
+    """
+    cfg = get_config()
+    if cfg.no_thinking:
+        return False
+    return _extract_thinking_from_request(request)
+
+
 def build_extended_sampling_kwargs(request) -> dict:
     """Resolve top_k / min_p / penalties through the 4-layer cascade.
 

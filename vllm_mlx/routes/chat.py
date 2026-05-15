@@ -48,6 +48,7 @@ from ..service.helpers import (
     _inject_json_instruction,
     _maybe_pin_system_prompt,
     _parse_tool_calls_with_parser,
+    _resolve_enable_thinking,
     _resolve_max_tokens,
     _resolve_model_name,
     _resolve_temperature,
@@ -335,9 +336,14 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         if json_instruction:
             messages = _inject_json_instruction(messages, json_instruction)
 
+    # Resolve enable_thinking once and reuse — drives both the
+    # max_tokens default (thinking models need more headroom) and the
+    # chat_template kwarg below. (#387)
+    resolved_thinking = _resolve_enable_thinking(request)
+
     # Prepare kwargs
     chat_kwargs = {
-        "max_tokens": _resolve_max_tokens(request.max_tokens, request.enable_thinking),
+        "max_tokens": _resolve_max_tokens(request.max_tokens, resolved_thinking),
         "temperature": _resolve_temperature(request.temperature),
         "top_p": _resolve_top_p(request.top_p),
         "stop": request.stop,
@@ -361,11 +367,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     if request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(request.tools)
 
-    # Pass through enable_thinking if explicitly set by the client
-    if request.enable_thinking is not None:
-        chat_kwargs["enable_thinking"] = request.enable_thinking
-    elif cfg.no_thinking:
-        chat_kwargs["enable_thinking"] = False
+    if resolved_thinking is not None:
+        chat_kwargs["enable_thinking"] = resolved_thinking
 
     # Cloud routing: offload large-context requests to cloud LLM
     if cfg.cloud_router and not engine.is_mllm and hasattr(engine, "build_prompt"):

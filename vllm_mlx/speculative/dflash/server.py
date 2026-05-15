@@ -186,12 +186,19 @@ def _build_app(
         # tokenizer-side reasoning/tool markers match what the model was
         # trained on; no rapid-mlx-side prompt mutation happens here.
         #
-        # Resolve enable_thinking precedence: server --no-thinking wins;
-        # else request-level enable_thinking; else None (template default).
+        # Resolve enable_thinking (#387). The dflash app captures its own
+        # ``no_thinking`` by closure rather than going through the
+        # ServerConfig singleton, so we apply that override first then
+        # delegate the request-side precedence (chat_template_kwargs >
+        # request.enable_thinking > None) to the shared extractor — same
+        # source of truth as the OpenAI/anthropic helper, but without the
+        # ``cfg.no_thinking`` consult that doesn't apply to dflash.
+        from ...service.helpers import _extract_thinking_from_request
+
         if no_thinking:
             enable_thinking: bool | None = False
         else:
-            enable_thinking = request.enable_thinking
+            enable_thinking = _extract_thinking_from_request(request)
         prompt = _render_prompt(
             processor, model, request, enable_thinking=enable_thinking
         )
