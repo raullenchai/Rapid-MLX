@@ -655,10 +655,11 @@ class BlockAwarePrefixCache:
                 )
                 if block_kv_data:
                     block.cache_data = block_kv_data
-                    # Record the originating cache class. ``_extract`` only
-                    # returns non-None when every layer is in
-                    # ``_SEQ_AXIS_KV_CLASSES``, so reading any one is safe.
-                    block.cache_class_name = cache_data[0].get("class_name")
+                    # ``_extract_block_tensor_slice`` only returns non-None
+                    # when every layer's ``class_name`` is in
+                    # ``_SEQ_AXIS_KV_CLASSES``, so reading the first layer's
+                    # name is safe and guaranteed non-None.
+                    block.cache_class_name = cache_data[0]["class_name"]
                     logger.debug(
                         f"Stored tensor slice for block {block.block_id}: "
                         f"tokens [{global_start}:{global_end}], {len(block_kv_data)} layers"
@@ -773,18 +774,22 @@ class BlockAwarePrefixCache:
 
                 keys, values = layer_state["state"]
 
-                # Gate on class_name so a Mamba/DeltaNet ``ArraysCache``
-                # holding two same-shape tensors can't be misclassified as
-                # KV and sliced along the wrong axis.
+                # Reject layers without an explicit allowlisted class_name
+                # *before* slicing — otherwise we'd store the block but
+                # ``reconstruct_cache`` would later refuse to host it,
+                # silently wasting a paged-cache slot. Mamba/DeltaNet
+                # ``ArraysCache`` and any future variant are bounced here.
+                class_name = layer_state.get("class_name")
+                if class_name not in self._SEQ_AXIS_KV_CLASSES:
+                    return None
+
                 seq_axis = self._cache_state_seq_axis(
-                    (keys, values),
-                    class_name=layer_state.get("class_name"),
+                    (keys, values), class_name=class_name
                 )
                 if seq_axis is None:
-                    # Unsupported layout (e.g. Mamba/DeltaNet state tuple in
-                    # a hybrid model). Bail out entirely — a partial slice
-                    # list would silently corrupt the cache when later
-                    # concatenated/reconstructed.
+                    # Tensor shape didn't match any known KV layout even
+                    # though the class name was right (e.g. corrupted
+                    # state). Bail out entirely.
                     return None
 
                 # Take the min over both tensors. ``keys`` and ``values``

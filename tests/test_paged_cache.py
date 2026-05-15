@@ -822,3 +822,51 @@ class TestBlockAwarePrefixCache:
         block.cache_class_name = "KVCache"
         out = cache.reconstruct_cache(table)
         assert out is not None and len(out) == 1
+
+    def test_extract_rejects_layer_without_class_name(self):
+        """If a layer dict lacks an explicit ``class_name``, ``_extract``
+        must refuse to slice. Otherwise the block would be stored with
+        ``cache_class_name=None`` and silently rejected at reconstruct,
+        wasting a paged-cache slot. Regression for codex pr_validate
+        round-2 finding on PR #392."""
+        import mlx.core as mx
+
+        from vllm_mlx.paged_cache import PagedCacheManager
+        from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+
+        paged_manager = PagedCacheManager(block_size=4, max_blocks=10)
+        cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
+        four_d = mx.zeros((1, 2, 8, 3))
+
+        # Missing class_name key entirely.
+        no_class_layer = {"state": (four_d, four_d), "meta_state": ""}
+        assert cache._extract_block_tensor_slice([no_class_layer], 0, 4) is None
+        # Explicit None.
+        explicit_none = dict(no_class_layer, class_name=None)
+        assert cache._extract_block_tensor_slice([explicit_none], 0, 4) is None
+        # Any non-allowlisted class.
+        for forbidden in ("ArraysCache", "RotatingKVCache", "QuantizedKVCache"):
+            layer = dict(no_class_layer, class_name=forbidden)
+            assert cache._extract_block_tensor_slice([layer], 0, 4) is None
+
+    def test_cow_copy_propagates_cache_class_name(self):
+        """``PagedCacheManager.copy_block`` must propagate
+        ``cache_class_name`` so the COW destination satisfies the
+        (cache_data, cache_class_name) invariant. Regression for codex
+        pr_validate round-2 finding on PR #392."""
+        import mlx.core as mx
+
+        from vllm_mlx.paged_cache import PagedCacheManager
+
+        manager = PagedCacheManager(block_size=4, max_blocks=10)
+        src = manager.allocate_block()
+        four_d = mx.zeros((1, 2, 4, 8))
+        src.cache_data = [(four_d, four_d)]
+        src.cache_class_name = "KVCache"
+        # Bump the source ref so copy_block treats it as shared (its COW
+        # contract decrements the source from a shared state).
+        manager.increment_ref(src.block_id)
+        dst = manager._cow_copy_block(src)
+        assert dst is not None
+        assert dst.cache_data == src.cache_data
+        assert dst.cache_class_name == "KVCache"

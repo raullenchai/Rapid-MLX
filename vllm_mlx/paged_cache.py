@@ -709,6 +709,7 @@ class PagedCacheManager:
 
             block.reset_hash()
             block.cache_data = None  # Free tensor memory
+            block.cache_class_name = None
             self.stats.evictions += 1
             return True
 
@@ -1119,6 +1120,9 @@ class PagedCacheManager:
 
         new_block.token_count = source_block.token_count
         new_block.cache_data = source_block.cache_data
+        # cache_class_name is part of the (cache_data, cache_class_name)
+        # invariant required by ``BlockAwarePrefixCache.reconstruct_cache``.
+        new_block.cache_class_name = source_block.cache_class_name
 
         source_block.ref_count -= 1
         if source_block.ref_count == 1:
@@ -1303,6 +1307,7 @@ class PagedCacheManager:
             for block in self.blocks:
                 block.reset_hash()
                 block.cache_data = None
+                block.cache_class_name = None
 
             self.stats.evictions = 0
             self.stats.cache_hits = 0
