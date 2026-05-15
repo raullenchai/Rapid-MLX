@@ -443,6 +443,20 @@ class TestStripBackslashBeforeUnicode:
         # should still be stripped.
         assert _strip_backslash_before_unicode("hi \\🎉 there") == "hi 🎉 there"
 
+    def test_key_collision_logs_and_keeps_first(self, caplog):
+        """Codex review round 2 finding: two dirty keys can collapse to
+        the same clean key (``"\\한"`` and ``"한"`` both → ``"한"``).
+        Silently dropping one is data loss; we keep the first occurrence
+        and log a warning."""
+        import logging
+
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        with caplog.at_level(logging.WARNING, logger="vllm_mlx.routes.chat"):
+            cleaned = _strip_backslash_before_unicode({"\\한": 1, "한": 2})
+        assert cleaned == {"한": 1}
+        assert any("key collision" in rec.message for rec in caplog.records)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

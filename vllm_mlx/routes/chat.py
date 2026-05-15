@@ -80,10 +80,24 @@ def _strip_backslash_before_unicode(obj: object) -> object:
         # Clean both keys and values: ``lm-format-enforcer`` can produce
         # ``"\\한\\글": "value"`` (valid JSON, ugly key). Stripping only
         # values would leak the bug into client-visible object keys.
-        return {
-            _strip_backslash_before_unicode(k): _strip_backslash_before_unicode(v)
-            for k, v in obj.items()
-        }
+        cleaned: dict[object, object] = {}
+        for k, v in obj.items():
+            new_key = _strip_backslash_before_unicode(k)
+            new_val = _strip_backslash_before_unicode(v)
+            if new_key in cleaned:
+                # Two distinct dirty keys can collapse to the same clean
+                # key (e.g. ``"\\한"`` and ``"한"`` both → ``"한"``). Keep
+                # the first occurrence and surface the collision rather
+                # than silently dropping a field.
+                logger.warning(
+                    "JSON key collision after backslash strip: %r dropped "
+                    "in favor of earlier value (cleaned key=%r)",
+                    k,
+                    new_key,
+                )
+                continue
+            cleaned[new_key] = new_val
+        return cleaned
     if isinstance(obj, list):
         return [_strip_backslash_before_unicode(v) for v in obj]
     if isinstance(obj, str):
@@ -616,9 +630,13 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             )
             if parsed_json is not None:
                 parsed_json = _strip_backslash_before_unicode(parsed_json)
-                # ensure_ascii=False keeps non-ASCII characters as-is rather
-                # than escaping them — preserves user-visible CJK / emoji in
-                # the cleaned text without double-encoding.
+                # ``ensure_ascii=False`` keeps non-ASCII characters as
+                # raw UTF-8 rather than escaping them to ``\uXXXX``. This
+                # is the standard recommendation for JSON-over-HTTP with
+                # international content (matches OpenAI's own response
+                # encoding); FastAPI emits this body as UTF-8 anyway, so
+                # the on-wire bytes are smaller and clients don't have to
+                # un-escape user-visible CJK / emoji a second time.
                 cleaned_text = json.dumps(parsed_json, ensure_ascii=False)
             if not is_valid:
                 logger.warning(f"JSON validation failed: {error}")
