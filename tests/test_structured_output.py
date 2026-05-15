@@ -457,6 +457,46 @@ class TestStripBackslashBeforeUnicode:
         assert cleaned == {"한": 1}
         assert any("key collision" in rec.message for rec in caplog.records)
 
+    def test_end_to_end_response_format_cleanup(self):
+        """Integration: drive the exact chain ``routes/chat.py`` runs on
+        a response_format='json_object' request whose model output
+        contains spurious ``\\`` before non-ASCII chars. This is the
+        regression that exercises wiring — if a future refactor moves
+        the helper to a different module or skips it, this test fails.
+
+        Codex review round 2 asked for this end-to-end coverage so the
+        unit test alone isn't the only safeguard against the wiring
+        getting accidentally dropped."""
+        import json as _json
+
+        from vllm_mlx.api.tool_calling import parse_json_output
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        # Simulated model output: looks like JSON, but every CJK char
+        # carries a leading backslash (lm-format-enforcer behavior).
+        # Use double-escaped backslashes because the model emits the
+        # literal characters ``\``, ``빠``, ``\``, ``르``, …
+        raw_model_text = (
+            '{"message": "안녕 \\\\빠\\\\르\\\\게", "name": "\\\\한\\\\글"}'
+        )
+        response_format = {"type": "json_object"}
+
+        _, parsed_json, is_valid, _ = parse_json_output(raw_model_text, response_format)
+        assert is_valid, "json_object parser should accept this input"
+        assert parsed_json is not None
+
+        # The chat route now applies the helper before re-serializing.
+        cleaned = _strip_backslash_before_unicode(parsed_json)
+        final = _json.dumps(cleaned, ensure_ascii=False)
+
+        # Final body is what the client sees in ``message.content``.
+        # No spurious backslashes before the CJK characters.
+        assert "\\빠" not in final
+        assert "\\한" not in final
+        # CJK content survives intact (not double-escaped to \uXXXX).
+        assert "빠르게" in final
+        assert "한글" in final
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
