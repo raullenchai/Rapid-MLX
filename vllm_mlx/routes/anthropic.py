@@ -34,6 +34,7 @@ from ..service.helpers import (
     _build_usage,
     _disconnect_guard,
     _parse_tool_calls_with_parser,
+    _resolve_enable_thinking,
     _resolve_max_tokens,
     _resolve_temperature,
     _resolve_top_p,
@@ -148,7 +149,7 @@ async def create_anthropic_message(
     chat_kwargs = {
         "max_tokens": _resolve_max_tokens(
             openai_request.max_tokens,
-            getattr(openai_request, "enable_thinking", None),
+            _resolve_enable_thinking(openai_request),
         ),
         **_resolved_sampling_kwargs(openai_request),
     }
@@ -156,10 +157,11 @@ async def create_anthropic_message(
     if openai_request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
     cfg = get_config()
-    if openai_request.enable_thinking is not None:
-        chat_kwargs["enable_thinking"] = openai_request.enable_thinking
-    elif cfg.no_thinking:
-        chat_kwargs["enable_thinking"] = False
+    # Resolve enable_thinking via shared helper (#387: chat_template_kwargs
+    # passthrough). Same precedence as the OpenAI route.
+    resolved_thinking = _resolve_enable_thinking(openai_request)
+    if resolved_thinking is not None:
+        chat_kwargs["enable_thinking"] = resolved_thinking
 
     start_time = time.perf_counter()
     timeout = cfg.default_timeout
@@ -349,7 +351,7 @@ async def _stream_anthropic_messages(
     chat_kwargs = {
         "max_tokens": _resolve_max_tokens(
             openai_request.max_tokens,
-            getattr(openai_request, "enable_thinking", None),
+            _resolve_enable_thinking(openai_request),
         ),
         **_resolved_sampling_kwargs(openai_request),
     }
@@ -357,10 +359,11 @@ async def _stream_anthropic_messages(
     if openai_request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
     cfg = get_config()
-    if openai_request.enable_thinking is not None:
-        chat_kwargs["enable_thinking"] = openai_request.enable_thinking
-    elif cfg.no_thinking:
-        chat_kwargs["enable_thinking"] = False
+    # Resolve enable_thinking via shared helper (#387: chat_template_kwargs
+    # passthrough). Same precedence as the OpenAI route.
+    resolved_thinking = _resolve_enable_thinking(openai_request)
+    if resolved_thinking is not None:
+        chat_kwargs["enable_thinking"] = resolved_thinking
 
     # Emit message_start
     message_start = {
