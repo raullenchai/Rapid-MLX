@@ -377,5 +377,59 @@ class TestStructuredOutputIntegration:
         assert isinstance(data["colors"], list)
 
 
+class TestStripBackslashBeforeUnicode:
+    """Cherry-picked from upstream waybarrios#525.
+
+    ``lm-format-enforcer``'s grammar permits ``\\`` followed by any
+    codepoint as a valid JSON escape, so a model emitting JSON with
+    non-ASCII content can produce strings like ``"\\빠\\르\\게"``: valid
+    JSON, but the decoded value carries literal backslashes that look
+    like corruption to clients. The helper in ``routes/chat.py`` strips
+    those spurious backslashes recursively across dicts / lists / strs.
+    """
+
+    def test_strips_backslash_before_cjk(self):
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        assert _strip_backslash_before_unicode("\\빠\\르\\게") == "빠르게"
+
+    def test_preserves_valid_ascii_escapes(self):
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        # ``\\n`` decodes to a newline; the helper sees an actual newline
+        # (non-ASCII codepoint? no — newline is ASCII), so it must remain
+        # untouched.  Same for ``\\\\`` (literal backslash).
+        assert _strip_backslash_before_unicode("line1\nline2") == "line1\nline2"
+        assert _strip_backslash_before_unicode("path\\\\to") == "path\\\\to"
+
+    def test_recurses_into_dict_and_list(self):
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        nested = {
+            "title": "\\안\\녕",
+            "items": ["a", "\\🚀", {"name": "\\한\\글"}],
+        }
+        cleaned = _strip_backslash_before_unicode(nested)
+        assert cleaned == {
+            "title": "안녕",
+            "items": ["a", "🚀", {"name": "한글"}],
+        }
+
+    def test_non_string_scalars_pass_through(self):
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        assert _strip_backslash_before_unicode(42) == 42
+        assert _strip_backslash_before_unicode(True) is True
+        assert _strip_backslash_before_unicode(None) is None
+
+    def test_emoji_with_surrogate_pair(self):
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        # Emoji past U+FFFF — the regex matches by codepoint, not by
+        # UTF-16 surrogate, so the single backslash before the emoji
+        # should still be stripped.
+        assert _strip_backslash_before_unicode("hi \\🎉 there") == "hi 🎉 there"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

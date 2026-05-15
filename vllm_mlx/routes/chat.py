@@ -4,6 +4,7 @@
 import gc
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -64,6 +65,24 @@ from ..service.helpers import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# Matches a single backslash directly followed by a non-ASCII codepoint.
+# ``lm-format-enforcer``'s grammar permits ``\\`` followed by any codepoint
+# as a valid JSON escape, so a model emitting JSON with CJK / emoji content
+# can produce strings like ``"\\빠\\르\\게"`` — valid JSON, but the decoded
+# value carries literal backslashes. Strip them so clients see clean text.
+_BACKSLASH_BEFORE_UNICODE = re.compile(r"\\([^\x00-\x7F])")
+
+
+def _strip_backslash_before_unicode(obj: object) -> object:
+    if isinstance(obj, dict):
+        return {k: _strip_backslash_before_unicode(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_backslash_before_unicode(v) for v in obj]
+    if isinstance(obj, str):
+        return _BACKSLASH_BEFORE_UNICODE.sub(r"\1", obj)
+    return obj
 
 
 def _finalize_content_and_reasoning(
@@ -590,7 +609,11 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                 json_input, response_format
             )
             if parsed_json is not None:
-                cleaned_text = json.dumps(parsed_json)
+                parsed_json = _strip_backslash_before_unicode(parsed_json)
+                # ensure_ascii=False keeps non-ASCII characters as-is rather
+                # than escaping them — preserves user-visible CJK / emoji in
+                # the cleaned text without double-encoding.
+                cleaned_text = json.dumps(parsed_json, ensure_ascii=False)
             if not is_valid:
                 logger.warning(f"JSON validation failed: {error}")
         except Exception as e:
