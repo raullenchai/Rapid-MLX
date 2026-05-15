@@ -77,7 +77,13 @@ _BACKSLASH_BEFORE_UNICODE = re.compile(r"\\([^\x00-\x7F])")
 
 def _strip_backslash_before_unicode(obj: object) -> object:
     if isinstance(obj, dict):
-        return {k: _strip_backslash_before_unicode(v) for k, v in obj.items()}
+        # Clean both keys and values: ``lm-format-enforcer`` can produce
+        # ``"\\한\\글": "value"`` (valid JSON, ugly key). Stripping only
+        # values would leak the bug into client-visible object keys.
+        return {
+            _strip_backslash_before_unicode(k): _strip_backslash_before_unicode(v)
+            for k, v in obj.items()
+        }
     if isinstance(obj, list):
         return [_strip_backslash_before_unicode(v) for v in obj]
     if isinstance(obj, str):

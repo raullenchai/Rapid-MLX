@@ -415,6 +415,19 @@ class TestStripBackslashBeforeUnicode:
             "items": ["a", "🚀", {"name": "한글"}],
         }
 
+    def test_cleans_non_ascii_keys(self):
+        """Codex review round 1 finding: keys can also carry spurious
+        backslashes (``lm-format-enforcer`` makes no distinction between
+        JSON keys and values). The cleaner must strip both."""
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        # Key with backslashes before CJK; value also dirty.
+        assert _strip_backslash_before_unicode({"\\제\\목": "\\값"}) == {"제목": "값"}
+        # Nested case: the inner dict's key must also be cleaned.
+        assert _strip_backslash_before_unicode({"items": [{"\\이\\름": "raul"}]}) == {
+            "items": [{"이름": "raul"}]
+        }
+
     def test_non_string_scalars_pass_through(self):
         from vllm_mlx.routes.chat import _strip_backslash_before_unicode
 
