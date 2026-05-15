@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for tool_calling.py"""
 
+import json
 from unittest.mock import MagicMock
 
 from vllm_mlx.api.tool_calling import (
@@ -153,6 +154,20 @@ class TestParseRawJsonToolCalls:
         assert len(result) == 1
         assert result[0]["name"] == "func1"
 
+    def test_text_with_json_file_content(self):
+        """Tool JSON with braces inside a string argument is still extracted."""
+        text = (
+            'Now write this file: {"name": "write_file", "arguments": {'
+            '"path": "/tmp/tsconfig.json", '
+            '"content": "{\\n  \\"compilerOptions\\": {\\n    \\"strict\\": true\\n  }\\n}\\n"'
+            "}}"
+        )
+        result = _parse_raw_json_tool_calls(text)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["name"] == "write_file"
+        assert '"compilerOptions"' in result[0]["arguments"]["content"]
+
     def test_arguments_extracted_as_dict(self):
         """Test that arguments are extracted as dict when present."""
         text = '{"name": "func", "arguments": {"key": "value", "num": 42}}'
@@ -258,6 +273,43 @@ class TestParseToolCalls:
         cleaned, tool_calls = parse_tool_calls(text, request=request)
 
         assert tool_calls is not None
+
+    def test_schema_string_arguments_serialize_objects(self):
+        """Object values for string parameters are serialized before OpenAI output."""
+        text = (
+            '{"name": "write_file", "arguments": '
+            '{"path": "/tmp/tsconfig.json", "content": {"compilerOptions": {"strict": true}}}}'
+        )
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+
+        _, tool_calls = parse_tool_calls(text, request=request)
+
+        assert tool_calls is not None
+        # Round-trip the serialized arguments to assert the full structure rather than
+        # a substring — guards against extra junk that would still pass an `in` check.
+        args = json.loads(tool_calls[0].function.arguments)
+        assert set(args.keys()) == {"path", "content"}
+        assert args["path"] == "/tmp/tsconfig.json"
+        # `content` is declared `string` in schema, so the object value should serialize
+        # to a JSON string rather than be passed through as a dict.
+        assert isinstance(args["content"], str)
+        assert json.loads(args["content"]) == {"compilerOptions": {"strict": True}}
 
 
 class TestConvertToolsForTemplate:

@@ -22,6 +22,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
+from ..api.tool_calling import _decode_json_like, _schema_type
 from .abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
@@ -47,8 +48,6 @@ def _get_arguments_config(func_name: str, tools: list[dict] | None) -> dict:
             params = func.get("parameters", {})
             if isinstance(params, dict) and "properties" in params:
                 return params["properties"]
-            elif isinstance(params, dict):
-                return params
             return {}
     return {}
 
@@ -61,13 +60,12 @@ def _convert_param_value(
         return None
 
     if param_name not in param_config:
-        return param_value
+        return _decode_json_like(param_value)
 
     cfg = param_config[param_name]
-    if isinstance(cfg, dict) and "type" in cfg:
-        param_type = str(cfg["type"]).strip().lower()
-    else:
-        param_type = "string"
+    param_type = _schema_type(cfg)
+    if param_type is None:
+        return _decode_json_like(param_value)
 
     if param_type in ("string", "str", "text", "varchar", "char", "enum"):
         return param_value
@@ -87,10 +85,9 @@ def _convert_param_value(
         if param_type in ("object", "array", "arr") or param_type.startswith(
             ("dict", "list")
         ):
-            try:
-                return json.loads(param_value)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+            decoded = _decode_json_like(param_value)
+            if decoded is not param_value:
+                return decoded
         try:
             return ast.literal_eval(param_value)
         except (ValueError, SyntaxError):
@@ -253,6 +250,8 @@ class Qwen3CoderToolParser(ToolParser):
     ) -> dict[str, Any] | None:
         if not previous_text:
             self._reset_streaming_state()
+            self._streaming_request = request
+        elif request is not None and self._streaming_request is None:
             self._streaming_request = request
 
         if not delta_text:
