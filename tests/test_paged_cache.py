@@ -794,3 +794,31 @@ class TestBlockAwarePrefixCache:
             "class_name": "ArraysCache",
         }
         assert cache._extract_block_tensor_slice([non_kv_layer], 0, 4) is None
+
+    def test_reconstruct_refuses_non_kvcache_class_name(self):
+        """``reconstruct_cache`` must refuse to host anything other than a
+        vanilla ``KVCache`` even if ``block.cache_data`` somehow contains
+        4D tensors. Defense in depth against a future writer that bypasses
+        ``_extract_block_tensor_slice``. Regression for codex pr_validate
+        finding on PR #392."""
+        import mlx.core as mx
+
+        from vllm_mlx.paged_cache import BlockTable, PagedCacheManager
+        from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+
+        paged_manager = PagedCacheManager(block_size=4, max_blocks=10)
+        cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
+
+        # Manually plant a block as if some non-KV writer had populated it.
+        block = paged_manager.allocate_block()
+        four_d = mx.zeros((1, 2, 4, 8))
+        block.cache_data = [(four_d, four_d)]
+        block.cache_class_name = "RotatingKVCache"
+
+        table = BlockTable(request_id="req", block_ids=[block.block_id], num_tokens=4)
+        assert cache.reconstruct_cache(table) is None
+
+        # And the happy path still works once class_name is correct.
+        block.cache_class_name = "KVCache"
+        out = cache.reconstruct_cache(table)
+        assert out is not None and len(out) == 1

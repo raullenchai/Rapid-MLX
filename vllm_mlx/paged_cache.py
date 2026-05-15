@@ -115,6 +115,11 @@ class CacheBlock:
     # Actual tensor data for this block
     # List of (keys, values) per layer, shape: (1, n_kv_heads, block_tokens, head_dim)
     cache_data: list[tuple[Any, Any]] | None = None
+    # mlx-lm cache class that produced ``cache_data``. Reconstruction must
+    # check this before hosting the slices in an ``mlx_lm.KVCache`` — two
+    # different cache classes may emit same-shape state but have different
+    # seq-axis semantics (e.g. ``RotatingKVCache`` vs ``KVCache``).
+    cache_class_name: str | None = None
 
     # Metadata
     token_count: int = 0

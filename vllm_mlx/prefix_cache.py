@@ -655,6 +655,10 @@ class BlockAwarePrefixCache:
                 )
                 if block_kv_data:
                     block.cache_data = block_kv_data
+                    # Record the originating cache class. ``_extract`` only
+                    # returns non-None when every layer is in
+                    # ``_SEQ_AXIS_KV_CLASSES``, so reading any one is safe.
+                    block.cache_class_name = cache_data[0].get("class_name")
                     logger.debug(
                         f"Stored tensor slice for block {block.block_id}: "
                         f"tokens [{global_start}:{global_end}], {len(block_kv_data)} layers"
@@ -930,6 +934,20 @@ class BlockAwarePrefixCache:
 
                 if block.cache_data is None:
                     logger.debug(f"Block {block_id} has no tensor data stored")
+                    return None
+
+                # Belt-and-suspenders: even though the store path gates on
+                # ``class_name``, refuse to host anything but a vanilla
+                # ``KVCache`` here. mlx_lm's ``KVCache`` accessors hard-code
+                # ``shape[2]`` for seq; a rotating/chunked cache with the
+                # same 4D shape would be silently misinterpreted.
+                if block.cache_class_name not in self._SEQ_AXIS_KV_CLASSES:
+                    logger.debug(
+                        f"Block {block_id} cache_class_name="
+                        f"{block.cache_class_name!r} not in "
+                        f"{sorted(self._SEQ_AXIS_KV_CLASSES)}; refusing to "
+                        "reconstruct as KVCache."
+                    )
                     return None
 
                 all_block_data.append(block.cache_data)
