@@ -2693,12 +2693,13 @@ class Scheduler:
                 else:
                     new_text = self._decode_tokens([response.token])
 
-            # Create output
+            # output_token_ids is a live reference (not a defensive copy):
+            # consumers read it synchronously; the per-decode list() was O(n).
             output = RequestOutput(
                 request_id=request_id,
                 new_token_ids=[response.token],
                 new_text=new_text,
-                output_token_ids=list(request.output_token_ids),
+                output_token_ids=request.output_token_ids,
                 prompt_tokens=request.num_prompt_tokens,
                 completion_tokens=request.num_output_tokens,
                 logprobs=response.logprobs,

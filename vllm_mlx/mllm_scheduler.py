@@ -528,12 +528,13 @@ class MLLMScheduler:
                 detok.add_token(response.token)
                 new_text = detok.last_segment
 
-            # Create output
+            # output_token_ids is a live reference (not a defensive copy):
+            # consumers read it synchronously; the per-decode list() was O(n).
             output = RequestOutput(
                 request_id=request_id,
                 new_token_ids=[response.token],
                 new_text=new_text,
-                output_token_ids=list(request.output_tokens),
+                output_token_ids=request.output_tokens,
                 prompt_tokens=request.num_prompt_tokens,
                 completion_tokens=request.num_output_tokens,
             )
