@@ -770,3 +770,27 @@ class TestBlockAwarePrefixCache:
         assert cache._cache_state_seq_axis((four_d, None)) is None
         assert cache._cache_state_seq_axis((None, four_d)) is None
         assert cache._cache_state_seq_axis((None, None)) is None
+        # Class-name gate: a Mamba/DeltaNet ``ArraysCache`` may happen to
+        # hold two same-shape 3D tensors, but its tensors are NOT seq-
+        # indexed. The gate must reject any class outside the allowlist.
+        # Regression for codex round-3 finding on PR #392.
+        assert (
+            cache._cache_state_seq_axis((kv_keys, kv_values), class_name="ArraysCache")
+            is None
+        )
+        assert (
+            cache._cache_state_seq_axis((four_d, four_d), class_name="RotatingKVCache")
+            is None
+        )
+        assert cache._cache_state_seq_axis((four_d, four_d), class_name="KVCache") == 2
+        # When class_name is omitted, fall back to the shape-only heuristic.
+        assert cache._cache_state_seq_axis((four_d, four_d)) == 2
+        # Extract path itself rejects layers whose class_name is not KVCache,
+        # even when their tensors look slicable.
+        non_kv_layer = {
+            "state": (kv_keys, kv_values),
+            "meta_state": "",
+            "class_ref": None,
+            "class_name": "ArraysCache",
+        }
+        assert cache._extract_block_tensor_slice([non_kv_layer], 0, 4) is None

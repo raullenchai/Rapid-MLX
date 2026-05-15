@@ -689,15 +689,30 @@ class BlockAwarePrefixCache:
 
         return block_table
 
-    def _cache_state_seq_axis(self, state: Any) -> int | None:
+    # Cache classes whose ``state`` is ``(keys, values)`` and whose seq
+    # axis is well-defined by ndim alone. Other classes (Mamba/DeltaNet
+    # ``ArraysCache``, ``QuantizedKVCache`` with tri-tuple values, rotating
+    # caches with non-monotonic seq positions) are explicitly rejected
+    # even when their tensors happen to look 3D/4D and same-shape.
+    _SEQ_AXIS_KV_CLASSES = frozenset({"KVCache"})
+
+    def _cache_state_seq_axis(
+        self, state: Any, *, class_name: str | None = None
+    ) -> int | None:
         """Return the sequence axis for cache states that support block concat.
 
         Supports two KV-cache layouts emitted by mlx-lm:
         - 4D ``(batch, n_kv_heads, seq, head_dim)`` → seq_axis = 2
         - 3D ``(n_kv_heads, seq, head_dim)`` (Qwen3.5-style) → seq_axis = 1
 
-        Returns ``None`` for unsupported shapes (e.g. mixed dims across keys/
-        values, scalars, MambaCache state tuples).
+        ``class_name``, when supplied, must be in ``_SEQ_AXIS_KV_CLASSES`` —
+        a Mamba/DeltaNet ``ArraysCache`` may incidentally hold two same-
+        shape 3D tensors but is NOT seq-indexed, and slicing it along axis
+        1 would silently corrupt the cache. When ``class_name`` is omitted
+        the legacy shape-only heuristic is used (kept for the standalone
+        unit test that does not flow through the full extract path).
+
+        Returns ``None`` for unsupported shapes or class names.
         """
         if not isinstance(state, (list, tuple)) or not state:
             return None
@@ -709,6 +724,9 @@ class BlockAwarePrefixCache:
         if len(state) != 2:
             return None
         if any(t is None or not hasattr(t, "shape") for t in state):
+            return None
+
+        if class_name is not None and class_name not in self._SEQ_AXIS_KV_CLASSES:
             return None
 
         ndims = {len(tensor.shape) for tensor in state}
@@ -751,7 +769,13 @@ class BlockAwarePrefixCache:
 
                 keys, values = layer_state["state"]
 
-                seq_axis = self._cache_state_seq_axis((keys, values))
+                # Gate on class_name so a Mamba/DeltaNet ``ArraysCache``
+                # holding two same-shape tensors can't be misclassified as
+                # KV and sliced along the wrong axis.
+                seq_axis = self._cache_state_seq_axis(
+                    (keys, values),
+                    class_name=layer_state.get("class_name"),
+                )
                 if seq_axis is None:
                     # Unsupported layout (e.g. Mamba/DeltaNet state tuple in
                     # a hybrid model). Bail out entirely — a partial slice
