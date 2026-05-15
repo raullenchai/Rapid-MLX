@@ -764,3 +764,9 @@ class TestBlockAwarePrefixCache:
         assert cache._cache_state_seq_axis((four_d, four_d)) == 2
         assert cache._cache_state_seq_axis((four_d,)) is None
         assert cache._cache_state_seq_axis((four_d, mx.zeros((2, 8)))) is None
+        # Partial-None state must reject up-front rather than relying on
+        # downstream ``.shape`` access to crash (caught by outer try/except,
+        # but fragile). Regression for codex round-2 finding on PR #392.
+        assert cache._cache_state_seq_axis((four_d, None)) is None
+        assert cache._cache_state_seq_axis((None, four_d)) is None
+        assert cache._cache_state_seq_axis((None, None)) is None

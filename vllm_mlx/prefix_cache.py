@@ -702,19 +702,20 @@ class BlockAwarePrefixCache:
         if not isinstance(state, (list, tuple)) or not state:
             return None
 
-        ndims = {
-            len(tensor.shape)
-            for tensor in state
-            if tensor is not None and hasattr(tensor, "shape")
-        }
+        # KV-cache state is always (keys, values); anything else is some
+        # other cache class (Mamba conv state + recurrent state, etc.).
+        # Reject up-front when either side is missing or non-tensorlike so
+        # downstream ``keys.shape`` / ``values.shape`` access is safe.
+        if len(state) != 2:
+            return None
+        if any(t is None or not hasattr(t, "shape") for t in state):
+            return None
+
+        ndims = {len(tensor.shape) for tensor in state}
         if len(ndims) != 1:
             return None
 
         ndim = next(iter(ndims))
-        # KV-cache state is always (keys, values); anything else is some
-        # other cache class (Mamba conv state + recurrent state, etc.).
-        if len(state) != 2:
-            return None
         if ndim == 4:
             return 2
         # Qwen3.5-style KV caches use (n_kv_heads, seq, head_dim).
