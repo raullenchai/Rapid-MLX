@@ -72,6 +72,22 @@ router = APIRouter()
 # as a valid JSON escape, so a model emitting JSON with CJK / emoji content
 # can produce strings like ``"\\빠\\르\\게"`` — valid JSON, but the decoded
 # value carries literal backslashes. Strip them so clients see clean text.
+#
+# Scope / known tradeoff: this is applied only on the ``response_format``
+# json-output path (see line ~632 below), not to tool-call arguments or
+# regular text content. The cleanup is unconditional within that path,
+# matching upstream waybarrios#525. A JSON object that LEGITIMATELY
+# contains a backslash before a non-ASCII codepoint (e.g. a Windows path
+# ``"C:\\사용자\\file.txt"`` in a response_format=json_object reply) will
+# be mutated to ``"C:사용자file.txt"``. We accept this tradeoff because:
+#  (a) the lm-format-enforcer bug is the overwhelming source of these
+#      sequences in JSON-output responses; the file-path case is rare,
+#  (b) gating the cleanup on a heuristic ("looks like enforcer output")
+#      would be fragile and only catch the obvious patterns,
+#  (c) clients that need raw backslash + non-ASCII can fall back to
+#      ``response_format=text`` and parse the JSON themselves.
+# If a user reports the false-positive in practice, revisit by adding a
+# config flag (``--no-strip-spurious-backslashes``) rather than a heuristic.
 _BACKSLASH_BEFORE_UNICODE = re.compile(r"\\([^\x00-\x7F])")
 
 
