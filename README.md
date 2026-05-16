@@ -68,6 +68,12 @@ curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
 
 > **"No matching distribution" error?** Your Python is too old. Run `python3 --version` — if it says 3.9, install a newer Python: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`
 
+> **`Tapping homebrew/core` / `Operation not permitted` during `brew install`?** Brew 5.x's install sandbox can't auto-tap `homebrew/core` mid-install. Pre-tap it once, then retry:
+> ```bash
+> brew tap homebrew/core --force   # ~1.3 GB, one-time
+> brew install raullenchai/rapid-mlx/rapid-mlx
+> ```
+
 **Step 2 — Serve a model:**
 ```bash
 rapid-mlx serve qwen3.5-4b
