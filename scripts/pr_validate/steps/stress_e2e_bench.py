@@ -210,7 +210,13 @@ def _load_registry() -> dict[str, Any]:
 
 
 def _select_models(registry: dict[str, Any], usable_gb: float) -> list[ModelChoice]:
-    """For each family, pick the highest-quality candidate that fits."""
+    """For each family, walk candidates top-to-bottom and pick the
+    first one whose ``ram_gb_required`` fits in ``usable_gb``. The
+    ordering of `candidates` in golden_models.yaml is the priority —
+    `quality_tier` is informational and does NOT affect selection.
+    Put your preferred candidate first; subsequent entries are
+    fallbacks for constrained hosts.
+    """
     out: list[ModelChoice] = []
     overrides = registry.get("overrides", {}) or {}
     for family in registry.get("families", []):
