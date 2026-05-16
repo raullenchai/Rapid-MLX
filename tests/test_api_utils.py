@@ -302,6 +302,142 @@ class TestIsMllmModelConfigPriority:
         assert _config_indicates_vlm({"architectures": "Qwen3ForCausalLM"}) is False
 
 
+class TestIsMllmModelWeightsPresenceOverride:
+    """Verifies the local weights-presence override for text-only forks of
+    multimodal architectures.
+
+    Regression coverage for issue #393: ``Qwen3.6-35B-A3B-MLX-8bit`` ships
+    ``config.json`` with a populated ``vision_config`` block (because the
+    base ``Qwen3_5MoeForConditionalGeneration`` architecture is multimodal-
+    capable), but the user's safetensors checkpoint only contains language
+    tensors — no ``vision_tower.*`` weights. Detection used to trust the
+    config and route the model into the MLLM batched engine, which then
+    crashed at first request because there was no vision tower to call.
+
+    The fix: when config says VLM AND the path is a local directory with
+    a ``model.safetensors.index.json``, scan the index for actual
+    multimodal tensor prefixes. If none are present, override to text.
+    """
+
+    @staticmethod
+    def _make_model_dir(tmp_path, name, config, weight_names):
+        """Build a fake local model dir with config.json + sharded index.
+
+        ``weight_names`` is the list of tensor names to embed in the
+        ``weight_map`` of ``model.safetensors.index.json`` — controls
+        whether the weights-presence override fires.
+        """
+        model_dir = tmp_path / name
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(json.dumps(config))
+        weight_map = {name: "model-00001-of-00001.safetensors" for name in weight_names}
+        (model_dir / "model.safetensors.index.json").write_text(
+            json.dumps({"metadata": {"total_size": 0}, "weight_map": weight_map})
+        )
+        return model_dir
+
+    def test_vision_config_but_no_vision_weights_is_text_only(self, tmp_path):
+        """The #393 fix path. Config declares vision_config but the index
+        has only language tensors — must return False (route as text)."""
+        model_dir = self._make_model_dir(
+            tmp_path,
+            "Qwen3.6-35B-A3B-MLX-8bit",
+            {
+                "model_type": "qwen3_5_moe",
+                "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                "vision_config": {"hidden_size": 1152, "depth": 27},
+                "image_token_id": 151655,
+            },
+            weight_names=[
+                "language_model.lm_head.weight",
+                "language_model.model.embed_tokens.weight",
+                "language_model.model.layers.0.self_attn.q_proj.weight",
+            ],
+        )
+        assert is_mllm_model(str(model_dir)) is False
+
+    def test_vision_config_with_vision_weights_is_vlm(self, tmp_path):
+        """Same config shape as above, but the index DOES carry
+        vision_tower tensors — must remain True (route as VLM). Mirrors
+        the genuine mlx-community/Qwen3.5-35B-A3B-8bit shape."""
+        model_dir = self._make_model_dir(
+            tmp_path,
+            "Qwen3.5-35B-A3B-8bit",
+            {
+                "model_type": "qwen3_5_moe",
+                "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                "vision_config": {"hidden_size": 1152, "depth": 27},
+            },
+            weight_names=[
+                "language_model.lm_head.weight",
+                "vision_tower.blocks.0.attn.qkv.weight",
+                "vision_tower.blocks.0.mlp.linear_fc1.weight",
+            ],
+        )
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_audio_only_checkpoint_with_audio_weights(self, tmp_path):
+        """Same principle but for the audio branch (audio_tower prefix)."""
+        model_dir = self._make_model_dir(
+            tmp_path,
+            "some-audio-vlm",
+            {"model_type": "custom_audio", "audio_config": {"sample_rate": 16000}},
+            weight_names=[
+                "language_model.lm_head.weight",
+                "audio_tower.encoder.layer.0.weight",
+            ],
+        )
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_missing_index_falls_back_to_config(self, tmp_path):
+        """Single-file safetensors (no sharded index) → the
+        weights-presence probe returns None, and we trust the config.
+        This is the conservative side: we'd rather route a small VLM
+        correctly than risk wrong-False on a real one. The cost of a
+        wrong-True (text path errors clearly at request time) is much
+        less than a wrong-False (silent corruption)."""
+        model_dir = tmp_path / "Qwen-VL-tiny"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["Qwen2VLForConditionalGeneration"],
+                    "vision_config": {"hidden_size": 768},
+                }
+            )
+        )
+        # No index file.
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_unreadable_index_falls_back_to_config(self, tmp_path):
+        model_dir = tmp_path / "broken-index"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["LlavaForConditionalGeneration"],
+                    "vision_config": {"hidden_size": 1024},
+                }
+            )
+        )
+        (model_dir / "model.safetensors.index.json").write_text("{ not json")
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_text_only_config_skips_weights_probe(self, tmp_path):
+        """If config says text-only, the weights probe must not fire —
+        irrelevant tensor names shouldn't suddenly promote a model to
+        MLLM routing. Preserves the existing text-routing decision."""
+        model_dir = self._make_model_dir(
+            tmp_path,
+            "qwen3-text",
+            {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]},
+            # Even if the dir somehow had vision-named tensors (shouldn't
+            # happen with a text-only config, but defensive), config wins.
+            weight_names=["language_model.lm_head.weight", "vision_tower.fake"],
+        )
+        assert is_mllm_model(str(model_dir)) is False
+
+
 class TestIsMllmModelHubOverride:
     """Verifies the hub config override for substring false-positives.
 

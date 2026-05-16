@@ -718,6 +718,68 @@ def _config_indicates_vlm(config: dict) -> bool:
     return False
 
 
+# Tensor-name prefixes that indicate actual vision/audio weights live in
+# the checkpoint. Used to distinguish text-only forks of multimodal
+# architectures (where config.json declares ``vision_config`` but the
+# safetensors ship no ``vision_tower.*`` tensors) from genuine VLMs.
+# See issue #393 (Qwen3.6-35B-A3B text-only fork misrouted into MLLM
+# batched path because Qwen3.5MoeForConditionalGeneration declares
+# vision_config even when the user's safetensors are language-only).
+_MULTIMODAL_TENSOR_PREFIXES = (
+    "vision_tower",
+    "vision_model",
+    "visual.",
+    "audio_tower",
+    "audio_model",
+    "mm_projector",
+    "patch_embed.",
+)
+
+
+def _local_checkpoint_has_multimodal_weights(model_dir: Path) -> bool | None:
+    """Probe a local model dir for actual vision/audio tensor weights.
+
+    Returns:
+        ``True`` if at least one tensor name in ``model.safetensors.index.json``
+        matches a known multimodal prefix (``vision_tower``, ``visual.``,
+        ``mm_projector``, …).
+        ``False`` if the index is present, readable, and contains zero
+        such tensors — meaning the checkpoint is text-only despite
+        whatever ``config.json`` declares.
+        ``None`` when we can't authoritatively answer (no index file,
+        single-file safetensors, unreadable index). Caller should fall
+        back to the config-based decision rather than flipping it.
+
+    The single-file-safetensors branch returns ``None`` rather than
+    parsing the file header ourselves — the cost of a wrong False (text
+    routing for a real VLM → crash later on first image input) is much
+    larger than the cost of a wrong True (current behavior, the bug we
+    want to fix only for the multi-file case Tylast reported in #393).
+    """
+    index_path = model_dir / "model.safetensors.index.json"
+    if not index_path.is_file():
+        # No sharded index. Caller must rely on config-based detection.
+        return None
+    try:
+        if index_path.stat().st_size > _MAX_CONFIG_JSON_BYTES:
+            # Unreasonably large index — bail rather than guess.
+            return None
+        with index_path.open(encoding="utf-8") as f:
+            idx = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None
+    weight_map = idx.get("weight_map")
+    if not isinstance(weight_map, dict):
+        return None
+    for tensor_name in weight_map:
+        if not isinstance(tensor_name, str):
+            continue
+        for prefix in _MULTIMODAL_TENSOR_PREFIXES:
+            if prefix in tensor_name:
+                return True
+    return False
+
+
 def _check_legacy_string_patterns(model_name: str) -> bool:
     """Validation 1: substring match of MLLM_PATTERNS against the input string.
 
@@ -731,17 +793,29 @@ def _check_legacy_string_patterns(model_name: str) -> bool:
 def is_mllm_model(model_name: str) -> bool:
     """Check if a model name or path indicates a multimodal language model.
 
-    Three complementary validations are run, in order:
+    Four complementary validations are run, in order:
 
     1. Local config.json inspection: when ``model_name`` resolves to a
        local directory containing a readable config.json, inspect the
        model's own metadata (``architectures`` field, ``vision_config``,
-       ``audio_config``, etc.). Authoritative when available.
+       ``audio_config``, etc.).
 
-    2. Legacy substring match against ``MLLM_PATTERNS``: when no local
+    2. Local weights-presence override: when (1) said "VLM" but the
+       directory ships a ``model.safetensors.index.json`` with NO
+       multimodal tensors (``vision_tower``, ``visual.``, ``mm_projector``,
+       …), the checkpoint is a text-only fork of a multimodal
+       architecture. Flip the answer to False so the model loads
+       through the text path instead of crashing in the MLLM batched
+       engine on a missing vision tower. Fixes #393 (Qwen3.6-35B-A3B
+       text-only fork — config.json declares ``vision_config`` because
+       the base ``Qwen3_5MoeForConditionalGeneration`` architecture is
+       multimodal-capable, but the user's safetensors only contain
+       language tensors).
+
+    3. Legacy substring match against ``MLLM_PATTERNS``: when no local
        config is reachable, the historical name-based heuristic decides.
 
-    3. Cached-config override (false-positive correction): when the
+    4. Cached-config override (false-positive correction): when the
        legacy substring says "MLLM" but the repo's own config (already
        in the local HF cache from a prior download or warmup call)
        disagrees (e.g. ``mlx-community/gemma-3-1b-it-4bit`` matches the
@@ -761,7 +835,26 @@ def is_mllm_model(model_name: str) -> bool:
     """
     config = _try_read_config_json(model_name)
     if config is not None:
-        return _config_indicates_vlm(config)
+        if not _config_indicates_vlm(config):
+            return False
+        # Config says VLM. For local directories, verify the checkpoint
+        # actually carries vision/audio tensors — text-only forks of
+        # multimodal architectures (#393) ship a config that declares
+        # vision_config but no vision_tower weights, and routing them
+        # to the MLLM batched engine crashes at first request.
+        try:
+            model_dir = Path(model_name)
+        except (TypeError, ValueError):
+            return True
+        if model_dir.is_dir():
+            verdict = _local_checkpoint_has_multimodal_weights(model_dir)
+            if verdict is False:
+                return False
+            # verdict is True or None (unable to authoritatively decide);
+            # trust the config in both cases — wrong-True here means an
+            # unnecessary text-path attempt that returns a clear error,
+            # vs wrong-False which would corrupt every request silently.
+        return True
 
     legacy = _check_legacy_string_patterns(model_name)
     if not legacy:
