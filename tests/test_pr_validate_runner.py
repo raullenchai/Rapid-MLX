@@ -214,7 +214,14 @@ class TestSelectModels:
                         {
                             "id": "mlx-community/Qwen3.6-27B-4bit",
                             "ram_gb_required": 18,
-                            "quality_tier": "golden",
+                            # Mirrors the YAML — `smoke` so the multi-
+                            # tool agent (skip_for_smoke=true) is
+                            # suppressed on constrained hosts that
+                            # have to fall through to this 4-bit
+                            # entry. A future test that relies on the
+                            # skip behavior wants the fixture's tier
+                            # to match production.
+                            "quality_tier": "smoke",
                         },
                     ],
                 },
