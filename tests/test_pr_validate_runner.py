@@ -239,12 +239,15 @@ class TestSelectModels:
 
     # The override args we expect for the qwen3.6 family — match
     # exactly so a regression that drops the parser, drops the value,
-    # or swaps `hermes` for the wrong parser id is caught.
-    _QWEN36_HERMES_ARGS = [
+    # or swaps `hermes` for the wrong parser id is caught. A tuple
+    # rather than a list so a future test can't accidentally `.append`
+    # to it and silently poison every other test that compares against
+    # this constant.
+    _QWEN36_HERMES_ARGS = (
         "--enable-auto-tool-choice",
         "--tool-call-parser",
         "hermes",
-    ]
+    )
 
     def test_high_ram_picks_8bit_primary(self):
         """48 GB usable easily fits the 36 GB primary — fallback must not
@@ -258,7 +261,7 @@ class TestSelectModels:
         # Override args wired through verbatim so the server boots with
         # the exact parser we asked for — regression guard for the
         # override-by-id map.
-        assert choices[0].extra_args == self._QWEN36_HERMES_ARGS
+        assert tuple(choices[0].extra_args) == self._QWEN36_HERMES_ARGS
 
     def test_low_ram_falls_through_to_4bit_fallback(self):
         """24 GB usable can't fit the 36 GB primary but does fit the 18
@@ -275,7 +278,7 @@ class TestSelectModels:
         # by full HF id, so a typo in either side silently drops the
         # parser flag and the model boots with default (broken)
         # tool-call routing.
-        assert choices[0].extra_args == self._QWEN36_HERMES_ARGS
+        assert tuple(choices[0].extra_args) == self._QWEN36_HERMES_ARGS
 
     def test_below_all_candidates_skips_family(self):
         """A host below every candidate's floor drops the family from the
@@ -348,10 +351,12 @@ class TestSelectModels:
             "candidates"
         ][0]
         assert qwen36.model_id == first_yaml["id"]
-        # Override entry exists for the picked id (catches typos /
-        # accidental drops on either side of the override map).
-        assert qwen36.extra_args, (
-            f"selected {qwen36.model_id!r} but its override map entry is "
-            "missing or empty — check overrides:{model_id} in "
+        # Override args wired through verbatim — full equality so a
+        # value-typo in the YAML override (e.g. `hermez` instead of
+        # `hermes`) is caught rather than just the truthiness of a
+        # non-empty list.
+        assert tuple(qwen36.extra_args) == self._QWEN36_HERMES_ARGS, (
+            f"selected {qwen36.model_id!r} but its overrides args don't "
+            f"match expected — check overrides:{qwen36.model_id} in "
             "golden_models.yaml"
         )

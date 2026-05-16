@@ -37,10 +37,14 @@
 # constrained hosts) are still tagged `golden` because changing the
 # label would be cosmetic; the per-candidate comments document any
 # known degradation.
-#   - golden: the family's preferred entry (or its fallbacks); the
-#     scorecard reads this as "first-class coverage" but per-candidate
-#     comments still own ground truth on known limitations.
-#   - smoke:  always-runnable; agents with skip_for_smoke skip
+#   - golden: the family's preferred entry; full agent battery applies.
+#   - smoke:  agents marked `skip_for_smoke: true` are suppressed.
+#     Two distinct uses: (1) tiny-model smoke (qwen3-0.6b) where the
+#     model can't pass multi-tool tests; (2) graceful-degradation
+#     fallbacks (qwen3.6-4bit) where this *quant* can't pass the
+#     multi-tool test even though the model class can — same skip
+#     mechanism, same engineering reason ("don't fail the gate on a
+#     test the model+quant combo provably can't pass").
 #   - small/medium: same battery as `golden`; no functional difference
 #     today, used historically to label tier-by-size for the scorecard.
 #
@@ -101,15 +105,22 @@ families:
       # logic walks candidates top-to-bottom and picks the first that
       # fits. On the maintainer's M3 Ultra and any 64 GB+ M-series the
       # 8-bit entry wins. On constrained hosts the 4-bit entry runs
-      # and the matrix degrades gracefully — known multi-tool flake on
-      # this entry is acceptable cost vs zero coverage for that family.
-      # CI runners are 8-bit-small only (separate workflow), so this
-      # fallback never fires there. quality_tier kept as `golden` so
-      # the scorecard labels behave identically — the tier downgrade
-      # would have been cosmetic anyway since selection ignores it.
+      # and the matrix degrades gracefully. CI runners are 8-bit-small
+      # only (separate workflow), so this fallback never fires there.
+      #
+      # Tagged `quality_tier: smoke` (not `golden`) precisely because
+      # `smoke` is the one tier the runner uses to skip agents marked
+      # `skip_for_smoke: true` — today that's just `pydantic_ai`, which
+      # is the multi-tool composition test that EMPIRICALLY rambles
+      # 4000 tokens without emitting <tool_call> XML on this exact
+      # quant + thinking combo (see top-of-file note). Skipping it on
+      # the constrained-host fallback is the WHOLE POINT of this PR's
+      # policy: don't gate the PR on a test that can't pass at this
+      # precision. anthropic_sdk + langchain still run on the 4-bit
+      # fallback; only the test the model can't pass is suppressed.
       - id: mlx-community/Qwen3.6-27B-4bit
         ram_gb_required: 18
-        quality_tier: golden
+        quality_tier: smoke
 
 # Gemma 4 was previously listed here for orthogonal coverage (different
 # chat template + tool-call format) but observed in PR #208 validation
