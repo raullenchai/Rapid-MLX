@@ -30,11 +30,19 @@
 # agents marked `skip_for_smoke: true` (e.g. `pydantic_ai`'s multi-tool
 # test) to skip — used so a 0.6B model isn't graded against an agent
 # test the model is too small to pass. Other tier values (`golden`,
-# `small`, `medium`) carry no functional difference today.
-#   - golden: the canonical sweet spot — full battery applies
+# `small`, `medium`) carry no functional difference today and are
+# applied to whichever candidate the family prefers, NOT a guarantee
+# that every candidate so labelled passes the full battery — known
+# graceful-degradation fallbacks (e.g. the qwen3.6 4-bit fallback for
+# constrained hosts) are still tagged `golden` because changing the
+# label would be cosmetic; the per-candidate comments document any
+# known degradation.
+#   - golden: the family's preferred entry (or its fallbacks); the
+#     scorecard reads this as "first-class coverage" but per-candidate
+#     comments still own ground truth on known limitations.
 #   - smoke:  always-runnable; agents with skip_for_smoke skip
-#   - small/medium: full battery applies (no functional difference
-#     from `golden` today)
+#   - small/medium: same battery as `golden`; no functional difference
+#     today, used historically to label tier-by-size for the scorecard.
 #
 # Add new families by appending. Within a family, put the preferred
 # candidate first; subsequent entries are graceful-degradation

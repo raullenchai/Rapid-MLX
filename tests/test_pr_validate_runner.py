@@ -237,6 +237,15 @@ class TestSelectModels:
             },
         }
 
+    # The override args we expect for the qwen3.6 family — match
+    # exactly so a regression that drops the parser, drops the value,
+    # or swaps `hermes` for the wrong parser id is caught.
+    _QWEN36_HERMES_ARGS = [
+        "--enable-auto-tool-choice",
+        "--tool-call-parser",
+        "hermes",
+    ]
+
     def test_high_ram_picks_8bit_primary(self):
         """48 GB usable easily fits the 36 GB primary — fallback must not
         win on a beefy host."""
@@ -246,9 +255,10 @@ class TestSelectModels:
         assert len(choices) == 1
         assert choices[0].family == "qwen3.6"
         assert choices[0].model_id == "unsloth/Qwen3.6-27B-MLX-8bit"
-        # Override args wired through so the server boots with the right
-        # tool-call parser — regression guard for the override-by-id map.
-        assert "--tool-call-parser" in choices[0].extra_args
+        # Override args wired through verbatim so the server boots with
+        # the exact parser we asked for — regression guard for the
+        # override-by-id map.
+        assert choices[0].extra_args == self._QWEN36_HERMES_ARGS
 
     def test_low_ram_falls_through_to_4bit_fallback(self):
         """24 GB usable can't fit the 36 GB primary but does fit the 18
@@ -261,6 +271,11 @@ class TestSelectModels:
         assert len(choices) == 1
         assert choices[0].model_id == "mlx-community/Qwen3.6-27B-4bit"
         assert choices[0].ram_gb_required == 18.0
+        # The fallback also gets its overrides — the override map keys
+        # by full HF id, so a typo in either side silently drops the
+        # parser flag and the model boots with default (broken)
+        # tool-call routing.
+        assert choices[0].extra_args == self._QWEN36_HERMES_ARGS
 
     def test_below_all_candidates_skips_family(self):
         """A host below every candidate's floor drops the family from the
@@ -302,3 +317,41 @@ class TestSelectModels:
         assert len(choices) == 1
         assert choices[0].model_id == "first/listed"
         assert choices[0].quality_tier == "small"
+
+    def test_real_yaml_high_ram_picks_first_qwen36_candidate(self):
+        """Hand-built ``_registry()`` above pins the algorithm; this
+        test pins the *file* — a future bump of ``ram_gb_required`` (say
+        36→40 after observing OOMs) or a candidate reorder must not
+        silently break the bench. We assert the YAML's first qwen3.6
+        candidate is the one selected on a high-RAM host, and that the
+        override map still has an entry for whatever id is first.
+        That's enough to catch the two breakages a YAML-only edit can
+        introduce: dropping the override key, or accidentally promoting
+        the 4-bit entry to position 0."""
+        from scripts.pr_validate.steps.stress_e2e_bench import (
+            _load_registry,
+            _select_models,
+        )
+
+        registry = _load_registry()
+        # Headroom that fits any plausible 27-35B 8-bit model on a real
+        # rig — the test is "primary entry wins on a beefy host", not
+        # "exactly 48 GB"; bumping the YAML floor to 40 or 48 doesn't
+        # invalidate this test, only a value > 999 would.
+        choices = _select_models(registry, usable_gb=999.0)
+        qwen36 = next((c for c in choices if c.family == "qwen3.6"), None)
+        assert qwen36 is not None, "qwen3.6 family missing from selection"
+
+        # The selected id must be the YAML's literal first candidate —
+        # walk the file the same way _select_models does.
+        first_yaml = next(f for f in registry["families"] if f["family"] == "qwen3.6")[
+            "candidates"
+        ][0]
+        assert qwen36.model_id == first_yaml["id"]
+        # Override entry exists for the picked id (catches typos /
+        # accidental drops on either side of the override map).
+        assert qwen36.extra_args, (
+            f"selected {qwen36.model_id!r} but its override map entry is "
+            "missing or empty — check overrides:{model_id} in "
+            "golden_models.yaml"
+        )
