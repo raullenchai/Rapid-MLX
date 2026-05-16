@@ -30,33 +30,36 @@ pytest --cov=vllm_mlx tests/
 
 ### Test Precision Policy
 
-Repo-wide rule when picking which model variant to use in a test:
+Repo-wide rule when picking which model variant to use in a test. Three buckets, in order of strictness:
 
-> **Correctness tests run on 8-bit (or higher). Performance tests run on 4-bit.**
+> 1. **Correctness tests** — use **8-bit (or higher)**. Quant noise must not be a confounder.
+> 2. **Performance tests** — use **4-bit**. ~80% of rapid-mlx users run 4-bit on M-series machines, so perf numbers must come from 4-bit to represent real user experience.
+> 3. **Smoke / boot sanity** — small 4-bit model is acceptable for speed (the test only proves "the engine starts and emits a sane response," not strict format conformance). Currently applies only to `make check`.
 
-A correctness test asks *"does the model + our code produce the right output?"* — quant noise on a 4-bit model is pure interference here. Performance tests ask *"how fast / how much memory?"* — and since ~80% of rapid-mlx users run 4-bit on M-series machines, perf numbers must come from 4-bit to represent real user experience.
+A correctness test asks *"does the model + our code produce the right output?"* A performance test asks *"how fast / how much memory?"* A smoke test asks *"did anything explode?"* — the third bucket exists because forcing every test into one of the first two would either slow down per-PR feedback (running 8-bit smoke on every push) or pollute the perf signal (running correctness on 4-bit). Keep the smoke bucket small and well-justified; default to one of the first two.
 
-| Suite | Bucket | Precision today |
+| Suite | Bucket | Model used today |
 |---|---|---|
-| `tests/` unit + integration | correctness | 8-bit small (`mlx-community/Qwen3-0.6B-8bit`) |
-| `scripts/pr_validate/` stress + agent matrix | correctness | 8-bit (`scripts/pr_validate/golden_models.yaml`) |
-| `scripts/bench_dflash.py`, `scripts/bench_suffix_decoding_integrated.py`, `harness/runs/` | perf | 4-bit (user reality) |
-| `make check` doctor smoke | correctness today on 4-bit small (legacy; migration to 8-bit small is acceptable when speed cost is negligible) | qwen3.5-4b 4-bit |
+| `tests/` unit + integration | correctness | `mlx-community/Qwen3-0.6B-8bit` |
+| `scripts/pr_validate/` stress + agent matrix | correctness | per `scripts/pr_validate/golden_models.yaml` (all 8-bit) |
+| `scripts/bench_dflash.py`, `scripts/bench_suffix_decoding_integrated.py`, `harness/runs/` | perf | 4-bit aliases (user reality) |
+| `make check` doctor smoke | smoke / boot sanity | `mlx-community/Qwen3.5-4B-MLX-4bit` (4-bit, ~30s boot) |
 | `make full` doctor harness | mixed | 8-bit for correctness suites, 4-bit for bench suites; separate baselines per precision |
 | `evals/run_all_models.sh` scorecard | scoring + perf column | scoring on 8-bit; perf column on 4-bit |
 
-**Why the split:** quant noise on a 4-bit model produces failures that look like engine bugs but aren't. Concrete reproducible example (2026-05-15): `Qwen3.6-27B-4bit` + thinking-mode enabled + 2-tool composition reliably generates a 4000-token natural-language ramble without ever emitting a valid `<tool_call><function=...>` XML, hitting the 300s client timeout in PydanticAI's multi-tool test. The 8-bit variant emits both tool calls in 286 tokens. Same engine code in both runs — the only variable is quant noise interacting with the model's strict-format tool-call output under deliberation. If a correctness gate runs 4-bit, this failure looks like an engine regression; running 8-bit attributes the failure cleanly to where it belongs (the 4-bit quant + multi-tool capability ceiling, not rapid-mlx).
+**Why the split matters in practice.** Quant noise on a 4-bit model produces failures that look like engine bugs but aren't. Reproducible example: `mlx-community/Qwen3.6-27B-4bit` with thinking enabled and a 2-tool composition prompt (`Compute (3+4)*5 using add and multiply`) reliably generates a 4000+ token natural-language ramble without ever emitting a valid `<tool_call><function=...>` XML, hitting the 300s client timeout in PydanticAI's multi-tool test. The 8-bit variant (`unsloth/Qwen3.6-27B-MLX-8bit`) emits both tool calls in 286 tokens. Same engine code in both runs — the only variable is quant noise interacting with the model's strict-format tool-call output under deliberation. If a correctness gate runs 4-bit, the failure looks like an engine regression; running 8-bit attributes it cleanly to where it belongs (the 4-bit quant + multi-tool capability ceiling, not rapid-mlx).
 
 **Hardware constraints:**
 
-- GitHub `test-apple-silicon` (macos-14, M1/M2, 16 GB RAM) — large 8-bit models don't fit. Stick to 8-bit *small* models on CI (`qwen3-0.6b-8bit`, `qwen3.5-4b-8bit` at most). The big-model 8-bit correctness gate runs in `pr_validate` on the maintainer's M-series box, not on GitHub CI.
+- GitHub `test-apple-silicon` (macos-14, M1/M2, 16 GB RAM) — large 8-bit models don't fit. Stick to 8-bit *small* models on CI (`mlx-community/Qwen3-0.6B-8bit`, `mlx-community/Qwen3.5-4B-MLX-8bit` at most). The big-model 8-bit correctness gate runs in `pr_validate` on the maintainer's M-series box, not on GitHub CI.
 - Local M-series with 64 GB+ — no constraint, run anything.
 
 **When adding a new test:**
 
 - New correctness test → pick 8-bit. If your family has no 8-bit option (rare), document why in the test file.
 - New perf bench → pick 4-bit (it's what users run).
-- New test that's "kind of both" → split it into two test files, one per bucket. Mixed-purpose tests collapse the signal.
+- New smoke test → justify why it can't be a correctness test (usually: "boot speed matters more than precision here"). The smoke bucket should not grow without reason.
+- A test that's "kind of both" → split it into two test files, one per bucket. Mixed-purpose tests collapse the signal.
 
 ### Code Style
 
