@@ -79,11 +79,12 @@ families:
       - id: unsloth/Qwen3.6-27B-MLX-8bit
         # 27B dense weights at 8-bit = ~27 GB; add KV cache for the
         # multi-turn tool-call stress prompt (~2-4 GB) + MLX runtime
-        # overhead (~3 GB) + OS headroom. 36 GB matches the
-        # qwen3.5-35B-A3B-8bit entry above (which is MoE so weights
-        # use less but headroom math is similar). Underestimating
+        # overhead (~3 GB) + OS headroom → 36 GB. Underestimating
         # here would OOM at boot instead of falling through to the
-        # 4-bit fallback.
+        # 4-bit fallback. (For comparison, the qwen3.5-35B-A3B-8bit
+        # entry above carries 35 GB of MoE weights — all experts must
+        # be resident even though only ~3B are active per token — so
+        # 36 GB is also the floor there, not slack.)
         ram_gb_required: 36
         quality_tier: golden
       # FALLBACK: 4-bit retained so hosts that can't fit the 8-bit

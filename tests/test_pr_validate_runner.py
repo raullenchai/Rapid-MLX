@@ -182,3 +182,123 @@ class TestFailFast:
         from scripts.pr_validate.runner import STEPS
 
         assert isinstance(STEPS[0], FetchStep)
+
+
+class TestSelectModels:
+    """Pin the candidate-selection contract for ``stress_e2e_bench``.
+
+    The qwen3.6 family ships with two candidates today: an 8-bit primary
+    (``unsloth/Qwen3.6-27B-MLX-8bit``, ram=36) and a 4-bit fallback
+    (``mlx-community/Qwen3.6-27B-4bit``, ram=18). The selection rule is
+    "first candidate whose ``ram_gb_required`` fits ``usable_gb``" — these
+    tests make sure a future refactor that swaps the rule (e.g. to
+    "highest ``quality_tier``") doesn't silently downgrade the 36 GB+ host
+    to the 4-bit candidate or upgrade the 24 GB host to an OOM at boot.
+    """
+
+    @staticmethod
+    def _registry() -> dict:
+        """Mirror the qwen3.6 entry in golden_models.yaml. Hand-built so
+        the test doesn't depend on file content — if someone reorders the
+        YAML, this test still pins the selection algorithm itself."""
+        return {
+            "families": [
+                {
+                    "family": "qwen3.6",
+                    "candidates": [
+                        {
+                            "id": "unsloth/Qwen3.6-27B-MLX-8bit",
+                            "ram_gb_required": 36,
+                            "quality_tier": "golden",
+                        },
+                        {
+                            "id": "mlx-community/Qwen3.6-27B-4bit",
+                            "ram_gb_required": 18,
+                            "quality_tier": "golden",
+                        },
+                    ],
+                },
+            ],
+            "overrides": {
+                "unsloth/Qwen3.6-27B-MLX-8bit": {
+                    "args": [
+                        "--enable-auto-tool-choice",
+                        "--tool-call-parser",
+                        "hermes",
+                    ],
+                },
+                "mlx-community/Qwen3.6-27B-4bit": {
+                    "args": [
+                        "--enable-auto-tool-choice",
+                        "--tool-call-parser",
+                        "hermes",
+                    ],
+                },
+            },
+        }
+
+    def test_high_ram_picks_8bit_primary(self):
+        """48 GB usable easily fits the 36 GB primary — fallback must not
+        win on a beefy host."""
+        from scripts.pr_validate.steps.stress_e2e_bench import _select_models
+
+        choices = _select_models(self._registry(), usable_gb=48.0)
+        assert len(choices) == 1
+        assert choices[0].family == "qwen3.6"
+        assert choices[0].model_id == "unsloth/Qwen3.6-27B-MLX-8bit"
+        # Override args wired through so the server boots with the right
+        # tool-call parser — regression guard for the override-by-id map.
+        assert "--tool-call-parser" in choices[0].extra_args
+
+    def test_low_ram_falls_through_to_4bit_fallback(self):
+        """24 GB usable can't fit the 36 GB primary but does fit the 18
+        GB fallback — covers the constrained-host (≤32 GB) graceful-
+        degradation path. Without the fallback this family would be
+        silently dropped from the matrix on older M2 Pro / base M3."""
+        from scripts.pr_validate.steps.stress_e2e_bench import _select_models
+
+        choices = _select_models(self._registry(), usable_gb=24.0)
+        assert len(choices) == 1
+        assert choices[0].model_id == "mlx-community/Qwen3.6-27B-4bit"
+        assert choices[0].ram_gb_required == 18.0
+
+    def test_below_all_candidates_skips_family(self):
+        """A host below every candidate's floor drops the family from the
+        returned list rather than picking something that will OOM."""
+        from scripts.pr_validate.steps.stress_e2e_bench import _select_models
+
+        choices = _select_models(self._registry(), usable_gb=10.0)
+        assert choices == []
+
+    def test_first_fit_wins_even_when_later_candidate_has_higher_tier(self):
+        """``quality_tier`` is informational — order in the YAML decides
+        the priority. If a later candidate happens to be tagged "golden"
+        and the earlier one is tagged "small", the earlier one still
+        wins when both fit. This is the contract the inline docstring
+        on ``_select_models`` makes; pin it so a "smart" refactor can't
+        silently flip the priority."""
+        from scripts.pr_validate.steps.stress_e2e_bench import _select_models
+
+        registry = {
+            "families": [
+                {
+                    "family": "tiered",
+                    "candidates": [
+                        {
+                            "id": "first/listed",
+                            "ram_gb_required": 8,
+                            "quality_tier": "small",
+                        },
+                        {
+                            "id": "later/listed",
+                            "ram_gb_required": 16,
+                            "quality_tier": "golden",
+                        },
+                    ],
+                },
+            ],
+        }
+        choices = _select_models(registry, usable_gb=64.0)
+        assert len(choices) == 1
+        assert choices[0].model_id == "first/listed"
+        assert choices[0].quality_tier == "small"
