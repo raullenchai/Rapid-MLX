@@ -27,6 +27,7 @@ from ..service.helpers import (
     _validate_model_name,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    ensure_model_loaded,
     get_engine,
     get_usage,
 )
@@ -42,6 +43,7 @@ router = APIRouter()
 )
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
+    await ensure_model_loaded(request.model)
     _validate_model_name(request.model)
     engine = get_engine(request.model)
 
