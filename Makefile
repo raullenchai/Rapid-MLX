@@ -1,4 +1,4 @@
-.PHONY: help smoke check full benchmark update-baselines lint test stress soak clean
+.PHONY: help smoke check full benchmark update-baselines lint audit test stress soak clean
 
 # Pick the interpreter:
 #   1. Active venv ($VIRTUAL_ENV/bin/python) — wins so contributors using
@@ -30,8 +30,9 @@ help:
 	@echo ""
 	@echo "  Dev testing (scripts/dev_test.py):"
 	@echo "    make lint               ruff lint (~10s)"
+	@echo "    make audit              CLI ↔ Config fidelity audit (~1s)"
 	@echo "    make test               pytest unit suite (~30s)"
-	@echo "    make smoke              lint + unit (~1 min)"
+	@echo "    make smoke              lint + audit + unit (~1 min)"
 	@echo "    make stress             8-scenario stress test (needs server)"
 	@echo "    make soak               10-min agent soak test (needs server)"
 	@echo ""
@@ -46,6 +47,9 @@ help:
 # ---------- dev testing (scripts/dev_test.py) ----------
 lint:
 	$(DEV_TEST) lint
+
+audit:
+	$(DEV_TEST) audit
 
 test:
 	$(DEV_TEST) unit

@@ -678,6 +678,11 @@ def serve_command(args):
         max_cache_blocks=args.max_cache_blocks,
         # Chunked prefill
         chunked_prefill_tokens=args.chunked_prefill_tokens,
+        # Prefill step size (chunk size). Must be plumbed here — BatchedEngine
+        # reads it off scheduler_config only; the legacy load_model kwarg was
+        # accepted but never used. See #400 and the CLI ↔ Config fidelity
+        # audit at scripts/audit_cli_config_fidelity.py.
+        prefill_step_size=args.prefill_step_size,
         # MTP
         enable_mtp=args.enable_mtp,
         mtp_num_draft_tokens=args.mtp_num_draft_tokens,
@@ -803,7 +808,6 @@ def serve_command(args):
             max_tokens=args.max_tokens,
             force_mllm=args.mllm,
             gpu_memory_utilization=args.gpu_memory_utilization,
-            prefill_step_size=args.prefill_step_size,
             cloud_model=args.cloud_model,
             cloud_threshold=args.cloud_threshold,
             cloud_api_base=args.cloud_api_base,

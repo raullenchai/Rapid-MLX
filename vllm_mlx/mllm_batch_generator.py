@@ -665,9 +665,10 @@ class MLLMBatchGenerator:
         max_batch_tokens = self.prefill_step_size * len(requests)
         if total_prompt_tokens > max_batch_tokens:
             raise ValueError(
-                f"Total prompt tokens ({total_prompt_tokens}) exceeds safe limit "
-                f"({max_batch_tokens}) for {len(requests)} requests. "
-                f"Reduce prompt length or batch size."
+                f"Total prompt tokens ({total_prompt_tokens}) exceeds the "
+                f"per-batch cap ({max_batch_tokens} = prefill_step_size "
+                f"{self.prefill_step_size} × {len(requests)} request(s)). "
+                f"Raise the cap with --prefill-step-size, or shorten the prompt."
             )
 
         # Run vision encoding for each request with its own KVCache.

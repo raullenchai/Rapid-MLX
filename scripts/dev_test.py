@@ -60,6 +60,17 @@ def run_lint():
     return False
 
 
+def run_audit():
+    # Structural check — runs in <1s, catches "silent flag drop" bugs
+    # where a CLI arg is defined but never plumbed to its target config.
+    # See scripts/audit_cli_config_fidelity.py for rationale (#400).
+    return run(
+        [PY, os.path.join(SCRIPTS_DIR, "audit_cli_config_fidelity.py")],
+        "CLI ↔ Config fidelity audit",
+        timeout=30,
+    )
+
+
 def run_unit():
     return run(
         [
@@ -132,6 +143,7 @@ def main():
         "tier",
         choices=[
             "lint",
+            "audit",
             "unit",
             "smoke",
             "stress",
@@ -158,6 +170,9 @@ def main():
 
     if args.tier in ("lint", "smoke", "all", "full"):
         results["lint"] = run_lint()
+
+    if args.tier in ("audit", "smoke", "all", "full"):
+        results["audit"] = run_audit()
 
     if args.tier in ("unit", "smoke", "all", "full"):
         results["unit"] = run_unit()

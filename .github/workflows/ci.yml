@@ -28,6 +28,12 @@ jobs:
       - name: Run ruff format check
         run: ruff format --check vllm_mlx/ tests/
 
+      # Structural check — catches "silent flag drop" bugs where a CLI
+      # arg is defined but never plumbed to its target config (#400).
+      # Pure stdlib + AST — no mlx import required, runs on Linux.
+      - name: CLI ↔ Config fidelity audit
+        run: python scripts/audit_cli_config_fidelity.py
+
   type-check:
     runs-on: ubuntu-latest
     steps:

@@ -498,7 +498,6 @@ def load_model(
     max_tokens: int = 32768,
     force_mllm: bool = False,
     gpu_memory_utilization: float = 0.90,
-    prefill_step_size: int = 2048,
     cloud_model: str | None = None,
     cloud_threshold: int = 20000,
     cloud_api_base: str | None = None,
@@ -516,7 +515,6 @@ def load_model(
         max_tokens: Default max tokens for generation
         force_mllm: Force loading as MLLM even if not auto-detected
         gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
-        prefill_step_size: Tokens to process per prefill chunk (default: 2048)
         mtp: Enable native MTP speculative decoding
     """
     global \
@@ -1067,7 +1065,6 @@ Examples:
         args.model,
         max_tokens=args.max_tokens,
         force_mllm=args.mllm,
-        prefill_step_size=args.prefill_step_size,
         cloud_model=args.cloud_model,
         cloud_threshold=args.cloud_threshold,
         cloud_api_base=args.cloud_api_base,
