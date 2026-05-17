@@ -52,25 +52,16 @@ def test_shim_installed_when_scheduler_imports():
     assert getattr(mx, "_rapid_mlx_compat_installed", False) is True
 
 
-def test_vllm_mlx_import_does_not_touch_mlx_core():
-    """`import vllm_mlx` must NOT import mlx.core — preserves usability
-    on systems where mlx is installed but Metal is broken (the package
-    surface like __version__ should still work for metadata callers)."""
-    import sys
+def test_vllm_mlx_init_does_not_install_shim_or_import_mlx():
+    """`vllm_mlx/__init__.py` must NOT import mlx or call _mlx_compat.install().
+    Both would eagerly load `mlx.core`, which SIGABRTs (uncatchable from
+    Python) on systems where the `mlx` package is installed but Metal is
+    unavailable — breaking metadata-only callers (`__version__`, etc.).
 
-    # Drop both modules so the import is fresh.
-    for mod in list(sys.modules):
-        if mod == "vllm_mlx" or mod.startswith("vllm_mlx."):
-            del sys.modules[mod]
-    # NOTE: we cannot also drop mlx.core because other tests may have
-    # already imported it. Instead, capture the "was it already loaded"
-    # state and check that importing vllm_mlx doesn't load it if it
-    # wasn't already there. On a clean test environment mlx.core IS
-    # already loaded (because we used `importorskip` at module top), so
-    # this test really verifies that vllm_mlx itself doesn't ADD an
-    # import dependency — checked structurally by reading __init__.py.
-    import vllm_mlx  # noqa: F401
-
+    Pure source-text audit; no module manipulation so the test is safe
+    in a shared pytest process. The shim must be installed lazily at
+    the top of every module that imports `mlx_lm.generate` instead
+    (verified by `test_every_mlx_lm_generate_consumer_installs_shim`)."""
     init_source = (
         importlib.resources.files("vllm_mlx").joinpath("__init__.py").read_text()
     )
