@@ -1085,9 +1085,20 @@ Examples:
     # Pre-load embedding model if specified
     load_embedding_model(args.embedding_model, lock=True)
 
+    # Build a SchedulerConfig so user-supplied flags on this standalone entry
+    # (`python -m vllm_mlx.server` / `mise run`) reach the engine. Pre-0.6.52
+    # this entrypoint forwarded args.prefill_step_size to load_model where it
+    # was silently dropped — same bug class as #400. The unified rapid-mlx
+    # CLI builds a richer SchedulerConfig in cli.py; the standalone path only
+    # exposes a small subset of flags, so we plumb just those.
+    from .scheduler import SchedulerConfig
+
+    scheduler_config = SchedulerConfig(prefill_step_size=args.prefill_step_size)
+
     # Load model before starting server
     load_model(
         args.model,
+        scheduler_config=scheduler_config,
         max_tokens=args.max_tokens,
         force_mllm=args.mllm,
         cloud_model=args.cloud_model,

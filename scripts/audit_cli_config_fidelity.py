@@ -24,8 +24,16 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CLI_PATH = REPO_ROOT / "vllm_mlx" / "cli.py"
 SCHEDULER_PATH = REPO_ROOT / "vllm_mlx" / "scheduler.py"
+
+# Files that parse argparse args AND construct (or should construct) an
+# engine config. Each one is a user-facing entrypoint with the same
+# silent-flag-drop risk as #400. Order: primary CLI first, then secondary
+# entries (python -m vllm_mlx.server, mise run).
+CLI_ENTRY_PATHS = [
+    REPO_ROOT / "vllm_mlx" / "cli.py",
+    REPO_ROOT / "vllm_mlx" / "server.py",
+]
 
 
 def _dataclass_field_names(source_path: Path, class_name: str) -> set[str]:
@@ -119,8 +127,9 @@ def main() -> int:
     ]
 
     all_issues: list[str] = []
-    for source, cls_name in targets:
-        all_issues.extend(audit(CLI_PATH, source, cls_name))
+    for entry_path in CLI_ENTRY_PATHS:
+        for source, cls_name in targets:
+            all_issues.extend(audit(entry_path, source, cls_name))
 
     if not all_issues:
         print("CLI ↔ Config fidelity: OK")

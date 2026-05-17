@@ -29,11 +29,18 @@ CLI_SOURCE = REPO_ROOT / "vllm_mlx" / "cli.py"
 # ---------------------------------------------------------------------------
 
 
+SERVER_SOURCE = REPO_ROOT / "vllm_mlx" / "server.py"
+
+
 def _serve_command_scheduler_config_kwargs() -> set[str]:
-    """Return kwargs passed to SchedulerConfig() inside serve_command."""
-    tree = ast.parse(CLI_SOURCE.read_text())
+    return _function_scheduler_config_kwargs(CLI_SOURCE, "serve_command")
+
+
+def _function_scheduler_config_kwargs(source_path: Path, func_name: str) -> set[str]:
+    """Return kwargs passed to SchedulerConfig() inside the named function."""
+    tree = ast.parse(source_path.read_text())
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.FunctionDef) and node.name == "serve_command"):
+        if not (isinstance(node, ast.FunctionDef) and node.name == func_name):
             continue
         for call in ast.walk(node):
             if (
@@ -42,7 +49,9 @@ def _serve_command_scheduler_config_kwargs() -> set[str]:
                 and call.func.id == "SchedulerConfig"
             ):
                 return {kw.arg for kw in call.keywords if kw.arg}
-    raise AssertionError("serve_command or its SchedulerConfig(...) call not found")
+    raise AssertionError(
+        f"function {func_name} or its SchedulerConfig(...) call not found in {source_path}"
+    )
 
 
 def test_prefill_step_size_is_plumbed_in_serve_command():
@@ -59,6 +68,22 @@ def test_prefill_step_size_is_plumbed_in_serve_command():
         "regression: SchedulerConfig in serve_command no longer receives "
         "prefill_step_size — see #400. Add `prefill_step_size=args.prefill_step_size` "
         "to the SchedulerConfig(...) construction."
+    )
+
+
+def test_prefill_step_size_is_plumbed_in_server_main():
+    """#400 regression for the standalone entry —
+    `python -m vllm_mlx.server --prefill-step-size N` must reach
+    SchedulerConfig too. Pre-0.6.52 this entrypoint also silently dropped
+    the flag; codex round 3 on PR #405 caught it as the same bug class
+    in a sibling file the patch already touched.
+    """
+    kwargs = _function_scheduler_config_kwargs(SERVER_SOURCE, "main")
+    assert "prefill_step_size" in kwargs, (
+        "regression: SchedulerConfig in server.main no longer receives "
+        "prefill_step_size — see #400 / PR #405 codex round 3. The "
+        "`python -m vllm_mlx.server` / `mise run` entry must construct a "
+        "SchedulerConfig and pass args.prefill_step_size."
     )
 
 
