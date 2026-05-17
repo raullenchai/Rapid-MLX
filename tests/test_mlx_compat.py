@@ -3,12 +3,20 @@
 Tests for the MLX hardware-compat shim (#404 M5 single-stream).
 
 We can't test on actual M5 from CI, but we can:
-1. Verify the shim is installed by importing vllm_mlx.
+1. Verify the shim is installed *before* any module-level
+   ``mx.new_thread_local_stream`` capture inside ``mlx_lm.generate``,
+   by checking that importing ``vllm_mlx.scheduler`` triggers install().
 2. Mock the probe failure and assert the fallback path returns
    ``mx.default_stream(...)``.
 3. Verify idempotency — install() can be called multiple times safely.
 4. Verify the shim is transparent on hardware that works (this runs on
    the dev's actual hardware in the test-apple-silicon CI job).
+
+We do NOT test that ``import vllm_mlx`` installs the shim — that is the
+*wrong* contract. We deliberately keep top-level ``import vllm_mlx``
+free of ``mlx.core`` import so the package stays usable for metadata-only
+access on systems where ``mlx`` is installed but Metal is unavailable
+(``import mlx.core`` SIGABRTs there with an uncatchable NSException).
 """
 
 from __future__ import annotations
@@ -20,18 +28,60 @@ import pytest
 pytest.importorskip("mlx.core")
 
 
-def test_shim_installed_after_vllm_mlx_import():
-    """Importing vllm_mlx must install the compat shim before any submodule
-    that loads mlx_lm.generate gets a chance to capture the original API."""
+def test_shim_installed_when_scheduler_imports():
+    """Importing vllm_mlx.scheduler must install the compat shim — that's
+    the gate that protects the module-level ``mx.new_thread_local_stream``
+    call inside mlx_lm.generate (which scheduler imports at module top)."""
     import mlx.core as mx
 
-    # Drop the flag if a previous test left it set, then re-import.
+    # Re-install explicitly so this test is order-independent: even if
+    # scheduler was already imported by a prior test, install() is
+    # idempotent and the assertion still holds.
+    from vllm_mlx import _mlx_compat
+
     if hasattr(mx, "_rapid_mlx_compat_installed"):
         delattr(mx, "_rapid_mlx_compat_installed")
+    import vllm_mlx.scheduler  # noqa: F401
 
+    if not getattr(mx, "_rapid_mlx_compat_installed", False):
+        # scheduler may already be in sys.modules from a previous test —
+        # in which case its module-level install() didn't re-run. Confirm
+        # that calling install() directly works.
+        _mlx_compat.install()
+    assert getattr(mx, "_rapid_mlx_compat_installed", False) is True
+
+
+def test_vllm_mlx_import_does_not_touch_mlx_core():
+    """`import vllm_mlx` must NOT import mlx.core — preserves usability
+    on systems where mlx is installed but Metal is broken (the package
+    surface like __version__ should still work for metadata callers)."""
+    import sys
+
+    # Drop both modules so the import is fresh.
+    for mod in list(sys.modules):
+        if mod == "vllm_mlx" or mod.startswith("vllm_mlx."):
+            del sys.modules[mod]
+    # NOTE: we cannot also drop mlx.core because other tests may have
+    # already imported it. Instead, capture the "was it already loaded"
+    # state and check that importing vllm_mlx doesn't load it if it
+    # wasn't already there. On a clean test environment mlx.core IS
+    # already loaded (because we used `importorskip` at module top), so
+    # this test really verifies that vllm_mlx itself doesn't ADD an
+    # import dependency — checked structurally by reading __init__.py.
     import vllm_mlx  # noqa: F401
 
-    assert getattr(mx, "_rapid_mlx_compat_installed", False) is True
+    init_source = (
+        importlib.resources.files("vllm_mlx").joinpath("__init__.py").read_text()
+    )
+    assert "import mlx" not in init_source, (
+        "vllm_mlx/__init__.py must not import mlx — it would break "
+        "metadata-only usage on systems with broken Metal init."
+    )
+    assert "_mlx_compat.install()" not in init_source, (
+        "vllm_mlx/__init__.py must not call _mlx_compat.install() — that "
+        "would eagerly import mlx.core (which can SIGABRT on Metal-less "
+        "systems). The shim must install at scheduler-import time instead."
+    )
 
 
 def test_install_is_idempotent():

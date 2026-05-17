@@ -22,9 +22,15 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from mlx_lm.generate import BatchGenerator
+# MUST install the MLX hardware-compat shim BEFORE importing mlx_lm.generate;
+# see vllm_mlx/_mlx_compat.py + #404 for the M5 single-stream background.
+from vllm_mlx import _mlx_compat as _mlx_compat
 
-from .interfaces import DecodeRequest, DecodeStrategy, TokenResult
+_mlx_compat.install()
+
+from mlx_lm.generate import BatchGenerator  # noqa: E402
+
+from .interfaces import DecodeRequest, DecodeStrategy, TokenResult  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

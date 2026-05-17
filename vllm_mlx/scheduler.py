@@ -18,11 +18,21 @@ from enum import Enum
 from typing import Any
 
 import mlx.core as mx
-from mlx_lm.generate import BatchGenerator
-from mlx_lm.sample_utils import make_logits_processors, make_sampler
-from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer
 
-from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+# MUST install the MLX hardware-compat shim BEFORE importing mlx_lm.generate.
+# mlx_lm/generate.py captures `mx.new_thread_local_stream(mx.default_device())`
+# at module-import time; on M5 single-stream GPUs that stream is unusable
+# (#404). The shim is idempotent and a no-op on hardware where the original
+# API works.
+from . import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
+from mlx_lm.generate import BatchGenerator  # noqa: E402
+from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E402
+from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
+
+from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
 from .request import Request, RequestOutput, RequestStatus, SamplingParams

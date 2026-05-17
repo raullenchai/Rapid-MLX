@@ -19,18 +19,13 @@ try:
 except Exception:
     __version__ = "0.0.0"  # fallback for editable installs without metadata
 
-# Install MLX hardware-compatibility shims BEFORE any mlx_lm import.
-# mlx_lm/generate.py captures `mx.new_thread_local_stream(...)` at module
-# top level — by the time our scheduler/etc. imports it, it's too late to
-# patch. Running this here guarantees the patch is in place because Python
-# loads __init__.py before any submodule (including any submodule that
-# imports mlx_lm.generate). See _mlx_compat.py for #404 M5 background.
-from . import _mlx_compat as _mlx_compat
-
-_mlx_compat.install()
-
 # All imports are lazy to allow usage on non-Apple Silicon platforms
-# (e.g., CI running on Linux) where mlx_lm is not available.
+# (e.g., CI running on Linux) where mlx_lm is not available. The MLX
+# hardware-compat shim (#404 M5 single-stream) lives in `_mlx_compat`
+# and is installed at the top of every submodule that imports
+# `mlx_lm.generate` — NOT here, so that `import vllm_mlx` stays free of
+# mlx.core import (which can SIGABRT on systems with mlx installed but
+# Metal unavailable).
 
 
 def __getattr__(name):
