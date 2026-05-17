@@ -498,6 +498,7 @@ def load_model(
     max_tokens: int = 32768,
     force_mllm: bool = False,
     gpu_memory_utilization: float = 0.90,
+    prefill_step_size: int | None = None,
     cloud_model: str | None = None,
     cloud_threshold: int = 20000,
     cloud_api_base: str | None = None,
@@ -515,8 +516,32 @@ def load_model(
         max_tokens: Default max tokens for generation
         force_mllm: Force loading as MLLM even if not auto-detected
         gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
+        prefill_step_size: DEPRECATED — pass via
+            ``scheduler_config.prefill_step_size`` instead. Pre-0.6.52 this
+            parameter was accepted but silently ignored (the value never
+            reached BatchedEngine — root cause of #400). Kept here for
+            back-compat with external callers; if provided it is translated
+            into ``scheduler_config.prefill_step_size`` and a DeprecationWarning
+            is emitted. Will be removed in a future release.
         mtp: Enable native MTP speculative decoding
     """
+    if prefill_step_size is not None:
+        import warnings
+
+        from .scheduler import SchedulerConfig
+
+        warnings.warn(
+            "load_model(prefill_step_size=...) is deprecated; "
+            "pass via scheduler_config.prefill_step_size instead. "
+            "Pre-0.6.52 this kwarg was silently ignored (#400).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if scheduler_config is None:
+            scheduler_config = SchedulerConfig(prefill_step_size=prefill_step_size)
+        else:
+            scheduler_config.prefill_step_size = prefill_step_size
+
     global \
         _engine, \
         _model_name, \

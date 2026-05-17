@@ -124,6 +124,67 @@ def test_audit_detects_synthetic_drift(tmp_path):
     )
 
 
+def test_load_model_prefill_step_size_back_compat_translation():
+    """back-compat — load_model(prefill_step_size=X) must still be ACCEPTED
+    (no TypeError) and must translate the value into scheduler_config so it
+    actually takes effect this time. Pre-0.6.52 it was a silent no-op (#400).
+
+    External callers written against the previous documented signature
+    (``load_model(..., prefill_step_size=X)``) would otherwise hit a hard
+    TypeError on upgrade.
+    """
+    import inspect
+    import warnings
+
+    from vllm_mlx import server
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    # Signature must still accept the kwarg.
+    sig = inspect.signature(server.load_model)
+    assert "prefill_step_size" in sig.parameters, (
+        "load_model must keep the prefill_step_size kwarg for back-compat — "
+        "removing it in a patch release breaks external callers (#405 codex round 2)."
+    )
+
+    # Translation must work: passing the kwarg without scheduler_config
+    # should produce a SchedulerConfig with the value set, AND emit a
+    # DeprecationWarning. We exercise just the translation block — we do not
+    # actually load a model (which would require an mlx download).
+    captured_scheduler_config = {}
+
+    def fake_engine_init(*args, **kwargs):
+        captured_scheduler_config["value"] = kwargs.get("scheduler_config")
+        raise RuntimeError("stop after translation — we only need the kwarg")
+
+    # Monkeypatch BatchedEngine to halt after the translation step.
+    import vllm_mlx.engine.batched as batched_mod
+
+    original = batched_mod.BatchedEngine.__init__
+    batched_mod.BatchedEngine.__init__ = fake_engine_init
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                server.load_model("dummy-model", prefill_step_size=9999)
+            except RuntimeError as exc:
+                assert "stop after translation" in str(exc)
+
+        dep = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert dep, "expected DeprecationWarning for load_model(prefill_step_size=...)"
+        assert "deprecated" in str(dep[0].message).lower()
+    finally:
+        batched_mod.BatchedEngine.__init__ = original
+
+    cfg = captured_scheduler_config.get("value")
+    assert isinstance(cfg, SchedulerConfig), (
+        "load_model(prefill_step_size=X) without scheduler_config must "
+        "synthesise a SchedulerConfig so the value actually takes effect."
+    )
+    assert cfg.prefill_step_size == 9999, (
+        f"translation failed: cfg.prefill_step_size={cfg.prefill_step_size}, expected 9999"
+    )
+
+
 def test_audit_no_false_positive_when_field_unused(tmp_path):
     """Audit must NOT flag a SchedulerConfig site if the function doesn't
     even read args.X — that's correct subparser-scoped behavior (e.g. the
