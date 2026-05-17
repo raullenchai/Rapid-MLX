@@ -331,7 +331,18 @@ async def lifespan(app: FastAPI):
     # All slow startup work done. Flip the readiness flag so /health/ready
     # starts returning 200. Anything that races a request before this point
     # would otherwise hit a not-yet-warmed engine.
-    get_config().ready = True
+    _cfg = get_config()
+    _cfg.ready = True
+
+    # Print the real "Ready:" banner now — only here is the port truly
+    # accepting connections AND the engine warmed up. The CLI's earlier
+    # "Starting server …" line is replaced by this. If bind_host/bind_port
+    # weren't stashed (e.g. embedded usage where uvicorn is owned elsewhere),
+    # fall back silently.
+    if _cfg.bind_host and _cfg.bind_port:
+        print(f"  Ready: http://{_cfg.bind_host}:{_cfg.bind_port}/v1")
+        print(f"  Docs:  http://{_cfg.bind_host}:{_cfg.bind_port}/docs")
+        print()
 
     yield
 

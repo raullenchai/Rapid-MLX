@@ -832,16 +832,28 @@ def serve_command(args):
         sys.exit(1)
 
     # Start server
-    # Note: Metal shader warmup runs in the FastAPI lifespan hook (server.py)
-    # so it works for all engine types.
+    # Note: Metal shader warmup runs in the FastAPI lifespan hook (server.py).
+    # The "Ready:" banner is printed FROM that hook once warmup completes and
+    # the port is actually bound — printing it here would lie to users who
+    # curl immediately and get connection-refused while shaders compile.
     print()
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
-    print(f"  Ready: http://{host_display}:{args.port}/v1")
-    print(f"  Docs:  http://{host_display}:{args.port}/docs")
+    print(
+        f"  Starting server on http://{host_display}:{args.port} (warming up — this can take a few seconds)"
+    )
     from vllm_mlx._version_check import print_staleness_warning_if_any
 
     print_staleness_warning_if_any()
     print()
+
+    # Stash host/port so the lifespan hook can print the real "Ready:" banner
+    # after warmup. ServerConfig.bind_host/bind_port → used in server.lifespan().
+    from vllm_mlx.config import get_config
+
+    _cfg = get_config()
+    _cfg.bind_host = host_display
+    _cfg.bind_port = args.port
+
     uvicorn.run(
         app,
         host=args.host,

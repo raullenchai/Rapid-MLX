@@ -37,6 +37,14 @@ class ServerConfig:
     # in-progress warmup. Reset to False during lifespan shutdown.
     ready: bool = False
 
+    # Bind address and port stashed by the CLI before uvicorn.run() so the
+    # lifespan hook can print the "Ready:" banner with the real URL only
+    # AFTER warmup completes (and the port is actually bound). Without this
+    # the banner prints before uvicorn binds the port, and a user who curls
+    # immediately gets a connection-refused.
+    bind_host: str | None = None
+    bind_port: int | None = None
+
     # --- Defaults ---
     default_max_tokens: int = 4096
     thinking_token_budget: int = 2048
