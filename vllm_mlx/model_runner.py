@@ -380,6 +380,14 @@ class MLXModelRunner:
             List of generated token IDs
         """
         try:
+            # Install MLX hardware-compat shim (#404 M5 single-stream guard)
+            # BEFORE importing mlx_lm.generate — that module captures
+            # `mx.new_thread_local_stream(mx.default_device())` at top level.
+            # Idempotent: no-op once installed.
+            from vllm_mlx import _mlx_compat as _mlx_compat
+
+            _mlx_compat.install()
+
             from mlx_lm.generate import generate_step
             from mlx_lm.sample_utils import make_sampler
 

@@ -22,6 +22,7 @@ access on systems where ``mlx`` is installed but Metal is unavailable
 from __future__ import annotations
 
 import importlib
+import importlib.resources
 
 import pytest
 
@@ -81,6 +82,41 @@ def test_vllm_mlx_import_does_not_touch_mlx_core():
         "vllm_mlx/__init__.py must not call _mlx_compat.install() — that "
         "would eagerly import mlx.core (which can SIGABRT on Metal-less "
         "systems). The shim must install at scheduler-import time instead."
+    )
+
+
+def test_every_mlx_lm_generate_consumer_installs_shim():
+    """Any vllm_mlx file that imports `mlx_lm.generate` (either via
+    `from mlx_lm.generate import ...` or `importlib.import_module(
+    "mlx_lm.generate")`) MUST also call `_mlx_compat.install()` in the
+    same file. Otherwise that import path triggers `mlx_lm/generate.py`
+    module-level `mx.new_thread_local_stream` capture on M5 before our
+    shim runs, and the bug from #404 returns.
+
+    This is a structural audit: a new file that adds the import without
+    the install will fail here at unit-test time, catching the slip
+    before any M5 user does.
+    """
+    import pathlib
+
+    pkg_root = pathlib.Path(
+        str(importlib.resources.files("vllm_mlx").joinpath(""))
+    ).resolve()
+    offenders = []
+    for path in pkg_root.rglob("*.py"):
+        if path.name == "_mlx_compat.py":
+            continue  # the shim itself; nothing to install
+        source = path.read_text()
+        imports_generate = (
+            "from mlx_lm.generate" in source
+            or 'import_module("mlx_lm.generate")' in source
+            or "import_module('mlx_lm.generate')" in source
+        )
+        if imports_generate and "_mlx_compat.install()" not in source:
+            offenders.append(str(path.relative_to(pkg_root)))
+    assert not offenders, (
+        "Files import mlx_lm.generate without calling _mlx_compat.install() "
+        "first — #404 M5 regression risk:\n  " + "\n  ".join(offenders)
     )
 
 
