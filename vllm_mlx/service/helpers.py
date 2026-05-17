@@ -415,10 +415,10 @@ def _validate_model_name(request_model: str) -> None:
 async def ensure_model_loaded(model_name: str | None) -> None:
     """Validate that `model_name` is currently loaded; otherwise raise 404.
 
-    Wired into /v1/chat/completions and /v1/completions to give all inference
-    endpoints a single, consistent fall-through for unknown model names —
-    previously each route returned a slightly different shape (or, in
-    completions' case, deferred until `get_engine` and raised a 503).
+    Canonical strict-404 check for /v1/chat/completions and /v1/completions —
+    mirrors `_validate_model_name`'s message shape so the two are
+    interchangeable on the strict-404 path. The sync counterpart is kept for
+    /v1/messages (anthropic adapter is model-name-agnostic by design).
 
     Extension point for on-demand auto-loading: a follow-up PR will let an
     operator-set flag (`enable_on_demand_loading`) trigger a hot swap to the
@@ -428,9 +428,17 @@ async def ensure_model_loaded(model_name: str | None) -> None:
     """
     if _is_model_loaded(model_name):
         return
+    cfg = get_config()
+    if not cfg.model_name and cfg.model_registry is None:
+        return
+    available = (
+        ", ".join(cfg.model_registry.list_model_names())
+        if cfg.model_registry is not None
+        else cfg.model_name
+    )
     raise HTTPException(
         status_code=404,
-        detail=f"Model `{model_name}` is not loaded.",
+        detail=f"The model `{model_name}` does not exist. Available: {available}",
     )
 
 

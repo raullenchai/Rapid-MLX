@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 from vllm_mlx.config import get_config
+from vllm_mlx.runtime.model_registry import ModelRegistry
 from vllm_mlx.service.helpers import _is_model_loaded, ensure_model_loaded
 
 
@@ -30,7 +31,8 @@ def reset_config():
 
 
 def _make_registry(*names: str) -> MagicMock:
-    reg = MagicMock()
+    """Spec'd registry mock — catches interface drift if ModelRegistry changes."""
+    reg = MagicMock(spec=ModelRegistry)
     reg.__contains__ = lambda self, x: x in names
     reg.list_model_names.return_value = list(names)
     return reg
@@ -148,3 +150,46 @@ class TestEnsureModelLoaded:
             await ensure_model_loaded("kimi-48b")
         assert exc.value.status_code == 404
         assert "kimi-48b" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_404_detail_lists_available_single_mode(self, reset_config):
+        """Locks the 404 contract: detail must include the `Available:` hint.
+
+        Mirrors `_validate_model_name`'s message shape so the two helpers are
+        interchangeable on the strict-404 path — and so #319's swap logic can
+        replace this `raise` without changing what clients see on a miss.
+        """
+        reset_config.model_name = "qwen3.5-4b"
+        reset_config.model_alias = None
+        reset_config.model_path = None
+        reset_config.model_registry = None
+        with pytest.raises(HTTPException) as exc:
+            await ensure_model_loaded("kimi-48b")
+        assert exc.value.status_code == 404
+        assert "Available:" in exc.value.detail
+        assert "qwen3.5-4b" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_404_detail_lists_available_registry_mode(self, reset_config):
+        reset_config.model_registry = _make_registry("qwen3.5-4b", "phi4-14b")
+        reset_config.model_name = "qwen3.5-4b"
+        reset_config.model_alias = None
+        reset_config.model_path = None
+        with pytest.raises(HTTPException) as exc:
+            await ensure_model_loaded("kimi-48b")
+        assert exc.value.status_code == 404
+        assert "Available:" in exc.value.detail
+        assert "phi4-14b" in exc.value.detail
+        assert "qwen3.5-4b" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_noop_when_server_unconfigured(self, reset_config):
+        """Theoretical unconfigured-server case — preserves parity with
+        `_validate_model_name`, which silently returns when neither
+        `model_name` nor `model_registry` is set."""
+        reset_config.model_name = None
+        reset_config.model_alias = None
+        reset_config.model_path = None
+        reset_config.model_registry = None
+        # Should not raise even for a clearly-unknown name.
+        await ensure_model_loaded("anything")
