@@ -741,14 +741,54 @@ def test_registry_invariants():
             "(round-3 red-team #2.1 — liar-registry bypass)."
         )
 
-    # (d) DeepSeek-V4 round 2 fix (PR #409): every forwarded_kwargs entry
-    # must actually exist as a parameter on load_model AND
-    # BatchedEngine.__init__. A typo like "force_hyrbid" silently
-    # satisfies the invariants above, then fails downstream with a bare
-    # KeyError in the keyword-only test. Catching it here gives a
-    # descriptive failure with the offending pair name.
-    from vllm_mlx.engine.batched import BatchedEngine
-    from vllm_mlx.server import load_model
+    # (d) DeepSeek-V4 round 2 fix (PR #409): for pairs with
+    # ``model_config_field`` set, exactly 2 forwarded_kwargs are
+    # required (force-on first, force-off second) — convention
+    # enforced by ``_engine_core_override_cases()``. Previously this
+    # check lived at parametrize-collection time, where a violation
+    # aborts pytest with a collection error before any test runs.
+    # Move it here so the failure is a normal, named test failure.
+    #
+    # NOTE: the forwarded_kwargs name-existence check (each kwarg is
+    # an actual parameter on ``load_model`` / ``BatchedEngine.__init__``)
+    # was moved to ``test_registry_forwarded_kwargs_exist_on_signatures``
+    # in codex round-C — importing those modules requires MLX, and
+    # this static registry invariants test should remain importable on
+    # headless CI without a Metal device.
+    for pair in AUTO_ROUTING_FLAG_PAIRS:
+        if pair.model_config_field is None:
+            continue
+        assert len(pair.forwarded_kwargs) == 2, (
+            f"Registry pair {pair.force_on}/{pair.force_off} declares "
+            f"model_config_field={pair.model_config_field!r} but has "
+            f"{len(pair.forwarded_kwargs)} forwarded kwargs; "
+            "exactly 2 required (force-on first, force-off second)."
+        )
+
+
+def test_registry_forwarded_kwargs_exist_on_signatures():
+    """DeepSeek-V4 round 2 + codex round-C (PR #409): every entry in
+    ``forwarded_kwargs`` must be a real parameter on both
+    ``load_model`` and ``BatchedEngine.__init__``. A typo like
+    "force_hyrbid" silently satisfies the lighter registry invariants
+    and only crashes downstream with a bare KeyError. This test
+    catches it with a descriptive failure naming the offending pair.
+
+    Codex round-C fix: split out from ``test_registry_invariants``
+    because importing ``BatchedEngine`` / ``load_model`` triggers
+    ``mlx_lm`` / ``mlx`` initialization, which raises RuntimeError on
+    headless macOS / sandboxed CI without a Metal device. The static
+    invariants gate above must stay importable; this signature-check
+    gate is allowed to skip when MLX isn't available.
+    """
+    try:
+        from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.server import load_model
+    except RuntimeError as exc:
+        pytest.skip(
+            f"MLX runtime unavailable ({exc}) — signature audit requires "
+            "loading the MLX-backed engine stack. Skipped on headless CI."
+        )
 
     load_params = set(inspect.signature(load_model).parameters)
     batched_params = set(inspect.signature(BatchedEngine.__init__).parameters)
@@ -764,23 +804,6 @@ def test_registry_invariants():
                 f"`{kwarg}` but BatchedEngine.__init__ has no such "
                 "parameter — typo or stale refactor."
             )
-
-    # (e) DeepSeek-V4 round 2 fix (PR #409): for pairs with
-    # ``model_config_field`` set, exactly 2 forwarded_kwargs are
-    # required (force-on first, force-off second) — convention
-    # enforced by ``_engine_core_override_cases()``. Previously this
-    # check lived at parametrize-collection time, where a violation
-    # aborts pytest with a collection error before any test runs.
-    # Move it here so the failure is a normal, named test failure.
-    for pair in AUTO_ROUTING_FLAG_PAIRS:
-        if pair.model_config_field is None:
-            continue
-        assert len(pair.forwarded_kwargs) == 2, (
-            f"Registry pair {pair.force_on}/{pair.force_off} declares "
-            f"model_config_field={pair.model_config_field!r} but has "
-            f"{len(pair.forwarded_kwargs)} forwarded kwargs; "
-            "exactly 2 required (force-on first, force-off second)."
-        )
 
 
 def test_registry_is_not_runtime_mutated():
