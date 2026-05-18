@@ -1246,31 +1246,62 @@ def test_load_model_callers_register_every_routing_flag():
         # ``load_model``. A new entrypoint could write
         # ``from vllm_mlx.server import load_model as lm`` and call
         # ``lm(...)`` — the literal-name check alone would miss it.
-        local_aliases: set[str] = set()
+        #
+        # Codex round-F fix (PR #409): also track MODULE aliases. A
+        # new entrypoint could write
+        # ``from vllm_mlx import server`` or
+        # ``import vllm_mlx.server as srv`` and call
+        # ``server.load_model(...)`` / ``srv.load_model(...)``. We need
+        # to recognize both attribute-access shapes.
+        direct_aliases: set[str] = set()  # local names bound to load_model
+        module_aliases: set[str] = set()  # local names bound to vllm_mlx.server
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module in (
-                "vllm_mlx.server",
-                "..server",
-                ".server",
-            ):
+            if isinstance(node, ast.ImportFrom):
+                if node.module in ("vllm_mlx.server", "..server", ".server"):
+                    for alias in node.names:
+                        if alias.name == "load_model":
+                            direct_aliases.add(alias.asname or "load_model")
+                # `from vllm_mlx import server` — module-level alias.
+                elif node.module in ("vllm_mlx", ".."):
+                    for alias in node.names:
+                        if alias.name == "server":
+                            module_aliases.add(alias.asname or "server")
+            elif isinstance(node, ast.Import):
+                # `import vllm_mlx.server` / `import vllm_mlx.server as srv`.
                 for alias in node.names:
-                    if alias.name == "load_model":
-                        local_aliases.add(alias.asname or "load_model")
-        if not local_aliases:
+                    if alias.name == "vllm_mlx.server":
+                        module_aliases.add(alias.asname or "vllm_mlx.server")
+        if not (direct_aliases or module_aliases):
             continue
 
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            name = (
-                func.id
-                if isinstance(func, ast.Name)
-                else (func.attr if isinstance(func, ast.Attribute) else None)
-            )
-            if name in local_aliases:
+            # Direct call form: lm(...) / load_model(...)
+            if isinstance(func, ast.Name) and func.id in direct_aliases:
                 load_model_callers.add(rel)
                 break
+            # Attribute call form: server.load_model(...) /
+            # srv.load_model(...) / vllm_mlx.server.load_model(...)
+            if isinstance(func, ast.Attribute) and func.attr == "load_model":
+                # The receiver is a Name (single-level alias) or an
+                # Attribute (vllm_mlx.server.load_model). Reduce both to
+                # the leftmost Name for lookup against module_aliases.
+                receiver = func.value
+                if isinstance(receiver, ast.Name):
+                    receiver_name = receiver.id
+                elif (
+                    isinstance(receiver, ast.Attribute)
+                    and isinstance(receiver.value, ast.Name)
+                    and f"{receiver.value.id}.{receiver.attr}" == "vllm_mlx.server"
+                ):
+                    receiver_name = "vllm_mlx.server"
+                else:
+                    receiver_name = None
+                if receiver_name in module_aliases:
+                    load_model_callers.add(rel)
+                    break
 
     # server.py is where load_model is defined; skip its self-reference.
     load_model_callers.discard("server.py")
