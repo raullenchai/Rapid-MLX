@@ -1448,6 +1448,17 @@ def _param_is_bool(param: inspect.Parameter) -> bool:
         # No annotation — fall back to default. ``type(default) is bool``
         # is strict (won't match int).
         return type(param.default) is bool
+    # PEP 604 ``bool | None`` / typing.Optional[bool] / typing.Union[...]
+    # — these become real ``types.UnionType`` / ``typing.Union`` objects
+    # when the module does NOT use ``from __future__ import annotations``.
+    # Codex R1 (PR #409 review) flagged this gap: a positional
+    # ``flag: bool | None = None`` annotated without PEP 563 slips the
+    # bool detection above.
+    import typing
+
+    args = typing.get_args(annotation)
+    if args and any(a is bool for a in args):
+        return True
     return False
 
 
@@ -1489,6 +1500,50 @@ def _param_default_has_custom_bool(param: inspect.Parameter) -> bool:
     if default_type.__module__ == "builtins":
         return False
     return type(param.default).__bool__ is not object.__bool__
+
+
+def test_param_is_bool_handles_pep604_unions():
+    """Codex R1 regression: ``bool | None`` / ``Optional[bool]`` on a
+    positional parameter slipped the previous detector because the
+    annotation was a real ``types.UnionType``, not ``bool`` and not a
+    string. Lock the union-aware branch so a future regression to the
+    old behavior fails this test loudly.
+    """
+    import typing
+
+    def _param_with(annotation, default=inspect.Parameter.empty) -> inspect.Parameter:
+        return inspect.Parameter(
+            "f",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=annotation,
+            default=default,
+        )
+
+    # Real PEP 604 / typing.Optional / typing.Union — must be detected.
+    # noqa for UP045/UP007: this test verifies BOTH the legacy typing
+    # forms AND the PEP 604 forms are detected — that's the point.
+    assert _param_is_bool(_param_with(bool))
+    assert _param_is_bool(_param_with(bool | None, default=None))
+    assert _param_is_bool(_param_with(typing.Optional[bool], default=None))  # noqa: UP045
+    assert _param_is_bool(_param_with(typing.Union[bool, str], default=False))  # noqa: UP007
+
+    # Stringified.
+    assert _param_is_bool(_param_with("bool"))
+    assert _param_is_bool(_param_with("bool | None"))
+    assert _param_is_bool(_param_with("Optional[bool]"))
+
+    # No annotation, bool default.
+    assert _param_is_bool(_param_with(inspect.Parameter.empty, default=False))
+    assert _param_is_bool(_param_with(inspect.Parameter.empty, default=True))
+
+    # Negative cases — must NOT trigger.
+    assert not _param_is_bool(_param_with(int))
+    assert not _param_is_bool(_param_with(str))
+    assert not _param_is_bool(_param_with(int | None, default=None))
+    assert not _param_is_bool(_param_with("int"))
+    assert not _param_is_bool(_param_with("Optional[int]"))
+    assert not _param_is_bool(_param_with(inspect.Parameter.empty, default=0))
+    assert not _param_is_bool(_param_with(inspect.Parameter.empty, default=None))
 
 
 def test_hybrid_overrides_mutually_exclusive_in_load_model():

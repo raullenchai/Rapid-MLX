@@ -128,6 +128,42 @@ SETTER_METHOD_ROUTING_PATTERN = re.compile(
 )
 
 
+def _field_type_is_str(t: object) -> bool:
+    """True iff ``t`` (a ``dataclasses.Field.type`` value) represents
+    ``str``, ``Optional[str]``, or ``str | None`` — regardless of
+    whether the annotation is a real type, a stringified annotation
+    (PEP 563), or a PEP 604 ``types.UnionType``.
+
+    Codex R1 (PR #409 review) flagged that the original ``f.type == "str |
+    None"`` string match misses real ``types.UnionType`` objects, which
+    is what ``dataclasses.fields()`` returns on Python 3.10+ when the
+    module does NOT use ``from __future__ import annotations``. The
+    consequence was that ``tool_call_parser: str | None`` slipped the
+    allowlist check entirely — a future ``multimodal_mode: str | None``
+    would have done the same.
+    """
+    import typing
+
+    if t is str:
+        return True
+    # Stringified annotation (PEP 563 / from __future__ import annotations).
+    if isinstance(t, str):
+        try:
+            tree = ast.parse(t, mode="eval")
+        except SyntaxError:
+            return False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == "str":
+                return True
+        return False
+    # Real ``types.UnionType`` (PEP 604 ``str | None``) or
+    # ``typing.Optional[str]`` / ``typing.Union[str, None]``.
+    args = typing.get_args(t)
+    if args:
+        return any(a is str for a in args)
+    return False
+
+
 def _pkg_root() -> pathlib.Path:
     return pathlib.Path(
         str(importlib.resources.files("vllm_mlx").joinpath(""))
@@ -628,6 +664,39 @@ def test_no_routing_shaped_request_headers():
     assert not offenders, "\n".join(offenders)
 
 
+def test_field_type_is_str_handles_pep604_unions():
+    """Codex R1 regression: ``f.type`` from ``dataclasses.fields()`` is
+    a real ``types.UnionType`` (not a string) on Python 3.10+ when the
+    module doesn't use ``from __future__ import annotations``. The
+    original ``f.type == "str | None"`` string compare missed every
+    optional-str dataclass field, defeating the routing check.
+
+    Lock the helper down: every flavor of "this annotation includes
+    str" must return True, and obvious non-str annotations must return
+    False. If anyone reverts the union-args path, this fails loudly.
+    """
+    import typing
+
+    # Real annotations (without PEP 563).
+    # noqa for UP045/UP007: this test verifies BOTH legacy typing forms
+    # AND PEP 604 forms are detected — that's the point.
+    assert _field_type_is_str(str)
+    assert _field_type_is_str(str | None)
+    assert _field_type_is_str(typing.Optional[str])  # noqa: UP045
+    assert _field_type_is_str(typing.Union[str, int])  # noqa: UP007
+    # Stringified (PEP 563) annotations.
+    assert _field_type_is_str("str")
+    assert _field_type_is_str("str | None")
+    assert _field_type_is_str("Optional[str]")
+    # Non-str annotations must NOT trigger.
+    assert not _field_type_is_str(int)
+    assert not _field_type_is_str(int | None)
+    assert not _field_type_is_str("int")
+    assert not _field_type_is_str("bool")
+    assert not _field_type_is_str(typing.Optional[int])  # noqa: UP045
+    assert not _field_type_is_str(tuple[tuple[str, float], ...] | None)
+
+
 def test_alias_profile_str_fields_are_explicitly_listed():
     """Round-5 subagent 3 #D: an attacker adds ``multimodal_mode: str =
     "auto"`` to ``AliasProfile`` (passes round-4's name-shape check
@@ -662,9 +731,7 @@ def test_alias_profile_str_fields_are_explicitly_listed():
     )
 
     str_fields = [
-        f.name
-        for f in dataclasses.fields(AliasProfile)
-        if f.type is str or f.type == "str" or f.type == "str | None"
+        f.name for f in dataclasses.fields(AliasProfile) if _field_type_is_str(f.type)
     ]
     unlisted = set(str_fields) - ALLOWED_STR_FIELDS
     assert not unlisted, (
