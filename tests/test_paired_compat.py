@@ -85,13 +85,25 @@ def _make_paired_client(
     reasoning_parser: str | None = None,
     no_thinking: bool = True,
 ) -> tuple[TestClient, _StreamingEngine]:
-    """One FastAPI app mounting both routers + shared mock engine."""
+    """One FastAPI app mounting both routers + shared mock engine.
+
+    Mirrors what ``server.load_model`` does for the parser wiring: both
+    ``cfg.reasoning_parser_name`` AND the constructed ``cfg.reasoning_parser``
+    instance must be set, otherwise the non-streaming OpenAI path
+    short-circuits in ``_finalize_content_and_reasoning`` (parser=None →
+    return cleaned_text untouched) and the reasoning-extraction assertion
+    becomes vacuous.
+    """
     engine = _StreamingEngine(deltas)
     cfg = reset_config()
     cfg.engine = engine
     cfg.model_name = "test-model"
     cfg.no_thinking = no_thinking
     cfg.reasoning_parser_name = reasoning_parser
+    if reasoning_parser:
+        from vllm_mlx.reasoning import get_parser
+
+        cfg.reasoning_parser = get_parser(reasoning_parser)()
     cfg.model_registry = None
 
     app = FastAPI()
@@ -312,7 +324,25 @@ def test_plain_text_agrees(stream):
     assert openai["tool_calls"] == anthropic["tool_calls"] == []
 
 
-@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.parametrize(
+    "stream",
+    [
+        True,
+        pytest.param(
+            False,
+            marks=pytest.mark.xfail(
+                strict=False,
+                reason=(
+                    "strict=False: Anthropic non-streaming drops reasoning "
+                    "content silently — surface-divergence bug discovered by "
+                    "this gate (issue #413). Un-xfail once routes/anthropic.py "
+                    "non-streaming path populates reasoning_content and "
+                    "api/anthropic_adapter.py emits a thinking block."
+                ),
+            ),
+        ),
+    ],
+)
 def test_reasoning_extracted_consistently(stream):
     """A delta stream containing ``<think>...</think>answer`` must
     decompose identically through both routes' reasoning parser
@@ -320,6 +350,10 @@ def test_reasoning_extracted_consistently(stream):
 
     This is the exact class #288/#289 hit: the parser routed correctly
     on one surface and silently leaked tags to the other.
+
+    Non-streaming is currently xfail — see #413. The fact that this
+    gate immediately surfaced a latent bug the moment it was wired up
+    is exactly the value we're paying for.
     """
     # With server-default thinking on, qwen3 parser routes pre-</think>
     # text to reasoning, post-</think> text to content.
@@ -342,6 +376,54 @@ def test_reasoning_extracted_consistently(stream):
     assert openai["reasoning"] == anthropic["reasoning"], (
         f"reasoning divergence: openai={openai['reasoning']!r} vs anthropic={anthropic['reasoning']!r}"
     )
+    # Pin that reasoning was actually extracted (not both surfaces
+    # silently dropping it on the floor). Without this, the test passes
+    # vacuously if `cfg.reasoning_parser` is unset on either path — the
+    # exact failure mode codex flagged when the parser instance wasn't
+    # wired in `_make_paired_client`.
+    assert openai["reasoning"], (
+        f"reasoning was empty on both surfaces — parser likely bypassed: "
+        f"text={openai['text']!r} reasoning={openai['reasoning']!r}"
+    )
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_openai_reasoning_extracted(stream):
+    """Single-surface guard: OpenAI ``/v1/chat/completions`` must
+    extract ``<think>...</think>`` into ``reasoning_content`` whether
+    streaming or not.
+
+    Exists because ``test_reasoning_extracted_consistently[False]`` is
+    currently xfailed on the Anthropic-side bug (#413). Without this
+    standalone OpenAI-only assertion, a regression in
+    ``chat.py::_finalize_content_and_reasoning`` (non-streaming) or
+    ``postprocessor.py`` (streaming) would only show up as a
+    silent change in the xfail outcome — invisible at PR-review time.
+    """
+    client, _ = _make_paired_client(
+        ["<think>", "Let me think.", "</think>", "Final answer."],
+        reasoning_parser="qwen3",
+        no_thinking=False,
+    )
+    payload = {
+        "model": "test-model",
+        "max_tokens": 64,
+        "stream": stream,
+        "messages": [{"role": "user", "content": "reason then answer"}],
+        "temperature": 0,
+    }
+    r = client.post("/v1/chat/completions", json=payload)
+    assert r.status_code == 200, f"{r.status_code} {r.text[:300]}"
+    if stream:
+        norm = _normalize_openai_stream(_parse_sse(r.text))
+    else:
+        msg = r.json()["choices"][0]["message"]
+        norm = {
+            "text": msg.get("content") or "",
+            "reasoning": msg.get("reasoning_content") or "",
+        }
+    assert norm["text"] == "Final answer.", norm
+    assert norm["reasoning"] == "Let me think.", norm
 
 
 @pytest.mark.parametrize("stream", [True, False])
