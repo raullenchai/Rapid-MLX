@@ -170,6 +170,61 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
         sys.modules["mlx_vlm"] = real_mlx_vlm
 
 
+def test_auto_routing_flags_have_force_on_and_force_off_pair():
+    """SOP gate (#393 lesson): every binary auto-routing decision must
+    expose BOTH a force-on and a force-off CLI flag.
+
+    The pattern that bit us with #393 — ``--mllm`` (force on) shipped
+    without a paired ``--no-mllm`` (force off) — applies to every
+    auto-detection path. False positives are inevitable (incomplete
+    quants, custom forks, hardware-shaped edge cases); when we hit one
+    the user needs an escape hatch *immediately*, not in a follow-up
+    release that ships ~2 weeks later.
+
+    Registry below is the source of truth: every routing flag we expose
+    must appear with both directions. Adding a new auto-detection
+    *requires* adding both flags and registering them here. If someone
+    in the future removes one direction of the pair, CI fails with a
+    pointer to this principle.
+
+    Past incidents this rule would have caught:
+      - #393: ``--mllm`` had no inverse → Tylast had to wait for a
+        patch release instead of overriding from his launchd plist.
+      - #404 (related, hardware-side): no user override for MLX stream
+        capability, only an internal probe. The bug went undetected on
+        every chip family we don't own.
+    """
+    import importlib
+    import pathlib
+
+    pkg_root = pathlib.Path(
+        str(importlib.resources.files("vllm_mlx").joinpath(""))
+    ).resolve()
+    cli_source = (pkg_root / "cli.py").read_text()
+    server_source = (pkg_root / "server.py").read_text()
+
+    # Every entry: (force-on flag, force-off flag, what it routes).
+    # When you add a new auto-detection, add the pair here too.
+    AUTO_ROUTING_FLAG_PAIRS = [
+        ("--mllm", "--no-mllm", "MLLM vs text-only routing (#393)"),
+    ]
+
+    missing = []
+    for force_on, force_off, desc in AUTO_ROUTING_FLAG_PAIRS:
+        on_quoted = f'"{force_on}"'
+        off_quoted = f'"{force_off}"'
+        if on_quoted not in cli_source and on_quoted not in server_source:
+            missing.append(f"force-on flag {force_on} missing ({desc})")
+        if off_quoted not in cli_source and off_quoted not in server_source:
+            missing.append(
+                f"force-off flag {force_off} missing ({desc}) — "
+                "every binary auto-routing decision needs an escape hatch "
+                "in BOTH directions; see #393 for the past incident this "
+                "rule encodes."
+            )
+    assert not missing, "\n".join(missing)
+
+
 def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
     """An unrelated ValueError (e.g. config parsing) must NOT trigger
     the friendly-error path — it should propagate as-is so genuine bugs
