@@ -238,27 +238,40 @@ def _routing_attr_write_targets(node: ast.AST) -> list[tuple[str, ast.AST]]:
     """
     pairs: list[tuple[str, ast.AST]] = []
 
+    # Codex R2 fix: destructuring assignment `self._is_mllm, other = ...`
+    # nests the Attribute target inside a Tuple/List. Walk targets
+    # recursively so destructuring forms are scanned the same as
+    # direct assignment.
+    def _flatten_targets(t: ast.AST) -> list[ast.AST]:
+        if isinstance(t, (ast.Tuple, ast.List)):
+            out: list[ast.AST] = []
+            for elt in t.elts:
+                out.extend(_flatten_targets(elt))
+            return out
+        # Unwrap Starred (e.g. `*rest, self._is_mllm = ...`).
+        if isinstance(t, ast.Starred):
+            return _flatten_targets(t.value)
+        return [t]
+
     # 1. Direct Attribute assignment / augassign / annassign.
     attr_targets: list[ast.Attribute] = []
+    flat_targets: list[ast.AST] = []
     if isinstance(node, ast.Assign):
         for t in node.targets:
-            if isinstance(t, ast.Attribute):
-                attr_targets.append(t)
-    elif (
-        isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Attribute)
-    ) or (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Attribute)):
-        attr_targets.append(node.target)
+            flat_targets.extend(_flatten_targets(t))
+    elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+        flat_targets.append(node.target)
+
+    for t in flat_targets:
+        if isinstance(t, ast.Attribute):
+            attr_targets.append(t)
     for tgt in attr_targets:
         pairs.append((tgt.attr, node))
 
     # 2. Subscript assignment to .__dict__["x"] or vars(obj)["x"].
-    subscript_targets: list[ast.Subscript] = []
-    if isinstance(node, ast.Assign):
-        for t in node.targets:
-            if isinstance(t, ast.Subscript):
-                subscript_targets.append(t)
-    elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Subscript):
-        subscript_targets.append(node.target)
+    subscript_targets: list[ast.Subscript] = [
+        t for t in flat_targets if isinstance(t, ast.Subscript)
+    ]
 
     # ast.Delete: `del self.x` / `del vars(self)["x"]` — these clear a
     # routing decision the same way an assignment of False would.
@@ -280,31 +293,50 @@ def _routing_attr_write_targets(node: ast.AST) -> list[tuple[str, ast.AST]]:
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
                 pairs.append((key.value, node))
 
-    # 3. Call-form setattr / __setattr__ — second arg is the attr name.
+    # 3. Call-form setattr / __setattr__ — check both possible arg
+    # positions. Codex R2: bound `engine.__setattr__("x", v)` puts the
+    # name at args[0]; unbound `object.__setattr__(engine, "x", v)`
+    # puts it at args[1]. Rather than try to distinguish the binding
+    # statically (fragile), inspect ALL leading string-Constant args
+    # against ROUTING_ATTRS. If any matches, it's a routing write.
     if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
         call = node.value
     elif isinstance(node, ast.Call):
         call = node
     else:
         call = None
-    # Also handle setattr as statement target (e.g. inside `if x: setattr(...)`).
-    # Walking standalone Call nodes inside the broader scanner picks them up,
-    # but for ``x := setattr(...)`` / list-comprehension wrappers the call is
-    # in an arbitrary expression context — those are scanned elsewhere too.
     if call is not None:
-        func = call.func
-        if (
-            isinstance(func, ast.Name) and func.id == "setattr" and len(call.args) >= 2
-        ) or (
-            isinstance(func, ast.Attribute)
-            and func.attr == "__setattr__"
-            and len(call.args) >= 2
-        ):
-            name_arg = call.args[1]
-            if isinstance(name_arg, ast.Constant) and isinstance(name_arg.value, str):
-                pairs.append((name_arg.value, node))
+        pairs.extend(_setattr_routing_writes(call, node))
 
     return pairs
+
+
+def _setattr_routing_writes(
+    call: ast.Call, owner_node: ast.AST
+) -> list[tuple[str, ast.AST]]:
+    """If ``call`` is a setattr-family invocation, return every
+    string-constant arg paired with ``owner_node``. Cheap superset
+    over ``args[0]`` and ``args[1]`` so both bound and unbound forms
+    are covered:
+
+    - ``setattr(obj, "x", v)`` — args[0]=obj, args[1]="x"
+    - ``object.__setattr__(obj, "x", v)`` — args[0]=obj, args[1]="x"
+    - ``engine.__setattr__("x", v)`` — args[0]="x"
+
+    The downstream gate filters by ROUTING_ATTRS so non-routing
+    setattr calls (``setattr(obj, "some_other_key", v)``) don't match.
+    """
+    out: list[tuple[str, ast.AST]] = []
+    func = call.func
+    is_setattr_name = isinstance(func, ast.Name) and func.id == "setattr"
+    is_setattr_method = isinstance(func, ast.Attribute) and func.attr == "__setattr__"
+    if not (is_setattr_name or is_setattr_method):
+        return out
+    # Inspect leading args 0 and 1 (covers both bound and unbound shapes).
+    for arg in call.args[:2]:
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            out.append((arg.value, owner_node))
+    return out
 
 
 def _all_routing_write_calls(tree: ast.AST) -> list[tuple[str, ast.AST]]:
@@ -317,23 +349,10 @@ def _all_routing_write_calls(tree: ast.AST) -> list[tuple[str, ast.AST]]:
     for node in ast.walk(tree):
         out.extend(_routing_attr_write_targets(node))
         # Standalone call inside any expression context — setattr()
-        # via walrus or as a comprehension element.
+        # via walrus or as a comprehension element. Uses the same
+        # arg-position-agnostic helper as the per-node path.
         if isinstance(node, ast.Call):
-            func = node.func
-            if (
-                isinstance(func, ast.Name)
-                and func.id == "setattr"
-                and len(node.args) >= 2
-            ) or (
-                isinstance(func, ast.Attribute)
-                and func.attr == "__setattr__"
-                and len(node.args) >= 2
-            ):
-                name_arg = node.args[1]
-                if isinstance(name_arg, ast.Constant) and isinstance(
-                    name_arg.value, str
-                ):
-                    out.append((name_arg.value, node))
+            out.extend(_setattr_routing_writes(node, node))
     # Dedupe — Expr(Call(...)) and the inner Call both produce the same hit.
     seen: set[tuple[int, str]] = set()
     deduped: list[tuple[str, ast.AST]] = []
@@ -662,6 +681,69 @@ def test_no_routing_shaped_request_headers():
                 )
 
     assert not offenders, "\n".join(offenders)
+
+
+def test_routing_attr_write_detects_destructuring_and_bound_setattr():
+    """Codex R2 regression-lock: two specific shapes that previously
+    slipped the routing-attr write scanner.
+
+    (a) Destructuring assignment: ``self._is_mllm, other = False, x``
+        — outer target is Tuple, the Attribute is nested inside.
+    (b) Bound ``engine.__setattr__("_is_mllm", False)`` — name is at
+        args[0], not args[1] like the unbound classmethod form.
+
+    Both forms must be detected by ``_routing_attr_write_targets``.
+    If either regresses, this test fails loudly with a specific
+    pointer to the bypass."""
+
+    # (a) destructuring
+    src_destruct = "self._is_mllm, other = False, x"
+    tree = ast.parse(src_destruct)
+    found = []
+    for node in ast.walk(tree):
+        found.extend(_routing_attr_write_targets(node))
+    assert any(attr == "_is_mllm" for attr, _ in found), (
+        f"Destructuring assignment `{src_destruct}` was NOT detected as a "
+        "routing-attr write. The scanner must walk nested Tuple/List "
+        "targets recursively (codex R2 fix)."
+    )
+
+    # (b) bound __setattr__ — args[0] is the name
+    src_bound = 'engine.__setattr__("_is_mllm", False)'
+    tree = ast.parse(src_bound)
+    found = []
+    for node in ast.walk(tree):
+        found.extend(_routing_attr_write_targets(node))
+    assert any(attr == "_is_mllm" for attr, _ in found), (
+        f"Bound `{src_bound}` was NOT detected as a routing write. The "
+        "scanner must check both args[0] (bound form) and args[1] (unbound "
+        "form) — codex R2 fix."
+    )
+
+    # (b') unbound object.__setattr__ — args[1] is the name (must still work)
+    src_unbound = 'object.__setattr__(engine, "_is_mllm", False)'
+    tree = ast.parse(src_unbound)
+    found = []
+    for node in ast.walk(tree):
+        found.extend(_routing_attr_write_targets(node))
+    assert any(attr == "_is_mllm" for attr, _ in found), (
+        f"Unbound `{src_unbound}` was NOT detected — original arg-1 path "
+        "regressed when adding arg-0 coverage."
+    )
+
+    # Negative: non-routing setattr must NOT match.
+    src_negative = 'setattr(engine, "some_unrelated_key", True)'
+    tree = ast.parse(src_negative)
+    found = []
+    for node in ast.walk(tree):
+        found.extend(_routing_attr_write_targets(node))
+    # Found pairs may contain "some_unrelated_key" but should NOT
+    # contain any ROUTING_ATTRS member.
+    matching_routing = [attr for attr, _ in found if attr in ROUTING_ATTRS]
+    assert not matching_routing, (
+        f"Non-routing setattr `{src_negative}` falsely matched routing "
+        f"attrs: {matching_routing}."
+    )
 
 
 def test_field_type_is_str_handles_pep604_unions():
