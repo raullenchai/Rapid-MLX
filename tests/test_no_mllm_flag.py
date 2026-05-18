@@ -67,6 +67,31 @@ def test_force_mllm_still_works_when_force_text_is_false():
     assert engine._is_mllm is True
 
 
+def test_force_text_is_keyword_only_in_load_model():
+    """Regression: ``force_text`` must remain keyword-only so existing
+    positional callers (e.g. ``load_model(name, None, 1, 32768, False,
+    0.5)`` setting ``gpu_memory_utilization=0.5``) don't suddenly
+    pass that float as a truthy ``force_text``. Codex R2 caught this
+    on the original PR — the original placement after ``force_mllm``
+    shifted every subsequent positional arg by one slot."""
+    import inspect
+
+    from vllm_mlx.server import load_model
+
+    sig = inspect.signature(load_model)
+    assert sig.parameters["force_text"].kind == inspect.Parameter.KEYWORD_ONLY, (
+        "force_text must be KEYWORD_ONLY to preserve positional-arg "
+        "compatibility for downstream callers — see codex R2 on PR #407."
+    )
+
+    from vllm_mlx.engine.batched import BatchedEngine
+
+    sig = inspect.signature(BatchedEngine.__init__)
+    assert sig.parameters["force_text"].kind == inspect.Parameter.KEYWORD_ONLY, (
+        "BatchedEngine.__init__ force_text must be KEYWORD_ONLY too."
+    )
+
+
 def test_force_text_and_force_mllm_mutually_exclusive_in_load_model():
     """server.load_model raises ValueError if both flags are True. This
     is the second line of defense — CLI already rejects this via

@@ -497,7 +497,6 @@ def load_model(
     stream_interval: int = 1,
     max_tokens: int = 32768,
     force_mllm: bool = False,
-    force_text: bool = False,
     gpu_memory_utilization: float = 0.90,
     prefill_step_size: int | None = None,
     cloud_model: str | None = None,
@@ -506,6 +505,8 @@ def load_model(
     cloud_api_key: str | None = None,
     served_model_name: str | None = None,
     mtp: bool = False,
+    *,
+    force_text: bool = False,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -516,10 +517,6 @@ def load_model(
         stream_interval: Tokens to batch before streaming
         max_tokens: Default max tokens for generation
         force_mllm: Force loading as MLLM even if not auto-detected
-        force_text: Force loading as text-only LLM even when auto-detection
-            would route it as MLLM. Escape hatch for incomplete vision-tower
-            checkpoints (#393) and text-only forks of multimodal architectures.
-            Mutually exclusive with ``force_mllm``.
         gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
         prefill_step_size: DEPRECATED — pass via
             ``scheduler_config.prefill_step_size`` instead. Pre-0.6.52 this
@@ -529,6 +526,12 @@ def load_model(
             into ``scheduler_config.prefill_step_size`` and a DeprecationWarning
             is emitted. Will be removed in a future release.
         mtp: Enable native MTP speculative decoding
+        force_text: Keyword-only. Force loading as text-only LLM even when
+            auto-detection would route as MLLM. Escape hatch for incomplete
+            vision-tower checkpoints (#393) and text-only forks of multimodal
+            architectures whose config.json still declares vision_config.
+            Mutually exclusive with ``force_mllm``. Keyword-only to avoid
+            shifting positional args for existing callers.
     """
     if prefill_step_size is not None:
         import warnings
