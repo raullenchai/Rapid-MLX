@@ -376,6 +376,190 @@ def _all_add_argument_flags(source: str) -> set[str]:
     return flags
 
 
+# ---------------------------------------------------------------------------
+# Auto-discovered entrypoint set (closes round-3 red-team bypass #1.4/#4.4).
+#
+# Previously the SOP checks hardcoded ("cli.py", "server.py", "benchmark.py")
+# and never noticed routing-shape flags or load_model() callers added to
+# new files. Now we walk every .py file under vllm_mlx/ and discover any
+# file that calls add_argument() OR load_model() — that's the closure of
+# "places a contributor could regress an SOP gate". If your new file
+# starts appearing here, the gates automatically include it.
+#
+# Excluded: ``__pycache__``, ``__init__.py`` (re-exports only), test
+# fixtures. We re-check this list against the static seed below so the
+# discovery can't silently drop entrypoints either.
+# ---------------------------------------------------------------------------
+
+
+# Static seed (current known entrypoints). Discovery must produce a
+# SUPERSET of this — if discovery returns fewer files, something
+# downstream changed and we want a loud failure.
+_KNOWN_ENTRYPOINTS_SEED: frozenset[str] = frozenset(
+    {"cli.py", "server.py", "benchmark.py"}
+)
+
+
+def _discover_entrypoints() -> set[str]:
+    """Discover every file under ``vllm_mlx/`` that either calls
+    ``add_argument(...)`` or ``load_model(...)``. Returns paths
+    relative to the package root (e.g. ``"cli.py"`` or
+    ``"routes/audio_route.py"``).
+
+    Closes round-3 bypass: contributor adds a new entrypoint file
+    (e.g. ``vllm_mlx/serve.py`` with its own argparse) that the
+    hardcoded gate-file list would never check."""
+    root = _pkg_root()
+    discovered: set[str] = set()
+
+    for path in root.rglob("*.py"):
+        # Skip __pycache__ and other dunder dirs.
+        if any(part.startswith("__") for part in path.parts[len(root.parts) :]):
+            continue
+        if path.name == "__init__.py":
+            # __init__ files are usually re-exports; if a real
+            # entrypoint shows up there it's still discovered via the
+            # AST checks below.
+            pass
+
+        try:
+            source = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+
+        has_routing_shape = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.id
+                if isinstance(func, ast.Name)
+                else (func.attr if isinstance(func, ast.Attribute) else None)
+            )
+            if name == "add_argument":
+                # Only flag this file if at least one add_argument call
+                # is a routing-shape flag. Files that only register
+                # config knobs (e.g. --max-tokens) don't need to be in
+                # the parity/forwarding checks.
+                for arg in node.args:
+                    if (
+                        isinstance(arg, ast.Constant)
+                        and isinstance(arg.value, str)
+                        and arg.value.startswith("--")
+                    ):
+                        has_routing_shape = True
+                        break
+            elif name == "load_model":
+                # Any caller of load_model is by definition an
+                # entrypoint that needs the forwarding check.
+                has_routing_shape = True
+
+            if has_routing_shape:
+                break
+
+        if has_routing_shape:
+            rel = path.relative_to(root).as_posix()
+            discovered.add(rel)
+
+    missing_seed = _KNOWN_ENTRYPOINTS_SEED - discovered
+    assert not missing_seed, (
+        f"Entrypoint discovery dropped known files: {sorted(missing_seed)}. "
+        "Either a known entrypoint was deleted or the discovery logic "
+        "regressed. If deletion was intentional, update "
+        "_KNOWN_ENTRYPOINTS_SEED to match."
+    )
+    return discovered
+
+
+def test_registry_invariants():
+    """Round-3 hardening (PR #408): the registry IS the source of
+    truth for every gate, so the registry itself must be sane.
+    Catches red-team attacks where the registry is silently corrupted
+    or duplicated to defeat the derived gates:
+
+      - Bypass #2.1 (liar registry): a contributor sets
+        ``model_config_field=None`` on a pair that REALLY does mutate
+        ModelConfig. Parametrize then produces zero cases, no test
+        complains. This invariant test demands proof: every pair
+        whose ``forwarded_kwargs`` includes a ``force_*`` / ``no_*``
+        kwarg pair AND whose semantics flow through ModelConfig must
+        declare its field — we sanity-check by requiring any pair
+        with non-empty ``forwarded_kwargs`` to either (a) have
+        ``model_config_field`` set OR (b) be in
+        ``KWARGS_FORWARDED_BUT_NOT_VIA_MODEL_CONFIG`` (explicit
+        exception list, ``force_mllm``/``force_text`` go here).
+
+      - Bypass #2.5 (duplicate entry): contributor inserts the same
+        pair twice. We assert all ``(force_on, force_off)`` tuples
+        are unique.
+
+      - Hygiene: every ``model_config_field`` must actually exist on
+        ``ModelConfig``. Bogus field names get caught here loudly
+        instead of producing cryptic AttributeError at parametrize
+        execution time.
+    """
+    from vllm_mlx.model_auto_config import ModelConfig
+
+    # (a) No duplicate flag pairs.
+    pair_keys = [(p.force_on, p.force_off) for p in AUTO_ROUTING_FLAG_PAIRS]
+    assert len(pair_keys) == len(set(pair_keys)), (
+        f"AUTO_ROUTING_FLAG_PAIRS has duplicate (force_on, force_off) entries: "
+        f"{[pk for pk in pair_keys if pair_keys.count(pk) > 1]}. "
+        "Round-3 red-team #2.5 — duplicates silently waste gate cycles "
+        "without surfacing the issue."
+    )
+
+    # (b) Every model_config_field exists on ModelConfig.
+    mc = ModelConfig()
+    for pair in AUTO_ROUTING_FLAG_PAIRS:
+        if pair.model_config_field is None:
+            continue
+        assert hasattr(mc, pair.model_config_field), (
+            f"Registry pair {pair.force_on}/{pair.force_off} declares "
+            f"model_config_field={pair.model_config_field!r} but that "
+            "attribute doesn't exist on ModelConfig. Typo or stale field "
+            "name — fix or remove."
+        )
+
+    # (c) Forwarded kwargs that don't go through ModelConfig must be
+    # explicitly listed. Catches the round-3 "liar" registry bypass:
+    # contributor sets model_config_field=None on a pair that really
+    # does mutate ModelConfig to silently disable the derived gate.
+    KWARGS_FORWARDED_BUT_NOT_VIA_MODEL_CONFIG = frozenset(
+        {
+            # --mllm / --no-mllm route through BatchedEngine._is_mllm,
+            # not ModelConfig. Verified by test_force_text_overrides_auto_detection.
+            "force_mllm",
+            "force_text",
+        }
+    )
+    for pair in AUTO_ROUTING_FLAG_PAIRS:
+        if not pair.forwarded_kwargs:
+            continue
+        if pair.model_config_field is not None:
+            continue
+        # forwarded_kwargs non-empty AND model_config_field None — must
+        # be an explicit exception.
+        unexplained = set(pair.forwarded_kwargs) - (
+            KWARGS_FORWARDED_BUT_NOT_VIA_MODEL_CONFIG
+        )
+        assert not unexplained, (
+            f"Registry pair {pair.force_on}/{pair.force_off} forwards "
+            f"kwargs {sorted(pair.forwarded_kwargs)} but has "
+            "model_config_field=None and is not in "
+            "KWARGS_FORWARDED_BUT_NOT_VIA_MODEL_CONFIG. Either set "
+            "model_config_field (so the EngineCore mutation test parametrize "
+            "covers it) or add these kwargs to the exception list with a "
+            "comment explaining where the override actually takes effect "
+            "(round-3 red-team #2.1 — liar-registry bypass)."
+        )
+
+
 def test_auto_routing_flags_have_force_on_and_force_off_pair():
     """SOP gate (#393 lesson): every binary auto-routing decision must
     expose BOTH a force-on and a force-off CLI flag.
@@ -453,6 +637,10 @@ def test_no_unregistered_routing_shaped_flags():
     complement: enumerate every routing-shaped flag in the source and
     require a deliberate registration or allowlist decision.
 
+    Scans every file discovered by ``_discover_entrypoints()`` — not
+    a hardcoded list. Adding a new entrypoint file is automatically
+    included (round-3 bypass #1.4 fix).
+
     Pick option 2 (allowlist) only when you're sure the flag is a UX
     knob, not a binary auto-detection that could ever go wrong. When
     in doubt, register the pair — the cost of an extra registry entry
@@ -462,8 +650,8 @@ def test_no_unregistered_routing_shaped_flags():
 
     discovered: set[str] = set()
     pkg_root = _pkg_root()
-    for fname in ("cli.py", "server.py", "benchmark.py"):
-        source = (pkg_root / fname).read_text()
+    for relpath in _discover_entrypoints():
+        source = (pkg_root / relpath).read_text()
         for flag in _all_add_argument_flags(source):
             if routing_pattern.match(flag):
                 discovered.add(flag)
@@ -487,17 +675,22 @@ def test_no_unregistered_routing_shaped_flags():
 
 
 def test_routing_override_kwargs_are_forwarded_to_load_model():
-    """Strengthened SOP gate (codex R1 PR #407 + red-team #4 PR #408):
-    catching the flag in argparse is not enough — it must also be
-    forwarded to ``server.load_model`` so the override actually
-    reaches EngineCore.
+    """Strengthened SOP gate (codex R1 PR #407 + red-team #4 PR #408 +
+    round-3 hardening): catching the flag in argparse is not enough —
+    it must also be forwarded to ``server.load_model`` so the
+    override actually reaches EngineCore.
 
-    Walks the AST of every ``load_model(...)`` call in cli.py and
-    server.py and confirms each kwarg in ``KWARGS_THAT_MUST_BE_FORWARDED``
-    (derived from the registry) is either passed as a keyword arg OR
-    not passed at all. The failure mode this catches: flag registered,
-    mutex check present, but the kwarg is silently dropped between
-    argparse and the load call → override no-ops.
+    Walks the AST of every ``load_model(...)`` call in every file
+    discovered by ``_discover_entrypoints()`` (no longer hardcoded;
+    closes round-3 bypass #4.4 where a new ``vllm_mlx/serve.py``
+    entrypoint would never be scanned).
+
+    Also REJECTS ``load_model(**expanded_dict)`` constructs (round-3
+    bypass #4.1): with ``**`` the kwarg names are invisible to AST,
+    so any call site using ``**`` to forward routing kwargs MUST
+    instead spell them out so this gate can audit each one. Helper
+    functions returning kwarg dicts are exactly the bypass shape we
+    can't audit statically.
 
     The set of required kwargs is DERIVED from
     ``AUTO_ROUTING_FLAG_PAIRS[*].forwarded_kwargs`` so adding a new
@@ -521,10 +714,28 @@ def test_routing_override_kwargs_are_forwarded_to_load_model():
         return calls
 
     failures: list[str] = []
-    for fname in ("cli.py", "server.py"):
-        source = (pkg_root / fname).read_text()
+    for relpath in _discover_entrypoints():
+        source = (pkg_root / relpath).read_text()
         for call in _find_load_model_calls(source):
+            # ``kw.arg is None`` indicates a `**unpack` construct. Allow
+            # it ONLY if the call is empty of routing kwargs (i.e. no
+            # explicit routing kwargs and no risk of partial forwarding
+            # via the unpack). Otherwise reject — the unpacked dict is
+            # opaque to AST audit.
+            star_unpacks = [kw for kw in call.keywords if kw.arg is None]
             kwarg_names = {kw.arg for kw in call.keywords if kw.arg is not None}
+
+            if star_unpacks:
+                failures.append(
+                    f"{relpath} load_model() call at line {call.lineno} uses "
+                    "`**` unpacking which hides kwarg names from the SOP "
+                    "audit. Spell out every routing kwarg explicitly "
+                    f"({sorted(KWARGS_THAT_MUST_BE_FORWARDED)}) — otherwise a "
+                    "helper that builds the dict can silently drop a routing "
+                    "override (round-3 red-team bypass #4.1)."
+                )
+                continue
+
             # ``load_model`` defaults every routing override to False, so
             # omitting them all is fine for callers that never need to
             # override. But once a CALLER references one of these
@@ -534,7 +745,7 @@ def test_routing_override_kwargs_are_forwarded_to_load_model():
             if overlap and overlap != KWARGS_THAT_MUST_BE_FORWARDED:
                 missing = KWARGS_THAT_MUST_BE_FORWARDED - overlap
                 failures.append(
-                    f"{fname} load_model() call at line {call.lineno} forwards "
+                    f"{relpath} load_model() call at line {call.lineno} forwards "
                     f"{sorted(overlap)} but omits {sorted(missing)} — every "
                     "routing-override kwarg must be forwarded from any caller "
                     "that forwards any one of them (SOP §10). This list is "
@@ -544,28 +755,37 @@ def test_routing_override_kwargs_are_forwarded_to_load_model():
 
 
 def test_load_model_has_no_unkeyworded_bool_or_routing_params_beyond_baseline():
-    """SOP gate (red-team #3 PR #408 + round-2 hardening): every
-    positional parameter on ``load_model`` that is EITHER bool-typed
-    OR routing-named MUST be keyword-only, except explicitly
-    grandfathered pre-#407 entries.
+    """SOP gate (red-team #3 PR #408, rounds 2 + 3): every positional
+    parameter on ``load_model`` that is EITHER bool-typed OR
+    routing-named OR has truthy-laundering shape MUST be keyword-only,
+    except explicitly grandfathered pre-#407 entries.
 
-    Two complementary detection prongs:
+    Three complementary detection prongs:
 
     1. ``_param_is_bool``: catches positional bools regardless of
-       annotation style (real ``bool``, stringified ``"bool"``,
-       ``"Optional[bool]"`` etc., or inferred from default value).
-       Prevents the codex R2 bug shape — a new bool kwarg before
-       ``*,`` shifts every downstream positional slot.
+       annotation style (real ``bool``, stringified ``"bool"`` or
+       ``"Optional[bool]"``, or inferred from default value). Prevents
+       the codex R2 bug shape — a new bool kwarg before ``*,`` shifts
+       every downstream positional slot.
 
     2. ``_param_is_routing_shape``: catches positional params NAMED
        like routing overrides (``force_*``, ``no_*``, ``enable_*``,
-       ``disable_*``) regardless of type. Round-2 red-team found 3
-       bypasses on the bool-only check: ``force_quant: int = 0``,
-       ``force_quant=0`` (no annotation), and
-       ``force_quant: "Optional[bool]" = False`` all slipped past
-       bool detection but semantically routed via truthy/falsy
-       evaluation. The name pattern check closes that whole class —
-       if you NAMED it like a routing decision, it IS one.
+       ``disable_*``) regardless of type. Closes the type-laundering
+       bypass found in round 2.
+
+    3. ``_param_default_has_custom_bool``: catches params whose
+       default value is an instance of a class with a custom
+       ``__bool__`` method. Closes round-3 bypass #3.5 where a
+       ``_Flag`` class with ``__bool__`` returning False slipped all
+       three previous prongs.
+
+    Also: ``inspect.unwrap`` is called on ``load_model`` before
+    introspection so decorators that don't use ``functools.wraps``
+    can't hide the underlying signature (round-3 bypass #3.3).
+
+    Also: rejects ``**var_keyword`` params on ``load_model``. A
+    ``**routing_overrides: bool`` would hide every individual flag
+    from the keyword-only check (round-3 bypass #3.6).
 
     The grandfather list is FROZEN. If you genuinely need to add a
     positional bool/routing param (almost never), update it with a
@@ -573,7 +793,10 @@ def test_load_model_has_no_unkeyworded_bool_or_routing_params_beyond_baseline():
     """
     from vllm_mlx.server import load_model
 
-    sig = inspect.signature(load_model)
+    # Round-3 bypass #3.3: a non-functools.wraps decorator hides the
+    # underlying signature. Unwrap explicitly.
+    unwrapped = inspect.unwrap(load_model)
+    sig = inspect.signature(unwrapped)
 
     # Pre-SOP positional bools/routing names. Do NOT extend casually
     # — see docstring. Every entry needs a 1-line reason.
@@ -583,6 +806,14 @@ def test_load_model_has_no_unkeyworded_bool_or_routing_params_beyond_baseline():
             "mtp",  # native MTP enable, pre-PR #407
         }
     )
+
+    # Round-3 bypass #3.6: reject **var_keyword on load_model.
+    for name, param in sig.parameters.items():
+        assert param.kind != inspect.Parameter.VAR_KEYWORD, (
+            f"load_model has VAR_KEYWORD param `**{name}` — this hides "
+            "individual routing kwargs from SOP audit. Spell out every "
+            "routing kwarg explicitly. See PR #408 round-3 red-team #3.6."
+        )
 
     offenders: list[tuple[str, str]] = []
     for name, param in sig.parameters.items():
@@ -594,6 +825,14 @@ def test_load_model_has_no_unkeyworded_bool_or_routing_params_beyond_baseline():
             offenders.append((name, "bool-typed positional param"))
         elif _param_is_routing_shape(name):
             offenders.append((name, "routing-shape name (force_/no_/enable_/disable_)"))
+        elif _param_default_has_custom_bool(param):
+            offenders.append(
+                (
+                    name,
+                    "positional param with custom-__bool__ default — bypass of "
+                    "bool detection (round-3 red-team #3.5)",
+                )
+            )
 
     assert not offenders, (
         f"load_model has {len(offenders)} non-grandfathered positional "
@@ -661,6 +900,33 @@ def _param_is_routing_shape(name: str) -> bool:
     be keyword-only regardless of type — see PR #408 round-2
     red-team."""
     return bool(_ROUTING_PARAM_NAME_RE.match(name))
+
+
+def _param_default_has_custom_bool(param: inspect.Parameter) -> bool:
+    """Catches round-3 bypass #3.5: a custom class with ``__bool__``
+    behaves as a routing toggle (``bool(default)`` returns False) but
+    isn't a bool, isn't a routing-named param, and isn't any of the
+    annotation shapes ``_param_is_bool`` checks.
+
+    Heuristic: if the default value's type overrides ``__bool__``
+    (i.e. ``type(default).__bool__ is not object.__bool__``), treat
+    it as a candidate truthy-laundering bypass.
+
+    False positives are rare — most real Python types either inherit
+    ``object.__bool__`` (always True for non-empty) or are built-in
+    types (int/str/dict/list) whose ``__bool__`` is at type-level,
+    not class-level. The check is intentionally conservative."""
+    if param.default is inspect.Parameter.empty:
+        return False
+    if param.default is None:
+        return False
+    default_type = type(param.default)
+    # Builtins (int, str, float, bool, list, dict, tuple, set, frozenset, None)
+    # all have valid __bool__ — skip them. We're looking for user-defined
+    # classes that override __bool__.
+    if default_type.__module__ == "builtins":
+        return False
+    return type(param.default).__bool__ is not object.__bool__
 
 
 def test_hybrid_overrides_mutually_exclusive_in_load_model():
@@ -731,27 +997,52 @@ def test_routing_override_kwargs_are_keyword_only_in_load_model():
         )
 
 
-def _make_engine_core_for_override_test(monkeypatch, cfg):
+def _make_engine_core_for_override_test(monkeypatch, cfg, *, base=None):
     """Build an ``EngineCore`` with heavy dependencies stubbed so the
     routing-override block in ``__init__`` can be exercised in
     isolation. Returns the constructed core (or raises if __init__
-    does)."""
+    does).
+
+    Round-3 fix #5.2: the stub ``enrich_model_config`` previously
+    captured ``base`` from closure and ignored its ``_base`` argument.
+    That allowed bypass #5.2 (pre-enrich mutation): a contributor
+    could mutate ``base_cfg`` BEFORE enrich runs and the override
+    would survive in the test, even though in production enrich
+    overwrites with a fresh ModelConfig instance. Now the stub
+    correctly clones from its argument so any pre-enrich mutation is
+    discarded — matching production behavior.
+
+    Round-3 fix #5.5: the default ``base`` was hardcoded
+    ``ModelConfig(is_hybrid=True, supports_spec_decode=False)``. Tests
+    that expected ``is_hybrid=False`` after a force-off override
+    could pass even if the mutation never fired, because the base
+    already happened to be ... wait, base was True for is_hybrid so
+    that doesn't apply. The genuine #5.5 issue is for fields whose
+    default matches the force-off expected value. We address this by
+    making ``base`` parameter-overridable so callers can pre-set the
+    field to the OPPOSITE of expected, forcing the mutation to be
+    real."""
     from unittest.mock import MagicMock
 
     from vllm_mlx import engine_core as ec
     from vllm_mlx import model_auto_config as mac
     from vllm_mlx.model_auto_config import ModelConfig
 
-    base = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+    if base is None:
+        base = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+
     monkeypatch.setattr(mac, "detect_model_config", lambda _name: base)
-    monkeypatch.setattr(
-        mac,
-        "enrich_model_config",
-        lambda _base, _model: ModelConfig(
-            is_hybrid=base.is_hybrid,
-            supports_spec_decode=base.supports_spec_decode,
-        ),
-    )
+
+    # Stub respects its argument (not closure). This means pre-enrich
+    # mutation of ``base_cfg`` is invisible — matching production
+    # behavior where enrich produces a fresh ModelConfig.
+    def _stub_enrich(_base, _model):
+        return ModelConfig(
+            is_hybrid=_base.is_hybrid,
+            supports_spec_decode=_base.supports_spec_decode,
+        )
+
+    monkeypatch.setattr(mac, "enrich_model_config", _stub_enrich)
     # Scheduler construction is heavy and pulls in MLX. Replace with
     # MagicMock so we only test the override block.
     monkeypatch.setattr(ec, "Scheduler", MagicMock())
