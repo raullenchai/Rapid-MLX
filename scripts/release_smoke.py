@@ -75,11 +75,12 @@ def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 
 def smoke(install_spec: str, *, source: str) -> None:
-    # mkdtemp() can raise (disk full, permission denied) — keep it
-    # outside the try so the finally can't reference an unbound name.
-    venv = Path(tempfile.mkdtemp(prefix="rapid-mlx-release-smoke-"))
+    # ``venv`` is pre-bound to None so the finally can run safely no
+    # matter where mkdtemp / venv / pip raises (DeepSeek r1 #1, r2).
+    venv: Path | None = None
     env = _clean_subprocess_env()
     try:
+        venv = Path(tempfile.mkdtemp(prefix="rapid-mlx-release-smoke-"))
         print(f"[release-smoke] clean venv: {venv}")
         run([sys.executable, "-m", "venv", str(venv)], env=env)
         py = venv / "bin" / "python"
@@ -103,7 +104,8 @@ def smoke(install_spec: str, *, source: str) -> None:
             run([str(py), "-c", f"import {mod}"], cwd=str(venv), env=env)
         print("[release-smoke] OK — every release surface imports cleanly.")
     finally:
-        shutil.rmtree(venv, ignore_errors=True)
+        if venv is not None:
+            shutil.rmtree(venv, ignore_errors=True)
 
 
 def main() -> int:
