@@ -367,35 +367,79 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
     return cfg.engine
 
 
-def _validate_model_name(request_model: str) -> None:
-    """Validate that the request model name matches a served model."""
-    if not request_model:
-        return
+def _is_model_loaded(model_name: str | None) -> bool:
+    """Return True when model_name refers to a currently served model.
 
+    Treats `None`, empty string, and the literal "default" as "loaded": the
+    request does not target a specific model, so the currently configured
+    default serves it. This unifies single-model and registry modes — the
+    pre-fix behavior accepted "default" only in registry mode, which surfaced
+    as a confusing 404 for clients sending `model: "default"` against a
+    single-model server.
+    """
+    if not model_name or model_name == "default":
+        return True
     cfg = get_config()
-    if cfg.model_registry and request_model in cfg.model_registry:
-        return
-    if cfg.model_registry and request_model == "default":
-        return
-
+    if cfg.model_registry is not None and model_name in cfg.model_registry:
+        return True
     if not cfg.model_name:
-        return
+        return False
     accepted = {cfg.model_name}
     if cfg.model_alias:
         accepted.add(cfg.model_alias)
     if cfg.model_path:
         accepted.add(cfg.model_path)
-    if request_model not in accepted:
-        available = (
-            ", ".join(cfg.model_registry.list_model_names())
-            if cfg.model_registry
-            else cfg.model_name
-        )
-        raise HTTPException(
-            status_code=404,
-            detail=f"The model `{request_model}` does not exist. "
-            f"Available: {available}",
-        )
+    return model_name in accepted
+
+
+def _validate_model_name(request_model: str) -> None:
+    """Validate that the request model name matches a served model."""
+    if _is_model_loaded(request_model):
+        return
+
+    cfg = get_config()
+    if not cfg.model_name and cfg.model_registry is None:
+        return
+
+    available = (
+        ", ".join(cfg.model_registry.list_model_names())
+        if cfg.model_registry is not None
+        else cfg.model_name
+    )
+    raise HTTPException(
+        status_code=404,
+        detail=f"The model `{request_model}` does not exist. Available: {available}",
+    )
+
+
+async def ensure_model_loaded(model_name: str | None) -> None:
+    """Validate that `model_name` is currently loaded; otherwise raise 404.
+
+    Canonical strict-404 check for /v1/chat/completions and /v1/completions —
+    mirrors `_validate_model_name`'s message shape so the two are
+    interchangeable on the strict-404 path. The sync counterpart is kept for
+    /v1/messages (anthropic adapter is model-name-agnostic by design).
+
+    Extension point for on-demand auto-loading: a follow-up PR will let an
+    operator-set flag (`enable_on_demand_loading`) trigger a hot swap to the
+    requested model here instead of raising 404. The flag plumbing, swap
+    machinery, and security/concurrency model are intentionally out of scope
+    for this PR; today the function is strict-404.
+    """
+    if _is_model_loaded(model_name):
+        return
+    cfg = get_config()
+    if not cfg.model_name and cfg.model_registry is None:
+        return
+    available = (
+        ", ".join(cfg.model_registry.list_model_names())
+        if cfg.model_registry is not None
+        else cfg.model_name
+    )
+    raise HTTPException(
+        status_code=404,
+        detail=f"The model `{model_name}` does not exist. Available: {available}",
+    )
 
 
 # ── Tool call parsing ──────────────────────────────────────────────
