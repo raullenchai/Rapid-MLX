@@ -8,15 +8,18 @@ symbol/API that hasn't appeared in a released wheel yet. The dev gates
 (`make smoke/check/full`, `pr_validate`, codex review) all run against
 the dev mlx and silently agree with each other.
 
-This script builds rapid-mlx from the working tree, installs it into a
-brand-new venv with **only PyPI wheels** for the runtime deps, then
-imports the modules that the published entrypoints would import. An
-``AttributeError`` / ``ImportError`` here means we are about to ship a
+This script creates a brand-new venv and either:
+  - pip-installs the working tree (pip handles PEP 517 build internally,
+    so no `build` or `hatchling` dep is required on the dev env), or
+  - pip-installs `rapid-mlx==X.Y.Z` from PyPI (post-tag verification).
+
+Then it imports the modules that the published entrypoints would import.
+An ``AttributeError`` / ``ImportError`` here means we are about to ship a
 release that no user can ``pip install`` and use.
 
 Usage:
-    python3 scripts/release_smoke.py            # build wheel, smoke-import it
-    python3 scripts/release_smoke.py --version  # post-tag: smoke `pip install rapid-mlx==X` from PyPI
+    python3 scripts/release_smoke.py            # install working tree in clean venv, smoke-import
+    python3 scripts/release_smoke.py --version 0.6.55  # post-tag: install from PyPI
 
 Exit code: 0 on success, 1 on any failure. Designed to be the last gate
 before pushing a ``chore: bump version to X.Y.Z`` commit.
@@ -34,15 +37,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Modules whose import-time side effects must succeed against a clean
-# install. ``vllm_mlx.scheduler`` was the surface that #408 broke; the
-# others are added because every `rapid-mlx serve ...` invocation
-# imports them before binding a port, and any future shim-style code
-# added near them will fail the same way.
+# install. ``vllm_mlx.scheduler`` was the surface that #408 broke;
+# the others cover every base ``[project.scripts]`` entrypoint
+# (``rapid-mlx``, ``vllm-mlx``, ``vllm-mlx-bench``) plus the server
+# surface that every ``rapid-mlx serve`` invocation imports before
+# binding a port. ``vllm_mlx.gradio_app`` is intentionally excluded —
+# it's the ``vllm-mlx-chat`` entrypoint, which lives behind the
+# ``chat`` extra and is allowed to fail-import on the base install.
 IMPORT_TARGETS = (
     "vllm_mlx",
     "vllm_mlx.scheduler",
     "vllm_mlx.server",
     "vllm_mlx.cli",
+    "vllm_mlx.benchmark",
 )
 
 
@@ -60,34 +67,25 @@ def smoke(install_spec: str, *, source: str) -> None:
         py = venv / "bin" / "python"
         run([str(py), "-m", "pip", "install", "--quiet", "--upgrade", "pip"])
 
+        # ``pip install <local-path>`` invokes the PEP 517 build backend
+        # declared in ``pyproject.toml`` directly — no separate ``build``
+        # package needed on the dev env. The wheel that gets built and
+        # installed is bit-identical to what would land on PyPI.
         print(f"[release-smoke] installing {source}: {install_spec}")
         run([str(py), "-m", "pip", "install", "--quiet", install_spec])
 
+        # Run the import probes from inside the venv, NOT the repo root:
+        # ``python -c`` puts cwd at sys.path[0], so if we ran from
+        # REPO_ROOT the in-tree ``vllm_mlx/`` would shadow the wheel we
+        # just installed and the gate could pass against a broken
+        # published artifact.
         print("[release-smoke] importing release surfaces in clean venv:")
         for mod in IMPORT_TARGETS:
             print(f"    import {mod}", flush=True)
-            run([str(py), "-c", f"import {mod}"])
+            run([str(py), "-c", f"import {mod}"], cwd=str(venv))
         print("[release-smoke] OK — every release surface imports cleanly.")
     finally:
         shutil.rmtree(venv, ignore_errors=True)
-
-
-def build_wheel() -> Path:
-    dist = REPO_ROOT / "dist"
-    if dist.exists():
-        shutil.rmtree(dist)
-    print("[release-smoke] building wheel from working tree")
-    run(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", str(dist)], cwd=REPO_ROOT
-    )
-    wheels = sorted(dist.glob("rapid_mlx-*.whl"))
-    if not wheels:
-        sys.exit("[release-smoke] FAIL: no rapid_mlx wheel built")
-    if len(wheels) > 1:
-        print(
-            f"[release-smoke] WARN: multiple wheels in dist, using newest: {wheels[-1].name}"
-        )
-    return wheels[-1]
 
 
 def main() -> int:
@@ -103,8 +101,7 @@ def main() -> int:
         if args.version:
             smoke(f"rapid-mlx=={args.version}", source="PyPI")
         else:
-            wheel = build_wheel()
-            smoke(str(wheel), source="local wheel")
+            smoke(str(REPO_ROOT), source="working tree")
     except subprocess.CalledProcessError as exc:
         print(
             f"\n[release-smoke] FAIL: command exited {exc.returncode}\n"
