@@ -826,10 +826,12 @@ from .routes.audio import router as _audio_router
 from .routes.chat import router as _chat_router
 from .routes.completions import router as _completions_router
 from .routes.embeddings import router as _embeddings_router
+from .routes.health import probe_router as _probe_router
 from .routes.health import router as _health_router
 from .routes.mcp_routes import router as _mcp_router
 from .routes.models import router as _models_router
 
+app.include_router(_probe_router)
 app.include_router(_health_router)
 app.include_router(_models_router)
 app.include_router(_chat_router)
@@ -882,10 +884,10 @@ Examples:
     )
     parser.add_argument(
         "--log-level",
-        type=str,
+        type=lambda s: s.upper(),
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="INFO",
-        help="Log level for Python logging and uvicorn",
+        help="Log level for Python logging and uvicorn (case-insensitive)",
     )
     parser.add_argument(
         "--mllm",

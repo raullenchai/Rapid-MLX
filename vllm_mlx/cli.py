@@ -2736,10 +2736,10 @@ Examples:
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
     serve_parser.add_argument(
         "--log-level",
-        type=str,
+        type=lambda s: s.upper(),
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="INFO",
-        help="Log level for Python logging and uvicorn",
+        help="Log level for Python logging and uvicorn (case-insensitive)",
     )
     serve_parser.add_argument(
         "--max-num-seqs", type=int, default=256, help="Max concurrent sequences"

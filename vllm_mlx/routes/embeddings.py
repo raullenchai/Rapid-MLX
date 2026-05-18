@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Embeddings endpoint."""
 
+import base64
 import logging
+import struct
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -64,6 +66,12 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
         if not texts:
             raise HTTPException(status_code=400, detail="Input must not be empty")
 
+        if request.dimensions is not None and request.dimensions < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="dimensions must be a positive integer",
+            )
+
         start_time = time.perf_counter()
         prompt_tokens = cfg.embedding_engine.count_tokens(texts)
         embeddings = cfg.embedding_engine.embed(texts)
@@ -72,9 +80,28 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
             f"Embeddings: {len(texts)} inputs, {prompt_tokens} tokens in {elapsed:.2f}s"
         )
 
-        data = [
-            EmbeddingData(index=i, embedding=vec) for i, vec in enumerate(embeddings)
-        ]
+        # Optional truncation (OpenAI MRL semantics). Sliced post-embed
+        # because mlx-embeddings doesn't expose a native dim parameter.
+        if request.dimensions is not None:
+            embeddings = [list(vec)[: request.dimensions] for vec in embeddings]
+
+        # encoding_format=base64 per OpenAI spec — float32 little-endian
+        # bytes, base64-encoded as ASCII. Saves ~2-4× bandwidth on large
+        # batches and is the default for several OpenAI client SDKs.
+        if request.encoding_format == "base64":
+            encoded: list[list[float] | str] = []
+            for vec in embeddings:
+                vec_list = list(vec)
+                packed = struct.pack(f"<{len(vec_list)}f", *vec_list)
+                encoded.append(base64.b64encode(packed).decode("ascii"))
+            data = [
+                EmbeddingData(index=i, embedding=enc) for i, enc in enumerate(encoded)
+            ]
+        else:
+            data = [
+                EmbeddingData(index=i, embedding=list(vec))
+                for i, vec in enumerate(embeddings)
+            ]
 
         return EmbeddingResponse(
             data=data,
