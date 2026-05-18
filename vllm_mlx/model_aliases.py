@@ -117,6 +117,36 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"alias {alias!r}: value must be a string or an object with "
             f"'hf_path', got {type(value).__name__}"
         )
+    # Closed-key schema: any unknown key is rejected at load time so a
+    # contributor can't sneak a covert routing flip into aliases.json
+    # (round-4 env-config attack #5). Adding a NEW field requires
+    # editing this set AND the dataclass — surfacing the change in
+    # review.
+    _ALLOWED_PROFILE_KEYS = frozenset(
+        {
+            "hf_path",
+            "tool_call_parser",
+            "reasoning_parser",
+            "is_hybrid",
+            "is_moe",
+            "supports_spec_decode",
+            "default_max_tokens",
+            "suffix_decoding_tier",
+            "suffix_bench_speedup",
+            "supports_dflash",
+            "dflash_draft_model",
+            "recommended_sampling",
+        }
+    )
+    unknown_keys = set(value.keys()) - _ALLOWED_PROFILE_KEYS
+    if unknown_keys:
+        raise ValueError(
+            f"alias {alias!r}: unknown key(s) {sorted(unknown_keys)}; allowed: "
+            f"{sorted(_ALLOWED_PROFILE_KEYS)}. If you intend to add a new "
+            "field, update both AliasProfile and _ALLOWED_PROFILE_KEYS — and "
+            "if the field is a routing decision (force_*/no_*), it must be "
+            "registered in tests/test_no_mllm_flag.py::AUTO_ROUTING_FLAG_PAIRS."
+        )
     hf_path = value["hf_path"]
     if not isinstance(hf_path, str) or not hf_path:
         raise ValueError(
