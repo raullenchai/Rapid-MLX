@@ -1773,9 +1773,24 @@ def _make_engine_core_for_override_test(monkeypatch, cfg, *, base=None):
     real."""
     from unittest.mock import MagicMock
 
-    from vllm_mlx import engine_core as ec
-    from vllm_mlx import model_auto_config as mac
-    from vllm_mlx.model_auto_config import ModelConfig
+    # Codex round-A fix (PR #409): in headless CI / sandboxed macOS
+    # environments without a Metal device, importing engine_core
+    # triggers a chain (scheduler.py → mlx_lm → mlx.core) that raises
+    # RuntimeError at module-load time — BEFORE the monkeypatch below
+    # can stub Scheduler. Catch that and skip; the test's purpose is
+    # the EngineCore.__init__ routing-mutation block, which can't be
+    # exercised without a usable MLX runtime anyway. On machines with
+    # Metal (the SOP's intended audit surface), the import succeeds
+    # and the gate fires.
+    try:
+        from vllm_mlx import engine_core as ec
+        from vllm_mlx import model_auto_config as mac
+        from vllm_mlx.model_auto_config import ModelConfig
+    except RuntimeError as exc:
+        pytest.skip(
+            f"MLX runtime unavailable ({exc}) — EngineCore routing-mutation "
+            "audit requires a working Metal device. Skipped on headless CI."
+        )
 
     if base is None:
         base = ModelConfig(is_hybrid=True, supports_spec_decode=False)
@@ -1995,17 +2010,22 @@ def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
     """An unrelated ValueError (e.g. config parsing) must NOT trigger
     the friendly-error path — it should propagate as-is so genuine bugs
     surface and don't get misattributed to vision-tower issues."""
-    import importlib
+    import importlib.util
     import sys
 
-    try:
-        importlib.import_module("mlx_vlm")
-    except ImportError:
+    # Codex round-A fix (PR #409): in headless CI without a Metal
+    # device, importlib.import_module("mlx_vlm") raises RuntimeError
+    # from MLX init (not ImportError), bypassing the
+    # ``except ImportError`` skip. Use find_spec to verify mlx_vlm is
+    # installable without actually loading it — the test only needs
+    # the module slot in sys.modules to exist before we replace it
+    # with a fake. Skip if the package isn't installed at all.
+    if importlib.util.find_spec("mlx_vlm") is None:
         pytest.skip("mlx_vlm not installed (vision extra)")
 
     from vllm_mlx.models import mllm as mllm_mod
 
-    real_mlx_vlm = sys.modules["mlx_vlm"]
+    real_mlx_vlm = sys.modules.get("mlx_vlm")
 
     class _FakeMlxVlm:
         @staticmethod
@@ -2026,4 +2046,9 @@ def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
         with pytest.raises(ValueError, match="invalid model_type"):
             inst.load()
     finally:
-        sys.modules["mlx_vlm"] = real_mlx_vlm
+        # monkeypatch.setitem already restores on teardown, but the
+        # original test had a paranoid manual restore. Preserve that
+        # only when there's something to restore — find_spec-based
+        # detection means we may not have imported it.
+        if real_mlx_vlm is not None:
+            sys.modules["mlx_vlm"] = real_mlx_vlm
