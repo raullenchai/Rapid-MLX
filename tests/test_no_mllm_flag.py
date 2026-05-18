@@ -229,6 +229,63 @@ def test_force_mllm_still_works_when_force_text_is_false():
     assert engine._is_mllm is True
 
 
+def test_load_model_alias_resolver_handles_every_import_shape():
+    """Codex rounds E/F/G regression (PR #409): every scanner that
+    looks for ``vllm_mlx.server.load_model`` invocations must resolve
+    aliases. The whack-a-mole over 3 rounds proves the literal-name
+    match is bypass-prone; this test pins the shared resolver so all
+    common import shapes flow through one code path.
+
+    Shapes covered:
+      1. ``from vllm_mlx.server import load_model`` → ``load_model(...)``
+      2. ``from vllm_mlx.server import load_model as lm`` → ``lm(...)``
+      3. ``from vllm_mlx import server`` → ``server.load_model(...)``
+      4. ``import vllm_mlx.server as srv`` → ``srv.load_model(...)``
+      5. ``import vllm_mlx.server`` →
+         ``vllm_mlx.server.load_model(...)``
+
+    Negative controls:
+      6. ``from mlx_lm.utils import load_model`` then ``load_model(...)``
+         — NOT our entrypoint, must NOT be recognized
+      7. Bare ``load_model(...)`` with no import — must NOT be recognized
+    """
+    shapes = {
+        "direct": "from vllm_mlx.server import load_model\nload_model('q')\n",
+        "as-aliased": ("from vllm_mlx.server import load_model as lm\nlm('q')\n"),
+        "from-module": ("from vllm_mlx import server\nserver.load_model('q')\n"),
+        "import-as": ("import vllm_mlx.server as srv\nsrv.load_model('q')\n"),
+        "import-bare": ("import vllm_mlx.server\nvllm_mlx.server.load_model('q')\n"),
+    }
+    for shape, source in shapes.items():
+        tree = ast.parse(source)
+        direct, module = _load_model_aliases_in_tree(tree)
+        hits = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and _call_targets_load_model(n, direct, module)
+        ]
+        assert len(hits) == 1, (
+            f"alias shape `{shape}` must produce exactly one resolved "
+            f"call, got {len(hits)} (direct={direct}, module={module})"
+        )
+
+    # Negative controls: foreign load_model + unimported load_model.
+    foreign = "from mlx_lm.utils import load_model\nload_model('foreign')\n"
+    tree = ast.parse(foreign)
+    direct, module = _load_model_aliases_in_tree(tree)
+    assert not direct and not module, (
+        "mlx_lm.utils.load_model MUST NOT register as our alias — "
+        "would false-positive the entrypoint parity gate."
+    )
+
+    bare = "load_model('q')\n"
+    tree = ast.parse(bare)
+    direct, module = _load_model_aliases_in_tree(tree)
+    assert not direct and not module, (
+        "load_model without an import is NOT our entrypoint."
+    )
+
+
 def test_force_text_is_keyword_only_in_load_model():
     """Regression: ``force_text`` must remain keyword-only so existing
     positional callers (e.g. ``load_model(name, None, 1, 32768, False,
@@ -582,6 +639,80 @@ _KNOWN_ENTRYPOINTS_SEED: frozenset[str] = frozenset(
 )
 
 
+# Codex round-G hardening (PR #409): every scanner that looks for
+# ``load_model(...)`` calls must resolve aliases. The name is
+# overloaded (mlx_lm / mlx_audio / internal workers), and rounds E/F
+# showed `from vllm_mlx.server import load_model as lm` and
+# `from vllm_mlx import server; server.load_model(...)` both slip a
+# literal-name match. Single helper used by every scan to stop the
+# whack-a-mole.
+def _load_model_aliases_in_tree(
+    tree: ast.AST,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Return ``(direct_aliases, module_aliases)``:
+
+    - ``direct_aliases``: local names bound to ``load_model`` (e.g.
+      ``"load_model"`` from ``from vllm_mlx.server import load_model``,
+      or ``"lm"`` from ``... import load_model as lm``).
+    - ``module_aliases``: local names bound to the ``vllm_mlx.server``
+      module (e.g. ``"server"`` from ``from vllm_mlx import server``,
+      ``"srv"`` from ``import vllm_mlx.server as srv``, or the
+      two-segment ``"vllm_mlx.server"`` from bare
+      ``import vllm_mlx.server``).
+    """
+    direct: set[str] = set()
+    module: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module in ("vllm_mlx.server", "..server", ".server"):
+                for alias in node.names:
+                    if alias.name == "load_model":
+                        direct.add(alias.asname or "load_model")
+            elif node.module in ("vllm_mlx", ".."):
+                for alias in node.names:
+                    if alias.name == "server":
+                        module.add(alias.asname or "server")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "vllm_mlx.server":
+                    module.add(alias.asname or "vllm_mlx.server")
+    return frozenset(direct), frozenset(module)
+
+
+def _call_targets_load_model(
+    call: ast.Call,
+    direct_aliases: frozenset[str],
+    module_aliases: frozenset[str],
+) -> bool:
+    """Return True iff ``call`` invokes ``vllm_mlx.server.load_model``
+    (under any of the import shapes captured by
+    ``_load_model_aliases_in_tree``). Handles:
+
+      - ``load_model(...)`` / ``lm(...)`` — direct alias name
+      - ``server.load_model(...)`` / ``srv.load_model(...)`` —
+        single-level Attribute receiver
+      - ``vllm_mlx.server.load_model(...)`` — two-level Attribute
+        receiver collapsed against ``module_aliases``
+    """
+    func = call.func
+    if isinstance(func, ast.Name) and func.id in direct_aliases:
+        return True
+    if isinstance(func, ast.Attribute) and func.attr == "load_model":
+        receiver = func.value
+        receiver_name: str | None = None
+        if isinstance(receiver, ast.Name):
+            receiver_name = receiver.id
+        elif (
+            isinstance(receiver, ast.Attribute)
+            and isinstance(receiver.value, ast.Name)
+            and f"{receiver.value.id}.{receiver.attr}" == "vllm_mlx.server"
+        ):
+            receiver_name = "vllm_mlx.server"
+        if receiver_name is not None and receiver_name in module_aliases:
+            return True
+    return False
+
+
 def _discover_entrypoints() -> set[str]:
     """Discover every file under ``vllm_mlx/`` that either calls
     ``add_argument(...)`` or ``load_model(...)``. Returns paths
@@ -613,21 +744,19 @@ def _discover_entrypoints() -> set[str]:
         except SyntaxError:
             continue
 
+        # Codex round-G: detect ALL load_model alias shapes before the
+        # call scan, so a new entrypoint using `from vllm_mlx import
+        # server` / `import vllm_mlx.server as srv` doesn't slip
+        # discovery.
+        direct_aliases, module_aliases = _load_model_aliases_in_tree(tree)
+
         has_routing_shape = False
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            name = (
-                func.id
-                if isinstance(func, ast.Name)
-                else (func.attr if isinstance(func, ast.Attribute) else None)
-            )
-            if name == "add_argument":
-                # Only flag this file if at least one add_argument call
-                # is a routing-shape flag. Files that only register
-                # config knobs (e.g. --max-tokens) don't need to be in
-                # the parity/forwarding checks.
+            # add_argument detection (unchanged) — argparse method.
+            if isinstance(func, ast.Attribute) and func.attr == "add_argument":
                 for arg in node.args:
                     if (
                         isinstance(arg, ast.Constant)
@@ -636,9 +765,9 @@ def _discover_entrypoints() -> set[str]:
                     ):
                         has_routing_shape = True
                         break
-            elif name == "load_model":
-                # Any caller of load_model is by definition an
-                # entrypoint that needs the forwarding check.
+            elif _call_targets_load_model(node, direct_aliases, module_aliases):
+                # Any caller of OUR load_model (under any alias) is by
+                # definition an entrypoint that needs the forwarding check.
                 has_routing_shape = True
 
             if has_routing_shape:
@@ -1237,71 +1366,22 @@ def test_load_model_callers_register_every_routing_flag():
 
         # The name ``load_model`` is overloaded — mlx_lm.utils, mlx_audio.*,
         # and several internal worker classes define their own
-        # ``load_model``. Filter to only OUR engine entrypoint (the
-        # ``vllm_mlx.server`` function). A file is a "load_model caller"
-        # iff it imports ``load_model`` from ``vllm_mlx.server`` (or as
-        # ``server.load_model``) AND invokes it.
-        #
-        # Codex round-E fix (PR #409): also track the LOCAL ALIAS of
-        # ``load_model``. A new entrypoint could write
-        # ``from vllm_mlx.server import load_model as lm`` and call
-        # ``lm(...)`` — the literal-name check alone would miss it.
-        #
-        # Codex round-F fix (PR #409): also track MODULE aliases. A
-        # new entrypoint could write
-        # ``from vllm_mlx import server`` or
-        # ``import vllm_mlx.server as srv`` and call
-        # ``server.load_model(...)`` / ``srv.load_model(...)``. We need
-        # to recognize both attribute-access shapes.
-        direct_aliases: set[str] = set()  # local names bound to load_model
-        module_aliases: set[str] = set()  # local names bound to vllm_mlx.server
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                if node.module in ("vllm_mlx.server", "..server", ".server"):
-                    for alias in node.names:
-                        if alias.name == "load_model":
-                            direct_aliases.add(alias.asname or "load_model")
-                # `from vllm_mlx import server` — module-level alias.
-                elif node.module in ("vllm_mlx", ".."):
-                    for alias in node.names:
-                        if alias.name == "server":
-                            module_aliases.add(alias.asname or "server")
-            elif isinstance(node, ast.Import):
-                # `import vllm_mlx.server` / `import vllm_mlx.server as srv`.
-                for alias in node.names:
-                    if alias.name == "vllm_mlx.server":
-                        module_aliases.add(alias.asname or "vllm_mlx.server")
+        # ``load_model``. Use the shared alias resolver to detect
+        # invocations of OUR ``vllm_mlx.server.load_model`` under any
+        # import shape (direct / as-aliased / module-aliased / fully-
+        # qualified). The single helper closes rounds D/E/F/G bypasses
+        # at once and means every other scanner in this file picks up
+        # the same coverage.
+        direct_aliases, module_aliases = _load_model_aliases_in_tree(tree)
         if not (direct_aliases or module_aliases):
             continue
 
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            # Direct call form: lm(...) / load_model(...)
-            if isinstance(func, ast.Name) and func.id in direct_aliases:
+            if isinstance(node, ast.Call) and _call_targets_load_model(
+                node, direct_aliases, module_aliases
+            ):
                 load_model_callers.add(rel)
                 break
-            # Attribute call form: server.load_model(...) /
-            # srv.load_model(...) / vllm_mlx.server.load_model(...)
-            if isinstance(func, ast.Attribute) and func.attr == "load_model":
-                # The receiver is a Name (single-level alias) or an
-                # Attribute (vllm_mlx.server.load_model). Reduce both to
-                # the leftmost Name for lookup against module_aliases.
-                receiver = func.value
-                if isinstance(receiver, ast.Name):
-                    receiver_name = receiver.id
-                elif (
-                    isinstance(receiver, ast.Attribute)
-                    and isinstance(receiver.value, ast.Name)
-                    and f"{receiver.value.id}.{receiver.attr}" == "vllm_mlx.server"
-                ):
-                    receiver_name = "vllm_mlx.server"
-                else:
-                    receiver_name = None
-                if receiver_name in module_aliases:
-                    load_model_callers.add(rel)
-                    break
 
     # server.py is where load_model is defined; skip its self-reference.
     load_model_callers.discard("server.py")
@@ -1515,19 +1595,22 @@ def test_routing_override_kwargs_are_forwarded_to_load_model():
     pkg_root = _pkg_root()
 
     def _find_load_model_calls(source: str) -> list[ast.Call]:
+        # Codex round-G fix (PR #409): use the shared alias resolver so
+        # this forwarding audit catches aliased load_model calls
+        # (`from vllm_mlx.server import load_model as lm`,
+        # `import vllm_mlx.server as srv`, etc.). The previous literal-
+        # name match let an aliased caller forward one routing kwarg
+        # while omitting the rest — gate passed silently.
         tree = ast.parse(source)
+        direct_aliases, module_aliases = _load_model_aliases_in_tree(tree)
+        if not (direct_aliases or module_aliases):
+            return []
         calls = []
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func = node.func
-                # Match `load_model(...)` and `module.load_model(...)`.
-                name = (
-                    func.id
-                    if isinstance(func, ast.Name)
-                    else (func.attr if isinstance(func, ast.Attribute) else None)
-                )
-                if name == "load_model":
-                    calls.append(node)
+            if isinstance(node, ast.Call) and _call_targets_load_model(
+                node, direct_aliases, module_aliases
+            ):
+                calls.append(node)
         return calls
 
     failures: list[str] = []
