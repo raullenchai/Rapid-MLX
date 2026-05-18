@@ -194,7 +194,7 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
         capability, only an internal probe. The bug went undetected on
         every chip family we don't own.
     """
-    import importlib
+    import importlib.resources
     import pathlib
 
     pkg_root = pathlib.Path(
