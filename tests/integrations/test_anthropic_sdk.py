@@ -18,6 +18,21 @@ client = Anthropic(
     api_key="not-needed",
 )
 
+
+def _first_text(response) -> str:
+    """Return the first text block's text from an Anthropic response.
+
+    Models with reasoning enabled now emit a ``thinking`` block first
+    (PR #414, v0.6.56), so the legacy ``response.content[0].text`` lookup
+    raises ``AttributeError: 'ThinkingBlock' object has no attribute 'text'``.
+    Walk the content list and return the first ``type='text'`` block.
+    """
+    for block in response.content:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    raise AssertionError(f"No text block in response.content: {response.content}")
+
+
 results = {}
 
 # === 1. Plain message ===
@@ -30,7 +45,7 @@ try:
             {"role": "user", "content": "What is 2+2? Reply with just the number."}
         ],
     )
-    text = r.content[0].text
+    text = _first_text(r)
     assert "4" in text, text
     print(f"PASS: {text[:80]}")
     results["1_plain"] = "PASS"
@@ -47,7 +62,7 @@ try:
         system="You are a calculator. Output only the integer result.",
         messages=[{"role": "user", "content": "9 * 8"}],
     )
-    text = r.content[0].text
+    text = _first_text(r)
     assert "72" in text, text
     print(f"PASS: {text[:80]}")
     results["2_system"] = "PASS"
@@ -64,7 +79,7 @@ try:
         {"role": "user", "content": "What is my favorite color?"},
     ]
     r = client.messages.create(model=MODEL_ID, max_tokens=80, messages=msgs)
-    text = r.content[0].text
+    text = _first_text(r)
     assert "blue" in text.lower(), text
     print(f"PASS: {text[:80]}")
     results["3_multi_turn"] = "PASS"
