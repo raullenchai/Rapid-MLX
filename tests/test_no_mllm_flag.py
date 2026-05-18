@@ -24,7 +24,169 @@ These tests verify:
 
 from __future__ import annotations
 
+import ast
+import importlib.resources
+import inspect
+import pathlib
+import re
+from dataclasses import dataclass
+
 import pytest
+
+# ---------------------------------------------------------------------------
+# SOP §10 routing registry — single source of truth.
+#
+# Every binary auto-routing decision in rapid-mlx has an entry here. Other
+# gates in this file derive their checks from this registry instead of
+# carrying parallel hand-maintained lists — adding a new pair only requires
+# editing this one place. The 5-subagent red-team in PR #408 verified that
+# every test below now catches every previously-discovered bypass.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RoutingFlagPair:
+    """A binary auto-routing decision exposed via paired CLI flags.
+
+    Fields:
+        force_on: ``--force-*`` / ``--mllm``-style flag that forces the
+            auto-detected behavior on.
+        force_off: ``--no-*``-style flag that forces it off.
+        desc: human-readable description used in test failure messages.
+        required_files: source files (relative to ``vllm_mlx/``) where
+            BOTH flags must appear in an ``add_argument()`` call. Every
+            CLI entrypoint that takes a model name and runs the
+            corresponding auto-detection is required. Adding a new
+            model-taking entrypoint = adding it to every relevant pair.
+        forwarded_kwargs: ``load_model(...)`` kwargs the CLI forwards
+            when this pair is set. Empty tuple = the override is
+            consumed at a higher layer (e.g. parser opt-outs short-
+            circuit in cli.py before ``load_model``). When non-empty,
+            ``test_routing_override_kwargs_are_forwarded_to_load_model``
+            requires every ``load_model`` call site that forwards any
+            one of these to forward all of them.
+        model_config_field: ``ModelConfig`` attribute that
+            ``EngineCore.__init__`` mutates when this pair's
+            ``EngineConfig`` field is set. ``None`` = the override
+            doesn't go through ModelConfig (e.g. ``--no-mllm`` mutates
+            ``BatchedEngine._is_mllm``). When non-``None``,
+            ``test_engine_core_applies_routing_overrides_from_registry``
+            asserts the mutation actually happens.
+    """
+
+    force_on: str
+    force_off: str
+    desc: str
+    required_files: tuple[str, ...]
+    forwarded_kwargs: tuple[str, ...]
+    model_config_field: str | None = None
+
+
+AUTO_ROUTING_FLAG_PAIRS: tuple[RoutingFlagPair, ...] = (
+    RoutingFlagPair(
+        force_on="--mllm",
+        force_off="--no-mllm",
+        desc="MLLM vs text-only routing (#393)",
+        required_files=("cli.py", "server.py", "benchmark.py"),
+        forwarded_kwargs=("force_mllm", "force_text"),
+        # --mllm acts on BatchedEngine._is_mllm, not ModelConfig.
+        model_config_field=None,
+    ),
+    RoutingFlagPair(
+        force_on="--tool-call-parser",
+        force_off="--no-tool-call-parser",
+        desc="AliasProfile tool-call parser auto-selection",
+        required_files=("cli.py", "server.py"),
+        # Parser opt-outs are consumed in cli.py / server.py main()
+        # before load_model is ever called.
+        forwarded_kwargs=(),
+        model_config_field=None,
+    ),
+    RoutingFlagPair(
+        force_on="--reasoning-parser",
+        force_off="--no-reasoning-parser",
+        desc="AliasProfile reasoning parser auto-selection",
+        required_files=("cli.py", "server.py"),
+        forwarded_kwargs=(),
+        model_config_field=None,
+    ),
+    RoutingFlagPair(
+        force_on="--force-hybrid",
+        force_off="--no-hybrid",
+        desc="ModelConfig.is_hybrid (gates spec/suffix decode)",
+        required_files=("cli.py", "server.py"),
+        forwarded_kwargs=("force_hybrid", "no_hybrid"),
+        model_config_field="is_hybrid",
+    ),
+    RoutingFlagPair(
+        force_on="--force-spec-decode",
+        force_off="--no-spec-decode",
+        desc="ModelConfig.supports_spec_decode (gates MTP/DFlash/suffix)",
+        required_files=("cli.py", "server.py"),
+        forwarded_kwargs=("force_spec_decode", "no_spec_decode"),
+        model_config_field="supports_spec_decode",
+    ),
+)
+
+
+# Flags whose name matches the routing-shape pattern (--force-*, --no-*,
+# --enable-*, --disable-*) but are intentionally NOT auto-routing
+# decisions. Feature toggles, prompt-template knobs, and runtime-perf
+# opt-ins live here. Add to this list if and only if the flag is
+# definitively not a binary auto-detection that could ever need a paired
+# escape hatch — when in doubt, register the pair in
+# AUTO_ROUTING_FLAG_PAIRS instead.
+NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # Auto-tool-choice is a behavior knob, not auto-detection.
+        "--enable-auto-tool-choice",
+        # Performance opt-in for jump-forward decoding bias.
+        "--enable-tool-logits-bias",
+        # Feature flags for speculative-decode backends. The routing
+        # decision (which one is eligible) is gated by --force/no-spec-
+        # decode (registered pair); these just enable the implementation.
+        "--enable-mtp",
+        "--enable-dflash",
+        "--enable-suffix-decoding",
+        "--enable-kv-cache-quantization",
+        "--enable-kv-cache-turboquant",
+        "--enable-prefix-cache",
+        "--disable-prefix-cache",
+        # Chat-template toggle, not engine routing.
+        "--no-thinking",
+        # CORS toggle.
+        "--enable-cors",
+        # Perf / UX toggles, not routing decisions.
+        "--force-disk-check",  # forces eager disk-space check
+        "--no-gc-control",  # disables Python GC tuning
+        "--no-memory-aware-cache",  # disables memory-aware cache sizing
+        # Privacy toggle.
+        "--no-telemetry",
+    }
+)
+
+
+# Derived from the registry — never edit these by hand. The whole point
+# of the dataclass restructure is that adding a new RoutingFlagPair
+# entry transparently extends every gate below.
+KWARGS_THAT_MUST_BE_FORWARDED: frozenset[str] = frozenset(
+    kw for p in AUTO_ROUTING_FLAG_PAIRS for kw in p.forwarded_kwargs
+)
+
+
+def _registered_flag_names() -> set[str]:
+    """All flag strings (force-on + force-off) currently in the registry."""
+    out: set[str] = set()
+    for p in AUTO_ROUTING_FLAG_PAIRS:
+        out.add(p.force_on)
+        out.add(p.force_off)
+    return out
+
+
+def _pkg_root() -> pathlib.Path:
+    return pathlib.Path(
+        str(importlib.resources.files("vllm_mlx").joinpath(""))
+    ).resolve()
 
 
 def test_force_text_overrides_auto_detection(monkeypatch):
@@ -177,8 +339,6 @@ def _flag_in_add_argument_calls(source: str, flag: str) -> bool:
 
     Strengthened version (codex R1 PR #407) of the previous
     "string-search" check that was a false-positive guard."""
-    import ast
-
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -193,6 +353,29 @@ def _flag_in_add_argument_calls(source: str, flag: str) -> bool:
     return False
 
 
+def _all_add_argument_flags(source: str) -> set[str]:
+    """All positional string literals passed to any ``add_argument()``
+    call in ``source``. Used by ``test_no_unregistered_routing_shaped_flags``
+    to enumerate every argparse flag in an entrypoint without missing
+    subparser blocks or argparse group calls."""
+    tree = ast.parse(source)
+    flags: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+            continue
+        for arg in node.args:
+            if (
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and arg.value.startswith("-")
+            ):
+                flags.add(arg.value)
+    return flags
+
+
 def test_auto_routing_flags_have_force_on_and_force_off_pair():
     """SOP gate (#393 lesson): every binary auto-routing decision must
     expose BOTH a force-on and a force-off CLI flag.
@@ -204,11 +387,13 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
     the user needs an escape hatch *immediately*, not in a follow-up
     release that ships ~2 weeks later.
 
-    Registry below is the source of truth: every routing flag we expose
-    must appear with both directions. Adding a new auto-detection
-    *requires* adding both flags and registering them here. If someone
-    in the future removes one direction of the pair, CI fails with a
-    pointer to this principle.
+    Registry (module-level ``AUTO_ROUTING_FLAG_PAIRS``) is the single
+    source of truth: every routing flag we expose must appear with
+    both directions. Adding a new auto-detection *requires* adding
+    both flags and registering them in the dataclass list above. Every
+    other gate in this file derives from that same registry, so adding
+    a new entry transparently extends keyword-only checks, kwarg
+    forwarding checks, and EngineCore-mutation checks too.
 
     Past incidents this rule would have caught:
       - #393: ``--mllm`` had no inverse → Tylast had to wait for a
@@ -225,134 +410,99 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
         legacy-parser fallback for any per-request failure. If a
         false-positive surfaces, add an override flag here.
     """
-    import importlib.resources
-    import pathlib
-
-    pkg_root = pathlib.Path(
-        str(importlib.resources.files("vllm_mlx").joinpath(""))
-    ).resolve()
-    cli_source = (pkg_root / "cli.py").read_text()
-    server_source = (pkg_root / "server.py").read_text()
-    bench_source = (pkg_root / "benchmark.py").read_text()
-
-    # Every entry: (force-on flag, force-off flag, what it routes,
-    # entrypoint_files_required). The 4th element is a tuple of
-    # entrypoint source files where BOTH directions must appear — this
-    # is how we enforce that ``rapid-mlx serve`` and ``python -m
-    # vllm_mlx.server`` (and any other CLI taking a model name) all
-    # expose the same escape hatches. Adding a new entrypoint that
-    # takes a model name means adding it to every pair's required list.
-    AUTO_ROUTING_FLAG_PAIRS = [
-        (
-            "--mllm",
-            "--no-mllm",
-            "MLLM vs text-only routing (#393)",
-            ("cli.py", "server.py", "benchmark.py"),
-        ),
-        (
-            "--tool-call-parser",
-            "--no-tool-call-parser",
-            "AliasProfile tool-call parser auto-selection",
-            ("cli.py", "server.py"),
-        ),
-        (
-            "--reasoning-parser",
-            "--no-reasoning-parser",
-            "AliasProfile reasoning parser auto-selection",
-            ("cli.py", "server.py"),
-        ),
-        (
-            "--force-hybrid",
-            "--no-hybrid",
-            "ModelConfig.is_hybrid (gates spec/suffix decode)",
-            ("cli.py", "server.py"),
-        ),
-        (
-            "--force-spec-decode",
-            "--no-spec-decode",
-            "ModelConfig.supports_spec_decode (gates MTP/DFlash/suffix)",
-            ("cli.py", "server.py"),
-        ),
-    ]
-
+    pkg_root = _pkg_root()
     sources_by_file = {
-        "cli.py": cli_source,
-        "server.py": server_source,
-        "benchmark.py": bench_source,
+        fname: (pkg_root / fname).read_text()
+        for fname in ("cli.py", "server.py", "benchmark.py")
     }
 
-    missing = []
-    for force_on, force_off, desc, required_files in AUTO_ROUTING_FLAG_PAIRS:
-        # AST-based check: flag must appear as a positional literal in
-        # an ``add_argument`` call (not just anywhere in the source).
-        # Closes the false-positive gap codex caught in PR #407 R1.
-        for fname in required_files:
+    missing: list[str] = []
+    for pair in AUTO_ROUTING_FLAG_PAIRS:
+        for fname in pair.required_files:
             src = sources_by_file[fname]
-            if not _flag_in_add_argument_calls(src, force_on):
+            if not _flag_in_add_argument_calls(src, pair.force_on):
                 missing.append(
-                    f"force-on flag {force_on} not registered via "
-                    f"add_argument() in {fname} ({desc}) — every "
+                    f"force-on flag {pair.force_on} not registered via "
+                    f"add_argument() in {fname} ({pair.desc}) — every "
                     "entrypoint that takes a model name needs the same "
                     "routing escape hatches (SOP §10)."
                 )
-            if not _flag_in_add_argument_calls(src, force_off):
+            if not _flag_in_add_argument_calls(src, pair.force_off):
                 missing.append(
-                    f"force-off flag {force_off} not registered via "
-                    f"add_argument() in {fname} ({desc}) — every binary "
+                    f"force-off flag {pair.force_off} not registered via "
+                    f"add_argument() in {fname} ({pair.desc}) — every binary "
                     "auto-routing decision needs an escape hatch in BOTH "
                     "directions; see #393 for the past incident this rule "
                     "encodes."
                 )
-        # Legacy substring guard: catch flags present only in cli.py or
-        # only in server.py without explicit entrypoint registration.
-        # Keep both checks; the per-file required_files loop above is
-        # the stronger invariant.
-        on_in_cli = _flag_in_add_argument_calls(cli_source, force_on)
-        on_in_server = _flag_in_add_argument_calls(server_source, force_on)
-        off_in_cli = _flag_in_add_argument_calls(cli_source, force_off)
-        off_in_server = _flag_in_add_argument_calls(server_source, force_off)
-        if (on_in_cli and not on_in_server) or (on_in_server and not on_in_cli):
-            missing.append(
-                f"force-on flag {force_on} present in only one entrypoint "
-                f"({'cli.py' if on_in_cli else 'server.py'}); both CLI paths "
-                "must expose every routing escape hatch (SOP §10)."
-            )
-        if (off_in_cli and not off_in_server) or (off_in_server and not off_in_cli):
-            missing.append(
-                f"force-off flag {force_off} present in only one entrypoint "
-                f"({'cli.py' if off_in_cli else 'server.py'}); both CLI paths "
-                "must expose every routing escape hatch (SOP §10)."
-            )
     assert not missing, "\n".join(missing)
 
 
+def test_no_unregistered_routing_shaped_flags():
+    """SOP gate (red-team #1, PR #408): every CLI flag whose name
+    matches the routing-shape pattern (``--force-*``, ``--no-*``,
+    ``--enable-*``, ``--disable-*``) MUST be in
+    ``AUTO_ROUTING_FLAG_PAIRS`` (registered as a binary routing
+    decision) OR in ``NON_ROUTING_FLAGS_ALLOWLIST`` (intentionally a
+    feature toggle, not a routing decision).
+
+    The previous registry was a closed-set check — it only verified
+    "known pairs are intact" and silently passed when a contributor
+    added a new ``--audio`` / ``--enable-thinking`` flag without
+    realizing they'd added an auto-routing decision. This test is the
+    complement: enumerate every routing-shaped flag in the source and
+    require a deliberate registration or allowlist decision.
+
+    Pick option 2 (allowlist) only when you're sure the flag is a UX
+    knob, not a binary auto-detection that could ever go wrong. When
+    in doubt, register the pair — the cost of an extra registry entry
+    is zero, the cost of a missed escape hatch is a Tylast-style
+    issue + patch release."""
+    routing_pattern = re.compile(r"^--(?:force|no|enable|disable)-")
+
+    discovered: set[str] = set()
+    pkg_root = _pkg_root()
+    for fname in ("cli.py", "server.py", "benchmark.py"):
+        source = (pkg_root / fname).read_text()
+        for flag in _all_add_argument_flags(source):
+            if routing_pattern.match(flag):
+                discovered.add(flag)
+
+    registered = _registered_flag_names()
+    unregistered = discovered - registered - NON_ROUTING_FLAGS_ALLOWLIST
+
+    assert not unregistered, (
+        f"Found {len(unregistered)} routing-shaped flag(s) not in either "
+        f"AUTO_ROUTING_FLAG_PAIRS or NON_ROUTING_FLAGS_ALLOWLIST:\n  "
+        + "\n  ".join(sorted(unregistered))
+        + "\n\nFor each, choose ONE:\n"
+        "  (a) Register the pair in AUTO_ROUTING_FLAG_PAIRS (preferred — "
+        "every binary auto-routing decision needs both directions per "
+        "SOP §10, and this auto-extends every other gate in this file).\n"
+        "  (b) Add to NON_ROUTING_FLAGS_ALLOWLIST if the flag is a feature "
+        "toggle / UX knob, NOT a binary auto-detection.\n"
+        "Don't pick (b) unless you're sure — the wrong choice lets the next "
+        "#393 ship silently."
+    )
+
+
 def test_routing_override_kwargs_are_forwarded_to_load_model():
-    """Strengthened SOP gate (codex R1 PR #407): catching the flag
-    appears in argparse is not enough — it must also be forwarded to
-    ``server.load_model`` so the override actually reaches EngineCore.
+    """Strengthened SOP gate (codex R1 PR #407 + red-team #4 PR #408):
+    catching the flag in argparse is not enough — it must also be
+    forwarded to ``server.load_model`` so the override actually
+    reaches EngineCore.
 
     Walks the AST of every ``load_model(...)`` call in cli.py and
-    server.py and confirms each of the 4 routing-override kwargs is
-    either passed as a keyword arg OR not passed at all (the
-    ``load_model`` default is False). The failure mode this catches:
-    flag registered, mutex check present, but the kwarg is silently
-    dropped between argparse and the load call → override no-ops."""
-    import ast
-    import importlib.resources
-    import pathlib
+    server.py and confirms each kwarg in ``KWARGS_THAT_MUST_BE_FORWARDED``
+    (derived from the registry) is either passed as a keyword arg OR
+    not passed at all. The failure mode this catches: flag registered,
+    mutex check present, but the kwarg is silently dropped between
+    argparse and the load call → override no-ops.
 
-    pkg_root = pathlib.Path(
-        str(importlib.resources.files("vllm_mlx").joinpath(""))
-    ).resolve()
-
-    KWARGS_THAT_MUST_BE_FORWARDED = {
-        "force_text",
-        "force_mllm",
-        "force_hybrid",
-        "no_hybrid",
-        "force_spec_decode",
-        "no_spec_decode",
-    }
+    The set of required kwargs is DERIVED from
+    ``AUTO_ROUTING_FLAG_PAIRS[*].forwarded_kwargs`` so adding a new
+    registry entry automatically extends this gate."""
+    pkg_root = _pkg_root()
 
     def _find_load_model_calls(source: str) -> list[ast.Call]:
         tree = ast.parse(source)
@@ -370,17 +520,16 @@ def test_routing_override_kwargs_are_forwarded_to_load_model():
                     calls.append(node)
         return calls
 
-    failures = []
+    failures: list[str] = []
     for fname in ("cli.py", "server.py"):
         source = (pkg_root / fname).read_text()
         for call in _find_load_model_calls(source):
             kwarg_names = {kw.arg for kw in call.keywords if kw.arg is not None}
-            # Note: load_model has defaults of False for every routing
-            # override, so omitting them all is fine for callers that
-            # never need to override. But once a CALLER references one
-            # of these kwargs in argparse, it must forward it. We
-            # approximate that by requiring the *full set* in any call
-            # that forwards at least one of them.
+            # ``load_model`` defaults every routing override to False, so
+            # omitting them all is fine for callers that never need to
+            # override. But once a CALLER references one of these
+            # kwargs, it must forward all of them — otherwise the
+            # caller is half-wired and the override silently no-ops.
             overlap = kwarg_names & KWARGS_THAT_MUST_BE_FORWARDED
             if overlap and overlap != KWARGS_THAT_MUST_BE_FORWARDED:
                 missing = KWARGS_THAT_MUST_BE_FORWARDED - overlap
@@ -388,9 +537,71 @@ def test_routing_override_kwargs_are_forwarded_to_load_model():
                     f"{fname} load_model() call at line {call.lineno} forwards "
                     f"{sorted(overlap)} but omits {sorted(missing)} — every "
                     "routing-override kwarg must be forwarded from any caller "
-                    "that forwards any one of them (SOP §10)."
+                    "that forwards any one of them (SOP §10). This list is "
+                    "auto-derived from AUTO_ROUTING_FLAG_PAIRS[*].forwarded_kwargs."
                 )
     assert not failures, "\n".join(failures)
+
+
+def test_load_model_has_no_unkeyworded_bool_params_beyond_baseline():
+    """SOP gate (red-team #3, PR #408): every bool parameter on
+    ``load_model`` must be keyword-only EXCEPT explicitly grandfathered
+    pre-PR-#407 ones. Catches the codex R2 bug shape: a new bool kwarg
+    inserted before the ``*,`` separator silently shifts every
+    downstream positional arg by one slot, flipping the semantics of
+    existing callers.
+
+    The grandfather list is FROZEN. If you genuinely need to add a
+    positional bool (almost never), update it with a comment
+    explaining why — the explicit edit forces the discussion."""
+    from vllm_mlx.server import load_model
+
+    sig = inspect.signature(load_model)
+
+    # Pre-SOP positional bools. Do NOT extend casually — see test
+    # docstring. Every entry needs a 1-line reason.
+    grandfathered = frozenset(
+        {
+            "force_mllm",  # original MLLM force-on flag, pre-#393
+            "mtp",  # native MTP enable, pre-PR #407
+        }
+    )
+
+    offenders: list[str] = []
+    for name, param in sig.parameters.items():
+        if not _param_is_bool(param):
+            continue
+        if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
+            if name not in grandfathered:
+                offenders.append(name)
+
+    assert not offenders, (
+        f"load_model has {len(offenders)} non-grandfathered POSITIONAL bool "
+        f"param(s): {offenders}. NEW bool params must be keyword-only "
+        f"(after the `*,` separator) to avoid silently shifting downstream "
+        f"positional args. See codex R2 on PR #407 for the bug shape this "
+        f"prevents — a new positional bool changes the slot of every kwarg "
+        f"after it, so existing callers like "
+        f"`load_model(name, None, 1, 32768, False, 0.5)` start passing 0.5 "
+        f"as a truthy value to the wrong field. If you genuinely need a "
+        f"positional bool (almost never), update `grandfathered` in this "
+        f"test with the reason."
+    )
+
+
+def _param_is_bool(param: inspect.Parameter) -> bool:
+    """Best-effort detection of bool-typed parameters across annotation
+    styles (real type, stringified PEP 563, or just inferred from
+    default value)."""
+    if param.annotation is bool:
+        return True
+    if isinstance(param.annotation, str) and param.annotation == "bool":
+        return True
+    if param.annotation is inspect.Parameter.empty:
+        # No annotation — fall back to default. ``type(default) is bool``
+        # is strict (won't match int) which is exactly what we want.
+        return type(param.default) is bool
+    return False
 
 
 def test_hybrid_overrides_mutually_exclusive_in_load_model():
@@ -420,28 +631,44 @@ def test_spec_decode_overrides_mutually_exclusive_in_load_model():
         )
 
 
-def test_routing_override_kwargs_are_keyword_only_in_load_model():
-    """Regression: same lesson as test_force_text_is_keyword_only — the
-    4 new routing-override flags must be KEYWORD_ONLY so existing
-    positional callers don't silently get a True ``force_hybrid`` etc.
-    when they meant something else. See codex R2 on PR #407."""
-    import inspect
+def _post_sop_forwarded_kwargs() -> frozenset[str]:
+    """Forwarded kwargs from the registry MINUS pre-SOP grandfathered
+    ones. Used by the keyword-only test — pre-SOP positional bools
+    (``force_mllm``) can't be retroactively moved without breaking
+    callers, but every NEW kwarg added via the registry must be
+    keyword-only."""
+    return KWARGS_THAT_MUST_BE_FORWARDED - {"force_mllm"}
 
+
+def test_routing_override_kwargs_are_keyword_only_in_load_model():
+    """Every routing-override kwarg derived from the registry must be
+    KEYWORD_ONLY in both ``load_model`` and ``BatchedEngine.__init__``,
+    so existing positional callers don't silently get a True
+    ``force_X`` etc. when they meant something else. See codex R2 on
+    PR #407.
+
+    Derived from ``AUTO_ROUTING_FLAG_PAIRS[*].forwarded_kwargs`` so
+    adding a new pair to the registry automatically extends this
+    check. The pre-SOP grandfathered ``force_mllm`` is excluded — its
+    positional position is fixed for back-compat (verified by
+    ``test_load_model_has_no_unkeyworded_bool_params_beyond_baseline``
+    elsewhere)."""
+    from vllm_mlx.engine.batched import BatchedEngine
     from vllm_mlx.server import load_model
 
-    sig = inspect.signature(load_model)
-    for kwarg in ("force_hybrid", "no_hybrid", "force_spec_decode", "no_spec_decode"):
-        assert sig.parameters[kwarg].kind == inspect.Parameter.KEYWORD_ONLY, (
-            f"{kwarg} must be KEYWORD_ONLY to preserve positional-arg "
-            "compatibility. See codex R2 on PR #407."
+    expected = _post_sop_forwarded_kwargs()
+    assert expected, "Registry should produce at least one post-SOP kwarg"
+
+    load_sig = inspect.signature(load_model)
+    batched_sig = inspect.signature(BatchedEngine.__init__)
+
+    for kwarg in expected:
+        assert load_sig.parameters[kwarg].kind == inspect.Parameter.KEYWORD_ONLY, (
+            f"load_model({kwarg}=...) must be KEYWORD_ONLY to preserve "
+            "positional-arg compatibility. See codex R2 on PR #407."
         )
-
-    from vllm_mlx.engine.batched import BatchedEngine
-
-    sig = inspect.signature(BatchedEngine.__init__)
-    for kwarg in ("force_hybrid", "no_hybrid", "force_spec_decode", "no_spec_decode"):
-        assert sig.parameters[kwarg].kind == inspect.Parameter.KEYWORD_ONLY, (
-            f"BatchedEngine.__init__ {kwarg} must be KEYWORD_ONLY too."
+        assert batched_sig.parameters[kwarg].kind == inspect.Parameter.KEYWORD_ONLY, (
+            f"BatchedEngine.__init__({kwarg}=...) must be KEYWORD_ONLY too."
         )
 
 
@@ -474,46 +701,101 @@ def _make_engine_core_for_override_test(monkeypatch, cfg):
     return ec.EngineCore(model=model, tokenizer=MagicMock(), config=cfg)
 
 
+def _engine_core_override_cases() -> list[tuple[str, str, bool]]:
+    """Build parametrize cases ``(model_config_field, kwarg, expected)``
+    from the registry. Every routing pair whose ``model_config_field``
+    is not None contributes 2 cases: one for the force-on kwarg
+    (expected True) and one for the force-off kwarg (expected False).
+
+    Convention enforced by ``_assert_registry_kwarg_convention``: for
+    every ``model_config_field``-bearing pair, ``forwarded_kwargs[0]``
+    is the force-on direction (sets field True) and
+    ``forwarded_kwargs[1]`` is the force-off direction (sets False).
+    """
+    cases: list[tuple[str, str, bool]] = []
+    for pair in AUTO_ROUTING_FLAG_PAIRS:
+        if pair.model_config_field is None:
+            continue
+        assert len(pair.forwarded_kwargs) == 2, (
+            f"Registry pair {pair.force_on}/{pair.force_off} declares "
+            f"model_config_field={pair.model_config_field!r} but has "
+            f"{len(pair.forwarded_kwargs)} forwarded kwargs; "
+            "exactly 2 required (force-on first, force-off second)."
+        )
+        on_kwarg, off_kwarg = pair.forwarded_kwargs
+        cases.append((pair.model_config_field, on_kwarg, True))
+        cases.append((pair.model_config_field, off_kwarg, False))
+    return cases
+
+
 @pytest.mark.parametrize(
-    "flags,expected_hybrid,expected_spec",
-    [
-        ({"no_hybrid": True}, False, False),
-        ({"force_hybrid": True}, True, False),
-        ({"force_spec_decode": True}, True, True),
-        ({"no_spec_decode": True}, True, False),
-        ({"no_hybrid": True, "force_spec_decode": True}, False, True),
-        ({}, True, False),  # no flags → auto-detection result unchanged
-    ],
+    "model_config_field,kwarg,expected",
+    _engine_core_override_cases(),
+    ids=lambda v: str(v) if isinstance(v, (str, bool)) else "?",
 )
-def test_engine_core_applies_routing_overrides_to_model_config(
-    monkeypatch, flags, expected_hybrid, expected_spec
+def test_engine_core_applies_routing_overrides_from_registry(
+    monkeypatch, model_config_field, kwarg, expected
 ):
-    """EngineCore.__init__ must mutate ``self.model_config.is_hybrid``
-    and ``self.model_config.supports_spec_decode`` when the matching
-    override flag is set on ``EngineConfig``. This is the *only* place
-    in the call chain that talks to ModelConfig — if it stops working,
-    every routing escape hatch silently no-ops and the user gets the
-    old buggy behavior back."""
+    """For every routing pair in the registry with a non-None
+    ``model_config_field``, ``EngineCore.__init__`` must mutate
+    ``self.model_config.<field>`` when the corresponding kwarg is set
+    on ``EngineConfig``. Catches red-team #5 from PR #408: a new
+    EngineConfig field plumbed end-to-end but never actually applied
+    to ModelConfig.
+
+    Parametrize is DERIVED from the registry, so adding a new
+    ``RoutingFlagPair`` with a ``model_config_field`` automatically
+    adds new test cases. If your new pair's mutation block is missing
+    from ``EngineCore.__init__``, this test fails immediately —
+    nothing silently no-ops."""
     from vllm_mlx.engine_core import EngineConfig
 
-    cfg = EngineConfig(model_name="fake/model", **flags)
+    cfg = EngineConfig(model_name="fake/model", **{kwarg: True})
     core = _make_engine_core_for_override_test(monkeypatch, cfg)
 
-    assert core.model_config.is_hybrid is expected_hybrid
-    assert core.model_config.supports_spec_decode is expected_spec
+    actual = getattr(core.model_config, model_config_field)
+    assert actual is expected, (
+        f"Setting EngineConfig.{kwarg}=True must mutate "
+        f"ModelConfig.{model_config_field} to {expected}, but got {actual}. "
+        f"EngineCore.__init__ likely missing the mutation block for this "
+        f"routing pair — add it after enrich_model_config() and before "
+        f"`self.scheduler.model_config = self.model_config`."
+    )
 
 
-@pytest.mark.parametrize(
-    "flags",
-    [
-        {"force_hybrid": True, "no_hybrid": True},
-        {"force_spec_decode": True, "no_spec_decode": True},
-    ],
-)
+def test_engine_core_no_override_leaves_model_config_unchanged(monkeypatch):
+    """Sanity: when no override kwarg is set, EngineCore leaves the
+    enriched ModelConfig untouched. Pairs with the parametrized
+    mutation test above — together they prove "fires when set, doesn't
+    fire when not set"."""
+    from vllm_mlx.engine_core import EngineConfig
+
+    cfg = EngineConfig(model_name="fake/model")
+    core = _make_engine_core_for_override_test(monkeypatch, cfg)
+    # Stub returns is_hybrid=True, supports_spec_decode=False.
+    assert core.model_config.is_hybrid is True
+    assert core.model_config.supports_spec_decode is False
+
+
+def _engine_core_mutex_cases() -> list[dict[str, bool]]:
+    """Build mutex-conflict parametrize cases from the registry. For
+    every pair with ``model_config_field`` not None, generate one
+    conflict case where both directions are True."""
+    cases: list[dict[str, bool]] = []
+    for pair in AUTO_ROUTING_FLAG_PAIRS:
+        if pair.model_config_field is None:
+            continue
+        on_kwarg, off_kwarg = pair.forwarded_kwargs
+        cases.append({on_kwarg: True, off_kwarg: True})
+    return cases
+
+
+@pytest.mark.parametrize("flags", _engine_core_mutex_cases())
 def test_engine_core_rejects_conflicting_routing_overrides(monkeypatch, flags):
     """Second line of defense: EngineCore raises ValueError if both
-    directions of a routing-override pair are set on EngineConfig.
-    Programmatic callers that bypass the CLI mutex still get caught."""
+    directions of a registry-known routing-override pair are set on
+    EngineConfig. Programmatic callers that bypass the CLI mutex still
+    get caught. Derived from registry."""
     from vllm_mlx.engine_core import EngineConfig
 
     cfg = EngineConfig(model_name="fake/model", **flags)
