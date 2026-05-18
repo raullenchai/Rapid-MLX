@@ -216,6 +216,14 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
       - #404 (related, hardware-side): no user override for MLX stream
         capability, only an internal probe. The bug went undetected on
         every chip family we don't own.
+
+    Intentionally OUT OF SCOPE for the registry:
+      - ``OutputRouter.from_tokenizer`` in vllm_mlx/output_router.py
+        auto-detects Gemma 4 / Harmony channel formats by tokenizer
+        vocabulary. Not a binary decision (3+ formats including None),
+        already allowlisted to known-good tokens, and has a built-in
+        legacy-parser fallback for any per-request failure. If a
+        false-positive surfaces, add an override flag here.
     """
     import importlib.resources
     import pathlib
@@ -225,57 +233,84 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
     ).resolve()
     cli_source = (pkg_root / "cli.py").read_text()
     server_source = (pkg_root / "server.py").read_text()
+    bench_source = (pkg_root / "benchmark.py").read_text()
 
-    # Every entry: (force-on flag, force-off flag, what it routes).
-    # When you add a new auto-detection, add the pair here too.
+    # Every entry: (force-on flag, force-off flag, what it routes,
+    # entrypoint_files_required). The 4th element is a tuple of
+    # entrypoint source files where BOTH directions must appear — this
+    # is how we enforce that ``rapid-mlx serve`` and ``python -m
+    # vllm_mlx.server`` (and any other CLI taking a model name) all
+    # expose the same escape hatches. Adding a new entrypoint that
+    # takes a model name means adding it to every pair's required list.
     AUTO_ROUTING_FLAG_PAIRS = [
-        ("--mllm", "--no-mllm", "MLLM vs text-only routing (#393)"),
+        (
+            "--mllm",
+            "--no-mllm",
+            "MLLM vs text-only routing (#393)",
+            ("cli.py", "server.py", "benchmark.py"),
+        ),
         (
             "--tool-call-parser",
             "--no-tool-call-parser",
             "AliasProfile tool-call parser auto-selection",
+            ("cli.py", "server.py"),
         ),
         (
             "--reasoning-parser",
             "--no-reasoning-parser",
             "AliasProfile reasoning parser auto-selection",
+            ("cli.py", "server.py"),
         ),
         (
             "--force-hybrid",
             "--no-hybrid",
             "ModelConfig.is_hybrid (gates spec/suffix decode)",
+            ("cli.py", "server.py"),
         ),
         (
             "--force-spec-decode",
             "--no-spec-decode",
             "ModelConfig.supports_spec_decode (gates MTP/DFlash/suffix)",
+            ("cli.py", "server.py"),
         ),
     ]
 
+    sources_by_file = {
+        "cli.py": cli_source,
+        "server.py": server_source,
+        "benchmark.py": bench_source,
+    }
+
     missing = []
-    for force_on, force_off, desc in AUTO_ROUTING_FLAG_PAIRS:
+    for force_on, force_off, desc, required_files in AUTO_ROUTING_FLAG_PAIRS:
         # AST-based check: flag must appear as a positional literal in
         # an ``add_argument`` call (not just anywhere in the source).
         # Closes the false-positive gap codex caught in PR #407 R1.
+        for fname in required_files:
+            src = sources_by_file[fname]
+            if not _flag_in_add_argument_calls(src, force_on):
+                missing.append(
+                    f"force-on flag {force_on} not registered via "
+                    f"add_argument() in {fname} ({desc}) — every "
+                    "entrypoint that takes a model name needs the same "
+                    "routing escape hatches (SOP §10)."
+                )
+            if not _flag_in_add_argument_calls(src, force_off):
+                missing.append(
+                    f"force-off flag {force_off} not registered via "
+                    f"add_argument() in {fname} ({desc}) — every binary "
+                    "auto-routing decision needs an escape hatch in BOTH "
+                    "directions; see #393 for the past incident this rule "
+                    "encodes."
+                )
+        # Legacy substring guard: catch flags present only in cli.py or
+        # only in server.py without explicit entrypoint registration.
+        # Keep both checks; the per-file required_files loop above is
+        # the stronger invariant.
         on_in_cli = _flag_in_add_argument_calls(cli_source, force_on)
         on_in_server = _flag_in_add_argument_calls(server_source, force_on)
         off_in_cli = _flag_in_add_argument_calls(cli_source, force_off)
         off_in_server = _flag_in_add_argument_calls(server_source, force_off)
-        if not (on_in_cli or on_in_server):
-            missing.append(
-                f"force-on flag {force_on} not registered via add_argument() "
-                f"in cli.py or server.py ({desc})"
-            )
-        if not (off_in_cli or off_in_server):
-            missing.append(
-                f"force-off flag {force_off} not registered via add_argument() "
-                f"in cli.py or server.py ({desc}) — every binary "
-                "auto-routing decision needs an escape hatch in BOTH directions; "
-                "see #393 for the past incident this rule encodes."
-            )
-        # Both entrypoints expose the same routing knobs to avoid a
-        # divergent SOP gap. The standalone `python -m vllm_mlx.server`
-        # path was missed in PR #407 R1 — strengthen by checking both.
         if (on_in_cli and not on_in_server) or (on_in_server and not on_in_cli):
             missing.append(
                 f"force-on flag {force_on} present in only one entrypoint "
