@@ -62,6 +62,14 @@ def install() -> None:
     if getattr(mx, "_rapid_mlx_compat_installed", False):
         return
 
+    # No-op on builds that predate ``mx.new_thread_local_stream`` (#408): the
+    # M5 single-stream bug only manifests when ``mlx_lm.generate`` captures
+    # this symbol at module import. Older mlx never had it, so neither
+    # ``mlx_lm.generate`` nor the bug it triggers can be present here.
+    if not hasattr(mx, "new_thread_local_stream"):
+        mx._rapid_mlx_compat_installed = True
+        return
+
     original = mx.new_thread_local_stream
 
     # Tri-state cache per device:

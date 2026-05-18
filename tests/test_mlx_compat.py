@@ -123,6 +123,23 @@ def test_install_is_idempotent():
     assert first is second, "second install() must not re-wrap the function"
 
 
+def test_install_is_noop_when_symbol_missing(monkeypatch):
+    """Regression for #408: on mlx builds that predate
+    ``mx.new_thread_local_stream``, ``install()`` must be a no-op rather
+    than crash with AttributeError. Without this guard,
+    ``import vllm_mlx.scheduler`` aborts before the server can bind a
+    port — every user on the affected mlx is blocked from upgrading."""
+    import mlx.core as mx
+
+    from vllm_mlx import _mlx_compat
+
+    monkeypatch.delattr(mx, "new_thread_local_stream", raising=False)
+    monkeypatch.setattr(mx, "_rapid_mlx_compat_installed", False, raising=False)
+    importlib.reload(_mlx_compat)
+    _mlx_compat.install()  # must not raise
+    assert getattr(mx, "_rapid_mlx_compat_installed", False) is True
+
+
 def test_fallback_engages_when_probe_raises(monkeypatch):
     """Simulate M5: probe raises 'no Stream(gpu, 1)' → patched function must
     return mx.default_stream(device) instead of the unusable stream."""
