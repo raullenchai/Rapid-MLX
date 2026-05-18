@@ -104,6 +104,12 @@ def patch_mlx_lm_for_mamba():
     """
     import importlib
 
+    # Install MLX hardware-compat shim (#404 M5 single-stream guard) BEFORE
+    # importing mlx_lm.generate. Idempotent: no-op once installed.
+    from vllm_mlx import _mlx_compat as _mlx_compat
+
+    _mlx_compat.install()
+
     gen_module = importlib.import_module("mlx_lm.generate")
     from mlx_lm.models.cache import (
         ArraysCache,

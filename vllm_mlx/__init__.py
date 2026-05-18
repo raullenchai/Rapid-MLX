@@ -20,7 +20,12 @@ except Exception:
     __version__ = "0.0.0"  # fallback for editable installs without metadata
 
 # All imports are lazy to allow usage on non-Apple Silicon platforms
-# (e.g., CI running on Linux) where mlx_lm is not available.
+# (e.g., CI running on Linux) where mlx_lm is not available. The MLX
+# hardware-compat shim (#404 M5 single-stream) lives in `_mlx_compat`
+# and is installed at the top of every submodule that imports
+# `mlx_lm.generate` — NOT here, so that `import vllm_mlx` stays free of
+# mlx.core import (which can SIGABRT on systems with mlx installed but
+# Metal unavailable).
 
 
 def __getattr__(name):
