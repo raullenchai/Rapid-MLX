@@ -16,7 +16,28 @@ The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs
 
 The full path from "I want to release" to "users on `brew upgrade` see the new version":
 
-1. **Bump `pyproject.toml`** — change `version = "X.Y.Z"` to `X.Y.(Z+1)` (or minor / major as appropriate). Keep the change in its own commit:
+1. **Run the clean-room install smoke** (mandatory, ~30s):
+
+   ```bash
+   make release-smoke
+   ```
+
+   Builds the wheel from the working tree and installs it into a fresh
+   venv with only PyPI deps, then imports every module the published
+   entrypoints would import (`vllm_mlx`, `vllm_mlx.scheduler`,
+   `vllm_mlx.server`, `vllm_mlx.cli`). Catches the failure mode that
+   shipped in v0.6.53 (#408): code that imports cleanly on the dev
+   machine because the dev mlx has a symbol that hasn't appeared in any
+   released wheel yet. Every other gate (`make smoke/check/full`,
+   `pr_validate`, codex review) runs against the dev mlx and is blind
+   to this class of bug. **Do not push a version bump commit if this
+   fails** — the failure indicates every `pip install` user will crash
+   on import.
+
+   Post-tag verification: `python3 scripts/release_smoke.py --version X.Y.Z`
+   re-runs the gate against the wheel actually published to PyPI.
+
+2. **Bump `pyproject.toml`** — change `version = "X.Y.Z"` to `X.Y.(Z+1)` (or minor / major as appropriate). Keep the change in its own commit:
 
    ```bash
    git checkout main
@@ -29,15 +50,15 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 
    The commit subject **must** match `chore: bump version to X.Y.Z` exactly — `auto-release.yml` parses it.
 
-2. **`auto-release.yml` fires** (~30s) — verifies the commit, checks the tag doesn't already exist, builds a CHANGELOG from `git log <prev-tag>..HEAD`, creates the GitHub Release.
+3. **`auto-release.yml` fires** (~30s) — verifies the commit, checks the tag doesn't already exist, builds a CHANGELOG from `git log <prev-tag>..HEAD`, creates the GitHub Release.
 
-3. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment), polls PyPI until the version is queryable, computes the tarball SHA256, dispatches an `update-formula` event to `raullenchai/homebrew-rapid-mlx`.
+4. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment), polls PyPI until the version is queryable, computes the tarball SHA256, dispatches an `update-formula` event to `raullenchai/homebrew-rapid-mlx`.
 
-4. **The tap repo's workflow** (in `homebrew-rapid-mlx`) updates `Formula/rapid-mlx.rb` `url` + `sha256` + commits.
+5. **The tap repo's workflow** (in `homebrew-rapid-mlx`) updates `Formula/rapid-mlx.rb` `url` + `sha256` + commits.
 
-5. **Verify**: `brew update && brew upgrade rapid-mlx` should pull in the new version.
+6. **Verify**: `brew update && brew upgrade rapid-mlx` should pull in the new version.
 
-The whole sequence is hands-off after step 1.
+The sequence is hands-off after step 2.
 
 ## Safety nets
 

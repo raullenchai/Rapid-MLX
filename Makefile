@@ -1,4 +1,4 @@
-.PHONY: help smoke check full benchmark update-baselines lint audit test stress soak clean
+.PHONY: help smoke check full benchmark update-baselines lint audit test stress soak release-smoke clean
 
 # Pick the interpreter:
 #   1. Active venv ($VIRTUAL_ENV/bin/python) — wins so contributors using
@@ -42,6 +42,9 @@ help:
 	@echo "    make benchmark          overnight, all local models"
 	@echo "    make update-baselines TIER=check  re-record baseline"
 	@echo ""
+	@echo "  Release (see docs/development/releasing.md):"
+	@echo "    make release-smoke      clean-room install+import gate (~30s)"
+	@echo ""
 	@echo "  Env: HF_HUB_CACHE=$(HF_HUB_CACHE)"
 
 # ---------- dev testing (scripts/dev_test.py) ----------
@@ -79,6 +82,10 @@ update-baselines:
 		exit 2; \
 	fi
 	$(DOCTOR) $(TIER) --update-baselines
+
+# ---------- release gate ----------
+release-smoke:
+	$(PY) scripts/release_smoke.py
 
 clean:
 	rm -rf harness/runs/*
