@@ -1008,15 +1008,36 @@ def test_conftests_do_not_deselect_or_replace_collection():
         tree = ast.parse(source)
 
         # DeepSeek-V4 review fix (PR #409): only flag deselection-shaped
-        # mutations INSIDE pytest_collection_modifyitems. A helper
-        # function that happens to declare a local list named `items`
-        # and calls items.remove(...) on it is unrelated to the
-        # collection hook and shouldn't false-positive. Gate by
-        # enclosing function name.
+        # mutations INSIDE functions whose signature takes ``items`` as
+        # a parameter. A helper function that happens to declare a
+        # local list named `items` and calls items.remove(...) on it is
+        # unrelated to the collection hook and shouldn't false-positive.
+        #
+        # Codex round-B fix (PR #409): the previous narrow gating to
+        # `pytest_collection_modifyitems` missed deselection delegated
+        # to a helper:
+        #     def drop(items): items.clear()
+        #     def pytest_collection_modifyitems(config, items): drop(items)
+        # The helper takes `items` as a parameter, so we still scan it;
+        # an unrelated helper using a LOCAL variable named `items`
+        # wouldn't (parameter shape vs local shape disambiguates).
+        def _has_items_parameter(
+            f: ast.FunctionDef | ast.AsyncFunctionDef,
+        ) -> bool:
+            arg_lists = (
+                f.args.args,
+                f.args.posonlyargs,
+                f.args.kwonlyargs,
+            )
+            for arg_list in arg_lists:
+                if any(a.arg == "items" for a in arg_list):
+                    return True
+            return False
+
         for func_node in ast.walk(tree):
             if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if func_node.name != "pytest_collection_modifyitems":
+            if not _has_items_parameter(func_node):
                 continue
             for node in ast.walk(func_node):
                 # Match `items.remove(...)`, `items.pop(...)`, `items.clear()`.
@@ -1030,8 +1051,8 @@ def test_conftests_do_not_deselect_or_replace_collection():
                     ):
                         offenders.append(
                             f"{conftest.relative_to(repo_root)}:{node.lineno} "
-                            f"calls items.{func.attr}(...) inside "
-                            "pytest_collection_modifyitems — drops tests from "
+                            f"calls items.{func.attr}(...) inside a "
+                            "function that takes `items` as a parameter — drops tests from "
                             "collection (round-4 cat-5 #6 attack pattern). "
                             "Use item.add_marker(pytest.mark.skip(...)) to "
                             "skip without removing."

@@ -217,6 +217,75 @@ def _enclosing_function_chain(
     return chain
 
 
+def _os_environ_key_expr(node: ast.AST) -> ast.AST | None:
+    """Codex round-B helper (PR #409): return the key expression of an
+    ``os.environ`` access if ``node`` is one of:
+
+      - ``os.environ[key]`` / ``os.environ[key] = …`` — Subscript
+      - ``os.environ.get(key)`` / ``os.environ.get(key, default)`` — Call
+      - ``os.environ.pop(key, …)`` — Call (mutation form)
+      - ``os.environ.setdefault(key, …)`` — Call
+
+    Returns the key AST node so the caller can check if it's a
+    single Constant or a composed expression. Returns None for any
+    other node (so callers can blanket-skip).
+    """
+    # os.environ[key] form.
+    if isinstance(node, ast.Subscript):
+        value = node.value
+        if (
+            isinstance(value, ast.Attribute)
+            and value.attr == "environ"
+            and isinstance(value.value, ast.Name)
+            and value.value.id == "os"
+        ):
+            return node.slice
+        return None
+    # os.environ.get(...) / .pop(...) / .setdefault(...) form.
+    if isinstance(node, ast.Call):
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return None
+        if func.attr not in {"get", "pop", "setdefault"}:
+            return None
+        receiver = func.value
+        if not (
+            isinstance(receiver, ast.Attribute)
+            and receiver.attr == "environ"
+            and isinstance(receiver.value, ast.Name)
+            and receiver.value.id == "os"
+        ):
+            return None
+        if not node.args:
+            return None
+        return node.args[0]
+    return None
+
+
+def _func_is_method_of_class(
+    parents: dict[int, ast.AST],
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    """Codex round-B fix (PR #409): an `__init__` allowlisted by name
+    only is bypass-prone — a route module can declare a top-level
+    `def __init__(engine): engine._is_mllm = False` and call it per
+    request to flip routing without ever touching a real constructor.
+
+    A genuine constructor lives inside a `class` block: walk up the
+    parent chain from `fn` and return True iff we hit an ``ast.ClassDef``
+    before bottoming out. The check is per-function so callers can apply
+    it selectively (only `__init__`-named entries in the allowlist
+    benefit from the constructor requirement; `load_model`,
+    `_coerce`, etc. are module-level by design).
+    """
+    cur: ast.AST | None = parents.get(id(fn))
+    while cur is not None:
+        if isinstance(cur, ast.ClassDef):
+            return True
+        cur = parents.get(id(cur))
+    return False
+
+
 def _routing_attr_write_targets(node: ast.AST) -> list[tuple[str, ast.AST]]:
     """Return ``(attr_name, source_node)`` pairs for every routing-attr
     write expressed by ``node``. Covers many indirect attribute-write
@@ -442,6 +511,31 @@ def test_routing_fields_written_only_in_allowed_scopes():
                     "Assign, AnnAssign, AugAssign, Subscript (vars/__dict__), "
                     "setattr(), object.__setattr__(), and ast.Delete."
                 )
+                continue
+
+            # Codex round-B fix (PR #409): names alone aren't enough.
+            # `__init__` MUST be a real constructor — i.e. defined inside
+            # a `class` block. A top-level or helper function literally
+            # named `__init__` would otherwise pass this gate, even
+            # though it's not a constructor at all. Same logic applies
+            # to `model_post_init` (Pydantic constructor-equivalent).
+            CONSTRUCTOR_NAMES = {"__init__", "model_post_init"}
+            for fn in chain:
+                if fn.name in CONSTRUCTOR_NAMES and not _func_is_method_of_class(
+                    parents, fn
+                ):
+                    offenders.append(
+                        f"{rel}:{node.lineno} writes routing attribute "
+                        f"`.{attr_name}` inside a function named "
+                        f"`{fn.name}` that is NOT a method of a class "
+                        "(codex round-B bypass). Allowlist by name "
+                        "alone is bypass-prone: any top-level/helper "
+                        f"function literally named `{fn.name}` would "
+                        "pass. Routing writes must live inside a real "
+                        "constructor (defined in a `class` block) or "
+                        f"one of {sorted(ROUTING_WRITE_ALLOWED_FUNCS - CONSTRUCTOR_NAMES)}."
+                    )
+                    break
 
     assert not offenders, "\n".join(offenders)
 
@@ -517,6 +611,35 @@ def test_no_routing_shaped_rapid_mlx_env_vars():
                     "either `os.environb` or `from os import environb`). Use "
                     "os.environ.get() with a documented str key instead."
                 )
+
+        # Codex round-B fix (PR #409): the string-Constant scan only
+        # sees fully-literal keys. Composed names like
+        # ``os.environ.get("RAPID_MLX_" + "FORCE_MLLM")`` or
+        # ``f"{prefix}FORCE_MLLM"`` never present the full routing-shape
+        # string to ``_check_env_constant`` — the gate passes even
+        # though the runtime read targets the exact out-of-band routing
+        # override this test forbids. Ban os.environ accesses whose
+        # KEY is a composed expression (BinOp / JoinedStr / Call) —
+        # those are the bypass shapes. A bare ``Name``/``Attribute``
+        # reference (e.g. ``os.environ.get(ENV_VAR)``) is allowed
+        # because the constant's underlying string literal still flows
+        # through the Constant scan above.
+        for node in ast.walk(tree):
+            key_expr = _os_environ_key_expr(node)
+            if key_expr is None:
+                continue
+            if not isinstance(key_expr, (ast.BinOp, ast.JoinedStr, ast.Call)):
+                continue
+            shape = type(key_expr).__name__
+            offenders.append(
+                f"{rel}:{node.lineno} reads/writes os.environ with a "
+                f"COMPOSED key ({shape}: concat / f-string / call). "
+                "Composed env-var names defeat the routing-shape scan: "
+                "use a single string literal or a module-level "
+                "constant whose value is a literal. Composing the "
+                "name at the call site is the codex round-B bypass "
+                "shape (e.g. `os.environ.get('RAPID_MLX_' + 'FORCE_MLLM')`)."
+            )
 
     assert not offenders, "\n".join(offenders)
 
@@ -965,3 +1088,81 @@ def test_conftest_deselect_gate_scoped_to_pytest_hook():
     assert _gated_offenders(hook_source) == 1, (
         "gate MUST still fire on items.remove() inside pytest_collection_modifyitems."
     )
+
+
+def test_func_is_method_of_class_distinguishes_real_constructors():
+    """Codex round-B regression (PR #409): the routing-write allowlist
+    treats ``__init__`` (and ``model_post_init``) as constructor
+    surfaces — but allowlisting by NAME alone is bypass-prone. A
+    top-level helper like ``def __init__(engine): engine._is_mllm =
+    False`` passes the name check, even though it's not a constructor
+    at all and can be called per request. The fix requires the
+    function to live inside a ``class`` block; this test pins both
+    directions.
+    """
+    method_source = (
+        "class Engine:\n    def __init__(self):\n        self._is_mllm = False\n"
+    )
+    helper_source = "def __init__(engine):\n    engine._is_mllm = False\n"
+
+    def _check(source: str, target_func_name: str) -> bool:
+        tree = ast.parse(source)
+        parents = _build_parent_map(tree)
+        for n in ast.walk(tree):
+            if (
+                isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and n.name == target_func_name
+            ):
+                return _func_is_method_of_class(parents, n)
+        raise AssertionError(f"function {target_func_name} not found in source")
+
+    assert _check(method_source, "__init__") is True, (
+        "Engine.__init__ defined inside `class Engine` MUST be "
+        "recognized as a class method."
+    )
+    assert _check(helper_source, "__init__") is False, (
+        "Top-level `def __init__(engine)` is NOT a constructor; the "
+        "helper must return False to surface the codex round-B bypass."
+    )
+
+
+def test_os_environ_composed_key_is_detected():
+    """Codex round-B regression (PR #409): ``os.environ.get(...)``
+    with a literal-Constant key is the only safe shape — composed
+    keys (concatenation / f-strings / calls) defeat the routing-name
+    Constant scan above. Lock the detector so a future refactor of
+    ``_os_environ_key_expr`` can't silently drop one of these shapes.
+    """
+    composed_sources = {
+        "concat": "import os\nos.environ.get('RAPID_MLX_' + 'FORCE_MLLM')\n",
+        "fstring": "import os\nprefix = 'RAPID_MLX_'\nos.environ.get(f'{prefix}FORCE_MLLM')\n",
+        "call": "import os\nos.environ.get('RAPID_'.join(['MLX_FORCE_MLLM']))\n",
+    }
+    for shape, source in composed_sources.items():
+        tree = ast.parse(source)
+        flagged: list[tuple[str, int]] = []
+        for node in ast.walk(tree):
+            key = _os_environ_key_expr(node)
+            if key is None:
+                continue
+            if isinstance(key, (ast.BinOp, ast.JoinedStr, ast.Call)):
+                flagged.append((type(key).__name__, node.lineno))
+        assert flagged, f"composed key shape `{shape}` must be detected"
+
+    # Negative control: literal Constant + module-level Name reference
+    # must NOT be flagged (these are legitimate patterns used in
+    # vllm_mlx/mcp/config.py and vllm_mlx/telemetry/state.py).
+    benign_sources = (
+        "import os\nos.environ.get('VLLM_MLX_MCP_CONFIG')\n",
+        "import os\nENV_VAR = 'RAPID_MLX_TELEMETRY'\nos.environ.get(ENV_VAR)\n",
+    )
+    for source in benign_sources:
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            key = _os_environ_key_expr(node)
+            if key is None:
+                continue
+            assert not isinstance(key, (ast.BinOp, ast.JoinedStr, ast.Call)), (
+                f"benign key shape `{type(key).__name__}` MUST NOT be "
+                "flagged — would false-positive on module-level constants."
+            )
