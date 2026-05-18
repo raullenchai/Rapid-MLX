@@ -543,23 +543,40 @@ def test_routing_override_kwargs_are_forwarded_to_load_model():
     assert not failures, "\n".join(failures)
 
 
-def test_load_model_has_no_unkeyworded_bool_params_beyond_baseline():
-    """SOP gate (red-team #3, PR #408): every bool parameter on
-    ``load_model`` must be keyword-only EXCEPT explicitly grandfathered
-    pre-PR-#407 ones. Catches the codex R2 bug shape: a new bool kwarg
-    inserted before the ``*,`` separator silently shifts every
-    downstream positional arg by one slot, flipping the semantics of
-    existing callers.
+def test_load_model_has_no_unkeyworded_bool_or_routing_params_beyond_baseline():
+    """SOP gate (red-team #3 PR #408 + round-2 hardening): every
+    positional parameter on ``load_model`` that is EITHER bool-typed
+    OR routing-named MUST be keyword-only, except explicitly
+    grandfathered pre-#407 entries.
+
+    Two complementary detection prongs:
+
+    1. ``_param_is_bool``: catches positional bools regardless of
+       annotation style (real ``bool``, stringified ``"bool"``,
+       ``"Optional[bool]"`` etc., or inferred from default value).
+       Prevents the codex R2 bug shape — a new bool kwarg before
+       ``*,`` shifts every downstream positional slot.
+
+    2. ``_param_is_routing_shape``: catches positional params NAMED
+       like routing overrides (``force_*``, ``no_*``, ``enable_*``,
+       ``disable_*``) regardless of type. Round-2 red-team found 3
+       bypasses on the bool-only check: ``force_quant: int = 0``,
+       ``force_quant=0`` (no annotation), and
+       ``force_quant: "Optional[bool]" = False`` all slipped past
+       bool detection but semantically routed via truthy/falsy
+       evaluation. The name pattern check closes that whole class —
+       if you NAMED it like a routing decision, it IS one.
 
     The grandfather list is FROZEN. If you genuinely need to add a
-    positional bool (almost never), update it with a comment
-    explaining why — the explicit edit forces the discussion."""
+    positional bool/routing param (almost never), update it with a
+    comment explaining why — the explicit edit forces the discussion.
+    """
     from vllm_mlx.server import load_model
 
     sig = inspect.signature(load_model)
 
-    # Pre-SOP positional bools. Do NOT extend casually — see test
-    # docstring. Every entry needs a 1-line reason.
+    # Pre-SOP positional bools/routing names. Do NOT extend casually
+    # — see docstring. Every entry needs a 1-line reason.
     grandfathered = frozenset(
         {
             "force_mllm",  # original MLLM force-on flag, pre-#393
@@ -567,41 +584,83 @@ def test_load_model_has_no_unkeyworded_bool_params_beyond_baseline():
         }
     )
 
-    offenders: list[str] = []
+    offenders: list[tuple[str, str]] = []
     for name, param in sig.parameters.items():
-        if not _param_is_bool(param):
+        if param.kind != inspect.Parameter.POSITIONAL_OR_KEYWORD:
             continue
-        if param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
-            if name not in grandfathered:
-                offenders.append(name)
+        if name in grandfathered:
+            continue
+        if _param_is_bool(param):
+            offenders.append((name, "bool-typed positional param"))
+        elif _param_is_routing_shape(name):
+            offenders.append((name, "routing-shape name (force_/no_/enable_/disable_)"))
 
     assert not offenders, (
-        f"load_model has {len(offenders)} non-grandfathered POSITIONAL bool "
-        f"param(s): {offenders}. NEW bool params must be keyword-only "
-        f"(after the `*,` separator) to avoid silently shifting downstream "
-        f"positional args. See codex R2 on PR #407 for the bug shape this "
-        f"prevents — a new positional bool changes the slot of every kwarg "
-        f"after it, so existing callers like "
-        f"`load_model(name, None, 1, 32768, False, 0.5)` start passing 0.5 "
-        f"as a truthy value to the wrong field. If you genuinely need a "
-        f"positional bool (almost never), update `grandfathered` in this "
-        f"test with the reason."
+        f"load_model has {len(offenders)} non-grandfathered positional "
+        f"param(s) that should be keyword-only:\n  "
+        + "\n  ".join(f"{n} — {reason}" for n, reason in offenders)
+        + "\n\nMove each one AFTER the `*,` separator in load_model's "
+        "signature. NEW bool/routing params must be keyword-only to avoid "
+        "silently shifting downstream positional args (codex R2 lesson on "
+        "PR #407) — a new positional changes the slot of every kwarg after "
+        "it, so existing callers like "
+        "`load_model(name, None, 1, 32768, False, 0.5)` start passing 0.5 "
+        "as a truthy value to the wrong field. If you genuinely need a "
+        "positional (almost never), update `grandfathered` in this test "
+        "with the reason."
     )
 
 
 def _param_is_bool(param: inspect.Parameter) -> bool:
     """Best-effort detection of bool-typed parameters across annotation
-    styles (real type, stringified PEP 563, or just inferred from
-    default value)."""
-    if param.annotation is bool:
+    styles. Strengthened in PR #408 round-2 red-team after subagent
+    found 3 bypasses on the original ``annotation is bool`` check:
+
+      - Stringified container annotations (``"Optional[bool]"``,
+        ``"bool | None"``) defeated the literal ``annotation == "bool"``
+        match. Now we AST-parse the annotation string and look for any
+        ``Name(id="bool")`` node — catches arbitrary nesting.
+      - Type laundering with ``int`` (``force_quant: int = 0``)
+        semantically routes (truthy/falsy) but isn't a bool. NOT
+        caught here — the complementary ``_param_is_routing_shape``
+        name-pattern check handles that case in the test below.
+      - No-annotation + non-bool falsy default (``force_quant=0``)
+        also slips bool detection — same complementary name check
+        catches it.
+    """
+    annotation = param.annotation
+    if annotation is bool:
         return True
-    if isinstance(param.annotation, str) and param.annotation == "bool":
-        return True
-    if param.annotation is inspect.Parameter.empty:
+    if isinstance(annotation, str):
+        # PEP 563 (``from __future__ import annotations``) stringifies
+        # every annotation. AST-walk the string so wrappers don't hide
+        # the bool reference.
+        try:
+            tree = ast.parse(annotation, mode="eval")
+        except SyntaxError:
+            return False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == "bool":
+                return True
+        return False
+    if annotation is inspect.Parameter.empty:
         # No annotation — fall back to default. ``type(default) is bool``
-        # is strict (won't match int) which is exactly what we want.
+        # is strict (won't match int).
         return type(param.default) is bool
     return False
+
+
+_ROUTING_PARAM_NAME_RE = re.compile(r"^(force_|no_|enable_|disable_)")
+
+
+def _param_is_routing_shape(name: str) -> bool:
+    """Does the parameter NAME look like a routing decision? Catches
+    type-laundering bypasses (``force_quant: int = 0``) where the
+    semantic role is "routing override" but the type annotation
+    defeats ``_param_is_bool``. A parameter named in this shape MUST
+    be keyword-only regardless of type — see PR #408 round-2
+    red-team."""
+    return bool(_ROUTING_PARAM_NAME_RE.match(name))
 
 
 def test_hybrid_overrides_mutually_exclusive_in_load_model():
