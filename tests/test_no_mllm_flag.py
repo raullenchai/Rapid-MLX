@@ -878,15 +878,25 @@ def _discover_entrypoints() -> set[str]:
         # direct ``Attribute`` add_argument call, a new entrypoint
         # using only the indirect shape would skip discovery AND skip
         # the ban — the very bypass the bans exist to catch.
-        # Broaden discovery: flag any file that mentions the literal
-        # STRING "add_argument" anywhere (catches getattr / __dict__
-        # access / dynamic dispatch). No legitimate code references
-        # that identifier outside argparse contexts.
+        # Broaden discovery: flag a file that mentions the literal
+        # STRING "add_argument" AND imports argparse. The combination
+        # catches indirect shapes (getattr / __dict__ / dynamic
+        # dispatch) without false-positiving on a stray docstring or
+        # log message that happens to mention "add_argument" outside
+        # an argparse context (DeepSeek round-5 #4).
         mentions_add_argument_literal = any(
             isinstance(n, ast.Constant)
             and isinstance(n.value, str)
             and n.value == "add_argument"
             for n in ast.walk(tree)
+        )
+        imports_argparse = any(
+            (isinstance(n, ast.Import) and any(a.name == "argparse" for a in n.names))
+            or (isinstance(n, ast.ImportFrom) and n.module == "argparse")
+            for n in ast.walk(tree)
+        )
+        mentions_indirect_add_argument = (
+            mentions_add_argument_literal and imports_argparse
         )
 
         has_routing_shape = False
@@ -914,11 +924,12 @@ def _discover_entrypoints() -> set[str]:
             if has_routing_shape:
                 break
 
-        if not has_routing_shape and mentions_add_argument_literal:
-            # Codex round-H: the file references "add_argument" via
-            # something other than a direct Attribute call — exactly
-            # the indirect shape that the later add_argument-shape
-            # bans want to scan. Force discovery so those bans run.
+        if not has_routing_shape and mentions_indirect_add_argument:
+            # Codex round-H + DeepSeek round-5 #4: the file references
+            # "add_argument" via something other than a direct Attribute
+            # call AND imports argparse — exactly the indirect shape
+            # the later add_argument-shape bans want to scan. Force
+            # discovery so those bans run.
             has_routing_shape = True
 
         if has_routing_shape:
@@ -1185,6 +1196,27 @@ def test_registry_is_not_runtime_mutated():
         "or duck-type registry replacement)."
     )
 
+    # DeepSeek round-5 #1 fix (PR #409): also require every declared
+    # dataclass field to appear in the source AST keyword list. The
+    # original gate only compared fields PRESENT in source — a runtime
+    # mutation of a defaulted field (e.g. ``model_config_field=None``
+    # changed to ``"is_hybrid"`` at runtime) would not be caught
+    # because the source never mentioned it. Force every field to be
+    # spelled out at the call site so the AST scan can reconstruct
+    # 100% of state.
+    import dataclasses
+
+    declared_field_names = {f.name for f in dataclasses.fields(RoutingFlagPair)}
+    for i, expected in enumerate(expected_pairs):
+        missing_fields = declared_field_names - set(expected)
+        assert not missing_fields, (
+            f"AUTO_ROUTING_FLAG_PAIRS[{i}] in source omits fields "
+            f"{sorted(missing_fields)} (relying on dataclass defaults). "
+            "The registry-mutation gate cannot detect runtime mutation "
+            "of defaulted fields. Spell out every field explicitly so "
+            "the AST scan compares 100% of state (DeepSeek round-5 #1)."
+        )
+
     # Every runtime entry must be a real RoutingFlagPair (not a duck
     # type) AND match the source literal field-by-field.
     for i, (runtime_pair, expected) in enumerate(
@@ -1265,6 +1297,16 @@ def test_aliases_json_has_no_routing_shaped_keys():
             f"routing-shape audit cannot run. Fix the syntax error first. "
             f"Underlying error: {exc}"
         )
+
+    # DeepSeek round-5 #2 fix (PR #409): the file must be a JSON
+    # OBJECT (dict). A JSON array, string, or number would parse fine
+    # but then ``raw.items()`` would raise AttributeError — confusing
+    # trace for a non-IO test. Spell out the precondition.
+    assert isinstance(raw, dict), (
+        f"aliases.json at {aliases_path} parsed to "
+        f"{type(raw).__name__}, not dict. The routing-shape audit "
+        "expects a JSON object mapping alias names → alias profiles."
+    )
 
     offenders: list[str] = []
     for alias, value in raw.items():
