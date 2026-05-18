@@ -123,6 +123,35 @@ def test_install_is_idempotent():
     assert first is second, "second install() must not re-wrap the function"
 
 
+def test_install_is_noop_when_symbol_missing(monkeypatch):
+    """Regression for #408: on mlx builds that predate
+    ``mx.new_thread_local_stream``, ``install()`` must be a no-op rather
+    than crash with AttributeError. Without this guard,
+    ``import vllm_mlx.scheduler`` aborts before the server can bind a
+    port — every user on the affected mlx is blocked from upgrading."""
+    import mlx.core as mx
+
+    from vllm_mlx import _mlx_compat
+
+    # If a future mlx genuinely drops the symbol, this assert fails
+    # loudly so we revisit whether the compat shim still has a job to
+    # do — `raising=False` on the delattr below would silently turn
+    # this into a degenerate test that exercises nothing.
+    assert hasattr(mx, "new_thread_local_stream"), (
+        "expected baseline mlx to expose new_thread_local_stream; "
+        "if upstream removed it, this test no longer covers the #408 "
+        "regression path and the shim itself can probably go away."
+    )
+    monkeypatch.delattr(mx, "new_thread_local_stream")
+    monkeypatch.setattr(mx, "_rapid_mlx_compat_installed", False, raising=False)
+    importlib.reload(_mlx_compat)
+    _mlx_compat.install()  # must not raise — that's the #408 contract
+    # Note: on the no-symbol path the shim deliberately does NOT mark
+    # itself "installed" so that a later mlx upgrade (which adds the
+    # symbol) gets the wrap on the next install() call. The contract
+    # this test pins is "no AttributeError", not the flag.
+
+
 def test_fallback_engages_when_probe_raises(monkeypatch):
     """Simulate M5: probe raises 'no Stream(gpu, 1)' → patched function must
     return mx.default_stream(device) instead of the unusable stream."""
