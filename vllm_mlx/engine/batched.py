@@ -259,6 +259,7 @@ class BatchedEngine(BaseEngine):
         scheduler_config: Any | None = None,
         stream_interval: int = 1,
         force_mllm: bool = False,
+        force_text: bool = False,
         gpu_memory_utilization: float = 0.90,
     ):
         """
@@ -270,6 +271,9 @@ class BatchedEngine(BaseEngine):
             scheduler_config: Optional scheduler configuration
             stream_interval: Tokens to batch before streaming (1=every token)
             force_mllm: Force loading as MLLM even if not auto-detected
+            force_text: Force loading as text-only LLM even when auto-detection
+                would route as MLLM (#393 escape hatch). Mutually exclusive
+                with ``force_mllm`` — caller is responsible for not setting both.
             gpu_memory_utilization: Fraction of device memory for Metal allocation
                 limit and emergency threshold (0.0-1.0, default 0.90)
         """
@@ -278,7 +282,13 @@ class BatchedEngine(BaseEngine):
         self._scheduler_config = scheduler_config
         self._stream_interval = stream_interval
         self._gpu_memory_utilization = gpu_memory_utilization
-        self._is_mllm = force_mllm or is_mllm_model(model_name)
+        if force_text:
+            # User explicitly opted out of MLLM routing. Skip the probe
+            # entirely so a False from auto-detection can't be overridden
+            # by a future config-based True.
+            self._is_mllm = False
+        else:
+            self._is_mllm = force_mllm or is_mllm_model(model_name)
         self._tool_logits_processor_factory = None
 
         self._model = None

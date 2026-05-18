@@ -800,6 +800,13 @@ def serve_command(args):
         return
 
     # Load model with unified server
+    if args.mllm and args.no_mllm:
+        print(
+            "error: --mllm and --no-mllm are mutually exclusive — "
+            "pick one to override auto-detection.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     try:
         load_model(
             args.model,
@@ -807,6 +814,7 @@ def serve_command(args):
             stream_interval=args.stream_interval,
             max_tokens=args.max_tokens,
             force_mllm=args.mllm,
+            force_text=args.no_mllm,
             gpu_memory_utilization=args.gpu_memory_utilization,
             cloud_model=args.cloud_model,
             cloud_threshold=args.cloud_threshold,
@@ -3088,6 +3096,13 @@ Examples:
         "--mllm",
         action="store_true",
         help="Force load model as multimodal (vision) even if name doesn't match auto-detection patterns",
+    )
+    serve_parser.add_argument(
+        "--no-mllm",
+        "--text-only",
+        dest="no_mllm",
+        action="store_true",
+        help="Force load model as text-only LLM even when auto-detection would route it to the multimodal/VLM path. Escape hatch for incomplete vision-tower checkpoints (#393) and text-only forks of multimodal architectures whose config.json still declares vision_config.",
     )
     # Generation defaults
     serve_parser.add_argument(

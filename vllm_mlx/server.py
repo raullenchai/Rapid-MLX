@@ -497,6 +497,7 @@ def load_model(
     stream_interval: int = 1,
     max_tokens: int = 32768,
     force_mllm: bool = False,
+    force_text: bool = False,
     gpu_memory_utilization: float = 0.90,
     prefill_step_size: int | None = None,
     cloud_model: str | None = None,
@@ -515,6 +516,10 @@ def load_model(
         stream_interval: Tokens to batch before streaming
         max_tokens: Default max tokens for generation
         force_mllm: Force loading as MLLM even if not auto-detected
+        force_text: Force loading as text-only LLM even when auto-detection
+            would route it as MLLM. Escape hatch for incomplete vision-tower
+            checkpoints (#393) and text-only forks of multimodal architectures.
+            Mutually exclusive with ``force_mllm``.
         gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
         prefill_step_size: DEPRECATED — pass via
             ``scheduler_config.prefill_step_size`` instead. Pre-0.6.52 this
@@ -593,8 +598,18 @@ def load_model(
     else:
         _cloud_router = None
 
+    if force_mllm and force_text:
+        raise ValueError(
+            "force_mllm and force_text are mutually exclusive — "
+            "pick at most one to override auto-detection."
+        )
     if force_mllm:
         logger.info("Force MLLM mode enabled via --mllm flag")
+    if force_text:
+        logger.info(
+            "Force text-only mode enabled via --no-mllm flag "
+            "(MLLM auto-detection overridden, #393)"
+        )
 
     logger.info(f"Loading model with BatchedEngine: {model_name}")
     _engine = BatchedEngine(
@@ -602,6 +617,7 @@ def load_model(
         scheduler_config=scheduler_config,
         stream_interval=stream_interval,
         force_mllm=force_mllm,
+        force_text=force_text,
         gpu_memory_utilization=gpu_memory_utilization,
     )
     logger.info(f"Model loaded: {model_name}")
@@ -850,6 +866,13 @@ Examples:
         help="Force loading as MLLM (multimodal language model)",
     )
     parser.add_argument(
+        "--no-mllm",
+        "--text-only",
+        dest="no_mllm",
+        action="store_true",
+        help="Force text-only LLM routing even when auto-detection would route as MLLM (#393 escape hatch). Mutually exclusive with --mllm.",
+    )
+    parser.add_argument(
         "--continuous-batching",
         action="store_true",
         default=True,
@@ -1096,11 +1119,14 @@ Examples:
     scheduler_config = SchedulerConfig(prefill_step_size=args.prefill_step_size)
 
     # Load model before starting server
+    if args.mllm and args.no_mllm:
+        parser.error("--mllm and --no-mllm are mutually exclusive")
     load_model(
         args.model,
         scheduler_config=scheduler_config,
         max_tokens=args.max_tokens,
         force_mllm=args.mllm,
+        force_text=args.no_mllm,
         cloud_model=args.cloud_model,
         cloud_threshold=args.cloud_threshold,
         cloud_api_base=args.cloud_api_base,

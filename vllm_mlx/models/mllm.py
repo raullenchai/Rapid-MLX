@@ -758,6 +758,44 @@ class MLXMultimodalLM:
                 "Vision dependencies are required for multimodal inference. "
                 "Install with: pip install 'rapid-mlx[vision]'"
             )
+        except ValueError as e:
+            # mlx_vlm raises `ValueError: Missing N parameters: vision_*`
+            # when the checkpoint is a text-only fork (or an incomplete
+            # quant) of a multimodal architecture — config.json declares
+            # vision_config so MLLM auto-detection routes it here, but
+            # the actual safetensors lack the vision_tower weights.
+            # See #393 (Tylast: Qwen3.6-35B-A3B 8-bit community quant
+            # ships a partial vision tower). Translate to an actionable
+            # message instead of re-raising the raw ValueError.
+            msg = str(e)
+            if (
+                "Missing" in msg
+                and "parameters" in msg
+                and any(p in msg for p in ("vision_tower", "vision_model", "visual."))
+            ):
+                missing_count_hint = ""
+                # Pull "Missing N" if present, just for the friendly head.
+                import re
+
+                m = re.search(r"Missing\s+(\d+)\s+parameters?", msg)
+                if m:
+                    missing_count_hint = f" ({m.group(1)} vision tensors missing)"
+                logger.error(
+                    "MLLM load failed%s — this checkpoint declares "
+                    "vision_config in config.json but its safetensors don't "
+                    "carry a complete vision tower. Re-run with --no-mllm "
+                    "(or --text-only) to force text-only routing. "
+                    "See #393 for context.",
+                    missing_count_hint,
+                )
+                raise RuntimeError(
+                    f"MLLM load failed{missing_count_hint}: this checkpoint "
+                    "is text-only despite its multimodal config. "
+                    "Re-run with --no-mllm (or --text-only) to force "
+                    "text-only routing. Tracked in #393."
+                ) from e
+            logger.error(f"Failed to load MLLM: {e}")
+            raise
         except Exception as e:
             logger.error(f"Failed to load MLLM: {e}")
             raise
