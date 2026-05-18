@@ -1848,9 +1848,21 @@ class Scheduler:
                     self.config.prefill_step_size,
                 )
 
-        # Install MTP if the model supports it
+        # Install MTP if the model supports it. SOP §10: gate on
+        # ``model_config.supports_spec_decode`` so the --no-spec-decode
+        # escape hatch (and any future override) takes effect on MTP
+        # the same way it gates SuffixDecoding above.
         if self.config.enable_mtp:
-            if hasattr(self.model, "mtp") and self.model.mtp is not None:
+            if (
+                getattr(self, "model_config", None) is not None
+                and not self.model_config.supports_spec_decode
+            ):
+                logger.warning(
+                    "[MTP] --enable-mtp is set but profile says "
+                    "supports_spec_decode=False (possibly via "
+                    "--no-spec-decode). MTP will be disabled."
+                )
+            elif hasattr(self.model, "mtp") and self.model.mtp is not None:
                 _install_mtp(
                     bg,
                     model=self.model,

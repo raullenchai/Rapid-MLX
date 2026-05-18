@@ -899,6 +899,51 @@ Examples:
         action="store_true",
         help="Force text-only LLM routing even when auto-detection would route as MLLM (#393 escape hatch). Mutually exclusive with --mllm.",
     )
+    # SOP §10 routing-override escape hatches — mirror the unified CLI
+    # (vllm_mlx/cli.py) so this standalone entrypoint never becomes a
+    # silent gap for any auto-routing decision.
+    parser.add_argument(
+        "--no-tool-call-parser",
+        dest="no_tool_call_parser",
+        action="store_true",
+        default=False,
+        help="Force-disable tool-call parser auto-detection. Mutually exclusive with --tool-call-parser.",
+    )
+    parser.add_argument(
+        "--no-reasoning-parser",
+        dest="no_reasoning_parser",
+        action="store_true",
+        default=False,
+        help="Force-disable reasoning parser auto-detection. Mutually exclusive with --reasoning-parser.",
+    )
+    parser.add_argument(
+        "--force-hybrid",
+        dest="force_hybrid",
+        action="store_true",
+        default=False,
+        help="Force-treat the model as hybrid (Mamba/linear-attention). Mutually exclusive with --no-hybrid.",
+    )
+    parser.add_argument(
+        "--no-hybrid",
+        dest="no_hybrid",
+        action="store_true",
+        default=False,
+        help="Force-treat the model as non-hybrid (full attention). Mutually exclusive with --force-hybrid.",
+    )
+    parser.add_argument(
+        "--force-spec-decode",
+        dest="force_spec_decode",
+        action="store_true",
+        default=False,
+        help="Force-enable speculative-decode eligibility. Mutually exclusive with --no-spec-decode.",
+    )
+    parser.add_argument(
+        "--no-spec-decode",
+        dest="no_spec_decode",
+        action="store_true",
+        default=False,
+        help="Force-disable speculative-decode eligibility (suffix/MTP/DFlash). Mutually exclusive with --force-spec-decode.",
+    )
     parser.add_argument(
         "--continuous-batching",
         action="store_true",
@@ -1094,18 +1139,38 @@ Examples:
     if args.mcp_config:
         os.environ["VLLM_MLX_MCP_CONFIG"] = args.mcp_config
 
-    # Auto-detect parser config from model name when not explicitly set
+    # Auto-detect parser config from model name when not explicitly set.
+    # SOP §10: honor --no-tool-call-parser / --no-reasoning-parser opt-
+    # outs so this entrypoint matches the unified CLI behavior.
+    _opt_out_tool = getattr(args, "no_tool_call_parser", False)
+    _opt_out_reasoning = getattr(args, "no_reasoning_parser", False)
+    if args.tool_call_parser and _opt_out_tool:
+        parser.error(
+            "--tool-call-parser and --no-tool-call-parser are mutually exclusive"
+        )
+    if args.reasoning_parser and _opt_out_reasoning:
+        parser.error(
+            "--reasoning-parser and --no-reasoning-parser are mutually exclusive"
+        )
     if not args.tool_call_parser or not args.reasoning_parser:
         from .model_auto_config import detect_model_config
 
         auto_config = detect_model_config(args.model)
         if auto_config:
-            if not args.tool_call_parser and auto_config.tool_call_parser:
+            if (
+                not args.tool_call_parser
+                and not _opt_out_tool
+                and auto_config.tool_call_parser
+            ):
                 args.tool_call_parser = auto_config.tool_call_parser
                 logger.info(
                     f"Auto-configured --tool-call-parser {auto_config.tool_call_parser}"
                 )
-            if not args.reasoning_parser and auto_config.reasoning_parser:
+            if (
+                not args.reasoning_parser
+                and not _opt_out_reasoning
+                and auto_config.reasoning_parser
+            ):
                 args.reasoning_parser = auto_config.reasoning_parser
                 logger.info(
                     f"Auto-configured --reasoning-parser {auto_config.reasoning_parser}"
@@ -1148,6 +1213,12 @@ Examples:
     # Load model before starting server
     if args.mllm and args.no_mllm:
         parser.error("--mllm and --no-mllm are mutually exclusive")
+    if getattr(args, "force_hybrid", False) and getattr(args, "no_hybrid", False):
+        parser.error("--force-hybrid and --no-hybrid are mutually exclusive")
+    if getattr(args, "force_spec_decode", False) and getattr(
+        args, "no_spec_decode", False
+    ):
+        parser.error("--force-spec-decode and --no-spec-decode are mutually exclusive")
     load_model(
         args.model,
         scheduler_config=scheduler_config,
@@ -1158,6 +1229,10 @@ Examples:
         cloud_threshold=args.cloud_threshold,
         cloud_api_base=args.cloud_api_base,
         cloud_api_key=args.cloud_api_key,
+        force_hybrid=getattr(args, "force_hybrid", False),
+        no_hybrid=getattr(args, "no_hybrid", False),
+        force_spec_decode=getattr(args, "force_spec_decode", False),
+        no_spec_decode=getattr(args, "no_spec_decode", False),
     )
 
     # Start server

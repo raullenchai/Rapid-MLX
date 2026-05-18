@@ -809,6 +809,17 @@ def serve_command(args):
     # and run the dedicated DFlash server. The eligibility check above has
     # already validated the alias, so by here we have a known-good profile.
     if args.enable_dflash:
+        # DFlash IS a speculative-decode path. The --no-spec-decode escape
+        # hatch (SOP §10) must reject it here — otherwise the user thinks
+        # they've disabled spec-decode but DFlash silently proceeds via
+        # its dedicated server, never touching EngineCore / ModelConfig.
+        if getattr(args, "no_spec_decode", False):
+            print(
+                "error: --enable-dflash and --no-spec-decode are mutually "
+                "exclusive — DFlash is a speculative-decode mode.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         from .model_aliases import resolve_profile
         from .speculative.dflash.server import run_dflash_server
 

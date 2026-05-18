@@ -170,6 +170,29 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
         sys.modules["mlx_vlm"] = real_mlx_vlm
 
 
+def _flag_in_add_argument_calls(source: str, flag: str) -> bool:
+    """True iff ``flag`` appears as a positional string literal to an
+    ``add_argument`` call in ``source``. Uses AST so help text,
+    comments, and unrelated string occurrences don't count.
+
+    Strengthened version (codex R1 PR #407) of the previous
+    "string-search" check that was a false-positive guard."""
+    import ast
+
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        # Match both `parser.add_argument(...)` and `subparser.add_argument(...)`.
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and arg.value == flag:
+                return True
+    return False
+
+
 def test_auto_routing_flags_have_force_on_and_force_off_pair():
     """SOP gate (#393 lesson): every binary auto-routing decision must
     expose BOTH a force-on and a force-off CLI flag.
@@ -231,18 +254,108 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
 
     missing = []
     for force_on, force_off, desc in AUTO_ROUTING_FLAG_PAIRS:
-        on_quoted = f'"{force_on}"'
-        off_quoted = f'"{force_off}"'
-        if on_quoted not in cli_source and on_quoted not in server_source:
-            missing.append(f"force-on flag {force_on} missing ({desc})")
-        if off_quoted not in cli_source and off_quoted not in server_source:
+        # AST-based check: flag must appear as a positional literal in
+        # an ``add_argument`` call (not just anywhere in the source).
+        # Closes the false-positive gap codex caught in PR #407 R1.
+        on_in_cli = _flag_in_add_argument_calls(cli_source, force_on)
+        on_in_server = _flag_in_add_argument_calls(server_source, force_on)
+        off_in_cli = _flag_in_add_argument_calls(cli_source, force_off)
+        off_in_server = _flag_in_add_argument_calls(server_source, force_off)
+        if not (on_in_cli or on_in_server):
             missing.append(
-                f"force-off flag {force_off} missing ({desc}) — "
-                "every binary auto-routing decision needs an escape hatch "
-                "in BOTH directions; see #393 for the past incident this "
-                "rule encodes."
+                f"force-on flag {force_on} not registered via add_argument() "
+                f"in cli.py or server.py ({desc})"
+            )
+        if not (off_in_cli or off_in_server):
+            missing.append(
+                f"force-off flag {force_off} not registered via add_argument() "
+                f"in cli.py or server.py ({desc}) — every binary "
+                "auto-routing decision needs an escape hatch in BOTH directions; "
+                "see #393 for the past incident this rule encodes."
+            )
+        # Both entrypoints expose the same routing knobs to avoid a
+        # divergent SOP gap. The standalone `python -m vllm_mlx.server`
+        # path was missed in PR #407 R1 — strengthen by checking both.
+        if (on_in_cli and not on_in_server) or (on_in_server and not on_in_cli):
+            missing.append(
+                f"force-on flag {force_on} present in only one entrypoint "
+                f"({'cli.py' if on_in_cli else 'server.py'}); both CLI paths "
+                "must expose every routing escape hatch (SOP §10)."
+            )
+        if (off_in_cli and not off_in_server) or (off_in_server and not off_in_cli):
+            missing.append(
+                f"force-off flag {force_off} present in only one entrypoint "
+                f"({'cli.py' if off_in_cli else 'server.py'}); both CLI paths "
+                "must expose every routing escape hatch (SOP §10)."
             )
     assert not missing, "\n".join(missing)
+
+
+def test_routing_override_kwargs_are_forwarded_to_load_model():
+    """Strengthened SOP gate (codex R1 PR #407): catching the flag
+    appears in argparse is not enough — it must also be forwarded to
+    ``server.load_model`` so the override actually reaches EngineCore.
+
+    Walks the AST of every ``load_model(...)`` call in cli.py and
+    server.py and confirms each of the 4 routing-override kwargs is
+    either passed as a keyword arg OR not passed at all (the
+    ``load_model`` default is False). The failure mode this catches:
+    flag registered, mutex check present, but the kwarg is silently
+    dropped between argparse and the load call → override no-ops."""
+    import ast
+    import importlib.resources
+    import pathlib
+
+    pkg_root = pathlib.Path(
+        str(importlib.resources.files("vllm_mlx").joinpath(""))
+    ).resolve()
+
+    KWARGS_THAT_MUST_BE_FORWARDED = {
+        "force_text",
+        "force_mllm",
+        "force_hybrid",
+        "no_hybrid",
+        "force_spec_decode",
+        "no_spec_decode",
+    }
+
+    def _find_load_model_calls(source: str) -> list[ast.Call]:
+        tree = ast.parse(source)
+        calls = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                # Match `load_model(...)` and `module.load_model(...)`.
+                name = (
+                    func.id
+                    if isinstance(func, ast.Name)
+                    else (func.attr if isinstance(func, ast.Attribute) else None)
+                )
+                if name == "load_model":
+                    calls.append(node)
+        return calls
+
+    failures = []
+    for fname in ("cli.py", "server.py"):
+        source = (pkg_root / fname).read_text()
+        for call in _find_load_model_calls(source):
+            kwarg_names = {kw.arg for kw in call.keywords if kw.arg is not None}
+            # Note: load_model has defaults of False for every routing
+            # override, so omitting them all is fine for callers that
+            # never need to override. But once a CALLER references one
+            # of these kwargs in argparse, it must forward it. We
+            # approximate that by requiring the *full set* in any call
+            # that forwards at least one of them.
+            overlap = kwarg_names & KWARGS_THAT_MUST_BE_FORWARDED
+            if overlap and overlap != KWARGS_THAT_MUST_BE_FORWARDED:
+                missing = KWARGS_THAT_MUST_BE_FORWARDED - overlap
+                failures.append(
+                    f"{fname} load_model() call at line {call.lineno} forwards "
+                    f"{sorted(overlap)} but omits {sorted(missing)} — every "
+                    "routing-override kwarg must be forwarded from any caller "
+                    "that forwards any one of them (SOP §10)."
+                )
+    assert not failures, "\n".join(failures)
 
 
 def test_hybrid_overrides_mutually_exclusive_in_load_model():
@@ -371,6 +484,79 @@ def test_engine_core_rejects_conflicting_routing_overrides(monkeypatch, flags):
     cfg = EngineConfig(model_name="fake/model", **flags)
     with pytest.raises(ValueError, match="mutually exclusive"):
         _make_engine_core_for_override_test(monkeypatch, cfg)
+
+
+def test_mtp_install_respects_supports_spec_decode():
+    """Regression for codex R1 PR #407: MTP installer in scheduler.py
+    must check ``self.model_config.supports_spec_decode`` (gated by
+    --no-spec-decode). Pre-fix the gate only covered SuffixDecoding
+    and DFlash, so --no-spec-decode silently let MTP run anyway."""
+    import ast
+    import importlib.resources
+    import pathlib
+
+    pkg_root = pathlib.Path(
+        str(importlib.resources.files("vllm_mlx").joinpath(""))
+    ).resolve()
+    source = (pkg_root / "scheduler.py").read_text()
+    tree = ast.parse(source)
+
+    # Find the block guarded by ``if self.config.enable_mtp:`` and
+    # confirm it references ``supports_spec_decode`` somewhere within
+    # its body. Coarse but catches the regression we care about
+    # without coupling to the exact branch structure.
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        # Match `if self.config.enable_mtp:` (Attribute chain).
+        test = node.test
+        if (
+            isinstance(test, ast.Attribute)
+            and test.attr == "enable_mtp"
+            and isinstance(test.value, ast.Attribute)
+            and test.value.attr == "config"
+        ):
+            body_src = ast.unparse(ast.Module(body=node.body, type_ignores=[]))
+            if "supports_spec_decode" in body_src:
+                found = True
+                break
+    assert found, (
+        "scheduler.py's `if self.config.enable_mtp:` block must reference "
+        "`supports_spec_decode` so --no-spec-decode (SOP §10) gates MTP "
+        "the same way it gates SuffixDecoding/DFlash. Codex caught this "
+        "as a silent override-no-op on PR #407 R1."
+    )
+
+
+def test_dflash_branch_rejects_no_spec_decode():
+    """Regression for codex R1 PR #407: --enable-dflash + --no-spec-decode
+    must be a mutex error. DFlash IS spec-decode; without this guard
+    the user thinks they've disabled spec-decode but DFlash silently
+    proceeds via its dedicated server (never touches EngineCore)."""
+    import importlib.resources
+    import pathlib
+
+    pkg_root = pathlib.Path(
+        str(importlib.resources.files("vllm_mlx").joinpath(""))
+    ).resolve()
+    source = (pkg_root / "cli.py").read_text()
+
+    # Substring check is enough — the mutex block is small and the
+    # surrounding context is distinctive. We assert ordering: the
+    # `no_spec_decode` check must come BEFORE `run_dflash_server` in
+    # the same source file.
+    no_spec_idx = source.find('"no_spec_decode"')
+    dflash_idx = source.find("run_dflash_server(")
+    assert no_spec_idx != -1, (
+        "cli.py must reference no_spec_decode in the DFlash branch — "
+        "DFlash is a spec-decode path and must honor --no-spec-decode."
+    )
+    assert dflash_idx != -1
+    assert no_spec_idx < dflash_idx, (
+        "no_spec_decode mutex check must come BEFORE run_dflash_server() "
+        "call so the override actually rejects DFlash startup."
+    )
 
 
 def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
