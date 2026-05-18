@@ -964,53 +964,68 @@ def test_conftests_do_not_deselect_or_replace_collection():
         except UnicodeDecodeError:
             continue
         tree = ast.parse(source)
-        for node in ast.walk(tree):
-            # Match `items.remove(...)`, `items.pop(...)`, `items.clear()`.
-            if isinstance(node, ast.Call):
-                func = node.func
-                if (
-                    isinstance(func, ast.Attribute)
-                    and isinstance(func.value, ast.Name)
-                    and func.value.id == "items"
-                    and func.attr in {"remove", "pop", "clear"}
-                ):
-                    offenders.append(
-                        f"{conftest.relative_to(repo_root)}:{node.lineno} "
-                        f"calls items.{func.attr}(...) — drops tests from "
-                        "collection (round-4 cat-5 #6 attack pattern). "
-                        "Use item.add_marker(pytest.mark.skip(...)) to skip "
-                        "without removing."
-                    )
-            # Match `items[:] = ...` and `items[:] = ...` (Assign with Subscript).
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
+
+        # DeepSeek-V4 review fix (PR #409): only flag deselection-shaped
+        # mutations INSIDE pytest_collection_modifyitems. A helper
+        # function that happens to declare a local list named `items`
+        # and calls items.remove(...) on it is unrelated to the
+        # collection hook and shouldn't false-positive. Gate by
+        # enclosing function name.
+        for func_node in ast.walk(tree):
+            if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if func_node.name != "pytest_collection_modifyitems":
+                continue
+            for node in ast.walk(func_node):
+                # Match `items.remove(...)`, `items.pop(...)`, `items.clear()`.
+                if isinstance(node, ast.Call):
+                    func = node.func
                     if (
-                        isinstance(target, ast.Subscript)
-                        and isinstance(target.value, ast.Name)
-                        and target.value.id == "items"
+                        isinstance(func, ast.Attribute)
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id == "items"
+                        and func.attr in {"remove", "pop", "clear"}
                     ):
                         offenders.append(
                             f"{conftest.relative_to(repo_root)}:{node.lineno} "
-                            "assigns to items[...] — rewrites collection list "
-                            "(round-4 cat-5 #6 attack pattern). Use markers "
-                            "to skip tests instead."
+                            f"calls items.{func.attr}(...) inside "
+                            "pytest_collection_modifyitems — drops tests from "
+                            "collection (round-4 cat-5 #6 attack pattern). "
+                            "Use item.add_marker(pytest.mark.skip(...)) to "
+                            "skip without removing."
                         )
-            # Round-5 subagent 3 #H: `del items[i]` / `del items[:]`
-            # achieves the same deselection as items.remove() but via
-            # ast.Delete. Match Delete-of-Subscript on items.
-            if isinstance(node, ast.Delete):
-                for target in node.targets:
-                    if (
-                        isinstance(target, ast.Subscript)
-                        and isinstance(target.value, ast.Name)
-                        and target.value.id == "items"
-                    ):
-                        offenders.append(
-                            f"{conftest.relative_to(repo_root)}:{node.lineno} "
-                            "uses `del items[...]` — drops tests from "
-                            "collection (round-5 subagent 3 #H bypass). Use "
-                            "item.add_marker(pytest.mark.skip(...)) instead."
-                        )
+                # Match `items[:] = ...` (Assign with Subscript).
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if (
+                            isinstance(target, ast.Subscript)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == "items"
+                        ):
+                            offenders.append(
+                                f"{conftest.relative_to(repo_root)}:{node.lineno} "
+                                "assigns to items[...] inside "
+                                "pytest_collection_modifyitems — rewrites "
+                                "collection list (round-4 cat-5 #6 attack "
+                                "pattern). Use markers to skip tests instead."
+                            )
+                # Round-5 subagent 3 #H: `del items[i]` / `del items[:]`
+                # achieves the same deselection via ast.Delete.
+                if isinstance(node, ast.Delete):
+                    for target in node.targets:
+                        if (
+                            isinstance(target, ast.Subscript)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == "items"
+                        ):
+                            offenders.append(
+                                f"{conftest.relative_to(repo_root)}:{node.lineno} "
+                                "uses `del items[...]` inside "
+                                "pytest_collection_modifyitems — drops tests "
+                                "from collection (round-5 subagent 3 #H "
+                                "bypass). Use item.add_marker(pytest.mark."
+                                "skip(...)) instead."
+                            )
 
     assert not offenders, "\n".join(offenders)
 
@@ -1767,19 +1782,32 @@ def test_engine_core_applies_routing_overrides_from_registry(
     ``RoutingFlagPair`` with a ``model_config_field`` automatically
     adds new test cases. If your new pair's mutation block is missing
     from ``EngineCore.__init__``, this test fails immediately —
-    nothing silently no-ops."""
+    nothing silently no-ops.
+
+    DeepSeek-V4 review fix (PR #409): previously the stub default base
+    happened to already match `expected` for two of four parametrized
+    cases (force_hybrid=True / no_spec_decode=False), so those cases
+    silently passed even if EngineCore stopped mutating ModelConfig.
+    Now we force ``base.<field> = not expected`` so the mutation MUST
+    fire to flip it back to ``expected`` — the only path to success
+    is the actual mutation block running."""
     from vllm_mlx.engine_core import EngineConfig
+    from vllm_mlx.model_auto_config import ModelConfig
 
     cfg = EngineConfig(model_name="fake/model", **{kwarg: True})
-    core = _make_engine_core_for_override_test(monkeypatch, cfg)
+    # Force base to the OPPOSITE of expected. Now the only way for the
+    # final config to equal expected is for EngineCore.__init__ to
+    # actively mutate it — there's no "happens to match the default" path.
+    base = ModelConfig(**{model_config_field: not expected})
+    core = _make_engine_core_for_override_test(monkeypatch, cfg, base=base)
 
     actual = getattr(core.model_config, model_config_field)
     assert actual is expected, (
         f"Setting EngineConfig.{kwarg}=True must mutate "
-        f"ModelConfig.{model_config_field} to {expected}, but got {actual}. "
-        f"EngineCore.__init__ likely missing the mutation block for this "
-        f"routing pair — add it after enrich_model_config() and before "
-        f"`self.scheduler.model_config = self.model_config`."
+        f"ModelConfig.{model_config_field} from {not expected} to {expected}, "
+        f"but got {actual}. EngineCore.__init__ likely missing the mutation "
+        f"block for this routing pair — add it after enrich_model_config() "
+        f"and before `self.scheduler.model_config = self.model_config`."
     )
 
 

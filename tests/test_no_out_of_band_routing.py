@@ -353,11 +353,19 @@ def _all_routing_write_calls(tree: ast.AST) -> list[tuple[str, ast.AST]]:
         # arg-position-agnostic helper as the per-node path.
         if isinstance(node, ast.Call):
             out.extend(_setattr_routing_writes(node, node))
-    # Dedupe — Expr(Call(...)) and the inner Call both produce the same hit.
-    seen: set[tuple[int, str]] = set()
+    # Dedupe — Expr(Call(...)) and the inner Call share the same source
+    # location but are distinct objects, so id(n) lets both through and
+    # the offender list double-prints. DeepSeek-V4 review fix (PR #409):
+    # key by source position + attr so siblings at the same line are
+    # collapsed, regardless of which AST wrapper node we walked through.
+    seen: set[tuple[int, int, str]] = set()
     deduped: list[tuple[str, ast.AST]] = []
     for attr, n in out:
-        key = (id(n), attr)
+        key = (
+            getattr(n, "lineno", -1),
+            getattr(n, "col_offset", -1),
+            attr,
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -488,16 +496,25 @@ def test_no_routing_shaped_rapid_mlx_env_vars():
 
         # Round-5 subagent 3 #B: ban os.environb references entirely.
         # No legitimate use, bytes-form env reads are a parallel surface.
+        # DeepSeek-V4 review fix (PR #409): also catch the bare-name
+        # form `from os import environb; environb[b"…"]` — the rename
+        # via `from … import` strips the `os.` Attribute wrapper, so the
+        # attribute-only scan above misses it. Matching every reference
+        # to a name `environb` is safe: there is no legitimate variable
+        # by that name in the codebase.
         for node in ast.walk(tree):
-            if (
+            os_attribute_form = (
                 isinstance(node, ast.Attribute)
                 and node.attr == "environb"
                 and isinstance(node.value, ast.Name)
                 and node.value.id == "os"
-            ):
+            )
+            bare_name_form = isinstance(node, ast.Name) and node.id == "environb"
+            if os_attribute_form or bare_name_form:
                 offenders.append(
-                    f"{rel}:{node.lineno} uses `os.environb` — bytes-form env "
-                    "var access bypasses the string-Constant scan. Use "
+                    f"{rel}:{node.lineno} references `environb` — bytes-form env "
+                    "var access bypasses the string-Constant scan (matches "
+                    "either `os.environb` or `from os import environb`). Use "
                     "os.environ.get() with a documented str key instead."
                 )
 
@@ -824,4 +841,127 @@ def test_alias_profile_str_fields_are_explicitly_listed():
         "escape hatches — name-shape regex misses them, value-space scans "
         "are unreliable. The fix is closed-set: a new str field requires "
         "explicit review."
+    )
+
+
+def test_environb_detection_catches_bare_name_form():
+    """DeepSeek-V4 review regression (PR #409): the original
+    ``os.environb`` ban only matched ``Attribute(attr='environb',
+    value=Name(id='os'))``. An attacker who writes
+    ``from os import environb; environb[b'RAPID_MLX_FORCE_MLLM'] = b'1'``
+    creates an ``ast.Subscript`` whose ``.value`` is a bare ``Name(id=
+    'environb')`` with no ``os.`` prefix — the Attribute-only scan
+    misses it entirely. The fix adds a second predicate matching
+    ``Name(id='environb')`` directly.
+
+    This test parses both forms as standalone source snippets and
+    confirms the bare-name form is recognized by the same logic the
+    gate uses. We avoid replicating the full file-walk; we instead
+    exercise the predicate directly by running an AST walk and
+    counting matches.
+    """
+    bare_form_source = (
+        "from os import environb\nenvironb[b'RAPID_MLX_FORCE_MLLM'] = b'1'\n"
+    )
+    attribute_form_source = "import os\nos.environb[b'RAPID_MLX_FORCE_MLLM'] = b'1'\n"
+
+    def _count_environb_hits(source: str) -> int:
+        tree = ast.parse(source)
+        hits = 0
+        for node in ast.walk(tree):
+            os_attribute_form = (
+                isinstance(node, ast.Attribute)
+                and node.attr == "environb"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "os"
+            )
+            bare_name_form = isinstance(node, ast.Name) and node.id == "environb"
+            if os_attribute_form or bare_name_form:
+                hits += 1
+        return hits
+
+    assert _count_environb_hits(bare_form_source) >= 1, (
+        "bare-name `environb` reference must be detected — DeepSeek "
+        "regression: `from os import environb` strips the os. prefix."
+    )
+    assert _count_environb_hits(attribute_form_source) >= 1, (
+        "`os.environb` reference must still be detected (existing path)."
+    )
+
+
+def test_routing_write_dedup_is_location_based():
+    """DeepSeek-V4 review regression (PR #409): ``_all_routing_write_calls``
+    previously deduped by ``(id(node), attr)``. ``ast.walk`` yields the
+    enclosing ``ast.Expr`` AND the inner ``ast.Call`` for a statement
+    like ``setattr(engine, '_is_mllm', True)`` — same source location,
+    different Python object ids. The old key let both through; the
+    offender list double-printed the same offense.
+
+    The fix keys by ``(lineno, col_offset, attr)``. This regression
+    test parses a sample with a setattr() call, runs the dedup helper,
+    and asserts exactly one entry per source location.
+    """
+    source = "def f(engine):\n    setattr(engine, '_is_mllm', True)\n"
+    tree = ast.parse(source)
+    writes = _all_routing_write_calls(tree)
+    # Filter to the routing attr (avoids interference if helper grows).
+    is_mllm_writes = [w for w in writes if w[0] == "_is_mllm"]
+    assert len(is_mllm_writes) == 1, (
+        f"dedup must collapse Expr+Call sharing a source location, "
+        f"got {len(is_mllm_writes)} entries: {is_mllm_writes!r}."
+    )
+
+
+def test_conftest_deselect_gate_scoped_to_pytest_hook():
+    """DeepSeek-V4 review regression (PR #409): the conftest deselect
+    gate in ``test_no_mllm_flag.py`` previously walked every node in
+    every ``conftest.py`` looking for ``items.remove/pop/clear`` and
+    ``del items[…]`` — without checking the enclosing function name.
+    A legitimate helper that happens to use a local list named
+    ``items`` (e.g. ``def sort_records(records): items = ...;
+    items.remove(stale)``) would false-positive.
+
+    The fix scopes the AST scan to functions named
+    ``pytest_collection_modifyitems`` only. This regression test
+    parses both shapes in-memory and asserts the gated walker fires
+    only on the pytest hook form.
+    """
+    helper_source = (
+        "def some_helper(records):\n"
+        "    items = list(records)\n"
+        "    items.remove('stale')\n"
+        "    return items\n"
+    )
+    hook_source = (
+        "def pytest_collection_modifyitems(config, items):\n"
+        "    items.remove(items[0])\n"
+    )
+
+    def _gated_offenders(source: str) -> int:
+        tree = ast.parse(source)
+        hits = 0
+        for func_node in ast.walk(tree):
+            if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if func_node.name != "pytest_collection_modifyitems":
+                continue
+            for node in ast.walk(func_node):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "items"
+                    and func.attr in {"remove", "pop", "clear"}
+                ):
+                    hits += 1
+        return hits
+
+    assert _gated_offenders(helper_source) == 0, (
+        "gate must NOT fire on a local `items` list inside an unrelated "
+        "helper function — DeepSeek false-positive regression."
+    )
+    assert _gated_offenders(hook_source) == 1, (
+        "gate MUST still fire on items.remove() inside pytest_collection_modifyitems."
     )
