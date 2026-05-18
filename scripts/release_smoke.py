@@ -42,10 +42,33 @@ def _clean_subprocess_env() -> dict[str, str]:
     PYTHONPATH / PYTHONUSERBASE / PIP_TARGET / PIP_PREFIX can all inject
     host-site packages into a child interpreter even when it's the venv's
     own ``python``. Stripping them keeps the gate's "clean-room" promise
-    honest. We keep PATH / HOME / LANG so build backends and pip itself
-    still work normally.
+    honest. We keep PATH / HOME / LANG plus the proxy/cert vars pip needs
+    in corporate-network environments (SSL_CERT_FILE etc.) so the gate
+    is runnable behind a custom CA bundle.
     """
-    keep = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"}
+    keep = {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        # pip / requests TLS verification (corporate proxies, custom CAs)
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        # pip network / index configuration (corporate mirrors)
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+        "PIP_TRUSTED_HOST",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    }
     return {k: v for k, v in os.environ.items() if k in keep}
 
 

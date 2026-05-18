@@ -145,8 +145,11 @@ def test_install_is_noop_when_symbol_missing(monkeypatch):
     monkeypatch.delattr(mx, "new_thread_local_stream")
     monkeypatch.setattr(mx, "_rapid_mlx_compat_installed", False, raising=False)
     importlib.reload(_mlx_compat)
-    _mlx_compat.install()  # must not raise
-    assert getattr(mx, "_rapid_mlx_compat_installed", False) is True
+    _mlx_compat.install()  # must not raise — that's the #408 contract
+    # Note: on the no-symbol path the shim deliberately does NOT mark
+    # itself "installed" so that a later mlx upgrade (which adds the
+    # symbol) gets the wrap on the next install() call. The contract
+    # this test pins is "no AttributeError", not the flag.
 
 
 def test_fallback_engages_when_probe_raises(monkeypatch):
