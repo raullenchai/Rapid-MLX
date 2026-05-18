@@ -260,6 +260,12 @@ class BatchedEngine(BaseEngine):
         stream_interval: int = 1,
         force_mllm: bool = False,
         gpu_memory_utilization: float = 0.90,
+        *,
+        force_text: bool = False,
+        force_hybrid: bool = False,
+        no_hybrid: bool = False,
+        force_spec_decode: bool = False,
+        no_spec_decode: bool = False,
     ):
         """
         Initialize the batched engine.
@@ -272,13 +278,35 @@ class BatchedEngine(BaseEngine):
             force_mllm: Force loading as MLLM even if not auto-detected
             gpu_memory_utilization: Fraction of device memory for Metal allocation
                 limit and emergency threshold (0.0-1.0, default 0.90)
+            force_text: Keyword-only. Force loading as text-only LLM even when
+                auto-detection would route as MLLM (#393 escape hatch).
+                Mutually exclusive with ``force_mllm`` — caller is responsible
+                for not setting both. Keyword-only to avoid shifting
+                positional-arg semantics for existing callers.
+            force_hybrid / no_hybrid: Keyword-only. SOP §10 routing
+                escape hatches for ``ModelConfig.is_hybrid``. Forwarded
+                to ``EngineConfig`` and applied by ``EngineCore.__init__``
+                right after auto-detection. Mutually exclusive.
+            force_spec_decode / no_spec_decode: Keyword-only. SOP §10
+                routing escape hatches for
+                ``ModelConfig.supports_spec_decode``. Mutually exclusive.
         """
         self._model_name = model_name
         self._trust_remote_code = trust_remote_code
         self._scheduler_config = scheduler_config
         self._stream_interval = stream_interval
         self._gpu_memory_utilization = gpu_memory_utilization
-        self._is_mllm = force_mllm or is_mllm_model(model_name)
+        self._force_hybrid = force_hybrid
+        self._no_hybrid = no_hybrid
+        self._force_spec_decode = force_spec_decode
+        self._no_spec_decode = no_spec_decode
+        if force_text:
+            # User explicitly opted out of MLLM routing. Skip the probe
+            # entirely so a False from auto-detection can't be overridden
+            # by a future config-based True.
+            self._is_mllm = False
+        else:
+            self._is_mllm = force_mllm or is_mllm_model(model_name)
         self._tool_logits_processor_factory = None
 
         self._model = None
@@ -546,6 +574,10 @@ class BatchedEngine(BaseEngine):
             stream_interval=self._stream_interval,
             gpu_memory_utilization=self._gpu_memory_utilization,
             tool_logits_processor_factory=self._tool_logits_processor_factory,
+            force_hybrid=self._force_hybrid,
+            no_hybrid=self._no_hybrid,
+            force_spec_decode=self._force_spec_decode,
+            no_spec_decode=self._no_spec_decode,
         )
 
         # Create async engine and hand it the EXISTING model-load executor
@@ -1452,6 +1484,10 @@ class BatchedEngine(BaseEngine):
             scheduler_config=scheduler_config,
             stream_interval=self._stream_interval,
             tool_logits_processor_factory=self._tool_logits_processor_factory,
+            force_hybrid=self._force_hybrid,
+            no_hybrid=self._no_hybrid,
+            force_spec_decode=self._force_spec_decode,
+            no_spec_decode=self._no_spec_decode,
         )
 
         # Create async engine with shared model

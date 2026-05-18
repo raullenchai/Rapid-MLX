@@ -104,6 +104,16 @@ class EngineConfig:
     # BatchedEngine for B>1 support, add the config fields back here
     # and wire them through ``EngineCore.__init__``.
 
+    # ---- SOP §10 routing-override escape hatches ----
+    # CLI surfaces these as --force-hybrid / --no-hybrid / etc. Applied
+    # to ``self.model_config`` right after ``enrich_model_config()`` so
+    # downstream Scheduler reads see the user's override. None (default)
+    # means "respect auto-detection".
+    force_hybrid: bool = False
+    no_hybrid: bool = False
+    force_spec_decode: bool = False
+    no_spec_decode: bool = False
+
 
 class EngineCore:
     """
@@ -217,6 +227,37 @@ class EngineCore:
             model_path = None
         base_cfg = detect_model_config(model_path) if model_path else None
         self.model_config = enrich_model_config(base_cfg, model)
+
+        # SOP §10: apply CLI routing-override escape hatches *after*
+        # auto-detection/enrichment but *before* the scheduler reads
+        # capability gates. Mutex pairs (force_X / no_X) are validated
+        # at the CLI layer and re-validated here as a second line of
+        # defense for programmatic callers. ModelConfig is non-frozen
+        # so direct mutation is fine; we only touch fields whose
+        # override flag was explicitly set.
+        if self.config.force_hybrid and self.config.no_hybrid:
+            raise ValueError("force_hybrid and no_hybrid are mutually exclusive")
+        if self.config.force_spec_decode and self.config.no_spec_decode:
+            raise ValueError(
+                "force_spec_decode and no_spec_decode are mutually exclusive"
+            )
+        if self.config.no_hybrid:
+            self.model_config.is_hybrid = False
+            logger.info("Routing override: is_hybrid forced False via --no-hybrid")
+        elif self.config.force_hybrid:
+            self.model_config.is_hybrid = True
+            logger.info("Routing override: is_hybrid forced True via --force-hybrid")
+        if self.config.no_spec_decode:
+            self.model_config.supports_spec_decode = False
+            logger.info(
+                "Routing override: supports_spec_decode forced False via --no-spec-decode"
+            )
+        elif self.config.force_spec_decode:
+            self.model_config.supports_spec_decode = True
+            logger.info(
+                "Routing override: supports_spec_decode forced True via --force-spec-decode"
+            )
+
         # Plumb profile into Scheduler so spec-decode installs can consult
         # capability gates (e.g. ``supports_spec_decode``).
         self.scheduler.model_config = self.model_config

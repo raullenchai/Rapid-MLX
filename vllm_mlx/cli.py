@@ -397,14 +397,38 @@ def serve_command(args):
         )
         sys.exit(1)
 
-    # Auto-detect parser config from model name when not explicitly set
+    # Auto-detect parser config from model name when not explicitly set.
+    # --no-tool-call-parser / --no-reasoning-parser are escape hatches
+    # (SOP §10): if the user opts out, do NOT let the AliasProfile auto-
+    # populate args.tool_call_parser / args.reasoning_parser. Past
+    # incidents: #393-class (auto-detect false positive with no opt-out).
+    _opt_out_tool = getattr(args, "no_tool_call_parser", False)
+    _opt_out_reasoning = getattr(args, "no_reasoning_parser", False)
+    if args.tool_call_parser and _opt_out_tool:
+        print(
+            "error: --tool-call-parser and --no-tool-call-parser are "
+            "mutually exclusive — pick one to override auto-detection.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.reasoning_parser and _opt_out_reasoning:
+        print(
+            "error: --reasoning-parser and --no-reasoning-parser are "
+            "mutually exclusive — pick one to override auto-detection.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if not args.tool_call_parser or not args.reasoning_parser:
         try:
             from .model_auto_config import detect_model_config
 
             auto_config = detect_model_config(args.model)
             if auto_config:
-                if not args.tool_call_parser and auto_config.tool_call_parser:
+                if (
+                    not args.tool_call_parser
+                    and not _opt_out_tool
+                    and auto_config.tool_call_parser
+                ):
                     args.tool_call_parser = auto_config.tool_call_parser
                     args.enable_auto_tool_choice = True
                     logger.info(
@@ -412,6 +436,7 @@ def serve_command(args):
                     )
                 if (
                     not args.reasoning_parser
+                    and not _opt_out_reasoning
                     and not args.no_thinking
                     and auto_config.reasoning_parser
                 ):
@@ -421,6 +446,14 @@ def serve_command(args):
                     )
         except Exception as e:
             logger.debug(f"Auto-detection failed (non-fatal): {e}")
+    if _opt_out_tool:
+        logger.info(
+            "Tool-call parser auto-detection disabled via --no-tool-call-parser"
+        )
+    if _opt_out_reasoning:
+        logger.info(
+            "Reasoning parser auto-detection disabled via --no-reasoning-parser"
+        )
 
     # Pass alias info to server (for /v1/models)
     server._model_alias = getattr(args, "_original_alias", None)
@@ -776,6 +809,17 @@ def serve_command(args):
     # and run the dedicated DFlash server. The eligibility check above has
     # already validated the alias, so by here we have a known-good profile.
     if args.enable_dflash:
+        # DFlash IS a speculative-decode path. The --no-spec-decode escape
+        # hatch (SOP §10) must reject it here — otherwise the user thinks
+        # they've disabled spec-decode but DFlash silently proceeds via
+        # its dedicated server, never touching EngineCore / ModelConfig.
+        if getattr(args, "no_spec_decode", False):
+            print(
+                "error: --enable-dflash and --no-spec-decode are mutually "
+                "exclusive — DFlash is a speculative-decode mode.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         from .model_aliases import resolve_profile
         from .speculative.dflash.server import run_dflash_server
 
@@ -800,6 +844,29 @@ def serve_command(args):
         return
 
     # Load model with unified server
+    if args.mllm and args.no_mllm:
+        print(
+            "error: --mllm and --no-mllm are mutually exclusive — "
+            "pick one to override auto-detection.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if getattr(args, "force_hybrid", False) and getattr(args, "no_hybrid", False):
+        print(
+            "error: --force-hybrid and --no-hybrid are mutually exclusive — "
+            "pick one to override auto-detection.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if getattr(args, "force_spec_decode", False) and getattr(
+        args, "no_spec_decode", False
+    ):
+        print(
+            "error: --force-spec-decode and --no-spec-decode are mutually "
+            "exclusive — pick one to override auto-detection.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     try:
         load_model(
             args.model,
@@ -807,6 +874,7 @@ def serve_command(args):
             stream_interval=args.stream_interval,
             max_tokens=args.max_tokens,
             force_mllm=args.mllm,
+            force_text=args.no_mllm,
             gpu_memory_utilization=args.gpu_memory_utilization,
             cloud_model=args.cloud_model,
             cloud_threshold=args.cloud_threshold,
@@ -814,6 +882,10 @@ def serve_command(args):
             cloud_api_key=args.cloud_api_key,
             served_model_name=args.served_model_name,
             mtp=args.enable_mtp,
+            force_hybrid=getattr(args, "force_hybrid", False),
+            no_hybrid=getattr(args, "no_hybrid", False),
+            force_spec_decode=getattr(args, "force_spec_decode", False),
+            no_spec_decode=getattr(args, "no_spec_decode", False),
         )
     except Exception as e:
         # Show clean error instead of raw traceback. Catch the typed
@@ -3064,6 +3136,82 @@ Examples:
             "Useful for faster responses when chain-of-thought is not needed."
         ),
     )
+    serve_parser.add_argument(
+        "--no-tool-call-parser",
+        dest="no_tool_call_parser",
+        action="store_true",
+        default=False,
+        help=(
+            "Force-disable tool-call parser auto-detection from the alias "
+            "profile. Escape hatch (SOP §10) when AliasProfile's auto-"
+            "selected parser misfires for a specific deployment. Mutually "
+            "exclusive with --tool-call-parser."
+        ),
+    )
+    serve_parser.add_argument(
+        "--no-reasoning-parser",
+        dest="no_reasoning_parser",
+        action="store_true",
+        default=False,
+        help=(
+            "Force-disable reasoning parser auto-detection from the alias "
+            "profile. Distinct from --no-thinking (which also suppresses "
+            "the chain-of-thought prompt template) — this flag ONLY skips "
+            "the auto-config step. Mutually exclusive with --reasoning-parser."
+        ),
+    )
+    # SOP §10 profile-override escape hatches. Pair every binary
+    # auto-routing field with both force-on and force-off CLI flags so
+    # users always have an override path when the AliasProfile
+    # auto-detection misfires. Registered in
+    # tests/test_no_mllm_flag.py::test_auto_routing_flags_have_force_on_and_force_off_pair.
+    serve_parser.add_argument(
+        "--force-hybrid",
+        dest="force_hybrid",
+        action="store_true",
+        default=False,
+        help=(
+            "Force-treat the model as a hybrid (linear-attention / Mamba) "
+            "architecture even when AliasProfile says otherwise. Disables "
+            "spec/suffix decode paths that are unsound on hybrids. "
+            "Mutually exclusive with --no-hybrid."
+        ),
+    )
+    serve_parser.add_argument(
+        "--no-hybrid",
+        dest="no_hybrid",
+        action="store_true",
+        default=False,
+        help=(
+            "Force-treat the model as non-hybrid (full attention) even when "
+            "AliasProfile says it's hybrid. Use when the profile mis-labels "
+            "your model and you want spec/suffix decode enabled. "
+            "Mutually exclusive with --force-hybrid."
+        ),
+    )
+    serve_parser.add_argument(
+        "--force-spec-decode",
+        dest="force_spec_decode",
+        action="store_true",
+        default=False,
+        help=(
+            "Force-enable speculative-decode eligibility even when "
+            "AliasProfile says the model doesn't support it. Risky on "
+            "hybrid models — use only when you've verified the profile "
+            "is wrong. Mutually exclusive with --no-spec-decode."
+        ),
+    )
+    serve_parser.add_argument(
+        "--no-spec-decode",
+        dest="no_spec_decode",
+        action="store_true",
+        default=False,
+        help=(
+            "Force-disable speculative-decode eligibility (suffix / MTP / "
+            "DFlash) even when AliasProfile says the model supports it. "
+            "Mutually exclusive with --force-spec-decode."
+        ),
+    )
     # GC control (Tier 0 optimization)
     serve_parser.add_argument(
         "--gc-control",
@@ -3088,6 +3236,13 @@ Examples:
         "--mllm",
         action="store_true",
         help="Force load model as multimodal (vision) even if name doesn't match auto-detection patterns",
+    )
+    serve_parser.add_argument(
+        "--no-mllm",
+        "--text-only",
+        dest="no_mllm",
+        action="store_true",
+        help="Force load model as text-only LLM even when auto-detection would route it to the multimodal/VLM path. Escape hatch for incomplete vision-tower checkpoints (#393) and text-only forks of multimodal architectures whose config.json still declares vision_config.",
     )
     # Generation defaults
     serve_parser.add_argument(

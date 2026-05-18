@@ -1526,6 +1526,17 @@ Examples:
         help="Force MLLM benchmark mode (auto-detected by default)",
     )
     parser.add_argument(
+        "--no-mllm",
+        "--text-only",
+        dest="no_mllm",
+        action="store_true",
+        default=False,
+        help=(
+            "Force text-only LLM benchmark mode even when auto-detection would "
+            "route as MLLM (#393 escape hatch). Mutually exclusive with --mllm."
+        ),
+    )
+    parser.add_argument(
         "--quick",
         action="store_true",
         help="Quick benchmark with fewer configurations",
@@ -1551,8 +1562,16 @@ Examples:
 
     args = parser.parse_args()
 
-    # Determine if MLLM model
-    run_mllm = args.mllm or is_mllm_model(args.model)
+    if args.mllm and args.no_mllm:
+        parser.error("--mllm and --no-mllm are mutually exclusive")
+
+    # Determine if MLLM model. SOP §10: --no-mllm short-circuits the
+    # is_mllm_model() probe entirely so a False auto-detection cannot
+    # be silently flipped True by a future config-based heuristic.
+    if args.no_mllm:
+        run_mllm = False
+    else:
+        run_mllm = args.mllm or is_mllm_model(args.model)
 
     if args.video:
         # Video Benchmark
