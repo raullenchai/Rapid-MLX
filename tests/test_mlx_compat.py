@@ -133,7 +133,16 @@ def test_install_is_noop_when_symbol_missing(monkeypatch):
 
     from vllm_mlx import _mlx_compat
 
-    monkeypatch.delattr(mx, "new_thread_local_stream", raising=False)
+    # If a future mlx genuinely drops the symbol, this assert fails
+    # loudly so we revisit whether the compat shim still has a job to
+    # do — `raising=False` on the delattr below would silently turn
+    # this into a degenerate test that exercises nothing.
+    assert hasattr(mx, "new_thread_local_stream"), (
+        "expected baseline mlx to expose new_thread_local_stream; "
+        "if upstream removed it, this test no longer covers the #408 "
+        "regression path and the shim itself can probably go away."
+    )
+    monkeypatch.delattr(mx, "new_thread_local_stream")
     monkeypatch.setattr(mx, "_rapid_mlx_compat_installed", False, raising=False)
     importlib.reload(_mlx_compat)
     _mlx_compat.install()  # must not raise

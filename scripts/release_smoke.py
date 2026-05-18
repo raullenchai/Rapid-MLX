@@ -28,11 +28,26 @@ before pushing a ``chore: bump version to X.Y.Z`` commit.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+
+def _clean_subprocess_env() -> dict[str, str]:
+    """Build an env dict that won't let the host shadow the clean venv.
+
+    PYTHONPATH / PYTHONUSERBASE / PIP_TARGET / PIP_PREFIX can all inject
+    host-site packages into a child interpreter even when it's the venv's
+    own ``python``. Stripping them keeps the gate's "clean-room" promise
+    honest. We keep PATH / HOME / LANG so build backends and pip itself
+    still work normally.
+    """
+    keep = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"}
+    return {k: v for k, v in os.environ.items() if k in keep}
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -60,19 +75,22 @@ def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 
 def smoke(install_spec: str, *, source: str) -> None:
+    # mkdtemp() can raise (disk full, permission denied) — keep it
+    # outside the try so the finally can't reference an unbound name.
     venv = Path(tempfile.mkdtemp(prefix="rapid-mlx-release-smoke-"))
+    env = _clean_subprocess_env()
     try:
         print(f"[release-smoke] clean venv: {venv}")
-        run([sys.executable, "-m", "venv", str(venv)])
+        run([sys.executable, "-m", "venv", str(venv)], env=env)
         py = venv / "bin" / "python"
-        run([str(py), "-m", "pip", "install", "--quiet", "--upgrade", "pip"])
+        run([str(py), "-m", "pip", "install", "--quiet", "--upgrade", "pip"], env=env)
 
         # ``pip install <local-path>`` invokes the PEP 517 build backend
         # declared in ``pyproject.toml`` directly — no separate ``build``
         # package needed on the dev env. The wheel that gets built and
         # installed is bit-identical to what would land on PyPI.
         print(f"[release-smoke] installing {source}: {install_spec}")
-        run([str(py), "-m", "pip", "install", "--quiet", install_spec])
+        run([str(py), "-m", "pip", "install", "--quiet", install_spec], env=env)
 
         # Run the import probes from inside the venv, NOT the repo root:
         # ``python -c`` puts cwd at sys.path[0], so if we ran from
@@ -82,7 +100,7 @@ def smoke(install_spec: str, *, source: str) -> None:
         print("[release-smoke] importing release surfaces in clean venv:")
         for mod in IMPORT_TARGETS:
             print(f"    import {mod}", flush=True)
-            run([str(py), "-c", f"import {mod}"], cwd=str(venv))
+            run([str(py), "-c", f"import {mod}"], cwd=str(venv), env=env)
         print("[release-smoke] OK — every release surface imports cleanly.")
     finally:
         shutil.rmtree(venv, ignore_errors=True)
