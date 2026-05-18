@@ -1241,17 +1241,22 @@ def test_load_model_callers_register_every_routing_flag():
         # ``vllm_mlx.server`` function). A file is a "load_model caller"
         # iff it imports ``load_model`` from ``vllm_mlx.server`` (or as
         # ``server.load_model``) AND invokes it.
-        imports_ours = False
+        #
+        # Codex round-E fix (PR #409): also track the LOCAL ALIAS of
+        # ``load_model``. A new entrypoint could write
+        # ``from vllm_mlx.server import load_model as lm`` and call
+        # ``lm(...)`` — the literal-name check alone would miss it.
+        local_aliases: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module in (
                 "vllm_mlx.server",
                 "..server",
                 ".server",
             ):
-                if any(alias.name == "load_model" for alias in node.names):
-                    imports_ours = True
-                    break
-        if not imports_ours:
+                for alias in node.names:
+                    if alias.name == "load_model":
+                        local_aliases.add(alias.asname or "load_model")
+        if not local_aliases:
             continue
 
         for node in ast.walk(tree):
@@ -1263,7 +1268,7 @@ def test_load_model_callers_register_every_routing_flag():
                 if isinstance(func, ast.Name)
                 else (func.attr if isinstance(func, ast.Attribute) else None)
             )
-            if name == "load_model":
+            if name in local_aliases:
                 load_model_callers.add(rel)
                 break
 
