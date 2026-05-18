@@ -884,7 +884,7 @@ Examples:
     )
     parser.add_argument(
         "--log-level",
-        type=lambda s: s.upper(),
+        type=normalize_log_level,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="INFO",
         help="Log level for Python logging and uvicorn (case-insensitive)",

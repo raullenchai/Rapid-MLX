@@ -3,6 +3,7 @@
 
 import base64
 import logging
+import math
 import struct
 import time
 
@@ -81,9 +82,29 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
         )
 
         # Optional truncation (OpenAI MRL semantics). Sliced post-embed
-        # because mlx-embeddings doesn't expose a native dim parameter.
+        # because mlx-embeddings doesn't expose a native dim parameter,
+        # then L2-renormalized so the resulting vector is still a valid
+        # unit-norm embedding for cosine similarity (matches OpenAI
+        # cookbook recommendation for text-embedding-3-large).
         if request.dimensions is not None:
-            embeddings = [list(vec)[: request.dimensions] for vec in embeddings]
+            full_dim = len(list(embeddings[0]))
+            if request.dimensions > full_dim:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"dimensions={request.dimensions} exceeds the "
+                        f"model's native embedding size of {full_dim}"
+                    ),
+                )
+
+            truncated: list[list[float]] = []
+            for vec in embeddings:
+                sliced = list(vec)[: request.dimensions]
+                norm = math.sqrt(sum(x * x for x in sliced))
+                if norm > 0:
+                    sliced = [x / norm for x in sliced]
+                truncated.append(sliced)
+            embeddings = truncated
 
         # encoding_format=base64 per OpenAI spec — float32 little-endian
         # bytes, base64-encoded as ASCII. Saves ~2-4× bandwidth on large

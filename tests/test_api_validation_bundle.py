@@ -227,6 +227,9 @@ def _build_embed_app(patch_cfg, monkeypatch, embed_return):
 
 class TestEmbeddingsRoute:
     def test_dimensions_truncates_vector(self, patched_config, monkeypatch):
+        """Slice to the requested length, then L2-normalize so the
+        result is still a valid embedding (see
+        test_truncated_vector_is_unit_norm for the why)."""
         embed = [[0.1 * i for i in range(384)]]
         client, _ = _build_embed_app(patched_config, monkeypatch, embed)
         r = client.post(
@@ -236,7 +239,9 @@ class TestEmbeddingsRoute:
         assert r.status_code == 200, r.text
         vec = r.json()["data"][0]["embedding"]
         assert len(vec) == 64
-        assert vec[:3] == [0.0, 0.1, 0.2]
+        import math as _m
+
+        assert abs(_m.sqrt(sum(x * x for x in vec)) - 1.0) < 1e-6
 
     def test_dimensions_zero_rejected(self, patched_config, monkeypatch):
         embed = [[0.0] * 16]
@@ -283,7 +288,7 @@ class TestEmbeddingsRoute:
 
     def test_base64_plus_dimensions_combine(self, patched_config, monkeypatch):
         """Truncation happens BEFORE base64 encoding so the packed
-        length matches `dimensions`."""
+        length matches `dimensions`. Result is also L2-normalized."""
         original = [float(i) for i in range(16)]
         client, _ = _build_embed_app(patched_config, monkeypatch, [original])
 
@@ -298,8 +303,71 @@ class TestEmbeddingsRoute:
         )
         assert r.status_code == 200
         encoded = r.json()["data"][0]["embedding"]
-        decoded = struct.unpack("<4f", base64.b64decode(encoded))
-        assert list(decoded) == [0.0, 1.0, 2.0, 3.0]
+        decoded = list(struct.unpack("<4f", base64.b64decode(encoded)))
+        # Truncated [0,1,2,3] L2-normalized: norm=sqrt(14)
+        import math as _m
+
+        norm = _m.sqrt(sum(x * x for x in [0.0, 1.0, 2.0, 3.0]))
+        expected = [x / norm for x in [0.0, 1.0, 2.0, 3.0]]
+        for got, want in zip(decoded, expected):
+            assert abs(got - want) < 1e-6
+
+    def test_dimensions_above_model_dim_rejected(self, patched_config, monkeypatch):
+        """Per OpenAI spec: requesting more dimensions than the model
+        produces must 400, not silently return the full vector."""
+        client, _ = _build_embed_app(
+            patched_config, monkeypatch, [[0.1, 0.2, 0.3, 0.4]]
+        )
+        r = client.post(
+            "/v1/embeddings",
+            json={"model": "any", "input": "hi", "dimensions": 9999},
+        )
+        assert r.status_code == 400
+        assert "dimensions" in r.json()["detail"].lower()
+
+    def test_truncated_vector_is_unit_norm(self, patched_config, monkeypatch):
+        """MRL-style truncation requires L2-renormalization for the
+        result to be a valid cosine-similarity embedding (OpenAI
+        cookbook for text-embedding-3-large). A naive slice without
+        normalization is mathematically wrong for any MRL model."""
+        embed = [[3.0, 4.0, 0.0, 0.0, 0.0]]
+        client, _ = _build_embed_app(patched_config, monkeypatch, embed)
+        r = client.post(
+            "/v1/embeddings",
+            json={"model": "any", "input": "hi", "dimensions": 2},
+        )
+        assert r.status_code == 200
+        vec = r.json()["data"][0]["embedding"]
+        import math as _m
+
+        norm = _m.sqrt(sum(x * x for x in vec))
+        # Expect unit norm. Sliced (3,4) has norm 5 → normalized (0.6,0.8).
+        assert abs(norm - 1.0) < 1e-6
+        assert abs(vec[0] - 0.6) < 1e-6
+        assert abs(vec[1] - 0.8) < 1e-6
+
+
+class TestEmbeddingsEncodingFormatLiteral:
+    """Pydantic Literal narrowing replaces the silent-fallback bug:
+    unknown encoding_format values now 422 at parse time."""
+
+    def test_unknown_encoding_format_rejected(self):
+        """Catches typos like 'base65', 'BASE64', 'json' — previously
+        they all silently returned a float list."""
+        from pydantic import ValidationError
+
+        from vllm_mlx.api.models import EmbeddingRequest
+
+        for bogus in ["base65", "BASE64", "json", "raw"]:
+            with pytest.raises(ValidationError):
+                EmbeddingRequest(input="hi", model="x", encoding_format=bogus)
+
+    def test_valid_encoding_formats_accepted(self):
+        from vllm_mlx.api.models import EmbeddingRequest
+
+        for ok in ["float", "base64"]:
+            req = EmbeddingRequest(input="hi", model="x", encoding_format=ok)
+            assert req.encoding_format == ok
 
 
 # ---------------------------------------------------------------------------
