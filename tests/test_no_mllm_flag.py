@@ -663,7 +663,16 @@ def _routing_shaped_constants_in_module(source: str) -> set[str]:
     ``"--force-hybrid"`` matches, ``"--force-hybrid and --no-hybrid are
     mutually exclusive"`` (an error message) does not. Embedded flag
     names in error messages and docstrings are noise, not bypass."""
-    routing_pattern = re.compile(r"^--(?:force|no|enable|disable)-[a-z0-9-]+$")
+    # DeepSeek round-4 fix (PR #409): real argparse flag names accept
+    # uppercase letters (`--enable-TurboQuant`). The lowercase-only
+    # character class let any such flag escape the Constant-string
+    # scan (prong 2 of test_no_unregistered_routing_shaped_flags).
+    # IGNORECASE on the whole pattern keeps the prefix list (force/no/
+    # enable/disable) case-insensitive too — there is no legitimate
+    # reason to spell those uppercase, but bypass-proof beats minimal.
+    routing_pattern = re.compile(
+        r"^--(?:force|no|enable|disable)-[a-zA-Z0-9-]+$", re.IGNORECASE
+    )
     tree = ast.parse(source)
     flags: set[str] = set()
     for node in ast.walk(tree):
@@ -1419,15 +1428,28 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
         false-positive surfaces, add an override flag here.
     """
     pkg_root = _pkg_root()
-    sources_by_file = {
-        fname: (pkg_root / fname).read_text()
-        for fname in ("cli.py", "server.py", "benchmark.py")
-    }
+    # DeepSeek round-4 fix (PR #409): read each required file on
+    # demand (cached per-test) instead of hardcoding the current three.
+    # A future pair could add a new entrypoint to `required_files`; the
+    # prior dict-lookup would raise a bare KeyError, this loop now
+    # raises a descriptive failure (or silently includes the new file).
+    sources_by_file: dict[str, str] = {}
+
+    def _read_required(fname: str) -> str:
+        if fname not in sources_by_file:
+            path = pkg_root / fname
+            assert path.exists(), (
+                f"RoutingFlagPair.required_files lists `{fname}` but the "
+                f"file does not exist at {path}. Fix the registry or "
+                "restore the entrypoint."
+            )
+            sources_by_file[fname] = path.read_text()
+        return sources_by_file[fname]
 
     missing: list[str] = []
     for pair in AUTO_ROUTING_FLAG_PAIRS:
         for fname in pair.required_files:
-            src = sources_by_file[fname]
+            src = _read_required(fname)
             if not _flag_in_add_argument_calls(src, pair.force_on):
                 missing.append(
                     f"force-on flag {pair.force_on} not registered via "
@@ -1491,7 +1513,12 @@ def test_load_model_callers_register_every_routing_flag():
     load_model_callers: set[str] = set()
 
     for path in pkg_root.rglob("*.py"):
-        if any(part.startswith("__") for part in path.parts[len(pkg_root.parts) :]):
+        # DeepSeek round-4 fix (PR #409): use ``path.parent.parts`` so
+        # ``__init__.py`` files are NOT dropped (matches the equivalent
+        # fix in _discover_entrypoints — these two scans must stay in
+        # lockstep or one gate gets coverage the other doesn't).
+        parent_parts = path.parent.parts[len(pkg_root.parts) :]
+        if any(part.startswith("__") for part in parent_parts):
             continue
         rel = path.relative_to(pkg_root).as_posix()
         try:
@@ -1512,7 +1539,13 @@ def test_load_model_callers_register_every_routing_flag():
         # at once and means every other scanner in this file picks up
         # the same coverage.
         direct_aliases, module_aliases, pkg_aliases = _load_model_aliases_in_tree(tree)
-        if not (direct_aliases or module_aliases):
+        # DeepSeek round-4 fix (PR #409): include pkg_aliases in the
+        # early-exit guard. ``import vllm_mlx`` (no .server) followed
+        # by ``vllm_mlx.server.load_model(...)`` populates ONLY
+        # pkg_aliases; the previous guard would short-circuit before
+        # _call_targets_load_model could consider the package-attribute
+        # path, silently losing entrypoint coverage.
+        if not (direct_aliases or module_aliases or pkg_aliases):
             continue
 
         for node in ast.walk(tree):
@@ -1742,7 +1775,9 @@ def test_routing_override_kwargs_are_forwarded_to_load_model():
         # while omitting the rest — gate passed silently.
         tree = ast.parse(source)
         direct_aliases, module_aliases, pkg_aliases = _load_model_aliases_in_tree(tree)
-        if not (direct_aliases or module_aliases):
+        # DeepSeek round-4 fix (PR #409): include pkg_aliases in the
+        # short-circuit so `import vllm_mlx` callers aren't dropped.
+        if not (direct_aliases or module_aliases or pkg_aliases):
             return []
         calls = []
         for node in ast.walk(tree):
@@ -1830,7 +1865,17 @@ def test_load_model_has_no_unkeyworded_bool_or_routing_params_beyond_baseline():
     positional bool/routing param (almost never), update it with a
     comment explaining why — the explicit edit forces the discussion.
     """
-    from vllm_mlx.server import load_model
+    # DeepSeek round-4 fix (PR #409): graceful skip on headless CI
+    # (mirrors the pattern in test_routing_override_kwargs_are_
+    # keyword_only_in_load_model and _make_engine_core_for_override_test).
+    try:
+        from vllm_mlx.server import load_model
+    except RuntimeError as exc:
+        pytest.skip(
+            f"MLX runtime unavailable ({exc}) — load_model signature "
+            "audit requires importing vllm_mlx.server. Skipped on "
+            "headless CI."
+        )
 
     # Round-3 bypass #3.3: a non-functools.wraps decorator hides the
     # underlying signature. Unwrap explicitly.
@@ -2133,8 +2178,22 @@ def test_routing_override_kwargs_are_keyword_only_in_load_model():
     positional position is fixed for back-compat (verified by
     ``test_load_model_has_no_unkeyworded_bool_params_beyond_baseline``
     elsewhere)."""
-    from vllm_mlx.engine.batched import BatchedEngine
-    from vllm_mlx.server import load_model
+    # DeepSeek round-4 fix (PR #409): on headless CI without a Metal
+    # device, importing these modules raises RuntimeError before any
+    # assertion can run. Skip gracefully — the gate's intent is a
+    # signature/positional audit that only matters on machines that
+    # can actually run vllm-mlx. Mirrors the pattern in
+    # `test_registry_forwarded_kwargs_exist_on_signatures` and
+    # `_make_engine_core_for_override_test`.
+    try:
+        from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.server import load_model
+    except RuntimeError as exc:
+        pytest.skip(
+            f"MLX runtime unavailable ({exc}) — keyword-only audit "
+            "requires importing the MLX-backed engine stack. Skipped "
+            "on headless CI."
+        )
 
     expected = _post_sop_forwarded_kwargs()
     assert expected, "Registry should produce at least one post-SOP kwarg"
