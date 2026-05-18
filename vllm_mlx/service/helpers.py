@@ -38,6 +38,43 @@ _FALLBACK_TEMPERATURE = 0.7
 _FALLBACK_TOP_P = 0.9
 
 
+def _finalize_content_and_reasoning(
+    raw_text: str,
+    cleaned_text: str,
+    tool_calls: list,
+    reasoning_parser,
+) -> tuple[str, str | None]:
+    """Compute final ``content`` + ``reasoning_text`` after tool parsing.
+
+    Shared between the OpenAI ``/v1/chat/completions`` and Anthropic
+    ``/v1/messages`` non-streaming paths so both surfaces extract
+    reasoning identically — bypassing this on one route was the
+    silent-divergence bug filed as issue #413.
+
+    Rule (drives the unclosed-`<tool_call>` leak fix in PR #208): when
+    the tool parser successfully extracted ``tool_calls`` its
+    ``cleaned_text`` is authoritative — both ``<think>`` and tool tags
+    are already stripped. Run the reasoning parser on the raw output
+    only to recover ``reasoning_text``, never to overwrite
+    ``cleaned_text`` (that path would re-introduce the tool tags the
+    parser stripped, since the reasoning parser only knows about
+    ``<think>``).
+
+    When no tool_calls fire, the reasoning parser is the only thing
+    that can pull ``<think>`` out — run it on cleaned_text (or raw
+    output if cleaning produced an empty string).
+    """
+    reasoning_text = None
+    if reasoning_parser is None:
+        return cleaned_text, reasoning_text
+    if tool_calls:
+        reasoning_text, _ = reasoning_parser.extract_reasoning(raw_text)
+    else:
+        text_to_parse = cleaned_text or raw_text
+        reasoning_text, cleaned_text = reasoning_parser.extract_reasoning(text_to_parse)
+    return cleaned_text, reasoning_text
+
+
 def _cascade(cli_value, alias_key: str, gen_key: str | None = None):
     """Layers 3+4 of the sampling resolve chain.
 

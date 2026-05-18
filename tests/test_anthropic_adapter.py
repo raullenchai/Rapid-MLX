@@ -382,8 +382,18 @@ class TestAnthropicToOpenai:
 class TestOpenaiToAnthropic:
     """Tests for openai_to_anthropic conversion."""
 
-    def _make_response(self, content="hello", finish_reason="stop", tool_calls=None):
-        msg = AssistantMessage(content=content, tool_calls=tool_calls)
+    def _make_response(
+        self,
+        content="hello",
+        finish_reason="stop",
+        tool_calls=None,
+        reasoning_content=None,
+    ):
+        msg = AssistantMessage(
+            content=content,
+            tool_calls=tool_calls,
+            reasoning_content=reasoning_content,
+        )
         choice = ChatCompletionChoice(message=msg, finish_reason=finish_reason)
         return ChatCompletionResponse(
             model="default",
@@ -473,3 +483,44 @@ class TestOpenaiToAnthropic:
         result = openai_to_anthropic(resp, "test-model")
         assert result.id.startswith("msg_")
         assert result.model == "test-model"
+
+    def test_reasoning_content_becomes_thinking_block(self):
+        """#413 fix: reasoning_content on the OpenAI response must appear
+        as a ``thinking`` content block on the Anthropic response,
+        placed BEFORE the text block to match Anthropic's
+        extended-thinking SDK convention."""
+        resp = self._make_response(
+            content="Final answer.",
+            reasoning_content="Let me think.",
+        )
+        result = openai_to_anthropic(resp, "default")
+        assert len(result.content) == 2
+        assert result.content[0].type == "thinking"
+        assert result.content[0].thinking == "Let me think."
+        assert result.content[1].type == "text"
+        assert result.content[1].text == "Final answer."
+
+    def test_reasoning_content_with_tool_calls(self):
+        """Thinking block + text + tool_use coexist, in that order."""
+        tc = ToolCall(
+            id="call_1",
+            type="function",
+            function=FunctionCall(name="search", arguments='{"q":"x"}'),
+        )
+        resp = self._make_response(
+            content="Calling search.",
+            reasoning_content="I need to look this up.",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        result = openai_to_anthropic(resp, "default")
+        assert [b.type for b in result.content] == ["thinking", "text", "tool_use"]
+        assert result.content[0].thinking == "I need to look this up."
+
+    def test_no_reasoning_content_omits_thinking_block(self):
+        """Absence of reasoning_content must NOT produce a thinking
+        block (avoids leaking empty placeholders into clients that
+        check ``content_block[0].type``)."""
+        resp = self._make_response(content="hi", reasoning_content=None)
+        result = openai_to_anthropic(resp, "default")
+        assert all(b.type != "thinking" for b in result.content)

@@ -119,6 +119,18 @@ def openai_to_anthropic(
     choice = response.choices[0] if response.choices else None
 
     if choice:
+        # Add thinking block FIRST so it appears before the answer text,
+        # matching Anthropic's extended-thinking SDK convention. Without
+        # this block ``<think>...</think>`` reasoning would silently
+        # disappear from the non-streaming response — issue #413.
+        if choice.message.reasoning_content:
+            content.append(
+                AnthropicResponseContentBlock(
+                    type="thinking",
+                    thinking=choice.message.reasoning_content,
+                )
+            )
+
         # Add text content
         if choice.message.content:
             content.append(

@@ -84,8 +84,10 @@ class AnthropicUsage(BaseModel):
 class AnthropicResponseContentBlock(BaseModel):
     """A content block in the Anthropic response."""
 
-    type: str  # "text" or "tool_use"
+    type: str  # "text", "thinking", or "tool_use"
     text: str | None = None
+    # thinking-block field (Anthropic extended-thinking surface)
+    thinking: str | None = None
     # tool_use fields
     id: str | None = None
     name: str | None = None

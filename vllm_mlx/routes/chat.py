@@ -46,6 +46,7 @@ from ..service.helpers import (
     _build_usage,
     _disconnect_guard,
     _extract_streaming_token_logprobs,
+    _finalize_content_and_reasoning,
     _inject_json_instruction,
     _maybe_pin_system_prompt,
     _parse_tool_calls_with_parser,
@@ -119,42 +120,6 @@ def _strip_backslash_before_unicode(obj: object) -> object:
     if isinstance(obj, str):
         return _BACKSLASH_BEFORE_UNICODE.sub(r"\1", obj)
     return obj
-
-
-def _finalize_content_and_reasoning(
-    raw_text: str,
-    cleaned_text: str,
-    tool_calls: list,
-    reasoning_parser,
-) -> tuple[str, str | None]:
-    """Compute final ``content`` + ``reasoning_text`` after tool parsing.
-
-    Pulled out of the request handler so the regression suite can drive
-    the EXACT same orchestration the production path uses, instead of
-    maintaining a parallel reimplementation that can silently drift.
-
-    Rule (drives the unclosed-`<tool_call>` leak fix in PR #208): when
-    the tool parser successfully extracted ``tool_calls`` its
-    ``cleaned_text`` is authoritative — both ``<think>`` and tool tags
-    are already stripped. Run the reasoning parser on the raw output
-    only to recover ``reasoning_text``, never to overwrite
-    ``cleaned_text`` (that path would re-introduce the tool tags the
-    parser stripped, since the reasoning parser only knows about
-    ``<think>``).
-
-    When no tool_calls fire, the reasoning parser is the only thing
-    that can pull ``<think>`` out — run it on cleaned_text (or raw
-    output if cleaning produced an empty string).
-    """
-    reasoning_text = None
-    if reasoning_parser is None:
-        return cleaned_text, reasoning_text
-    if tool_calls:
-        reasoning_text, _ = reasoning_parser.extract_reasoning(raw_text)
-    else:
-        text_to_parse = cleaned_text or raw_text
-        reasoning_text, cleaned_text = reasoning_parser.extract_reasoning(text_to_parse)
-    return cleaned_text, reasoning_text
 
 
 @router.post(

@@ -24,6 +24,7 @@ from ..api.utils import (
     StreamingToolCallFilter,
     clean_output_text,
     extract_multimodal_content,
+    sanitize_output,
     strip_special_tokens,
     strip_thinking_tags,
 )
@@ -33,6 +34,7 @@ from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x
 from ..service.helpers import (
     _build_usage,
     _disconnect_guard,
+    _finalize_content_and_reasoning,
     _parse_tool_calls_with_parser,
     _resolve_enable_thinking,
     _resolve_max_tokens,
@@ -200,9 +202,25 @@ async def create_anthropic_message(
         output.text, openai_request
     )
 
+    # Extract reasoning content via the same orchestration the OpenAI route
+    # uses (chat.py). Skipping this is what #413 fixed — the Anthropic surface
+    # used to silently drop ``<think>...</think>`` content on the non-streaming
+    # path while OpenAI preserved it as ``reasoning_content``.
+    cleaned_text, reasoning_text = _finalize_content_and_reasoning(
+        raw_text=output.text,
+        cleaned_text=cleaned_text,
+        tool_calls=tool_calls,
+        reasoning_parser=cfg.reasoning_parser,
+    )
+
     final_content = None
     if cleaned_text:
         final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+        # Final defense against special-token / markup leakage — mirrors
+        # chat.py:669 so the two surfaces don't diverge on what they
+        # consider "sanitized" client-facing content. Pre-existing gap
+        # flagged by codex during the #413 review.
+        final_content = sanitize_output(final_content)
 
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
 
@@ -212,12 +230,13 @@ async def create_anthropic_message(
             ChatCompletionChoice(
                 message=AssistantMessage(
                     content=final_content,
+                    reasoning_content=reasoning_text,
                     tool_calls=tool_calls,
                 ),
                 finish_reason=finish_reason,
             )
         ],
-        usage=_build_usage(output, None),
+        usage=_build_usage(output, reasoning_text),
     )
 
     anthropic_response = openai_to_anthropic(

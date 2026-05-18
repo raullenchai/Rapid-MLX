@@ -324,36 +324,20 @@ def test_plain_text_agrees(stream):
     assert openai["tool_calls"] == anthropic["tool_calls"] == []
 
 
-@pytest.mark.parametrize(
-    "stream",
-    [
-        True,
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(
-                strict=False,
-                reason=(
-                    "strict=False: Anthropic non-streaming drops reasoning "
-                    "content silently — surface-divergence bug discovered by "
-                    "this gate (issue #413). Un-xfail once routes/anthropic.py "
-                    "non-streaming path populates reasoning_content and "
-                    "api/anthropic_adapter.py emits a thinking block."
-                ),
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("stream", [True, False])
 def test_reasoning_extracted_consistently(stream):
     """A delta stream containing ``<think>...</think>answer`` must
     decompose identically through both routes' reasoning parser
-    (qwen3 → reasoning_content for OpenAI, thinking_delta for Anthropic).
+    (qwen3 → reasoning_content for OpenAI, thinking_delta / thinking
+    block for Anthropic).
 
     This is the exact class #288/#289 hit: the parser routed correctly
     on one surface and silently leaked tags to the other.
 
-    Non-streaming is currently xfail — see #413. The fact that this
-    gate immediately surfaced a latent bug the moment it was wired up
-    is exactly the value we're paying for.
+    Non-streaming used to xfail under #413 — Anthropic dropped reasoning
+    on the floor while OpenAI preserved it. Closed by populating
+    reasoning_content in the non-streaming path and emitting a
+    ``thinking`` content block from the adapter.
     """
     # With server-default thinking on, qwen3 parser routes pre-</think>
     # text to reasoning, post-</think> text to content.
