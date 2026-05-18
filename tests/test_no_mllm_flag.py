@@ -1481,14 +1481,21 @@ def _param_default_has_custom_bool(param: inspect.Parameter) -> bool:
     isn't a bool, isn't a routing-named param, and isn't any of the
     annotation shapes ``_param_is_bool`` checks.
 
-    Heuristic: if the default value's type overrides ``__bool__``
-    (i.e. ``type(default).__bool__ is not object.__bool__``), treat
-    it as a candidate truthy-laundering bypass.
+    Heuristic: if the default value's type defines its own ``__bool__``
+    method, treat it as a candidate truthy-laundering bypass.
+
+    Codex R3 fix: previous version dereferenced ``object.__bool__``
+    directly, but stock ``object`` does NOT define ``__bool__`` at all
+    (Python's truthiness defaults are hardcoded in CPython without an
+    explicit method on the type). That made ``object.__bool__`` raise
+    AttributeError on any non-builtin default whose class didn't
+    define ``__bool__`` — crashing the gate instead of returning
+    False. Now uses ``getattr(..., None)`` for safety.
 
     False positives are rare — most real Python types either inherit
-    ``object.__bool__`` (always True for non-empty) or are built-in
-    types (int/str/dict/list) whose ``__bool__`` is at type-level,
-    not class-level. The check is intentionally conservative."""
+    no ``__bool__`` (default-True for non-empty) or are built-in
+    types whose ``__bool__`` is at the type level. The check is
+    intentionally conservative."""
     if param.default is inspect.Parameter.empty:
         return False
     if param.default is None:
@@ -1499,7 +1506,53 @@ def _param_default_has_custom_bool(param: inspect.Parameter) -> bool:
     # classes that override __bool__.
     if default_type.__module__ == "builtins":
         return False
-    return type(param.default).__bool__ is not object.__bool__
+    # Compare via getattr-with-default — both sides None means default
+    # truthiness behavior (no custom __bool__); any difference means
+    # the type has overridden it.
+    object_bool = getattr(object, "__bool__", None)
+    return getattr(default_type, "__bool__", None) is not object_bool
+
+
+def test_param_default_has_custom_bool_does_not_crash():
+    """Codex R3 regression: ``object`` does NOT define ``__bool__``
+    on stock Python (truthiness is hardcoded in CPython). The previous
+    implementation read ``object.__bool__`` directly, which raises
+    AttributeError on any non-builtin default whose class also lacks
+    a custom ``__bool__`` — crashing the gate. This test locks the
+    getattr-with-default fix: ordinary user-defined classes return
+    False, custom-__bool__ classes return True, builtins return False.
+    """
+
+    class _Plain:
+        pass
+
+    class _CustomBool:
+        def __bool__(self):
+            return False
+
+    def _param_with_default(default) -> inspect.Parameter:
+        return inspect.Parameter(
+            "f",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            default=default,
+        )
+
+    # Plain class — no custom __bool__, must NOT crash, must return False.
+    assert _param_default_has_custom_bool(_param_with_default(_Plain())) is False
+    # Custom __bool__ — must be detected.
+    assert _param_default_has_custom_bool(_param_with_default(_CustomBool())) is True
+    # Builtins must return False (early skip via __module__ == "builtins").
+    assert _param_default_has_custom_bool(_param_with_default(0)) is False
+    assert _param_default_has_custom_bool(_param_with_default("")) is False
+    assert _param_default_has_custom_bool(_param_with_default([])) is False
+    # None / empty defaults must return False.
+    assert _param_default_has_custom_bool(_param_with_default(None)) is False
+    assert (
+        _param_default_has_custom_bool(
+            inspect.Parameter("f", inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        )
+        is False
+    )
 
 
 def test_param_is_bool_handles_pep604_unions():
