@@ -376,31 +376,6 @@ def _all_add_argument_flags(source: str) -> set[str]:
     return flags
 
 
-def _all_add_argument_dests(source: str) -> set[str]:
-    """All ``dest=`` values passed to ``add_argument()`` calls. Used by
-    ``test_no_unregistered_routing_shaped_flags`` to catch round-4
-    cat-1 ``dest=`` aliasing — a contributor registers an innocent-
-    looking flag like ``--turbo-mode`` with ``dest="force_mllm"``, so
-    the flag name evades the routing-shape regex but argparse still
-    sets ``args.force_mllm=True``."""
-    tree = ast.parse(source)
-    dests: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
-            continue
-        for kw in node.keywords:
-            if (
-                kw.arg == "dest"
-                and isinstance(kw.value, ast.Constant)
-                and isinstance(kw.value.value, str)
-            ):
-                dests.add(kw.value.value)
-    return dests
-
-
 def _add_argument_calls_with_custom_action(source: str) -> list[tuple[int, str]]:
     """Find ``add_argument(..., action=<non-stdlib>)`` calls — a
     contributor can sneak routing by writing a custom
@@ -766,6 +741,47 @@ def test_registry_invariants():
             "(round-3 red-team #2.1 — liar-registry bypass)."
         )
 
+    # (d) DeepSeek-V4 round 2 fix (PR #409): every forwarded_kwargs entry
+    # must actually exist as a parameter on load_model AND
+    # BatchedEngine.__init__. A typo like "force_hyrbid" silently
+    # satisfies the invariants above, then fails downstream with a bare
+    # KeyError in the keyword-only test. Catching it here gives a
+    # descriptive failure with the offending pair name.
+    from vllm_mlx.engine.batched import BatchedEngine
+    from vllm_mlx.server import load_model
+
+    load_params = set(inspect.signature(load_model).parameters)
+    batched_params = set(inspect.signature(BatchedEngine.__init__).parameters)
+    for pair in AUTO_ROUTING_FLAG_PAIRS:
+        for kwarg in pair.forwarded_kwargs:
+            assert kwarg in load_params, (
+                f"Registry pair {pair.force_on}/{pair.force_off} forwards "
+                f"`{kwarg}` but load_model has no such parameter — typo or "
+                "stale refactor."
+            )
+            assert kwarg in batched_params, (
+                f"Registry pair {pair.force_on}/{pair.force_off} forwards "
+                f"`{kwarg}` but BatchedEngine.__init__ has no such "
+                "parameter — typo or stale refactor."
+            )
+
+    # (e) DeepSeek-V4 round 2 fix (PR #409): for pairs with
+    # ``model_config_field`` set, exactly 2 forwarded_kwargs are
+    # required (force-on first, force-off second) — convention
+    # enforced by ``_engine_core_override_cases()``. Previously this
+    # check lived at parametrize-collection time, where a violation
+    # aborts pytest with a collection error before any test runs.
+    # Move it here so the failure is a normal, named test failure.
+    for pair in AUTO_ROUTING_FLAG_PAIRS:
+        if pair.model_config_field is None:
+            continue
+        assert len(pair.forwarded_kwargs) == 2, (
+            f"Registry pair {pair.force_on}/{pair.force_off} declares "
+            f"model_config_field={pair.model_config_field!r} but has "
+            f"{len(pair.forwarded_kwargs)} forwarded kwargs; "
+            "exactly 2 required (force-on first, force-off second)."
+        )
+
 
 def test_registry_is_not_runtime_mutated():
     """Round-4 cat-5 hardening: the registry is the SSOT for every gate,
@@ -798,8 +814,17 @@ def test_registry_is_not_runtime_mutated():
     # literal RoutingFlagPair(...) calls inside it. The assignment is
     # annotated (``: tuple[RoutingFlagPair, ...]``) so it parses as
     # ast.AnnAssign, not ast.Assign.
+    #
+    # DeepSeek-V4 round 2 fix (PR #409): walk ONLY direct children of
+    # the module body, not arbitrary descendants. A local variable also
+    # named ``AUTO_ROUTING_FLAG_PAIRS`` inside any function or class in
+    # this file could be visited first by ``ast.walk`` (whose order is
+    # unspecified) and replace ``expected_pairs`` with a different
+    # Tuple — causing a spurious "runtime mutation detected" failure.
+    # Restricting to ``tree.body`` makes the scan deterministic and
+    # impossible to shadow.
     expected_pairs: list[dict[str, object]] = []
-    for node in ast.walk(tree):
+    for node in tree.body:
         target_name: str | None = None
         value_node: ast.AST | None = None
         if isinstance(node, ast.Assign):
@@ -922,7 +947,24 @@ def test_aliases_json_has_no_routing_shaped_keys():
 
     pkg_root = _pkg_root()
     aliases_path = pkg_root / "aliases.json"
-    raw = json.loads(aliases_path.read_text())
+    # DeepSeek-V4 round 2 fix (PR #409): wrap read+parse in a
+    # descriptive failure. Bare FileNotFoundError / JSONDecodeError on
+    # this gate would confuse anyone investigating the failure — the
+    # test isn't about file IO. Spell out the precondition.
+    try:
+        raw = json.loads(aliases_path.read_text())
+    except FileNotFoundError as exc:
+        pytest.fail(
+            f"aliases.json missing at {aliases_path} — routing-shape "
+            f"audit cannot run. Restore the file or update _pkg_root(). "
+            f"Underlying error: {exc}"
+        )
+    except json.JSONDecodeError as exc:
+        pytest.fail(
+            f"aliases.json at {aliases_path} is not valid JSON — "
+            f"routing-shape audit cannot run. Fix the syntax error first. "
+            f"Underlying error: {exc}"
+        )
 
     offenders: list[str] = []
     for alias, value in raw.items():
@@ -1406,8 +1448,16 @@ def test_load_model_has_no_unkeyworded_bool_or_routing_params_beyond_baseline():
             offenders.append(
                 (
                     name,
-                    "positional param with custom-__bool__ default — bypass of "
-                    "bool detection (round-3 red-team #3.5)",
+                    "positional param whose default's type defines __bool__ "
+                    "(or inherits a non-object __bool__) — could be a "
+                    "round-3 red-team #3.5 truthy-laundering bypass, but is "
+                    "also triggered by harmless stdlib defaults like "
+                    "pathlib.Path / enum.Enum / uuid.UUID. If your default "
+                    "is one of those, move the param to keyword-only and "
+                    "the gate will stop firing. The heuristic is "
+                    "intentionally conservative — keyword-only is always "
+                    "safe; positional + custom __bool__ shifts every later "
+                    "positional caller silently",
                 )
             )
 
@@ -1673,6 +1723,20 @@ def test_routing_override_kwargs_are_keyword_only_in_load_model():
     batched_sig = inspect.signature(BatchedEngine.__init__)
 
     for kwarg in expected:
+        # DeepSeek-V4 round 2 fix (PR #409): assert the kwarg exists in
+        # both signatures FIRST. Without this, a typo in
+        # ``RoutingFlagPair.forwarded_kwargs`` (e.g. "force_hyrbid")
+        # crashes with bare ``KeyError: 'force_hyrbid'`` — descriptive
+        # failure beats cryptic crash.
+        assert kwarg in load_sig.parameters, (
+            f"Registry declares forwarded kwarg `{kwarg}` but it does not "
+            "exist on load_model — typo in AUTO_ROUTING_FLAG_PAIRS or stale "
+            "refactor. Fix the registry entry or add the kwarg to load_model."
+        )
+        assert kwarg in batched_sig.parameters, (
+            f"Registry declares forwarded kwarg `{kwarg}` but it does not "
+            "exist on BatchedEngine.__init__ — typo or stale refactor."
+        )
         assert load_sig.parameters[kwarg].kind == inspect.Parameter.KEYWORD_ONLY, (
             f"load_model({kwarg}=...) must be KEYWORD_ONLY to preserve "
             "positional-arg compatibility. See codex R2 on PR #407."
@@ -1747,16 +1811,19 @@ def _engine_core_override_cases() -> list[tuple[str, str, bool]]:
     is the force-on direction (sets field True) and
     ``forwarded_kwargs[1]`` is the force-off direction (sets False).
     """
+    # DeepSeek-V4 round 2 fix (PR #409): the 2-kwarg invariant is
+    # enforced by ``test_registry_invariants`` (execution-time test,
+    # descriptive failure). Asserting it again here would fire at
+    # parametrize-collection time — pytest aborts with a collection
+    # error before any test runs, which is much harder to debug than a
+    # named test failure. Here we just SKIP malformed entries; the
+    # invariants test catches the malformation with full context.
     cases: list[tuple[str, str, bool]] = []
     for pair in AUTO_ROUTING_FLAG_PAIRS:
         if pair.model_config_field is None:
             continue
-        assert len(pair.forwarded_kwargs) == 2, (
-            f"Registry pair {pair.force_on}/{pair.force_off} declares "
-            f"model_config_field={pair.model_config_field!r} but has "
-            f"{len(pair.forwarded_kwargs)} forwarded kwargs; "
-            "exactly 2 required (force-on first, force-off second)."
-        )
+        if len(pair.forwarded_kwargs) != 2:
+            continue
         on_kwarg, off_kwarg = pair.forwarded_kwargs
         cases.append((pair.model_config_field, on_kwarg, True))
         cases.append((pair.model_config_field, off_kwarg, False))
