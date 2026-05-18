@@ -57,6 +57,19 @@ ROUTING_ATTRS: frozenset[str] = frozenset(
 
 # Functions that MAY write to routing attributes. Anything else is an
 # escape hatch.
+#
+# Codex round-D fix (PR #409): allowlisting by NAME alone is bypass-
+# prone — any module can define a helper or method literally named
+# ``load_model`` / ``detect_model_config`` / ``_coerce`` etc. that
+# writes routing attrs and passes this gate. Each non-constructor
+# allowlist entry must be PINNED to the canonical module path(s)
+# where the production function actually lives. Per-call lookup uses
+# ``ROUTING_WRITE_ALLOWED_LOCATIONS`` below.
+#
+# Constructor entries (``__init__``, ``model_post_init``) are NOT
+# pinned by location — they have an orthogonal class-ancestor check
+# in ``_func_is_method_of_class``, which already prevents top-level
+# helpers from claiming the name.
 ROUTING_WRITE_ALLOWED_FUNCS: frozenset[str] = frozenset(
     {
         "__init__",  # Constructor — the canonical write site.
@@ -72,6 +85,20 @@ ROUTING_WRITE_ALLOWED_FUNCS: frozenset[str] = frozenset(
         "model_post_init",
     }
 )
+
+
+# Codex round-D fix (PR #409): canonical module path(s) for each
+# non-constructor allowlist entry. A function may write routing
+# attributes only if it lives in one of the listed files (paths are
+# relative to ``vllm_mlx/``). Adding a new canonical location requires
+# an explicit edit + PR review.
+ROUTING_WRITE_ALLOWED_LOCATIONS: dict[str, frozenset[str]] = {
+    "load_model": frozenset({"server.py"}),
+    "detect_model_config": frozenset({"model_auto_config.py"}),
+    "enrich_model_config": frozenset({"model_auto_config.py"}),
+    "_coerce": frozenset({"model_aliases.py"}),
+    "_load": frozenset({"model_aliases.py"}),
+}
 
 
 # RAPID_MLX_* env vars that are allowed to exist. Routing-shaped env
@@ -520,6 +547,7 @@ def test_routing_fields_written_only_in_allowed_scopes():
             # though it's not a constructor at all. Same logic applies
             # to `model_post_init` (Pydantic constructor-equivalent).
             CONSTRUCTOR_NAMES = {"__init__", "model_post_init"}
+            bypass_found = False
             for fn in chain:
                 if fn.name in CONSTRUCTOR_NAMES and not _func_is_method_of_class(
                     parents, fn
@@ -534,6 +562,30 @@ def test_routing_fields_written_only_in_allowed_scopes():
                         "pass. Routing writes must live inside a real "
                         "constructor (defined in a `class` block) or "
                         f"one of {sorted(ROUTING_WRITE_ALLOWED_FUNCS - CONSTRUCTOR_NAMES)}."
+                    )
+                    bypass_found = True
+                    break
+            if bypass_found:
+                continue
+
+            # Codex round-D fix (PR #409): pin non-constructor allowlist
+            # entries to their canonical module paths. A helper or
+            # method named `load_model` / `detect_model_config` /
+            # `_coerce` etc. defined ANYWHERE else would otherwise
+            # pass — the function-name check alone is bypass-prone.
+            for fn in chain:
+                pinned = ROUTING_WRITE_ALLOWED_LOCATIONS.get(fn.name)
+                if pinned is None:
+                    continue
+                if rel not in pinned:
+                    offenders.append(
+                        f"{rel}:{node.lineno} writes routing attribute "
+                        f"`.{attr_name}` inside `{fn.name}` — but the "
+                        f"canonical location for `{fn.name}` is "
+                        f"{sorted(pinned)}, not `{rel}` (codex round-D "
+                        "bypass). Define this function only in the "
+                        "canonical module, or move the routing write "
+                        "to a real constructor."
                     )
                     break
 
@@ -1165,4 +1217,38 @@ def test_os_environ_composed_key_is_detected():
             assert not isinstance(key, (ast.BinOp, ast.JoinedStr, ast.Call)), (
                 f"benign key shape `{type(key).__name__}` MUST NOT be "
                 "flagged — would false-positive on module-level constants."
+            )
+
+
+def test_routing_write_allowed_locations_pins_canonical_paths():
+    """Codex round-D regression (PR #409): allowlisting routing-write
+    functions by NAME alone is bypass-prone. Any module can define a
+    helper or method named ``load_model`` / ``detect_model_config`` /
+    ``_coerce`` etc. and the function-chain check would accept it.
+    The fix pins each non-constructor allowlist entry to its canonical
+    module path(s) via ``ROUTING_WRITE_ALLOWED_LOCATIONS``.
+
+    This regression test asserts two things:
+      1. Every non-constructor entry in ``ROUTING_WRITE_ALLOWED_FUNCS``
+         has a corresponding entry in ``ROUTING_WRITE_ALLOWED_LOCATIONS``
+         (no name slips through unlocated).
+      2. Each pinned path actually exists in the vllm_mlx/ tree.
+    """
+    CONSTRUCTOR_NAMES = {"__init__", "model_post_init"}
+    non_constructor = ROUTING_WRITE_ALLOWED_FUNCS - CONSTRUCTOR_NAMES
+    unlocated = non_constructor - set(ROUTING_WRITE_ALLOWED_LOCATIONS)
+    assert not unlocated, (
+        f"Non-constructor allowlist names {sorted(unlocated)} have NO "
+        "canonical location pin. Add an entry to "
+        "ROUTING_WRITE_ALLOWED_LOCATIONS so name-only bypass (codex "
+        "round-D) doesn't reopen."
+    )
+
+    pkg_root = _pkg_root()
+    for name, paths in ROUTING_WRITE_ALLOWED_LOCATIONS.items():
+        for rel in paths:
+            assert (pkg_root / rel).exists(), (
+                f"ROUTING_WRITE_ALLOWED_LOCATIONS[{name!r}] pins to "
+                f"`{rel}` but that file does not exist in vllm_mlx/. "
+                "Stale pin — fix or remove."
             )

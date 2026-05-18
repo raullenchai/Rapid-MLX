@@ -1178,6 +1178,124 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
     assert not missing, "\n".join(missing)
 
 
+# Files that call ``load_model(...)`` but are NOT user-facing model-
+# serving entrypoints (test helpers, internal probes, doctor harness
+# etc.) — these don't need to expose every routing override flag.
+# Each entry requires a one-line reason. Adding to this allowlist is
+# a deliberate PR-review act.
+LOAD_MODEL_ENTRYPOINT_EXEMPTIONS: frozenset[str] = frozenset(
+    {
+        # Doctor harness — runs internal probes, not user-facing
+        # request serving. The doctor checks own routing via the
+        # serve command they spawn.
+        "doctor/checks/perf.py",
+        "doctor/checks/api.py",
+        "doctor/checks/benchmark.py",
+        "doctor/checks/load.py",
+        "doctor/server.py",
+        # Eval harness — bench / scoring tool, not a serving entrypoint.
+        "agents/testing.py",
+    }
+)
+
+
+def test_load_model_callers_register_every_routing_flag():
+    """Codex round-D bypass (PR #409): the existing parity test only
+    inspects the hardcoded ``cli.py``, ``server.py``, ``benchmark.py``.
+    A NEW user-facing entrypoint that calls ``load_model(...)`` but
+    forgets to expose ``--no-mllm`` / ``--no-hybrid`` / etc. would slip
+    every existing gate and ship without escape hatches.
+
+    This test scans every file under ``vllm_mlx/`` for ``load_model(``
+    invocations (the canonical engine entrypoint). Each such file
+    must EITHER (a) register all routing-pair flags via argparse,
+    matching the existing parity gate's expectation, OR (b) be
+    explicitly exempted in ``LOAD_MODEL_ENTRYPOINT_EXEMPTIONS`` with
+    a one-line reason. Exempted entries are typically test/doctor
+    helpers that don't serve user requests.
+
+    Adding a new entrypoint that takes a model alias and accepts
+    requests must NEVER go via the exemption list — register the
+    flags so users have the same escape hatches every other
+    entrypoint provides.
+    """
+    pkg_root = _pkg_root()
+    load_model_callers: set[str] = set()
+
+    for path in pkg_root.rglob("*.py"):
+        if any(part.startswith("__") for part in path.parts[len(pkg_root.parts) :]):
+            continue
+        rel = path.relative_to(pkg_root).as_posix()
+        try:
+            source = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+
+        # The name ``load_model`` is overloaded — mlx_lm.utils, mlx_audio.*,
+        # and several internal worker classes define their own
+        # ``load_model``. Filter to only OUR engine entrypoint (the
+        # ``vllm_mlx.server`` function). A file is a "load_model caller"
+        # iff it imports ``load_model`` from ``vllm_mlx.server`` (or as
+        # ``server.load_model``) AND invokes it.
+        imports_ours = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in (
+                "vllm_mlx.server",
+                "..server",
+                ".server",
+            ):
+                if any(alias.name == "load_model" for alias in node.names):
+                    imports_ours = True
+                    break
+        if not imports_ours:
+            continue
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.id
+                if isinstance(func, ast.Name)
+                else (func.attr if isinstance(func, ast.Attribute) else None)
+            )
+            if name == "load_model":
+                load_model_callers.add(rel)
+                break
+
+    # server.py is where load_model is defined; skip its self-reference.
+    load_model_callers.discard("server.py")
+
+    missing: list[str] = []
+    for rel in sorted(load_model_callers):
+        if rel in LOAD_MODEL_ENTRYPOINT_EXEMPTIONS:
+            continue
+        source = (pkg_root / rel).read_text()
+        for pair in AUTO_ROUTING_FLAG_PAIRS:
+            if not _flag_in_add_argument_calls(source, pair.force_on):
+                missing.append(
+                    f"{rel} calls load_model() but does NOT register the "
+                    f"`{pair.force_on}` flag (force-on of {pair.desc}). "
+                    "Every user-facing entrypoint MUST expose the same "
+                    "routing escape hatches (SOP §10). Register the flag "
+                    "or add a one-line exemption in "
+                    "LOAD_MODEL_ENTRYPOINT_EXEMPTIONS with a reason."
+                )
+            if not _flag_in_add_argument_calls(source, pair.force_off):
+                missing.append(
+                    f"{rel} calls load_model() but does NOT register the "
+                    f"`{pair.force_off}` flag (force-off of {pair.desc}). "
+                    "Every binary auto-routing decision needs an escape "
+                    "hatch in BOTH directions (#393 lesson)."
+                )
+
+    assert not missing, "\n".join(missing)
+
+
 def test_no_unregistered_routing_shaped_flags():
     """SOP gate (red-team #1, PR #408): every CLI flag whose name
     matches the routing-shape pattern (``--force-*``, ``--no-*``,
