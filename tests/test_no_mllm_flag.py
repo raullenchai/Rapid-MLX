@@ -207,6 +207,26 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
     # When you add a new auto-detection, add the pair here too.
     AUTO_ROUTING_FLAG_PAIRS = [
         ("--mllm", "--no-mllm", "MLLM vs text-only routing (#393)"),
+        (
+            "--tool-call-parser",
+            "--no-tool-call-parser",
+            "AliasProfile tool-call parser auto-selection",
+        ),
+        (
+            "--reasoning-parser",
+            "--no-reasoning-parser",
+            "AliasProfile reasoning parser auto-selection",
+        ),
+        (
+            "--force-hybrid",
+            "--no-hybrid",
+            "ModelConfig.is_hybrid (gates spec/suffix decode)",
+        ),
+        (
+            "--force-spec-decode",
+            "--no-spec-decode",
+            "ModelConfig.supports_spec_decode (gates MTP/DFlash/suffix)",
+        ),
     ]
 
     missing = []
@@ -223,6 +243,134 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
                 "rule encodes."
             )
     assert not missing, "\n".join(missing)
+
+
+def test_hybrid_overrides_mutually_exclusive_in_load_model():
+    """server.load_model raises ValueError if both --force-hybrid and
+    --no-hybrid are passed. Second line of defense — CLI also rejects
+    via sys.exit(2), but load_model is a public entry point too."""
+    from vllm_mlx.server import load_model
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        load_model(
+            "fake/model",
+            force_hybrid=True,
+            no_hybrid=True,
+        )
+
+
+def test_spec_decode_overrides_mutually_exclusive_in_load_model():
+    """server.load_model raises ValueError if both --force-spec-decode
+    and --no-spec-decode are passed."""
+    from vllm_mlx.server import load_model
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        load_model(
+            "fake/model",
+            force_spec_decode=True,
+            no_spec_decode=True,
+        )
+
+
+def test_routing_override_kwargs_are_keyword_only_in_load_model():
+    """Regression: same lesson as test_force_text_is_keyword_only — the
+    4 new routing-override flags must be KEYWORD_ONLY so existing
+    positional callers don't silently get a True ``force_hybrid`` etc.
+    when they meant something else. See codex R2 on PR #407."""
+    import inspect
+
+    from vllm_mlx.server import load_model
+
+    sig = inspect.signature(load_model)
+    for kwarg in ("force_hybrid", "no_hybrid", "force_spec_decode", "no_spec_decode"):
+        assert sig.parameters[kwarg].kind == inspect.Parameter.KEYWORD_ONLY, (
+            f"{kwarg} must be KEYWORD_ONLY to preserve positional-arg "
+            "compatibility. See codex R2 on PR #407."
+        )
+
+    from vllm_mlx.engine.batched import BatchedEngine
+
+    sig = inspect.signature(BatchedEngine.__init__)
+    for kwarg in ("force_hybrid", "no_hybrid", "force_spec_decode", "no_spec_decode"):
+        assert sig.parameters[kwarg].kind == inspect.Parameter.KEYWORD_ONLY, (
+            f"BatchedEngine.__init__ {kwarg} must be KEYWORD_ONLY too."
+        )
+
+
+def _make_engine_core_for_override_test(monkeypatch, cfg):
+    """Build an ``EngineCore`` with heavy dependencies stubbed so the
+    routing-override block in ``__init__`` can be exercised in
+    isolation. Returns the constructed core (or raises if __init__
+    does)."""
+    from unittest.mock import MagicMock
+
+    from vllm_mlx import engine_core as ec
+    from vllm_mlx import model_auto_config as mac
+    from vllm_mlx.model_auto_config import ModelConfig
+
+    base = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+    monkeypatch.setattr(mac, "detect_model_config", lambda _name: base)
+    monkeypatch.setattr(
+        mac,
+        "enrich_model_config",
+        lambda _base, _model: ModelConfig(
+            is_hybrid=base.is_hybrid,
+            supports_spec_decode=base.supports_spec_decode,
+        ),
+    )
+    # Scheduler construction is heavy and pulls in MLX. Replace with
+    # MagicMock so we only test the override block.
+    monkeypatch.setattr(ec, "Scheduler", MagicMock())
+
+    model = MagicMock()
+    return ec.EngineCore(model=model, tokenizer=MagicMock(), config=cfg)
+
+
+@pytest.mark.parametrize(
+    "flags,expected_hybrid,expected_spec",
+    [
+        ({"no_hybrid": True}, False, False),
+        ({"force_hybrid": True}, True, False),
+        ({"force_spec_decode": True}, True, True),
+        ({"no_spec_decode": True}, True, False),
+        ({"no_hybrid": True, "force_spec_decode": True}, False, True),
+        ({}, True, False),  # no flags → auto-detection result unchanged
+    ],
+)
+def test_engine_core_applies_routing_overrides_to_model_config(
+    monkeypatch, flags, expected_hybrid, expected_spec
+):
+    """EngineCore.__init__ must mutate ``self.model_config.is_hybrid``
+    and ``self.model_config.supports_spec_decode`` when the matching
+    override flag is set on ``EngineConfig``. This is the *only* place
+    in the call chain that talks to ModelConfig — if it stops working,
+    every routing escape hatch silently no-ops and the user gets the
+    old buggy behavior back."""
+    from vllm_mlx.engine_core import EngineConfig
+
+    cfg = EngineConfig(model_name="fake/model", **flags)
+    core = _make_engine_core_for_override_test(monkeypatch, cfg)
+
+    assert core.model_config.is_hybrid is expected_hybrid
+    assert core.model_config.supports_spec_decode is expected_spec
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"force_hybrid": True, "no_hybrid": True},
+        {"force_spec_decode": True, "no_spec_decode": True},
+    ],
+)
+def test_engine_core_rejects_conflicting_routing_overrides(monkeypatch, flags):
+    """Second line of defense: EngineCore raises ValueError if both
+    directions of a routing-override pair are set on EngineConfig.
+    Programmatic callers that bypass the CLI mutex still get caught."""
+    from vllm_mlx.engine_core import EngineConfig
+
+    cfg = EngineConfig(model_name="fake/model", **flags)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _make_engine_core_for_override_test(monkeypatch, cfg)
 
 
 def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):

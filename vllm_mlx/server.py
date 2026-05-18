@@ -507,6 +507,10 @@ def load_model(
     mtp: bool = False,
     *,
     force_text: bool = False,
+    force_hybrid: bool = False,
+    no_hybrid: bool = False,
+    force_spec_decode: bool = False,
+    no_spec_decode: bool = False,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -532,6 +536,12 @@ def load_model(
             architectures whose config.json still declares vision_config.
             Mutually exclusive with ``force_mllm``. Keyword-only to avoid
             shifting positional args for existing callers.
+        force_hybrid / no_hybrid: Keyword-only. SOP §10 escape hatches
+            for ``ModelConfig.is_hybrid`` auto-detection. Forwarded to
+            ``BatchedEngine`` → ``EngineConfig``. Mutually exclusive.
+        force_spec_decode / no_spec_decode: Keyword-only. SOP §10
+            escape hatches for ``ModelConfig.supports_spec_decode``
+            auto-detection. Mutually exclusive.
     """
     if prefill_step_size is not None:
         import warnings
@@ -606,6 +616,16 @@ def load_model(
             "force_mllm and force_text are mutually exclusive — "
             "pick at most one to override auto-detection."
         )
+    if force_hybrid and no_hybrid:
+        raise ValueError(
+            "force_hybrid and no_hybrid are mutually exclusive — "
+            "pick at most one to override auto-detection."
+        )
+    if force_spec_decode and no_spec_decode:
+        raise ValueError(
+            "force_spec_decode and no_spec_decode are mutually exclusive — "
+            "pick at most one to override auto-detection."
+        )
     if force_mllm:
         logger.info("Force MLLM mode enabled via --mllm flag")
     if force_text:
@@ -622,6 +642,10 @@ def load_model(
         force_mllm=force_mllm,
         force_text=force_text,
         gpu_memory_utilization=gpu_memory_utilization,
+        force_hybrid=force_hybrid,
+        no_hybrid=no_hybrid,
+        force_spec_decode=force_spec_decode,
+        no_spec_decode=no_spec_decode,
     )
     logger.info(f"Model loaded: {model_name}")
 
