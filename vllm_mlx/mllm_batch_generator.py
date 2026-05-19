@@ -466,14 +466,25 @@ class MLLMBatchGenerator:
         all_images = []
 
         if request.images:
+            from fastapi import HTTPException
+
             from .models.mllm import process_image_input
 
+            # Pre-PR: undecodable / unreachable image was logged at WARN and
+            # silently dropped from ``all_images``, so the model would
+            # caption a non-existent image and confidently hallucinate
+            # ("a vibrant red jellyfish" for a 404'd URL). Fail loudly
+            # instead — a multimodal request without images is almost
+            # never what the caller intended.
             for img in request.images:
                 try:
                     path = process_image_input(img)
                     all_images.append(path)
                 except Exception as e:
-                    logger.warning(f"Failed to process image: {e}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Failed to process image: {e}",
+                    ) from e
 
         if request.videos:
             from .models.mllm import (
@@ -502,7 +513,15 @@ class MLLMBatchGenerator:
                     frame_paths = save_frames_to_temp(frames)
                     all_images.extend(frame_paths)
                 except Exception as e:
-                    logger.warning(f"Failed to process video: {e}")
+                    # Same rationale as the image branch above: silent drop
+                    # leads to the model hallucinating about a video that
+                    # never reached it. Fail with a clear 400.
+                    from fastapi import HTTPException
+
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Failed to process video: {e}",
+                    ) from e
 
         # Check pixel cache first
         cached_pixels = self.vision_cache.get_pixel_cache(all_images, request.prompt)

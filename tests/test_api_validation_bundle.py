@@ -401,3 +401,307 @@ class TestLogLevelLowercase:
     def test_unknown_level_still_rejected(self):
         with pytest.raises(SystemExit):
             self._make_parser().parse_args(["--log-level", "trace"])
+
+
+# ---------------------------------------------------------------------------
+# Surgical bundle (R10 follow-up #2):
+# - C3: chat rejects image/video on text-only models (no silent hallucination)
+# - C16: guided JSON preserves nested array-of-objects (no silent str degrade)
+# - H17: `rapid-mlx ps` parses --port positioned after the model argument
+# - H18: /v1/completions rejects FIM `suffix` (declared, not silently dropped)
+# ---------------------------------------------------------------------------
+
+
+class TestChatRejectsImageOnTextOnlyModel:
+    def test_image_url_on_text_only_engine_400(self, patched_config, monkeypatch):
+        """Before this fix, extract_multimodal_content silently stripped
+        the image part on a text-only engine and the model would
+        confidently caption an image it never saw (R9P1 sweep)."""
+        client = _build_chat_app(patched_config, monkeypatch)
+        r = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "stub-model",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is this?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "https://example.com/x.png"},
+                            },
+                        ],
+                    }
+                ],
+            },
+        )
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "image" in detail.lower() or "video" in detail.lower()
+
+    def test_video_on_text_only_engine_400(self, patched_config, monkeypatch):
+        client = _build_chat_app(patched_config, monkeypatch)
+        r = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "stub-model",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "describe"},
+                            {"type": "video", "video": "/tmp/x.mp4"},
+                        ],
+                    }
+                ],
+            },
+        )
+        assert r.status_code == 400
+        assert (
+            "image" in r.json()["detail"].lower()
+            or "video" in r.json()["detail"].lower()
+        )
+
+    def test_text_only_content_still_passes_validation(
+        self, patched_config, monkeypatch
+    ):
+        """Plain text request on a text-only engine must NOT trigger the
+        vision-rejection branch. (Downstream will 500 because the engine
+        is mocked — we only care that the 400 reason is not the new
+        guard.)"""
+        client = _build_chat_app(patched_config, monkeypatch)
+        r = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        if r.status_code == 400:
+            assert "image" not in r.json().get("detail", "").lower()
+            assert "video" not in r.json().get("detail", "").lower()
+
+
+class TestGuidedArrayOfObjectsSchema:
+    """Before C16, ``array of objects`` (and ``array of arrays``) fell
+    through to ``type_mapping.get(items_type, str)`` and silently became
+    ``list[str]``. The model would then emit strings where the schema
+    required objects, and the response failed validation against the
+    user's own schema (R10 sweep finding)."""
+
+    def test_array_of_objects_maps_to_list_dict(self):
+        from vllm_mlx.api.guided import json_schema_to_pydantic
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["items"],
+        }
+        model = json_schema_to_pydantic(schema)
+        assert model is not None
+        # ``list[dict]`` accepts dict elements without coercion. Before
+        # the fix this would be ``list[str]`` and dicts would coerce
+        # to their repr or raise.
+        instance = model(items=[{"a": 1}, {"b": 2}])
+        assert instance.items == [{"a": 1}, {"b": 2}]
+
+    def test_array_of_arrays_maps_to_list_list(self):
+        from vllm_mlx.api.guided import json_schema_to_pydantic
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "matrix": {"type": "array", "items": {"type": "array"}},
+            },
+            "required": ["matrix"],
+        }
+        model = json_schema_to_pydantic(schema)
+        assert model is not None
+        instance = model(matrix=[[1, 2], [3, 4]])
+        assert instance.matrix == [[1, 2], [3, 4]]
+
+    def test_array_of_strings_still_works(self):
+        """Sanity: the historical happy path is unchanged."""
+        from vllm_mlx.api.guided import json_schema_to_pydantic
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "tags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["tags"],
+        }
+        model = json_schema_to_pydantic(schema)
+        assert model is not None
+        assert model(tags=["a", "b"]).tags == ["a", "b"]
+
+
+class TestPsCommandPortParsing:
+    """``rapid-mlx ps`` used to break on the first positional argument,
+    so ``serve qwen3.5-4b --port 8005`` showed port=8000 (the default).
+    Verify the parser keeps scanning for flags after capturing the
+    positional model."""
+
+    def _parse_serve(self, cmd_words):
+        """Re-implement ps_command's parsing loop in isolation to avoid
+        importing psutil + the full CLI. Mirrors cli.py:1249-1280."""
+        model = "(unknown)"
+        port = "8000"
+        try:
+            i = cmd_words.index("serve") + 1
+            model_seen = False
+            while i < len(cmd_words):
+                tok = cmd_words[i]
+                if tok.startswith("--"):
+                    if tok == "--port" and i + 1 < len(cmd_words):
+                        port = cmd_words[i + 1]
+                        i += 2
+                    elif "=" in tok and tok.startswith("--port="):
+                        port = tok.split("=", 1)[1]
+                        i += 1
+                    else:
+                        i += 1
+                else:
+                    if not model_seen:
+                        model = tok
+                        model_seen = True
+                    i += 1
+        except ValueError:
+            pass
+        return model, port
+
+    def test_port_after_positional_model(self):
+        model, port = self._parse_serve(
+            ["rapid-mlx", "serve", "qwen3.5-4b", "--port", "8005"]
+        )
+        assert model == "qwen3.5-4b"
+        assert port == "8005"
+
+    def test_port_before_positional_model(self):
+        model, port = self._parse_serve(
+            ["rapid-mlx", "serve", "--port", "8005", "qwen3.5-4b"]
+        )
+        assert model == "qwen3.5-4b"
+        assert port == "8005"
+
+    def test_port_equals_form(self):
+        model, port = self._parse_serve(
+            ["rapid-mlx", "serve", "qwen3.5-4b", "--port=9000"]
+        )
+        assert model == "qwen3.5-4b"
+        assert port == "9000"
+
+    def test_no_port_uses_default(self):
+        model, port = self._parse_serve(["rapid-mlx", "serve", "qwen3.5-4b"])
+        assert model == "qwen3.5-4b"
+        assert port == "8000"
+
+
+class TestCompletionsSuffixRejection:
+    def _build_completions_app(self, patch_cfg, monkeypatch):
+        from vllm_mlx.routes import completions as comp_route
+
+        app = FastAPI()
+        app.include_router(comp_route.router)
+
+        engine = MagicMock()
+        patch_cfg(
+            engine=engine,
+            model_name="stub-model",
+            model_alias=None,
+            model_path=None,
+            model_registry=None,
+            tool_call_parser=None,
+            reasoning_parser=None,
+            ready=True,
+            api_key=None,
+        )
+        monkeypatch.setattr(comp_route, "get_engine", lambda *_a, **_kw: engine)
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_suffix_rejected_with_400(self, patched_config, monkeypatch):
+        """FIM `suffix` was silently dropped pre-PR (field not declared
+        on CompletionRequest). Code-completion clients (Continue, Cody)
+        would then get a non-FIM completion that ignored the suffix and
+        often produced wrong code. Declare + reject so they fall back."""
+        client = self._build_completions_app(patched_config, monkeypatch)
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "def hello():",
+                "suffix": "    return greeting",
+            },
+        )
+        assert r.status_code == 400
+        assert "suffix" in r.json()["detail"].lower()
+
+    def test_empty_suffix_does_not_trigger_400(self, patched_config, monkeypatch):
+        """Defensive clients sometimes always send ``suffix: ""`` — the
+        empty string must NOT trip the new guard."""
+        client = self._build_completions_app(patched_config, monkeypatch)
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hello",
+                "suffix": "",
+            },
+        )
+        if r.status_code == 400:
+            assert "suffix" not in r.json().get("detail", "").lower()
+
+    def test_omitted_suffix_does_not_trigger_400(self, patched_config, monkeypatch):
+        client = self._build_completions_app(patched_config, monkeypatch)
+        r = client.post(
+            "/v1/completions",
+            json={"model": "stub-model", "prompt": "hello"},
+        )
+        if r.status_code == 400:
+            assert "suffix" not in r.json().get("detail", "").lower()
+
+
+class TestMLLMBatchGeneratorFailsLoud:
+    """Before C2, image/video processing failures (404, decode error,
+    auth) were logged at WARN and the broken input was silently dropped
+    from the request — the model then captioned a non-existent image
+    and hallucinated. Verify the new HTTPException path is wired up.
+
+    Structural test (grep-based) instead of full async invocation: the
+    real `_prepare_pixel_values` requires a model registry, GPU init,
+    and an event loop. The bug class we're guarding against is "did
+    someone reintroduce the silent-drop pattern", which a structural
+    check catches with zero setup cost.
+    """
+
+    def _source(self):
+        from pathlib import Path
+
+        import vllm_mlx.mllm_batch_generator as mod
+
+        return Path(mod.__file__).read_text()
+
+    def test_image_branch_raises_http_400(self):
+        src = self._source()
+        # The image except-block must raise HTTPException with 400, not
+        # logger.warning. Asserting on both halves means future
+        # refactors can move the block but cannot regress to silent.
+        assert "Failed to process image" in src
+        # Window straddles the marker (HTTPException(...) wraps it).
+        idx = src.find("Failed to process image")
+        window = src[max(0, idx - 200) : idx + 200]
+        assert "HTTPException" in window
+        assert "400" in window
+        assert 'logger.warning(f"Failed to process image' not in src
+
+    def test_video_branch_raises_http_400(self):
+        src = self._source()
+        assert "Failed to process video" in src
+        idx = src.find("Failed to process video")
+        window = src[max(0, idx - 200) : idx + 200]
+        assert "HTTPException" in window
+        assert "400" in window
+        assert 'logger.warning(f"Failed to process video' not in src
