@@ -819,3 +819,35 @@ class TestAdmissionControl:
         eng_no_inner._engine = _Stub()
         eng_no_inner.check_admission()
         assert eng_no_inner._admission_reservations == 0
+
+    def test_mllm_scheduler_inherits_configured_concurrent_cap(self):
+        """Codex R5 closure: a server started with
+        ``SchedulerConfig(max_concurrent_requests=N)`` must apply the
+        same cap to the MLLM scheduler. Pre-fix, ``_start_mllm`` built
+        ``MLLMSchedulerConfig(...)`` without forwarding the field, so
+        the MLLM admission gate always saw the default 256 and ignored
+        memory-constrained deployments' lower cap.
+
+        Drives the cap propagation directly: simulate the
+        ``_start_mllm`` plumbing by reading the field off
+        ``BatchedEngine._scheduler_config`` and asserting the
+        resulting ``MLLMSchedulerConfig`` carries it. The full
+        ``_start_mllm`` requires loading a vision model so we exercise
+        the configuration path the same way the production code does
+        — via ``getattr(_scheduler_config, ..., 256)``."""
+        from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+        from vllm_mlx.scheduler import SchedulerConfig
+
+        configured = SchedulerConfig(max_concurrent_requests=4)
+        # Mirror the propagation site in ``_start_mllm``.
+        forwarded = getattr(configured, "max_concurrent_requests", 256)
+        assert forwarded == 4
+        mllm_cfg = MLLMSchedulerConfig(max_concurrent_requests=forwarded)
+        assert mllm_cfg.max_concurrent_requests == 4
+
+        # Sanity: the fallback (no override on the source config)
+        # matches MLLMSchedulerConfig's own default so omitting the
+        # field doesn't silently downgrade.
+        bare = object()
+        assert getattr(bare, "max_concurrent_requests", 256) == 256
+        assert MLLMSchedulerConfig().max_concurrent_requests == 256

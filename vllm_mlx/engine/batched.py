@@ -549,6 +549,18 @@ class BatchedEngine(BaseEngine):
             self._scheduler_config, "completion_batch_size", 32
         )
         prefill_step_size = getattr(self._scheduler_config, "prefill_step_size", 2048)
+        # Carry the user-configured admission cap across to the MLLM
+        # scheduler. Without this, a server started with
+        # ``SchedulerConfig(max_concurrent_requests=N)`` would always
+        # admission-gate MLLM routes against the default 256 — leaving
+        # memory-constrained vision deployments without the
+        # configured backpressure protection (codex R5). The fallback
+        # (256) matches ``MLLMSchedulerConfig``'s own dataclass default
+        # so a stripped-down test config object behaves identically to
+        # the no-override production path.
+        max_concurrent_requests = getattr(
+            self._scheduler_config, "max_concurrent_requests", 256
+        )
 
         mllm_config = MLLMSchedulerConfig(
             max_num_seqs=max_num_seqs,
@@ -557,6 +569,7 @@ class BatchedEngine(BaseEngine):
             prefill_step_size=prefill_step_size,
             enable_vision_cache=True,
             vision_cache_size=100,
+            max_concurrent_requests=max_concurrent_requests,
         )
 
         # Create and start MLLM scheduler — pass the model-owning executor so
