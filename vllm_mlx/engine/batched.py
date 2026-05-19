@@ -14,6 +14,7 @@ LLM engine), so text-only requests must also be routed through it.
 import functools
 import json
 import logging
+import threading
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
@@ -319,6 +320,19 @@ class BatchedEngine(BaseEngine):
         self._loaded = False
         self._engine_started = False  # Track if engine loop is running
 
+        # Atomic admission counter. Tracks in-flight requests admitted
+        # via ``check_admission``; released by
+        # ``release_admission_reservation`` once the route handler is
+        # done (response sent / streaming generator closed). The cap
+        # check + bump runs under ``_admission_lock`` so two concurrent
+        # route handlers cannot both pass admission at ``cap-1`` — the
+        # race codex R2 flagged on the streaming path.
+        # ``threading.Lock`` (not ``asyncio.Lock``) because the scheduler
+        # step thread also calls these methods in defence-in-depth
+        # checks; an asyncio lock would only serialise the event loop.
+        self._admission_lock = threading.Lock()
+        self._admission_reservations = 0
+
     @property
     def model_name(self) -> str:
         """Get the model name."""
@@ -330,42 +344,67 @@ class BatchedEngine(BaseEngine):
         return self._is_mllm
 
     def check_admission(self) -> None:
-        """Synchronous admission control gate.
+        """Atomic admission gate that *reserves* a slot on success.
 
-        Raises ``BackpressureError`` if scheduling another request
-        would exceed ``max_concurrent_requests``. Routes call this
-        BEFORE returning a ``StreamingResponse`` so streaming
-        backpressure surfaces as HTTP 503 (not as a 200 stream with
-        an error-data chunk).
+        Under ``_admission_lock``, compares
+        ``_admission_reservations`` to ``max_concurrent_requests``;
+        if the cap is reached, raises ``BackpressureError``; otherwise
+        bumps the counter so a second concurrent caller sees the cap
+        immediately. Closes the streaming race codex R2 flagged where
+        two requests at ``cap-1`` could both pass a plain check-then-
+        act gate and then have the loser raise ``BackpressureError``
+        *inside* the response generator (which would degrade to a 200
+        SSE error chunk instead of a clean HTTP 503).
 
-        There IS a residual race: between this check and the actual
-        ``add_request``, another request may fill the slot. The
-        second ``add_request`` then raises ``BackpressureError`` too,
-        which ``_wait_with_disconnect`` already catches for the
-        non-streaming path. For streaming, the race window is one
-        scheduler step (~milliseconds) so this is acceptable.
+        The reservation counter is authoritative for the cap — the
+        scheduler's own ``len(requests) >= cap`` check in
+        ``Scheduler.add_request`` is retained as defence in depth (a
+        direct ``add_request`` caller that bypasses the engine would
+        still hit it) but the route-handler path lives entirely on
+        this counter, so a request never double-counts.
+
+        The caller MUST call ``release_admission_reservation`` exactly
+        once per successful ``check_admission`` — when the request is
+        finished (response sent, generator closed, validation error,
+        whatever). ``_disconnect_guard`` and ``_wait_with_disconnect``
+        do this from a ``finally`` clause so route handlers don't have
+        to thread it manually.
         """
         from ..scheduler import BackpressureError
 
         if self._is_mllm and self._mllm_scheduler is not None:
             cap = getattr(self._mllm_scheduler.config, "max_concurrent_requests", None)
-            in_flight = len(getattr(self._mllm_scheduler, "requests", {}) or {})
         elif self._engine is not None and getattr(self._engine, "scheduler", None):
             cap = getattr(
                 self._engine.scheduler.config, "max_concurrent_requests", None
             )
-            in_flight = len(getattr(self._engine.scheduler, "requests", {}) or {})
         else:
             # Engine not fully initialised yet — admission control
             # only applies once a scheduler exists. Let the actual
             # add_request handle it (or fail naturally).
             return
 
-        if cap is not None and cap > 0 and in_flight >= cap:
-            raise BackpressureError(
-                f"max_concurrent_requests={cap} reached "
-                f"(currently {in_flight} in-flight)"
-            )
+        if cap is None or cap <= 0:
+            return
+
+        with self._admission_lock:
+            if self._admission_reservations >= cap:
+                raise BackpressureError(
+                    f"max_concurrent_requests={cap} reached "
+                    f"(currently {self._admission_reservations} in-flight)"
+                )
+            self._admission_reservations += 1
+
+    def release_admission_reservation(self) -> None:
+        """Release a slot reserved by ``check_admission``.
+
+        Idempotent below zero — a stray extra release (e.g. both
+        success path and a finally clause firing on an unusual
+        cancellation) cannot corrupt the cap accounting.
+        """
+        with self._admission_lock:
+            if self._admission_reservations > 0:
+                self._admission_reservations -= 1
 
     @property
     def tokenizer(self) -> Any:

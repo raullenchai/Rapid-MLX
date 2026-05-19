@@ -39,17 +39,24 @@ _FALLBACK_TOP_P = 0.9
 
 
 def _check_admission_or_503(engine) -> None:
-    """Pre-flight admission gate for route handlers.
+    """Atomic admission gate for route handlers — reserves a slot.
 
-    Calls ``engine.check_admission()`` (sync, ~µs); if the cap is
-    exceeded, raises HTTP 503 with Retry-After before any response
-    body is sent. This is necessary for streaming routes — once
-    ``StreamingResponse`` starts yielding, headers are flushed and
-    the only way to signal backpressure would be an SSE error chunk
-    on a 200 response.
+    Calls ``engine.check_admission()`` which, under
+    ``_admission_lock``, checks the cap and increments the engine's
+    reservation counter. If the cap is reached, raises HTTP 503 with
+    Retry-After before any response body is sent. This is necessary
+    for streaming routes — once ``StreamingResponse`` starts yielding,
+    headers are flushed and the only way to signal backpressure would
+    be an SSE error chunk on a 200 response.
 
-    Engines without a scheduler yet (mid-init) silently no-op via
-    ``check_admission``'s own guard.
+    The reservation is released by ``_disconnect_guard`` (streaming)
+    or ``_wait_with_disconnect`` (non-streaming) via their ``finally``
+    clauses when the caller passes ``engine=engine`` to them. Routes
+    that bypass both (e.g. the chat ``want_logprobs`` branch) must
+    call ``engine.release_admission_reservation()`` themselves.
+
+    Engines without a ``check_admission`` attribute (test stubs)
+    silently no-op.
     """
     from ..scheduler import BackpressureError
 
@@ -712,8 +719,18 @@ async def _disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
     poll_interval: float = 0.5,
+    engine=None,
 ) -> AsyncIterator[str]:
-    """Wrap streaming generator to abort on client disconnect."""
+    """Wrap streaming generator to abort on client disconnect.
+
+    When ``engine`` is provided, releases its admission reservation in
+    the ``finally`` clause so the slot acquired by
+    ``_check_admission_or_503`` is returned to the pool once the
+    streaming response finishes (or the client disconnects, or the
+    generator raises). The release is the safety net for the
+    streaming path; non-streaming routes mirror it via
+    ``_wait_with_disconnect``.
+    """
     import time as _time
 
     _t0 = _time.monotonic()
@@ -806,6 +823,16 @@ async def _disconnect_guard(
             await generator.aclose()
         except Exception:
             pass
+        if engine is not None:
+            release = getattr(engine, "release_admission_reservation", None)
+            if release is not None:
+                try:
+                    release()
+                except Exception:
+                    logger.warning(
+                        "[disconnect_guard] release_admission_reservation raised",
+                        exc_info=True,
+                    )
         logger.info(
             f"[disconnect_guard] CLEANUP done, {chunk_count} chunks total, elapsed={_elapsed()}"
         )
@@ -816,6 +843,7 @@ async def _wait_with_disconnect(
     raw_request: Request,
     timeout: float,
     poll_interval: float = 0.5,
+    engine=None,
 ):
     """Run a coroutine with both timeout and client disconnect detection.
 
@@ -824,6 +852,12 @@ async def _wait_with_disconnect(
     the conversion here means every route that goes through this
     helper (chat, completions, anthropic) gets correct 503 semantics
     without each one wiring its own try/except.
+
+    When ``engine`` is provided, releases its admission reservation in
+    the ``finally`` clause — mirrors ``_disconnect_guard`` for the
+    non-streaming path so a slot acquired by ``_check_admission_or_503``
+    is always returned to the pool (whether the request completed,
+    timed out, the client disconnected, or backpressure fired).
     """
     import time as _time
 
@@ -889,3 +923,13 @@ async def _wait_with_disconnect(
             disconnect_task.cancel()
         if not task.done():
             task.cancel()
+        if engine is not None:
+            release = getattr(engine, "release_admission_reservation", None)
+            if release is not None:
+                try:
+                    release()
+                except Exception:
+                    logger.warning(
+                        "[wait_with_disconnect] release_admission_reservation raised",
+                        exc_info=True,
+                    )

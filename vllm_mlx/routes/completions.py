@@ -74,6 +74,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             _disconnect_guard(
                 stream_completion(engine, prompts[0], request),
                 raw_request,
+                engine=engine,
             ),
             media_type="text/event-stream",
         )
@@ -87,33 +88,47 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
     extended_kwargs = build_extended_sampling_kwargs(request)
 
-    for i, prompt in enumerate(prompts):
-        output = await _wait_with_disconnect(
-            engine.generate(
-                prompt=prompt,
-                max_tokens=_resolve_max_tokens(request.max_tokens),
-                temperature=_resolve_temperature(request.temperature),
-                top_p=_resolve_top_p(request.top_p),
-                stop=request.stop,
-                **extended_kwargs,
-            ),
-            raw_request,
-            timeout=timeout,
-        )
-        if output is None:
-            return Response(status_code=499)  # Client closed request
-
-        choices.append(
-            CompletionChoice(
-                index=i,
-                text=output.text,
-                finish_reason=output.finish_reason,
+    # Reservation released exactly once after the per-prompt loop —
+    # passing ``engine`` to each ``_wait_with_disconnect`` would over-
+    # release for multi-prompt requests (one acquire vs N releases).
+    try:
+        for i, prompt in enumerate(prompts):
+            output = await _wait_with_disconnect(
+                engine.generate(
+                    prompt=prompt,
+                    max_tokens=_resolve_max_tokens(request.max_tokens),
+                    temperature=_resolve_temperature(request.temperature),
+                    top_p=_resolve_top_p(request.top_p),
+                    stop=request.stop,
+                    **extended_kwargs,
+                ),
+                raw_request,
+                timeout=timeout,
             )
-        )
-        total_completion_tokens += output.completion_tokens
-        total_prompt_tokens += (
-            output.prompt_tokens if hasattr(output, "prompt_tokens") else 0
-        )
+            if output is None:
+                return Response(status_code=499)  # Client closed request
+
+            choices.append(
+                CompletionChoice(
+                    index=i,
+                    text=output.text,
+                    finish_reason=output.finish_reason,
+                )
+            )
+            total_completion_tokens += output.completion_tokens
+            total_prompt_tokens += (
+                output.prompt_tokens if hasattr(output, "prompt_tokens") else 0
+            )
+    finally:
+        release = getattr(engine, "release_admission_reservation", None)
+        if release is not None:
+            try:
+                release()
+            except Exception:
+                logger.warning(
+                    "release_admission_reservation raised",
+                    exc_info=True,
+                )
 
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = total_completion_tokens / elapsed if elapsed > 0 else 0

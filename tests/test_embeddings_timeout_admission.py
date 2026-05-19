@@ -347,42 +347,59 @@ class TestAdmissionControl:
         assert cfg.max_concurrent_requests > 0
 
     def test_add_request_raises_backpressure_at_cap(self):
-        """When in-flight count equals the cap, the next add_request
-        must raise BackpressureError. Exercise the actual gate by
-        constructing a stub scheduler with the dict pre-populated up
-        to the cap — proves the check fires before tokenization, not
-        just that the exception class exists (codex R1 found the prior
-        version passed by accident)."""
-        from vllm_mlx.scheduler import BackpressureError
+        """Driving ``Scheduler.add_request`` directly — not a re-
+        implemented copy of the gate — proves the production cap
+        check fires before tokenization. Codex R2 flagged the earlier
+        version as test-by-accident because it inlined the gate
+        logic; this version constructs a real ``Scheduler`` instance
+        (via ``__new__`` so we skip the expensive
+        tokenizer/model/engine wiring) and calls the bound method."""
+        from vllm_mlx.request import Request, SamplingParams
+        from vllm_mlx.scheduler import BackpressureError, Scheduler, SchedulerConfig
 
         # 1) The class itself must be an ordinary Exception subclass so
         #    handlers can ``except BackpressureError`` safely.
         assert issubclass(BackpressureError, Exception)
 
-        # 2) Drive add_request via a minimal stand-in. Constructing a
-        #    full Scheduler requires a tokenizer + model + ~20 args;
-        #    inline the gate's actual logic (kept in sync with
-        #    Scheduler.add_request) so this test breaks if someone
-        #    removes the guard.
-        from vllm_mlx.scheduler import Scheduler, SchedulerConfig
-
+        # 2) Build a minimal Scheduler stand-in with the in-flight
+        #    dict pre-populated to cap. Skip __init__ — full
+        #    construction needs a tokenizer + model + ~20 args; we
+        #    only need ``self.requests`` and ``self.config`` for the
+        #    gate to fire.
         sched = Scheduler.__new__(Scheduler)
         sched.config = SchedulerConfig(max_concurrent_requests=2)
         sched.requests = {"req-1": object(), "req-2": object()}
 
-        # Re-run the gate from add_request directly — at cap, raises.
-        cap = sched.config.max_concurrent_requests
-        with pytest.raises(BackpressureError):
-            if cap is not None and cap > 0 and len(sched.requests) >= cap:
-                raise BackpressureError(
-                    f"max_concurrent_requests={cap} reached "
-                    f"(currently {len(sched.requests)} in-flight)"
-                )
+        new_req = Request(
+            request_id="req-3",
+            prompt="hi",
+            sampling_params=SamplingParams(max_tokens=8),
+        )
 
-        # 3) Below cap → no exception.
+        # The real ``add_request`` runs the cap check at the top —
+        # any later attribute access (tokenizer / block_aware_cache /
+        # …) would AttributeError on this bare stub, so a passing
+        # ``raises(BackpressureError)`` here is proof the gate fired
+        # *first*.
+        with pytest.raises(BackpressureError):
+            Scheduler.add_request(sched, new_req)
+
+        # 3) Below cap → the gate passes silently. We intercept the
+        #    very next attribute access (``self.tokenizer``) to stop
+        #    before tokenization without needing a real model.
         sched.requests = {"req-1": object()}
-        if cap is not None and cap > 0 and len(sched.requests) >= cap:
-            pytest.fail("BackpressureError raised below cap")
+        below_cap_req = Request(
+            request_id="req-3",
+            prompt="hi",
+            sampling_params=SamplingParams(max_tokens=8),
+        )
+        # ``AttributeError`` proves the gate did not raise — execution
+        # advanced past the cap check into the tokenize step that our
+        # bare stub doesn't satisfy. If the gate had spuriously raised
+        # ``BackpressureError`` below the cap, that exception would
+        # surface here instead.
+        with pytest.raises(AttributeError):
+            Scheduler.add_request(sched, below_cap_req)
 
     def test_admission_returns_503_with_retry_after(self, monkeypatch):
         """End-to-end: a request that would push in-flight over the
@@ -549,3 +566,70 @@ class TestAdmissionControl:
 
         assert r.status_code == 503, r.text
         assert r.headers.get("Retry-After") is not None
+
+    def test_check_admission_reservation_is_atomic(self):
+        """Codex R2 BLOCKER closure: ``check_admission`` is *reserve-
+        on-success*, not check-then-act. Two callers racing at cap-1
+        cannot both succeed — exactly one wins the slot, the other
+        raises ``BackpressureError``. Without the reservation counter,
+        both would pass and the loser would only fail later inside
+        ``add_request`` (too late for streaming to return a clean
+        HTTP 503).
+
+        Drives the real ``BatchedEngine.check_admission`` against a
+        synthesised scheduler stub so we exercise the production
+        lock/counter, not a copy of the gate logic."""
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+
+        eng = BatchedEngine.__new__(BatchedEngine)
+        eng._is_mllm = False
+        eng._mllm_scheduler = None
+        eng._admission_lock = threading.Lock()
+        eng._admission_reservations = 0
+
+        # Synthetic scheduler with cap=1. ``check_admission`` only
+        # reads ``scheduler.config.max_concurrent_requests`` for the
+        # cap; the in-flight count comes from ``_admission_reservations``
+        # under the engine lock, so we don't need to populate
+        # ``scheduler.requests`` here.
+        class _Stub:
+            pass
+
+        scheduler_stub = _Stub()
+        scheduler_stub.config = SchedulerConfig(max_concurrent_requests=1)
+        scheduler_stub.requests = {}
+
+        engine_stub = _Stub()
+        engine_stub.scheduler = scheduler_stub
+        eng._engine = engine_stub
+
+        # First reservation: succeeds (counter 0 → 1).
+        eng.check_admission()
+        assert eng._admission_reservations == 1
+
+        # Second reservation at cap: must raise. Without the atomic
+        # reserve-on-success, a check-then-act gate would let both
+        # through because ``scheduler.requests`` is still empty.
+        with pytest.raises(BackpressureError):
+            eng.check_admission()
+
+        # Counter unchanged after the failed reservation — the cap
+        # check happens before the increment under the same lock,
+        # so a raise must not bump the counter.
+        assert eng._admission_reservations == 1
+
+        # Release returns the slot; next reservation succeeds again.
+        eng.release_admission_reservation()
+        assert eng._admission_reservations == 0
+        eng.check_admission()
+        assert eng._admission_reservations == 1
+
+        # Release floor: extra releases do not drive the counter
+        # negative (idempotent below zero).
+        eng.release_admission_reservation()
+        eng.release_admission_reservation()
+        eng.release_admission_reservation()
+        assert eng._admission_reservations == 0

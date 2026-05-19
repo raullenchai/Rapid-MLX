@@ -138,6 +138,7 @@ async def create_anthropic_message(
             _disconnect_guard(
                 _stream_anthropic_messages(engine, openai_request, anthropic_request),
                 request,
+                engine=engine,
             ),
             media_type="text/event-stream",
             headers={
@@ -177,6 +178,7 @@ async def create_anthropic_message(
             engine.chat(messages=messages, **chat_kwargs),
             request,
             timeout=timeout,
+            engine=engine,
         )
     except HTTPException:
         raise

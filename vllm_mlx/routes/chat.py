@@ -489,6 +489,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                                 **cloud_kwargs,
                             ),
                             raw_request,
+                            engine=engine,
                         ),
                         media_type="text/event-stream",
                     )
@@ -497,6 +498,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         cfg.cloud_router.completion(cloud_messages, **cloud_kwargs),
                         raw_request,
                         timeout=request.timeout or cfg.default_timeout,
+                        engine=engine,
                     )
                     if result is None:
                         return Response(status_code=499, content="Client disconnected")
@@ -540,6 +542,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             _disconnect_guard(
                 stream_chat_completion(engine, messages, request, **chat_kwargs),
                 raw_request,
+                engine=engine,
             ),
             media_type="text/event-stream",
         )
@@ -590,22 +593,31 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                     ),
                     raw_request,
                     timeout=timeout,
+                    engine=engine,
                 )
             except Exception as guided_err:
                 logger.warning(
                     f"Guided generation failed, falling back to standard: {guided_err}"
                 )
                 logger.debug(f"Problematic schema: {json_schema}")
+                # Re-reserve before falling back: the failed
+                # ``generate_with_schema`` already released the original
+                # reservation in its finally clause. Without a fresh
+                # ``check_admission`` the cap accounting would drift
+                # negative once the fallback's finally runs.
+                _check_admission_or_503(engine)
                 output = await _wait_with_disconnect(
                     engine.chat(messages=messages, **chat_kwargs),
                     raw_request,
                     timeout=timeout,
+                    engine=engine,
                 )
         else:
             output = await _wait_with_disconnect(
                 engine.chat(messages=messages, **chat_kwargs),
                 raw_request,
                 timeout=timeout,
+                engine=engine,
             )
     except HTTPException:
         raise
@@ -632,6 +644,21 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         if cfg.gc_control and gc_was_enabled:
             gc.enable()
             gc.collect()
+        # Safety net for the want_logprobs/non-stream branch which calls
+        # ``engine.stream_chat`` directly (no ``_wait_with_disconnect``
+        # to handle release). The other branches already released via
+        # ``_wait_with_disconnect.finally``; ``release_admission_reservation``
+        # is idempotent below zero so calling it twice is harmless.
+        if want_logprobs and not use_guided:
+            release = getattr(engine, "release_admission_reservation", None)
+            if release is not None:
+                try:
+                    release()
+                except Exception:
+                    logger.warning(
+                        "release_admission_reservation raised",
+                        exc_info=True,
+                    )
 
     if output is None:
         return Response(status_code=499)
