@@ -67,7 +67,10 @@ class MLLMSchedulerConfig:
     # Admission control: hard cap on concurrent in-flight MLLM
     # requests (queued + running). Matches the LLM scheduler
     # convention so ``max_concurrent_requests`` is uniform across
-    # both engines; default 256 matches MLLM ``max_num_seqs`` headroom.
+    # both engines. Default 256 provides queue depth on top of
+    # ``max_num_seqs`` (waiting requests cost only the tokenised
+    # prompt, not KV state). Operators who want admission tied to
+    # ``max_num_seqs`` pass ``--max-concurrent-requests`` explicitly.
     max_concurrent_requests: int = 256
 
 

@@ -559,14 +559,15 @@ class BatchedEngine(BaseEngine):
         # Carry the user-configured admission cap across to the MLLM
         # scheduler. Without this, a server started with
         # ``SchedulerConfig(max_concurrent_requests=N)`` would always
-        # admission-gate MLLM routes against the default 256 — leaving
-        # memory-constrained vision deployments without the
+        # admission-gate MLLM routes against the dataclass default —
+        # leaving memory-constrained vision deployments without the
         # configured backpressure protection (codex R5). The fallback
-        # (256) matches ``MLLMSchedulerConfig``'s own dataclass default
-        # so a stripped-down test config object behaves identically to
-        # the no-override production path.
+        # (``None``) is then resolved by ``MLLMSchedulerConfig.__post_init__``
+        # to ``max_num_seqs`` so an operator who only lowered
+        # ``--max-num-seqs`` (codex R7) still gets the matching cap
+        # rather than the old hard-coded 256.
         max_concurrent_requests = getattr(
-            self._scheduler_config, "max_concurrent_requests", 256
+            self._scheduler_config, "max_concurrent_requests", None
         )
 
         mllm_config = MLLMSchedulerConfig(

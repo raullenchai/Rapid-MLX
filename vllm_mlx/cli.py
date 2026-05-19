@@ -706,6 +706,7 @@ def serve_command(args):
 
     scheduler_config = SchedulerConfig(
         max_num_seqs=args.max_num_seqs,
+        max_concurrent_requests=args.max_concurrent_requests,
         prefill_batch_size=args.prefill_batch_size,
         completion_batch_size=args.completion_batch_size,
         enable_prefix_cache=enable_prefix_cache,
@@ -989,6 +990,7 @@ def bench_command(args):
 
         scheduler_config = SchedulerConfig(
             max_num_seqs=args.max_num_seqs,
+            max_concurrent_requests=getattr(args, "max_concurrent_requests", 256),
             prefill_batch_size=args.prefill_batch_size,
             completion_batch_size=args.completion_batch_size,
             enable_prefix_cache=enable_prefix_cache,
@@ -2760,6 +2762,17 @@ Examples:
     )
     serve_parser.add_argument(
         "--max-num-seqs", type=int, default=256, help="Max concurrent sequences"
+    )
+    serve_parser.add_argument(
+        "--max-concurrent-requests",
+        type=int,
+        default=256,
+        help=(
+            "Admission cap on in-flight requests (queued + running). When "
+            "exceeded, new requests return HTTP 503 with Retry-After. "
+            "Default 256; operators on memory-constrained devices may want "
+            "to set this near ``--max-num-seqs`` to limit queue depth."
+        ),
     )
     serve_parser.add_argument(
         "--prefill-batch-size", type=int, default=8, help="Prefill batch size"

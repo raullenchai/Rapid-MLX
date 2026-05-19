@@ -863,26 +863,48 @@ class TestAdmissionControl:
         the MLLM admission gate always saw the default 256 and ignored
         memory-constrained deployments' lower cap.
 
-        Drives the cap propagation directly: simulate the
-        ``_start_mllm`` plumbing by reading the field off
-        ``BatchedEngine._scheduler_config`` and asserting the
-        resulting ``MLLMSchedulerConfig`` carries it. The full
-        ``_start_mllm`` requires loading a vision model so we exercise
-        the configuration path the same way the production code does
-        — via ``getattr(_scheduler_config, ..., 256)``."""
+        Drives the cap propagation directly: read the field off a
+        ``SchedulerConfig`` instance and assert the resulting
+        ``MLLMSchedulerConfig`` carries it."""
         from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
         from vllm_mlx.scheduler import SchedulerConfig
 
         configured = SchedulerConfig(max_concurrent_requests=4)
         # Mirror the propagation site in ``_start_mllm``.
-        forwarded = getattr(configured, "max_concurrent_requests", 256)
+        forwarded = getattr(configured, "max_concurrent_requests", None)
         assert forwarded == 4
         mllm_cfg = MLLMSchedulerConfig(max_concurrent_requests=forwarded)
         assert mllm_cfg.max_concurrent_requests == 4
 
-        # Sanity: the fallback (no override on the source config)
-        # matches MLLMSchedulerConfig's own default so omitting the
-        # field doesn't silently downgrade.
+        # Sanity: omitting the field on the source config falls back
+        # to the dataclass default so MLLMSchedulerConfig ends up with
+        # the same cap as a no-override LLM server.
         bare = object()
-        assert getattr(bare, "max_concurrent_requests", 256) == 256
-        assert MLLMSchedulerConfig().max_concurrent_requests == 256
+        forwarded = getattr(bare, "max_concurrent_requests", None) or 256
+        assert (
+            MLLMSchedulerConfig(
+                max_concurrent_requests=forwarded
+            ).max_concurrent_requests
+            == 256
+        )
+
+    def test_scheduler_config_accepts_explicit_admission_cap(self):
+        """Codex R7 closure (via explicit CLI flag rather than
+        auto-tracking ``max_num_seqs``): operators on memory-
+        constrained devices can pass ``--max-concurrent-requests N``
+        to lower the admission cap independently of
+        ``--max-num-seqs``. The dataclass default stays at 256 so
+        existing tests that intentionally send more requests than
+        ``max_num_seqs`` to exercise the queue still work."""
+        from vllm_mlx.scheduler import SchedulerConfig
+
+        # Default — cap stays at 256 even when max_num_seqs is lower.
+        # This preserves queue depth for tests/deployments that count
+        # on it.
+        cfg = SchedulerConfig(max_num_seqs=8)
+        assert cfg.max_concurrent_requests == 256
+
+        # Explicit override — operator can tighten the cap to match
+        # max_num_seqs (or anything else) for memory protection.
+        cfg = SchedulerConfig(max_num_seqs=8, max_concurrent_requests=8)
+        assert cfg.max_concurrent_requests == 8

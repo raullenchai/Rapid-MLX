@@ -145,8 +145,14 @@ class SchedulerConfig:
     # be able to OOM the Metal allocator and crash the server for all
     # other clients; ``add_request`` now raises ``BackpressureError``
     # at the cap and routes return 503 with Retry-After. Default 256
-    # matches ``max_num_seqs`` so admission only fires when the batch
-    # generator itself is at saturation.
+    # provides ample queue depth on top of ``max_num_seqs`` — waiting
+    # requests only carry their tokenised prompt, not KV cache state,
+    # so the memory cost of a queue is small even when ``max_num_seqs``
+    # is constrained. Operators who want admission to mirror
+    # ``max_num_seqs`` exactly can pass ``--max-concurrent-requests``
+    # (codex R7 flagged the gap; the explicit override resolves it
+    # without breaking existing tests that intentionally send more
+    # requests than ``max_num_seqs`` to exercise the queue).
     max_concurrent_requests: int = 256
 
 
