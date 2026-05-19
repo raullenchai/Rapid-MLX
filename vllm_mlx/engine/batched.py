@@ -561,13 +561,14 @@ class BatchedEngine(BaseEngine):
         # ``SchedulerConfig(max_concurrent_requests=N)`` would always
         # admission-gate MLLM routes against the dataclass default —
         # leaving memory-constrained vision deployments without the
-        # configured backpressure protection (codex R5). The fallback
-        # (``None``) is then resolved by ``MLLMSchedulerConfig.__post_init__``
-        # to ``max_num_seqs`` so an operator who only lowered
-        # ``--max-num-seqs`` (codex R7) still gets the matching cap
-        # rather than the old hard-coded 256.
+        # configured backpressure protection (codex R5). Fallback 256
+        # matches ``MLLMSchedulerConfig``'s own dataclass default so
+        # the no-explicit-config programmatic construction path (no
+        # ``scheduler_config`` passed to ``BatchedEngine``) still
+        # admission-gates rather than passing ``None`` through and
+        # silently disabling the cap (codex R8).
         max_concurrent_requests = getattr(
-            self._scheduler_config, "max_concurrent_requests", None
+            self._scheduler_config, "max_concurrent_requests", 256
         )
 
         mllm_config = MLLMSchedulerConfig(

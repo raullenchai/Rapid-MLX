@@ -871,22 +871,158 @@ class TestAdmissionControl:
 
         configured = SchedulerConfig(max_concurrent_requests=4)
         # Mirror the propagation site in ``_start_mllm``.
-        forwarded = getattr(configured, "max_concurrent_requests", None)
+        forwarded = getattr(configured, "max_concurrent_requests", 256)
         assert forwarded == 4
         mllm_cfg = MLLMSchedulerConfig(max_concurrent_requests=forwarded)
         assert mllm_cfg.max_concurrent_requests == 4
 
-        # Sanity: omitting the field on the source config falls back
-        # to the dataclass default so MLLMSchedulerConfig ends up with
-        # the same cap as a no-override LLM server.
+        # Sanity: omitting the source field falls back to 256 — same
+        # as ``MLLMSchedulerConfig``'s dataclass default. Codex R8
+        # caught the prior version which forwarded ``None`` here,
+        # silently disabling both the engine-level
+        # ``check_admission`` and the scheduler-level
+        # ``MLLMScheduler.add_request`` cap check.
         bare = object()
-        forwarded = getattr(bare, "max_concurrent_requests", None) or 256
+        forwarded = getattr(bare, "max_concurrent_requests", 256)
+        assert forwarded == 256
         assert (
             MLLMSchedulerConfig(
                 max_concurrent_requests=forwarded
             ).max_concurrent_requests
             == 256
         )
+
+    def test_cloud_routed_chat_releases_local_admission_slot(self, monkeypatch):
+        """Codex R8 P2 closure: when ``cfg.cloud_router`` decides to
+        route a chat completion to the cloud, the local admission
+        slot reserved at route entry must be released immediately —
+        the cloud round-trip uses no local scheduler/Metal resources.
+        Without this, a burst of long cloud-routed requests could
+        exhaust the local cap and 503 unrelated local requests while
+        the local engine sits idle."""
+        import threading
+
+        from vllm_mlx.config import get_config
+        from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.routes import chat as chat_route
+        from vllm_mlx.scheduler import SchedulerConfig
+
+        app = FastAPI()
+        app.include_router(chat_route.router)
+
+        # Build a MagicMock engine with the real admission methods so
+        # the counter is the source of truth (mirrors the R3 test).
+        engine = MagicMock()
+        engine.is_mllm = False
+        engine.supports_guided_generation = False
+        # ``build_prompt`` + ``estimate_new_tokens`` are read by the
+        # cloud-routing branch — return non-zero so the threshold
+        # check fires.
+        engine.build_prompt.return_value = "prompt"
+        engine.model.estimate_new_tokens.return_value = (1000, 1000)
+        # ``preserve_native_tool_format`` is read during message prep.
+        engine.preserve_native_tool_format = False
+
+        engine._admission_lock = threading.Lock()
+        engine._admission_reservations = 0
+        engine._is_mllm = False
+        engine._mllm_scheduler = None
+
+        class _Stub:
+            pass
+
+        scheduler_stub = _Stub()
+        scheduler_stub.config = SchedulerConfig(max_concurrent_requests=2)
+        scheduler_stub.requests = {}
+        inner_engine_stub = _Stub()
+        inner_engine_stub.scheduler = scheduler_stub
+        async_engine_stub = _Stub()
+        async_engine_stub.engine = inner_engine_stub
+        engine._engine = async_engine_stub
+
+        engine.check_admission = lambda: BatchedEngine.check_admission(engine)
+        engine.release_admission_reservation = lambda: (
+            BatchedEngine.release_admission_reservation(engine)
+        )
+
+        # Stub the cloud router: ``should_route_to_cloud`` returns True
+        # so the branch fires; ``completion`` returns a minimal dict.
+        cloud_router = MagicMock()
+        cloud_router.should_route_to_cloud.return_value = True
+        cloud_router.threshold = 500
+        cloud_router.cloud_model = "cloud-x"
+
+        async def _fake_completion(*_a, **_kw):
+            return {
+                "id": "cloud-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "cloud-x",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+
+        cloud_router.completion = _fake_completion
+
+        cfg = get_config()
+        saved = {
+            k: getattr(cfg, k, None)
+            for k in (
+                "engine",
+                "model_name",
+                "model_alias",
+                "model_path",
+                "model_registry",
+                "tool_call_parser",
+                "reasoning_parser",
+                "ready",
+                "api_key",
+                "cloud_router",
+                "pin_system_prompt",
+            )
+        }
+        cfg.engine = engine
+        cfg.model_name = "stub"
+        cfg.model_alias = None
+        cfg.model_path = None
+        cfg.model_registry = None
+        cfg.tool_call_parser = None
+        cfg.reasoning_parser = None
+        cfg.ready = True
+        cfg.api_key = None
+        cfg.cloud_router = cloud_router
+        cfg.pin_system_prompt = False
+
+        monkeypatch.setattr(chat_route, "get_engine", lambda *_a, **_kw: engine)
+
+        try:
+            client = TestClient(app, raise_server_exceptions=False)
+            r = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "stub",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+        finally:
+            for k, v in saved.items():
+                setattr(cfg, k, v)
+
+        # Cloud completion succeeded → 200; the local admission slot
+        # must have been released before the cloud call returned, so
+        # the reservation counter is back at zero.
+        assert r.status_code == 200, r.text
+        assert engine._admission_reservations == 0
 
     def test_scheduler_config_accepts_explicit_admission_cap(self):
         """Codex R7 closure (via explicit CLI flag rather than

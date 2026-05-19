@@ -505,8 +505,17 @@ async def _create_chat_completion_impl(
                         t.model_dump() if hasattr(t, "model_dump") else t
                         for t in request.tools
                     ]
+                # Cloud-routed request: the local scheduler/Metal path
+                # is bypassed entirely, so the admission slot reserved
+                # at route entry shouldn't be held for the cloud
+                # round-trip. Release it now (and flip the commit flag
+                # so the route-level finally doesn't double-release).
+                # Without this, a burst of long cloud-routed requests
+                # could exhaust the local cap and 503 unrelated local
+                # requests while the local engine is idle (codex R8).
+                _release_admission_unless_committed(engine, _commit_state[0])
+                _commit_state[0] = True
                 if request.stream:
-                    _commit_state[0] = True
                     return StreamingResponse(
                         _disconnect_guard(
                             cfg.cloud_router.stream_completion(
@@ -515,7 +524,6 @@ async def _create_chat_completion_impl(
                                 **cloud_kwargs,
                             ),
                             raw_request,
-                            engine=engine,
                         ),
                         media_type="text/event-stream",
                     )
