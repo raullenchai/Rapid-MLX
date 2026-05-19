@@ -59,11 +59,21 @@ def json_schema_to_pydantic(schema: dict[str, Any]) -> type | None:
         for prop_name, prop_spec in properties.items():
             prop_type = prop_spec.get("type", "string")
 
-            # Handle array type
+            # Handle array type. The "object" and "array" element types
+            # are special-cased: without this branch they fell through to
+            # ``type_mapping.get(items_type, str)`` and silently became
+            # ``list[str]``, so the model emitted strings where the schema
+            # required objects — producing JSON that fails validation
+            # against the user's own schema (R10 sweep, guided.py bug).
             if prop_type == "array":
                 items_type = prop_spec.get("items", {}).get("type", "string")
-                inner_type = type_mapping.get(items_type, str)
-                python_type = list[inner_type]
+                if items_type == "object":
+                    python_type = list[dict]
+                elif items_type == "array":
+                    python_type = list[list]
+                else:
+                    inner_type = type_mapping.get(items_type, str)
+                    python_type = list[inner_type]
             # Handle object type (nested)
             elif prop_type == "object":
                 # For nested objects, use dict

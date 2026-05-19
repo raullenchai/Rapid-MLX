@@ -281,6 +281,32 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     else:
         _cloud_original_messages = None
 
+    # Reject image/video content when the loaded model has no vision
+    # head. Without this guard ``extract_multimodal_content`` silently
+    # drops the image parts on the text-only path and the model
+    # hallucinates a confident description of an image it never saw
+    # (R9P1: 600M text model returned "a red rose" for arbitrary images).
+    if not engine.is_mllm:
+        for _msg in request.messages:
+            _content = (
+                _msg.content if hasattr(_msg, "content") else _msg.get("content", "")
+            )
+            if isinstance(_content, list):
+                for _item in _content:
+                    _item_type = (
+                        _item.type
+                        if hasattr(_item, "type")
+                        else (_item.get("type", "") if isinstance(_item, dict) else "")
+                    )
+                    if _item_type in ("image_url", "image", "video", "video_url"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"Model '{cfg.model_name}' does not support "
+                                "image or video inputs."
+                            ),
+                        )
+
     # For MLLM models, keep original messages with embedded images
     if engine.is_mllm:
         messages = []

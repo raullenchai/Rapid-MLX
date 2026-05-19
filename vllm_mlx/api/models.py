@@ -313,6 +313,11 @@ class CompletionRequest(BaseModel):
     # Logprobs
     logprobs: bool | None = None
     top_logprobs: int | None = None  # 0-20, per OpenAI spec
+    # OpenAI FIM (fill-in-the-middle) suffix. Declared so Pydantic stops
+    # silently dropping it; rejected with 400 in routes/completions.py
+    # when non-empty since no MLX engine implements FIM yet (and silently
+    # ignoring it produces wrong completions on code-completion clients).
+    suffix: str | None = None
     # Request timeout in seconds (None = use server default)
     timeout: float | None = None
 

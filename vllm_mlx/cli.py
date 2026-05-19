@@ -1250,6 +1250,12 @@ def ps_command(_args):
         port = "8000"  # serve's default
         try:
             i = cmd.index("serve") + 1
+            # Pre-PR this loop ``break``ed on the first positional, so a
+            # ``rapid-mlx serve qwen3.5-4b --port 8005`` ended with
+            # port="8000" because the positional model token came before
+            # ``--port``. Keep scanning for flags after we've captured the
+            # model — argparse accepts them on either side.
+            model_seen = False
             while i < len(cmd):
                 tok = cmd[i]
                 if tok.startswith("--"):
@@ -1265,8 +1271,10 @@ def ps_command(_args):
                     else:
                         i += 1
                 else:
-                    model = tok
-                    break
+                    if not model_seen:
+                        model = tok
+                        model_seen = True
+                    i += 1
         except ValueError:
             pass
 

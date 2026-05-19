@@ -468,12 +468,21 @@ class MLLMBatchGenerator:
         if request.images:
             from .models.mllm import process_image_input
 
+            # Pre-PR: undecodable / unreachable image was logged at WARN
+            # and silently dropped from ``all_images``, so the model
+            # would caption a non-existent image and confidently
+            # hallucinate ("a vibrant red jellyfish" for a 404'd URL).
+            # Fail loud with ValueError so MLLMScheduler._step's narrow
+            # ``except (ValueError, RuntimeError)`` cleans up the
+            # request (finish_reason="error") instead of the generic
+            # ``except Exception`` in _process_loop swallowing the
+            # error and hanging the client.
             for img in request.images:
                 try:
                     path = process_image_input(img)
                     all_images.append(path)
                 except Exception as e:
-                    logger.warning(f"Failed to process image: {e}")
+                    raise ValueError(f"Failed to process image: {e}") from e
 
         if request.videos:
             from .models.mllm import (
@@ -502,7 +511,10 @@ class MLLMBatchGenerator:
                     frame_paths = save_frames_to_temp(frames)
                     all_images.extend(frame_paths)
                 except Exception as e:
-                    logger.warning(f"Failed to process video: {e}")
+                    # Same rationale as the image branch above: silent
+                    # drop hallucinates; ValueError so the scheduler
+                    # cleans up the request properly.
+                    raise ValueError(f"Failed to process video: {e}") from e
 
         # Check pixel cache first
         cached_pixels = self.vision_cache.get_pixel_cache(all_images, request.prompt)

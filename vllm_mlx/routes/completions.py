@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from ..api.models import (
@@ -43,6 +43,14 @@ router = APIRouter()
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
     _validate_model_name(request.model)
+    if request.suffix:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "FIM (fill-in-the-middle) 'suffix' is not supported by this "
+                "server. Use the chat completions API or omit 'suffix'."
+            ),
+        )
     engine = get_engine(request.model)
 
     # Handle single prompt or list of prompts
