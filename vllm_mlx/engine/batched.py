@@ -374,15 +374,26 @@ class BatchedEngine(BaseEngine):
 
         if self._is_mllm and self._mllm_scheduler is not None:
             cap = getattr(self._mllm_scheduler.config, "max_concurrent_requests", None)
-        elif self._engine is not None and getattr(self._engine, "scheduler", None):
-            cap = getattr(
-                self._engine.scheduler.config, "max_concurrent_requests", None
-            )
         else:
-            # Engine not fully initialised yet — admission control
-            # only applies once a scheduler exists. Let the actual
-            # add_request handle it (or fail naturally).
-            return
+            # ``self._engine`` is an ``AsyncEngineCore`` wrapper; the
+            # actual ``Scheduler`` lives on its inner ``EngineCore`` —
+            # ``self._engine.engine.scheduler``. The old
+            # ``getattr(self._engine, "scheduler", None)`` lookup
+            # silently returned ``None`` because ``AsyncEngineCore``
+            # does not expose ``scheduler`` directly, so the LLM
+            # admission gate was a no-op (codex R4 BLOCKER: streaming
+            # text requests at cap were degrading to 200 SSE error
+            # chunks instead of the intended 503 + Retry-After).
+            inner_engine = (
+                getattr(self._engine, "engine", None) if self._engine else None
+            )
+            scheduler = getattr(inner_engine, "scheduler", None)
+            if scheduler is None:
+                # Engine not fully initialised yet — admission control
+                # only applies once a scheduler exists. Let the actual
+                # add_request handle it (or fail naturally).
+                return
+            cap = getattr(scheduler.config, "max_concurrent_requests", None)
 
         if cap is None or cap <= 0:
             return

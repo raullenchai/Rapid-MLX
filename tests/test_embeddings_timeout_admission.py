@@ -595,6 +595,12 @@ class TestAdmissionControl:
         # cap; the in-flight count comes from ``_admission_reservations``
         # under the engine lock, so we don't need to populate
         # ``scheduler.requests`` here.
+        #
+        # ``self._engine`` is the ``AsyncEngineCore`` wrapper; the
+        # real ``Scheduler`` lives on its inner ``.engine`` attribute.
+        # Mirror that nesting so the production lookup path is
+        # exercised, not just the dataclass — codex R4 BLOCKER root
+        # cause was the lookup walking the wrong indirection.
         class _Stub:
             pass
 
@@ -602,9 +608,12 @@ class TestAdmissionControl:
         scheduler_stub.config = SchedulerConfig(max_concurrent_requests=1)
         scheduler_stub.requests = {}
 
-        engine_stub = _Stub()
-        engine_stub.scheduler = scheduler_stub
-        eng._engine = engine_stub
+        inner_engine_stub = _Stub()
+        inner_engine_stub.scheduler = scheduler_stub
+
+        async_engine_stub = _Stub()
+        async_engine_stub.engine = inner_engine_stub
+        eng._engine = async_engine_stub
 
         # First reservation: succeeds (counter 0 → 1).
         eng.check_admission()
@@ -685,9 +694,13 @@ class TestAdmissionControl:
         scheduler_stub.config = SchedulerConfig(max_concurrent_requests=2)
         scheduler_stub.requests = {}
 
-        engine_stub = _Stub()
-        engine_stub.scheduler = scheduler_stub
-        engine._engine = engine_stub
+        # ``self._engine.engine.scheduler`` — mirror the real
+        # AsyncEngineCore-wrapping-EngineCore nesting (codex R4).
+        inner_engine_stub = _Stub()
+        inner_engine_stub.scheduler = scheduler_stub
+        async_engine_stub = _Stub()
+        async_engine_stub.engine = inner_engine_stub
+        engine._engine = async_engine_stub
 
         # Bind the real methods so the counter is the source of truth.
         engine.check_admission = lambda: BatchedEngine.check_admission(engine)
@@ -745,3 +758,64 @@ class TestAdmissionControl:
         # route-level finally.
         assert statuses == [400, 400, 400, 400, 400], statuses
         assert engine._admission_reservations == 0
+
+    def test_check_admission_finds_llm_scheduler_through_async_wrapper(self):
+        """Codex R4 BLOCKER closure: the LLM admission lookup must
+        walk through ``AsyncEngineCore`` to its inner ``EngineCore``
+        scheduler. Pre-fix it did ``getattr(self._engine,
+        "scheduler", None)`` which silently returned ``None`` on
+        every text engine — so streaming text requests at cap
+        degraded to 200 SSE error chunks instead of 503.
+
+        Reproduce the exact production nesting (``self._engine`` is
+        the wrapper; the scheduler is at ``self._engine.engine.scheduler``)
+        and assert the gate actually fires at the cap. Without the
+        fix the second ``check_admission`` would return silently
+        because ``cap`` would be derived from a missing scheduler."""
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+
+        eng = BatchedEngine.__new__(BatchedEngine)
+        eng._is_mllm = False
+        eng._mllm_scheduler = None
+        eng._admission_lock = threading.Lock()
+        eng._admission_reservations = 0
+
+        class _Stub:
+            pass
+
+        scheduler_stub = _Stub()
+        scheduler_stub.config = SchedulerConfig(max_concurrent_requests=1)
+        scheduler_stub.requests = {}
+
+        # Match the production indirection exactly.
+        inner_engine_stub = _Stub()
+        inner_engine_stub.scheduler = scheduler_stub
+        async_engine_stub = _Stub()
+        async_engine_stub.engine = inner_engine_stub
+        eng._engine = async_engine_stub
+
+        eng.check_admission()
+        assert eng._admission_reservations == 1
+        with pytest.raises(BackpressureError):
+            eng.check_admission()
+
+        # Sanity: without the inner indirection (the pre-fix lookup
+        # path), the gate would silently no-op. Drop the inner
+        # engine and verify check_admission does NOT reserve — pins
+        # the codex R4 root cause so a future regression that
+        # forgets the wrapper would fail this test too.
+        eng_no_inner = BatchedEngine.__new__(BatchedEngine)
+        eng_no_inner._is_mllm = False
+        eng_no_inner._mllm_scheduler = None
+        eng_no_inner._admission_lock = threading.Lock()
+        eng_no_inner._admission_reservations = 0
+        # ``self._engine`` exists but has no ``engine`` attribute —
+        # exactly the pre-fix shape that bypassed admission. The
+        # gate should treat this as "not initialised yet" (early
+        # return) rather than crash.
+        eng_no_inner._engine = _Stub()
+        eng_no_inner.check_admission()
+        assert eng_no_inner._admission_reservations == 0
