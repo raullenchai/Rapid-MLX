@@ -35,12 +35,21 @@ def _first_text(response) -> str:
 
 results = {}
 
+# Reasoning models burn dozens-to-hundreds of tokens inside the
+# ``thinking`` block before emitting any visible text — give them
+# enough headroom on small models (qwen3-0.6b) to finish thinking +
+# answer. Per-test caps are unchanged in spirit (small enough that a
+# loop is still bounded); they're just lifted off the old 50-token
+# floor that pre-dated thinking-block emission in v0.6.56.
+_MAX_TOKENS_SHORT = 256
+_MAX_TOKENS_LONG = 384
+
 # === 1. Plain message ===
 print("=== Test 1: Plain message ===")
 try:
     r = client.messages.create(
         model=MODEL_ID,
-        max_tokens=50,
+        max_tokens=_MAX_TOKENS_SHORT,
         messages=[
             {"role": "user", "content": "What is 2+2? Reply with just the number."}
         ],
@@ -58,7 +67,7 @@ print("\n=== Test 2: System prompt ===")
 try:
     r = client.messages.create(
         model=MODEL_ID,
-        max_tokens=50,
+        max_tokens=_MAX_TOKENS_SHORT,
         system="You are a calculator. Output only the integer result.",
         messages=[{"role": "user", "content": "9 * 8"}],
     )
@@ -78,7 +87,9 @@ try:
         {"role": "assistant", "content": "Got it, your favorite color is blue."},
         {"role": "user", "content": "What is my favorite color?"},
     ]
-    r = client.messages.create(model=MODEL_ID, max_tokens=80, messages=msgs)
+    r = client.messages.create(
+        model=MODEL_ID, max_tokens=_MAX_TOKENS_LONG, messages=msgs
+    )
     text = _first_text(r)
     assert "blue" in text.lower(), text
     print(f"PASS: {text[:80]}")
@@ -93,7 +104,7 @@ try:
     chunks = []
     with client.messages.stream(
         model=MODEL_ID,
-        max_tokens=80,
+        max_tokens=_MAX_TOKENS_LONG,
         messages=[{"role": "user", "content": "Count from 1 to 5, comma-separated."}],
     ) as stream:
         for text in stream.text_stream:
