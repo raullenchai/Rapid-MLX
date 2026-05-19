@@ -173,26 +173,26 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     _validate_model_name(request.model)
     engine = get_engine(request.model)
 
-    # Pre-flight admission gate (C4). Runs BEFORE returning the
-    # StreamingResponse so a backpressured streaming request surfaces
-    # as HTTP 503 (Retry-After) instead of a 200 stream with an
-    # error-data chunk. The reservation is released by the route-level
-    # ``finally`` (calls ``_release_admission_unless_committed``);
-    # on the streaming path ``_commit_state[0]`` is flipped to True so
-    # ``_disconnect_guard`` (via its ``engine=`` kwarg) owns the
-    # release once the SSE generator closes. Closes the codex R3 leak
-    # where validation errors raised between the reservation and the
-    # helper used to pin the slot until restart — after
-    # ``max_concurrent_requests`` such bad requests the cap was
-    # permanently exhausted.
-    _check_admission_or_503(engine)
+    # Admission reservation is acquired LATER — after cloud-routing
+    # decision (codex R9: cloud-routable requests must not be 503'd
+    # solely because the local engine is at cap; they bypass local
+    # generation entirely) and after the cheap validation that may
+    # raise HTTPException (codex R3: validation errors used to pin
+    # the slot until restart, exhausting the cap via a trivial
+    # malformed-JSON DoS). ``_commit_state[0] = True`` is flipped
+    # right before returning a StreamingResponse so
+    # ``_disconnect_guard`` owns release after the SSE generator
+    # closes; the route-level ``finally`` releases for non-streaming
+    # and cloud paths.
     _commit_state = [False]
+    _admission_acquired = [False]
     try:
         return await _create_chat_completion_impl(
-            request, raw_request, engine, _commit_state
+            request, raw_request, engine, _commit_state, _admission_acquired
         )
     finally:
-        _release_admission_unless_committed(engine, _commit_state[0])
+        if _admission_acquired[0]:
+            _release_admission_unless_committed(engine, _commit_state[0])
 
 
 async def _create_chat_completion_impl(
@@ -200,10 +200,13 @@ async def _create_chat_completion_impl(
     raw_request: Request,
     engine,
     _commit_state: list[bool],
+    _admission_acquired: list[bool],
 ):
-    """Inner impl for ``create_chat_completion`` after admission has
-    been acquired by the wrapper. ``_commit_state[0] = True`` defers
-    the slot release to ``_disconnect_guard`` for streaming paths."""
+    """Inner impl for ``create_chat_completion``. Admission is
+    reserved inside this function — after cloud-routing decision
+    and after cheap validation — to avoid (a) 503'ing
+    cloud-routable requests when the local engine is full and
+    (b) leaking the slot on validation HTTPException paths."""
     # Validate messages is non-empty
     if not request.messages:
         raise HTTPException(
@@ -506,15 +509,14 @@ async def _create_chat_completion_impl(
                         for t in request.tools
                     ]
                 # Cloud-routed request: the local scheduler/Metal path
-                # is bypassed entirely, so the admission slot reserved
-                # at route entry shouldn't be held for the cloud
-                # round-trip. Release it now (and flip the commit flag
-                # so the route-level finally doesn't double-release).
-                # Without this, a burst of long cloud-routed requests
-                # could exhaust the local cap and 503 unrelated local
-                # requests while the local engine is idle (codex R8).
-                _release_admission_unless_committed(engine, _commit_state[0])
-                _commit_state[0] = True
+                # is bypassed entirely, so admission is not acquired
+                # for cloud paths. The wrapper's ``finally`` checks
+                # ``_admission_acquired[0]`` (still False here) and
+                # skips the release. Without this ordering (admission
+                # check moved BELOW the cloud routing block), a burst
+                # of local requests filling the cap would 503
+                # cloud-routable requests that never touch the local
+                # engine (codex R9).
                 if request.stream:
                     return StreamingResponse(
                         _disconnect_guard(
@@ -548,6 +550,15 @@ async def _create_chat_completion_impl(
             logger.warning(
                 f"[CLOUD ROUTE] Error during routing check: {e}, falling back to local"
             )
+
+    # Local-path admission gate: reserve a slot before kicking the
+    # engine. Placed AFTER cloud routing so cloud-routable requests
+    # don't 503 just because the local cap is full (codex R9), and
+    # AFTER the cheap validation above so a malformed request can't
+    # pin a slot until restart (codex R3). The wrapper's ``finally``
+    # uses ``_admission_acquired`` to decide whether to release.
+    _check_admission_or_503(engine)
+    _admission_acquired[0] = True
 
     if request.stream:
         # Validate chat template eagerly so template errors return 400
