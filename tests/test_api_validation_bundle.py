@@ -668,13 +668,23 @@ class TestMLLMBatchGeneratorFailsLoud:
     """Before C2, image/video processing failures (404, decode error,
     auth) were logged at WARN and the broken input was silently dropped
     from the request — the model then captioned a non-existent image
-    and hallucinated. Verify the new HTTPException path is wired up.
+    and hallucinated.
+
+    The new code raises ``ValueError`` (NOT HTTPException) because
+    ``_preprocess_request`` runs inside ``MLLMBatchGenerator.next()``,
+    which is called from ``MLLMScheduler._step()``. That step catches
+    ``(ValueError, RuntimeError)`` narrowly and converts the failure
+    into a ``finish_reason="error"`` response for the request. An
+    HTTPException would bubble past the narrow catch into
+    ``_process_loop``'s generic ``except Exception``, which only logs
+    — the client would hang until timeout instead of getting a
+    structured error. (Caught by codex review on PR #416.)
 
     Structural test (grep-based) instead of full async invocation: the
-    real `_prepare_pixel_values` requires a model registry, GPU init,
+    real ``_preprocess_request`` requires a model registry, GPU init,
     and an event loop. The bug class we're guarding against is "did
-    someone reintroduce the silent-drop pattern", which a structural
-    check catches with zero setup cost.
+    someone reintroduce the silent-drop pattern OR re-raise as a type
+    the scheduler can't catch", which structural checks pin cheaply.
     """
 
     def _source(self):
@@ -684,24 +694,42 @@ class TestMLLMBatchGeneratorFailsLoud:
 
         return Path(mod.__file__).read_text()
 
-    def test_image_branch_raises_http_400(self):
+    def test_image_branch_raises_value_error(self):
         src = self._source()
-        # The image except-block must raise HTTPException with 400, not
-        # logger.warning. Asserting on both halves means future
-        # refactors can move the block but cannot regress to silent.
         assert "Failed to process image" in src
-        # Window straddles the marker (HTTPException(...) wraps it).
+        # Window straddles the marker so we see the raise above it.
         idx = src.find("Failed to process image")
         window = src[max(0, idx - 200) : idx + 200]
-        assert "HTTPException" in window
-        assert "400" in window
+        assert "raise ValueError" in window
+        # The old silent-drop pattern must not return.
         assert 'logger.warning(f"Failed to process image' not in src
+        # And we must NOT use HTTPException here — the scheduler's
+        # narrow except catches ValueError/RuntimeError only.
+        assert "HTTPException" not in window
 
-    def test_video_branch_raises_http_400(self):
+    def test_video_branch_raises_value_error(self):
         src = self._source()
         assert "Failed to process video" in src
         idx = src.find("Failed to process video")
         window = src[max(0, idx - 200) : idx + 200]
-        assert "HTTPException" in window
-        assert "400" in window
+        assert "raise ValueError" in window
         assert 'logger.warning(f"Failed to process video' not in src
+        assert "HTTPException" not in window
+
+    def test_scheduler_catches_value_error_from_preprocess(self):
+        """Pins the contract that motivates the choice of ValueError:
+        ``MLLMScheduler._step`` must catch ``(ValueError, RuntimeError)``
+        around ``self.batch_generator.next()``. If a future refactor
+        narrows that catch or wraps the call site differently, our
+        C2 fix silently regresses to "client hangs"."""
+        from pathlib import Path
+
+        import vllm_mlx.mllm_scheduler as sched_mod
+
+        src = Path(sched_mod.__file__).read_text()
+        # Find the next() call and assert the surrounding catch.
+        idx = src.find("self.batch_generator.next()")
+        assert idx != -1, "MLLMScheduler no longer calls batch_generator.next()"
+        window = src[max(0, idx - 100) : idx + 400]
+        assert "try:" in window
+        assert "except (ValueError, RuntimeError)" in window
