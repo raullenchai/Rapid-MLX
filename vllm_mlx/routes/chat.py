@@ -44,6 +44,7 @@ from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
     _TOOL_USE_SYSTEM_SUFFIX,
     _build_usage,
+    _check_admission_or_503,
     _disconnect_guard,
     _extract_streaming_token_logprobs,
     _finalize_content_and_reasoning,
@@ -170,6 +171,13 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     """
     _validate_model_name(request.model)
     engine = get_engine(request.model)
+
+    # Pre-flight admission gate (C4). Runs BEFORE returning the
+    # StreamingResponse so a backpressured streaming request surfaces
+    # as HTTP 503 (Retry-After) instead of a 200 stream with an
+    # error-data chunk. Non-streaming requests get a second-chance
+    # catch inside ``_wait_with_disconnect`` for the race window.
+    _check_admission_or_503(engine)
 
     # Validate messages is non-empty
     if not request.messages:

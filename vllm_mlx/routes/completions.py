@@ -19,6 +19,7 @@ from ..api.models import (
 from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
+    _check_admission_or_503,
     _disconnect_guard,
     _resolve_max_tokens,
     _resolve_model_name,
@@ -52,6 +53,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             ),
         )
     engine = get_engine(request.model)
+
+    # Pre-flight admission gate (C4) — see chat.py for rationale.
+    _check_admission_or_503(engine)
 
     # Handle single prompt or list of prompts
     prompts = request.prompt if isinstance(request.prompt, list) else [request.prompt]

@@ -38,6 +38,32 @@ _FALLBACK_TEMPERATURE = 0.7
 _FALLBACK_TOP_P = 0.9
 
 
+def _check_admission_or_503(engine) -> None:
+    """Pre-flight admission gate for route handlers.
+
+    Calls ``engine.check_admission()`` (sync, ~µs); if the cap is
+    exceeded, raises HTTP 503 with Retry-After before any response
+    body is sent. This is necessary for streaming routes — once
+    ``StreamingResponse`` starts yielding, headers are flushed and
+    the only way to signal backpressure would be an SSE error chunk
+    on a 200 response.
+
+    Engines without a scheduler yet (mid-init) silently no-op via
+    ``check_admission``'s own guard.
+    """
+    from ..scheduler import BackpressureError
+
+    check = getattr(engine, "check_admission", None)
+    if check is None:
+        # Engine doesn't implement admission control (e.g. test stub) —
+        # fall through to the runtime catch in ``_wait_with_disconnect``.
+        return
+    try:
+        check()
+    except BackpressureError as exc:
+        _raise_backpressure_503(exc)
+
+
 def _raise_backpressure_503(exc: Exception) -> None:
     """Convert ``BackpressureError`` from the scheduler into HTTP 503
     with a Retry-After header (RFC 9110 §10.2.4).

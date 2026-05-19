@@ -329,6 +329,44 @@ class BatchedEngine(BaseEngine):
         """Check if this is a multimodal model."""
         return self._is_mllm
 
+    def check_admission(self) -> None:
+        """Synchronous admission control gate.
+
+        Raises ``BackpressureError`` if scheduling another request
+        would exceed ``max_concurrent_requests``. Routes call this
+        BEFORE returning a ``StreamingResponse`` so streaming
+        backpressure surfaces as HTTP 503 (not as a 200 stream with
+        an error-data chunk).
+
+        There IS a residual race: between this check and the actual
+        ``add_request``, another request may fill the slot. The
+        second ``add_request`` then raises ``BackpressureError`` too,
+        which ``_wait_with_disconnect`` already catches for the
+        non-streaming path. For streaming, the race window is one
+        scheduler step (~milliseconds) so this is acceptable.
+        """
+        from ..scheduler import BackpressureError
+
+        if self._is_mllm and self._mllm_scheduler is not None:
+            cap = getattr(self._mllm_scheduler.config, "max_concurrent_requests", None)
+            in_flight = len(getattr(self._mllm_scheduler, "requests", {}) or {})
+        elif self._engine is not None and getattr(self._engine, "scheduler", None):
+            cap = getattr(
+                self._engine.scheduler.config, "max_concurrent_requests", None
+            )
+            in_flight = len(getattr(self._engine.scheduler, "requests", {}) or {})
+        else:
+            # Engine not fully initialised yet — admission control
+            # only applies once a scheduler exists. Let the actual
+            # add_request handle it (or fail naturally).
+            return
+
+        if cap is not None and cap > 0 and in_flight >= cap:
+            raise BackpressureError(
+                f"max_concurrent_requests={cap} reached "
+                f"(currently {in_flight} in-flight)"
+            )
+
     @property
     def tokenizer(self) -> Any:
         """Get the tokenizer."""

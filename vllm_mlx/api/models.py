@@ -13,7 +13,7 @@ import time
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 # =============================================================================
 # Content Types (for multimodal messages)
@@ -480,7 +480,13 @@ class EmbeddingRequest(BaseModel):
     # pipelines that pre-tokenize with a shared HF tokenizer send the
     # latter two forms — refusing them broke LangChain / LlamaIndex
     # integrations that hard-code the spec shape (R10 sweep H6).
-    input: str | list[str] | list[int] | list[list[int]]
+    #
+    # ``StrictInt`` / ``StrictStr`` so Pydantic does NOT silently
+    # coerce ``"123"`` → 123 (would be treated as token id 123, a
+    # different embedding from the word "123") or ``True`` → 1
+    # (Python ``bool`` is an ``int`` subclass; without ``StrictInt``
+    # a JSON ``true`` would pass as token id 1).
+    input: StrictStr | list[StrictStr] | list[StrictInt] | list[list[StrictInt]]
     model: str
     # Literal so an unknown value (typo like "base65" or "BASE64") 422s
     # at parse time rather than silently falling back to float — that

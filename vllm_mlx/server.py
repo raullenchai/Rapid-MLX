@@ -993,8 +993,8 @@ Examples:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=300.0,
-        help="Default request timeout in seconds (default: 300)",
+        default=1800.0,
+        help="Default request timeout in seconds (default: 1800 = 30 min)",
     )
     parser.add_argument(
         "--rate-limit",

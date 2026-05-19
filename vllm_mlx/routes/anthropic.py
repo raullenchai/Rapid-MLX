@@ -33,6 +33,7 @@ from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
 from ..service.helpers import (
     _build_usage,
+    _check_admission_or_503,
     _disconnect_guard,
     _finalize_content_and_reasoning,
     _parse_tool_calls_with_parser,
@@ -106,6 +107,9 @@ async def create_anthropic_message(
 
     _validate_model_name(anthropic_request.model)
     engine = get_engine(anthropic_request.model)
+
+    # Pre-flight admission gate (C4) — see routes/chat.py for rationale.
+    _check_admission_or_503(engine)
 
     # --- Detailed request logging ---
     n_msgs = len(anthropic_request.messages)

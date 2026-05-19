@@ -91,6 +91,18 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
                 detail=("input must be str, list[str], list[int], or list[list[int]]"),
             )
 
+        # Reject empty token sequences. ``[[]]`` would produce a
+        # zero-width tensor; ``[[1, 2], []]`` produces a row whose
+        # attention mask is all zeros (mlx-embeddings would either
+        # NaN or return a meaningless zero vector depending on the
+        # pooling head). Better to 400 with a clear message than
+        # ship garbage embeddings to a vector store.
+        if token_batches is not None and any(len(b) == 0 for b in token_batches):
+            raise HTTPException(
+                status_code=400,
+                detail="input must not contain empty token sequences",
+            )
+
         if request.dimensions is not None and request.dimensions < 1:
             raise HTTPException(
                 status_code=400,
