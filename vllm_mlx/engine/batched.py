@@ -389,11 +389,18 @@ class BatchedEngine(BaseEngine):
             )
             scheduler = getattr(inner_engine, "scheduler", None)
             if scheduler is None:
-                # Engine not fully initialised yet — admission control
-                # only applies once a scheduler exists. Let the actual
-                # add_request handle it (or fail naturally).
-                return
-            cap = getattr(scheduler.config, "max_concurrent_requests", None)
+                # Cold-start / pre-load window — the scheduler may not
+                # exist yet but a burst of streaming requests can
+                # still pour in. Fall back to the configured cap from
+                # ``self._scheduler_config`` so the reservation
+                # counter enforces backpressure even before
+                # ``_start_llm``/``_start_mllm`` finishes (codex R6
+                # P2: without this, cold-start requests slipped past
+                # admission and the late ``BackpressureError`` from
+                # ``add_request`` degraded to a 200 SSE error chunk).
+                cap = getattr(self._scheduler_config, "max_concurrent_requests", None)
+            else:
+                cap = getattr(scheduler.config, "max_concurrent_requests", None)
 
         if cap is None or cap <= 0:
             return

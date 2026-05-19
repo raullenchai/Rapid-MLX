@@ -804,21 +804,56 @@ class TestAdmissionControl:
 
         # Sanity: without the inner indirection (the pre-fix lookup
         # path), the gate would silently no-op. Drop the inner
-        # engine and verify check_admission does NOT reserve — pins
-        # the codex R4 root cause so a future regression that
-        # forgets the wrapper would fail this test too.
+        # engine and verify check_admission does NOT reserve unless
+        # a ``_scheduler_config`` is present (cold-start fallback,
+        # codex R6 P2). With neither, the gate cleanly no-ops
+        # rather than crash.
         eng_no_inner = BatchedEngine.__new__(BatchedEngine)
         eng_no_inner._is_mllm = False
         eng_no_inner._mllm_scheduler = None
         eng_no_inner._admission_lock = threading.Lock()
         eng_no_inner._admission_reservations = 0
+        eng_no_inner._scheduler_config = None
         # ``self._engine`` exists but has no ``engine`` attribute —
-        # exactly the pre-fix shape that bypassed admission. The
+        # exactly the pre-R4 shape that bypassed admission. The
         # gate should treat this as "not initialised yet" (early
-        # return) rather than crash.
+        # return via the cap=None fallback) rather than crash.
         eng_no_inner._engine = _Stub()
         eng_no_inner.check_admission()
         assert eng_no_inner._admission_reservations == 0
+
+    def test_check_admission_uses_scheduler_config_during_cold_start(self):
+        """Codex R6 P2 closure: during cold-start (``self._engine``
+        not yet wired or its inner ``engine.scheduler`` not yet
+        constructed), a burst of streaming requests must still be
+        gated against the *configured* cap, not slip through and have
+        the loser raise ``BackpressureError`` inside the response
+        generator.
+
+        Reproduce the cold-start window by leaving ``self._engine``
+        unset and assert ``check_admission`` reads the cap from
+        ``self._scheduler_config`` and reserves under the atomic
+        lock just like the post-init path."""
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+
+        eng = BatchedEngine.__new__(BatchedEngine)
+        eng._is_mllm = False
+        eng._mllm_scheduler = None
+        # No engine yet — pre-``start()`` cold-start window.
+        eng._engine = None
+        eng._admission_lock = threading.Lock()
+        eng._admission_reservations = 0
+        eng._scheduler_config = SchedulerConfig(max_concurrent_requests=1)
+
+        eng.check_admission()
+        assert eng._admission_reservations == 1
+        # Second reservation: cap reached, must raise.
+        with pytest.raises(BackpressureError):
+            eng.check_admission()
+        assert eng._admission_reservations == 1
 
     def test_mllm_scheduler_inherits_configured_concurrent_cap(self):
         """Codex R5 closure: a server started with
