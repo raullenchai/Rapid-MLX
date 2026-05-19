@@ -84,6 +84,55 @@ class EmbeddingEngine:
         # Convert to Python lists for JSON serialization
         return embeds.tolist()
 
+    def embed_tokens(self, token_batches: list[list[int]]) -> list[list[float]]:
+        """Embed pre-tokenized inputs (OpenAI spec input formats 3 and 4).
+
+        Skips the tokenizer entirely — the caller has already produced
+        token IDs (typically from a shared HF tokenizer in a retrieval
+        pipeline). We still need to right-pad to a uniform length to
+        form a batch tensor and build the matching attention mask.
+
+        Args:
+            token_batches: List of pre-tokenized inputs. Each inner
+                list is a sequence of token IDs.
+
+        Returns:
+            List of embedding vectors (one per input).
+        """
+        self._ensure_loaded()
+
+        if not token_batches:
+            return []
+
+        # Pad each sequence to the longest in the batch, capped at the
+        # same 512 ceiling as the str path so client-controlled
+        # ``input`` cannot allocate unbounded memory.
+        max_len = min(max(len(ids) for ids in token_batches), 512)
+        pad_id = (
+            getattr(self._tokenizer, "pad_token_id", None)
+            or getattr(
+                getattr(self._tokenizer, "_tokenizer", self._tokenizer),
+                "pad_token_id",
+                None,
+            )
+            or 0
+        )
+        padded = []
+        masks = []
+        for ids in token_batches:
+            ids = list(ids)[:max_len]
+            n = len(ids)
+            pad = max_len - n
+            padded.append(ids + [pad_id] * pad)
+            masks.append([1] * n + [0] * pad)
+
+        input_ids = mx.array(padded)
+        attention_mask = mx.array(masks)
+
+        output = self._model(input_ids, attention_mask=attention_mask)
+        embeds: mx.array = output.text_embeds
+        return embeds.tolist()
+
     def count_tokens(self, texts: str | list[str]) -> int:
         """Approximate token count for usage reporting."""
         self._ensure_loaded()

@@ -48,7 +48,12 @@ class ServerConfig:
     # --- Defaults ---
     default_max_tokens: int = 4096
     thinking_token_budget: int = 2048
-    default_timeout: float = 300.0
+    # 1800s (30 min) matches vLLM and most OpenAI-compat proxy
+    # defaults. The old 300s default silently truncated reasoning
+    # generations (DeepSeek-R1, Qwen-thinking) and 30B+ greedy
+    # completions that needed >5 min of decode. Override via
+    # CLI ``--timeout`` or per-request ``timeout`` field.
+    default_timeout: float = 1800.0
     default_temperature: float | None = None
     default_top_p: float | None = None
     default_top_k: int | None = None

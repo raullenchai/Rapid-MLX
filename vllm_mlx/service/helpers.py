@@ -38,6 +38,28 @@ _FALLBACK_TEMPERATURE = 0.7
 _FALLBACK_TOP_P = 0.9
 
 
+def _raise_backpressure_503(exc: Exception) -> None:
+    """Convert ``BackpressureError`` from the scheduler into HTTP 503
+    with a Retry-After header (RFC 9110 §10.2.4).
+
+    Backpressure is a normal load-shedding outcome, not a bug — clients
+    that respect Retry-After can simply re-queue. Without this catch,
+    the error reaches FastAPI's generic 500 handler and the client
+    sees an opaque ``Internal server error`` body, defeating the
+    point of admission control.
+    """
+    raise HTTPException(
+        status_code=503,
+        # 1s is a sensible default — the cap usually clears within
+        # a few tokens of decode on the saturated batch.
+        headers={"Retry-After": "1"},
+        detail=(
+            "Server is busy (max concurrent requests reached). "
+            f"Retry after the Retry-After delay. ({exc})"
+        ),
+    )
+
+
 def _finalize_content_and_reasoning(
     raw_text: str,
     cleaned_text: str,
@@ -769,8 +791,17 @@ async def _wait_with_disconnect(
     timeout: float,
     poll_interval: float = 0.5,
 ):
-    """Run a coroutine with both timeout and client disconnect detection."""
+    """Run a coroutine with both timeout and client disconnect detection.
+
+    Also catches ``BackpressureError`` from admission control and
+    re-raises as HTTP 503 with Retry-After (RFC 9110 §10.2.4). Doing
+    the conversion here means every route that goes through this
+    helper (chat, completions, anthropic) gets correct 503 semantics
+    without each one wiring its own try/except.
+    """
     import time as _time
+
+    from ..scheduler import BackpressureError
 
     _t0 = _time.monotonic()
 
@@ -822,7 +853,10 @@ async def _wait_with_disconnect(
                 pass
             return None
 
-        return task.result()
+        try:
+            return task.result()
+        except BackpressureError as exc:
+            _raise_backpressure_503(exc)
 
     finally:
         if not disconnect_task.done():

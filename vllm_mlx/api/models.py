@@ -474,7 +474,13 @@ class EmbeddingRequest(BaseModel):
     # to an error and 500 every embeddings request.
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
-    input: str | list[str]
+    # OpenAI spec lists 4 input shapes: ``str``, ``list[str]``,
+    # ``list[int]`` (single pre-tokenized input), and
+    # ``list[list[int]]`` (batch of pre-tokenized inputs). Production
+    # pipelines that pre-tokenize with a shared HF tokenizer send the
+    # latter two forms — refusing them broke LangChain / LlamaIndex
+    # integrations that hard-code the spec shape (R10 sweep H6).
+    input: str | list[str] | list[int] | list[list[int]]
     model: str
     # Literal so an unknown value (typo like "base65" or "BASE64") 422s
     # at parse time rather than silently falling back to float — that

@@ -21,7 +21,9 @@ class TestServerConfig:
         assert cfg.model_name is None
         assert cfg.default_max_tokens == 4096
         assert cfg.thinking_token_budget == 2048
-        assert cfg.default_timeout == 300.0
+        # Bumped 300 → 1800 (PR H22): 5min default silently truncated
+        # reasoning generations and 30B+ greedy decodes.
+        assert cfg.default_timeout == 1800.0
         assert cfg.api_key is None
         assert cfg.gc_control is True
         assert cfg.enable_auto_tool_choice is False

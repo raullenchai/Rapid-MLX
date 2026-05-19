@@ -176,7 +176,7 @@ _model_path: str | None = (
 )
 _default_max_tokens: int = 4096
 _thinking_token_budget: int = 2048  # Extra tokens added for thinking models
-_default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes)
+_default_timeout: float = 1800.0  # Default request timeout in seconds (30 minutes)
 _default_temperature: float | None = None  # Set via --default-temperature
 _default_top_p: float | None = None  # Set via --default-top-p
 _default_top_k: int | None = None  # Set via --default-top-k

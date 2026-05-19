@@ -62,10 +62,34 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
 
         load_embedding_model(model_name, lock=False, reuse_existing=True)
 
-        texts = request.input if isinstance(request.input, list) else [request.input]
-
-        if not texts:
+        # OpenAI spec supports 4 input shapes (see EmbeddingRequest):
+        #   str                — single text
+        #   list[str]          — batch of texts
+        #   list[int]          — single pre-tokenized
+        #   list[list[int]]    — batch of pre-tokenized
+        # The int forms must NOT go through the str path: ``str(101)``
+        # is a different embedding from token id 101.
+        raw_input = request.input
+        token_batches: list[list[int]] | None = None
+        texts: list[str] | None = None
+        if isinstance(raw_input, str):
+            texts = [raw_input]
+        elif isinstance(raw_input, list) and not raw_input:
             raise HTTPException(status_code=400, detail="Input must not be empty")
+        elif isinstance(raw_input, list) and all(isinstance(x, str) for x in raw_input):
+            texts = raw_input
+        elif isinstance(raw_input, list) and all(isinstance(x, int) for x in raw_input):
+            token_batches = [list(raw_input)]
+        elif isinstance(raw_input, list) and all(
+            isinstance(x, list) and all(isinstance(t, int) for t in x)
+            for x in raw_input
+        ):
+            token_batches = [list(x) for x in raw_input]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=("input must be str, list[str], list[int], or list[list[int]]"),
+            )
 
         if request.dimensions is not None and request.dimensions < 1:
             raise HTTPException(
@@ -74,11 +98,19 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
             )
 
         start_time = time.perf_counter()
-        prompt_tokens = cfg.embedding_engine.count_tokens(texts)
-        embeddings = cfg.embedding_engine.embed(texts)
+        if token_batches is not None:
+            # count_tokens for pre-tokenized: trust the caller's count
+            # (capped at 512 same as embed_tokens does).
+            prompt_tokens = sum(min(len(b), 512) for b in token_batches)
+            embeddings = cfg.embedding_engine.embed_tokens(token_batches)
+            n_inputs = len(token_batches)
+        else:
+            prompt_tokens = cfg.embedding_engine.count_tokens(texts)
+            embeddings = cfg.embedding_engine.embed(texts)
+            n_inputs = len(texts)
         elapsed = time.perf_counter() - start_time
         logger.info(
-            f"Embeddings: {len(texts)} inputs, {prompt_tokens} tokens in {elapsed:.2f}s"
+            f"Embeddings: {n_inputs} inputs, {prompt_tokens} tokens in {elapsed:.2f}s"
         )
 
         # Optional truncation (OpenAI MRL semantics). Sliced post-embed
