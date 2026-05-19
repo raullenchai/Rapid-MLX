@@ -194,11 +194,18 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             detail="n > 1 is not supported. Rapid-MLX generates one completion per request.",
         )
 
-    # Validate max_tokens (must be positive)
+    # Validate max_tokens. Lower bound: must be positive. Upper bound: a
+    # hard sanity ceiling so a buggy client passing 999_999_999 cannot
+    # combine with unbounded admission to OOM the Metal allocator.
     if request.max_tokens is not None and request.max_tokens < 1:
         raise HTTPException(
             status_code=400,
             detail="max_tokens must be at least 1",
+        )
+    if request.max_tokens is not None and request.max_tokens > 1_000_000:
+        raise HTTPException(
+            status_code=400,
+            detail="max_tokens must be at most 1000000",
         )
 
     # Validate temperature range (OpenAI spec: 0-2)
@@ -210,6 +217,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             detail="temperature must be between 0 and 2",
         )
 
+    # Validate top_p range (OpenAI spec: (0, 1]). Without this, top_p=2.0
+    # is silently accepted while sister field `temperature` is checked,
+    # so clients with a bug see no signal.
+    if request.top_p is not None and (request.top_p <= 0 or request.top_p > 1):
+        raise HTTPException(
+            status_code=400,
+            detail="top_p must be in (0, 1]",
+        )
+
     # Validate top_logprobs range (OpenAI spec: 0-20)
     if request.top_logprobs is not None and (
         request.top_logprobs < 0 or request.top_logprobs > 20
@@ -217,6 +233,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         raise HTTPException(
             status_code=400,
             detail="top_logprobs must be between 0 and 20",
+        )
+
+    # Reject non-empty logit_bias with a clear 400 rather than silently
+    # dropping it. We accept {} so defensive clients that always include
+    # the field don't break.
+    if request.logit_bias:
+        raise HTTPException(
+            status_code=400,
+            detail="logit_bias is not supported on this server",
         )
 
     # --- Detailed request logging ---

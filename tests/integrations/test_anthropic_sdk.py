@@ -18,19 +18,43 @@ client = Anthropic(
     api_key="not-needed",
 )
 
+
+def _first_text(response) -> str:
+    """Return the first text block's text from an Anthropic response.
+
+    Models with reasoning enabled now emit a ``thinking`` block first
+    (PR #414, v0.6.56), so the legacy ``response.content[0].text`` lookup
+    raises ``AttributeError: 'ThinkingBlock' object has no attribute 'text'``.
+    Walk the content list and return the first ``type='text'`` block.
+    """
+    for block in response.content:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    raise AssertionError(f"No text block in response.content: {response.content}")
+
+
 results = {}
+
+# Reasoning models burn dozens-to-hundreds of tokens inside the
+# ``thinking`` block before emitting any visible text — give them
+# enough headroom on small models (qwen3-0.6b) to finish thinking +
+# answer. Per-test caps are unchanged in spirit (small enough that a
+# loop is still bounded); they're just lifted off the old 50-token
+# floor that pre-dated thinking-block emission in v0.6.56.
+_MAX_TOKENS_SHORT = 256
+_MAX_TOKENS_LONG = 384
 
 # === 1. Plain message ===
 print("=== Test 1: Plain message ===")
 try:
     r = client.messages.create(
         model=MODEL_ID,
-        max_tokens=50,
+        max_tokens=_MAX_TOKENS_SHORT,
         messages=[
             {"role": "user", "content": "What is 2+2? Reply with just the number."}
         ],
     )
-    text = r.content[0].text
+    text = _first_text(r)
     assert "4" in text, text
     print(f"PASS: {text[:80]}")
     results["1_plain"] = "PASS"
@@ -43,11 +67,11 @@ print("\n=== Test 2: System prompt ===")
 try:
     r = client.messages.create(
         model=MODEL_ID,
-        max_tokens=50,
+        max_tokens=_MAX_TOKENS_SHORT,
         system="You are a calculator. Output only the integer result.",
         messages=[{"role": "user", "content": "9 * 8"}],
     )
-    text = r.content[0].text
+    text = _first_text(r)
     assert "72" in text, text
     print(f"PASS: {text[:80]}")
     results["2_system"] = "PASS"
@@ -63,8 +87,10 @@ try:
         {"role": "assistant", "content": "Got it, your favorite color is blue."},
         {"role": "user", "content": "What is my favorite color?"},
     ]
-    r = client.messages.create(model=MODEL_ID, max_tokens=80, messages=msgs)
-    text = r.content[0].text
+    r = client.messages.create(
+        model=MODEL_ID, max_tokens=_MAX_TOKENS_LONG, messages=msgs
+    )
+    text = _first_text(r)
     assert "blue" in text.lower(), text
     print(f"PASS: {text[:80]}")
     results["3_multi_turn"] = "PASS"
@@ -78,7 +104,7 @@ try:
     chunks = []
     with client.messages.stream(
         model=MODEL_ID,
-        max_tokens=80,
+        max_tokens=_MAX_TOKENS_LONG,
         messages=[{"role": "user", "content": "Count from 1 to 5, comma-separated."}],
     ) as stream:
         for text in stream.text_stream:

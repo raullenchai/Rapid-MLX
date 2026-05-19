@@ -11,10 +11,17 @@ from ..middleware.auth import verify_api_key
 
 logger = logging.getLogger(__name__)
 
+# Probe endpoints (no auth) — exposed for k8s/LB liveness+readiness checks
+# which cannot send Authorization headers by default. Without splitting,
+# `--api-key X` makes every probe fail and pods get marked unhealthy.
+probe_router = APIRouter()
+
+# Management endpoints (auth-gated when --api-key is configured) — request
+# cancellation, cache clears, internal /v1/status snapshot.
 router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
-@router.get("/health")
+@probe_router.get("/health")
 async def health():
     """Health check endpoint.
 
@@ -55,7 +62,7 @@ async def health():
     }
 
 
-@router.get("/health/ready")
+@probe_router.get("/health/ready")
 async def health_ready():
     """Strict readiness probe — 503 until lifespan startup is fully done.
 
@@ -70,6 +77,27 @@ async def health_ready():
     if not cfg.ready:
         raise HTTPException(status_code=503, detail="model loading")
     return {"ready": True, "model": cfg.model_name}
+
+
+@probe_router.get("/healthz")
+async def healthz():
+    """k8s-convention alias for /health. Many orchestrator templates default
+    to /healthz; without this alias they 404 and the operator has to override
+    every chart."""
+    return await health()
+
+
+@probe_router.get("/readyz")
+async def readyz():
+    """k8s-convention alias for /health/ready."""
+    return await health_ready()
+
+
+@probe_router.get("/livez")
+async def livez():
+    """k8s liveness probe — 200 if the process is alive. Does not check
+    model readiness; for that use /readyz."""
+    return {"status": "alive"}
 
 
 @router.post("/v1/requests/{request_id}/cancel")
@@ -166,9 +194,15 @@ async def status():
             "peak_memory_gb": stats.get("metal_peak_memory_gb"),
             "cache_memory_gb": stats.get("metal_cache_memory_gb"),
         },
-        "cache": stats.get("memory_aware_cache")
-        or stats.get("paged_cache")
-        or stats.get("prefix_cache"),
+        # Always emit an object (never null) so dashboards with strict
+        # number-or-object schemas don't crash when prefix cache is
+        # disabled via --disable-prefix-cache.
+        "cache": (
+            stats.get("memory_aware_cache")
+            or stats.get("paged_cache")
+            or stats.get("prefix_cache")
+            or {"enabled": False}
+        ),
         "requests": stats.get("requests", []),
     }
 

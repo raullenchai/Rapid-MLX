@@ -11,8 +11,9 @@ These models define the request and response schemas for:
 
 import time
 import uuid
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # =============================================================================
 # Content Types (for multimodal messages)
@@ -209,6 +210,10 @@ class ChatCompletionRequest(BaseModel):
     # Logprobs
     logprobs: bool | None = None
     top_logprobs: int | None = None  # 0-20, per OpenAI spec
+    # OpenAI extended spec — declared so Pydantic stops silently dropping
+    # it. Currently rejected with 400 in routes/chat.py if non-empty;
+    # mapping to mlx-lm's logits processor is tracked separately.
+    logit_bias: dict[str, float] | None = None
     # MLLM-specific parameters
     video_fps: float | None = None
     video_max_frames: int | None = None
@@ -455,9 +460,30 @@ class AudioSeparationRequest(BaseModel):
 class EmbeddingRequest(BaseModel):
     """Request for text embeddings (OpenAI compatible)."""
 
+    # extra="forbid" turns silent-drop into a 422 with a clear field name.
+    # Without it, fields like `dimensions` or `encoding_format` typos pass
+    # through and the user only notices when the response shape is wrong.
+    # protected_namespaces=() suppresses the Pydantic v2 warning about
+    # the `model` field colliding with the reserved `model_` prefix; a
+    # future Pydantic point release could otherwise promote that warning
+    # to an error and 500 every embeddings request.
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
     input: str | list[str]
     model: str
-    encoding_format: str | None = "float"  # "float" or "base64"
+    # Literal so an unknown value (typo like "base65" or "BASE64") 422s
+    # at parse time rather than silently falling back to float — that
+    # silent fallback is the same class of bug this PR exists to close.
+    encoding_format: Literal["float", "base64"] | None = "float"
+    # OpenAI spec: per-vector truncation. Common for MRL-style models
+    # (text-embedding-3-large, nomic-embed-text-v1.5). Implemented in
+    # the route as a post-embed slice + L2 renormalization (required
+    # for the truncated vector to remain a valid embedding for cosine
+    # similarity per the OpenAI cookbook).
+    dimensions: int | None = None
+    # OpenAI abuse-tracking field. Accepted (not validated) so clients
+    # using the upstream SDK don't see a 422 on unknown field.
+    user: str | None = None
 
 
 class EmbeddingData(BaseModel):
@@ -465,7 +491,9 @@ class EmbeddingData(BaseModel):
 
     object: str = "embedding"
     index: int
-    embedding: list[float]
+    # `list[float]` for encoding_format="float"; base64-encoded float32
+    # little-endian bytes (as ASCII string) for encoding_format="base64".
+    embedding: list[float] | str
 
 
 class EmbeddingUsage(BaseModel):

@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Embeddings endpoint."""
 
+import base64
 import logging
+import math
+import struct
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -64,6 +67,12 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
         if not texts:
             raise HTTPException(status_code=400, detail="Input must not be empty")
 
+        if request.dimensions is not None and request.dimensions < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="dimensions must be a positive integer",
+            )
+
         start_time = time.perf_counter()
         prompt_tokens = cfg.embedding_engine.count_tokens(texts)
         embeddings = cfg.embedding_engine.embed(texts)
@@ -72,9 +81,48 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
             f"Embeddings: {len(texts)} inputs, {prompt_tokens} tokens in {elapsed:.2f}s"
         )
 
-        data = [
-            EmbeddingData(index=i, embedding=vec) for i, vec in enumerate(embeddings)
-        ]
+        # Optional truncation (OpenAI MRL semantics). Sliced post-embed
+        # because mlx-embeddings doesn't expose a native dim parameter,
+        # then L2-renormalized so the resulting vector is still a valid
+        # unit-norm embedding for cosine similarity (matches OpenAI
+        # cookbook recommendation for text-embedding-3-large).
+        if request.dimensions is not None:
+            full_dim = len(list(embeddings[0]))
+            if request.dimensions > full_dim:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"dimensions={request.dimensions} exceeds the "
+                        f"model's native embedding size of {full_dim}"
+                    ),
+                )
+
+            truncated: list[list[float]] = []
+            for vec in embeddings:
+                sliced = list(vec)[: request.dimensions]
+                norm = math.sqrt(sum(x * x for x in sliced))
+                if norm > 0:
+                    sliced = [x / norm for x in sliced]
+                truncated.append(sliced)
+            embeddings = truncated
+
+        # encoding_format=base64 per OpenAI spec — float32 little-endian
+        # bytes, base64-encoded as ASCII. Saves ~2-4× bandwidth on large
+        # batches and is the default for several OpenAI client SDKs.
+        if request.encoding_format == "base64":
+            encoded: list[list[float] | str] = []
+            for vec in embeddings:
+                vec_list = list(vec)
+                packed = struct.pack(f"<{len(vec_list)}f", *vec_list)
+                encoded.append(base64.b64encode(packed).decode("ascii"))
+            data = [
+                EmbeddingData(index=i, embedding=enc) for i, enc in enumerate(encoded)
+            ]
+        else:
+            data = [
+                EmbeddingData(index=i, embedding=list(vec))
+                for i, vec in enumerate(embeddings)
+            ]
 
         return EmbeddingResponse(
             data=data,

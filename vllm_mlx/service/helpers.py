@@ -406,8 +406,16 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
 
 def _validate_model_name(request_model: str) -> None:
     """Validate that the request model name matches a served model."""
-    if not request_model:
+    if request_model is None:
         return
+    # Empty string used to short-circuit to the default model silently,
+    # masking client bugs (a typo or unset env var would still get a 200).
+    # OpenAI returns 400 for empty model fields; do the same.
+    if request_model == "":
+        raise HTTPException(
+            status_code=400,
+            detail="model must not be empty",
+        )
 
     cfg = get_config()
     if cfg.model_registry and request_model in cfg.model_registry:

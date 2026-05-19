@@ -9,6 +9,8 @@ These are pure Pydantic models with no MLX dependency.
 import json
 import time
 
+import pytest
+
 from vllm_mlx.api.models import (
     AssistantMessage,
     AudioSeparationRequest,
@@ -285,6 +287,25 @@ class TestChatCompletion:
         assert req.video_fps == 1.0
         assert req.video_max_frames == 16
 
+    def test_logit_bias_declared(self):
+        """logit_bias must round-trip through the schema. Without an
+        explicit declaration Pydantic silently drops the field on parse,
+        so any rejection in the route handler never sees it."""
+        req = ChatCompletionRequest(
+            model="test-model",
+            messages=[Message(role="user", content="Hello")],
+            logit_bias={"50000": -100.0, "12345": 5.5},
+        )
+        assert req.logit_bias == {"50000": -100.0, "12345": 5.5}
+
+    def test_logit_bias_defaults_none(self):
+        """logit_bias is optional and defaults to None when omitted."""
+        req = ChatCompletionRequest(
+            model="test-model",
+            messages=[Message(role="user", content="Hello")],
+        )
+        assert req.logit_bias is None
+
     def test_assistant_message_reasoning(self):
         msg = AssistantMessage(
             content="The answer is 42.",
@@ -542,6 +563,32 @@ class TestEmbeddingModels:
         data = EmbeddingData(index=0, embedding=[0.1, 0.2, 0.3])
         assert data.object == "embedding"
         assert len(data.embedding) == 3
+
+    def test_embedding_data_accepts_base64_string(self):
+        """embedding may also be a base64-encoded string when the request
+        used encoding_format=base64."""
+        data = EmbeddingData(index=0, embedding="AAAAAA==")
+        assert data.embedding == "AAAAAA=="
+
+    def test_embedding_request_accepts_dimensions(self):
+        """OpenAI MRL-style truncation field must round-trip; previously
+        the field was silently dropped by the schema."""
+        req = EmbeddingRequest(input="hi", model="bert", dimensions=128)
+        assert req.dimensions == 128
+
+    def test_embedding_request_accepts_user(self):
+        """OpenAI abuse-tracking field must be accepted (not validated)."""
+        req = EmbeddingRequest(input="hi", model="bert", user="account-42")
+        assert req.user == "account-42"
+
+    def test_embedding_request_rejects_unknown_fields(self):
+        """extra='forbid' surfaces unknown fields as 422 errors rather
+        than silently dropping them. Catches typos like ``encodingformat``
+        or fields the server hasn't implemented yet."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            EmbeddingRequest(input="hi", model="bert", unknown_field="oops")
 
     def test_embedding_usage(self):
         usage = EmbeddingUsage(prompt_tokens=5, total_tokens=5)

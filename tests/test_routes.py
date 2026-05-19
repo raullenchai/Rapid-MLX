@@ -59,9 +59,10 @@ def mock_registry():
 
 class TestHealthRoutes:
     def _make_app(self):
-        from vllm_mlx.routes.health import router
+        from vllm_mlx.routes.health import probe_router, router
 
         app = FastAPI()
+        app.include_router(probe_router)
         app.include_router(router)
         return app
 
@@ -182,16 +183,20 @@ class TestHealthRoutes:
     @pytest.mark.parametrize(
         ("method", "path"),
         [
-            ("get", "/health"),
-            ("get", "/health/ready"),
             ("post", "/v1/cache/clear"),
             ("get", "/v1/status"),
             ("get", "/v1/cache/stats"),
             ("delete", "/v1/cache"),
         ],
     )
-    def test_health_router_requires_api_key_when_configured(self, method, path):
-        """Health, status, and cache management routes honor API auth."""
+    def test_management_router_requires_api_key_when_configured(self, method, path):
+        """Management routes (cache, status) honor API auth.
+
+        Probe endpoints (/health, /healthz, /livez, /readyz) are NOT in
+        this list — they live on a separate no-auth router so k8s/LB
+        liveness checks work when --api-key is set. See
+        test_probes_bypass_api_key.
+        """
         orig = self._patch_config(api_key="test-secret", ready=True)
         try:
             app = self._make_app()
@@ -201,6 +206,64 @@ class TestHealthRoutes:
 
             assert r.status_code == 401
             assert r.json()["detail"] == "API key required"
+        finally:
+            self._restore_config(orig)
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/health", "/healthz", "/health/ready", "/readyz", "/livez"],
+    )
+    def test_probes_bypass_api_key(self, path, mock_engine):
+        """Probe endpoints must be reachable without auth, even when
+        --api-key is configured. k8s/AWS ALB/GCP probes cannot send
+        Authorization headers by default; without this split, every probe
+        marks the pod unhealthy."""
+        orig = self._patch_config(
+            api_key="test-secret",
+            engine=mock_engine,
+            mcp_manager=None,
+            model_name="test-model",
+            ready=True,
+        )
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+
+            r = client.get(path)
+
+            assert r.status_code == 200, (
+                f"{path} should return 200 with no auth header, got "
+                f"{r.status_code}: {r.text}"
+            )
+        finally:
+            self._restore_config(orig)
+
+    @pytest.mark.parametrize(
+        ("path", "expected_keys"),
+        [
+            ("/healthz", {"status", "ready", "model_loaded"}),
+            ("/readyz", {"ready", "model"}),
+            ("/livez", {"status"}),
+        ],
+    )
+    def test_k8s_probe_aliases_match_canonical_shape(
+        self, path, expected_keys, mock_engine
+    ):
+        """k8s-convention aliases return the same JSON shape as their
+        canonical counterparts (/health, /health/ready) so dashboards
+        and probe specs can use either path interchangeably."""
+        orig = self._patch_config(
+            engine=mock_engine,
+            mcp_manager=None,
+            model_name="test-model",
+            ready=True,
+        )
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+            r = client.get(path)
+            assert r.status_code == 200
+            assert expected_keys.issubset(r.json().keys())
         finally:
             self._restore_config(orig)
 

@@ -17,6 +17,15 @@ import os
 import sys
 
 
+def _log_level_choice(value: str) -> str:
+    """Argparse ``type`` callable: normalize to upper-case so
+    ``--log-level info`` is accepted as ``INFO``. Named (not a lambda)
+    so argparse's error messages read sensibly instead of
+    ``invalid <lambda> value``.
+    """
+    return value.upper()
+
+
 def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     """Print fuzzy suggestions + a curated popular-models hint.
 
@@ -2736,10 +2745,10 @@ Examples:
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
     serve_parser.add_argument(
         "--log-level",
-        type=str,
+        type=_log_level_choice,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="INFO",
-        help="Log level for Python logging and uvicorn",
+        help="Log level for Python logging and uvicorn (case-insensitive)",
     )
     serve_parser.add_argument(
         "--max-num-seqs", type=int, default=256, help="Max concurrent sequences"
