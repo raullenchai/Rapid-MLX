@@ -398,7 +398,19 @@ class BatchedEngine(BaseEngine):
                 # P2: without this, cold-start requests slipped past
                 # admission and the late ``BackpressureError`` from
                 # ``add_request`` degraded to a 200 SSE error chunk).
-                cap = getattr(self._scheduler_config, "max_concurrent_requests", None)
+                # When the engine was constructed without an explicit
+                # ``scheduler_config`` (e.g. ``load_model`` defaults,
+                # tests, or programmatic ``BatchedEngine(...)``
+                # callers), ``self._scheduler_config`` is ``None`` —
+                # use the dataclass default so the gate still
+                # enforces 256 instead of silently degrading to a
+                # no-op (codex R10 P2).
+                from ..scheduler import SchedulerConfig
+
+                sc = self._scheduler_config
+                if sc is None:
+                    sc = SchedulerConfig()
+                cap = getattr(sc, "max_concurrent_requests", None)
             else:
                 cap = getattr(scheduler.config, "max_concurrent_requests", None)
 

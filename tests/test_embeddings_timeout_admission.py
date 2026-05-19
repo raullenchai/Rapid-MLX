@@ -802,12 +802,14 @@ class TestAdmissionControl:
         with pytest.raises(BackpressureError):
             eng.check_admission()
 
-        # Sanity: without the inner indirection (the pre-fix lookup
-        # path), the gate would silently no-op. Drop the inner
-        # engine and verify check_admission does NOT reserve unless
-        # a ``_scheduler_config`` is present (cold-start fallback,
-        # codex R6 P2). With neither, the gate cleanly no-ops
-        # rather than crash.
+        # Sanity: without the inner indirection (the pre-R4 lookup
+        # path), AND without an explicit ``_scheduler_config``, the
+        # gate must still enforce the SchedulerConfig dataclass
+        # default of 256 (codex R10 closure — the prior behavior
+        # of silently no-op'ing here let cold-start streaming
+        # bursts slip past preflight and only the late
+        # scheduler-level BackpressureError fired, degrading to a
+        # 200 SSE error chunk).
         eng_no_inner = BatchedEngine.__new__(BatchedEngine)
         eng_no_inner._is_mllm = False
         eng_no_inner._mllm_scheduler = None
@@ -815,12 +817,11 @@ class TestAdmissionControl:
         eng_no_inner._admission_reservations = 0
         eng_no_inner._scheduler_config = None
         # ``self._engine`` exists but has no ``engine`` attribute —
-        # exactly the pre-R4 shape that bypassed admission. The
-        # gate should treat this as "not initialised yet" (early
-        # return via the cap=None fallback) rather than crash.
+        # the pre-R4 shape. The gate now reserves under the
+        # default cap (256) rather than no-op'ing.
         eng_no_inner._engine = _Stub()
         eng_no_inner.check_admission()
-        assert eng_no_inner._admission_reservations == 0
+        assert eng_no_inner._admission_reservations == 1
 
     def test_check_admission_uses_scheduler_config_during_cold_start(self):
         """Codex R6 P2 closure: during cold-start (``self._engine``
@@ -1044,6 +1045,42 @@ class TestAdmissionControl:
         # max_num_seqs (or anything else) for memory protection.
         cfg = SchedulerConfig(max_num_seqs=8, max_concurrent_requests=8)
         assert cfg.max_concurrent_requests == 8
+
+    def test_cold_start_admission_uses_default_cap_when_config_is_none(self):
+        """Codex R10 closure: when ``BatchedEngine`` is constructed
+        without an explicit ``scheduler_config`` (the ``load_model``
+        default + direct test callers), ``self._scheduler_config`` is
+        ``None`` until the engine finishes starting. The cold-start
+        fallback must default to ``SchedulerConfig().max_concurrent_requests``
+        (256) rather than silently no-op'ing — otherwise a streaming
+        burst at startup slips past preflight and only the
+        scheduler-level ``BackpressureError`` fires, degrading to a
+        200 SSE error chunk."""
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+
+        engine = MagicMock(spec=BatchedEngine)
+        engine._admission_lock = threading.Lock()
+        engine._is_mllm = False
+        engine._mllm_scheduler = None
+        # No scheduler yet (cold-start) AND no scheduler_config (the
+        # exact path codex R10 flagged).
+        engine._engine = None
+        engine._scheduler_config = None
+
+        default_cap = SchedulerConfig().max_concurrent_requests
+        engine._admission_reservations = default_cap
+
+        with pytest.raises(BackpressureError):
+            BatchedEngine.check_admission(engine)
+
+        # One slot below cap still admits — confirms the gate is
+        # active and using the default cap, not unbounded.
+        engine._admission_reservations = default_cap - 1
+        BatchedEngine.check_admission(engine)
+        assert engine._admission_reservations == default_cap
 
     def test_cloud_routable_chat_not_rejected_at_local_cap(self, monkeypatch):
         """Codex R9 closure: when ``cfg.cloud_router`` is enabled and
