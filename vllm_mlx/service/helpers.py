@@ -71,6 +71,39 @@ def _check_admission_or_503(engine) -> None:
         _raise_backpressure_503(exc)
 
 
+def _release_admission_unless_committed(engine, committed: bool) -> None:
+    """Release a slot reserved by ``_check_admission_or_503`` unless
+    release responsibility has been handed off to a streaming helper.
+
+    Pair with a route-handler ``try/finally``: set a local
+    ``_admission_committed_to_helper = False`` right after the
+    reservation, flip to ``True`` immediately before returning a
+    ``StreamingResponse(_disconnect_guard(..., engine=engine))``
+    (the helper releases when the SSE generator closes), and call
+    this from the ``finally``. Closes the codex R3 leak — validation
+    errors (``messages=[]``, invalid ``max_tokens``, unsupported
+    image-on-text, ``response_format`` schema errors,
+    chat-template errors, …) that previously pinned a slot until
+    restart now drop the slot via this finally.
+
+    ``release_admission_reservation`` is idempotent below zero so a
+    stray double release (defensive callers, helper fires just as
+    the route handler also releases) cannot corrupt the accounting.
+    """
+    if committed:
+        return
+    release = getattr(engine, "release_admission_reservation", None)
+    if release is None:
+        return
+    try:
+        release()
+    except Exception:
+        logger.warning(
+            "release_admission_reservation raised on route finally",
+            exc_info=True,
+        )
+
+
 def _raise_backpressure_503(exc: Exception) -> None:
     """Convert ``BackpressureError`` from the scheduler into HTTP 503
     with a Retry-After header (RFC 9110 §10.2.4).
@@ -843,7 +876,6 @@ async def _wait_with_disconnect(
     raw_request: Request,
     timeout: float,
     poll_interval: float = 0.5,
-    engine=None,
 ):
     """Run a coroutine with both timeout and client disconnect detection.
 
@@ -853,11 +885,12 @@ async def _wait_with_disconnect(
     helper (chat, completions, anthropic) gets correct 503 semantics
     without each one wiring its own try/except.
 
-    When ``engine`` is provided, releases its admission reservation in
-    the ``finally`` clause — mirrors ``_disconnect_guard`` for the
-    non-streaming path so a slot acquired by ``_check_admission_or_503``
-    is always returned to the pool (whether the request completed,
-    timed out, the client disconnected, or backpressure fired).
+    Admission release is the caller's responsibility — wrap the route
+    handler in ``with _admission_slot(engine):`` so the slot is
+    released on ``with`` exit (covering normal completion, validation
+    errors, timeouts, and disconnects). Releasing inside this helper
+    would drop the slot *before* the route handler's post-processing
+    finishes, briefly under-counting in-flight requests.
     """
     import time as _time
 
@@ -923,13 +956,3 @@ async def _wait_with_disconnect(
             disconnect_task.cancel()
         if not task.done():
             task.cancel()
-        if engine is not None:
-            release = getattr(engine, "release_admission_reservation", None)
-            if release is not None:
-                try:
-                    release()
-                except Exception:
-                    logger.warning(
-                        "[wait_with_disconnect] release_admission_reservation raised",
-                        exc_info=True,
-                    )

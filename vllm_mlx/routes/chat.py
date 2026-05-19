@@ -51,6 +51,7 @@ from ..service.helpers import (
     _inject_json_instruction,
     _maybe_pin_system_prompt,
     _parse_tool_calls_with_parser,
+    _release_admission_unless_committed,
     _resolve_enable_thinking,
     _resolve_max_tokens,
     _resolve_model_name,
@@ -175,10 +176,34 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     # Pre-flight admission gate (C4). Runs BEFORE returning the
     # StreamingResponse so a backpressured streaming request surfaces
     # as HTTP 503 (Retry-After) instead of a 200 stream with an
-    # error-data chunk. Non-streaming requests get a second-chance
-    # catch inside ``_wait_with_disconnect`` for the race window.
+    # error-data chunk. The reservation is released by the route-level
+    # ``finally`` (calls ``_release_admission_unless_committed``);
+    # on the streaming path ``_commit_state[0]`` is flipped to True so
+    # ``_disconnect_guard`` (via its ``engine=`` kwarg) owns the
+    # release once the SSE generator closes. Closes the codex R3 leak
+    # where validation errors raised between the reservation and the
+    # helper used to pin the slot until restart — after
+    # ``max_concurrent_requests`` such bad requests the cap was
+    # permanently exhausted.
     _check_admission_or_503(engine)
+    _commit_state = [False]
+    try:
+        return await _create_chat_completion_impl(
+            request, raw_request, engine, _commit_state
+        )
+    finally:
+        _release_admission_unless_committed(engine, _commit_state[0])
 
+
+async def _create_chat_completion_impl(
+    request: ChatCompletionRequest,
+    raw_request: Request,
+    engine,
+    _commit_state: list[bool],
+):
+    """Inner impl for ``create_chat_completion`` after admission has
+    been acquired by the wrapper. ``_commit_state[0] = True`` defers
+    the slot release to ``_disconnect_guard`` for streaming paths."""
     # Validate messages is non-empty
     if not request.messages:
         raise HTTPException(
@@ -481,6 +506,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         for t in request.tools
                     ]
                 if request.stream:
+                    _commit_state[0] = True
                     return StreamingResponse(
                         _disconnect_guard(
                             cfg.cloud_router.stream_completion(
@@ -498,7 +524,6 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         cfg.cloud_router.completion(cloud_messages, **cloud_kwargs),
                         raw_request,
                         timeout=request.timeout or cfg.default_timeout,
-                        engine=engine,
                     )
                     if result is None:
                         return Response(status_code=499, content="Client disconnected")
@@ -538,6 +563,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         detail=f"Chat template error: {err_msg}",
                     )
                 raise
+        _commit_state[0] = True
         return StreamingResponse(
             _disconnect_guard(
                 stream_chat_completion(engine, messages, request, **chat_kwargs),
@@ -593,31 +619,26 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                     ),
                     raw_request,
                     timeout=timeout,
-                    engine=engine,
                 )
             except Exception as guided_err:
                 logger.warning(
                     f"Guided generation failed, falling back to standard: {guided_err}"
                 )
                 logger.debug(f"Problematic schema: {json_schema}")
-                # Re-reserve before falling back: the failed
-                # ``generate_with_schema`` already released the original
-                # reservation in its finally clause. Without a fresh
-                # ``check_admission`` the cap accounting would drift
-                # negative once the fallback's finally runs.
-                _check_admission_or_503(engine)
+                # Fallback runs under the outer admission reservation
+                # still held by the wrapper's ``finally`` — no
+                # re-acquire needed (the helper does not release on
+                # its own now that release lives at the route level).
                 output = await _wait_with_disconnect(
                     engine.chat(messages=messages, **chat_kwargs),
                     raw_request,
                     timeout=timeout,
-                    engine=engine,
                 )
         else:
             output = await _wait_with_disconnect(
                 engine.chat(messages=messages, **chat_kwargs),
                 raw_request,
                 timeout=timeout,
-                engine=engine,
             )
     except HTTPException:
         raise
@@ -644,21 +665,6 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         if cfg.gc_control and gc_was_enabled:
             gc.enable()
             gc.collect()
-        # Safety net for the want_logprobs/non-stream branch which calls
-        # ``engine.stream_chat`` directly (no ``_wait_with_disconnect``
-        # to handle release). The other branches already released via
-        # ``_wait_with_disconnect.finally``; ``release_admission_reservation``
-        # is idempotent below zero so calling it twice is harmless.
-        if want_logprobs and not use_guided:
-            release = getattr(engine, "release_admission_reservation", None)
-            if release is not None:
-                try:
-                    release()
-                except Exception:
-                    logger.warning(
-                        "release_admission_reservation raised",
-                        exc_info=True,
-                    )
 
     if output is None:
         return Response(status_code=499)

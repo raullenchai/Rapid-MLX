@@ -37,6 +37,7 @@ from ..service.helpers import (
     _disconnect_guard,
     _finalize_content_and_reasoning,
     _parse_tool_calls_with_parser,
+    _release_admission_unless_committed,
     _resolve_enable_thinking,
     _resolve_max_tokens,
     _resolve_temperature,
@@ -109,149 +110,159 @@ async def create_anthropic_message(
     engine = get_engine(anthropic_request.model)
 
     # Pre-flight admission gate (C4) — see routes/chat.py for rationale.
+    # Reservation released by the route-level ``finally`` below; on the
+    # streaming path ``_admission_committed`` flips to True so
+    # ``_disconnect_guard`` owns the release once the SSE generator
+    # closes. Closes the codex R3 leak (validation errors between the
+    # reservation and the helper used to pin the slot until restart).
     _check_admission_or_503(engine)
-
-    # --- Detailed request logging ---
-    n_msgs = len(anthropic_request.messages)
-    total_chars = 0
-    last_user_preview = ""
-    for m in anthropic_request.messages:
-        content = m.content if isinstance(m.content, str) else str(m.content)
-        total_chars += len(content)
-        if m.role == "user":
-            last_user_preview = content[:300]
-    sys_chars = len(anthropic_request.system) if anthropic_request.system else 0
-    n_tools = len(anthropic_request.tools) if anthropic_request.tools else 0
-    logger.info(
-        f"[REQUEST] POST /v1/messages (anthropic) stream={anthropic_request.stream} "
-        f"model={anthropic_request.model!r} max_tokens={anthropic_request.max_tokens} "
-        f"msgs={n_msgs} total_chars={total_chars} system_chars={sys_chars} "
-        f"tools={n_tools}"
-    )
-    logger.debug(f"[REQUEST] last user message preview: {last_user_preview!r}")
-
-    # Convert Anthropic request -> OpenAI request
-    openai_request = anthropic_to_openai(anthropic_request)
-
-    if anthropic_request.stream:
-        return StreamingResponse(
-            _disconnect_guard(
-                _stream_anthropic_messages(engine, openai_request, anthropic_request),
-                request,
-                engine=engine,
-            ),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
-
-    # Non-streaming: run inference through existing engine
-    messages, images, videos = extract_multimodal_content(
-        openai_request.messages,
-        preserve_native_format=engine.preserve_native_tool_format,
-    )
-
-    chat_kwargs = {
-        "max_tokens": _resolve_max_tokens(
-            openai_request.max_tokens,
-            _resolve_enable_thinking(openai_request),
-        ),
-        **_resolved_sampling_kwargs(openai_request),
-    }
-
-    if openai_request.tools:
-        chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
-    cfg = get_config()
-    # Resolve enable_thinking via shared helper (#387: chat_template_kwargs
-    # passthrough). Same precedence as the OpenAI route.
-    resolved_thinking = _resolve_enable_thinking(openai_request)
-    if resolved_thinking is not None:
-        chat_kwargs["enable_thinking"] = resolved_thinking
-
-    start_time = time.perf_counter()
-    timeout = cfg.default_timeout
-
+    _admission_committed = False
     try:
-        output = await _wait_with_disconnect(
-            engine.chat(messages=messages, **chat_kwargs),
-            request,
-            timeout=timeout,
-            engine=engine,
+        # --- Detailed request logging ---
+        n_msgs = len(anthropic_request.messages)
+        total_chars = 0
+        last_user_preview = ""
+        for m in anthropic_request.messages:
+            content = m.content if isinstance(m.content, str) else str(m.content)
+            total_chars += len(content)
+            if m.role == "user":
+                last_user_preview = content[:300]
+        sys_chars = len(anthropic_request.system) if anthropic_request.system else 0
+        n_tools = len(anthropic_request.tools) if anthropic_request.tools else 0
+        logger.info(
+            f"[REQUEST] POST /v1/messages (anthropic) stream={anthropic_request.stream} "
+            f"model={anthropic_request.model!r} max_tokens={anthropic_request.max_tokens} "
+            f"msgs={n_msgs} total_chars={total_chars} system_chars={sys_chars} "
+            f"tools={n_tools}"
         )
-    except HTTPException:
-        raise
-    except Exception as e:
-        err_msg = str(e)
-        err_type = type(e).__name__
-        if (
-            "TemplateError" in err_type
-            or "template" in err_msg.lower()
-            or ("user" in err_msg.lower() and "found" in err_msg.lower())
-        ):
-            raise HTTPException(
-                status_code=400, detail=f"Chat template error: {err_msg}"
-            )
-        raise
-    if output is None:
-        return Response(status_code=499)
+        logger.debug(f"[REQUEST] last user message preview: {last_user_preview!r}")
 
-    elapsed = time.perf_counter() - start_time
-    tokens_per_sec = output.completion_tokens / elapsed if elapsed > 0 else 0
-    logger.info(
-        f"Anthropic messages: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
-    )
+        # Convert Anthropic request -> OpenAI request
+        openai_request = anthropic_to_openai(anthropic_request)
 
-    # Parse tool calls
-    cleaned_text, tool_calls = _parse_tool_calls_with_parser(
-        output.text, openai_request
-    )
-
-    # Extract reasoning content via the same orchestration the OpenAI route
-    # uses (chat.py). Skipping this is what #413 fixed — the Anthropic surface
-    # used to silently drop ``<think>...</think>`` content on the non-streaming
-    # path while OpenAI preserved it as ``reasoning_content``.
-    cleaned_text, reasoning_text = _finalize_content_and_reasoning(
-        raw_text=output.text,
-        cleaned_text=cleaned_text,
-        tool_calls=tool_calls,
-        reasoning_parser=cfg.reasoning_parser,
-    )
-
-    final_content = None
-    if cleaned_text:
-        final_content = strip_thinking_tags(clean_output_text(cleaned_text))
-        # Final defense against special-token / markup leakage — mirrors
-        # chat.py:669 so the two surfaces don't diverge on what they
-        # consider "sanitized" client-facing content. Pre-existing gap
-        # flagged by codex during the #413 review.
-        final_content = sanitize_output(final_content)
-
-    finish_reason = "tool_calls" if tool_calls else output.finish_reason
-
-    openai_response = ChatCompletionResponse(
-        model=cfg.model_name or openai_request.model,
-        choices=[
-            ChatCompletionChoice(
-                message=AssistantMessage(
-                    content=final_content,
-                    reasoning_content=reasoning_text,
-                    tool_calls=tool_calls,
+        if anthropic_request.stream:
+            _admission_committed = True
+            return StreamingResponse(
+                _disconnect_guard(
+                    _stream_anthropic_messages(
+                        engine, openai_request, anthropic_request
+                    ),
+                    request,
+                    engine=engine,
                 ),
-                finish_reason=finish_reason,
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
             )
-        ],
-        usage=_build_usage(output, reasoning_text),
-    )
 
-    anthropic_response = openai_to_anthropic(
-        openai_response, cfg.model_name or anthropic_request.model
-    )
-    return Response(
-        content=anthropic_response.model_dump_json(exclude_none=True),
-        media_type="application/json",
-    )
+        # Non-streaming: run inference through existing engine
+        messages, images, videos = extract_multimodal_content(
+            openai_request.messages,
+            preserve_native_format=engine.preserve_native_tool_format,
+        )
+
+        chat_kwargs = {
+            "max_tokens": _resolve_max_tokens(
+                openai_request.max_tokens,
+                _resolve_enable_thinking(openai_request),
+            ),
+            **_resolved_sampling_kwargs(openai_request),
+        }
+
+        if openai_request.tools:
+            chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
+        cfg = get_config()
+        # Resolve enable_thinking via shared helper (#387: chat_template_kwargs
+        # passthrough). Same precedence as the OpenAI route.
+        resolved_thinking = _resolve_enable_thinking(openai_request)
+        if resolved_thinking is not None:
+            chat_kwargs["enable_thinking"] = resolved_thinking
+
+        start_time = time.perf_counter()
+        timeout = cfg.default_timeout
+
+        try:
+            output = await _wait_with_disconnect(
+                engine.chat(messages=messages, **chat_kwargs),
+                request,
+                timeout=timeout,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            err_msg = str(e)
+            err_type = type(e).__name__
+            if (
+                "TemplateError" in err_type
+                or "template" in err_msg.lower()
+                or ("user" in err_msg.lower() and "found" in err_msg.lower())
+            ):
+                raise HTTPException(
+                    status_code=400, detail=f"Chat template error: {err_msg}"
+                )
+            raise
+        if output is None:
+            return Response(status_code=499)
+
+        elapsed = time.perf_counter() - start_time
+        tokens_per_sec = output.completion_tokens / elapsed if elapsed > 0 else 0
+        logger.info(
+            f"Anthropic messages: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
+        )
+
+        # Parse tool calls
+        cleaned_text, tool_calls = _parse_tool_calls_with_parser(
+            output.text, openai_request
+        )
+
+        # Extract reasoning content via the same orchestration the OpenAI route
+        # uses (chat.py). Skipping this is what #413 fixed — the Anthropic surface
+        # used to silently drop ``<think>...</think>`` content on the non-streaming
+        # path while OpenAI preserved it as ``reasoning_content``.
+        cleaned_text, reasoning_text = _finalize_content_and_reasoning(
+            raw_text=output.text,
+            cleaned_text=cleaned_text,
+            tool_calls=tool_calls,
+            reasoning_parser=cfg.reasoning_parser,
+        )
+
+        final_content = None
+        if cleaned_text:
+            final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+            # Final defense against special-token / markup leakage — mirrors
+            # chat.py:669 so the two surfaces don't diverge on what they
+            # consider "sanitized" client-facing content. Pre-existing gap
+            # flagged by codex during the #413 review.
+            final_content = sanitize_output(final_content)
+
+        finish_reason = "tool_calls" if tool_calls else output.finish_reason
+
+        openai_response = ChatCompletionResponse(
+            model=cfg.model_name or openai_request.model,
+            choices=[
+                ChatCompletionChoice(
+                    message=AssistantMessage(
+                        content=final_content,
+                        reasoning_content=reasoning_text,
+                        tool_calls=tool_calls,
+                    ),
+                    finish_reason=finish_reason,
+                )
+            ],
+            usage=_build_usage(output, reasoning_text),
+        )
+
+        anthropic_response = openai_to_anthropic(
+            openai_response, cfg.model_name or anthropic_request.model
+        )
+        return Response(
+            content=anthropic_response.model_dump_json(exclude_none=True),
+            media_type="application/json",
+        )
+    finally:
+        _release_admission_unless_committed(engine, _admission_committed)
 
 
 @router.post(

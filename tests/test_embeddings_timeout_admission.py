@@ -633,3 +633,115 @@ class TestAdmissionControl:
         eng.release_admission_reservation()
         eng.release_admission_reservation()
         assert eng._admission_reservations == 0
+
+    def test_validation_error_does_not_leak_admission_slot(self, monkeypatch):
+        """Codex R3 BLOCKER closure: a 400 from validation (here,
+        ``messages=[]``) raised AFTER ``_check_admission_or_503``
+        reserved a slot must not leak the reservation. Under the old
+        flow, after ``max_concurrent_requests`` such bad requests the
+        cap was permanently exhausted and every subsequent valid
+        request received 503 until restart.
+
+        The route-level ``finally`` calls
+        ``_release_admission_unless_committed`` so the slot is
+        returned. Uses a ``MagicMock`` engine with the real atomic
+        admission counter + lock + ``release_admission_reservation``
+        method attached so the helper-side accounting under the
+        FastAPI test client is exercised end-to-end."""
+        import threading
+
+        from vllm_mlx.config import get_config
+        from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.routes import chat as chat_route
+        from vllm_mlx.scheduler import SchedulerConfig
+
+        app = FastAPI()
+        app.include_router(chat_route.router)
+
+        # MagicMock engine — ``MagicMock`` doesn't enforce
+        # ``BatchedEngine``'s read-only ``@property`` definitions, so
+        # we can set ``is_mllm`` / ``supports_guided_generation``
+        # directly while still binding the real admission methods to
+        # exercise the production accounting.
+        engine = MagicMock()
+        engine.is_mllm = False
+        engine.supports_guided_generation = False
+
+        # Wire the real admission state onto the mock. The route
+        # handler calls ``engine.check_admission()`` and
+        # ``engine.release_admission_reservation()`` — both bind
+        # through ``BatchedEngine`` against the mock's namespace, so
+        # ``engine._admission_reservations`` is what we'll assert
+        # against at the end.
+        engine._admission_lock = threading.Lock()
+        engine._admission_reservations = 0
+        engine._is_mllm = False
+        engine._mllm_scheduler = None
+
+        class _Stub:
+            pass
+
+        scheduler_stub = _Stub()
+        scheduler_stub.config = SchedulerConfig(max_concurrent_requests=2)
+        scheduler_stub.requests = {}
+
+        engine_stub = _Stub()
+        engine_stub.scheduler = scheduler_stub
+        engine._engine = engine_stub
+
+        # Bind the real methods so the counter is the source of truth.
+        engine.check_admission = lambda: BatchedEngine.check_admission(engine)
+        engine.release_admission_reservation = lambda: (
+            BatchedEngine.release_admission_reservation(engine)
+        )
+
+        cfg = get_config()
+        saved = {
+            k: getattr(cfg, k, None)
+            for k in (
+                "engine",
+                "model_name",
+                "model_alias",
+                "model_path",
+                "model_registry",
+                "tool_call_parser",
+                "reasoning_parser",
+                "ready",
+                "api_key",
+            )
+        }
+        cfg.engine = engine
+        cfg.model_name = "stub"
+        cfg.model_alias = None
+        cfg.model_path = None
+        cfg.model_registry = None
+        cfg.tool_call_parser = None
+        cfg.reasoning_parser = None
+        cfg.ready = True
+        cfg.api_key = None
+
+        monkeypatch.setattr(chat_route, "get_engine", lambda *_a, **_kw: engine)
+
+        try:
+            client = TestClient(app, raise_server_exceptions=False)
+            # Fire 5 requests that all fail validation with empty
+            # ``messages``. With cap=2, the old leaky flow would
+            # exhaust the cap after the 2nd request and the 3rd+
+            # would return 503 instead of 400.
+            statuses = []
+            for _ in range(5):
+                r = client.post(
+                    "/v1/chat/completions",
+                    json={"model": "stub", "messages": []},
+                )
+                statuses.append(r.status_code)
+        finally:
+            for k, v in saved.items():
+                setattr(cfg, k, v)
+
+        # Every request must surface as 400 (validation) — never 503
+        # (admission exhaustion). The reservation counter must end at
+        # zero, proving each request's slot was released by the
+        # route-level finally.
+        assert statuses == [400, 400, 400, 400, 400], statuses
+        assert engine._admission_reservations == 0
