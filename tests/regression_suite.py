@@ -439,6 +439,13 @@ def test_11():
     # ``list.get`` and turning into an EXCEPTION result that hides the
     # signal.
     p = parsed if isinstance(parsed, dict) else {}
+    # Same defensive idea for ``items``: a regression that produces
+    # ``items: null`` (or any non-iterable scalar) should print a
+    # deterministic per-check FAIL, not raise ``TypeError`` during
+    # ``checks`` construction and turn into an EXCEPTION result that
+    # hides the signal (codex R7 P3).
+    items_value = p.get("items")
+    items_iter = items_value if isinstance(items_value, list) else []
     checks = [
         ("top-level is object", isinstance(parsed, dict)),
         ("label is enum", p.get("label") in {"red", "green", "blue"}),
@@ -446,12 +453,12 @@ def test_11():
             "score is int in [1,10]",
             isinstance(p.get("score"), int) and 1 <= p["score"] <= 10,
         ),
-        ("items is list", isinstance(p.get("items"), list)),
+        ("items is list", isinstance(items_value, list)),
         (
             "every item is object with required fields",
             all(
                 isinstance(it, dict) and "name" in it and "qty" in it
-                for it in p.get("items", [])
+                for it in items_iter
             ),
         ),
     ]
