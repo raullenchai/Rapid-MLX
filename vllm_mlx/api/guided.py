@@ -169,6 +169,15 @@ class GuidedGenerator:
             # underlying ``JsonSchema`` class has been stable since the
             # feature first shipped, so importing it directly avoids
             # the surface-version dependency.
+            #
+            # Import failures are surfaced loudly (WARNING-level
+            # logger.exception with full traceback) before returning
+            # ``None`` so operators can detect that guided generation
+            # was silently disabled — DeepSeek R2 found that the prior
+            # bare ``logger.error`` swallowed the traceback for the new
+            # ``outlines.types.dsl`` import path, which on an older
+            # outlines without that submodule would otherwise look
+            # indistinguishable from a runtime generation failure.
             from outlines.types.dsl import JsonSchema
 
             schema_constraint = JsonSchema(json_schema)
@@ -179,8 +188,21 @@ class GuidedGenerator:
             )
             return result
 
-        except Exception as e:
-            logger.error(f"Guided generation failed: {e}")
+        except ImportError:
+            # Specifically distinguish "outlines installed but
+            # ``outlines.types.dsl`` missing/renamed" from a generic
+            # runtime failure — this is the failure mode the comment
+            # block above warns about. ``logger.exception`` includes
+            # the full traceback so the operator sees the import path
+            # that broke, not just a flat string.
+            logger.exception(
+                "Guided generation unavailable: import of outlines "
+                "constraint API failed. Falling back to unconstrained "
+                "generation."
+            )
+            return None
+        except Exception:
+            logger.exception("Guided generation failed")
             return None
 
     def generate_json_object(

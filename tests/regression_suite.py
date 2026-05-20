@@ -492,35 +492,26 @@ def test_11():
     # would pass every per-check above while violating ``anyOf`` and
     # ``additionalProperties: false`` — exactly the constraint class
     # this gate exists to enforce (codex R9 P3).
-    # Separate the import outcome from the validation outcome.
-    # ``jsonschema>=4.0.0`` is a declared project dependency, but the
-    # doctor harness may run against installs that strip optional
-    # extras. If the import itself fails, the master check is skipped
-    # (logged as ``-`` so it doesn't masquerade as a real FAIL and
-    # block deployment on a packaging gap — DeepSeek R1 finding); the
-    # per-check breakdown above still decides PASS/FAIL. If the import
-    # succeeds, any validation failure is a real schema regression.
-    schema_error: str | None = None
-    schema_check_label: str
-    schema_check_ok: bool
+    # ``jsonschema`` is a *hard* project dependency (declared in
+    # pyproject.toml, not under any optional extra), so the import is
+    # expected to succeed on every supported install. We deliberately
+    # do not soft-skip on ImportError: a missing dep is an env bug
+    # that should surface loudly, not silently downgrade this gate
+    # into the hand-written per-check subset (which doesn't cover
+    # ``additionalProperties: false`` or every ``anyOf`` branch and
+    # would let real schema regressions slip — DeepSeek R2 finding).
+    import jsonschema  # noqa: E402 — import-at-use is intentional here
+
     try:
-        import jsonschema
-    except ImportError:
-        schema_check_label = "matches declared json_schema (jsonschema unavailable)"
-        schema_check_ok = True  # neutral — don't fail the gate
-        print(
-            "  WARN: jsonschema package not importable in this env; "
-            "master schema check skipped"
-        )
-    else:
-        try:
-            jsonschema.validate(instance=parsed, schema=schema)
-            schema_check_ok = True
-        except jsonschema.exceptions.ValidationError as e:
-            schema_check_ok = False
-            schema_error = str(e)
-        schema_check_label = "matches declared json_schema (jsonschema.validate)"
-    checks.append((schema_check_label, schema_check_ok))
+        jsonschema.validate(instance=parsed, schema=schema)
+        schema_check_ok = True
+        schema_error: str | None = None
+    except jsonschema.exceptions.ValidationError as e:
+        schema_check_ok = False
+        schema_error = str(e)
+    checks.append(
+        ("matches declared json_schema (jsonschema.validate)", schema_check_ok)
+    )
 
     all_pass = all(ok for _, ok in checks)
     for label, ok in checks:
