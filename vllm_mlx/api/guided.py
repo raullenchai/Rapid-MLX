@@ -141,10 +141,11 @@ class GuidedGenerator:
     ) -> str | None:
         """Generate JSON output constrained to a schema.
 
-        Hands the raw schema dict to outlines via ``outlines.json_schema``,
-        which natively understands ``$defs``, ``$ref``, ``anyOf``, ``enum``,
-        numeric bounds, ``additionalProperties: false``, and nested
-        objects. The previous code path passed the schema through
+        Hands the raw schema dict to outlines via
+        ``outlines.types.dsl.JsonSchema``, which natively understands
+        ``$defs``, ``$ref``, ``anyOf``, ``enum``, numeric bounds,
+        ``additionalProperties: false``, and nested objects. The
+        previous code path passed the schema through
         ``json_schema_to_pydantic`` first — that converter silently
         dropped every one of those constructs, so outlines was given a
         Pydantic model that was a strict superset of the user's schema.
@@ -152,6 +153,10 @@ class GuidedGenerator:
         repro), this surfaced as outlines streaming a valid JSON array
         when the schema required an object. Pass the dict through and
         let outlines own schema interpretation.
+
+        (We import the ``JsonSchema`` class directly rather than going
+        through the top-level ``outlines.json_schema`` factory; see the
+        in-function comment for why.)
         """
         try:
             outlines_model = self._get_outlines_model()
