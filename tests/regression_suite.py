@@ -3,26 +3,18 @@
 
 Standalone script — the doctor harness invokes it via subprocess
 against a live server (``[py, str(script)]`` in
-``vllm_mlx/doctor/checks/api.py``). The ``test_*`` function names
-mean pytest will *try* to collect it when targeted directly (e.g.
-the diff-aware step in ``scripts/pr_validate``). Skip the collected
-items so a no-server pytest run doesn't fail every test with
-``URLError`` and surface as a regression of whichever new test was
-added (the doctor-harness subprocess path is unaffected — it never
-sees pytest markers).
+``vllm_mlx/doctor/checks/api.py``). NOT meant for pytest collection;
+``tests/conftest.py`` has a ``collect_ignore`` entry for this file
+so the diff-aware ``targeted_tests`` step doesn't try to run it
+without a live server (and so this module avoids a runtime
+``import pytest`` — pytest is dev-only and the doctor subprocess
+must work in clean source installs).
 """
 
 import json
 import os
 import urllib.error
 import urllib.request
-
-import pytest
-
-pytestmark = pytest.mark.skip(
-    reason="regression_suite.py is a standalone script run via subprocess "
-    "by the doctor harness against a live server, not via pytest."
-)
 
 # Port can be overridden by the doctor harness (which picks a free port).
 _PORT = os.environ.get("RAPID_MLX_PORT", "8777")

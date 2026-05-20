@@ -3,6 +3,19 @@
 
 import pytest
 
+_SCRIPT_ONLY_MODULES = {"regression_suite.py"}
+"""Files inside ``tests/`` that define ``test_*`` symbols but are
+actually standalone scripts invoked by the doctor harness via
+subprocess against a live server (see
+``vllm_mlx/doctor/checks/api.py``). pytest must not run them as
+unit tests — every call would fail with ``URLError`` and the
+diff-aware ``targeted_tests`` step in ``scripts/pr_validate``
+would flag any newly-added test in such a file as a regression.
+
+The marker lives in conftest (loaded only by pytest) so the
+script modules themselves don't take a runtime ``import pytest``
+dependency (pytest is dev-only; codex R3 closure)."""
+
 
 def pytest_addoption(parser):
     """Add custom command line options."""
@@ -44,6 +57,19 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip_integration)
+
+    # Skip items inside script-only modules (regression_suite.py etc.)
+    # — see ``_SCRIPT_ONLY_MODULES`` above. ``pytest_ignore_collect`` is
+    # not called when the file is named explicitly on the command line
+    # (which is exactly what ``scripts/pr_validate`` does for diff-
+    # adjacent files), so the skip has to happen post-collection.
+    skip_script_only = pytest.mark.skip(
+        reason="Standalone script — runs as subprocess via doctor harness, "
+        "not pytest. See tests/conftest.py::_SCRIPT_ONLY_MODULES."
+    )
+    for item in items:
+        if item.path.name in _SCRIPT_ONLY_MODULES:
+            item.add_marker(skip_script_only)
 
 
 @pytest.fixture(scope="session")
