@@ -520,67 +520,68 @@ class StreamingPostProcessor:
                 _fallback_text, request=self.request
             )
             if result.tools_called:
-                tc_list = [
-                    {
-                        "index": i,
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": tc["arguments"],
-                        },
-                    }
-                    for i, tc in enumerate(result.tool_calls)
-                ]
                 events.append(
-                    StreamEvent(
-                        type="tool_call",
-                        tool_calls=tc_list,
-                        finish_reason="tool_calls",
-                        tool_calls_detected=True,
+                    self._build_tool_call_event(
+                        ({"id": tc["id"], "name": tc["name"], "arguments": tc["arguments"]} for tc in result.tool_calls)
                     )
                 )
                 self.tool_calls_detected = True
             else:
-                # Cross-format fallback. The configured streaming parser is
-                # tightly bound to ONE wire format — e.g. ``qwen3_xml`` is
-                # registered to ``QwenToolParser`` which expects
-                # ``<tool_call>{"name":"...","arguments":{...}}</tool_call>``
-                # (JSON inside the wrapper), while vanilla Qwen3.6-35B-A3B
-                # emits the XML-bodied variant
-                # ``<tool_call><function=name><parameter=key>value</parameter></function></tool_call>``.
-                # ``parse_tool_calls`` in ``api/tool_calling.py`` scans every
-                # known format and recovers calls the per-parser
-                # ``extract_tool_calls`` misses. The non-stream path in
-                # ``service/helpers.py:604`` already falls back to it; this
-                # mirrors that on the streaming path so a wire-format
-                # mismatch surfaces as a structured tool call rather than
-                # ``finish_reason: stop`` with zero deltas. See #425.
-                _, fb_tcs = parse_tool_calls(_fallback_text, self.request)
+                # Cross-format fallback. The configured streaming parser is bound to
+                # ONE wire format; ``parse_tool_calls`` in ``api/tool_calling.py``
+                # scans every known format and recovers calls the per-parser path
+                # misses (e.g. ``qwen3_xml`` is registered to ``QwenToolParser``
+                # which expects JSON inside ``<tool_call>``, but Qwen3.6-35B-A3B
+                # emits the ``<function=name><parameter=...>`` XML body). The
+                # non-stream path at ``service/helpers.py:604`` already falls back;
+                # this mirrors it on streaming. Wrapped defensively to match the
+                # non-stream try/except — a parser bug must not abort the stream.
+                # See #425.
+                try:
+                    _, fb_tcs = parse_tool_calls(_fallback_text, self.request)
+                except Exception as e:
+                    logger.warning(
+                        "finalize cross-format fallback parser raised: %s", e
+                    )
+                    fb_tcs = None
                 if fb_tcs:
-                    tc_list = [
-                        {
-                            "index": i,
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for i, tc in enumerate(fb_tcs)
-                    ]
+                    logger.info(
+                        "[finalize] cross-format fallback recovered %d tool_call(s); "
+                        "configured parser=%r returned tools_called=False — "
+                        "consider whether --tool-call-parser matches the model's wire format",
+                        len(fb_tcs),
+                        getattr(self.cfg, "tool_call_parser", None),
+                    )
                     events.append(
-                        StreamEvent(
-                            type="tool_call",
-                            tool_calls=tc_list,
-                            finish_reason="tool_calls",
-                            tool_calls_detected=True,
+                        self._build_tool_call_event(
+                            ({"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments} for tc in fb_tcs)
                         )
                     )
                     self.tool_calls_detected = True
 
         return events
+
+    def _build_tool_call_event(self, items) -> StreamEvent:
+        """Build a tool_call StreamEvent from an iterable of {id, name, arguments} dicts.
+
+        Used by both finalize() branches (configured parser succeeded, and the
+        cross-format ``parse_tool_calls`` fallback) so the two paths can't drift
+        in wire shape.
+        """
+        return StreamEvent(
+            type="tool_call",
+            tool_calls=[
+                {
+                    "index": i,
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                }
+                for i, tc in enumerate(items)
+            ],
+            finish_reason="tool_calls",
+            tool_calls_detected=True,
+        )
 
     def _detect_tool_calls(self, content: str) -> dict | None:
         """Run incremental tool call detection.

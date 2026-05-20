@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for StreamingPostProcessor — the unified streaming pipeline."""
 
+import json
 from unittest.mock import MagicMock
 
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
@@ -367,8 +368,6 @@ class TestStreamingPostProcessorToolCalls:
         tc = events[0].tool_calls[0]
         assert tc["function"]["name"] == "read_file"
         # arguments is a JSON string; parse to assert the value
-        import json
-
         assert json.loads(tc["function"]["arguments"]) == {"path": "/etc/hostname"}
         assert pp.tool_calls_detected is True
 
@@ -392,6 +391,63 @@ class TestStreamingPostProcessorToolCalls:
         pp.tool_accumulated_text = "the value of x < 10 is fine"
 
         events = pp.finalize()
+        assert events == []
+        assert pp.tool_calls_detected is False
+
+    def test_finalize_cross_format_fallback_both_parsers_fail(self):
+        """Structural markup is present (passes the ``<`` pre-check) but the text
+        is not a parseable tool call in any known format. Both the configured
+        parser and ``parse_tool_calls`` return no calls. finalize() must return
+        ``[]`` cleanly and leave ``tool_calls_detected`` False — not raise, not
+        emit a spurious event."""
+        tool_parser = self._make_tool_parser()
+        tool_parser.extract_tool_calls.return_value = MagicMock(
+            tools_called=False, tool_calls=[]
+        )
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        # XML-shaped but not actually a tool call — no <function=...> or
+        # [Calling tool: ...] or {"name":...} structure parse_tool_calls
+        # recognises.
+        pp.tool_accumulated_text = "<tool_call>garbled junk no actual call</tool_call>"
+
+        events = pp.finalize()
+        assert events == []
+        assert pp.tool_calls_detected is False
+
+    def test_finalize_cross_format_fallback_swallows_parser_exception(self):
+        """``parse_tool_calls`` must not be allowed to abort the stream. If the
+        multi-format scanner raises (regex pathology, adversarial input), the
+        fallback logs a warning and returns ``[]`` rather than propagating.
+        Mirrors the defensive ``try/except`` in ``service/helpers.py:605-607``."""
+        tool_parser = self._make_tool_parser()
+        tool_parser.extract_tool_calls.return_value = MagicMock(
+            tools_called=False, tool_calls=[]
+        )
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+        pp.tool_accumulated_text = "<tool_call>anything</tool_call>"
+
+        # Force the fallback parser to raise
+        from unittest.mock import patch
+
+        with patch(
+            "vllm_mlx.service.postprocessor.parse_tool_calls",
+            side_effect=RuntimeError("boom"),
+        ):
+            events = pp.finalize()
+
         assert events == []
         assert pp.tool_calls_detected is False
 
