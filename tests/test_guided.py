@@ -1,9 +1,48 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for guided generation module."""
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _install_outlines_dsl_mock():
+    """Install mock ``outlines.types.dsl`` in ``sys.modules`` so the
+    ``from outlines.types.dsl import JsonSchema`` line inside
+    ``generate_json`` resolves even on machines where the optional
+    ``outlines`` dependency is not installed (e.g. the `dev` extra only).
+
+    Returns ``(mock_dsl, restore_callable)``. Callers must invoke
+    ``restore_callable`` in a ``finally`` block to put ``sys.modules``
+    back exactly as it was.
+    """
+    original_modules = {
+        name: sys.modules.get(name)
+        for name in ("outlines", "outlines.types", "outlines.types.dsl")
+    }
+    had = {name: name in sys.modules for name in original_modules}
+
+    # Reuse the existing `outlines` entry if present (so other tests
+    # patching `guided.outlines` continue to work); otherwise install
+    # a MagicMock placeholder. Same for `outlines.types`.
+    mock_outlines = sys.modules.get("outlines") or MagicMock()
+    mock_types = sys.modules.get("outlines.types") or MagicMock()
+    mock_dsl = MagicMock()
+    mock_dsl.JsonSchema = MagicMock(return_value=MagicMock())
+
+    sys.modules["outlines"] = mock_outlines
+    sys.modules["outlines.types"] = mock_types
+    sys.modules["outlines.types.dsl"] = mock_dsl
+
+    def restore():
+        for name, mod in original_modules.items():
+            if had[name]:
+                sys.modules[name] = mod
+            else:
+                sys.modules.pop(name, None)
+
+    return mock_dsl, restore
 
 
 class TestJsonSchemaToPydantic:
@@ -261,6 +300,10 @@ class TestGuidedGenerator:
         # Save original state
         original_has_outlines = guided.HAS_OUTLINES
         original_outlines = guided.outlines
+        # Also mock outlines.types.dsl so `from outlines.types.dsl import
+        # JsonSchema` inside generate_json resolves without the optional
+        # `guided` extra installed.
+        _mock_dsl, restore_dsl = _install_outlines_dsl_mock()
 
         try:
             guided.HAS_OUTLINES = True
@@ -298,6 +341,7 @@ class TestGuidedGenerator:
         finally:
             guided.HAS_OUTLINES = original_has_outlines
             guided.outlines = original_outlines
+            restore_dsl()
 
     def test_generate_json_returns_none_on_failure(self):
         """Test generate_json returns None on failure."""
@@ -306,6 +350,7 @@ class TestGuidedGenerator:
         # Save original state
         original_has_outlines = guided.HAS_OUTLINES
         original_outlines = guided.outlines
+        _mock_dsl, restore_dsl = _install_outlines_dsl_mock()
 
         try:
             guided.HAS_OUTLINES = True
@@ -332,6 +377,7 @@ class TestGuidedGenerator:
         finally:
             guided.HAS_OUTLINES = original_has_outlines
             guided.outlines = original_outlines
+            restore_dsl()
 
     def test_generate_json_object_with_mocked_outlines(self):
         """Test generate_json_object with mocked outlines."""
@@ -415,6 +461,7 @@ class TestGenerateWithSchema:
         # Save original state
         original_has_outlines = guided.HAS_OUTLINES
         original_outlines = guided.outlines
+        _mock_dsl, restore_dsl = _install_outlines_dsl_mock()
 
         try:
             guided.HAS_OUTLINES = True
@@ -444,6 +491,7 @@ class TestGenerateWithSchema:
         finally:
             guided.HAS_OUTLINES = original_has_outlines
             guided.outlines = original_outlines
+            restore_dsl()
 
 
 class TestEdgeCases:
