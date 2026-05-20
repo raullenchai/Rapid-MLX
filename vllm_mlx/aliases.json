@@ -169,6 +169,14 @@
     "is_hybrid": false,
     "supports_spec_decode": true
   },
+  "qwen3-0.6b-8bit": {
+    "hf_path": "mlx-community/Qwen3-0.6B-8bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
   "qwen3-4b-8bit": {
     "hf_path": "mlx-community/Qwen3-4B-8bit",
     "tool_call_parser": "hermes",
