@@ -392,7 +392,19 @@ def test_11():
         "properties": {
             "label": {"type": "string", "enum": ["red", "green", "blue"]},
             "score": {"type": "integer", "minimum": 1, "maximum": 10},
-            "items": {"type": "array", "items": {"$ref": "#/$defs/Item"}},
+            # ``minItems: 1`` is what makes this a meaningful gate of
+            # the ``$defs``/``$ref`` path. Without it, a model that
+            # returns ``items: []`` would still pass every check below
+            # (the inner ``all(...)`` is vacuously true on empty), and
+            # the regression would silently degrade to "did the model
+            # emit a string label and an integer score" without ever
+            # exercising the per-item ``$ref`` constraint this test
+            # exists to cover (codex R8 P3).
+            "items": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/Item"},
+                "minItems": 1,
+            },
         },
         "required": ["label", "score", "items"],
         "additionalProperties": False,
@@ -454,6 +466,13 @@ def test_11():
             isinstance(p.get("score"), int) and 1 <= p["score"] <= 10,
         ),
         ("items is list", isinstance(items_value, list)),
+        # Explicit non-empty assertion. The schema declares
+        # ``minItems: 1`` but we cross-check it here so that the
+        # ``every item ...`` check below is never vacuously true on an
+        # empty array — that would let a regression slip through
+        # without actually exercising the ``$defs``/``$ref`` path this
+        # gate exists to cover (codex R8 P3).
+        ("items is non-empty (minItems: 1)", len(items_iter) >= 1),
         (
             "every item is object with required fields",
             all(
