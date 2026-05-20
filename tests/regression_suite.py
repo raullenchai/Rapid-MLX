@@ -1,10 +1,28 @@
 #!/usr/bin/env python3.12
-"""Comprehensive regression and edge case test suite for Rapid-MLX."""
+"""Comprehensive regression and edge case test suite for Rapid-MLX.
+
+Standalone script — the doctor harness invokes it via subprocess
+against a live server (``[py, str(script)]`` in
+``vllm_mlx/doctor/checks/api.py``). The ``test_*`` function names
+mean pytest will *try* to collect it when targeted directly (e.g.
+the diff-aware step in ``scripts/pr_validate``). Skip the collected
+items so a no-server pytest run doesn't fail every test with
+``URLError`` and surface as a regression of whichever new test was
+added (the doctor-harness subprocess path is unaffected — it never
+sees pytest markers).
+"""
 
 import json
 import os
 import urllib.error
 import urllib.request
+
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="regression_suite.py is a standalone script run via subprocess "
+    "by the doctor harness against a live server, not via pytest."
+)
 
 # Port can be overridden by the doctor harness (which picks a free port).
 _PORT = os.environ.get("RAPID_MLX_PORT", "8777")
@@ -423,19 +441,25 @@ def test_11():
         print("  RESULT: FAIL")
         return False
 
+    # Guard with a dict fallback so the wrong-shape case (parsed is a
+    # list — the exact bug class this gate exists to catch) prints a
+    # deterministic per-check FAIL instead of raising AttributeError on
+    # ``list.get`` and turning into an EXCEPTION result that hides the
+    # signal.
+    p = parsed if isinstance(parsed, dict) else {}
     checks = [
         ("top-level is object", isinstance(parsed, dict)),
-        ("label is enum", parsed.get("label") in {"red", "green", "blue"}),
+        ("label is enum", p.get("label") in {"red", "green", "blue"}),
         (
             "score is int in [1,10]",
-            isinstance(parsed.get("score"), int) and 1 <= parsed["score"] <= 10,
+            isinstance(p.get("score"), int) and 1 <= p["score"] <= 10,
         ),
-        ("items is list", isinstance(parsed.get("items"), list)),
+        ("items is list", isinstance(p.get("items"), list)),
         (
             "every item is object with required fields",
             all(
                 isinstance(it, dict) and "name" in it and "qty" in it
-                for it in parsed.get("items", [])
+                for it in p.get("items", [])
             ),
         ),
     ]
