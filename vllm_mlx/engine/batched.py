@@ -1458,6 +1458,7 @@ class BatchedEngine(BaseEngine):
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.9,
+        raise_on_failure: bool = False,
         **kwargs,
     ) -> GenerationOutput:
         """Generate JSON output constrained to a schema using guided decoding.
@@ -1465,6 +1466,18 @@ class BatchedEngine(BaseEngine):
         Uses outlines for constrained generation to guarantee the output is
         valid JSON matching the specified schema.  Runs synchronously in a
         thread pool to avoid blocking the event loop.
+
+        Args:
+            raise_on_failure: When True, raise ``RuntimeError`` instead of
+                silently falling back to unconstrained ``self.chat(...)`` if
+                ``_run_guided_generation`` returns ``None`` (outlines
+                import/grammar failure caught upstream). The non-streaming
+                route leaves this False — a buffered unconstrained reply
+                is acceptable degradation. The streaming route passes
+                True so it can route the failure to
+                ``stream_chat_completion`` instead of stalling on a
+                buffered unconstrained response that defeats SSE
+                (codex Round 2 finding on the guided-streaming PR).
         """
         import asyncio
 
@@ -1528,7 +1541,15 @@ class BatchedEngine(BaseEngine):
             )
 
         if result is None:
-            # Fallback to standard generation
+            # Fallback to standard generation. The streaming caller passes
+            # raise_on_failure=True so it can delegate to its own SSE
+            # fallback rather than buffer a long unconstrained chat
+            # response into a single content chunk.
+            if raise_on_failure:
+                raise RuntimeError(
+                    "Guided generation produced no result "
+                    "(outlines import/grammar failure — see prior log)"
+                )
             logger.warning(
                 "Guided generation failed, falling back to regular generation"
             )

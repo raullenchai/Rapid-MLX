@@ -463,6 +463,68 @@ class TestGuidedGenerationStepThread:
         assert called["n"] == 1
         assert result.text == '{"ok": true}'
 
+    @pytest.mark.asyncio
+    async def test_raise_on_failure_skips_unconstrained_fallback(self, monkeypatch):
+        """When ``_run_guided_generation`` returns None, the default path
+        silently falls back to ``self.chat(...)``. The streaming guided
+        route needs the engine to RAISE instead so it can delegate to
+        its own SSE-aware unconstrained fallback (buffering a long
+        unconstrained reply into a single content chunk defeats SSE —
+        codex Round 2 finding on the guided-streaming PR).
+
+        Default (False): falls back via ``self.chat`` — no raise.
+        Opt-in (True): raises RuntimeError, never calls ``self.chat``.
+        """
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._is_mllm = False
+        engine._model = MagicMock()
+        engine._tokenizer = MagicMock()
+        engine._tokenizer.apply_chat_template = MagicMock(return_value="prompt")
+        engine._tokenizer.encode = MagicMock(return_value=[1])
+        engine._model_load_executor = None
+        engine._engine = None
+
+        from vllm_mlx.engine import batched as batched_mod
+        from vllm_mlx.engine.base import GenerationOutput
+
+        monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
+
+        # Simulate outlines failure: _run_guided_generation returns None.
+        engine._run_guided_generation = lambda **_: None
+
+        # Track whether self.chat was invoked (default fallback path).
+        chat_calls = {"n": 0}
+
+        async def fake_chat(messages, **kwargs):
+            chat_calls["n"] += 1
+            return GenerationOutput(
+                text="FALLBACK",
+                finished=True,
+                finish_reason="stop",
+            )
+
+        engine.chat = fake_chat
+
+        # Default path: falls back via self.chat.
+        result = await engine.generate_with_schema(
+            messages=[{"role": "user", "content": "hi"}],
+            json_schema={"type": "object"},
+        )
+        assert result.text == "FALLBACK"
+        assert chat_calls["n"] == 1
+
+        # Opt-in path: raises instead, self.chat is never called again.
+        with pytest.raises(RuntimeError, match="Guided generation produced no result"):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                raise_on_failure=True,
+            )
+        assert chat_calls["n"] == 1  # unchanged — raise short-circuited self.chat
+
 
 class TestMLLMSchedulerStepThread:
     """#170 regression: MLLMScheduler must run every step on the mllm-step

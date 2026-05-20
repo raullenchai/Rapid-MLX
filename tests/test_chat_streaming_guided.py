@@ -192,6 +192,16 @@ def test_streaming_json_schema_routes_through_guided_generation():
     # that PR #419 fixed.
     assert engine.guided_calls[0]["json_schema"] == _SCHEMA
 
+    # ``raise_on_failure=True`` is load-bearing: it forces the engine
+    # to raise instead of silently falling back to ``self.chat(...)``
+    # (which would buffer a long unconstrained reply into a single
+    # content chunk and defeat SSE). The streaming helper catches the
+    # raise and delegates to the unconstrained streaming fallback
+    # instead (codex Round 2 finding). A refactor that drops this
+    # kwarg silently re-introduces the buffered-reply-pretending-to-be-
+    # streaming bug.
+    assert engine.guided_calls[0]["kwargs"].get("raise_on_failure") is True
+
     events, saw_done = _parse_sse_events(resp.text)
     assert saw_done, "streaming response must terminate with [DONE]"
 

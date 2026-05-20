@@ -1057,10 +1057,20 @@ async def stream_chat_completion_guided(
         # fallback the unconstrained helper emits its own complete
         # SSE stream (role → content → DONE); a pre-emitted role would
         # produce a duplicate role chunk in the fallback path.
+        #
+        # ``raise_on_failure=True`` is critical: without it,
+        # ``generate_with_schema`` silently falls back to
+        # ``self.chat(...)`` on guided-engine failure and returns a
+        # buffered unconstrained ``GenerationOutput``. From this
+        # helper's POV that looks like a successful guided result and
+        # we would emit one giant content chunk at the end —
+        # defeating SSE for clients/proxies that rely on early chunks
+        # (codex Round 2 finding).
         try:
             output = await engine.generate_with_schema(
                 messages=messages,
                 json_schema=json_schema,
+                raise_on_failure=True,
                 **kwargs,
             )
         except Exception as guided_err:
