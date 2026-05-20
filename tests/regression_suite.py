@@ -522,6 +522,140 @@ def test_11():
     return all_pass
 
 
+def test_12():
+    """Streaming variant of test_11: stream=true must preserve schema enforcement.
+
+    SOP-gate added after Gap #2 of the v0.6.60 onboarding sweep: pre-fix,
+    ``stream=true`` requests with ``response_format: json_schema`` silently
+    bypassed ``GuidedGenerator`` because the stream branch of
+    ``_create_chat_completion_impl`` went straight to
+    ``engine.stream_chat`` with no constraint hookup. The model would
+    emit unconstrained tokens (e.g. a ```json ... ``` markdown fence
+    around the JSON), defeating the user's intent.
+
+    This test sends the same complex schema as ``test_11`` but with
+    ``stream=true``, reassembles the SSE chunks, and asserts the joined
+    content passes ``jsonschema.validate`` against the same schema —
+    locking in the streaming guided contract.
+    """
+    print("=" * 60)
+    print("TEST 12: Streaming json_schema enforcement (Gap #2 — stream=true)")
+    schema = {
+        "type": "object",
+        "$defs": {
+            "Item": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "qty": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                },
+                "required": ["name", "qty"],
+                "additionalProperties": False,
+            }
+        },
+        "properties": {
+            "label": {"type": "string", "enum": ["red", "green", "blue"]},
+            "score": {"type": "integer", "minimum": 1, "maximum": 10},
+            "items": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/Item"},
+                "minItems": 1,
+            },
+        },
+        "required": ["label", "score", "items"],
+        "additionalProperties": False,
+    }
+
+    try:
+        text, lines = stream_call(
+            "/v1/chat/completions",
+            {
+                "model": "default",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Pick a color and rate it 7/10 with two items.",
+                    }
+                ],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "Pick",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
+                "max_tokens": 400,
+                "temperature": 0.1,
+                "stream": True,
+            },
+        )
+    except Exception as e:
+        print(f"  Streaming call failed: {e}")
+        print("  RESULT: FAIL")
+        return False
+
+    print(f"  SSE lines received: {len(lines)}")
+    print(f"  Joined content: {text[:200]}")
+
+    # The streaming path must terminate with [DONE]. Without this gate,
+    # a half-emitted stream would still appear to pass the schema check
+    # if the partial JSON happens to parse.
+    saw_done = any("[DONE]" in line for line in lines)
+
+    try:
+        parsed = json.loads(text)
+    except Exception as e:
+        print(f"  JSON parse failed: {e}")
+        print("  RESULT: FAIL")
+        return False
+
+    p = parsed if isinstance(parsed, dict) else {}
+    items_value = p.get("items")
+    items_iter = items_value if isinstance(items_value, list) else []
+    checks = [
+        ("SSE stream terminated with [DONE]", saw_done),
+        ("top-level is object", isinstance(parsed, dict)),
+        ("label is enum", p.get("label") in {"red", "green", "blue"}),
+        (
+            "score is int in [1,10]",
+            isinstance(p.get("score"), int) and 1 <= p["score"] <= 10,
+        ),
+        ("items is list", isinstance(items_value, list)),
+        ("items is non-empty (minItems: 1)", len(items_iter) >= 1),
+        (
+            "every item is object with required fields",
+            all(
+                isinstance(it, dict) and "name" in it and "qty" in it
+                for it in items_iter
+            ),
+        ),
+    ]
+
+    # Authoritative leaf check — same pattern as test_11. ``jsonschema``
+    # is a hard project dependency (no soft ImportError fallback).
+    import jsonschema  # noqa: E402
+
+    try:
+        jsonschema.validate(instance=parsed, schema=schema)
+        schema_check_ok = True
+        schema_error: str | None = None
+    except jsonschema.exceptions.ValidationError as e:
+        schema_check_ok = False
+        schema_error = str(e)
+    checks.append(
+        ("matches declared json_schema (jsonschema.validate)", schema_check_ok)
+    )
+
+    all_pass = all(ok for _, ok in checks)
+    for label, ok in checks:
+        print(f"  {'PASS' if ok else 'FAIL'}: {label}")
+    if schema_error is not None:
+        print(f"  jsonschema error: {schema_error}")
+    print(f"  RESULT: {'PASS' if all_pass else 'FAIL'}")
+    return all_pass
+
+
 if __name__ == "__main__":
     results = {}
     for i, test_fn in enumerate(
@@ -537,6 +671,7 @@ if __name__ == "__main__":
             test_9,
             test_10,
             test_11,
+            test_12,
         ],
         1,
     ):
@@ -550,7 +685,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    for i in range(1, 12):
+    for i in range(1, 13):
         status = "PASS" if results.get(i) else "FAIL"
         print(f"  Test {i:2d}: {status}")
     passed = sum(1 for v in results.values() if v)
