@@ -139,38 +139,29 @@ class GuidedGenerator:
         max_tokens: int = 256,
         temperature: float = 0.7,
     ) -> str | None:
+        """Generate JSON output constrained to a schema.
+
+        Hands the raw schema dict to outlines via ``outlines.json_schema``,
+        which natively understands ``$defs``, ``$ref``, ``anyOf``, ``enum``,
+        numeric bounds, ``additionalProperties: false``, and nested
+        objects. The previous code path passed the schema through
+        ``json_schema_to_pydantic`` first — that converter silently
+        dropped every one of those constructs, so outlines was given a
+        Pydantic model that was a strict superset of the user's schema.
+        On a real-world schema with ``$defs`` + ``$ref`` (waybarrios#546
+        repro), this surfaced as outlines streaming a valid JSON array
+        when the schema required an object. Pass the dict through and
+        let outlines own schema interpretation.
         """
-        Generate JSON output constrained to a schema.
-
-        Args:
-            prompt: Input prompt
-            json_schema: JSON schema to constrain output
-            max_tokens: Maximum tokens to generate
-            temperature: Sampling temperature
-
-        Returns:
-            JSON string matching the schema, or None on failure
-        """
-        # Convert schema to Pydantic model
-        pydantic_model = json_schema_to_pydantic(json_schema)
-
-        if pydantic_model is None:
-            logger.warning(
-                "Could not convert schema to Pydantic, falling back to raw generation"
-            )
-            return None
-
         try:
             outlines_model = self._get_outlines_model()
 
-            # Generate with schema constraint
+            schema_constraint = outlines.json_schema(json_schema)
             result = outlines_model(
                 prompt,
-                output_type=pydantic_model,
+                output_type=schema_constraint,
                 max_tokens=max_tokens,
             )
-
-            # result is a JSON string, validate and return
             return result
 
         except Exception as e:

@@ -353,6 +353,99 @@ def test_10():
     return found_usage
 
 
+def test_11():
+    """Complex json_schema must be fully enforced ($defs+$ref+anyOf+enum).
+
+    SOP-gate added after the waybarrios#546 follow-up: shipping a guided
+    generator that silently drops $defs/$ref/anyOf/enum constraints lets
+    a complex schema round-trip to wrong-shape JSON (a JSON array where
+    the schema requires an object). The unit tests in test_guided.py
+    pin the wiring; this end-to-end check runs against the live server
+    so any future regression in the actual outlines integration also
+    trips the doctor harness.
+    """
+    print("=" * 60)
+    print("TEST 11: Complex json_schema enforcement ($defs+$ref+anyOf+enum)")
+    schema = {
+        "type": "object",
+        "$defs": {
+            "Item": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "qty": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                },
+                "required": ["name", "qty"],
+                "additionalProperties": False,
+            }
+        },
+        "properties": {
+            "label": {"type": "string", "enum": ["red", "green", "blue"]},
+            "score": {"type": "integer", "minimum": 1, "maximum": 10},
+            "items": {"type": "array", "items": {"$ref": "#/$defs/Item"}},
+        },
+        "required": ["label", "score", "items"],
+        "additionalProperties": False,
+    }
+    code, r = api_call(
+        "/v1/chat/completions",
+        {
+            "model": "default",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Pick a color and rate it 7/10 with two items.",
+                }
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "Pick",
+                    "schema": schema,
+                    "strict": True,
+                },
+            },
+            "max_tokens": 400,
+            "temperature": 0.1,
+            "stream": False,
+        },
+    )
+    if code != 200:
+        print(f"  HTTP {code}: {r}")
+        print("  RESULT: FAIL")
+        return False
+    raw = r["choices"][0]["message"]["content"]
+    print(f"  Content: {raw[:200]}")
+    try:
+        parsed = json.loads(raw)
+    except Exception as e:
+        print(f"  JSON parse failed: {e}")
+        print("  RESULT: FAIL")
+        return False
+
+    checks = [
+        ("top-level is object", isinstance(parsed, dict)),
+        ("label is enum", parsed.get("label") in {"red", "green", "blue"}),
+        (
+            "score is int in [1,10]",
+            isinstance(parsed.get("score"), int) and 1 <= parsed["score"] <= 10,
+        ),
+        ("items is list", isinstance(parsed.get("items"), list)),
+        (
+            "every item is object with required fields",
+            all(
+                isinstance(it, dict) and "name" in it and "qty" in it
+                for it in parsed.get("items", [])
+            ),
+        ),
+    ]
+    all_pass = all(ok for _, ok in checks)
+    for label, ok in checks:
+        print(f"  {'PASS' if ok else 'FAIL'}: {label}")
+    print(f"  RESULT: {'PASS' if all_pass else 'FAIL'}")
+    return all_pass
+
+
 if __name__ == "__main__":
     results = {}
     for i, test_fn in enumerate(
@@ -367,6 +460,7 @@ if __name__ == "__main__":
             test_8,
             test_9,
             test_10,
+            test_11,
         ],
         1,
     ):
@@ -380,7 +474,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    for i in range(1, 11):
+    for i in range(1, 12):
         status = "PASS" if results.get(i) else "FAIL"
         print(f"  Test {i:2d}: {status}")
     passed = sum(1 for v in results.values() if v)
