@@ -492,8 +492,29 @@ class StreamingPostProcessor:
         # streaming parser dropped on the floor; the only difference between
         # the two modes was this gate. See knowledge/guided_generation_gaps_2026-05-20.md
         # "Bug A — Streaming tool-parser coverage gap is family-wide".
+        #
+        # Cheap pre-check: every known tool-call format carries at least
+        # one structural marker — ``<`` (XML wrappers: ``<tool_call>``,
+        # ``<function=>``, ``<|tool_call>``), ``{`` (bare JSON, parameter
+        # blocks), or ``[Calling`` (text-format degradation). Skipping the
+        # full regex scan when none of these markers is present keeps
+        # end-of-stream cost flat on plain-text responses that happened to
+        # have ``tools=...`` in the request (DeepSeek pr_validate finding
+        # on PR #424 — high-throughput servers with tool-enabled
+        # endpoints would otherwise pay the parser cost on every reply
+        # that didn't actually call a tool).
         _fallback_text = self.tool_accumulated_text or self.accumulated_text
-        if self.tool_parser and _fallback_text and not self.tool_calls_detected:
+        _has_plausible_markup = bool(_fallback_text) and (
+            "<" in _fallback_text
+            or "{" in _fallback_text
+            or "[Calling" in _fallback_text
+        )
+        if (
+            self.tool_parser
+            and _fallback_text
+            and not self.tool_calls_detected
+            and _has_plausible_markup
+        ):
             result = self.tool_parser.extract_tool_calls(
                 _fallback_text, request=self.request
             )

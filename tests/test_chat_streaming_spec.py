@@ -268,7 +268,12 @@ class _GapStreamParser(ToolParser):
     streaming dropped a tool call that the non-stream parser handled.
     """
 
-    SENTINEL = "TOOLCALL:get_weather"
+    # Use `{` so the cheap markup pre-check in finalize() (added in
+    # response to DeepSeek's pr_validate finding on PR #424 — every real
+    # tool-call format has at least one of `<`, `{`, or `[Calling`) lets
+    # us reach extract_tool_calls. Plain-text responses without any
+    # structural marker correctly skip the full parser.
+    SENTINEL = '{"call":"get_weather"}'
 
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
