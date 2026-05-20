@@ -812,12 +812,24 @@ async def stream_chat_completion(
     engine,
     messages: list,
     request: ChatCompletionRequest,
+    *,
+    response_id: str | None = None,
+    created: int | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response.
 
     Uses StreamingPostProcessor for reasoning/tool/sanitization pipeline.
     SSE formatting stays inline for performance (fast path bypasses Pydantic).
+
+    Args:
+        response_id: Optional pre-computed response id (``chatcmpl-…``).
+            When provided, all SSE chunks share this id instead of one
+            generated fresh here. Used by ``stream_chat_completion_guided``
+            on its unconstrained fallback path so the client-visible
+            stream stays self-consistent across the guided→unconstrained
+            handoff (DeepSeek pr_validate round 5 finding).
+        created: Optional pre-computed Unix timestamp. Same rationale.
     """
     from ..service.postprocessor import StreamingPostProcessor
 
@@ -827,7 +839,8 @@ async def stream_chat_completion(
         gc.disable()
 
     try:
-        response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+        if response_id is None:
+            response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
         start_time = time.perf_counter()
 
         # Check if we should include usage in the final chunk
@@ -847,7 +860,7 @@ async def stream_chat_completion(
             return ChoiceLogProbs(content=entries) if entries else None
 
         # Pre-compute SSE template parts that don't change per-token.
-        _sse_created = int(time.time())
+        _sse_created = created if created is not None else int(time.time())
         _model_escaped = json.dumps(_resolve_model_name(request.model))
         _sse_prefix = (
             f'data: {{"id":"{response_id}","object":"chat.completion.chunk",'
@@ -1105,8 +1118,19 @@ async def stream_chat_completion_guided(
             logger.debug(
                 f"Problematic schema shape: keys={_schema_keys} required={_required}"
             )
+            # Forward the pre-computed response_id + _sse_created so the
+            # fallback stream's chunks share id/created with this outer
+            # helper's would-be chunks. Without this, a client that
+            # tracks the completion id across the guided→unconstrained
+            # handoff sees two different ids/timestamps for what is
+            # logically one request (DeepSeek pr_validate round 5).
             async for chunk in stream_chat_completion(
-                engine, messages, request, **kwargs
+                engine,
+                messages,
+                request,
+                response_id=response_id,
+                created=_sse_created,
+                **kwargs,
             ):
                 yield chunk
             return

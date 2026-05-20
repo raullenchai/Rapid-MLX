@@ -316,6 +316,50 @@ def test_streaming_guided_no_duplicate_usage_when_include_usage_true():
     )
 
 
+def test_streaming_guided_fallback_preserves_id_and_created():
+    """Fallback to unconstrained streaming must share id/created with
+    what the outer helper would emit on the success path. Without this,
+    a client tracking the completion id across the guided→unconstrained
+    handoff would see two different ids/timestamps for what is logically
+    one request (DeepSeek pr_validate round 5 finding).
+
+    The contract is enforced by passing ``response_id`` and ``created``
+    kwargs to ``stream_chat_completion``. The mock fallback stream emits
+    its standard chunks; this test reassembles them and asserts every
+    chunk shares one id and one created value (the outer helper's).
+    """
+    engine = _GuidedEngine(raise_in_guided=True)
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "pick a color"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "Pick", "schema": _SCHEMA, "strict": True},
+            },
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events, saw_done = _parse_sse_events(resp.text)
+    assert saw_done
+
+    ids = {e["id"] for e in events if "id" in e}
+    createds = {e["created"] for e in events if "created" in e}
+    assert len(ids) == 1, (
+        f"all chunks must share one id across the guided→unconstrained "
+        f"fallback handoff; saw {ids}"
+    )
+    assert len(createds) == 1, (
+        f"all chunks must share one created timestamp across the "
+        f"guided→unconstrained fallback handoff; saw {createds}"
+    )
+
+
 def test_streaming_guided_falls_back_to_unconstrained_on_engine_failure():
     """If generate_with_schema raises, the helper must fall back to
     stream_chat so the request still returns a response.
