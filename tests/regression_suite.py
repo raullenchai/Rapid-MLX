@@ -481,9 +481,33 @@ def test_11():
             ),
         ),
     ]
+    # The per-check breakdown above is for human-readable debug output —
+    # it pins the high-level shape constraints but doesn't enumerate
+    # every leaf in the schema (qty must be int|null, no extra keys,
+    # etc.). The authoritative gate is a real ``jsonschema.validate``
+    # against the same schema the request was constrained with: if the
+    # model emits anything that doesn't match, this raises and the test
+    # fails. Without this, a response like
+    # ``{"label":"red","score":7,"items":[{"name":"x","qty":"bad","extra":1}]}``
+    # would pass every per-check above while violating ``anyOf`` and
+    # ``additionalProperties: false`` — exactly the constraint class
+    # this gate exists to enforce (codex R9 P3).
+    try:
+        import jsonschema
+
+        jsonschema.validate(instance=parsed, schema=schema)
+        schema_valid = True
+        schema_error = None
+    except Exception as e:
+        schema_valid = False
+        schema_error = str(e)
+    checks.append(("matches declared json_schema (jsonschema.validate)", schema_valid))
+
     all_pass = all(ok for _, ok in checks)
     for label, ok in checks:
         print(f"  {'PASS' if ok else 'FAIL'}: {label}")
+    if not schema_valid:
+        print(f"  jsonschema error: {schema_error}")
     print(f"  RESULT: {'PASS' if all_pass else 'FAIL'}")
     return all_pass
 
