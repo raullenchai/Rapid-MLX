@@ -156,7 +156,22 @@ class GuidedGenerator:
         try:
             outlines_model = self._get_outlines_model()
 
-            schema_constraint = outlines.json_schema(json_schema)
+            # Use the ``JsonSchema`` class from ``outlines.types.dsl``
+            # directly rather than the top-level ``outlines.json_schema``
+            # factory. The factory is a convenience export — it landed
+            # mid-way through the 1.x line and is absent on the floor of
+            # our declared ``outlines>=1.0.0`` dependency range, where
+            # this attribute lookup raises ``AttributeError`` (codex R5
+            # P1: that exception silently bubbles to the catch below,
+            # returns None, and ``generate_with_schema`` falls back to
+            # *unconstrained* generation for every json_schema request
+            # while the chat route logs "Using guided generation"). The
+            # underlying ``JsonSchema`` class has been stable since the
+            # feature first shipped, so importing it directly avoids
+            # the surface-version dependency.
+            from outlines.types.dsl import JsonSchema
+
+            schema_constraint = JsonSchema(json_schema)
             result = outlines_model(
                 prompt,
                 output_type=schema_constraint,
