@@ -98,16 +98,23 @@ def test_orphan_aliases_now_covered() -> None:
 
 
 def test_list_aliases_returns_legacy_string_view() -> None:
-    """Old callers (doctor harness, tests) expect ``{alias: hf_path}``."""
+    """Old callers (doctor harness, tests) expect ``{alias: hf_path}``.
+
+    Lower-bound (``>=``) on count instead of exact equality: an exact
+    count is a merge-conflict magnet — every alias add/remove demands
+    a manual bump here, and the count itself isn't a contract. The
+    lower bound still catches accidental bulk-deletion of aliases.
+    Per-entry contracts are pinned by the focused assertions below."""
     aliases = list_aliases()
-    assert len(aliases) == 65
+    assert len(aliases) >= 65
     assert all(isinstance(p, str) for p in aliases.values())
     assert aliases["qwen3.5-4b"] == "mlx-community/Qwen3.5-4B-MLX-4bit"
+    assert aliases["qwen3-0.6b-8bit"] == "mlx-community/Qwen3-0.6B-8bit"
 
 
 def test_list_profiles_returns_rich_dataclass_view() -> None:
     profiles = list_profiles()
-    assert len(profiles) == 65
+    assert len(profiles) >= 65
     p = profiles["qwen3.5-4b"]
     assert isinstance(p, AliasProfile)
     assert p.hf_path == "mlx-community/Qwen3.5-4B-MLX-4bit"
@@ -115,6 +122,18 @@ def test_list_profiles_returns_rich_dataclass_view() -> None:
     assert p.reasoning_parser == "qwen3"
     assert p.is_hybrid is True
     assert p.supports_spec_decode is False
+
+    # qwen3-0.6b-8bit — canonical smoke-test model, registered as a
+    # first-class alias so onboarding scripts don't need to bypass
+    # the registry with a raw HF path. Standard Qwen3 dense profile.
+    p06 = profiles["qwen3-0.6b-8bit"]
+    assert isinstance(p06, AliasProfile)
+    assert p06.hf_path == "mlx-community/Qwen3-0.6B-8bit"
+    assert p06.tool_call_parser == "hermes"
+    assert p06.reasoning_parser == "qwen3"
+    assert p06.is_hybrid is False
+    assert p06.is_moe is False
+    assert p06.supports_spec_decode is True
 
 
 def test_resolve_model_unchanged_for_callers() -> None:
