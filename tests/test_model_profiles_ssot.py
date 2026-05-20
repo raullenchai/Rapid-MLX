@@ -100,14 +100,14 @@ def test_orphan_aliases_now_covered() -> None:
 def test_list_aliases_returns_legacy_string_view() -> None:
     """Old callers (doctor harness, tests) expect ``{alias: hf_path}``."""
     aliases = list_aliases()
-    assert len(aliases) == 64
+    assert len(aliases) == 65
     assert all(isinstance(p, str) for p in aliases.values())
     assert aliases["qwen3.5-4b"] == "mlx-community/Qwen3.5-4B-MLX-4bit"
 
 
 def test_list_profiles_returns_rich_dataclass_view() -> None:
     profiles = list_profiles()
-    assert len(profiles) == 64
+    assert len(profiles) == 65
     p = profiles["qwen3.5-4b"]
     assert isinstance(p, AliasProfile)
     assert p.hf_path == "mlx-community/Qwen3.5-4B-MLX-4bit"
