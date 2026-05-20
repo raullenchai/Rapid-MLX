@@ -928,6 +928,7 @@ async def stream_chat_completion(
                     else:
                         chunk = ChatCompletionChunk(
                             id=response_id,
+                            created=_sse_created,
                             model=_resolve_model_name(request.model),
                             choices=[
                                 ChatCompletionChunkChoice(
@@ -946,6 +947,7 @@ async def stream_chat_completion(
                 elif event.type == "tool_call":
                     chunk = ChatCompletionChunk(
                         id=response_id,
+                        created=_sse_created,
                         model=_resolve_model_name(request.model),
                         choices=[
                             ChatCompletionChunkChoice(
@@ -955,7 +957,16 @@ async def stream_chat_completion(
                                 finish_reason=event.finish_reason,
                             )
                         ],
-                        usage=get_usage(output) if output.finished else None,
+                        # Usage placement: when ``stream_options.include_usage``
+                        # is True, usage MUST appear ONLY in the dedicated
+                        # trailing chunk per the OpenAI streaming spec.
+                        # Without ``include_usage``, legacy clients expect it
+                        # on the finish chunk.
+                        usage=(
+                            None
+                            if include_usage
+                            else (get_usage(output) if output.finished else None)
+                        ),
                     )
                     _tc_sse = f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
                     logger.info(f"[SSE-TC] {_tc_sse.strip()[:300]}")
@@ -964,6 +975,7 @@ async def stream_chat_completion(
                 elif event.type == "finish":
                     chunk = ChatCompletionChunk(
                         id=response_id,
+                        created=_sse_created,
                         model=_resolve_model_name(request.model),
                         choices=[
                             ChatCompletionChunkChoice(
@@ -975,7 +987,12 @@ async def stream_chat_completion(
                                 logprobs=_build_chunk_logprobs(output),
                             )
                         ],
-                        usage=get_usage(output) if output.finished else None,
+                        # See "Usage placement" note on the tool_call branch.
+                        usage=(
+                            None
+                            if include_usage
+                            else (get_usage(output) if output.finished else None)
+                        ),
                     )
                     yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
@@ -984,6 +1001,7 @@ async def stream_chat_completion(
             if event.type == "tool_call":
                 tool_chunk = ChatCompletionChunk(
                     id=response_id,
+                    created=_sse_created,
                     model=_resolve_model_name(request.model),
                     choices=[
                         ChatCompletionChunkChoice(
@@ -1009,6 +1027,7 @@ async def stream_chat_completion(
         if include_usage:
             usage_chunk = ChatCompletionChunk(
                 id=response_id,
+                created=_sse_created,
                 model=_resolve_model_name(request.model),
                 choices=[],
                 usage=Usage(

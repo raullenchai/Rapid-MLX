@@ -476,15 +476,24 @@ class StreamingPostProcessor:
         """
         events = []
 
-        # Fallback tool call detection: parser accumulated text but never
-        # emitted (e.g., closing tag never arrived).
+        # Fallback tool call detection: streaming parser missed a tool call
+        # that the non-stream parser can recover. The streaming code path of
+        # each parser is necessarily simpler than ``extract_tool_calls`` —
+        # it can't backtrack and typically only handles the canonical
+        # wrapper format. ``extract_tool_calls`` has the full set of fallback
+        # patterns (bare JSON, alternate XML forms, text-format degradation).
+        # Running it here gives streaming the same tolerance as non-stream.
+        #
+        # Previously gated on ``has_pending_tool_call`` — but that gate
+        # uses the SAME canonical-wrapper check as the streaming parser, so
+        # by construction it can never catch what the streaming parser
+        # missed. The 2026-05-20 ≥20B onboarding sweep caught gemma-4-26b
+        # producing structured tool_calls in non-stream mode that the
+        # streaming parser dropped on the floor; the only difference between
+        # the two modes was this gate. See knowledge/guided_generation_gaps_2026-05-20.md
+        # "Bug A — Streaming tool-parser coverage gap is family-wide".
         _fallback_text = self.tool_accumulated_text or self.accumulated_text
-        if (
-            self.tool_parser
-            and _fallback_text
-            and not self.tool_calls_detected
-            and self.tool_parser.has_pending_tool_call(_fallback_text)
-        ):
+        if self.tool_parser and _fallback_text and not self.tool_calls_detected:
             result = self.tool_parser.extract_tool_calls(
                 _fallback_text, request=self.request
             )
