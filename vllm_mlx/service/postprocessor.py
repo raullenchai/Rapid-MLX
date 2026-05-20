@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ..api.tool_calling import parse_tool_calls
 from ..api.utils import sanitize_output, strip_special_tokens
 from ..domain.events import StreamEvent
 
@@ -540,6 +541,44 @@ class StreamingPostProcessor:
                     )
                 )
                 self.tool_calls_detected = True
+            else:
+                # Cross-format fallback. The configured streaming parser is
+                # tightly bound to ONE wire format — e.g. ``qwen3_xml`` is
+                # registered to ``QwenToolParser`` which expects
+                # ``<tool_call>{"name":"...","arguments":{...}}</tool_call>``
+                # (JSON inside the wrapper), while vanilla Qwen3.6-35B-A3B
+                # emits the XML-bodied variant
+                # ``<tool_call><function=name><parameter=key>value</parameter></function></tool_call>``.
+                # ``parse_tool_calls`` in ``api/tool_calling.py`` scans every
+                # known format and recovers calls the per-parser
+                # ``extract_tool_calls`` misses. The non-stream path in
+                # ``service/helpers.py:604`` already falls back to it; this
+                # mirrors that on the streaming path so a wire-format
+                # mismatch surfaces as a structured tool call rather than
+                # ``finish_reason: stop`` with zero deltas. See #425.
+                _, fb_tcs = parse_tool_calls(_fallback_text, self.request)
+                if fb_tcs:
+                    tc_list = [
+                        {
+                            "index": i,
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for i, tc in enumerate(fb_tcs)
+                    ]
+                    events.append(
+                        StreamEvent(
+                            type="tool_call",
+                            tool_calls=tc_list,
+                            finish_reason="tool_calls",
+                            tool_calls_detected=True,
+                        )
+                    )
+                    self.tool_calls_detected = True
 
         return events
 
