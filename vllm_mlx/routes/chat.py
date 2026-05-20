@@ -1097,9 +1097,26 @@ async def stream_chat_completion_guided(
         completion_tokens = getattr(output, "completion_tokens", 0) or 0
         finish_reason = getattr(output, "finish_reason", None) or "stop"
 
-        # Final chunk with finish_reason. Usage is attached here on the
-        # final delta (matches the non-streaming response shape and the
-        # stream_chat_completion finish-chunk semantics).
+        # Final chunk with finish_reason. Usage placement:
+        #  - When ``stream_options.include_usage`` is True, usage MUST
+        #    appear ONLY in the dedicated usage chunk below (per the
+        #    OpenAI spec; emitting it in both places would have clients
+        #    that aggregate usage double-count). DeepSeek review caught
+        #    the duplication on first pass.
+        #  - When False, attach usage to the finish chunk so a client
+        #    that doesn't set ``include_usage`` still receives token
+        #    counts in the final delta (matches the legacy behavior of
+        #    ``stream_chat_completion`` and the non-streaming response
+        #    shape).
+        finish_usage = (
+            None
+            if include_usage
+            else Usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            )
+        )
         finish_chunk = ChatCompletionChunk(
             id=response_id,
             model=_resolve_model_name(request.model),
@@ -1109,11 +1126,7 @@ async def stream_chat_completion_guided(
                     finish_reason=finish_reason,
                 )
             ],
-            usage=Usage(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=prompt_tokens + completion_tokens,
-            ),
+            usage=finish_usage,
         )
         yield f"data: {finish_chunk.model_dump_json(exclude_none=True)}\n\n"
 

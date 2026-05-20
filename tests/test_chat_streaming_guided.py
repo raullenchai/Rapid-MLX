@@ -225,6 +225,86 @@ def test_streaming_json_schema_routes_through_guided_generation():
     assert "".join(content_parts) == _GUIDED_OUTPUT
 
 
+def test_streaming_guided_no_duplicate_usage_when_include_usage_true():
+    """When ``stream_options.include_usage`` is True, usage must appear
+    ONLY in the dedicated usage chunk, NOT in the finish chunk too —
+    emitting it in both places would have aggregating clients
+    double-count tokens. DeepSeek review caught this on first pass; a
+    later refactor that re-introduces the duplication trips this gate.
+
+    When ``include_usage`` is False (default), usage stays on the finish
+    chunk so basic clients still receive token counts. The two pin
+    assertions below lock both branches.
+    """
+    engine = _GuidedEngine(guided_text=_GUIDED_OUTPUT)
+    client = _make_client(engine)
+
+    # include_usage=True branch: usage only in dedicated chunk.
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "Pick", "schema": _SCHEMA, "strict": True},
+            },
+            "stream_options": {"include_usage": True},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events, saw_done = _parse_sse_events(resp.text)
+    assert saw_done
+
+    finish_events = [
+        e for e in events for c in e.get("choices", []) if c.get("finish_reason")
+    ]
+    usage_only_events = [e for e in events if not e.get("choices") and e.get("usage")]
+    assert len(finish_events) == 1, "exactly one finish chunk expected"
+    assert finish_events[0].get("usage") is None, (
+        "finish chunk must NOT carry usage when include_usage=True — "
+        "double-emission would have clients double-count tokens"
+    )
+    assert len(usage_only_events) == 1, (
+        "expected exactly one dedicated usage chunk when include_usage=True"
+    )
+
+    # include_usage default-False branch: usage stays on the finish chunk
+    # (legacy behavior — bare clients that don't set the flag still get
+    # token counts in the final delta).
+    engine2 = _GuidedEngine(guided_text=_GUIDED_OUTPUT)
+    client2 = _make_client(engine2)
+    resp2 = client2.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "Pick", "schema": _SCHEMA, "strict": True},
+            },
+        },
+    )
+    assert resp2.status_code == 200, resp2.text
+    events2, _ = _parse_sse_events(resp2.text)
+    finish_events2 = [
+        e for e in events2 for c in e.get("choices", []) if c.get("finish_reason")
+    ]
+    usage_only_events2 = [e for e in events2 if not e.get("choices") and e.get("usage")]
+    assert len(finish_events2) == 1
+    assert finish_events2[0].get("usage") is not None, (
+        "finish chunk MUST carry usage when include_usage is unset — "
+        "matches the legacy stream_chat_completion behavior"
+    )
+    assert usage_only_events2 == [], (
+        "no dedicated usage chunk when include_usage is unset"
+    )
+
+
 def test_streaming_guided_falls_back_to_unconstrained_on_engine_failure():
     """If generate_with_schema raises, the helper must fall back to
     stream_chat so the request still returns a response.
