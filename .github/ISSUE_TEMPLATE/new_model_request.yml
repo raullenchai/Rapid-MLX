@@ -1,0 +1,56 @@
+name: New model request
+description: Request support for a model that does not currently run in vllm-mlx
+title: "[New Model]: "
+labels: ["new-model"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        vllm-mlx wraps mlx-lm, mlx-vlm, mlx-audio, and mlx-embeddings. If the model already runs in the underlying library, adding support here is usually a small adapter task. If it does not run there yet, please consider opening an issue upstream first.
+
+  - type: input
+    attributes:
+      label: Hugging Face URL
+      placeholder: https://huggingface.co/google/gemma-4-E2B-it
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Modality
+      options:
+        - Text-only
+        - Vision-language (text + image)
+        - Audio (ASR or TTS)
+        - Embeddings
+        - Other (explain below)
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Does it already run in mlx-lm, mlx-vlm, mlx-audio, or mlx-embeddings?
+      description: Yes / No / Partially. If yes, link the upstream support. If no, summarize what is missing.
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Closest model already supported by vllm-mlx
+      description: Pick the architecturally closest model already runnable in this repo.
+
+  - type: textarea
+    attributes:
+      label: Architecture notes
+      description: New attention variant, new tokenizer, custom operators, or anything unusual that might block support.
+
+  - type: textarea
+    attributes:
+      label: Tool calling, reasoning, or multimodal specifics
+      description: If the model has a tool-call format, thinking tags, or a multimodal prompt template that needs custom handling, describe it here.
+
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Links to the model card, paper, or reference implementations.

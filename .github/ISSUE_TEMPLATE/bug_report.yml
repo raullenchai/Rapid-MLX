@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a bug or unexpected behavior in vllm-mlx
+title: "[Bug]: "
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting, please search existing issues to avoid duplicates.
+
+        Security note: redact API tokens, Hugging Face tokens, private URLs, API keys, and any other credentials from logs and configs you paste below.
+
+  - type: textarea
+    attributes:
+      label: Environment
+      description: |
+        Run the following and paste the output, plus your hardware details.
+
+        ```sh
+        python -c "import sys, mlx.core as mx; print('python', sys.version); print('mlx device', mx.default_device())"
+        pip show vllm-mlx mlx mlx-lm mlx-vlm mlx-audio mlx-embeddings 2>/dev/null | grep -E "^(Name|Version):"
+        sw_vers
+        ```
+      value: |
+        - Chip (M1 / M2 / M3 / M4 / M5, including Pro / Max / Ultra):
+        - RAM:
+        - macOS version:
+        - Python version:
+        - vllm-mlx version:
+        - mlx / mlx-lm / mlx-vlm / mlx-audio versions:
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Model and quantization
+      description: Hugging Face repo and quant scheme used when reproducing.
+      placeholder: mlx-community/Qwen3-0.6B-8bit
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Minimal command or snippet that triggers the bug. Include the full server command and the client request if applicable.
+      placeholder: |
+        vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --port 8000
+        curl -X POST http://localhost:8000/v1/chat/completions \
+          -H 'Content-Type: application/json' \
+          -d '{"model": "...", "messages": [...]}'
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Expected behavior
+      description: What you expected to see.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Actual behavior
+      description: What you actually got. Include the full traceback or error response.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Server logs, screenshots, links to related issues, or anything else relevant. Reminder to redact secrets.

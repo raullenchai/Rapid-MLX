@@ -1,0 +1,65 @@
+name: Feature request
+description: Propose a new feature or capability that does not exist yet in vllm-mlx
+title: "[Feature]: "
+labels: ["feature"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For non-trivial changes, please describe the motivation and the surface impact before jumping into implementation details. If you already plan to send a PR, mention it so reviewers know to expect one.
+
+  - type: textarea
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Who benefits? Link any prior issue or discussion.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Proposal
+      description: What you want vllm-mlx to do. Be specific about the user-facing surface (CLI flag, endpoint, behavior, default).
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Surface impact
+      multiple: true
+      options:
+        - CLI / serve command
+        - OpenAI API endpoints
+        - Anthropic API endpoints
+        - Scheduler / batching
+        - Sampling
+        - KV cache / prefix cache
+        - Multimodal pipeline
+        - MCP / tool calling
+        - Reasoning models
+        - Metal kernels / v1 engine
+        - Build / packaging
+        - Docs
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about, and why this one is preferred.
+
+  - type: dropdown
+    attributes:
+      label: Are you planning to send a PR for this?
+      options:
+        - "Yes"
+        - "Maybe, depending on feedback"
+        - "No, requesting only"
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Reference papers, repos, screenshots, or examples.

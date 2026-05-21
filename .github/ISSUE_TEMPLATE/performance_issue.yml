@@ -1,0 +1,68 @@
+name: Performance issue
+description: Report a performance regression or propose a performance improvement
+title: "[Perf]: "
+labels: ["performance"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Performance reports are most actionable when they include hardware, model, quantization, and measured numbers. Apple Silicon performance varies a lot across chip classes. Numbers from one chip do not transfer to another.
+
+  - type: dropdown
+    attributes:
+      label: Kind of report
+      options:
+        - Regression vs a previous version
+        - Improvement proposal
+        - Performance question
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Hardware
+      description: Chip class and RAM matter for triage.
+      value: |
+        - Chip (M1 / M2 / M3 / M4 / M5, including Pro / Max / Ultra):
+        - RAM:
+        - macOS version:
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Model and quantization
+      placeholder: mlx-community/Qwen3-0.6B-8bit
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Measurements
+      description: |
+        Include the metrics you measured. Common ones: time to first token (ms), decode throughput (tok/s) at batch=1, batch=8, batch=32, and peak resident memory. State the benchmark or command you used so we can reproduce.
+      placeholder: |
+        Command: vllm-mlx-bench --model mlx-community/Qwen3-0.6B-8bit
+        Decode tok/s batch=1: 250 (expected ~290)
+        Decode tok/s batch=8: ...
+        TTFT batch=1: ...
+        Peak RSS: ...
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Comparison baseline
+      description: What are you comparing against? A previous vllm-mlx version, a published claim, another framework, your own prior measurement?
+
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Exact command, fixed seed, prompt set if relevant. Mention any non-default flags.
+      render: shell
+
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Profiler output, Instruments traces, suspected cause, related issues.
