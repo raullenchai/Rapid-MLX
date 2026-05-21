@@ -1080,8 +1080,17 @@ async def stream_chat_completion(
                 choices=[
                     ChatCompletionChunkChoice(
                         delta=ChatCompletionChunkDelta(
-                            content=processor.accumulated_text or None,
-                            reasoning_content=processor.accumulated_reasoning or None,
+                            # getattr guard: a future processor (e.g.
+                            # non-reasoning parser) may not define these
+                            # attributes; falling back to None keeps the
+                            # synthetic chunk well-formed instead of
+                            # raising AttributeError mid-stream.
+                            content=getattr(processor, "accumulated_text", None)
+                            or None,
+                            reasoning_content=getattr(
+                                processor, "accumulated_reasoning", None
+                            )
+                            or None,
                             tool_calls=fallback_tool_calls,
                         ),
                         finish_reason="tool_calls",

@@ -429,7 +429,12 @@ def serve_command(args):
                 "Proceeding without input check.",
                 file=sys.stderr,
             )
-        if valid is not None and args.tool_call_parser not in valid:
+        # Treat an empty registry (degenerate install) the same as a
+        # failed import — skip validation rather than reject every input.
+        # Without this guard, a successful import with zero registered
+        # parsers would hard-fail every CLI invocation; DeepSeek
+        # follow-up to PR #434.
+        if valid and args.tool_call_parser not in valid:
             print(
                 f"error: argument --tool-call-parser: invalid choice: "
                 f"{args.tool_call_parser!r} "
