@@ -1049,6 +1049,131 @@ def validate_response(
     return (True, "")
 
 
+def _check_finish_reason(allowed: Any, finish_reason: Optional[str]) -> list[str]:
+    """Verify ``finish_reason`` is in the allowed set, if one is configured."""
+    if allowed is None:
+        return []
+    allowed_list = [allowed] if isinstance(allowed, str) else list(allowed)
+    if finish_reason in allowed_list:
+        return []
+    return [f"finish_reason {finish_reason!r} not in allowed set {allowed_list!r}"]
+
+
+def _check_length_bounds(min_chars: Any, max_chars: Any, content: str) -> list[str]:
+    """Apply ``min_chars`` / ``max_chars`` content-length bounds."""
+    issues: list[str] = []
+    if min_chars is not None and len(content) < int(min_chars):
+        issues.append(f"content shorter than min_chars={min_chars}")
+    if max_chars is not None and len(content) > int(max_chars):
+        issues.append(f"content longer than max_chars={max_chars}")
+    return issues
+
+
+def _check_regex_patterns(
+    patterns: Any,
+    content: str,
+    *,
+    kind: str,
+    expect_match: bool,
+) -> list[str]:
+    """Validate that each pattern either matches or does not, per ``expect_match``.
+
+    ``kind`` is the diagnostic name (``"required_regex"`` or
+    ``"forbidden_regex"``) and is reused across the resulting issue
+    strings so operators can grep for the failing check.
+    """
+    issues: list[str] = []
+    for pattern in patterns or []:
+        try:
+            matched = bool(re.search(str(pattern), content, re.MULTILINE))
+        except re.error as exc:
+            issues.append(f"invalid {kind} {pattern!r}: {exc}")
+            continue
+        if expect_match and not matched:
+            issues.append(f"{kind} did not match: {pattern}")
+        elif not expect_match and matched:
+            issues.append(f"{kind} matched: {pattern}")
+    return issues
+
+
+def _check_json_content(should_be_json: Any, content: str) -> list[str]:
+    """Verify ``content`` parses as JSON when ``checks['json']`` is truthy."""
+    if not should_be_json:
+        return []
+    try:
+        json.loads(content)
+    except json.JSONDecodeError as exc:
+        return [f"content is not valid JSON: {exc}"]
+    return []
+
+
+def _check_tool_call_count_and_names(checks: dict, tool_calls: list[dict]) -> list[str]:
+    """Apply ``no_tool_calls`` / ``tool_call_count`` / ``tool_call_names``."""
+    issues: list[str] = []
+    if checks.get("no_tool_calls") and tool_calls:
+        issues.append(f"no_tool_calls: expected 0 tool calls, got {len(tool_calls)}")
+
+    expected_count = checks.get("tool_call_count")
+    if expected_count is not None and len(tool_calls) != int(expected_count):
+        issues.append(
+            f"tool_call_count: expected {expected_count}, got {len(tool_calls)}"
+        )
+
+    expected_names = checks.get("tool_call_names")
+    if expected_names is not None:
+        actual_names = sorted(
+            tc.get("function", {}).get("name", "") for tc in tool_calls
+        )
+        expected_sorted = sorted(str(name) for name in expected_names)
+        if actual_names != expected_sorted:
+            issues.append(
+                f"tool_call_names: expected {expected_sorted!r}, got {actual_names!r}"
+            )
+    return issues
+
+
+def _check_tool_call_args(required_args: Any, tool_calls: list[dict]) -> list[str]:
+    """Validate parsed JSON arguments include the required keys per function.
+
+    For each named function, looks up matching tool calls, parses their
+    ``arguments`` as JSON, and reports issues for: missing tool call,
+    invalid JSON, non-object arguments, or missing required keys.
+    """
+    required_args = required_args or {}
+    if not required_args:
+        return []
+    issues: list[str] = []
+    by_name: dict[str, list[dict]] = {}
+    for tc in tool_calls:
+        name = tc.get("function", {}).get("name", "")
+        by_name.setdefault(name, []).append(tc)
+    for name, required_keys in required_args.items():
+        matches = by_name.get(str(name), [])
+        if not matches:
+            issues.append(f"tool_call_args_required_keys: no tool call named {name!r}")
+            continue
+        for tc in matches:
+            raw_args = tc.get("function", {}).get("arguments", "")
+            try:
+                parsed_args = json.loads(raw_args or "{}")
+            except json.JSONDecodeError as exc:
+                issues.append(
+                    f"tool_call_args_required_keys: {name} arguments invalid JSON: {exc}"
+                )
+                continue
+            if not isinstance(parsed_args, dict):
+                issues.append(
+                    f"tool_call_args_required_keys: {name} arguments not an object"
+                )
+                continue
+            missing = [key for key in required_keys if key not in parsed_args]
+            if missing:
+                issues.append(
+                    f"tool_call_args_required_keys: {name} missing keys {missing!r}"
+                )
+    return issues
+
+
 def validate_quality_checks(
     finish_reason: Optional[str],
     content: str,
@@ -1077,98 +1202,31 @@ def validate_quality_checks(
     checks = checks or {}
     tool_calls = tool_calls or []
 
-    allowed_finish = checks.get("finish_reason")
-    if allowed_finish is not None:
-        allowed = (
-            [allowed_finish]
-            if isinstance(allowed_finish, str)
-            else list(allowed_finish)
+    issues.extend(_check_finish_reason(checks.get("finish_reason"), finish_reason))
+    issues.extend(
+        _check_length_bounds(checks.get("min_chars"), checks.get("max_chars"), content)
+    )
+    issues.extend(
+        _check_regex_patterns(
+            checks.get("required_regex"),
+            content,
+            kind="required_regex",
+            expect_match=True,
         )
-        if finish_reason not in allowed:
-            issues.append(
-                f"finish_reason {finish_reason!r} not in allowed set {allowed!r}"
-            )
-
-    min_chars = checks.get("min_chars")
-    if min_chars is not None and len(content) < int(min_chars):
-        issues.append(f"content shorter than min_chars={min_chars}")
-
-    max_chars = checks.get("max_chars")
-    if max_chars is not None and len(content) > int(max_chars):
-        issues.append(f"content longer than max_chars={max_chars}")
-
-    for pattern in checks.get("required_regex", []) or []:
-        try:
-            if not re.search(str(pattern), content, re.MULTILINE):
-                issues.append(f"required_regex did not match: {pattern}")
-        except re.error as exc:
-            issues.append(f"invalid required_regex {pattern!r}: {exc}")
-
-    for pattern in checks.get("forbidden_regex", []) or []:
-        try:
-            if re.search(str(pattern), content, re.MULTILINE):
-                issues.append(f"forbidden_regex matched: {pattern}")
-        except re.error as exc:
-            issues.append(f"invalid forbidden_regex {pattern!r}: {exc}")
-
-    if checks.get("json"):
-        try:
-            json.loads(content)
-        except json.JSONDecodeError as exc:
-            issues.append(f"content is not valid JSON: {exc}")
-
-    if checks.get("no_tool_calls") and tool_calls:
-        issues.append(f"no_tool_calls: expected 0 tool calls, got {len(tool_calls)}")
-
-    expected_count = checks.get("tool_call_count")
-    if expected_count is not None and len(tool_calls) != int(expected_count):
-        issues.append(
-            f"tool_call_count: expected {expected_count}, got {len(tool_calls)}"
+    )
+    issues.extend(
+        _check_regex_patterns(
+            checks.get("forbidden_regex"),
+            content,
+            kind="forbidden_regex",
+            expect_match=False,
         )
-
-    expected_names = checks.get("tool_call_names")
-    if expected_names is not None:
-        actual_names = sorted(
-            tc.get("function", {}).get("name", "") for tc in tool_calls
-        )
-        expected_sorted = sorted(str(name) for name in expected_names)
-        if actual_names != expected_sorted:
-            issues.append(
-                f"tool_call_names: expected {expected_sorted!r}, got {actual_names!r}"
-            )
-
-    required_args = checks.get("tool_call_args_required_keys") or {}
-    if required_args:
-        by_name: dict[str, list[dict]] = {}
-        for tc in tool_calls:
-            name = tc.get("function", {}).get("name", "")
-            by_name.setdefault(name, []).append(tc)
-        for name, required_keys in required_args.items():
-            matches = by_name.get(str(name), [])
-            if not matches:
-                issues.append(
-                    f"tool_call_args_required_keys: no tool call named {name!r}"
-                )
-                continue
-            for tc in matches:
-                raw_args = tc.get("function", {}).get("arguments", "")
-                try:
-                    parsed_args = json.loads(raw_args or "{}")
-                except json.JSONDecodeError as exc:
-                    issues.append(
-                        f"tool_call_args_required_keys: {name} arguments invalid JSON: {exc}"
-                    )
-                    continue
-                if not isinstance(parsed_args, dict):
-                    issues.append(
-                        f"tool_call_args_required_keys: {name} arguments not an object"
-                    )
-                    continue
-                missing = [key for key in required_keys if key not in parsed_args]
-                if missing:
-                    issues.append(
-                        f"tool_call_args_required_keys: {name} missing keys {missing!r}"
-                    )
+    )
+    issues.extend(_check_json_content(checks.get("json"), content))
+    issues.extend(_check_tool_call_count_and_names(checks, tool_calls))
+    issues.extend(
+        _check_tool_call_args(checks.get("tool_call_args_required_keys"), tool_calls)
+    )
 
     return (not issues, issues)
 
