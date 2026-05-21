@@ -1252,25 +1252,14 @@ class TestHarmonyHelperFunctions:
 
 
 class TestHarmonyCLIIntegration:
-    """Tests that harmony and gpt-oss are valid CLI parser choices."""
+    """Tests that harmony and gpt-oss are valid CLI parser choices.
 
-    @staticmethod
-    def _get_serve_tool_parser_choices():
-        """Extract --tool-call-parser choices from the CLI serve subcommand.
-
-        We inspect the argparse tree rather than calling main() so no server
-        is started.
-        """
-        import importlib
-        import inspect
-
-        # Read the source of cli.main to find the choices list.
-        # Alternatively, we can build the parser by importing and inspecting.
-        # The safest approach: grep the choices from the source itself.
-        mod = importlib.import_module("vllm_mlx.cli")
-        source = inspect.getsource(mod.main)
-        # The choices list is defined literally in the source
-        return source
+    Pre-PR #433 these tests grepped a hardcoded ``choices=[...]`` list in
+    ``vllm_mlx/cli.py``. PR #433 removed that list in favor of validating
+    against the live ``ToolParserManager`` registry, so the helper that
+    read the source is gone — the tests now assert registry membership
+    directly. Codex follow-up dead-code cleanup.
+    """
 
     def test_harmony_in_cli_choices(self):
         """Verify 'harmony' is accepted by CLI --tool-call-parser.

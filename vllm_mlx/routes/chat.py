@@ -1070,7 +1070,9 @@ async def stream_chat_completion(
             # fallback still recovered tool calls (shouldn't normally
             # happen — process_chunk emits finish on output.finished).
             # Emit a synthetic terminal chunk so the client gets the
-            # tool calls instead of a dangling stream.
+            # tool calls instead of a dangling stream. Carry through any
+            # accumulated content/reasoning so the synthetic chunk
+            # doesn't silently truncate text the model produced.
             tool_chunk = ChatCompletionChunk(
                 id=response_id,
                 created=_sse_created,
@@ -1078,6 +1080,8 @@ async def stream_chat_completion(
                 choices=[
                     ChatCompletionChunkChoice(
                         delta=ChatCompletionChunkDelta(
+                            content=processor.accumulated_text or None,
+                            reasoning_content=processor.accumulated_reasoning or None,
                             tool_calls=fallback_tool_calls,
                         ),
                         finish_reason="tool_calls",
