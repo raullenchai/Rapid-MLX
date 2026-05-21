@@ -194,8 +194,62 @@ async def test_stream_chat_routes_tool_call_channel_on_finish():
     assert outputs[0].logprobs is None
 
 
+# Router-allowlist families that emit Channel.TOOL_CALL as a *deferred
+# aggregate* event (TokenMap has both tool_call_start and tool_call_end
+# set; router buffers body tokens during RouterState.TOOL_CALL and emits
+# once on the end marker with event.text = full decoded body).
+#
+# THIS IS THE BUG A SURFACE (v0.6.62): if the engine's single-token-flush
+# optimization is applied to these events, the end-marker token's text
+# clobbers the buffered body and the streaming tool call is dropped.
+#
+# Every family in this dict MUST be exercised by the parametrized
+# `test_router_tool_call_body_preserved_single_token_flush` below. The
+# structural test `test_router_allowlist_tool_call_routing_declared`
+# enforces that ALL `_OUTPUT_ROUTER_ALLOWLIST` families are categorized
+# either here or in `_ROUTER_FAMILIES_TOOL_CALL_AT_PARSER_LAYER` so that
+# the next router-family addition cannot silently ship without coverage.
+_ROUTER_FAMILIES_TOOL_CALL_AGGREGATE: dict[str, dict] = {
+    "gemma4": {
+        "vocab": GEMMA4_VOCAB,
+        # <|tool_call>call:get_weather{city:Tokyo}<tool_call|>
+        "body_tokens": [
+            48,
+            6639,
+            236787,
+            828,
+            236779,
+            19323,
+            236782,
+            13319,
+            236787,
+            89265,
+            236783,
+            49,
+        ],
+        "expected_substrings": [
+            "<|tool_call>",
+            "get_weather",
+            "Tokyo",
+            "<tool_call|>",
+        ],
+    },
+}
+
+# Router-allowlist families whose TOKENIZER-level routing does NOT emit
+# Channel.TOOL_CALL — tool-call extraction happens downstream at the
+# per-family ToolParser (e.g. HarmonyToolParser scanning the commentary
+# channel). These families are exempt from the aggregate-body invariant
+# above; their streaming coverage lives in the per-parser test files.
+_ROUTER_FAMILIES_TOOL_CALL_AT_PARSER_LAYER: set[str] = {
+    "harmony",  # tool calls routed via <|channel|>commentary + <|call|>;
+    # extracted by HarmonyToolParser, not OutputRouter.feed()
+}
+
+
+@pytest.mark.parametrize("family", sorted(_ROUTER_FAMILIES_TOOL_CALL_AGGREGATE.keys()))
 @pytest.mark.asyncio
-async def test_stream_chat_preserves_tool_call_body_across_single_token_flush():
+async def test_router_tool_call_body_preserved_single_token_flush(family):
     """Single-token engine flush must not clobber the router's multi-token body.
 
     Regression: ``Channel.TOOL_CALL`` is a *deferred aggregate* — the router
@@ -204,28 +258,21 @@ async def test_stream_chat_preserves_tool_call_body_across_single_token_flush():
     body. The single-token-flush optimization that lets CONTENT/REASONING
     chunks reuse the scheduler's detokenized ``output.new_text`` would, if
     applied to TOOL_CALL events, override the accumulated body with just the
-    end-marker token's text ('<tool_call|>'), silently dropping the call body.
-    Caught post-v0.6.61 on gemma-4-26b — non-stream extracted a valid tool
-    call from the same generation that streaming returned as bare content.
+    end-marker token's text, silently dropping the call body. Caught
+    post-v0.6.61 on gemma-4-26b — non-stream extracted a valid tool call
+    from the same generation that streaming returned as bare content.
+
+    Parametrized over every router-allowlist family that emits TOOL_CALL
+    aggregate events. Adding a new family to that group (see
+    ``_ROUTER_FAMILIES_TOOL_CALL_AGGREGATE``) requires extending this test.
     """
-    engine = _make_engine(FakeTokenizer(GEMMA4_VOCAB))
+    spec = _ROUTER_FAMILIES_TOOL_CALL_AGGREGATE[family]
+    vocab = spec["vocab"]
+    body_tokens = spec["body_tokens"]
+    expected = spec["expected_substrings"]
 
-    body_tokens = [
-        48,  # <|tool_call>
-        6639,  # call
-        236787,  # :
-        828,  # get
-        236779,  # _
-        19323,  # weather
-        236782,  # {
-        13319,  # city
-        236787,  # :
-        89265,  # Tokyo
-        236783,  # }
-        49,  # <tool_call|>
-    ]
-
-    _id_to_text = {v: k for k, v in GEMMA4_VOCAB.items()}
+    engine = _make_engine(FakeTokenizer(vocab))
+    _id_to_text = {v: k for k, v in vocab.items()}
 
     async def fake_stream_generate(**kwargs):
         for i, tid in enumerate(body_tokens):
@@ -245,14 +292,43 @@ async def test_stream_chat_preserves_tool_call_body_across_single_token_flush():
     )
 
     tool_call_outputs = [o for o in outputs if o.channel == "tool_call"]
-    assert len(tool_call_outputs) == 1
+    assert len(tool_call_outputs) == 1, (
+        f"{family}: expected exactly 1 TOOL_CALL event, got {len(tool_call_outputs)}"
+    )
     body = tool_call_outputs[0].new_text
-    assert "<|tool_call>" in body, f"start marker dropped: {body!r}"
-    assert "get_weather" in body, f"function name dropped: {body!r}"
-    assert "Tokyo" in body, f"argument value dropped: {body!r}"
-    assert "<tool_call|>" in body, f"end marker dropped: {body!r}"
+    for needle in expected:
+        assert needle in body, f"{family}: {needle!r} dropped from body: {body!r}"
     assert tool_call_outputs[0].finished is True
     assert tool_call_outputs[0].finish_reason == "stop"
+
+
+def test_router_allowlist_tool_call_routing_declared():
+    """Every router-allowlist family must declare its tool-call routing.
+
+    Forcing function for the Bug A class (v0.6.62): when adding a new
+    family to ``_OUTPUT_ROUTER_ALLOWLIST``, the dev must categorize it as
+    either (a) emitting ``Channel.TOOL_CALL`` aggregate events through
+    ``OutputRouter.feed()`` — in which case the parametrized streaming
+    test above must cover it — OR (b) deferring tool-call extraction to
+    the per-family ``ToolParser``. The undeclared case is what let the
+    single-token-flush regression ship in v0.6.61: no test enforced that
+    every router family had streaming coverage for the aggregate path.
+    """
+    from vllm_mlx.engine.batched import _OUTPUT_ROUTER_ALLOWLIST
+
+    declared = (
+        set(_ROUTER_FAMILIES_TOOL_CALL_AGGREGATE.keys())
+        | _ROUTER_FAMILIES_TOOL_CALL_AT_PARSER_LAYER
+    )
+    undeclared = _OUTPUT_ROUTER_ALLOWLIST - declared
+    assert not undeclared, (
+        f"Router-allowlist families with no declared tool-call routing: "
+        f"{sorted(undeclared)}. Add each to either "
+        f"_ROUTER_FAMILIES_TOOL_CALL_AGGREGATE (router emits Channel.TOOL_CALL "
+        f"as a buffered aggregate event — MUST add a parametrized streaming "
+        f"coverage entry too) or _ROUTER_FAMILIES_TOOL_CALL_AT_PARSER_LAYER "
+        f"(tool-call extraction happens at the per-family ToolParser layer)."
+    )
 
 
 @pytest.mark.asyncio

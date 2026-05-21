@@ -122,6 +122,42 @@ families:
         ram_gb_required: 18
         quality_tier: smoke
 
+  - family: harmony
+    candidates:
+      # Added 2026-05-21 to close the router-allowlist coverage gap surfaced
+      # by Bug A (v0.6.62 tool-call streaming regression). The two families
+      # routed through OutputRouter — `gemma4` and `harmony`
+      # (vllm_mlx/engine/batched.py:_OUTPUT_ROUTER_ALLOWLIST) — were both
+      # absent from this matrix when Bug A shipped, so no PR could have
+      # caught the regression at the integration layer. Gemma 4 remains
+      # excluded (see note below — model-side instruction-following
+      # weaknesses produce agent-test flake), but gpt-oss-20b
+      # (Harmony format) does NOT have those issues and gives us live
+      # OutputRouter coverage for the second allowlist family.
+      #
+      # Bug A's specific surface (Channel.TOOL_CALL aggregate body override)
+      # is gemma4-only at the router layer — Harmony's TokenMap does NOT
+      # set tool_call_start/tool_call_end, so harmony tool calls are
+      # extracted by HarmonyToolParser scanning commentary channel content,
+      # not via OutputRouter.feed(). What harmony DOES exercise here is the
+      # router's CONTENT/REASONING channel routing + HarmonyToolParser's
+      # streaming path end-to-end, which is the closest integration-level
+      # coverage we can get for the parser+router seam.
+      #
+      # The pure router-level invariant (single-token-flush of
+      # Channel.TOOL_CALL aggregates) is enforced by
+      # tests/test_batched_engine_output_router.py::
+      # test_router_allowlist_tool_call_routing_declared — a structural
+      # check that fails CI if anyone adds a router family without
+      # declaring how its tool calls route. That + this matrix entry are
+      # the two halves of the meta-fix.
+      #
+      # RAM: ~12 GB MXFP4-Q8 weights + ~3-4 GB KV cache for tool-call
+      # stress prompts + MLX runtime overhead → 22 GB target.
+      - id: mlx-community/gpt-oss-20b-MXFP4-Q8
+        ram_gb_required: 22
+        quality_tier: golden
+
 # Gemma 4 was previously listed here for orthogonal coverage (different
 # chat template + tool-call format) but observed in PR #208 validation
 # to fail multiple agent tests due to model-side instruction-following
@@ -177,6 +213,13 @@ overrides:
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
   "mlx-community/Qwen3.6-27B-4bit":
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
+  # Harmony parser handles both <|channel|>commentary tool-call blocks and
+  # the final-channel content for gpt-oss-20b. The auto-detect registry
+  # picks it via gpt-oss-20b alias profile, but the explicit override
+  # documents intent at the validation surface (mirrors the qwen3.5/3.6
+  # convention above).
+  "mlx-community/gpt-oss-20b-MXFP4-Q8":
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "harmony"]
 
 # Agent integrations — each is a tests/integrations/ test_X.py script
 # we exec against the live server. The matrix is models × agents.
