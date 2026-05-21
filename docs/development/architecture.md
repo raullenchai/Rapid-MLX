@@ -195,7 +195,7 @@ general hot-reconfiguration API for a running FastAPI server.
 ## Hardware Detection
 
 vllm-mlx auto-detects Apple Silicon:
-- Chip name (M1, M2, M3, M4)
+- Chip name (M1, M2, M3, M4, M5)
 - Total memory
 - Neural engine cores
 - GPU cores

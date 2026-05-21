@@ -15,7 +15,7 @@ vllm-mlx incorpora aceleración GPU nativa de Apple Silicon a vLLM mediante la i
 ## Características principales
 
 - **Multimodal** - Texto, imagen, video y audio en una sola plataforma
-- **Aceleración GPU nativa** en Apple Silicon (M1, M2, M3, M4)
+- **Aceleración GPU nativa** en Apple Silicon (M1, M2, M3, M4, M5)
 - **Voces TTS nativas** - Español, francés, chino, japonés y 5 idiomas más
 - **Compatible con la API de OpenAI** - reemplazo directo del cliente de OpenAI
 - **Embeddings** - Endpoint `/v1/embeddings` compatible con OpenAI
@@ -57,7 +57,7 @@ vllm-mlx incorpora aceleración GPU nativa de Apple Silicon a vLLM mediante la i
 
 ## Requisitos
 
-- macOS en Apple Silicon (M1/M2/M3/M4)
+- macOS en Apple Silicon (M1/M2/M3/M4/M5)
 - Python 3.10+
 - Se recomiendan 8 GB de RAM o más
 

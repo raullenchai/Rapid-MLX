@@ -74,7 +74,7 @@ claude
 - **Built-in benchmarker**: `vllm-mlx bench-serve` for prompt sweeps with CSV/JSON output
 
 ### Native GPU acceleration
-- Apple Silicon only (M1, M2, M3, M4) with Metal kernels via MLX
+- Apple Silicon only (M1, M2, M3, M4, M5) with Metal kernels via MLX
 - Unified memory, no model conversion
 
 ## Performance

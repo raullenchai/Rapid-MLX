@@ -2,7 +2,7 @@
 
 ## 系统要求
 
-- 搭载 Apple Silicon（M1/M2/M3/M4）的 macOS
+- 搭载 Apple Silicon（M1/M2/M3/M4/M5）的 macOS
 - Python 3.10+
 
 ## 使用 uv 安装（推荐）

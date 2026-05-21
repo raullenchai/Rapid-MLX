@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- macOS on Apple Silicon (M1/M2/M3/M4)
+- macOS on Apple Silicon (M1/M2/M3/M4/M5)
 - Python 3.10+
 
 ## Install with uv (Recommended)

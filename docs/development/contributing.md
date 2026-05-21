@@ -75,7 +75,7 @@ See [Architecture](architecture.md) for details on the codebase structure.
 
 ## Testing on Different Hardware
 
-If you have access to different Apple Silicon chips (M1, M2, M3, M4), benchmark results are valuable:
+If you have access to different Apple Silicon chips (M1, M2, M3, M4, M5), benchmark results are valuable:
 
 ```bash
 vllm-mlx-bench --model mlx-community/Qwen3-0.6B-8bit --output results_m4.json

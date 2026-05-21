@@ -74,7 +74,7 @@ claude
 - **内置基准测试**：`vllm-mlx bench-serve`，支持 prompt 扫描及 CSV/JSON 输出
 
 ### 原生 GPU 加速
-- 仅支持 Apple Silicon（M1、M2、M3、M4），通过 MLX 使用 Metal kernel
+- 仅支持 Apple Silicon（M1、M2、M3、M4、M5），通过 MLX 使用 Metal kernel
 - 统一内存，无需模型转换
 
 ## 性能

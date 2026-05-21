@@ -74,7 +74,7 @@ claude
 - **Benchmark intégré** : `vllm-mlx bench-serve` pour des balayages de prompts en CSV/JSON
 
 ### Accélération GPU native
-- Apple Silicon uniquement (M1, M2, M3, M4) avec kernels Metal via MLX
+- Apple Silicon uniquement (M1, M2, M3, M4, M5) avec kernels Metal via MLX
 - Mémoire unifiée, sans conversion de modèles
 
 ## Performance
