@@ -198,6 +198,79 @@ def print_staleness_warning_if_any() -> None:
         pass
 
 
+def prompt_upgrade_if_available() -> bool:
+    """Interactive Y/n prompt when a newer release is on GitHub.
+
+    Designed for the top of long-lived entry points (``rapid-mlx serve``):
+    if the network has a newer release than what's installed, ask once
+    before booting the model. On accept, dispatch the right upgrade
+    command (brew/pip/install.sh — same dispatcher as ``rapid-mlx
+    upgrade``) and return ``True`` so the caller can exit. Returns
+    ``False`` when no prompt was shown (disabled, non-TTY, already
+    current, dev build, network down) or the user declined.
+
+    Distinct from ``staleness_warning()`` in two ways: (1) prompts on ANY
+    newer release, not only ≥2-patch lag, because if we're going to
+    interrupt a long-running boot we may as well save the user the
+    re-launch; (2) crosses minor-version boundaries, because an
+    interactive opt-in is safer than the silent banner's automatic
+    cross-minor restraint.
+    """
+    try:
+        if _disabled():
+            return False
+        # Need stdin for the prompt too — _disabled checks stderr only.
+        if not sys.stdin.isatty():
+            return False
+
+        installed_str = _installed_version()
+        if not installed_str:
+            return False
+        installed = _parse_version(installed_str)
+        if installed is None:
+            return False  # dev build
+
+        latest_str = get_latest_version()
+        if not latest_str:
+            return False
+        latest = _parse_version(latest_str)
+        if latest is None or latest <= installed:
+            return False
+
+        import subprocess
+
+        info = detect_install_method()
+        print(
+            f"\nA newer rapid-mlx is available: {latest_str} "
+            f"(current: {installed_str})."
+        )
+        print(f"  Upgrade command: {info.upgrade_command}")
+        try:
+            answer = input("  Run it now? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer and answer not in ("y", "yes"):
+            return False
+
+        print()
+        try:
+            result = subprocess.run(info.upgrade_argv, check=False)
+        except FileNotFoundError as e:
+            print(f"  Upgrade command not found: {e}\n")
+            return False
+        except KeyboardInterrupt:
+            print("\n  Interrupted.\n")
+            return False
+        if result.returncode == 0:
+            print("\nUpgrade complete. Please re-run your command.\n")
+        else:
+            print(f"\nUpgrade exited with code {result.returncode}.\n")
+        return True
+    except Exception:  # noqa: BLE001 — never break the CLI
+        return False
+
+
 # --- install-method detection (used by ``rapid-mlx upgrade``) -----------
 
 

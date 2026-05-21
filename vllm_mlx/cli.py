@@ -384,6 +384,15 @@ def serve_command(args):
 
     import uvicorn
 
+    # Interactive auto-upgrade prompt — when serve runs interactively and a
+    # newer release is available, ask once before booting the model. Honors
+    # RAPID_MLX_DISABLE_VERSION_CHECK, CI=1, and non-TTY stdin. Cached
+    # piggy-backs on the existing staleness check's cache (24h TTL).
+    from vllm_mlx._version_check import prompt_upgrade_if_available
+
+    if prompt_upgrade_if_available():
+        sys.exit(0)
+
     # Import unified server
     from . import server
     from .middleware.auth import configure_rate_limiter

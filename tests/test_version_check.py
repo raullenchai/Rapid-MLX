@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -315,3 +316,162 @@ def test_detect_install_method_no_binary_falls_back_to_pip(monkeypatch):
     info = vc.detect_install_method()
     assert info.method == "pip"
     assert info.binary_path is None
+
+
+# --- prompt_upgrade_if_available ------------------------------------------
+
+
+@pytest.fixture
+def interactive(monkeypatch):
+    """Enable the prompt path: TTY on stdin+stderr, not disabled, not in CI."""
+    monkeypatch.delenv("RAPID_MLX_DISABLE_VERSION_CHECK", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr(vc.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(vc.sys.stderr, "isatty", lambda: True)
+
+
+def test_prompt_returns_false_when_disabled(monkeypatch, interactive):
+    monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", "1")
+    # Disabled MUST short-circuit before fetching anything.
+    monkeypatch.setattr(
+        vc, "get_latest_version",
+        lambda force_refresh=False: pytest.fail("network leaked on disabled"),
+    )
+    assert vc.prompt_upgrade_if_available() is False
+
+
+def test_prompt_returns_false_when_stdin_not_tty(monkeypatch, interactive):
+    monkeypatch.setattr(vc.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(
+        vc, "get_latest_version",
+        lambda force_refresh=False: pytest.fail("network leaked on non-TTY"),
+    )
+    assert vc.prompt_upgrade_if_available() is False
+
+
+def test_prompt_returns_false_when_already_current(monkeypatch, interactive):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.62")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
+    with patch("builtins.input") as inp:
+        assert vc.prompt_upgrade_if_available() is False
+        inp.assert_not_called()
+
+
+def test_prompt_returns_false_when_local_ahead(monkeypatch, interactive):
+    """Dev build one bump ahead of latest — never prompt downward."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.63")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
+    with patch("builtins.input") as inp:
+        assert vc.prompt_upgrade_if_available() is False
+        inp.assert_not_called()
+
+
+def test_prompt_returns_false_when_dev_build_unparseable(monkeypatch, interactive):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.62.dev1+gabcdef")
+    monkeypatch.setattr(vc, "_parse_version", lambda s: None if "dev" in s else (0, 6, 62))
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
+    with patch("builtins.input") as inp:
+        assert vc.prompt_upgrade_if_available() is False
+        inp.assert_not_called()
+
+
+def test_prompt_returns_false_when_offline(monkeypatch, interactive):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: None)
+    with patch("builtins.input") as inp:
+        assert vc.prompt_upgrade_if_available() is False
+        inp.assert_not_called()
+
+
+def test_prompt_returns_false_when_user_declines(monkeypatch, interactive):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(
+            method="pip",
+            upgrade_command="pip install -U rapid-mlx",
+            upgrade_argv=["pip", "install", "-U", "rapid-mlx"],
+        ),
+    )
+    with (
+        patch("builtins.input", return_value="n"),
+        patch("subprocess.run") as run,
+    ):
+        assert vc.prompt_upgrade_if_available() is False
+        run.assert_not_called()
+
+
+def test_prompt_returns_true_and_runs_upgrade_on_accept(monkeypatch, interactive):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(
+            method="brew",
+            upgrade_command="brew upgrade raullenchai/tap/rapid-mlx",
+            upgrade_argv=["brew", "upgrade", "raullenchai/tap/rapid-mlx"],
+        ),
+    )
+    fake_result = MagicMock(returncode=0)
+    # Empty answer == default Y.
+    with (
+        patch("builtins.input", return_value=""),
+        patch("subprocess.run", return_value=fake_result) as run,
+    ):
+        assert vc.prompt_upgrade_if_available() is True
+        run.assert_called_once_with(
+            ["brew", "upgrade", "raullenchai/tap/rapid-mlx"], check=False
+        )
+
+
+def test_prompt_crosses_minor_boundary(monkeypatch, interactive):
+    """``staleness_warning`` stays silent across minor bumps, but the
+    interactive prompt opts in — user can still say no."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.62")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.7.0")
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(
+            method="pip",
+            upgrade_command="pip",
+            upgrade_argv=["pip"],
+        ),
+    )
+    with patch("builtins.input", return_value="n") as inp:
+        assert vc.prompt_upgrade_if_available() is False
+        inp.assert_called_once()
+
+
+def test_prompt_never_raises(monkeypatch, interactive):
+    """A bug in detect_install_method or _installed_version must never crash
+    the CLI — silently skip and return False so serve continues to boot.
+    """
+
+    def boom():
+        raise RuntimeError("simulated bug")
+
+    monkeypatch.setattr(vc, "_installed_version", boom)
+    # Must not raise.
+    assert vc.prompt_upgrade_if_available() is False
+
+
+def test_prompt_returns_false_on_keyboard_interrupt(monkeypatch, interactive):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(
+            method="pip", upgrade_command="pip", upgrade_argv=["pip"]
+        ),
+    )
+    with (
+        patch("builtins.input", side_effect=KeyboardInterrupt()),
+        patch("subprocess.run") as run,
+    ):
+        assert vc.prompt_upgrade_if_available() is False
+        run.assert_not_called()
