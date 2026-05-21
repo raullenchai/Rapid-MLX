@@ -25,6 +25,7 @@ from .base import (
     cleanup_startup_cancellation,
     run_blocking_startup_work,
 )
+from .chat_template_safety import normalize_messages_for_chat_template
 from ..mlx_streams import bind_generation_streams
 
 logger = logging.getLogger(__name__)
@@ -893,15 +894,16 @@ class SimpleEngine(BaseEngine):
                 template_kwargs.update(chat_template_kwargs)
             if template_tools:
                 template_kwargs["tools"] = template_tools
+            safe_messages = normalize_messages_for_chat_template(messages)
 
             try:
-                prompt = tokenizer.apply_chat_template(messages, **template_kwargs)
+                prompt = tokenizer.apply_chat_template(safe_messages, **template_kwargs)
             except TypeError:
                 # Some templates don't support all kwargs
                 for key in ["tools", "enable_thinking", *chat_template_kwargs.keys()]:
                     if key in template_kwargs:
                         del template_kwargs[key]
-                prompt = tokenizer.apply_chat_template(messages, **template_kwargs)
+                prompt = tokenizer.apply_chat_template(safe_messages, **template_kwargs)
         else:
             prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
             prompt += "\nassistant:"
@@ -1531,17 +1533,18 @@ class SimpleEngine(BaseEngine):
         template_kwargs.update(chat_template_kwargs)
         if tools:
             template_kwargs["tools"] = tools
+        safe_messages = normalize_messages_for_chat_template(messages)
 
         try:
             full_prompt = self._text_tokenizer.apply_chat_template(
-                messages, **template_kwargs
+                safe_messages, **template_kwargs
             )
         except TypeError:
             # Template doesn't accept tools= or enable_thinking=
             template_kwargs.pop("tools", None)
             template_kwargs.pop("enable_thinking", None)
             full_prompt = self._text_tokenizer.apply_chat_template(
-                messages, **template_kwargs
+                safe_messages, **template_kwargs
             )
 
         sampler = make_sampler(

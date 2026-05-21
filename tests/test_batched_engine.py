@@ -235,3 +235,39 @@ class TestToolCallReplayNormalization:
         assert normalized[0]["tool_calls"][0]["function"]["arguments"] == {
             "value": ["not", "object"]
         }
+
+    def test_closes_dangling_think_before_raw_tool_call(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": (
+                    "<think>Need the weather tool.\n"
+                    "<tool_call>\n"
+                    "<function=get_weather>\n"
+                    "<parameter=city>\nParis\n</parameter>\n"
+                    "</function>\n"
+                    "</tool_call>"
+                ),
+            }
+        ]
+
+        normalized = _normalize_tool_call_arguments_for_template(messages)
+        content = normalized[0]["content"]
+
+        assert "Need the weather tool.\n</think><tool_call>" in content
+        assert "<tool_call>" not in content.split("</think>", 1)[0]
+        assert messages[0]["content"].startswith("<think>Need")
+
+    def test_normalizes_pydantic_style_messages_without_stringifying(self):
+        class MessageLike:
+            def model_dump(self, exclude_none=False):
+                assert exclude_none is True
+                return {
+                    "role": "assistant",
+                    "content": "plain response",
+                    "unused": None,
+                }
+
+        normalized = _normalize_tool_call_arguments_for_template([MessageLike()])
+
+        assert normalized == [{"role": "assistant", "content": "plain response"}]

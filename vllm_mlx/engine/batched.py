@@ -13,7 +13,6 @@ LLM engine), so text-only requests must also be routed through it.
 
 import asyncio
 import inspect
-import json
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -27,36 +26,14 @@ from .base import (
     cleanup_startup_cancellation,
     run_blocking_startup_work,
 )
+from .chat_template_safety import normalize_messages_for_chat_template
 
 logger = logging.getLogger(__name__)
 
 
 def _normalize_tool_call_arguments_for_template(messages: list[dict]) -> list[dict]:
     """Normalize OpenAI tool-call replay for templates expecting mappings."""
-    normalized = json.loads(json.dumps(messages, default=str))
-    for message in normalized:
-        if message.get("role") != "assistant":
-            continue
-        tool_calls = message.get("tool_calls")
-        if not isinstance(tool_calls, list):
-            continue
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, dict):
-                continue
-            function = tool_call.get("function")
-            if not isinstance(function, dict):
-                continue
-            arguments = function.get("arguments")
-            if not isinstance(arguments, str):
-                continue
-            try:
-                parsed = json.loads(arguments)
-            except (json.JSONDecodeError, ValueError, TypeError):
-                parsed = {"value": arguments}
-            if not isinstance(parsed, dict):
-                parsed = {"value": parsed}
-            function["arguments"] = parsed
-    return normalized
+    return normalize_messages_for_chat_template(messages)
 
 
 def _extract_media_from_messages(messages: list[dict[str, Any]]) -> tuple:
