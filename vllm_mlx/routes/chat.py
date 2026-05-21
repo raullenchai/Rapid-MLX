@@ -1046,9 +1046,7 @@ async def stream_chat_completion(
                             content=finish_event.content,
                             reasoning_content=finish_event.reasoning,
                             tool_calls=(
-                                fallback_tool_calls
-                                if fallback_tool_calls
-                                else None
+                                fallback_tool_calls if fallback_tool_calls else None
                             ),
                         ),
                         finish_reason=(
@@ -1063,11 +1061,7 @@ async def stream_chat_completion(
                 usage=(
                     None
                     if include_usage
-                    else (
-                        get_usage(finish_output)
-                        if finish_output.finished
-                        else None
-                    )
+                    else (get_usage(finish_output) if finish_output.finished else None)
                 ),
             )
             yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
