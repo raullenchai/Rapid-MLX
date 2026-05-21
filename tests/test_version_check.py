@@ -368,15 +368,60 @@ def test_prompt_returns_false_when_local_ahead(monkeypatch, interactive):
         inp.assert_not_called()
 
 
-def test_prompt_returns_false_when_dev_build_unparseable(monkeypatch, interactive):
-    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.62.dev1+gabcdef")
-    monkeypatch.setattr(
-        vc, "_parse_version", lambda s: None if "dev" in s else (0, 6, 62)
-    )
-    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
+@pytest.mark.parametrize(
+    "dev_version",
+    [
+        "0.6.62.dev1+gabcdef",  # editable dev build
+        "0.6.61.dev1",  # dev base of in-progress next bump
+        "0.6.62rc1",  # release candidate
+        "0.6.62a1",  # alpha
+        "0.6.62b1",  # beta
+        "0.6.62.post1",  # post-release
+        "0.6.62+local.build",  # PEP 440 local version
+    ],
+)
+def test_prompt_returns_false_for_pep440_non_final_release(
+    monkeypatch, interactive, dev_version
+):
+    """Real ``_parse_version`` tolerates dev/rc/+ suffixes and returns a tuple,
+    which would otherwise let a dev on ``0.6.61.dev1`` get a false prompt for
+    ``0.6.62``. The dev-build guard must skip BEFORE parsing, using the real
+    parser unmocked so a future regression of the parser doesn't silently
+    bypass the guard. DeepSeek finding #3 on PR #428.
+    """
+    monkeypatch.setattr(vc, "_installed_version", lambda: dev_version)
+    # Real _parse_version intentionally NOT mocked — guard must fire first.
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.7.0")
     with patch("builtins.input") as inp:
         assert vc.prompt_upgrade_if_available() is False
         inp.assert_not_called()
+
+
+def test_prompt_returns_false_when_upgrade_subprocess_fails(monkeypatch, interactive):
+    """Brew/pip failure (network, conflict, sudo prompt) must NOT cause
+    serve to exit silently. Return False so the caller continues booting
+    with the current version. DeepSeek finding #2 on PR #428.
+    """
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(
+            method="brew",
+            upgrade_command="brew upgrade raullenchai/tap/rapid-mlx",
+            upgrade_argv=["brew", "upgrade", "raullenchai/tap/rapid-mlx"],
+        ),
+    )
+    fake_result = MagicMock(returncode=1)
+    with (
+        patch("builtins.input", return_value="y"),
+        patch("subprocess.run", return_value=fake_result),
+    ):
+        # Failed upgrade → return False so serve continues with the
+        # current installed version. The user sees the exit code and can
+        # retry manually.
+        assert vc.prompt_upgrade_if_available() is False
 
 
 def test_prompt_returns_false_when_offline(monkeypatch, interactive):

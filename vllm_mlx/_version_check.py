@@ -226,9 +226,20 @@ def prompt_upgrade_if_available() -> bool:
         installed_str = _installed_version()
         if not installed_str:
             return False
+        # Skip pre-release / dev / local-version builds. ``_parse_version``
+        # tolerates ``0.6.62.dev1`` → ``(0, 6, 62)`` so the tuple can be
+        # compared at all, but for an interactive prompt the dev-base case
+        # can fire a false "newer release available" against the dev's
+        # own in-progress branch (installed ``0.6.61.dev1`` vs latest
+        # ``0.6.62`` → prompt). A clean PEP 440 final release is digits
+        # and dots only; anything else (``dev``/``a``/``b``/``rc``/
+        # ``post``/``+local``) is non-final and gets the dev-build skip
+        # path. DeepSeek finding #1 on PR #428.
+        if any(c.isalpha() or c == "+" for c in installed_str.lstrip("v")):
+            return False
         installed = _parse_version(installed_str)
         if installed is None:
-            return False  # dev build
+            return False  # unparseable
 
         latest_str = get_latest_version()
         if not latest_str:
@@ -264,9 +275,18 @@ def prompt_upgrade_if_available() -> bool:
             return False
         if result.returncode == 0:
             print("\nUpgrade complete. Please re-run your command.\n")
-        else:
-            print(f"\nUpgrade exited with code {result.returncode}.\n")
-        return True
+            return True
+        # Failed upgrade: return False so the caller continues booting with
+        # the current version rather than exiting silently. The user has
+        # been shown the exit code and can retry manually if they care.
+        # DeepSeek finding #2 on PR #428: returning True here would have
+        # `serve_command` do ``sys.exit(0)`` and leave the user with no
+        # running server and only an error message.
+        print(
+            f"\nUpgrade exited with code {result.returncode}; "
+            f"continuing with rapid-mlx {installed_str}.\n"
+        )
+        return False
     except Exception:  # noqa: BLE001 — never break the CLI
         return False
 
