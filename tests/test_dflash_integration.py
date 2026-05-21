@@ -566,8 +566,13 @@ def test_stream_completion_surfaces_generator_exception(monkeypatch) -> None:
         "stream must end with [DONE] even when the upstream generator "
         f"raises; body was:\n{body}"
     )
-    # The final delta block must carry the error block + finish_reason=error.
-    assert '"finish_reason": "error"' in body
+    # The final delta block must carry the error block alongside an
+    # OpenAI-spec-compliant finish_reason. ``"error"`` is NOT in the
+    # OpenAI ChatCompletion finish_reason literal set; aborts use
+    # ``"length"`` so spec-validating clients (openai-python, pydantic-ai)
+    # can parse the response. The ``error`` block carries the diagnostic
+    # details. v0.6.63 onboarding sweep finding #6.
+    assert '"finish_reason": "length"' in body
     assert "dflash_runtime_error" in body
     assert "simulated mlx-vlm failure" in body
     # And the one happy chunk that *did* arrive before the raise must
@@ -621,10 +626,12 @@ def test_stream_completion_surfaces_constructor_exception(monkeypatch) -> None:
     chunks = asyncio.run(_drain())
     body = b"".join(chunks).decode()
     # Must still get a clean [DONE] terminator + the error block.
+    # finish_reason is OpenAI-spec-compliant ``"length"`` (see the
+    # generator-exception test above for full rationale).
     assert "data: [DONE]" in body, (
         f"constructor-time crash must still terminate the stream; got:\n{body}"
     )
-    assert '"finish_reason": "error"' in body
+    assert '"finish_reason": "length"' in body
     assert "dflash_runtime_error" in body
     assert "simulated OOM at generator construction" in body
 

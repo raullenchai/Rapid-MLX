@@ -1273,14 +1273,22 @@ class TestHarmonyCLIIntegration:
         return source
 
     def test_harmony_in_cli_choices(self):
-        """Verify 'harmony' is listed as a --tool-call-parser choice in CLI source."""
-        source = self._get_serve_tool_parser_choices()
-        assert '"harmony"' in source
+        """Verify 'harmony' is accepted by CLI --tool-call-parser.
+
+        Post-v0.6.63 onboarding sweep finding #1: the argparse hardcoded
+        choices list was removed in favor of live-registry validation.
+        This test now asserts the registry-derived path accepts the name.
+        """
+        from vllm_mlx.tool_parsers import ToolParserManager
+
+        assert "harmony" in ToolParserManager.tool_parsers
 
     def test_gpt_oss_in_cli_choices(self):
-        """Verify 'gpt-oss' is listed as a --tool-call-parser choice in CLI source."""
-        source = self._get_serve_tool_parser_choices()
-        assert '"gpt-oss"' in source
+        """Verify 'gpt-oss' is accepted by CLI --tool-call-parser
+        via the registry-derived validation (see test above)."""
+        from vllm_mlx.tool_parsers import ToolParserManager
+
+        assert "gpt-oss" in ToolParserManager.tool_parsers
 
     def test_registry_has_both_names(self):
         """ToolParserManager resolves both 'harmony' and 'gpt-oss'."""

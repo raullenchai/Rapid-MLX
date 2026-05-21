@@ -408,6 +408,24 @@ def serve_command(args):
         print("Example: --enable-auto-tool-choice --tool-call-parser mistral")
         sys.exit(1)
 
+    # Validate --tool-call-parser against the live registry (not the
+    # stale argparse choices list). v0.6.63 onboarding sweep finding #1.
+    if args.tool_call_parser:
+        try:
+            from .tool_parsers import ToolParserManager
+
+            valid = sorted(ToolParserManager.tool_parsers.keys())
+        except Exception:
+            valid = []
+        if valid and args.tool_call_parser not in valid:
+            print(
+                f"error: argument --tool-call-parser: invalid choice: "
+                f"{args.tool_call_parser!r} "
+                f"(choose from: {', '.join(valid)})",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
     # Validate gpu-memory-utilization range
     if not (0.0 < args.gpu_memory_utilization <= 1.0):
         print(
@@ -3111,34 +3129,26 @@ Examples:
         "--tool-call-parser",
         type=str,
         default=None,
-        choices=[
-            "auto",
-            "mistral",
-            "qwen",
-            "qwen3_coder",
-            "qwen3_coder_xml",
-            "qwen3_xml",
-            "llama",
-            "hermes",
-            "deepseek",
-            "kimi",
-            "granite",
-            "nemotron",
-            "xlam",
-            "functionary",
-            "glm47",
-            "minimax",
-            "harmony",
-            "gpt-oss",
-            "gemma4",
-        ],
+        # Choices NOT enforced at argparse level — the canonical set is the
+        # ToolParserManager registry, which has ~39 entries (canonical
+        # names + per-family aliases like ``deepseek_v31``, ``llama4``,
+        # ``moonshot`` for kimi, ``nous`` for hermes). The argparse hard-
+        # coded list drifted to 19 over multiple releases and rejected
+        # legitimate aliases users discovered via ``rapid-mlx info``.
+        # Validation now happens post-parse in
+        # ``_validate_tool_call_parser_choice`` against the live registry.
+        # v0.6.63 onboarding sweep finding #1.
         help=(
-            "Select the tool call parser for the model. Options: "
+            "Select the tool call parser for the model. Canonical options: "
             "auto (auto-detect), mistral, qwen/qwen3/qwen3_xml (reasoning models, "
             "<tool_call>JSON</tool_call> format), qwen3_coder/qwen3_coder_xml "
-            "(Coder model, <function=NAME> XML format), llama, hermes, "
-            "deepseek, kimi, granite, nemotron, xlam, functionary, glm47, minimax, "
-            "harmony/gpt-oss, gemma4. "
+            "(Coder model, <function=NAME> XML format), llama/llama3/llama4, "
+            "hermes/nous, deepseek/deepseek_v3/deepseek_v31, kimi/moonshot/kimi_k2, "
+            "granite/granite3, nemotron/nemotron3, xlam, functionary/meetkai, "
+            "glm47/glm4, minimax/minimax_m2, harmony/gpt-oss/gpt_oss, "
+            "gemma4/gemma_4, seed_oss/seed. "
+            "Run `python -c 'from vllm_mlx.tool_parsers import ToolParserManager;"
+            "print(sorted(ToolParserManager.tool_parsers))'` for the live list. "
             "Required for --enable-auto-tool-choice."
         ),
     )
@@ -3256,12 +3266,12 @@ Examples:
         "--gc-control",
         action="store_true",
         default=True,
-        help="Disable Python GC during generation to avoid latency spikes (default: enabled)",
+        help="Enable Python GC pausing during generation to avoid latency spikes (default: enabled)",
     )
     serve_parser.add_argument(
         "--no-gc-control",
         action="store_true",
-        help="Disable GC control (allow normal GC during generation)",
+        help="Disable GC control (allow normal Python GC during generation)",
     )
     # Pinned prefix cache (Tier 0 optimization)
     serve_parser.add_argument(

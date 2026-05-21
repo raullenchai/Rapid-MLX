@@ -3195,7 +3195,14 @@ class Scheduler:
                         RequestOutput(
                             request_id=rid,
                             finished=True,
-                            finish_reason="error",
+                            # OpenAI ChatCompletion only accepts {stop, length,
+                            # tool_calls, content_filter, function_call}. We
+                            # report "length" for aborted requests so spec-
+                            # validating clients (openai-python, pydantic-ai)
+                            # can parse the response; callers reading
+                            # ``RequestOutput.error`` still see the abort
+                            # details. (#v0.6.63 onboarding sweep)
+                            finish_reason="length",
                         )
                     )
                 output.finished_request_ids = aborted_ids

@@ -590,7 +590,12 @@ class EngineCore:
                                     output_token_ids=[],
                                     output_text="",
                                     finished=True,
-                                    finish_reason="error",
+                                    # OpenAI ChatCompletion finish_reason
+                                    # literal-set rejects "error"; "length"
+                                    # keeps the response spec-parseable.
+                                    # ``RequestOutput.error`` still carries
+                                    # the full abort message for callers.
+                                    finish_reason="length",
                                     prompt_tokens=0,
                                     completion_tokens=0,
                                     error=err_text,

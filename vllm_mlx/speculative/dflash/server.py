@@ -403,7 +403,10 @@ async def _stream_completion(
                 exc_info=gen_or_err,
             )
             error_message = f"{type(gen_or_err).__name__}: {gen_or_err}"
-            finish_reason = "error"
+            # OpenAI ChatCompletion only accepts {stop, length, tool_calls,
+            # content_filter, function_call}. The error block on the final
+            # SSE chunk carries the abort details for clients.
+            finish_reason = "length"
             gen = None
         else:
             gen = gen_or_err
@@ -434,7 +437,8 @@ async def _stream_completion(
                         exc_info=chunk,
                     )
                     error_message = f"{type(chunk).__name__}: {chunk}"
-                    finish_reason = "error"
+                    # See above for OpenAI spec literal-set rationale.
+                    finish_reason = "length"
                     break
                 # Always sync token counts from the chunk — even when text
                 # is empty (mlx-vlm occasionally emits trailing flush

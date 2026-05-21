@@ -756,10 +756,12 @@ class TestPrefillErrorCleanup:
         # Scheduler bookkeeping should be clean
         assert req_id not in scheduler.running
         assert req_id not in scheduler.request_id_to_uid
-        # Error output should have been queued
+        # Error output should have been queued. finish_reason is "length"
+        # (OpenAI-spec-compliant abort signal), not the legacy "error"
+        # literal — see scheduler.py rationale.
         queued = scheduler.output_queues[req_id].get_nowait()
         assert queued.finished is True
-        assert queued.finish_reason == "error"
+        assert queued.finish_reason == "length"
 
     def test_subsequent_request_not_poisoned(self):
         """A good request after a failed one should not be affected."""

@@ -118,6 +118,12 @@ class StreamingPostProcessor:
         # State
         self.accumulated_text = ""
         self.tool_accumulated_text = ""
+        # Accumulated reasoning content (split out by the reasoning parser
+        # from the raw model output). Surfaced on the streaming Usage
+        # chunk so clients see ``completion_tokens_details.reasoning_tokens``
+        # in parity with the non-streaming response shape. v0.6.63
+        # onboarding sweep finding #5.
+        self.accumulated_reasoning = ""
         self.tool_calls_detected = False
         self.tool_markup_possible = False
 
@@ -189,6 +195,7 @@ class StreamingPostProcessor:
         """
         self.accumulated_text = ""
         self.tool_accumulated_text = ""
+        self.accumulated_reasoning = ""
         self.tool_calls_detected = False
         self.tool_markup_possible = False
         self._think_prefix_sent = False
@@ -313,6 +320,9 @@ class StreamingPostProcessor:
 
         content = delta_msg.content
         reasoning = delta_msg.reasoning
+
+        if reasoning:
+            self.accumulated_reasoning += reasoning
 
         # MiniMax redirect: tool calls wrapped in <think> blocks
         if self.tool_parser and reasoning:

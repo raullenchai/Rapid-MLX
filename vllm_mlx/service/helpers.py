@@ -213,9 +213,26 @@ def _resolve_model_name(request_model: str | None) -> str:
 def _resolve_max_tokens(
     request_value: int | None, enable_thinking: bool | None = None
 ) -> int:
-    """Resolve max_tokens with thinking budget for reasoning models."""
+    """Resolve max_tokens with thinking budget for reasoning models.
+
+    OpenAI semantics: ``max_tokens`` from the client is a hard upper
+    bound on completion tokens (including reasoning). Three independent
+    onboarding agents flagged the prior behavior (silently adding the
+    thinking budget on top of the client's explicit cap) as
+    spec-violating — clients send ``max_tokens=40`` for a short reply
+    and the server scheduled ``max_tokens=2088``. v0.6.63 onboarding
+    sweep finding #2.
+
+    The thinking budget still applies when the client did NOT specify
+    ``max_tokens`` (server default in effect): reasoning models need
+    headroom to think *and* respond, and the server-side default is
+    the right place to bake that in.
+    """
+    if request_value is not None:
+        # Hard cap per client contract.
+        return request_value
     cfg = get_config()
-    base = request_value if request_value is not None else cfg.default_max_tokens
+    base = cfg.default_max_tokens
     if enable_thinking is False:
         return base
     if cfg.reasoning_parser_name and base > 0 and base < 4096:

@@ -685,14 +685,16 @@ class MLLMScheduler:
                     if uids_to_remove:
                         self.batch_generator.remove(uids_to_remove)
 
-                # Create error outputs (queue delivery deferred to caller)
+                # Create error outputs (queue delivery deferred to caller).
+                # finish_reason="length" — OpenAI spec-compliant aborted
+                # signal; see scheduler.py for full rationale.
                 for request_id in error_ids:
                     output.outputs.append(
                         RequestOutput(
                             request_id=request_id,
                             output_text="",
                             finished=True,
-                            finish_reason="error",
+                            finish_reason="length",
                         )
                     )
                 output.finished_request_ids = error_ids
@@ -1002,12 +1004,13 @@ class MLLMScheduler:
                 break
 
         if final_output is None:
-            # Create empty output on error
+            # Create empty output on error. finish_reason="length" keeps
+            # the response OpenAI-spec-compliant; see scheduler.py rationale.
             final_output = RequestOutput(
                 request_id=request_id,
                 output_text="",
                 finished=True,
-                finish_reason="error",
+                finish_reason="length",
             )
 
         # Cleanup

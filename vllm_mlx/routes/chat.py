@@ -590,6 +590,27 @@ async def _create_chat_completion_impl(
                 use_guided = False
             if use_guided:
                 logger.info("Using guided generation for JSON schema enforcement")
+            else:
+                # Surface the silent-degradation case: client asked for
+                # json_schema strict mode but the engine can't enforce it
+                # (most commonly: the user installed `rapid-mlx` without
+                # the `[guided]` extra, so outlines is unavailable). The
+                # request will still be served with unconstrained
+                # decoding, but the schema contract is NOT being honored
+                # — without this warning, the client sees garbage
+                # (e.g. the model thinks for max_tokens and never emits
+                # JSON) with no diagnostic signal. v0.6.63 onboarding
+                # sweep finding #5.
+                logger.warning(
+                    "json_schema response_format requested but guided "
+                    "generation is unavailable (engine="
+                    "%s.supports_guided_generation=False). Falling back "
+                    "to unconstrained decoding — schema will NOT be "
+                    "enforced. Install with `pip install "
+                    "'rapid-mlx[guided]'` to enable outlines-backed "
+                    "schema enforcement.",
+                    type(engine).__name__,
+                )
 
     if request.stream:
         # Validate chat template eagerly so template errors return 400
@@ -912,6 +933,15 @@ async def stream_chat_completion(
         prompt_tokens = 0
         completion_tokens = 0
 
+        # Buffer the terminal "finish" event so the cross-format fallback in
+        # processor.finalize() (#425) gets a chance to recover a missed tool
+        # call BEFORE we emit a terminal chunk. Without this buffer the route
+        # emits a finish_reason="stop" chunk first and then a separate
+        # finish_reason="tool_calls" chunk from the fallback path — spec-
+        # compliant clients stop reading at the first finish_reason and
+        # silently drop the tool call (#v0.6.63 onboarding sweep finding #3).
+        buffered_finish: tuple | None = None
+
         # Stream content — PostProcessor handles reasoning/tool/sanitize
         async for output in engine.stream_chat(messages=messages, **kwargs):
             if hasattr(output, "prompt_tokens") and output.prompt_tokens:
@@ -973,48 +1003,96 @@ async def stream_chat_completion(
                     yield _tc_sse
 
                 elif event.type == "finish":
-                    chunk = ChatCompletionChunk(
-                        id=response_id,
-                        created=_sse_created,
-                        model=_resolve_model_name(request.model),
-                        choices=[
-                            ChatCompletionChunkChoice(
-                                delta=ChatCompletionChunkDelta(
-                                    content=event.content,
-                                    reasoning_content=event.reasoning,
-                                ),
-                                finish_reason=event.finish_reason,
-                                logprobs=_build_chunk_logprobs(output),
-                            )
-                        ],
-                        # See "Usage placement" note on the tool_call branch.
-                        usage=(
-                            None
-                            if include_usage
-                            else (get_usage(output) if output.finished else None)
-                        ),
-                    )
-                    yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+                    # Defer emission: finalize() (below) may recover a
+                    # missed tool call via cross-format fallback. If it
+                    # does, we must merge the recovered tool_calls into
+                    # this single terminal chunk and re-stamp the
+                    # finish_reason as "tool_calls" — not emit two
+                    # contradictory finish chunks.
+                    buffered_finish = (event, output)
 
-        # Fallback tool call detection
+        # Fallback tool call detection (post-stream). Collect ALL fallback
+        # tool_call events before emitting; they get merged into the
+        # buffered finish chunk so the stream produces exactly one
+        # terminal chunk with one finish_reason (OpenAI spec).
+        fallback_tool_calls: list = []
         for event in processor.finalize():
             if event.type == "tool_call":
-                tool_chunk = ChatCompletionChunk(
-                    id=response_id,
-                    created=_sse_created,
-                    model=_resolve_model_name(request.model),
-                    choices=[
-                        ChatCompletionChunkChoice(
-                            delta=ChatCompletionChunkDelta(
-                                tool_calls=event.tool_calls,
-                            ),
-                            finish_reason="tool_calls",
-                        )
-                    ],
+                fallback_tool_calls.extend(event.tool_calls or [])
+
+        # Emit the terminal chunk. Three cases:
+        #   (a) Streaming parser already emitted tool_calls during the
+        #       loop → buffered_finish has finish_reason="tool_calls"
+        #       and fallback_tool_calls is empty. Emit as-is.
+        #   (b) Streaming parser missed the call but finalize() recovered
+        #       it via cross-format fallback → merge tool_calls into the
+        #       buffered finish and override finish_reason="tool_calls".
+        #   (c) No tool calls at all → emit the buffered finish unchanged.
+        if buffered_finish is not None:
+            finish_event, finish_output = buffered_finish
+            if fallback_tool_calls:
+                logger.info(
+                    "[SSE-FALLBACK-TC-MERGED] merging %d recovered tool_call(s) "
+                    "into terminal chunk; overriding finish_reason -> tool_calls",
+                    len(fallback_tool_calls),
                 )
-                _fb_sse = f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
-                logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
-                yield _fb_sse
+            final_chunk = ChatCompletionChunk(
+                id=response_id,
+                created=_sse_created,
+                model=_resolve_model_name(request.model),
+                choices=[
+                    ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(
+                            content=finish_event.content,
+                            reasoning_content=finish_event.reasoning,
+                            tool_calls=(
+                                fallback_tool_calls
+                                if fallback_tool_calls
+                                else None
+                            ),
+                        ),
+                        finish_reason=(
+                            "tool_calls"
+                            if fallback_tool_calls
+                            else finish_event.finish_reason
+                        ),
+                        logprobs=_build_chunk_logprobs(finish_output),
+                    )
+                ],
+                # See "Usage placement" note on the tool_call branch.
+                usage=(
+                    None
+                    if include_usage
+                    else (
+                        get_usage(finish_output)
+                        if finish_output.finished
+                        else None
+                    )
+                ),
+            )
+            yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
+        elif fallback_tool_calls:
+            # Defensive: stream ended without a "finish" event but the
+            # fallback still recovered tool calls (shouldn't normally
+            # happen — process_chunk emits finish on output.finished).
+            # Emit a synthetic terminal chunk so the client gets the
+            # tool calls instead of a dangling stream.
+            tool_chunk = ChatCompletionChunk(
+                id=response_id,
+                created=_sse_created,
+                model=_resolve_model_name(request.model),
+                choices=[
+                    ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(
+                            tool_calls=fallback_tool_calls,
+                        ),
+                        finish_reason="tool_calls",
+                    )
+                ],
+            )
+            _fb_sse = f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
+            logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
+            yield _fb_sse
 
         # Log throughput
         elapsed = time.perf_counter() - start_time
@@ -1023,17 +1101,28 @@ async def stream_chat_completion(
             f"Chat completion (stream): {completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
         )
 
-        # Send final chunk with usage if requested
+        # Send final chunk with usage if requested. Mirror non-streaming
+        # shape by populating completion_tokens_details.reasoning_tokens
+        # when the postprocessor saw a reasoning split — v0.6.63
+        # onboarding sweep finding #5 (streaming previously dropped this
+        # field even when non-streaming had it).
         if include_usage:
+            # Build a synthetic GenerationOutput-shaped namespace so
+            # _build_usage can compute the reasoning_tokens breakdown.
+            class _UsageOutput:
+                pass
+
+            _u = _UsageOutput()
+            _u.prompt_tokens = prompt_tokens
+            _u.completion_tokens = completion_tokens
             usage_chunk = ChatCompletionChunk(
                 id=response_id,
                 created=_sse_created,
                 model=_resolve_model_name(request.model),
                 choices=[],
-                usage=Usage(
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=prompt_tokens + completion_tokens,
+                usage=_build_usage(
+                    _u,
+                    processor.accumulated_reasoning or None,
                 ),
             )
             yield f"data: {usage_chunk.model_dump_json(exclude_none=True)}\n\n"
