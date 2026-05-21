@@ -334,7 +334,8 @@ def test_prompt_returns_false_when_disabled(monkeypatch, interactive):
     monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", "1")
     # Disabled MUST short-circuit before fetching anything.
     monkeypatch.setattr(
-        vc, "get_latest_version",
+        vc,
+        "get_latest_version",
         lambda force_refresh=False: pytest.fail("network leaked on disabled"),
     )
     assert vc.prompt_upgrade_if_available() is False
@@ -343,7 +344,8 @@ def test_prompt_returns_false_when_disabled(monkeypatch, interactive):
 def test_prompt_returns_false_when_stdin_not_tty(monkeypatch, interactive):
     monkeypatch.setattr(vc.sys.stdin, "isatty", lambda: False)
     monkeypatch.setattr(
-        vc, "get_latest_version",
+        vc,
+        "get_latest_version",
         lambda force_refresh=False: pytest.fail("network leaked on non-TTY"),
     )
     assert vc.prompt_upgrade_if_available() is False
@@ -368,7 +370,9 @@ def test_prompt_returns_false_when_local_ahead(monkeypatch, interactive):
 
 def test_prompt_returns_false_when_dev_build_unparseable(monkeypatch, interactive):
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.62.dev1+gabcdef")
-    monkeypatch.setattr(vc, "_parse_version", lambda s: None if "dev" in s else (0, 6, 62))
+    monkeypatch.setattr(
+        vc, "_parse_version", lambda s: None if "dev" in s else (0, 6, 62)
+    )
     monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
     with patch("builtins.input") as inp:
         assert vc.prompt_upgrade_if_available() is False
