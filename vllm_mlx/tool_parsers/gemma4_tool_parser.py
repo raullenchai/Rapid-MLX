@@ -82,6 +82,8 @@ class Gemma4ToolParser(ToolParser):
     Format: <|tool_call>call:func_name{key:<|"|>value<|"|>}<tool_call|>
     """
 
+    EXPECTED_WIRE_FORMATS = ("gemma4_native", "calling_tool_text")
+
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
         self._emitted_tool_count = 0

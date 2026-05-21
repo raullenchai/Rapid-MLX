@@ -108,6 +108,7 @@ class SeedOssToolParser(ToolParser):
     """
 
     SUPPORTS_NATIVE_TOOL_FORMAT = True
+    EXPECTED_WIRE_FORMATS = ("seed_oss_native",)
 
     TOOL_CALL_START = "<seed:tool_call>"
     TOOL_CALL_END = "</seed:tool_call>"

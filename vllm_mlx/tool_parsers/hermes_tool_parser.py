@@ -68,6 +68,18 @@ class HermesToolParser(ToolParser):
     # proper <tool_call> XML after a few rounds of tool use.
     SUPPORTS_NATIVE_TOOL_FORMAT = True
 
+    # Hermes is the most flexible parser — handles JSON body inside
+    # <tool_call>, the Nemotron-style XML body fallback (covers vanilla
+    # Qwen3.6), bare <function=...> blocks, raw JSON tool calls, and the
+    # [Calling tool:] text-fallback for low-quant degradation.
+    EXPECTED_WIRE_FORMATS = (
+        "tool_call_json",
+        "tool_call_xml_body",
+        "function_bare",
+        "raw_json",
+        "calling_tool_text",
+    )
+
     # Standard format: <tool_call>{"name": ..., "arguments": ...}</tool_call>
     TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
     # Lenient format: <tool_call or <tool_call> followed by JSON (handles malformed tags)

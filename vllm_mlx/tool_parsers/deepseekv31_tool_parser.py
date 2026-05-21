@@ -42,6 +42,7 @@ class DeepSeekV31ToolParser(ToolParser):
     """
 
     SUPPORTS_NATIVE_TOOL_FORMAT = True
+    EXPECTED_WIRE_FORMATS = ("deepseek_v31_native",)
 
     TOOL_CALLS_START = "<｜tool▁calls▁begin｜>"
     TOOL_CALLS_END = "<｜tool▁calls▁end｜>"

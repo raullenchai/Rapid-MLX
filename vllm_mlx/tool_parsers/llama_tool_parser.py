@@ -37,6 +37,10 @@ class LlamaToolParser(ToolParser):
 
     # Llama 3+ chat templates support native tool message format
     SUPPORTS_NATIVE_TOOL_FORMAT = True
+    # NOTE: this parser implements the bare <function=...> form; the
+    # llama_python_tag label is reserved for future expansion if/when
+    # Llama 3.1+ <|python_tag|> handling is added here.
+    EXPECTED_WIRE_FORMATS = ("function_bare",)
 
     # Pattern for Llama-style: <function=name>{"json"}</function>
     FUNCTION_PATTERN = re.compile(r"<function=([^>]+)>(\{.*?\})</function>", re.DOTALL)

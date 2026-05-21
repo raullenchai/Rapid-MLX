@@ -40,6 +40,7 @@ class GraniteToolParser(ToolParser):
 
     # Granite 3.1 chat templates support native tool message format
     SUPPORTS_NATIVE_TOOL_FORMAT = True
+    EXPECTED_WIRE_FORMATS = ("granite_native",)
 
     BOT_TOKEN = "<|tool_call|>"
     BOT_STRING = "<tool_call>"

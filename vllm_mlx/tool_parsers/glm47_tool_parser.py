@@ -43,6 +43,7 @@ class Glm47ToolParser(ToolParser):
     # tool calls back to the model in their native form instead of converting
     # them to a synthetic <function=…> string.
     SUPPORTS_NATIVE_TOOL_FORMAT = True
+    EXPECTED_WIRE_FORMATS = ("glm_named_tool_call",)
 
     # Match entire tool call block
     TOOL_CALL_PATTERN = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)

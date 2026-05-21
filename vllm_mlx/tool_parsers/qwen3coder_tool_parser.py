@@ -106,6 +106,7 @@ class Qwen3CoderToolParser(ToolParser):
     """
 
     SUPPORTS_NATIVE_TOOL_FORMAT = True
+    EXPECTED_WIRE_FORMATS = ("qwen3_coder_xml_named", "tool_call_xml_body")
 
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)

@@ -35,7 +35,17 @@ class QwenToolParser(ToolParser):
     - Bracket: [Calling tool: func_name({"arg": "value"})]
 
     Used when --enable-auto-tool-choice --tool-call-parser qwen are set.
+
+    Note on naming: "qwen3_xml" in the registration list refers to the XML
+    *wrapper* (<tool_call>...</tool_call> tags), NOT to XML-body parameters.
+    The JSON body inside the wrapper is what this parser extracts. Vanilla
+    Qwen3.6 non-reasoning models emit XML-body parameters, which this parser
+    does NOT handle on its own — the cross-format fallback at
+    service/postprocessor.py::finalize() (PR #426, fixes #425) routes those
+    through api.tool_calling.parse_tool_calls.
     """
+
+    EXPECTED_WIRE_FORMATS = ("tool_call_json", "calling_tool_text")
 
     # Pattern for XML-style: <tool_call>{"json"}</tool_call>
     XML_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)

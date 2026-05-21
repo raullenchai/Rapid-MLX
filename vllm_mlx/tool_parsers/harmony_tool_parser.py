@@ -69,6 +69,8 @@ class HarmonyToolParser(ToolParser):
     # which breaks the model's understanding of the tool flow.
     SUPPORTS_NATIVE_TOOL_FORMAT = True
 
+    EXPECTED_WIRE_FORMATS = ("harmony_commentary",)
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:

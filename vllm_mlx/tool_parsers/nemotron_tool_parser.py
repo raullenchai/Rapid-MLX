@@ -40,6 +40,8 @@ class NemotronToolParser(ToolParser):
     Used when --enable-auto-tool-choice --tool-call-parser nemotron are set.
     """
 
+    EXPECTED_WIRE_FORMATS = ("tool_call_xml_body",)
+
     # Pattern for Nemotron-style with parameters
     TOOL_CALL_PATTERN = re.compile(
         r"<tool_call>\s*<function=([^>]+)>(.*?)</function>\s*</tool_call>",

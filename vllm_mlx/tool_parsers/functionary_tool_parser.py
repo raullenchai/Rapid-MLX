@@ -42,6 +42,7 @@ class FunctionaryToolParser(ToolParser):
 
     # Functionary chat templates support native tool message format
     SUPPORTS_NATIVE_TOOL_FORMAT = True
+    EXPECTED_WIRE_FORMATS = ("functionary_native", "function_bare")
 
     # Functionary v3 format
     RECIPIENT_PATTERN = re.compile(

@@ -48,6 +48,7 @@ class MistralToolParser(ToolParser):
 
     # Mistral chat templates support native tool message format
     SUPPORTS_NATIVE_TOOL_FORMAT = True
+    EXPECTED_WIRE_FORMATS = ("mistral_tool_calls",)
 
     BOT_TOKEN = "[TOOL_CALLS]"
     TOOL_CALL_REGEX = re.compile(r"\[{.*}\]", re.DOTALL)

@@ -51,6 +51,62 @@ class ExtractedToolCallInformation:
     """Any content that wasn't part of tool calls."""
 
 
+# Canonical wire-format labels each ToolParser subclass declares it handles.
+# Adding a new label here is a deliberate act — the audit script and the
+# parity test (test_tool_call_streaming_parity.py) cross-reference these
+# strings, so reusing existing labels keeps the surfaces aligned. Define
+# new labels only when an actually-novel wire format is introduced.
+#
+# Canonical formats (and which parsers handle them):
+#   tool_call_json        — <tool_call>{"name":...,"arguments":...}</tool_call>
+#                           (Hermes, Qwen, Qwen3-Coder JSON variant)
+#   tool_call_xml_body    — <tool_call><function=name><parameter=p>v</parameter>
+#                           </function></tool_call>  (Qwen3.6, Nemotron, Hermes
+#                           fallback, Qwen3-Coder XML variant)
+#   function_bare         — <function=name>...</function>  without <tool_call>
+#                           wrapper (Hermes BARE_FUNCTION_PATTERN)
+#   raw_json              — bare {"name":...,"arguments":...} (Hermes fallback,
+#                           xLAM, Llama JSON variant)
+#   calling_tool_text     — [Calling tool="name" k="v"]  text fallback for
+#                           low-quant degradation
+#   gemma4_native         — <|tool_call>call:name{k:v}<tool_call|>  (Gemma 4)
+#   harmony_commentary    — <|channel|>commentary to=functions.X<|message|>
+#                           {...}<|call|>  (GPT-OSS / Harmony)
+#   mistral_tool_calls    — [TOOL_CALLS][{"name":...,"arguments":...}]
+#   llama_python_tag      — <|python_tag|>{"name":..."parameters":...}
+#   glm_named_tool_call   — <tool_call>name\n{json}</tool_call>  (GLM-4.5/4.7)
+#   functionary_native    — <|from|>assistant<|recipient|>name<|content|>...
+#   granite_native        — <|tool_call|>[{...}]  (Granite 3/4)
+#   kimi_native           — <|tool_calls_section_begin|>...<|tool_calls_section_end|>
+#   minimax_native        — <tool_calls>[...]</tool_calls>  (MiniMax M2/M2.5)
+#   seed_oss_native       — Seed-OSS specific (TBD; placeholder)
+#   deepseek_native       — DeepSeek V3 specific
+#   deepseek_v31_native   — DeepSeek V3.1 / R1-0528 specific
+#   qwen3_coder_xml_named — Qwen3-Coder XML variant with named function tags
+WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
+    {
+        "tool_call_json",
+        "tool_call_xml_body",
+        "function_bare",
+        "raw_json",
+        "calling_tool_text",
+        "gemma4_native",
+        "harmony_commentary",
+        "mistral_tool_calls",
+        "llama_python_tag",
+        "glm_named_tool_call",
+        "functionary_native",
+        "granite_native",
+        "kimi_native",
+        "minimax_native",
+        "seed_oss_native",
+        "deepseek_native",
+        "deepseek_v31_native",
+        "qwen3_coder_xml_named",
+    }
+)
+
+
 class ToolParser(ABC):
     """
     Abstract base class for tool call parsers.
@@ -63,6 +119,17 @@ class ToolParser(ABC):
     # can handle role="tool" messages and tool_calls fields directly,
     # without needing conversion to text format.
     SUPPORTS_NATIVE_TOOL_FORMAT: bool = False
+
+    # Declarative list of wire formats this parser handles. Every concrete
+    # subclass MUST override this with at least one label from
+    # ``WIRE_FORMAT_LABELS``. The structural test
+    # ``tests/test_tool_parser_wire_formats.py::test_every_parser_declares_formats``
+    # enforces this. Forcing function for the #425-class meta-fix: when a
+    # new parser ships, the wire format(s) it handles MUST be documented
+    # at the class level rather than buried in the regex patterns. This is
+    # what makes the audit + parity matrices machine-checkable rather than
+    # reading-the-source archeology.
+    EXPECTED_WIRE_FORMATS: tuple[str, ...] = ()
 
     @classmethod
     def supports_native_format(cls) -> bool:

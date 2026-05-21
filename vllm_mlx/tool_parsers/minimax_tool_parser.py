@@ -42,6 +42,8 @@ class MiniMaxToolParser(ToolParser):
         </minimax:tool_call>
     """
 
+    EXPECTED_WIRE_FORMATS = ("minimax_native",)
+
     TOOL_CALL_BLOCK = re.compile(
         r"<minimax:tool_call>(.*?)</minimax:tool_call>", re.DOTALL
     )

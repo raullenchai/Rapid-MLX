@@ -39,6 +39,8 @@ class xLAMToolParser(ToolParser):
     Used when --enable-auto-tool-choice --tool-call-parser xlam are set.
     """
 
+    EXPECTED_WIRE_FORMATS = ("raw_json",)
+
     # Patterns for extracting JSON
     CODE_BLOCK_PATTERN = re.compile(r"```(?:json)?\s*([\s\S]*?)```")
     THINKING_PATTERN = re.compile(r"</think>\s*([\s\S]*)")
