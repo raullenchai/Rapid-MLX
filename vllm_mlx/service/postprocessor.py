@@ -522,7 +522,12 @@ class StreamingPostProcessor:
             if result.tools_called:
                 events.append(
                     self._build_tool_call_event(
-                        ({"id": tc["id"], "name": tc["name"], "arguments": tc["arguments"]} for tc in result.tool_calls)
+                        {
+                            "id": tc["id"],
+                            "name": tc["name"],
+                            "arguments": tc["arguments"],
+                        }
+                        for tc in result.tool_calls
                     )
                 )
                 self.tool_calls_detected = True
@@ -554,7 +559,12 @@ class StreamingPostProcessor:
                     )
                     events.append(
                         self._build_tool_call_event(
-                            ({"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments} for tc in fb_tcs)
+                            {
+                                "id": tc.id,
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            }
+                            for tc in fb_tcs
                         )
                     )
                     self.tool_calls_detected = True
