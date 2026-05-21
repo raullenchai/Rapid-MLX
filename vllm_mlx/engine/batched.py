@@ -1260,7 +1260,22 @@ class BatchedEngine(BaseEngine):
                     event = router.feed(token_id)
                     if event is None:
                         continue
-                    event_text = output.new_text if len(token_ids) == 1 else event.text
+                    # TOOL_CALL events are deferred multi-token aggregates: the
+                    # router suppresses tokens during RouterState.TOOL_CALL and
+                    # emits once on the end marker with event.text carrying the
+                    # full decoded body. The single-token-flush optimization
+                    # (use output.new_text) is correct for one-token-in /
+                    # one-event-out channels (CONTENT, REASONING), but for
+                    # TOOL_CALL it would override the accumulated body with
+                    # just the end-marker token's text, dropping the body on
+                    # the floor and breaking streaming tool calls for gemma4
+                    # and harmony — caught on gemma-4-26b post-v0.6.61.
+                    if event.channel == Channel.TOOL_CALL:
+                        event_text = event.text
+                    else:
+                        event_text = (
+                            output.new_text if len(token_ids) == 1 else event.text
+                        )
                     routed_outputs.append(
                         self._make_routed_output(
                             output,

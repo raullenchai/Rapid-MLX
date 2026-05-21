@@ -195,6 +195,67 @@ async def test_stream_chat_routes_tool_call_channel_on_finish():
 
 
 @pytest.mark.asyncio
+async def test_stream_chat_preserves_tool_call_body_across_single_token_flush():
+    """Single-token engine flush must not clobber the router's multi-token body.
+
+    Regression: ``Channel.TOOL_CALL`` is a *deferred aggregate* — the router
+    silently buffers body tokens during ``RouterState.TOOL_CALL`` and emits
+    one event on the end marker with ``event.text`` carrying the full decoded
+    body. The single-token-flush optimization that lets CONTENT/REASONING
+    chunks reuse the scheduler's detokenized ``output.new_text`` would, if
+    applied to TOOL_CALL events, override the accumulated body with just the
+    end-marker token's text ('<tool_call|>'), silently dropping the call body.
+    Caught post-v0.6.61 on gemma-4-26b — non-stream extracted a valid tool
+    call from the same generation that streaming returned as bare content.
+    """
+    engine = _make_engine(FakeTokenizer(GEMMA4_VOCAB))
+
+    body_tokens = [
+        48,  # <|tool_call>
+        6639,  # call
+        236787,  # :
+        828,  # get
+        236779,  # _
+        19323,  # weather
+        236782,  # {
+        13319,  # city
+        236787,  # :
+        89265,  # Tokyo
+        236783,  # }
+        49,  # <tool_call|>
+    ]
+
+    _id_to_text = {v: k for k, v in GEMMA4_VOCAB.items()}
+
+    async def fake_stream_generate(**kwargs):
+        for i, tid in enumerate(body_tokens):
+            finished = i == len(body_tokens) - 1
+            yield GenerationOutput(
+                text="",
+                new_text=_id_to_text[tid],
+                tokens=[tid],
+                finished=finished,
+                finish_reason="stop" if finished else None,
+            )
+
+    engine.stream_generate = fake_stream_generate
+
+    outputs = await _collect(
+        engine.stream_chat(messages=[{"role": "user", "content": "hi"}])
+    )
+
+    tool_call_outputs = [o for o in outputs if o.channel == "tool_call"]
+    assert len(tool_call_outputs) == 1
+    body = tool_call_outputs[0].new_text
+    assert "<|tool_call>" in body, f"start marker dropped: {body!r}"
+    assert "get_weather" in body, f"function name dropped: {body!r}"
+    assert "Tokyo" in body, f"argument value dropped: {body!r}"
+    assert "<tool_call|>" in body, f"end marker dropped: {body!r}"
+    assert tool_call_outputs[0].finished is True
+    assert tool_call_outputs[0].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
 async def test_stream_chat_uses_incremental_new_text_for_single_token_events():
     """Single-token routed chunks preserve scheduler detokenizer text."""
     vocab = {
