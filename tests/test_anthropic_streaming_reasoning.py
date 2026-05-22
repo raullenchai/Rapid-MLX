@@ -365,9 +365,7 @@ class TestAnthropicStreamingWithoutReasoningParser:
 class TestAnthropicStreamingChannelRouting:
     """OutputRouter channel-aware branch (harmony/gemma4 models)."""
 
-    def test_unknown_channel_falls_through_to_legacy_path(
-        self, cfg_with_reasoning_parser
-    ):
+    def test_unknown_channel_is_suppressed_not_leaked(self, cfg_with_reasoning_parser):
         """Unrecognized ``output.channel`` must NOT leak to user text.
 
         DeepSeek review on PR #436 flagged that the initial ``else``
@@ -377,8 +375,8 @@ class TestAnthropicStreamingChannelRouting:
         route, the implicit-text fallback would silently leak those
         internal tokens. Fix: explicit allowlist
         ``("reasoning", "content", "tool_call")``; unknown channels
-        fall through to the legacy reasoning-parser path which
-        treats the chunk as plain text only after parser inspection.
+        are dropped (logged at WARNING) and the loop ``continue``s,
+        so the delta never reaches the client SSE stream.
         """
         from vllm_mlx.routes.anthropic import (
             AnthropicRequest,

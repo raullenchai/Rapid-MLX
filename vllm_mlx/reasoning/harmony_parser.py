@@ -44,8 +44,15 @@ _FINAL_PATTERN_RETURN = re.compile(
     r"<\|channel\|>final\s*<\|message\|>(.*?)<\|return\|>",
     re.DOTALL,
 )
+# Greedy ``(.*)`` so a literal ``<|end|>`` inside answer text is
+# consumed and we stop at the LAST ``<|end|>`` — the real
+# end-of-message marker. Combined with the
+# ``_FINAL_PATTERN_RETURN``-first preference above, this covers both
+# terminator paths (``<|return|>``-terminated outputs use the
+# preferred regex; ``<|end|>``-only outputs use this greedy
+# fallback).
 _FINAL_PATTERN_END = re.compile(
-    r"<\|channel\|>final\s*<\|message\|>(.*?)<\|end\|>",
+    r"<\|channel\|>final\s*<\|message\|>(.*)<\|end\|>",
     re.DOTALL,
 )
 

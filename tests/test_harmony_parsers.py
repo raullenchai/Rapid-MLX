@@ -300,6 +300,23 @@ class TestHarmonyReasoningParser:
 
         assert content == "prefix <|end|> suffix"
 
+    def test_literal_end_token_in_content_end_only_terminator(self, parser):
+        """``<|end|>``-only output with embedded literal ``<|end|>``.
+
+        DeepSeek round-2 follow-up: the ``<|return|>``-first preference
+        only covers the case where the real terminator is
+        ``<|return|>``. When the model emits ``<|end|>`` as the
+        message terminator (gpt-oss-20b's common case) AND the
+        answer contains a literal ``<|end|>``, the non-greedy
+        fallback would still truncate. Greedy ``(.*)`` in
+        ``_FINAL_PATTERN_END`` now consumes up to the LAST
+        ``<|end|>``, which is the real terminator.
+        """
+        output = "<|channel|>final<|message|>prefix <|end|> suffix<|end|>"
+        _, content = parser.extract_reasoning(output)
+
+        assert content == "prefix <|end|> suffix"
+
     def test_multiple_analysis_blocks(self, parser):
         """Concatenate multiple analysis blocks."""
         output = (
