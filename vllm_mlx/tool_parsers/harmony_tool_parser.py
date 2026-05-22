@@ -40,15 +40,19 @@ def _generate_tool_id() -> str:
 # end-of-string OR the next channel marker as alternative terminators
 # so a complete-but-unterminated tool call still parses. Same regression
 # class as PR #436's hermes unclosed-``<tool_call>`` fix.
+#
+# Tool names follow the OpenAI/Anthropic spec (letters, digits,
+# underscores, hyphens) — ``[\w-]+`` covers them. ``\w+`` alone would
+# silently drop hyphenated names (``get-weather``, ``my-tool``).
 _COMMENTARY_BLOCK_PATTERN = re.compile(
     r"(?:"
     # Real format: to=functions.NAME<|channel|>commentary [content_type]<|message|>
-    r"to=functions\.(\w+)<\|channel\|>commentary(?:\s+\w+)?<\|message\|>"
+    r"to=functions\.([\w-]+)<\|channel\|>commentary(?:\s+\w+)?<\|message\|>"
     r"(.*?)"
     r"(?:<\|call\|>|<\|channel\|>|<\|start\|>|<\|end\|>|<\|return\|>|$)"
     r"|"
     # Legacy format: <|channel|>commentary to=functions.NAME ... <|message|>
-    r"<\|channel\|>commentary\s+to=functions\.(\w+)(?:\s*<\|constrain\|>\w+)?\s*<\|message\|>"
+    r"<\|channel\|>commentary\s+to=functions\.([\w-]+)(?:\s*<\|constrain\|>\w+)?\s*<\|message\|>"
     r"(.*?)"
     r"(?:<\|call\|>|<\|channel\|>|<\|start\|>|<\|end\|>|<\|return\|>|$)"
     r")",

@@ -762,6 +762,62 @@ class TestHarmonyEnginePipeline:
         cleaned = clean_output_text(raw)
         assert cleaned == "The answer is 42."
 
+    def test_hyphenated_tool_name_extracted(self):
+        """Tool names with hyphens (``get-weather``, ``my-tool``) must
+        be captured. DeepSeek round-2 review flagged ``\\w+`` would
+        silently drop them — both the engine-layer guard and the tool
+        parser need ``[\\w-]+``.
+        """
+        from vllm_mlx.api.utils import clean_output_text
+
+        raw = (
+            "<|channel|>analysis<|message|>thinking<|end|>"
+            "<|channel|>commentary to=functions.get-weather "
+            '<|constrain|>json<|message|>{"city":"Tokyo"}'
+        )
+        cleaned = clean_output_text(raw)
+        # Commentary block must survive cleanup for the hyphenated name
+        assert "to=functions.get-weather" in cleaned, (
+            "Engine-layer guard failed to detect hyphenated tool name "
+            f"(cleaned={cleaned!r})"
+        )
+        parser = HarmonyToolParser()
+        result = parser.extract_tool_calls(cleaned)
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "get-weather"
+        assert json.loads(result.tool_calls[0]["arguments"])["city"] == "Tokyo"
+
+    def test_commentary_isolation_from_trailing_text(self):
+        """``arguments`` payload must not absorb non-commentary text that
+        precedes the commentary block. When commentary is present,
+        ``clean_output_text`` returns the raw text untouched so the
+        reasoning parser can still see the analysis channel — the
+        harmony tool parser's regex is anchored at
+        ``<|channel|>commentary to=functions.NAME`` and so does not
+        attach prior analysis text to the tool args.
+        """
+        from vllm_mlx.api.utils import clean_output_text
+
+        raw = (
+            "<|channel|>analysis<|message|>SHOULD_NOT_LEAK<|end|>"
+            "<|start|>assistant<|channel|>commentary to=functions.get_weather "
+            '<|constrain|>json<|message|>{"city":"Tokyo"}'
+        )
+        cleaned = clean_output_text(raw)
+        parser = HarmonyToolParser()
+        result = parser.extract_tool_calls(cleaned)
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "get_weather"
+        args = json.loads(result.tool_calls[0]["arguments"])
+        assert args == {"city": "Tokyo"}, f"args payload leaked trailing text: {args!r}"
+        # Tool args must not absorb the analysis-channel content
+        assert "SHOULD_NOT_LEAK" not in result.tool_calls[0]["arguments"]
+        # Analysis channel is preserved in cleaned so HarmonyReasoningParser
+        # downstream can extract reasoning_content. Stripping it here broke
+        # pydantic_ai multi-tool turn loops (model lost prior-call context).
+        assert "<|channel|>analysis" in cleaned
+        assert "SHOULD_NOT_LEAK" in cleaned
+
 
 class TestHarmonyEdgeCases:
     """Edge case tests for Harmony parsers."""
