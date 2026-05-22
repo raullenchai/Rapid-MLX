@@ -18,6 +18,14 @@ class GenerationOutput:
     """
 
     text: str
+    # Pre-cleaning model output, preserved so the route's reasoning parser
+    # can see harmony channel markers that ``clean_output_text`` strips out
+    # of ``text``. Without this, ``HarmonyReasoningParser.extract_reasoning``
+    # on the non-stream + no-tool path runs on already-cleaned text and
+    # returns ``(None, None)`` — leaking the analysis channel into
+    # ``content`` and emitting empty ``reasoning_content`` to clients.
+    # Empty string default keeps callers that don't populate it working.
+    raw_text: str = ""
     tokens: list[int] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0

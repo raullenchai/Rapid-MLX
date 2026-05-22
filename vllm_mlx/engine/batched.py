@@ -890,6 +890,7 @@ class BatchedEngine(BaseEngine):
 
             return GenerationOutput(
                 text=clean_output_text(output.output_text),
+                raw_text=output.output_text,
                 tokens=output.output_token_ids,
                 prompt_tokens=output.prompt_tokens,
                 completion_tokens=output.completion_tokens,
@@ -938,6 +939,7 @@ class BatchedEngine(BaseEngine):
 
         return GenerationOutput(
             text=text,
+            raw_text=output.output_text,
             prompt_tokens=output.prompt_tokens,
             completion_tokens=output.completion_tokens,
             finish_reason=output.finish_reason,

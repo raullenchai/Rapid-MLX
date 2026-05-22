@@ -172,6 +172,22 @@ def _finalize_content_and_reasoning(
     else:
         text_to_parse = cleaned_text or raw_text
         new_reasoning, new_cleaned = reasoning_parser.extract_reasoning(text_to_parse)
+        # Harmony retry: the engine's ``clean_output_text`` strips
+        # ``<|channel|>analysis<|message|>…`` markers before the route
+        # ever sees the output, so a ``HarmonyReasoningParser`` running
+        # on ``cleaned_text`` finds no channels and returns ``None``.
+        # When the engine populated ``raw_text`` with the pre-clean
+        # output, re-run the parser on it to recover the analysis-channel
+        # content. Only triggers when (a) first parse found no reasoning
+        # AND (b) raw_text actually differs from the text we just parsed
+        # — non-harmony parsers (``<think>``) are unaffected because
+        # their first parse succeeds on cleaned_text. (Counterpart to
+        # PR #436's empty-TextBlock fix: that PR rescued ``content``
+        # from being clobbered to None; this rescues ``reasoning``.)
+        if new_reasoning is None and raw_text and raw_text != text_to_parse:
+            retry_reasoning, _ = reasoning_parser.extract_reasoning(raw_text)
+            if retry_reasoning is not None:
+                new_reasoning = retry_reasoning
         reasoning_text = new_reasoning
         # Only overwrite cleaned_text when the parser explicitly
         # produced new content. ``new_cleaned is None`` means the

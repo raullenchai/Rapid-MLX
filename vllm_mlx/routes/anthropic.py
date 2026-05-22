@@ -222,7 +222,7 @@ async def create_anthropic_message(
         # used to silently drop ``<think>...</think>`` content on the non-streaming
         # path while OpenAI preserved it as ``reasoning_content``.
         cleaned_text, reasoning_text = _finalize_content_and_reasoning(
-            raw_text=output.text,
+            raw_text=output.raw_text or output.text,
             cleaned_text=cleaned_text,
             tool_calls=tool_calls,
             reasoning_parser=cfg.reasoning_parser,

@@ -31,6 +31,7 @@ class _BaseEngine:
 @dataclass
 class _GenerationOutput:
     text: str
+    raw_text: str = ""
     tokens: list[int] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
