@@ -2058,6 +2058,23 @@ class Scheduler:
             request = self.requests.get(request_id)
             if not request or getattr(request, "prefix_boundary", 0) <= 0:
                 continue
+            # Defense-in-depth: validate progress[0] equals the
+            # expected boundary offset. mlx-lm 0.31+ rewrites
+            # ``[[prefix, tail]]`` into ``[[prefix, tail[:-1], tail[-1:]]]``
+            # when ``len(tail) > 1`` (generate.py:1646-1648), so
+            # end_of_segment fires THREE times — once at prefix done,
+            # once at tail[:-1] done, and end_of_prompt at tail[-1:].
+            # The `_boundary_snapshot_taken` guard below blocks the
+            # second fire, but this progress check skips it deterministically.
+            progress = getattr(resp, "progress", None)
+            expected_offset = request.prefix_boundary - (request.cached_tokens or 0)
+            if (
+                progress is not None
+                and isinstance(progress, tuple)
+                and len(progress) >= 1
+                and progress[0] != expected_offset
+            ):
+                continue
             # Once-per-request guard: prevents a future API change that
             # repeats end_of_segment from producing duplicate stores.
             if getattr(request, "_boundary_snapshot_taken", False):
@@ -2100,6 +2117,7 @@ class Scheduler:
 
             prefix_tokens = list(request.prompt_token_ids[:prefix_boundary])
             _t0 = _time.monotonic()
+            stored = False
             try:
                 # evict_prefixes=False matches the prompt-cache save
                 # path — keep boundary entries so later turns with the
@@ -2111,11 +2129,16 @@ class Scheduler:
                 logger.debug(
                     "[boundary_snapshot] store failed for uid=%s: %s", uid, exc
                 )
-                continue
             _dt = _time.monotonic() - _t0
+            # Mark the guard after the attempt (success OR failure) so a
+            # repeated end_of_segment doesn't redo the expensive
+            # extract+reconstruct cycle. A failed store usually means
+            # the entry already exists (returns False) or the cache is
+            # busy — retrying every step would be pure waste. DeepSeek
+            # finding #2 on PR #435.
+            request._boundary_snapshot_taken = True
 
             if stored:
-                request._boundary_snapshot_taken = True
                 logger.info(
                     f"[boundary_snapshot] request={request_id[:12]} "
                     f"saved {prefix_boundary} tokens at message boundary "
