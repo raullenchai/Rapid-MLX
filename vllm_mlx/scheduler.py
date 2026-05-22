@@ -1865,11 +1865,17 @@ class Scheduler:
             # snapshot (the part that actually feeds the prefix cache)
             # is wired into Scheduler.step() via end_of_prompt response
             # signals — see _snapshot_promoted_prompts (issue #163).
+            # The per-message boundary save is wired via insert_segments
+            # + end_of_segment — see _snapshot_boundary_segments
+            # (issue #427).
             if chunked_budget > 0:
-                logger.warning(
-                    "[chunked_prefill] Skipped — mlx-lm 0.31+ removed the "
-                    "internal Batch API. Using native prefill_step_size=%d "
-                    "instead. Mid-prefill snapshots are unavailable.",
+                logger.info(
+                    "[chunked_prefill] mlx-lm 0.31+ removed the legacy "
+                    "Batch API; --chunked-prefill-tokens=%d is no-op'd "
+                    "and native prefill_step_size=%d is used instead. "
+                    "Per-message boundary snapshots ARE supported via "
+                    "insert_segments (issue #427).",
+                    chunked_budget,
                     self.config.prefill_step_size,
                 )
 
@@ -2002,6 +2008,142 @@ class Scheduler:
                         uid,
                         exc,
                     )
+
+    def _snapshot_boundary_segments(self, prompt_responses) -> None:
+        """Snapshot KV/Mamba cache at ``prefix_boundary`` for multi-turn workloads.
+
+        Issue #427: hybrid models (linear-attention/Mamba + Transformer)
+        MISS the LCP-based prefix cache on every turn of a growing
+        conversation because the prior turn's cached entry has a tail
+        that diverges from the new turn (e.g. ``<think>\\n`` template
+        sentinel emitted by ``add_generation_prompt=True`` gets replaced
+        by actual assistant content on the next turn) and Mamba layers
+        are non-trimmable, so the supersequence fallback can't reuse
+        the prefix either.
+
+        Fix: when a request arrives with ``prefix_boundary > 0``,
+        ``_schedule_waiting`` inserts it via ``insert_segments(
+        [[prefix_seg, tail_seg]])`` so BatchGenerator processes the
+        prefix segment as its own boundary. When that segment finishes,
+        the response carries ``end_of_segment=True`` **without**
+        ``end_of_prompt=True`` (the tail still has work to do). That's
+        our cue to extract the cache via the public
+        ``BatchGenerator.extract_cache`` API and store it under the
+        ``prefix_boundary`` token prefix — so the *next* turn's lookup
+        finds the boundary entry and skips re-prefilling the shared
+        prefix.
+
+        This is the mlx-lm 0.31+ replacement for the boundary-save
+        path that was disabled when the legacy ``_install_chunked_prefill``
+        monkey-patch could no longer run (the internal Batch API was
+        removed in 0.31). The ``_make_mid_prefill_save_callback``
+        infrastructure is still present for clients that downgrade to
+        the legacy API; this new path coexists rather than replaces it.
+        """
+        if self.memory_aware_cache is None or not prompt_responses:
+            return
+
+        boundary_uids: list[int] = []
+        for resp in prompt_responses:
+            if not getattr(resp, "end_of_segment", False):
+                continue
+            # end_of_prompt promotions are handled by
+            # _snapshot_promoted_prompts (whole-prompt entry, issue #163).
+            # We only want the *inter*-segment boundary here.
+            if getattr(resp, "end_of_prompt", False):
+                continue
+            request_id = self.uid_to_request_id.get(resp.uid)
+            if not request_id:
+                continue
+            request = self.requests.get(request_id)
+            if not request or getattr(request, "prefix_boundary", 0) <= 0:
+                continue
+            # Defense-in-depth: validate progress[0] equals the
+            # expected boundary offset. mlx-lm 0.31+ rewrites
+            # ``[[prefix, tail]]`` into ``[[prefix, tail[:-1], tail[-1:]]]``
+            # when ``len(tail) > 1`` (generate.py:1646-1648), so
+            # end_of_segment fires THREE times — once at prefix done,
+            # once at tail[:-1] done, and end_of_prompt at tail[-1:].
+            # The `_boundary_snapshot_taken` guard below blocks the
+            # second fire, but this progress check skips it deterministically.
+            progress = getattr(resp, "progress", None)
+            expected_offset = request.prefix_boundary - (request.cached_tokens or 0)
+            if (
+                progress is not None
+                and isinstance(progress, tuple)
+                and len(progress) >= 1
+                and progress[0] != expected_offset
+            ):
+                continue
+            # Once-per-request guard: prevents a future API change that
+            # repeats end_of_segment from producing duplicate stores.
+            if getattr(request, "_boundary_snapshot_taken", False):
+                continue
+            boundary_uids.append(resp.uid)
+
+        if not boundary_uids:
+            return
+
+        try:
+            extracted = self.batch_generator.extract_cache(boundary_uids)
+        except Exception as exc:
+            logger.debug("[boundary_snapshot] extract_cache failed: %s", exc)
+            return
+
+        import time as _time
+
+        for uid, payload in extracted.items():
+            # Stage-1 (in-prompt) and stage-2 (promoted) both return
+            # ``(cache, tokens)``. Anything else means the uid was
+            # already removed before the snapshot — skip silently.
+            if not (isinstance(payload, tuple) and len(payload) == 2):
+                continue
+            cache, _tokens = payload
+
+            request_id = self.uid_to_request_id.get(uid)
+            request = self.requests.get(request_id) if request_id else None
+            if not request:
+                continue
+            prefix_boundary = getattr(request, "prefix_boundary", 0)
+            if prefix_boundary <= 0:
+                continue
+
+            states = self._extract_cache_states(cache)
+            if not states:
+                continue
+            reconstructed = self._reconstruct_cache_from_states(states)
+            if not reconstructed:
+                continue
+
+            prefix_tokens = list(request.prompt_token_ids[:prefix_boundary])
+            _t0 = _time.monotonic()
+            stored = False
+            try:
+                # evict_prefixes=False matches the prompt-cache save
+                # path — keep boundary entries so later turns with the
+                # same prefix but different suffix still hit.
+                stored = self.memory_aware_cache.store(
+                    prefix_tokens, reconstructed, evict_prefixes=False
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[boundary_snapshot] store failed for uid=%s: %s", uid, exc
+                )
+            _dt = _time.monotonic() - _t0
+            # Mark the guard after the attempt (success OR failure) so a
+            # repeated end_of_segment doesn't redo the expensive
+            # extract+reconstruct cycle. A failed store usually means
+            # the entry already exists (returns False) or the cache is
+            # busy — retrying every step would be pure waste. DeepSeek
+            # finding #2 on PR #435.
+            request._boundary_snapshot_taken = True
+
+            if stored:
+                logger.info(
+                    f"[boundary_snapshot] request={request_id[:12]} "
+                    f"saved {prefix_boundary} tokens at message boundary "
+                    f"store_time={_dt:.3f}s"
+                )
 
     def _make_mid_prefill_save_callback(self, save_interval: int):
         """Create a callback for saving intermediate KV cache during chunked prefill.
@@ -2649,14 +2791,47 @@ class Scheduler:
                 top_k=request.sampling_params.top_k,
             )
 
+            # Issue #427: split the insert at prefix_boundary so the
+            # per-message cache snapshot can fire after the prefix
+            # segment prefills (see _snapshot_boundary_segments). Only
+            # useful when (a) we have somewhere to save, (b) the request
+            # has a multi-turn shared prefix set, and (c) the boundary
+            # lies strictly inside the tokens we're about to process —
+            # otherwise there's nothing new to capture at the boundary.
+            boundary_local_split: int | None = None
+            if (
+                self.memory_aware_cache is not None
+                and getattr(request, "prefix_boundary", 0) > 0
+                and len(tokens_to_process) > 1
+            ):
+                _pb = request.prefix_boundary
+                _cached = request.cached_tokens or 0
+                _local = _pb - _cached
+                if 0 < _local < len(tokens_to_process):
+                    boundary_local_split = _local
+
             try:
-                uids = self.batch_generator.insert(
-                    [tokens_to_process],
-                    max_tokens=[request.sampling_params.max_tokens],
-                    caches=[cache_to_use] if cache_to_use else None,
-                    samplers=[request_sampler],
-                    logits_processors=request_logits_processors,
-                )
+                if boundary_local_split is not None:
+                    uids = self.batch_generator.insert_segments(
+                        [
+                            [
+                                tokens_to_process[:boundary_local_split],
+                                tokens_to_process[boundary_local_split:],
+                            ]
+                        ],
+                        max_tokens=[request.sampling_params.max_tokens],
+                        caches=[cache_to_use] if cache_to_use else None,
+                        samplers=[request_sampler],
+                        logits_processors=request_logits_processors,
+                    )
+                else:
+                    uids = self.batch_generator.insert(
+                        [tokens_to_process],
+                        max_tokens=[request.sampling_params.max_tokens],
+                        caches=[cache_to_use] if cache_to_use else None,
+                        samplers=[request_sampler],
+                        logits_processors=request_logits_processors,
+                    )
             except Exception as e:
                 if cache_to_use is not None:
                     logger.warning(
@@ -2668,13 +2843,33 @@ class Scheduler:
                     request.cached_tokens = 0
                     request.remaining_tokens = request.prompt_token_ids
                     tokens_to_process = request.prompt_token_ids
-                    uids = self.batch_generator.insert(
-                        [tokens_to_process],
-                        max_tokens=[request.sampling_params.max_tokens],
-                        caches=None,
-                        samplers=[request_sampler],
-                        logits_processors=request_logits_processors,
-                    )
+                    # Recompute split against the now-full prompt
+                    # (cached_tokens=0 so boundary == split).
+                    if (
+                        self.memory_aware_cache is not None
+                        and getattr(request, "prefix_boundary", 0) > 0
+                        and 0 < request.prefix_boundary < len(tokens_to_process)
+                    ):
+                        uids = self.batch_generator.insert_segments(
+                            [
+                                [
+                                    tokens_to_process[: request.prefix_boundary],
+                                    tokens_to_process[request.prefix_boundary :],
+                                ]
+                            ],
+                            max_tokens=[request.sampling_params.max_tokens],
+                            caches=None,
+                            samplers=[request_sampler],
+                            logits_processors=request_logits_processors,
+                        )
+                    else:
+                        uids = self.batch_generator.insert(
+                            [tokens_to_process],
+                            max_tokens=[request.sampling_params.max_tokens],
+                            caches=None,
+                            samplers=[request_sampler],
+                            logits_processors=request_logits_processors,
+                        )
                 else:
                     raise
 
@@ -3149,6 +3344,10 @@ class Scheduler:
                     if isinstance(raw_next, tuple):
                         prompt_responses, responses = raw_next
                         self._snapshot_promoted_prompts(prompt_responses)
+                        # issue #427: per-message boundary snapshot for
+                        # multi-turn hybrid workloads (segment finished
+                        # but prompt still has tail to process).
+                        self._snapshot_boundary_segments(prompt_responses)
                     else:
                         responses = raw_next
 
