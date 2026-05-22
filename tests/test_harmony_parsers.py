@@ -260,6 +260,26 @@ class TestHarmonyReasoningParser:
         assert reasoning == "Let me think step by step."
         assert content == "The answer is 42."
 
+    def test_extract_final_terminated_by_end_token(self, parser):
+        """Final channel terminated by ``<|end|>`` (not ``<|return|>``).
+
+        Regression for the v0.6.64 gpt-oss-20b empty-TextBlock flake:
+        gpt-oss-20b emits ``<|end|>`` after the final channel for a
+        sizeable fraction of non-streaming responses, and the prior
+        ``<|return|>``-only regex silently dropped that content. The
+        streaming path already accepts both terminators; the
+        non-streaming path must agree or pr_validate's anthropic_sdk /
+        langchain / pydantic_ai non-stream tests all see empty text.
+        """
+        output = (
+            "<|channel|>analysis<|message|>The user asks 2+2.<|end|>"
+            "<|channel|>final<|message|>4<|end|>"
+        )
+        reasoning, content = parser.extract_reasoning(output)
+
+        assert reasoning == "The user asks 2+2."
+        assert content == "4"
+
     def test_multiple_analysis_blocks(self, parser):
         """Concatenate multiple analysis blocks."""
         output = (

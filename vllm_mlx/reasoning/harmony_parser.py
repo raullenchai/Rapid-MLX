@@ -25,9 +25,19 @@ _ANALYSIS_PATTERN = re.compile(
     re.DOTALL,
 )
 
-# Final channel content: <|channel|>final<|message|>...<|return|>
+# Final channel content. Harmony spec uses ``<|return|>`` to terminate the
+# final channel, but gpt-oss-20b emits ``<|end|>`` in practice for a sizeable
+# fraction of non-streaming responses (observed in v0.6.64 pr_validate runs:
+# anthropic_sdk 0/5, langchain 2/6, pydantic_ai 1/6 on
+# ``mlx-community/gpt-oss-20b-MXFP4-Q8`` — every non-streaming test landed
+# here). Accept either terminator so the regex matches the same set of
+# completions that ``HarmonyToolParser._FINAL_BLOCK_PATTERN`` already
+# accepts and that the streaming parser already handles via the
+# ``<|end|>``/``<|return|>`` end-of-message check. Without this, the
+# non-streaming path returns ``content=None`` and the chat response
+# emits an empty TextBlock for what was actually a fully-formed answer.
 _FINAL_PATTERN = re.compile(
-    r"<\|channel\|>final\s*<\|message\|>(.*?)<\|return\|>",
+    r"<\|channel\|>final\s*<\|message\|>(.*?)(?:<\|return\|>|<\|end\|>)",
     re.DOTALL,
 )
 
