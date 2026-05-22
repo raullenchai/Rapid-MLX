@@ -131,3 +131,32 @@ class TestToolTagLeakRegression:
         assert not tool_calls
         assert content and "answer is 42" in content
         _assert_no_leak(content)
+
+    def test_parser_finds_nothing_preserves_existing_cleaned_text(self):
+        # Regression for the v0.6.64 gpt-oss-20b empty-TextBlock bug:
+        # ``engine.generate()`` runs ``clean_output_text`` on harmony
+        # output, which strips channel markup and returns just the
+        # final-channel content ("4"). The non-streaming route then
+        # called ``_finalize_content_and_reasoning`` with this
+        # pre-cleaned string, and the HarmonyReasoningParser — looking
+        # for ``<|channel|>analysis``/``<|channel|>final`` markers —
+        # found none and returned ``(None, None)``. The helper then
+        # silently overwrote the perfectly valid ``cleaned_text="4"``
+        # with ``None``, so anthropic_sdk / langchain / pydantic_ai
+        # received empty TextBlocks for fully-formed answers.
+        #
+        # Fix: when the parser returns ``(None, None)``, keep the
+        # original cleaned_text. Validate here with the harmony
+        # reasoning parser because that is the parser that exhibits
+        # the pattern, but the guard applies to any parser that
+        # legitimately reports "I found no markers I understand."
+        from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+
+        cleaned, reasoning = _finalize_content_and_reasoning(
+            raw_text="4",
+            cleaned_text="4",
+            tool_calls=None,
+            reasoning_parser=HarmonyReasoningParser(),
+        )
+        assert cleaned == "4"
+        assert reasoning is None

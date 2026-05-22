@@ -150,7 +150,19 @@ def _finalize_content_and_reasoning(
 
     When no tool_calls fire, the reasoning parser is the only thing
     that can pull ``<think>`` out — run it on cleaned_text (or raw
-    output if cleaning produced an empty string).
+    output if cleaning produced an empty string). If the parser
+    returns ``(None, None)`` it means the input has no reasoning
+    markers it understands — keep the original ``cleaned_text``
+    instead of clobbering it with ``None``. This is critical for
+    harmony models, where ``clean_output_text`` (called in
+    ``engine.generate``) has already extracted the final-channel
+    content and stripped channel markup before the parser ever sees
+    the text: a ``HarmonyReasoningParser`` searching for
+    ``<|channel|>final`` on the already-cleaned string returns
+    ``(None, None)`` and without this guard would silently turn a
+    fully-formed answer into an empty ``TextBlock`` for clients
+    (anthropic_sdk / langchain / pydantic_ai non-streaming
+    integrations, v0.6.64 pr_validate baseline).
     """
     reasoning_text = None
     if reasoning_parser is None:
@@ -159,7 +171,10 @@ def _finalize_content_and_reasoning(
         reasoning_text, _ = reasoning_parser.extract_reasoning(raw_text)
     else:
         text_to_parse = cleaned_text or raw_text
-        reasoning_text, cleaned_text = reasoning_parser.extract_reasoning(text_to_parse)
+        new_reasoning, new_cleaned = reasoning_parser.extract_reasoning(text_to_parse)
+        reasoning_text = new_reasoning
+        if new_reasoning is not None or new_cleaned is not None:
+            cleaned_text = new_cleaned
     return cleaned_text, reasoning_text
 
 
