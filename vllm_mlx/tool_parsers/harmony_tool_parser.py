@@ -32,13 +32,25 @@ def _generate_tool_id() -> str:
 # Tool call pattern — supports both formats from the harmony spec:
 #   Model-generated: <|channel|>commentary to=functions.NAME <|constrain|>json<|message|>ARGS<|call|>
 #   Template-encoded (history): to=functions.NAME<|channel|>commentary json<|message|>ARGS<|call|>
+# Terminator: ``<|call|>`` is the in-output token, but the engine stops
+# generation when it emits it (``<|call|>`` is part of the harmony EOS
+# set), so the token is consumed and never appears in ``output_text``.
+# Empirically (gpt-oss-20b via /v1/chat/completions, 2026-05-22) the
+# commentary block ends with the JSON args and no terminator. Accept
+# end-of-string OR the next channel marker as alternative terminators
+# so a complete-but-unterminated tool call still parses. Same regression
+# class as PR #436's hermes unclosed-``<tool_call>`` fix.
 _COMMENTARY_BLOCK_PATTERN = re.compile(
     r"(?:"
     # Real format: to=functions.NAME<|channel|>commentary [content_type]<|message|>
-    r"to=functions\.(\w+)<\|channel\|>commentary(?:\s+\w+)?<\|message\|>(.*?)<\|call\|>"
+    r"to=functions\.(\w+)<\|channel\|>commentary(?:\s+\w+)?<\|message\|>"
+    r"(.*?)"
+    r"(?:<\|call\|>|<\|channel\|>|<\|start\|>|<\|end\|>|<\|return\|>|$)"
     r"|"
     # Legacy format: <|channel|>commentary to=functions.NAME ... <|message|>
-    r"<\|channel\|>commentary\s+to=functions\.(\w+)(?:\s*<\|constrain\|>\w+)?\s*<\|message\|>(.*?)<\|call\|>"
+    r"<\|channel\|>commentary\s+to=functions\.(\w+)(?:\s*<\|constrain\|>\w+)?\s*<\|message\|>"
+    r"(.*?)"
+    r"(?:<\|call\|>|<\|channel\|>|<\|start\|>|<\|end\|>|<\|return\|>|$)"
     r")",
     re.DOTALL,
 )

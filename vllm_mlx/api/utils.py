@@ -98,6 +98,18 @@ _FINAL_CHANNEL_RE = re.compile(
     r"<\|channel\|>final[^<]*(?:<\|constrain\|>[^<]*)?<\|message\|>"
 )
 
+# Commentary-channel tool-call markers (both legacy and current forms).
+# If ANY of these are present, the output carries tool-call structure
+# that the harmony tool parser needs to see intact — bail out of
+# stripping. Matches:
+#   <|channel|>commentary to=functions.NAME ... <|message|>...<|call|>
+#   to=functions.NAME<|channel|>commentary ... <|message|>...<|call|>
+_COMMENTARY_TOOL_CALL_RE = re.compile(
+    r"<\|channel\|>commentary\s+to=functions\."
+    r"|"
+    r"to=functions\.\w+<\|channel\|>commentary"
+)
+
 
 def _clean_gpt_oss_output(text: str) -> str:
     """
@@ -116,6 +128,17 @@ def _clean_gpt_oss_output(text: str) -> str:
     Returns:
         Extracted final content, or text with channel tokens stripped.
     """
+    # Tool-call structure must survive to the harmony tool parser:
+    # if the model emitted ``<|channel|>commentary to=functions.X...<|call|>``
+    # (which gpt-oss-20b does for every tool invocation), the parser needs
+    # those structural tokens intact to extract the call. Stripping them
+    # here drops the args into plain text and the parser returns 0 calls.
+    # Same regression class as PR #436 but for the tool parser. Final
+    # channel is unaffected because the route runs ``clean_output_text``
+    # again after parsers run (chat.py / anthropic.py).
+    if _COMMENTARY_TOOL_CALL_RE.search(text):
+        return text
+
     match = _FINAL_CHANNEL_RE.search(text)
     if match:
         content = text[match.end() :]

@@ -693,15 +693,98 @@ class TestHarmonyToolDefinitionConverter:
 # ============================================================================
 
 
+class TestHarmonyEnginePipeline:
+    """End-to-end through the engine layer: clean_output_text → tool parser.
+
+    Reproduces the v0.6.64 bug where gpt-oss-20b's commentary-only tool
+    calls came back as plain text instead of structured ``tool_calls``.
+    Root cause: ``_clean_gpt_oss_output`` in ``api/utils.py`` only matched
+    a ``<|channel|>final<|message|>`` block; commentary-only output fell
+    through to the "strip all channel/structural tokens" branch, which
+    consumed ``<|channel|>commentary to=functions.*<|call|>`` markers
+    that the harmony tool parser needed intact. anthropic_sdk /
+    langchain / pydantic_ai all received tool-call args inlined into
+    user-facing text.
+
+    These tests drive the exact engine-layer pipeline (``clean_output_text``
+    then ``HarmonyToolParser.extract_tool_calls``) so the suite catches
+    a future regression in either layer.
+    """
+
+    def test_commentary_only_output_extracts_tool_call(self):
+        """Real gpt-oss-20b output for a single tool call.
+
+        Captured verbatim from ``mlx-community/gpt-oss-20b-MXFP4-Q8`` via
+        ``/v1/chat/completions`` with ``tools=[get_weather]`` (2026-05-22).
+        Note: no trailing ``<|call|>`` — the engine consumed it as a
+        harmony stop token. Pre-fix: ``clean_output_text`` ate the
+        commentary structure, parser returned 0 calls, args leaked
+        into content as plain text.
+        """
+        from vllm_mlx.api.utils import clean_output_text
+
+        raw = (
+            "<|channel|>analysis<|message|>We need to call get_weather "
+            'with city "Tokyo".<|end|>'
+            "<|start|>assistant<|channel|>commentary "
+            "to=functions.get_weather <|constrain|>json<|message|>"
+            '{"city":"Tokyo"}'
+        )
+
+        # Engine-layer cleanup MUST preserve the commentary structure
+        engine_text = clean_output_text(raw)
+        assert "<|channel|>commentary" in engine_text, (
+            "Engine layer stripped commentary structure — tool parser "
+            "will see plain text and extract zero calls. "
+            f"Got: {engine_text!r}"
+        )
+
+        # Harmony tool parser MUST then extract the call
+        parser = HarmonyToolParser()
+        result = parser.extract_tool_calls(engine_text)
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "get_weather"
+        assert json.loads(result.tool_calls[0]["arguments"])["city"] == "Tokyo"
+
+    def test_final_only_output_still_strips_normally(self):
+        """Sanity: final-channel-only output keeps its established
+        cleanup behavior (extract just the answer text). The
+        commentary-preservation guard must NOT regress this path —
+        chat responses with no tool calls would otherwise leak
+        channel markers all the way to the wire.
+        """
+        from vllm_mlx.api.utils import clean_output_text
+
+        raw = (
+            "<|channel|>analysis<|message|>thinking<|end|>"
+            "<|channel|>final<|message|>The answer is 42.<|return|>"
+        )
+        cleaned = clean_output_text(raw)
+        assert cleaned == "The answer is 42."
+
+
 class TestHarmonyEdgeCases:
     """Edge case tests for Harmony parsers."""
 
-    def test_tool_parser_incomplete_call(self):
-        """Incomplete tool call (missing <|call|>) is not parsed."""
+    def test_tool_parser_unterminated_call_is_now_parsed(self):
+        """Commentary block without trailing ``<|call|>`` IS parsed now.
+
+        Earlier behavior treated a missing ``<|call|>`` terminator as
+        "incomplete". Empirically (gpt-oss-20b via /v1/chat/completions,
+        2026-05-22) ``<|call|>`` is part of the harmony stop-token set,
+        so the engine consumes it and ``output_text`` ends with the
+        JSON args alone. Refusing to parse meant zero tool calls
+        extracted on every real harmony invocation — same regression
+        class as PR #436's hermes unclosed-``<tool_call>`` fix. The
+        parser now accepts end-of-string OR the next channel marker
+        as an alternative terminator.
+        """
         parser = HarmonyToolParser()
         text = '<|channel|>commentary to=functions.func\n<|message|>{"arg": "value"}'
         result = parser.extract_tool_calls(text)
-        assert not result.tools_called
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "func"
+        assert json.loads(result.tool_calls[0]["arguments"])["arg"] == "value"
 
     def test_tool_parser_unicode_content(self):
         """Handle unicode in tool arguments."""
@@ -908,16 +991,25 @@ class TestHarmonyExtractToolCalls:
         assert not result.tools_called
         assert result.tool_calls == []
 
-    def test_malformed_missing_call_tag(self, parser):
-        """Commentary block without <|call|> is not a complete tool call."""
+    def test_missing_call_tag_is_now_parsed(self, parser):
+        """Commentary block without trailing ``<|call|>`` IS parsed now.
+
+        Counterpart of TestHarmonyEdgeCases::
+        ``test_tool_parser_unterminated_call_is_now_parsed``. Empirically
+        the engine stops emission at ``<|call|>`` (harmony stop token),
+        so ``output_text`` ends with the JSON args. Accept end-of-string
+        / next channel marker as alternative terminator.
+        """
         text = (
             "<|channel|>commentary to=functions.func\n"
             "<|constrain|>json\n"
             '<|message|>{"key": "value"}\n'
-            # Missing <|call|>
+            # No <|call|> — engine consumed it as stop token.
         )
         result = parser.extract_tool_calls(text)
-        assert not result.tools_called
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "func"
+        assert json.loads(result.tool_calls[0]["arguments"])["key"] == "value"
 
     def test_malformed_missing_message_tag(self, parser):
         """Commentary block without <|message|> tag."""
