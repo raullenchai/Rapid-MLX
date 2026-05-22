@@ -1102,9 +1102,20 @@ class BatchedEngine(BaseEngine):
         # langchain default to ``stream:false`` and hit ``chat()`` directly.
         # PR #435 only wired this into ``stream_chat`` so the fix was a no-op
         # for the very SDKs fishloa was hitting; this closes that gap.
-        prefix_boundary = self._compute_prefix_boundary(messages, tools)
-        if prefix_boundary > 0:
-            kwargs["prefix_boundary"] = prefix_boundary
+        #
+        # Hybrid-only gate: the boundary split routes through
+        # ``BatchGenerator.insert_segments`` which on pure-Transformer models
+        # (e.g. gpt-oss-20b harmony) corrupts the harmony tool-call channel
+        # state across multi-turn-with-tools and the agent loops forever.
+        # Pure Transformers don't need the boundary save anyway — the prefix
+        # cache already reuses via trim+supersequence. Only hybrid models
+        # (Mamba/DeltaNet+Transformer) have the "can't trim" constraint that
+        # PR #435 was built to fix. Gating on ``is_hybrid`` keeps the fix
+        # active where it's needed and inert where it broke things.
+        if self._is_hybrid_model():
+            prefix_boundary = self._compute_prefix_boundary(messages, tools)
+            if prefix_boundary > 0:
+                kwargs["prefix_boundary"] = prefix_boundary
 
         return await self.generate(
             prompt=prompt,
@@ -1115,6 +1126,34 @@ class BatchedEngine(BaseEngine):
             videos=all_videos if all_videos else None,
             **kwargs,
         )
+
+    def _is_hybrid_model(self) -> bool:
+        """Is the loaded model a hybrid Mamba/DeltaNet + Transformer?
+
+        The boundary-snapshot fix (#427) exists because hybrid models'
+        linear-attention layers are non-trimmable: the prefix cache
+        finds the LCP match but can't crop the Mamba state at the
+        cut point, so a stored "full prompt+output" entry is unusable
+        for a turn-2 prompt that shares only the prefix. The fix
+        captures cache state mid-prefill at the message boundary so
+        the next turn's lookup gets an exact-length match.
+
+        Pure Transformer models don't have this constraint — trim works
+        — so they don't need the boundary save. Worse, the boundary
+        split routes through ``insert_segments`` which on gpt-oss-20b
+        empirically corrupts harmony tool-call channel state across
+        multi-turn-with-tools (pydantic_ai multi_tool 5/6 → loops on
+        ``add(3,4)``). Gating the entire boundary path on this flag is
+        the smallest change that keeps the fix where it's needed and
+        inert where it isn't.
+
+        Returns False on any access error so a malformed engine state
+        never *enables* the new path — fails closed.
+        """
+        try:
+            return bool(self._engine.engine.model_config.is_hybrid)
+        except (AttributeError, TypeError):
+            return False
 
     def _compute_prefix_boundary(
         self, messages: list[dict[str, Any]], tools: list[dict] | None = None
@@ -1382,10 +1421,14 @@ class BatchedEngine(BaseEngine):
             enable_thinking=enable_thinking,
         )
 
-        # Compute prefix boundary for cache
-        prefix_boundary = self._compute_prefix_boundary(messages, tools)
-        if prefix_boundary > 0:
-            kwargs["prefix_boundary"] = prefix_boundary
+        # Compute prefix boundary for cache — hybrid-only gate, see
+        # ``chat()`` for the rationale. Path parity: stream and non-stream
+        # must apply the same gating condition so a future change can't
+        # silently regress one path while keeping the other green.
+        if self._is_hybrid_model():
+            prefix_boundary = self._compute_prefix_boundary(messages, tools)
+            if prefix_boundary > 0:
+                kwargs["prefix_boundary"] = prefix_boundary
 
         router = self._create_output_router()
         stream = self.stream_generate(

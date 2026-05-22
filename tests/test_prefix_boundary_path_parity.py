@@ -71,7 +71,9 @@ class _StubLLMEngine:
         yield _StubOutput()
 
 
-def _build_engine(monkeypatch) -> tuple[BatchedEngine, _StubLLMEngine]:
+def _build_engine(
+    monkeypatch, *, is_hybrid: bool = True
+) -> tuple[BatchedEngine, _StubLLMEngine]:
     engine = BatchedEngine("test-model")
     engine._loaded = True
     engine._is_mllm = False
@@ -83,6 +85,7 @@ def _build_engine(monkeypatch) -> tuple[BatchedEngine, _StubLLMEngine]:
         "_compute_prefix_boundary",
         lambda messages, tools=None: _SENTINEL_BOUNDARY,
     )
+    monkeypatch.setattr(engine, "_is_hybrid_model", lambda: is_hybrid)
     return engine, stub
 
 
@@ -148,6 +151,7 @@ def test_single_message_zero_boundary_both_paths(monkeypatch):
     monkeypatch.setattr(
         engine, "_compute_prefix_boundary", lambda messages, tools=None: 0
     )
+    monkeypatch.setattr(engine, "_is_hybrid_model", lambda: True)
     messages = [{"role": "user", "content": "single"}]
 
     asyncio.run(engine.chat(messages=messages))
@@ -164,4 +168,44 @@ def test_single_message_zero_boundary_both_paths(monkeypatch):
     asyncio.run(_drain())
     assert stub.last_generate_kwargs.get("prefix_boundary", 0) == 0, (
         f"stream path: expected boundary=0 got {stub.last_generate_kwargs!r}"
+    )
+
+
+def test_non_hybrid_model_skips_boundary_both_paths(monkeypatch):
+    """Pure Transformer models (gpt-oss-20b, qwen3-coder, etc.) must NOT
+    take the boundary-split path even if a multi-message conversation
+    would otherwise produce ``prefix_boundary > 0``.
+
+    Why: ``BatchGenerator.insert_segments`` empirically corrupts harmony
+    tool-call channel state across multi-turn-with-tools on gpt-oss-20b
+    (pydantic_ai 6_multi_tool drops from 6/6 to 5/6 — agent loops on
+    ``add(3,4)`` until ``request_limit`` exhausts). Pure Transformers
+    don't need the boundary save anyway — trim+supersequence reuse
+    works — so the gate is a free no-op for them. This test pins the
+    gate so a future refactor can't quietly re-enable the broken path.
+    """
+    engine, stub = _build_engine(monkeypatch, is_hybrid=False)
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+    ]
+
+    asyncio.run(engine.chat(messages=messages))
+    assert stub.last_generate_kwargs.get("prefix_boundary", 0) == 0, (
+        f"non-stream path: non-hybrid model leaked boundary "
+        f"into kwargs={stub.last_generate_kwargs!r}"
+    )
+
+    stub.last_generate_kwargs = None
+
+    async def _drain():
+        async for _ in engine.stream_chat(messages=messages):
+            break
+
+    asyncio.run(_drain())
+    assert stub.last_generate_kwargs.get("prefix_boundary", 0) == 0, (
+        f"stream path: non-hybrid model leaked boundary "
+        f"into kwargs={stub.last_generate_kwargs!r}"
     )
