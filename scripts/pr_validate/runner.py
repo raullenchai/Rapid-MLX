@@ -22,12 +22,14 @@ from .steps.lint import LintStep
 from .steps.stress_e2e_bench import StressE2EBenchStep
 from .steps.supply_chain import SupplyChainStep
 from .steps.targeted_tests import TargetedTestsStep
+from .steps.test_plan_check import TestPlanCheckStep
 
 # Step order — see scripts/pr_validate/README.md for the rationale.
 # DeepSeek review goes early so cheap critical thinking happens before
 # we spend 10 minutes on tests.
 STEPS: list[Step] = [
     FetchStep(),  # 0 — fetch PR + diff + classify blast radius
+    TestPlanCheckStep(),  # 0.5 — unchecked test-plan items block merge (#427 lesson)
     DeepSeekReviewStep(),  # 6 — adversarial review (moved to front)
     SupplyChainStep(),  # 1 — pip-audit, license, install hooks
     LintStep(),  # 2 — ruff check + format

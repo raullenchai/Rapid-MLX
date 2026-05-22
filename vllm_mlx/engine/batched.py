@@ -924,9 +924,14 @@ class BatchedEngine(BaseEngine):
             **_sp_kwargs,
         )
 
+        # Forward prefix_boundary so multi-turn hybrid models save the
+        # snapshot at the message boundary (#427). Set by ``chat()`` after
+        # message-aware boundary computation; absent for raw-prompt callers.
+        prefix_boundary = kwargs.pop("prefix_boundary", 0)
         output = await self._engine.generate(
             prompt=prompt,
             sampling_params=sampling_params,
+            prefix_boundary=prefix_boundary,
         )
 
         text = clean_output_text(output.output_text)
@@ -1091,6 +1096,15 @@ class BatchedEngine(BaseEngine):
             num_images=len(all_images),
             enable_thinking=enable_thinking,
         )
+
+        # Compute prefix boundary for hybrid-model cache reuse (#427).
+        # Must run on the NON-streaming path too — pydantic_ai / smolagents /
+        # langchain default to ``stream:false`` and hit ``chat()`` directly.
+        # PR #435 only wired this into ``stream_chat`` so the fix was a no-op
+        # for the very SDKs fishloa was hitting; this closes that gap.
+        prefix_boundary = self._compute_prefix_boundary(messages, tools)
+        if prefix_boundary > 0:
+            kwargs["prefix_boundary"] = prefix_boundary
 
         return await self.generate(
             prompt=prompt,
