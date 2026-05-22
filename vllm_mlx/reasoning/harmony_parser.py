@@ -36,8 +36,16 @@ _ANALYSIS_PATTERN = re.compile(
 # ``<|end|>``/``<|return|>`` end-of-message check. Without this, the
 # non-streaming path returns ``content=None`` and the chat response
 # emits an empty TextBlock for what was actually a fully-formed answer.
-_FINAL_PATTERN = re.compile(
-    r"<\|channel\|>final\s*<\|message\|>(.*?)(?:<\|return\|>|<\|end\|>)",
+# Prefer ``<|return|>`` over ``<|end|>``: if both appear, the model has
+# definitively terminated the message with ``<|return|>``. Trying that
+# pattern first avoids truncating answer text that happens to contain
+# a literal ``<|end|>`` (e.g. a transcript of a harmony exchange).
+_FINAL_PATTERN_RETURN = re.compile(
+    r"<\|channel\|>final\s*<\|message\|>(.*?)<\|return\|>",
+    re.DOTALL,
+)
+_FINAL_PATTERN_END = re.compile(
+    r"<\|channel\|>final\s*<\|message\|>(.*?)<\|end\|>",
     re.DOTALL,
 )
 
@@ -81,8 +89,12 @@ class HarmonyReasoningParser(ReasoningParser):
         analysis_blocks = _ANALYSIS_PATTERN.findall(model_output)
         reasoning = "\n".join(block.strip() for block in analysis_blocks) or None
 
-        # Extract final channel content
-        final_match = _FINAL_PATTERN.search(model_output)
+        # Extract final channel content. Prefer ``<|return|>`` over
+        # ``<|end|>`` so a literal ``<|end|>`` in answer text does not
+        # truncate a ``<|return|>``-terminated message.
+        final_match = _FINAL_PATTERN_RETURN.search(
+            model_output
+        ) or _FINAL_PATTERN_END.search(model_output)
         content = final_match.group(1).strip() if final_match else None
 
         return reasoning, content

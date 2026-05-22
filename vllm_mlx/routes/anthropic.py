@@ -497,12 +497,18 @@ async def _stream_anthropic_messages(
             # falling through to the text path below.
             output_channel = getattr(output, "channel", None)
             if output_channel is not None:
+                # Explicit allowlist (mirrors ``_CHANNEL_TO_STRING``
+                # in ``engine/batched.py``). An unrecognized channel
+                # is suppressed and logged rather than emitted as
+                # user-facing text — if a new router channel is
+                # added later (e.g. ``"system"``, ``"error"``) it
+                # must opt in here before reaching the client.
                 pieces_routed: list[tuple[str, str]] = []
                 if output_channel == "reasoning":
                     reasoning = strip_special_tokens(delta_text)
                     if reasoning:
                         pieces_routed.append(("thinking", reasoning))
-                else:
+                elif output_channel in ("content", "tool_call"):
                     # ``content`` and ``tool_call`` both render as
                     # user-facing text deltas; tool detection still
                     # runs through ``tool_filter`` so an emitted tool
@@ -514,6 +520,13 @@ async def _stream_anthropic_messages(
                         filtered = tool_filter.process(content)
                         if filtered:
                             pieces_routed.append(("text", filtered))
+                else:
+                    logger.warning(
+                        "anthropic stream: dropping delta from "
+                        "unknown channel %r (delta=%r)",
+                        output_channel,
+                        delta_text[:64],
+                    )
                 if pieces_routed:
                     events, current_block_type, block_index = _emit_content_pieces(
                         pieces_routed, current_block_type, block_index

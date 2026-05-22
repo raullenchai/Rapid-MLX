@@ -280,6 +280,26 @@ class TestHarmonyReasoningParser:
         assert reasoning == "The user asks 2+2."
         assert content == "4"
 
+    def test_literal_end_token_in_content_does_not_truncate_return_terminated(
+        self, parser
+    ):
+        """A literal ``<|end|>`` inside answer text must not truncate a
+        ``<|return|>``-terminated final block (DeepSeek review finding).
+
+        Reproduces the scenario where the non-greedy alternation
+        ``(?:<\\|return\\|>|<\\|end\\|>)`` would stop at the first
+        terminator it sees — pre-fix this returned just ``"prefix "``,
+        losing the suffix. Now the parser tries ``<|return|>`` first
+        and falls back to ``<|end|>`` only if absent.
+        """
+        # Embeds a literal ``<|end|>`` inside the final-channel content
+        # (e.g. a transcript-of-a-harmony-exchange answer). The real
+        # terminator is ``<|return|>`` at the end.
+        output = "<|channel|>final<|message|>prefix <|end|> suffix<|return|>"
+        _, content = parser.extract_reasoning(output)
+
+        assert content == "prefix <|end|> suffix"
+
     def test_multiple_analysis_blocks(self, parser):
         """Concatenate multiple analysis blocks."""
         output = (

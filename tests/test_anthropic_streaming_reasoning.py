@@ -360,3 +360,71 @@ class TestAnthropicStreamingWithoutReasoningParser:
         has_start = any(t[0] == "message_start" for t in delta_types)
         has_stop = any(t[0] == "message_stop" for t in delta_types)
         assert has_start and has_stop, f"Missing SSE framing: {delta_types}"
+
+
+class TestAnthropicStreamingChannelRouting:
+    """OutputRouter channel-aware branch (harmony/gemma4 models)."""
+
+    def test_unknown_channel_falls_through_to_legacy_path(
+        self, cfg_with_reasoning_parser
+    ):
+        """Unrecognized ``output.channel`` must NOT leak to user text.
+
+        DeepSeek review on PR #436 flagged that the initial ``else``
+        branch caught every non-``reasoning`` channel and emitted it
+        as user-facing ``text_delta``. If a future router channel is
+        added (e.g. ``"system"``, ``"error"``) without updating this
+        route, the implicit-text fallback would silently leak those
+        internal tokens. Fix: explicit allowlist
+        ``("reasoning", "content", "tool_call")``; unknown channels
+        fall through to the legacy reasoning-parser path which
+        treats the chunk as plain text only after parser inspection.
+        """
+        from vllm_mlx.routes.anthropic import (
+            AnthropicRequest,
+            ChatCompletionRequest,
+            _stream_anthropic_messages,
+        )
+
+        class _ChannelDelta(MockDeltaOutput):
+            def __init__(self, text: str, channel: str | None):
+                super().__init__(text)
+                self.channel = channel
+
+        class _ChannelEngine(MockEngine):
+            def __init__(self, deltas):
+                self._d = deltas
+                self.tokenizer = _FakeTokenizer()
+                self.preserve_native_tool_format = False
+
+            async def stream_chat(self, **kwargs):
+                for d in self._d:
+                    yield d
+
+        # First delta is the unknown channel; second is normal content
+        # so the test verifies the unknown one is not emitted as text.
+        engine = _ChannelEngine(
+            [
+                _ChannelDelta("INTERNAL_LEAK_TOKEN", channel="system"),
+                _ChannelDelta("safe", channel="content"),
+            ]
+        )
+        openai_req = ChatCompletionRequest(
+            model="test-model",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=20,
+        )
+        anthropic_req = AnthropicRequest(
+            model="test-model",
+            max_tokens=20,
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+        gen = _stream_anthropic_messages(engine, openai_req, anthropic_req)
+        events = _collect_sse_events(gen)
+
+        joined = "\n".join(events)
+        assert "INTERNAL_LEAK_TOKEN" not in joined, (
+            f"Unknown channel leaked to client: {joined!r}"
+        )
