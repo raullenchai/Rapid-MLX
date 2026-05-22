@@ -303,6 +303,38 @@ async def _create_chat_completion_impl(
 
     cfg = get_config()
 
+    # Enforce ``tool_choice`` at the prompt level (#445). The OpenAI spec
+    # accepts four modes: "auto", "none", "required", and
+    # ``{"type":"function","function":{"name":X}}``. Local inference has no
+    # native enforcement (no FSM constraint), so the only reliable lever for
+    # ``"none"`` and the specific-function form is to mutate what the model
+    # sees: drop ``tools`` entirely for ``"none"``, or filter to just the
+    # named function for the specific case. ``"auto"`` and ``"required"``
+    # leave tools untouched — ``"required"`` enforcement is tracked
+    # separately under #442 (needs decoder-level constraints, PR #132).
+    tc = request.tool_choice
+    if tc is not None and request.tools:
+        if tc == "none":
+            request.tools = None
+        elif isinstance(tc, dict) and tc.get("type") == "function":
+            fn = tc.get("function") or {}
+            target = fn.get("name")
+            if not target:
+                raise HTTPException(
+                    status_code=400,
+                    detail=("tool_choice with type='function' requires function.name"),
+                )
+            filtered = [t for t in request.tools if t.function.get("name") == target]
+            if not filtered:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"tool_choice references function {target!r} which "
+                        "is not present in the 'tools' array"
+                    ),
+                )
+            request.tools = filtered
+
     # Save original messages (clean dicts) for cloud routing BEFORE
     # local mutations (extract_multimodal_content, developer→system, suffix injection).
     if cfg.cloud_router:
