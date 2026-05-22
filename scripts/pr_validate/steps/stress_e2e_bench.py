@@ -472,18 +472,24 @@ def _run_agent(
         **os.environ,
         "RAPID_MLX_BASE_URL": f"http://127.0.0.1:{BENCH_PORT}/v1",
     }
-    # 1200s (20 min) per agent script. Sized for the slowest model in the
-    # matrix — Gemma 4 26B routes through MLLMModel (mlx-vlm) which has
-    # higher per-token decode overhead than the qwen3.5/qwen3.6 path. 600s
-    # was enough for 27B-class qwen models but truncated gemma4 langchain
-    # mid-suite (observed in pr_validate against PR #208).
+    # 1800s (30 min) per agent script. 1200s used to be enough for
+    # 27B-class qwen models, but qwen3.6-27B-MLX-8bit + pydantic_ai
+    # ran for >20 min during PR #436 validation (the test ultimately
+    # passed 6/6 when re-run unbounded — see post-merge cleanup
+    # notes). Underestimating here turns a slow-but-successful test
+    # into a BLOCKING "step crashed: TimeoutExpired" verdict and
+    # gives no signal about whether the actual agent failed.
+    # The slowest known matrix entry remains Gemma 4 26B (mlx-vlm
+    # MLLMModel decode overhead); 1800s gives both that and pydantic_ai
+    # on qwen3.6 reasonable headroom without inflating the per-agent
+    # ceiling beyond what a stuck process would justify.
     proc = subprocess.run(  # noqa: S603
         ["python3.12", str(script)],
         capture_output=True,
         text=True,
         env=env,
         cwd=str(ctx.repo_root),
-        timeout=1200,
+        timeout=1800,
     )
     log.write_text((proc.stdout or "") + (proc.stderr or ""))
     summary = _grep_last(proc.stdout, "passed") or _grep_last(proc.stdout, "FAIL")
