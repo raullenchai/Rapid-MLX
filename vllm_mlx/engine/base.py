@@ -26,6 +26,19 @@ class GenerationOutput:
     # ``content`` and emitting empty ``reasoning_content`` to clients.
     # Empty string default keeps callers that don't populate it working.
     raw_text: str = ""
+    # Token-level reasoning extraction, populated by the engine via
+    # ``OutputRouter.feed_sequence`` for tokenizers it supports
+    # (Harmony / Gemma 4 / Qwen3 / DeepSeek R1 — see
+    # ``output_router.from_tokenizer``). This is the AUTHORITATIVE source
+    # of reasoning_content for non-streaming responses: it tracks channel
+    # state at the token level instead of regex-parsing the decoded text
+    # after the fact, so truncated outputs (``finish_reason=length``,
+    # no ``<|end|>`` terminator) still produce correct
+    # ``reasoning_content`` without leaking the analysis body into
+    # ``content``. Empty string means the engine didn't populate it
+    # (no router, or router failed) — routes fall back to the
+    # text-based ``ReasoningParser`` in that case. Issue #442.
+    reasoning_text: str = ""
     tokens: list[int] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0

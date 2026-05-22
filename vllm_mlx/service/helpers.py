@@ -131,6 +131,7 @@ def _finalize_content_and_reasoning(
     cleaned_text: str,
     tool_calls: list,
     reasoning_parser,
+    engine_reasoning_text: str = "",
 ) -> tuple[str, str | None]:
     """Compute final ``content`` + ``reasoning_text`` after tool parsing.
 
@@ -165,6 +166,18 @@ def _finalize_content_and_reasoning(
     integrations, v0.6.64 pr_validate baseline).
     """
     reasoning_text = None
+    # Engine-level token routing is authoritative when present. The
+    # ``OutputRouter`` state machine tracks channel boundaries at the
+    # token level (same code path the streaming route already trusts),
+    # so the text-based retry below is redundant — and would in fact
+    # be wrong for truncated harmony output, where the engine cleaner
+    # leaks analysis content into ``cleaned_text`` and the parser's
+    # regex misses it without an ``<|end|>`` terminator. When the
+    # engine populated ``reasoning_text``, use it directly and skip
+    # the parser. (No reasoning_parser is still a short-circuit
+    # below.) Issue #442.
+    if engine_reasoning_text:
+        return cleaned_text, engine_reasoning_text
     if reasoning_parser is None:
         return cleaned_text, reasoning_text
     if tool_calls:

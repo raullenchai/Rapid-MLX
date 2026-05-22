@@ -149,3 +149,57 @@ def test_no_reasoning_parser_short_circuits():
     )
     assert reasoning is None
     assert cleaned == _HARMONY_CLEANED
+
+
+def test_engine_reasoning_text_short_circuits_parser():
+    """When the engine populated ``reasoning_text`` via ``OutputRouter``,
+    the helper trusts it as authoritative and skips the text-based
+    parser. This is the root-cause fix for issue #442 — token-level
+    routing replaces fragile regex parsing of decoded output. The
+    parser would have returned None on this truncated input (no
+    ``<|end|>`` to anchor against); the engine-provided text wins.
+    """
+    truncated_raw = (
+        "<|channel|>analysis<|message|>User wants multiple actions. We must use tools."
+    )
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=truncated_raw,
+        cleaned_text="",
+        tool_calls=[],
+        reasoning_parser=HarmonyReasoningParser(),
+        engine_reasoning_text="User wants multiple actions. We must use tools.",
+    )
+    assert reasoning == "User wants multiple actions. We must use tools."
+    assert cleaned == ""
+
+
+def test_engine_reasoning_text_overrides_even_when_parser_could_match():
+    """When the engine populated ``reasoning_text``, its value wins even
+    if the text-based parser COULD have found something — token-level
+    routing is the authoritative source. This pins the precedence so a
+    future change can't accidentally re-prefer the regex result.
+    """
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_HARMONY_RAW,
+        cleaned_text=_HARMONY_CLEANED,
+        tool_calls=[],
+        reasoning_parser=HarmonyReasoningParser(),
+        engine_reasoning_text="ENGINE-ROUTED-VALUE",
+    )
+    assert reasoning == "ENGINE-ROUTED-VALUE"
+
+
+def test_engine_reasoning_empty_falls_through_to_parser():
+    """Empty ``engine_reasoning_text`` means the engine couldn't route
+    (no ``OutputRouter`` for this tokenizer, or a non-channel model).
+    Helper falls through to the existing parser-based extraction so
+    older formats (e.g. plain ``<think>`` tags) keep working.
+    """
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_HARMONY_RAW,
+        cleaned_text=_HARMONY_CLEANED,
+        tool_calls=[],
+        reasoning_parser=HarmonyReasoningParser(),
+        engine_reasoning_text="",
+    )
+    assert reasoning is not None and "17 * 23" in reasoning

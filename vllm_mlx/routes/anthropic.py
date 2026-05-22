@@ -226,6 +226,7 @@ async def create_anthropic_message(
             cleaned_text=cleaned_text,
             tool_calls=tool_calls,
             reasoning_parser=cfg.reasoning_parser,
+            engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
         )
 
         final_content = None

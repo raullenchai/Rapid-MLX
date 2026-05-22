@@ -936,10 +936,28 @@ class BatchedEngine(BaseEngine):
         )
 
         text = clean_output_text(output.output_text)
+        # Token-level channel extraction via ``OutputRouter`` — the SAME
+        # state machine the streaming path already uses
+        # (``_stream_with_output_router``). For non-streaming we feed the
+        # full token sequence through ``feed_sequence`` to get the
+        # authoritative reasoning/content split. Text-based regex
+        # cleaning above (``clean_output_text``) keeps working for the
+        # happy paths (final channel present, or tool-call commentary
+        # bail-out); the router result tells us when text-based cleaning
+        # would be WRONG — specifically the "analysis channel only, no
+        # final" case where ``_clean_gpt_oss_output``'s else branch
+        # would otherwise leak the analysis body into ``content``
+        # (issue #442). The router doesn't care about ``<|end|>``
+        # terminators so it also recovers reasoning from truncated
+        # output (``finish_reason=length`` mid-thinking).
+        reasoning_text, text = self._route_tokens_for_channels(
+            output.output_token_ids, fallback_text=text
+        )
 
         return GenerationOutput(
             text=text,
             raw_text=output.output_text,
+            reasoning_text=reasoning_text,
             prompt_tokens=output.prompt_tokens,
             completion_tokens=output.completion_tokens,
             finish_reason=output.finish_reason,
@@ -1207,6 +1225,54 @@ class BatchedEngine(BaseEngine):
             return lcp
         except Exception:
             return 0
+
+    def _route_tokens_for_channels(
+        self, token_ids: list[int] | None, *, fallback_text: str
+    ) -> tuple[str, str]:
+        """Run ``OutputRouter.feed_sequence`` on a completed token list.
+
+        Returns ``(reasoning_text, content_text)`` for the non-streaming
+        path. The router is the token-level state machine that the
+        streaming path already trusts (``_stream_with_output_router``);
+        using it here closes a long-standing gap where non-streaming
+        relied on text-based ``clean_output_text`` regex parsing and
+        leaked analysis-channel content into ``content`` when the
+        model finished mid-thinking (``finish_reason=length`` — issue
+        #442) or otherwise emitted no ``final`` channel.
+
+        ``fallback_text`` is the result of ``clean_output_text`` —
+        we keep it as ``content`` for cases the router doesn't override
+        (e.g. tool-call paths where harmony commentary text needs to
+        survive intact for the route's tool parser; the router only
+        knows about ``analysis`` and ``final`` for harmony, so we don't
+        clobber its decisions). The override fires only when the router
+        is authoritative AND text-based cleaning is known wrong —
+        specifically when the router sees REASONING tokens but no
+        CONTENT tokens, which means there was no ``final`` channel and
+        ``message.content`` should be empty.
+        """
+        if not token_ids:
+            return "", fallback_text
+        router = self._create_output_router()
+        if router is None:
+            return "", fallback_text
+        try:
+            router.reset()
+            routed = router.feed_sequence(token_ids)
+        except Exception as e:
+            logger.debug("OutputRouter sequence routing failed: %s", e)
+            return "", fallback_text
+
+        reasoning = routed.get("reasoning") or ""
+        # Override content ONLY when the router authoritatively says
+        # there is no content channel AND there is reasoning. In every
+        # other case we keep ``fallback_text`` so tool-call commentary
+        # text reaches the route's tool parser unchanged, and so non-
+        # reasoning models (router emits CONTENT only) keep their
+        # text-cleaning result.
+        if routed.get("content") is None and reasoning:
+            return reasoning, ""
+        return reasoning, fallback_text
 
     def _create_output_router(self) -> OutputRouter | None:
         """Create a per-request token router for supported tokenizer formats."""
