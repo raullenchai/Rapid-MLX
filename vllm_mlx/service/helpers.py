@@ -173,7 +173,21 @@ def _finalize_content_and_reasoning(
         text_to_parse = cleaned_text or raw_text
         new_reasoning, new_cleaned = reasoning_parser.extract_reasoning(text_to_parse)
         reasoning_text = new_reasoning
-        if new_reasoning is not None or new_cleaned is not None:
+        # Only overwrite cleaned_text when the parser explicitly
+        # produced new content. ``new_cleaned is None`` means the
+        # parser had nothing concrete to say about content — either
+        # it found no markers at all (harmony pre-cleaned case) or
+        # it found only reasoning (qwen3 ``<think>``-only case). In
+        # both cases the original cleaned_text is the right thing to
+        # keep; downstream ``strip_thinking_tags`` + sanitization
+        # will collapse think-only inputs to empty further along the
+        # pipeline. (Originally widened with ``or new_reasoning is
+        # not None`` after the harmony empty-TextBlock fix, but
+        # DeepSeek review on PR #436 pointed out that branch still
+        # clobbered cleaned_text whenever the parser returned
+        # ``(reasoning, None)`` — same regression by a different
+        # route.)
+        if new_cleaned is not None:
             cleaned_text = new_cleaned
     return cleaned_text, reasoning_text
 

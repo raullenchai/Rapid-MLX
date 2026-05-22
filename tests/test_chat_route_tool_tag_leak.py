@@ -160,3 +160,32 @@ class TestToolTagLeakRegression:
         )
         assert cleaned == "4"
         assert reasoning is None
+
+    def test_parser_returns_reasoning_only_preserves_cleaned_text(self):
+        # DeepSeek review on PR #436 flagged that the initial
+        # ``(None, None)``-only guard still clobbered ``cleaned_text``
+        # whenever the parser returned ``(reasoning, None)`` — same
+        # regression class by a different route. Concrete case: a
+        # ``<think>thinking</think>`` payload with no actual content
+        # after the closing tag. The Qwen3 reasoning parser pulls
+        # ``"thinking"`` out as reasoning and returns ``content=None``;
+        # the helper must NOT overwrite the caller's ``cleaned_text``
+        # with that ``None``. (Downstream ``strip_thinking_tags`` will
+        # collapse this to an empty content for the wire response,
+        # which is the right outcome — but the helper's job is to
+        # respect the contract "only update cleaned_text when the
+        # parser explicitly produced new content.")
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        raw = "<think>just thinking, no answer</think>"
+        cleaned, reasoning = _finalize_content_and_reasoning(
+            raw_text=raw,
+            cleaned_text=raw,
+            tool_calls=None,
+            reasoning_parser=Qwen3ReasoningParser(tokenizer=None),
+        )
+        assert cleaned == raw, (
+            f"expected original cleaned_text preserved (sentinel for "
+            f"downstream strip_thinking_tags), got {cleaned!r}"
+        )
+        assert reasoning is not None and "thinking" in reasoning
