@@ -28,6 +28,81 @@ def _needs_tokenizer_fallback(model_name: str) -> bool:
     return any(pattern.lower() in model_lower for pattern in FALLBACK_MODELS)
 
 
+def _apply_chat_template_sidecar(model_path: Path, tokenizer) -> bool:
+    """Populate ``tokenizer.chat_template`` from a sidecar file if missing.
+
+    Newer HuggingFace repos ship the chat template as a standalone file
+    next to ``tokenizer_config.json`` instead of embedding it. Two
+    conventions exist:
+
+      - ``chat_template.jinja`` (raw jinja, the modern transformers
+        ≥4.43 default — DeepSeek V4, some Qwen builds)
+      - ``chat_template.json`` (single-key ``{"chat_template": "..."}``
+        wrapper — used by mlx-community Mistral Small 3.1 and newer
+        repos that follow the older HF Tokenizers sidecar convention)
+
+    Both ``AutoTokenizer.from_pretrained`` and ``mlx_lm.load``'s
+    ``TokenizerWrapper`` fail to auto-merge ``chat_template.json`` on
+    transformers ≤5.6 — ``tokenizer.chat_template`` comes back ``None``
+    and every ``/v1/chat/completions`` request 400s with
+    "Cannot use chat template functions". Surfaced on 2026-05-22
+    fresh-PyPI v0.6.65 onboarding sweep against
+    ``mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit``.
+
+    Returns True if a sidecar template was applied, False otherwise.
+    """
+    if getattr(tokenizer, "chat_template", None):
+        return False
+
+    jinja_path = model_path / "chat_template.jinja"
+    if jinja_path.exists():
+        # utf-8-sig strips a UTF-8 BOM if the file was saved with one —
+        tokenizer.chat_template = jinja_path.read_text(encoding="utf-8-sig")
+        logger.info("Chat template loaded from chat_template.jinja sidecar")
+        return True
+
+    json_path = model_path / "chat_template.json"
+    if json_path.exists():
+        try:
+            with open(json_path) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(
+                f"Found chat_template.json at {json_path} but failed to parse: {e}"
+            )
+            return False
+        template = data.get("chat_template")
+        if isinstance(template, str) and template:
+            tokenizer.chat_template = template
+            logger.info("Chat template loaded from chat_template.json sidecar")
+            return True
+        logger.warning(
+            f"chat_template.json at {json_path} has no 'chat_template' string key; "
+            f"got keys={list(data.keys())}"
+        )
+    return False
+
+
+def _resolve_model_path(model_name: str) -> Path | None:
+    """Resolve a HuggingFace ``model_name`` to a local snapshot directory.
+
+    Returns ``None`` (instead of raising) when the model can't be located
+    locally — callers use this for best-effort sidecar lookup and should
+    skip the sidecar branch silently if the path can't be resolved
+    (offline / non-existent model / weird hub state).
+    """
+    local = Path(model_name)
+    if local.is_dir():
+        return local
+    try:
+        from huggingface_hub import snapshot_download
+
+        return Path(snapshot_download(model_name))
+    except Exception as e:
+        logger.debug(f"_resolve_model_path({model_name}) failed: {e}")
+        return None
+
+
 def _register_vendored_archs() -> None:
     """Make vendored model architectures visible to mlx-lm's importlib lookup.
 
@@ -121,6 +196,10 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
             # Try native mlx-lm load first (0.31+)
             model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
             logger.info("Gemma 4 loaded natively via mlx-lm")
+            if not getattr(tokenizer, "chat_template", None):
+                mp = _resolve_model_path(model_name)
+                if mp is not None:
+                    _apply_chat_template_sidecar(mp, tokenizer)
             return model, tokenizer
         except Exception as e:
             # Fall back to our wrapper for older mlx-lm versions
@@ -140,6 +219,15 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
         # layers and the model came back without a .mtp attribute;
         # if so, re-inject from the safetensors on disk.
         _try_inject_mtp_post_load(model, model_name)
+        # Sidecar chat-template recovery: AutoTokenizer doesn't merge
+        # ``chat_template.json`` on transformers ≤5.6, leaving
+        # ``tokenizer.chat_template`` None for newer mlx-community repos
+        # like Mistral Small 3.1. /v1/chat/completions then 400s. Try
+        # to load the sidecar before returning so chat endpoints work.
+        if not getattr(tokenizer, "chat_template", None):
+            mp = _resolve_model_path(model_name)
+            if mp is not None:
+                _apply_chat_template_sidecar(mp, tokenizer)
         return model, tokenizer
     except ValueError as e:
         # Fallback for models with non-standard tokenizers, OR newer model_types
@@ -189,6 +277,7 @@ def _load_strict_false(model_name: str, tokenizer_config: dict = None):
     )
     # Inject MTP support if model has MTP config + weights
     _try_inject_mtp(model, model_path, config)
+    _apply_chat_template_sidecar(model_path, tokenizer)
     return model, tokenizer
 
 
@@ -260,6 +349,7 @@ def _load_non_strict(model_name: str, tokenizer_config: dict = None):
 
     model, _ = load_model(model_path, strict=False)
     tokenizer = load_tokenizer(model_path, tokenizer_config or {})
+    _apply_chat_template_sidecar(model_path, tokenizer)
     return model, tokenizer
 
 
@@ -305,16 +395,6 @@ def _load_with_tokenizer_fallback(model_name: str):
                 unk_token = config.get("unk_token", unk_token)
                 chat_template = config.get("chat_template")
 
-        # HF convention (transformers >=4.43): chat_template.jinja sits
-        # alongside tokenizer_config.json. DeepSeek V4 ships it that way.
-        # utf-8-sig strips a UTF-8 BOM if the file was saved with one —
-        # jinja2 would otherwise treat \ufeff as part of the template.
-        if chat_template is None:
-            chat_template_jinja = model_path / "chat_template.jinja"
-            if chat_template_jinja.exists():
-                chat_template = chat_template_jinja.read_text(encoding="utf-8-sig")
-                logger.info("Chat template loaded from chat_template.jinja")
-
         tokenizer = PreTrainedTokenizerFast(
             tokenizer_object=base_tokenizer,
             bos_token=bos_token,
@@ -323,10 +403,15 @@ def _load_with_tokenizer_fallback(model_name: str):
             pad_token="<pad>",
         )
 
-        # Set chat template if available
+        # Set chat template if available. Sidecar fallback (.jinja then
+        # .json) is delegated to ``_apply_chat_template_sidecar`` so the
+        # primary load path and this fallback stay in sync (Mistral
+        # Small 3.1 ships .json sidecar; DeepSeek V4 ships .jinja).
         if chat_template:
             tokenizer.chat_template = chat_template
             logger.info("Chat template loaded from tokenizer_config.json")
+        elif _apply_chat_template_sidecar(model_path, tokenizer):
+            pass  # helper logs the sidecar source
         elif _needs_tokenizer_fallback(model_name):
             # Use official Nemotron chat template with thinking support
             tokenizer.chat_template = NEMOTRON_CHAT_TEMPLATE
