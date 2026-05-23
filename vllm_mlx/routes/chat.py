@@ -721,7 +721,24 @@ async def _create_chat_completion_impl(
 
     try:
         if want_logprobs and not use_guided:
+            # ``logprobs`` requests need per-token data, so we route through
+            # the streaming path even for a non-stream response. The streaming
+            # iterator yields per-token outputs; on channel-routed models
+            # (harmony/gpt-oss, gemma4) each chunk also carries the channel
+            # the router assigned that token. Accumulate text by channel so
+            # ``reasoning_text`` and ``text`` reach
+            # ``_finalize_content_and_reasoning`` already split — without
+            # this, the loop kept only the LAST chunk's text and ``output.
+            # reasoning_text`` stayed empty, so the route fell back to the
+            # text-regex parser which leaks analysis-channel content into
+            # ``content`` on harmony (same shape as #442 but for the logprobs
+            # path).
+            from dataclasses import replace as _dc_replace
+
             output = None
+            routed_content_parts: list[str] = []
+            routed_reasoning_parts: list[str] = []
+            saw_channel = False
             async for chunk in engine.stream_chat(messages=messages, **chat_kwargs):
                 output = chunk
                 token_logprobs_list.extend(
@@ -729,8 +746,24 @@ async def _create_chat_completion_impl(
                         chunk, engine.tokenizer, top_k_logprobs
                     )
                 )
+                ch = getattr(chunk, "channel", None)
+                if ch:
+                    saw_channel = True
+                    if ch == "reasoning":
+                        routed_reasoning_parts.append(chunk.new_text or "")
+                    elif ch == "content":
+                        routed_content_parts.append(chunk.new_text or "")
+                    # ``tool_call`` channel is parsed downstream by
+                    # ``_parse_tool_calls_with_parser``; don't fold its body
+                    # into either text bucket here.
             if output is None:
                 return Response(status_code=499)
+            if saw_channel:
+                output = _dc_replace(
+                    output,
+                    text="".join(routed_content_parts),
+                    reasoning_text="".join(routed_reasoning_parts),
+                )
         elif use_guided and json_schema:
             try:
                 output = await _wait_with_disconnect(
