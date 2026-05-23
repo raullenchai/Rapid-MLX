@@ -429,6 +429,135 @@ class TestGetUsage:
         assert usage.total_tokens == 75
 
 
+class TestBuildUsageReasoningBreakdown:
+    """Pin the ``_build_usage`` reasoning-token allocation contract.
+
+    Per OpenAI spec, ``completion_tokens_details.reasoning_tokens`` is
+    a SUBSET of ``completion_tokens`` — derived ``content_tokens =
+    completion_tokens - reasoning_tokens`` must be ``>= 0`` and must be
+    ``> 0`` whenever ``output.text`` is non-empty. The earlier
+    implementation clamped ``reasoning_tokens`` to ``total_completion``
+    when ``len(reasoning_text)//4`` exceeded the budget, silently
+    attributing ALL completion tokens to reasoning even when the
+    assistant emitted content. Surfaced by the v0.6.66 hybrid
+    onboarding sweep on ``qwen3.6-27b-8bit`` (300/300 reasoning split
+    with non-empty content).
+    """
+
+    def _setup_cfg(self, monkeypatch):
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        # Cache & restore — any non-None string triggers the reasoning
+        # breakdown branch in _build_usage.
+        old = cfg.reasoning_parser_name
+        cfg.reasoning_parser_name = "harmony"
+        monkeypatch.setattr(cfg, "reasoning_parser_name", "harmony", raising=False)
+
+        def _restore():
+            cfg.reasoning_parser_name = old
+
+        monkeypatch.setattr(cfg, "reasoning_parser_name", "harmony", raising=False)
+        return cfg
+
+    def test_long_reasoning_plus_content_leaves_room_for_content(self, monkeypatch):
+        """The specific case from the v0.6.66 hybrid onboarding bug
+        report: ``len(reasoning_text)//4 > total_completion``, but
+        ``output.text`` is non-empty. Derived content_tokens MUST be > 0.
+        """
+        from vllm_mlx.service.helpers import _build_usage
+
+        self._setup_cfg(monkeypatch)
+        output = GenerationOutput(
+            text="I do not have access to real-time data.",
+            completion_tokens=300,
+            prompt_tokens=50,
+        )
+        reasoning_text = "a" * 1300  # > 300 by chars//4
+
+        usage = _build_usage(output, reasoning_text)
+        assert usage.completion_tokens == 300
+        details = usage.completion_tokens_details
+        assert details is not None
+        reasoning_tokens = details.reasoning_tokens
+        content_tokens = usage.completion_tokens - reasoning_tokens
+        assert reasoning_tokens < usage.completion_tokens, (
+            f"reasoning_tokens ({reasoning_tokens}) must be < "
+            f"completion_tokens ({usage.completion_tokens}) when content "
+            f"is non-empty — previously clamped to equal."
+        )
+        assert content_tokens > 0, (
+            f"derived content_tokens must be > 0 when output.text is "
+            f"non-empty. got reasoning={reasoning_tokens} of "
+            f"{usage.completion_tokens}"
+        )
+
+    def test_reasoning_only_empty_content_attributes_all_to_reasoning(
+        self, monkeypatch
+    ):
+        """When ``output.text`` is empty, all completion tokens ARE
+        reasoning — the spec invariant ``content_tokens >= 0`` reduces
+        to ``content_tokens == 0`` and reasoning_tokens == total.
+        """
+        from vllm_mlx.service.helpers import _build_usage
+
+        self._setup_cfg(monkeypatch)
+        output = GenerationOutput(text="", completion_tokens=200, prompt_tokens=50)
+        usage = _build_usage(output, "a" * 800)
+        assert usage.completion_tokens_details.reasoning_tokens == 200
+
+    def test_balanced_split_proportional(self, monkeypatch):
+        """Roughly equal reasoning/content char counts should split the
+        completion-token budget roughly 50/50.
+        """
+        from vllm_mlx.service.helpers import _build_usage
+
+        self._setup_cfg(monkeypatch)
+        output = GenerationOutput(
+            text="abc" * 100, completion_tokens=200, prompt_tokens=50
+        )
+        usage = _build_usage(output, "def" * 100)
+        rt = usage.completion_tokens_details.reasoning_tokens
+        # Allow a few tokens of rounding wiggle.
+        assert 95 < rt < 105, f"50/50 split should give ~100 reasoning, got {rt}"
+
+    def test_tiny_reasoning_large_content_at_least_one_reasoning_token(
+        self, monkeypatch
+    ):
+        """A single reasoning word with a large content body should
+        still report ``reasoning_tokens >= 1`` (the field reflects that
+        reasoning happened) AND ``< completion_tokens`` (content must
+        retain at least one token).
+        """
+        from vllm_mlx.service.helpers import _build_usage
+
+        self._setup_cfg(monkeypatch)
+        output = GenerationOutput(
+            text="x" * 1000, completion_tokens=300, prompt_tokens=50
+        )
+        usage = _build_usage(output, "reason")
+        rt = usage.completion_tokens_details.reasoning_tokens
+        assert rt >= 1, f"reasoning_tokens must be >= 1 when reasoning happened, got {rt}"
+        assert rt < usage.completion_tokens, (
+            f"reasoning_tokens ({rt}) must leave room for content "
+            f"(completion_tokens={usage.completion_tokens})"
+        )
+
+    def test_no_reasoning_no_details(self, monkeypatch):
+        """When ``reasoning_text`` is empty, ``completion_tokens_details``
+        is None — no spurious zero-reasoning field on responses from
+        non-reasoning models.
+        """
+        from vllm_mlx.service.helpers import _build_usage
+
+        self._setup_cfg(monkeypatch)
+        output = GenerationOutput(
+            text="hello world", completion_tokens=10, prompt_tokens=5
+        )
+        usage = _build_usage(output, "")
+        assert usage.completion_tokens_details is None
+
+
 # ---------------------------------------------------------------------------
 # _inject_json_instruction
 # ---------------------------------------------------------------------------

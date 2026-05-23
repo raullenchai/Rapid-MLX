@@ -452,12 +452,43 @@ def build_extended_sampling_kwargs(request) -> dict:
 
 
 def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
-    """Build Usage with reasoning token breakdown when applicable."""
+    """Build Usage with reasoning token breakdown when applicable.
+
+    Per OpenAI spec, ``completion_tokens_details.reasoning_tokens`` is a
+    SUBSET of ``completion_tokens`` — the remainder is content tokens.
+    When both reasoning and content are present, we split the actual
+    ``completion_tokens`` budget proportionally between them based on
+    character ratio (chars-÷4 heuristic on each half is unreliable when
+    one half exceeds the budget). The earlier ``min(reasoning, total)``
+    clamp silently attributed ALL completion tokens to reasoning
+    whenever ``len(reasoning_text)//4 >= total_completion``, leaving
+    derived ``content_tokens == 0`` even when ``output.text`` was
+    non-empty — surfaced by the v0.6.66 hybrid onboarding sweep on
+    qwen3.6-27b-8bit (300/300 split with non-empty content).
+    """
     cfg = get_config()
     total_completion = output.completion_tokens
     if reasoning_text and cfg.reasoning_parser_name:
-        reasoning_tokens = max(1, len(reasoning_text) // 4)
-        reasoning_tokens = min(reasoning_tokens, total_completion)
+        reasoning_chars = len(reasoning_text)
+        content_chars = len(output.text or "")
+        total_chars = reasoning_chars + content_chars
+        if total_chars > 0:
+            reasoning_tokens = round(total_completion * reasoning_chars / total_chars)
+            # If reasoning is non-empty, attribute at least 1 token to it
+            # so the field reflects that reasoning happened.
+            if reasoning_chars > 0:
+                reasoning_tokens = max(1, reasoning_tokens)
+            # If content is also non-empty, reasoning_tokens MUST be
+            # strictly less than total — leave at least 1 token for
+            # content so the OpenAI-spec invariant (content_tokens =
+            # completion_tokens - reasoning_tokens >= 0) reflects
+            # what actually got generated.
+            if content_chars > 0:
+                reasoning_tokens = min(reasoning_tokens, max(0, total_completion - 1))
+            else:
+                reasoning_tokens = min(reasoning_tokens, total_completion)
+        else:
+            reasoning_tokens = 0
         return Usage(
             prompt_tokens=output.prompt_tokens,
             completion_tokens=total_completion,
