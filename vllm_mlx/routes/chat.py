@@ -363,11 +363,12 @@ async def _create_chat_completion_impl(
     else:
         _cloud_original_messages = None
 
-    # Reject image/video content when the loaded model has no vision
-    # head. Without this guard ``extract_multimodal_content`` silently
-    # drops the image parts on the text-only path and the model
-    # hallucinates a confident description of an image it never saw
-    # (R9P1: 600M text model returned "a red rose" for arbitrary images).
+    # Reject image/video/audio content when the loaded model has no
+    # multimodal head. Without this guard ``extract_multimodal_content``
+    # silently drops the media parts on the text-only path and the model
+    # hallucinates (R9P1: 600M text model returned "a red rose" for
+    # arbitrary images; iter12 onboarding: text-only model claimed
+    # "no audio attached" while silently dropping ``audio_url``).
     if not engine.is_mllm:
         for _msg in request.messages:
             _content = (
@@ -380,12 +381,20 @@ async def _create_chat_completion_impl(
                         if hasattr(_item, "type")
                         else (_item.get("type", "") if isinstance(_item, dict) else "")
                     )
-                    if _item_type in ("image_url", "image", "video", "video_url"):
+                    if _item_type in (
+                        "image_url",
+                        "image",
+                        "video",
+                        "video_url",
+                        "audio_url",
+                        "audio",
+                        "input_audio",
+                    ):
                         raise HTTPException(
                             status_code=400,
                             detail=(
                                 f"Model '{cfg.model_name}' does not support "
-                                "image or video inputs."
+                                "image, video, or audio inputs."
                             ),
                         )
 
