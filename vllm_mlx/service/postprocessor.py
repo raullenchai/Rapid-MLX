@@ -283,6 +283,19 @@ class StreamingPostProcessor:
             if not content:
                 content = None
 
+        # Accumulate post-sanitize so the final usage chunk can compute
+        # ``completion_tokens_details.reasoning_tokens`` via _build_usage's
+        # proportional split (PR #453 logic). Without this, OutputRouter
+        # models (Gemma 4, harmony/gpt-oss) emit reasoning_content deltas
+        # to the client but leave both accumulators empty — _build_usage
+        # then sees ``reasoning_text=None`` and omits the field entirely,
+        # creating stream/non-stream usage shape drift. Verified on
+        # gemma-4-26b + gpt-oss-20b during the v0.6.66 onboarding sweep.
+        if content:
+            self.accumulated_text += content
+        if reasoning:
+            self.accumulated_reasoning += reasoning
+
         # When finish_reason is set, emit ONE finish event with content/reasoning
         # merged in to avoid double-emission.
         if finish_reason:

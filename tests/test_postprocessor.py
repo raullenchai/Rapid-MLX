@@ -116,6 +116,52 @@ class TestStreamingPostProcessorChannelRouted:
         assert events[0].content == "Hello"
         parser.extract_reasoning_streaming.assert_not_called()
 
+    def test_channel_routed_accumulators_populated(self):
+        """OutputRouter path must update accumulated_text + accumulated_reasoning.
+
+        Regression for v0.6.66 onboarding sweep finding: the streaming
+        usage chunk dropped ``completion_tokens_details.reasoning_tokens``
+        entirely for Gemma 4 / harmony because ``_process_channel_routed``
+        emitted events to the client but never updated the per-processor
+        accumulators that ``_build_usage`` reads to compute the
+        reasoning/content split. Confirmed by parallel onboarding agents
+        on gemma-4-26b and gpt-oss-20b.
+        """
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        # Interleave reasoning + content chunks across multiple calls
+        # (the real stream emits one channel-tagged token at a time).
+        pp.process_chunk(_make_output("Let ", channel="reasoning"))
+        pp.process_chunk(_make_output("me ", channel="reasoning"))
+        pp.process_chunk(_make_output("think.", channel="reasoning"))
+        pp.process_chunk(_make_output("The ", channel="content"))
+        pp.process_chunk(_make_output("answer ", channel="content"))
+        pp.process_chunk(_make_output("is 42.", channel="content"))
+
+        assert pp.accumulated_reasoning == "Let me think."
+        assert pp.accumulated_text == "The answer is 42."
+
+    def test_channel_routed_accumulators_skip_empty_after_sanitize(self):
+        """Sanitized-empty chunks must NOT accumulate (avoid phantom tokens).
+
+        ``sanitize_output`` can return None when a chunk is entirely
+        special tokens; the accumulator must respect that so the usage
+        char-ratio doesn't include suppressed content.
+        """
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+
+        pp.process_chunk(_make_output("real ", channel="content"))
+        pp.process_chunk(_make_output("<|endoftext|>", channel="content"))
+        pp.process_chunk(_make_output("text", channel="content"))
+
+        # Special-token-only chunk is dropped from accumulation.
+        assert "<|endoftext|>" not in pp.accumulated_text
+        assert pp.accumulated_text == "real text"
+
 
 class TestStreamingPostProcessorReasoning:
     """Tests for text-based reasoning parser integration."""
