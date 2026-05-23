@@ -217,6 +217,16 @@ class ChatCompletionRequest(BaseModel):
     # post-generation truncation (the only reliable lever absent FSM
     # constraints — see PR #132 / #442 for the decoder-level path).
     parallel_tool_calls: bool | None = None
+    # Legacy OpenAI tool-calling shape (pre-1.0 SDK + LangChain compat layers).
+    # When set and the modern ``tools``/``tool_choice`` slots are empty, the
+    # post-init validator below normalizes them to the modern equivalent so
+    # downstream code keeps reading a single shape. Declared so Pydantic
+    # stops silently dropping them (same blind-spot family as #355 /
+    # #459 / #464). If a client supplies BOTH shapes, modern wins —
+    # OpenAI's documented deprecation behavior — and the legacy slots are
+    # ignored.
+    functions: list[dict] | None = None
+    function_call: str | dict | None = None
     # Structured output
     response_format: ResponseFormat | dict | None = None
     # Logprobs
@@ -253,6 +263,29 @@ class ChatCompletionRequest(BaseModel):
                     "different values; use max_completion_tokens only."
                 )
             self.max_tokens = self.max_completion_tokens
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_legacy_functions(self) -> "ChatCompletionRequest":
+        """Translate the pre-1.0 ``functions``/``function_call`` shape into
+        the modern ``tools``/``tool_choice`` slots so the route never has
+        to know about the legacy form. Modern fields take precedence when
+        a client supplies both — matches OpenAI's deprecation behavior."""
+        if self.functions and self.tools is None:
+            self.tools = [
+                ToolDefinition(type="function", function=fn) for fn in self.functions
+            ]
+        if self.function_call is not None and self.tool_choice is None:
+            fc = self.function_call
+            if isinstance(fc, str):
+                # "auto" / "none" map 1:1; anything else passes through and
+                # the existing tool_choice handler will 400 on it.
+                self.tool_choice = fc
+            elif isinstance(fc, dict) and "name" in fc:
+                self.tool_choice = {
+                    "type": "function",
+                    "function": {"name": fc["name"]},
+                }
         return self
 
 
