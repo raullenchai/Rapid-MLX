@@ -699,6 +699,83 @@ class TestExtractStreamingTokenLogprobs:
         chunk = self._make_chunk(logprobs=[], new_text="hi", new_token_ids=[])
         assert _extract_streaming_token_logprobs(chunk, MagicMock(), top_k=3) == []
 
+    def test_logprobs_works_with_real_generation_output(self):
+        """Pre-fix bug: ``_extract_streaming_token_logprobs`` reached for
+        ``chunk.new_token_ids`` but that attribute exists on the engine's
+        internal ``RequestOutput`` — NOT on the public ``GenerationOutput``
+        dataclass the route actually receives. Every ``logprobs=true``
+        request returned HTTP 500 with
+        ``AttributeError: 'GenerationOutput' object has no attribute 'new_token_ids'``.
+
+        The earlier ``SimpleNamespace``-based tests in this class masked
+        the bug — they fabricated ``new_token_ids`` on the chunk stub.
+        This test uses the REAL dataclass so a future change can't
+        re-introduce the AttributeError without breaking pinning.
+
+        Surfaced on 2026-05-23 fresh-PyPI v0.6.65 onboarding sweep
+        against ``unsloth/Qwen3.6-27B-MLX-8bit``.
+        """
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.service.helpers import _extract_streaming_token_logprobs
+
+        assert not hasattr(GenerationOutput, "new_token_ids"), (
+            "If new_token_ids was added to GenerationOutput, update this "
+            "test to also verify it's actually populated downstream — "
+            "the helper still needs the chunk.tokens fallback for any "
+            "engine path that forgets to populate the new field."
+        )
+
+        mock, arr = self._make_logprob_array()
+        tok = MagicMock()
+        tok.decode.return_value = "x"
+
+        chunk = GenerationOutput(
+            text="hi",
+            new_text="hi",
+            tokens=[7],
+            logprobs=mock,
+        )
+
+        with patch("numpy.array", return_value=arr):
+            result = _extract_streaming_token_logprobs(chunk, tok, top_k=3)
+
+        assert len(result) == 1, (
+            f"GenerationOutput chunk with one delta token must yield "
+            f"exactly one TokenLogProb entry; got {len(result)}. "
+            "Pre-fix this raised AttributeError → 500."
+        )
+
+    def test_logprobs_multi_token_real_generation_output(self):
+        """Multi-token delta on real ``GenerationOutput``: when an
+        upstream flush carries 3 tokens (``stream_interval > 1``), all 3
+        per-step logprob distributions must produce 3 TokenLogProb
+        entries. Pre-fix this also crashed via the missing attribute;
+        post-fix the ``chunk.tokens`` fallback supplies the per-step
+        token list correctly.
+        """
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.service.helpers import _extract_streaming_token_logprobs
+
+        mock_a, arr_a = self._make_logprob_array()
+        mock_b, arr_b = self._make_logprob_array()
+        mock_c, arr_c = self._make_logprob_array()
+        tok = MagicMock()
+        tok.decode.return_value = "x"
+
+        chunk = GenerationOutput(
+            text="abc",
+            new_text="abc",
+            tokens=[10, 11, 12],
+            logprobs=[mock_a, mock_b, mock_c],
+        )
+
+        with patch("numpy.array", side_effect=[arr_a, arr_b, arr_c]):
+            result = _extract_streaming_token_logprobs(chunk, tok, top_k=3)
+
+        assert len(result) == 3, (
+            f"3-token delta must yield 3 TokenLogProb entries; got {len(result)}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # _validate_tool_call_params
