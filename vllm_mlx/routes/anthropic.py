@@ -67,7 +67,7 @@ def _resolved_sampling_kwargs(openai_request) -> dict:
         # branches stay in sync. Note: the response stop_reason still
         # maps "stop" → "end_turn" (not "stop_sequence") because the
         # engine doesn't yet report WHICH stop fired; that's a follow-up.
-        "stop": openai_request.stop,
+        "stop": getattr(openai_request, "stop", None),
     }
     out.update(build_extended_sampling_kwargs(openai_request))
     return out
