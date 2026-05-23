@@ -16,8 +16,9 @@ crashed with ``KeyError`` / ``AttributeError`` on the missing field.
 Fix: when ``final_content is None and not tool_calls``, default to ``""``
 so the key is always serialized.
 
-Tool-call responses are exempt — OpenAI's spec permits ``content: null``
-when ``tool_calls`` is populated.
+Tool-call responses keep ``content: null`` (key present, value null) —
+matches OpenAI's own response shape. The route does a post-dump fixup to
+re-inject the ``null`` value that ``exclude_none=True`` would drop.
 """
 
 from fastapi import FastAPI
@@ -109,18 +110,22 @@ class TestEmptyContentKeyPresent:
         finally:
             reset_config()
 
-    def test_tool_call_response_content_may_be_null(self, monkeypatch):
-        """OpenAI exemption: when ``tool_calls`` is populated and the model
-        emitted no content tokens, ``content`` is allowed to be omitted
-        (matches OpenAI's own response shape). The fix MUST NOT clobber a
-        legitimate tool-call response by forcing ``content: ""`` — that
-        would imply the model produced an empty text response IN ADDITION
-        to the tool call, which is a different (and rare) semantic.
+    def test_tool_call_response_content_is_explicit_null(self, monkeypatch):
+        """OpenAI shape: when ``tool_calls`` is populated and the model
+        emitted no content tokens, ``content`` is present with value
+        ``null`` — NOT omitted, NOT empty string.
 
-        Pre-fix behavior already satisfied this (content stayed None →
-        dropped by ``exclude_none=True``); the test pins it as an invariant
-        so a future refactor moving the default doesn't silently break
-        tool clients."""
+        Verified against the live api.openai.com response shape (DeepSeek
+        round-3 finding): OpenAI emits ``"content": null`` so clients can
+        distinguish ``content is None`` from ``"content" not in msg``.
+        ``exclude_none=True`` would drop the key, so the route does a
+        post-dump fixup to re-inject ``null`` for any message that has
+        no content key.
+
+        The fix MUST NOT force ``content: ""`` for tool-call responses —
+        that would imply the model produced an empty text response IN
+        ADDITION to the tool call, a different (and rare) semantic.
+        """
         import vllm_mlx.routes.chat as chat_module
 
         # Sentinel: verify the monkeypatched parser actually fires. The
@@ -197,15 +202,19 @@ class TestEmptyContentKeyPresent:
             )
             msg = resp.json()["choices"][0]["message"]
             assert msg.get("tool_calls"), "tool_calls must be present"
-            # Pinned invariant: ``content`` is OMITTED entirely (matches OpenAI
-            # response shape — ``exclude_none=True`` drops the None field).
-            # Use ``not in`` rather than ``.get(...) is None`` so a future
-            # change from omitted to explicit ``null`` (or worse, ``""``)
-            # fails the test loudly (DeepSeek round-2 finding #2).
-            assert "content" not in msg, (
-                f"tool_call response must omit content key entirely; "
-                f"explicit null OR empty string would be a regression. "
-                f"got: {msg.get('content')!r}"
+            # Pinned invariant matches OpenAI: ``content`` key PRESENT with
+            # value ``null``. Use ``"content" in msg`` + explicit ``is None``
+            # so a future regression to either (a) key-omitted or (b) empty
+            # string fails the test loudly. DeepSeek round-3 caught the
+            # earlier "key-omitted" assertion as a spec misread.
+            assert "content" in msg, (
+                "tool_call response must include content key (OpenAI emits "
+                "'content: null', not key-absent). Pre-fixup omits it; the "
+                "route does a post-dump re-injection."
+            )
+            assert msg["content"] is None, (
+                f"tool_call response must have content=null; "
+                f"empty string would be a semantic regression. got: {msg['content']!r}"
             )
         finally:
             reset_config()

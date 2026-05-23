@@ -954,8 +954,20 @@ async def _create_chat_completion_impl(
         ],
         usage=_build_usage(output, reasoning_text),
     )
+    # OpenAI-compat fixup: even when ``tool_calls`` is set and ``content`` is
+    # legitimately null, OpenAI's own API emits ``"content": null`` (key
+    # present, value null) rather than omitting the key. ``exclude_none=True``
+    # would drop the key; re-inject it explicitly so clients that test
+    # ``"content" in msg`` (to distinguish null vs missing) see the same
+    # shape they see from api.openai.com. The non-tool-call branch above
+    # already defaults to ``""`` so this only runs for tool-call responses.
+    response_dict = chat_response.model_dump(exclude_none=True)
+    for _choice in response_dict.get("choices", ()):
+        _msg = _choice.get("message")
+        if isinstance(_msg, dict) and "content" not in _msg:
+            _msg["content"] = None
     return Response(
-        content=chat_response.model_dump_json(exclude_none=True),
+        content=json.dumps(response_dict, ensure_ascii=False),
         media_type="application/json",
     )
 
