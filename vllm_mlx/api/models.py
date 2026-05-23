@@ -13,7 +13,7 @@ import time
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
 
 # =============================================================================
 # Content Types (for multimodal messages)
@@ -188,6 +188,11 @@ class ChatCompletionRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
+    # OpenAI-canonical token cap since Sept 2024 (preferred over max_tokens for
+    # reasoning models; newer SDKs >=1.45 send only this field). Normalized to
+    # max_tokens by a model_validator so all downstream code keeps reading the
+    # single max_tokens field.
+    max_completion_tokens: int | None = None
     stream: bool = False
     stream_options: StreamOptions | None = (
         None  # Streaming options (include_usage, etc.)
@@ -228,6 +233,20 @@ class ChatCompletionRequest(BaseModel):
     chat_template_kwargs: dict | None = None
     # Number of completions (only n=1 supported)
     n: int | None = None
+
+    @model_validator(mode="after")
+    def _normalize_max_completion_tokens(self) -> "ChatCompletionRequest":
+        if self.max_completion_tokens is not None:
+            if (
+                self.max_tokens is not None
+                and self.max_tokens != self.max_completion_tokens
+            ):
+                raise ValueError(
+                    "Cannot specify both max_tokens and max_completion_tokens with "
+                    "different values; use max_completion_tokens only."
+                )
+            self.max_tokens = self.max_completion_tokens
+        return self
 
 
 class AssistantMessage(BaseModel):

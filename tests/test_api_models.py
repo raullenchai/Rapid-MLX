@@ -10,6 +10,7 @@ import json
 import time
 
 import pytest
+from pydantic import ValidationError
 
 from vllm_mlx.api.models import (
     AssistantMessage,
@@ -305,6 +306,37 @@ class TestChatCompletion:
             messages=[Message(role="user", content="Hello")],
         )
         assert req.logit_bias is None
+
+    def test_max_completion_tokens_normalized_to_max_tokens(self):
+        """OpenAI deprecated max_tokens for reasoning models in Sept 2024;
+        SDKs >=1.45 send max_completion_tokens only. Without the validator
+        Pydantic silently drops it and the request runs uncapped."""
+        req = ChatCompletionRequest(
+            model="test-model",
+            messages=[Message(role="user", content="hi")],
+            max_completion_tokens=42,
+        )
+        assert req.max_completion_tokens == 42
+        assert req.max_tokens == 42
+
+    def test_max_completion_tokens_equal_to_max_tokens_allowed(self):
+        req = ChatCompletionRequest(
+            model="test-model",
+            messages=[Message(role="user", content="hi")],
+            max_tokens=42,
+            max_completion_tokens=42,
+        )
+        assert req.max_tokens == 42
+
+    def test_max_completion_tokens_conflicts_with_max_tokens(self):
+        with pytest.raises(ValidationError) as excinfo:
+            ChatCompletionRequest(
+                model="test-model",
+                messages=[Message(role="user", content="hi")],
+                max_tokens=10,
+                max_completion_tokens=42,
+            )
+        assert "max_completion_tokens" in str(excinfo.value)
 
     def test_assistant_message_reasoning(self):
         msg = AssistantMessage(
