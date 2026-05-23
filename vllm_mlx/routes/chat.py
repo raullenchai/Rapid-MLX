@@ -1169,6 +1169,14 @@ async def stream_chat_completion(
             _u = _UsageOutput()
             _u.prompt_tokens = prompt_tokens
             _u.completion_tokens = completion_tokens
+            # ``text`` carries the accumulated content (NOT reasoning) so
+            # ``_build_usage`` can split ``completion_tokens`` between
+            # reasoning and content by character ratio. Without this,
+            # streaming usage chunks attribute 100% of the budget to
+            # reasoning when ``len(reasoning)//4 >= completion_tokens``
+            # (same root cause as the non-stream bug surfaced by the
+            # v0.6.66 hybrid onboarding sweep on qwen3.6-27b-8bit).
+            _u.text = processor.accumulated_text or ""
             usage_chunk = ChatCompletionChunk(
                 id=response_id,
                 created=_sse_created,

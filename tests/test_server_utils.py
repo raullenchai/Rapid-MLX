@@ -557,6 +557,45 @@ class TestBuildUsageReasoningBreakdown:
         usage = _build_usage(output, "")
         assert usage.completion_tokens_details is None
 
+    def test_streaming_usage_output_namespace_does_not_crash(self, monkeypatch):
+        """The streaming path in ``routes/chat.py`` synthesizes a
+        ``_UsageOutput`` ad-hoc namespace with only ``prompt_tokens`` and
+        ``completion_tokens`` (plus ``text`` since the content-aware
+        split fix). ``_build_usage`` must not ``AttributeError`` if
+        ``text`` is ever missing — pr_validate caught this on PR #453
+        when pydantic_ai streaming raised ``'_UsageOutput' object has
+        no attribute 'text'``. Defensive ``getattr`` in ``_build_usage``
+        keeps the route from 500-ing on any future synthetic-output
+        shape.
+        """
+        from vllm_mlx.service.helpers import _build_usage
+
+        self._setup_cfg(monkeypatch)
+
+        # Mimic the streaming-path namespace pre-fix (no ``.text``).
+        class _StreamUsage:
+            pass
+
+        out = _StreamUsage()
+        out.prompt_tokens = 50
+        out.completion_tokens = 100
+
+        # Must not raise.
+        usage = _build_usage(out, "some reasoning text here")
+        assert usage.completion_tokens == 100
+        # Without content_chars, fall back to "all tokens are reasoning"
+        # for this one synthetic-output path.
+        assert usage.completion_tokens_details.reasoning_tokens == 100
+
+        # Now with the ``.text`` attribute populated (post-fix shape).
+        out.text = "and here is the actual content body"
+        usage = _build_usage(out, "some reasoning text here")
+        rt = usage.completion_tokens_details.reasoning_tokens
+        assert rt < usage.completion_tokens, (
+            f"streaming usage with .text populated must leave room for "
+            f"content; got reasoning={rt} of {usage.completion_tokens}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # _inject_json_instruction

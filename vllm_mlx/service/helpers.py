@@ -470,7 +470,13 @@ def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
     total_completion = output.completion_tokens
     if reasoning_text and cfg.reasoning_parser_name:
         reasoning_chars = len(reasoning_text)
-        content_chars = len(output.text or "")
+        # ``output`` is normally ``GenerationOutput`` but the streaming
+        # path synthesizes a ``_UsageOutput`` namespace and must pass
+        # ``text`` explicitly. ``getattr`` keeps any other ad-hoc
+        # callers from raising ``AttributeError`` here — they just lose
+        # content-aware splitting and fall back to "all tokens are
+        # reasoning" (the prior pre-fix shape) for that one path.
+        content_chars = len(getattr(output, "text", "") or "")
         total_chars = reasoning_chars + content_chars
         if total_chars > 0:
             reasoning_tokens = round(total_completion * reasoning_chars / total_chars)
