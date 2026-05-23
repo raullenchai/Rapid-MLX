@@ -840,6 +840,13 @@ async def _create_chat_completion_impl(
     # Parse tool calls from output using configured parser
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(output.text, request)
 
+    # Honor ``parallel_tool_calls=false`` by capping the parsed list at one.
+    # No decoder-level enforcement exists, so this is a post-parse trim — the
+    # only reliable lever for OpenAI-compat clients that explicitly request a
+    # single tool call (see PR #132 for the longer-term FSM-constrained path).
+    if tool_calls and len(tool_calls) > 1 and request.parallel_tool_calls is False:
+        tool_calls = tool_calls[:1]
+
     # Validate tool call parameter values against schemas
     if tool_calls and request.tools:
         _validate_tool_call_params(tool_calls, request.tools)

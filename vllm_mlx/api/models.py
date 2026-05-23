@@ -210,6 +210,13 @@ class ChatCompletionRequest(BaseModel):
     # Tool calling
     tools: list[ToolDefinition] | None = None
     tool_choice: str | dict | None = None  # "auto", "none", or specific tool
+    # OpenAI extended spec — declared so Pydantic stops silently dropping it.
+    # When set to False, the route caps the parsed ``tool_calls`` list at
+    # length 1 in the response. Default None == True (model may emit
+    # multiple). Cannot rely on decoder-level enforcement; this is a
+    # post-generation truncation (the only reliable lever absent FSM
+    # constraints — see PR #132 / #442 for the decoder-level path).
+    parallel_tool_calls: bool | None = None
     # Structured output
     response_format: ResponseFormat | dict | None = None
     # Logprobs
