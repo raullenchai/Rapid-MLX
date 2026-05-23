@@ -59,6 +59,15 @@ def _resolved_sampling_kwargs(openai_request) -> dict:
     out = {
         "temperature": _resolve_temperature(openai_request.temperature),
         "top_p": _resolve_top_p(openai_request.top_p),
+        # ``stop_sequences`` from the Anthropic request flows through the
+        # adapter as ``openai_request.stop``. Both /v1/messages branches
+        # (non-stream + stream) were dropping this, so the engine ran
+        # uncapped and the model emitted past the user's stop tokens.
+        # Forward via the single sampling-kwargs helper so the two
+        # branches stay in sync. Note: the response stop_reason still
+        # maps "stop" → "end_turn" (not "stop_sequence") because the
+        # engine doesn't yet report WHICH stop fired; that's a follow-up.
+        "stop": getattr(openai_request, "stop", None),
     }
     out.update(build_extended_sampling_kwargs(openai_request))
     return out
