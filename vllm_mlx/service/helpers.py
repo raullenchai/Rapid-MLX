@@ -499,15 +499,27 @@ def _extract_streaming_token_logprobs(
     steps (under ``stream_interval > 1``, after PR #210). The downstream
     SSE consumer expects one entry per *generated token*, not per flush
     — so we must iterate, pairing each per-step distribution with the
-    corresponding ``new_token_ids`` entry. Without this iteration the
-    list-form gets passed to ``_extract_token_logprob`` as one giant
-    flattened array, and ``argmax`` reads from concatenated unrelated
-    vocab dims (#220).
+    corresponding token id. Without this iteration the list-form gets
+    passed to ``_extract_token_logprob`` as one giant flattened array,
+    and ``argmax`` reads from concatenated unrelated vocab dims (#220).
+
+    The token-id source is ``chunk.tokens`` (the delta-token list per
+    ``GenerationOutput`` — populated by ``BatchedEngine.stream_chat`` as
+    ``tokens=output.new_token_ids``). The pre-fix code reached for
+    ``chunk.new_token_ids`` directly, but that attribute exists on
+    ``RequestOutput`` (engine internal) and was never added to
+    ``GenerationOutput`` (engine public surface) — so every real
+    streaming chunk raised ``AttributeError`` and the route returned
+    HTTP 500 on any ``logprobs=true`` request. The earlier
+    ``SimpleNamespace``-based tests masked this because they fabricated
+    a ``new_token_ids`` attribute on the chunk stub — pinned now by
+    ``test_logprobs_works_with_real_generation_output`` against the
+    actual dataclass.
     """
     if chunk.logprobs is None or not getattr(chunk, "new_text", None):
         return []
     lps = chunk.logprobs if isinstance(chunk.logprobs, list) else [chunk.logprobs]
-    tids = chunk.new_token_ids or ([chunk.tokens[-1]] if chunk.tokens else [0])
+    tids = getattr(chunk, "new_token_ids", None) or chunk.tokens or [0]
     return [
         _extract_token_logprob(lp, tid, tokenizer, top_k) for lp, tid in zip(lps, tids)
     ]
