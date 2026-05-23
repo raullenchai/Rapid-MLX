@@ -964,3 +964,83 @@ class TestConfigureLogging:
         assert _logging.getLogger("httpx").level == _logging.NOTSET
         server.configure_logging("INFO")
         assert _logging.getLogger("httpx").level == _logging.WARNING
+
+
+# ---------------------------------------------------------------------------
+# GenerationOutput field-ordering positional-compat regression
+# ---------------------------------------------------------------------------
+
+
+class TestGenerationOutputFieldOrder:
+    """Pin the dataclass field order so the engine's public-surface
+    positional-construction contract stays stable.
+
+    Codex round-1 review of v0.6.66 (PR #443) caught ``raw_text`` and
+    ``reasoning_text`` inserted at positions 2 and 3 of the dataclass,
+    silently rebinding ``GenerationOutput("text", [1, 2])`` so that
+    ``[1, 2]`` landed in ``raw_text`` (which expects ``str``) and
+    ``tokens`` defaulted to ``[]``. The fix moves both new fields to
+    the END of the dataclass after ``channel``. These tests pin that
+    the contract stays as: positions 0..9 are the v0.6.65 surface
+    (``text, tokens, prompt_tokens, completion_tokens, finish_reason,
+    new_text, finished, logprobs, channel``), and anything added after
+    that must be appended, never inserted.
+    """
+
+    def test_positional_text_tokens_binding(self):
+        """The minimal positional form — ``(text, tokens)`` — must bind
+        as it always did: text → ``.text``, list[int] → ``.tokens``.
+        """
+        out = GenerationOutput("hello", [1, 2, 3])
+        assert out.text == "hello"
+        assert out.tokens == [1, 2, 3]
+        # All optional fields take their defaults.
+        assert out.raw_text == ""
+        assert out.reasoning_text == ""
+        assert out.prompt_tokens == 0
+        assert out.completion_tokens == 0
+
+    def test_positional_full_v065_surface(self):
+        """Full positional construction of the v0.6.65 surface must
+        still bind to the right fields. Caller order:
+        text, tokens, prompt_tokens, completion_tokens, finish_reason,
+        new_text, finished, logprobs, channel.
+        """
+        out = GenerationOutput(
+            "T",
+            [9, 8],
+            10,
+            20,
+            "stop",
+            "delta",
+            True,
+            None,
+            "content",
+        )
+        assert out.text == "T"
+        assert out.tokens == [9, 8]
+        assert out.prompt_tokens == 10
+        assert out.completion_tokens == 20
+        assert out.finish_reason == "stop"
+        assert out.new_text == "delta"
+        assert out.finished is True
+        assert out.logprobs is None
+        assert out.channel == "content"
+        # New fields default to empty when not passed.
+        assert out.raw_text == ""
+        assert out.reasoning_text == ""
+
+    def test_field_order_appends_new_fields_at_end(self):
+        """Make the rule machine-checkable: ``raw_text`` and
+        ``reasoning_text`` must be the LAST two fields. If a refactor
+        ever reorders them back into the middle, this test fails loud
+        instead of producing silent positional-bind regressions.
+        """
+        from dataclasses import fields
+
+        names = [f.name for f in fields(GenerationOutput)]
+        assert names[-2:] == ["raw_text", "reasoning_text"], (
+            f"raw_text and reasoning_text must remain the LAST two fields "
+            f"of GenerationOutput to preserve positional-arg compatibility "
+            f"for the v0.6.65 surface. Current order: {names}"
+        )

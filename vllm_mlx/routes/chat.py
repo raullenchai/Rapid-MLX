@@ -313,16 +313,28 @@ async def _create_chat_completion_impl(
     # leave tools untouched — ``"required"`` enforcement is tracked
     # separately under #442 (needs decoder-level constraints, PR #132).
     tc = request.tool_choice
-    if tc is not None and request.tools:
-        if tc == "none":
-            request.tools = None
-        elif isinstance(tc, dict) and tc.get("type") == "function":
+    if tc is not None:
+        # Validation runs even when ``tools`` is empty/None: the OpenAI spec
+        # treats ``tool_choice`` with a specific function but no matching
+        # ``tools`` entry as a malformed request (400), not a silent
+        # fall-through. Codex round-1 review of #446 flagged the previous
+        # guard ``if tc is not None and request.tools:`` as silently
+        # accepting these requests.
+        if isinstance(tc, dict) and tc.get("type") == "function":
             fn = tc.get("function") or {}
             target = fn.get("name")
             if not target:
                 raise HTTPException(
                     status_code=400,
                     detail=("tool_choice with type='function' requires function.name"),
+                )
+            if not request.tools:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"tool_choice references function {target!r} but the "
+                        "request has no 'tools' array"
+                    ),
                 )
             filtered = [t for t in request.tools if t.function.get("name") == target]
             if not filtered:
@@ -334,6 +346,8 @@ async def _create_chat_completion_impl(
                     ),
                 )
             request.tools = filtered
+        elif tc == "none" and request.tools:
+            request.tools = None
 
     # Save original messages (clean dicts) for cloud routing BEFORE
     # local mutations (extract_multimodal_content, developer→system, suffix injection).

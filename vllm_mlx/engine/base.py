@@ -18,27 +18,6 @@ class GenerationOutput:
     """
 
     text: str
-    # Pre-cleaning model output, preserved so the route's reasoning parser
-    # can see harmony channel markers that ``clean_output_text`` strips out
-    # of ``text``. Without this, ``HarmonyReasoningParser.extract_reasoning``
-    # on the non-stream + no-tool path runs on already-cleaned text and
-    # returns ``(None, None)`` — leaking the analysis channel into
-    # ``content`` and emitting empty ``reasoning_content`` to clients.
-    # Empty string default keeps callers that don't populate it working.
-    raw_text: str = ""
-    # Token-level reasoning extraction, populated by the engine via
-    # ``OutputRouter.feed_sequence`` for tokenizers it supports
-    # (Harmony / Gemma 4 / Qwen3 / DeepSeek R1 — see
-    # ``output_router.from_tokenizer``). This is the AUTHORITATIVE source
-    # of reasoning_content for non-streaming responses: it tracks channel
-    # state at the token level instead of regex-parsing the decoded text
-    # after the fact, so truncated outputs (``finish_reason=length``,
-    # no ``<|end|>`` terminator) still produce correct
-    # ``reasoning_content`` without leaking the analysis body into
-    # ``content``. Empty string means the engine didn't populate it
-    # (no router, or router failed) — routes fall back to the
-    # text-based ``ReasoningParser`` in that case. Issue #442.
-    reasoning_text: str = ""
     tokens: list[int] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -50,6 +29,31 @@ class GenerationOutput:
     logprobs: Any = None
     # Semantic channel: "content", "reasoning", "tool_call", or None
     channel: str | None = None
+    # NOTE: keep the following two fields LAST. They were added after v0.6.65
+    # and inserting them in the middle silently rebound positional
+    # constructor args for downstream callers (text, tokens, ...) — see
+    # codex round-1 review of the v0.6.66 release. New optional fields go
+    # at the end of this dataclass to preserve positional compatibility.
+    # Pre-cleaning model output, preserved so the route's reasoning parser
+    # can see harmony channel markers that ``clean_output_text`` strips out
+    # of ``text``. Without this, ``HarmonyReasoningParser.extract_reasoning``
+    # on the non-stream + no-tool path runs on already-cleaned text and
+    # returns ``(None, None)`` — leaking the analysis channel into
+    # ``content`` and emitting empty ``reasoning_content`` to clients.
+    raw_text: str = ""
+    # Token-level reasoning extraction, populated by the engine via
+    # ``OutputRouter.feed_sequence`` for tokenizers it supports
+    # (Harmony / Gemma 4 / Qwen3 / DeepSeek R1 — see
+    # ``output_router.from_tokenizer``). AUTHORITATIVE source of
+    # reasoning_content for non-streaming responses: it tracks channel
+    # state at the token level instead of regex-parsing the decoded text
+    # after the fact, so truncated outputs (``finish_reason=length``,
+    # no ``<|end|>`` terminator) still produce correct
+    # ``reasoning_content`` without leaking the analysis body into
+    # ``content``. Empty string means the engine didn't populate it
+    # (no router, or router failed) — routes fall back to the
+    # text-based ``ReasoningParser`` in that case. Issue #442.
+    reasoning_text: str = ""
 
 
 class BaseEngine(ABC):

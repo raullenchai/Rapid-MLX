@@ -264,3 +264,59 @@ def test_tool_choice_none_with_no_tools_is_noop():
         },
     )
     assert resp.status_code == 200, resp.text
+
+
+def test_tool_choice_specific_function_with_no_tools_returns_400():
+    """``tool_choice: {type:function, function:{name:X}}`` with no
+    ``tools`` array (or empty) is malformed — must return 400 instead
+    of silently passing through. Codex round-1 review of v0.6.66
+    caught the earlier guard ``if tc is not None and request.tools:``
+    skipping validation entirely for the no-tools case. Pin the fix
+    so future refactors don't reintroduce silent acceptance.
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    # No ``tools`` key at all.
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "do it"}],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 400
+    assert "get_weather" in resp.text
+    # Empty ``tools`` array — same outcome.
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "do it"}],
+            "tools": [],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 400
+    assert "get_weather" in resp.text
+
+
+def test_tool_choice_function_missing_name_with_no_tools_returns_400():
+    """The ``function:{}`` malformed-payload check must also fire when
+    there are no ``tools`` — the validation is unconditional on the
+    ``tool_choice`` shape, not gated by ``tools`` truthiness.
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "do it"}],
+            "tool_choice": {"type": "function", "function": {}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 400
