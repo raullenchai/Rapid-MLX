@@ -906,6 +906,11 @@ async def _create_chat_completion_impl(
         if response_format and final_content:
             final_content = extract_json_from_response(final_content)
 
+    # Build logprobs for response if requested
+    choice_logprobs = None
+    if want_logprobs and token_logprobs_list:
+        choice_logprobs = ChoiceLogProbs(content=token_logprobs_list)
+
     # OpenAI spec: ``message.content`` must always be present in non-tool-call
     # responses, even when empty (string ``""``). Without this default, the
     # ``model_dump_json(exclude_none=True)`` below drops the key entirely when
@@ -914,14 +919,16 @@ async def _create_chat_completion_impl(
     # off ``choices[0].message.content`` (LangChain, Vercel AI SDK) crash with
     # ``KeyError`` / ``AttributeError`` on the missing field. When ``tool_calls``
     # is populated, ``content`` may legitimately be null (OpenAI spec); only
-    # default to empty when there's no tool_call either.
+    # default to empty when there's no tool_call either. Placed immediately
+    # before the AssistantMessage construction so it sees the definitive
+    # ``tool_calls`` state — guards against a future refactor that mutates
+    # ``tool_calls`` between the parse/cap/validate block above and this point.
+    # NOTE: the streaming path (``stream_chat_completion`` below) intentionally
+    # does NOT apply this default — OpenAI's SSE spec has clients accumulate
+    # ``content`` from per-delta chunks; the role chunk itself has no content
+    # key, and well-behaved clients use ``.get("content", "")`` on each delta.
     if final_content is None and not tool_calls:
         final_content = ""
-
-    # Build logprobs for response if requested
-    choice_logprobs = None
-    if want_logprobs and token_logprobs_list:
-        choice_logprobs = ChoiceLogProbs(content=token_logprobs_list)
 
     chat_response = ChatCompletionResponse(
         model=_resolve_model_name(request.model),

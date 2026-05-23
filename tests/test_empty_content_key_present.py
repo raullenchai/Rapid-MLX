@@ -109,6 +109,86 @@ class TestEmptyContentKeyPresent:
         finally:
             reset_config()
 
+    def test_tool_call_response_content_may_be_null(self, monkeypatch):
+        """OpenAI exemption: when ``tool_calls`` is populated and the model
+        emitted no content tokens, ``content`` is allowed to be ``null``
+        (or omitted via ``exclude_none``). The fix MUST NOT clobber a
+        legitimate tool-call response by forcing ``content: ""``.
+
+        Pre-fix behavior already satisfied this (content stayed None →
+        dropped); the test pins it as an invariant so a future refactor
+        moving the default doesn't silently break tool clients."""
+        import vllm_mlx.routes.chat as chat_module
+
+        def _fake_parse(text, request):
+            from vllm_mlx.api.models import FunctionCall, ToolCall
+
+            return (
+                "",
+                [
+                    ToolCall(
+                        id="call_x",
+                        function=FunctionCall(name="get_weather", arguments="{}"),
+                    )
+                ],
+            )
+
+        monkeypatch.setattr(chat_module, "_parse_tool_calls_with_parser", _fake_parse)
+
+        class _ToolCallEngine:
+            preserve_native_tool_format = False
+            is_mllm = False
+            supports_guided_generation = False
+            tokenizer = None
+
+            def build_prompt(self, messages, tools=None, enable_thinking=None):
+                return "PROMPT"
+
+            async def chat(self, messages, **kwargs):
+                return GenerationOutput(
+                    text="",
+                    new_text="",
+                    tokens=[10, 11, 12],
+                    prompt_tokens=8,
+                    completion_tokens=3,
+                    finished=True,
+                    finish_reason="stop",
+                    channel=None,
+                )
+
+        client = _client(engine_cls=_ToolCallEngine)
+        try:
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test-model",
+                    "messages": [{"role": "user", "content": "weather?"}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    "max_tokens": 16,
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            msg = resp.json()["choices"][0]["message"]
+            assert msg.get("tool_calls"), "tool_calls must be present"
+            # OpenAI permits content to be null OR omitted when tool_calls is set.
+            # Critical invariant: it MUST NOT be the empty string "" — that
+            # would imply the model produced an empty text response IN ADDITION
+            # to the tool call, which is a different (and rare) semantic.
+            assert msg.get("content") in (None,), (
+                f"tool_call response must keep content as null (or omit it); "
+                f"empty string would be a semantic regression. got: {msg.get('content')!r}"
+            )
+        finally:
+            reset_config()
+
     def test_normal_text_response_unchanged(self):
         """The fix only affects the empty-text path; normal text round-trips."""
 
