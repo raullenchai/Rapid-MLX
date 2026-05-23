@@ -671,7 +671,8 @@ class MLLMScheduler:
             except (ValueError, RuntimeError) as e:
                 # Oversized prompt or other unrecoverable error — fail all
                 # running requests instead of retrying forever.
-                logger.error(f"Batch generation failed: {e}")
+                err_msg = str(e)
+                logger.error(f"Batch generation failed: {err_msg}")
                 error_ids = set(self.running.keys())
 
                 # Remove from batch generator BEFORE scheduler cleanup so
@@ -685,16 +686,32 @@ class MLLMScheduler:
                     if uids_to_remove:
                         self.batch_generator.remove(uids_to_remove)
 
+                # Differentiate CLIENT errors (image/video fetch failures)
+                # from SERVER errors (oversized prompt, runtime crash).
+                # Client errors get a non-None ``error`` field so
+                # ``stream_outputs`` can raise — letting the route layer
+                # convert to HTTP 400 instead of the previous silent
+                # 200+empty-content+finish_reason=length pattern that
+                # caused #457 (Anthropic SDK clients + curl saw a 200 OK
+                # with no signal that the image fetch had failed).
+                #
+                # Non-client errors keep the legacy
+                # finish_reason="length"+empty-text behavior to avoid
+                # breaking callers that handle oversized-prompt as a soft
+                # truncation rather than a hard failure.
+                is_client_error = (
+                    "Failed to process image" in err_msg
+                    or "Failed to process video" in err_msg
+                )
                 # Create error outputs (queue delivery deferred to caller).
-                # finish_reason="length" — OpenAI spec-compliant aborted
-                # signal; see scheduler.py for full rationale.
                 for request_id in error_ids:
                     output.outputs.append(
                         RequestOutput(
                             request_id=request_id,
                             output_text="",
                             finished=True,
-                            finish_reason="length",
+                            error=err_msg if is_client_error else None,
+                            finish_reason="error" if is_client_error else "length",
                         )
                     )
                 output.finished_request_ids = error_ids
@@ -958,6 +975,14 @@ class MLLMScheduler:
                 if output is None:
                     finished_normally = True
                     break
+                if output.error:
+                    # Surface scheduler-side client errors (image/video
+                    # fetch failures, etc.) as exceptions so the route
+                    # layer can map to a meaningful HTTP status (#457).
+                    # Mark finished BEFORE raising so the finally block
+                    # doesn't double-abort what's already cleaned up.
+                    finished_normally = True
+                    raise ValueError(output.error)
                 yield output
                 if output.finished:
                     finished_normally = True

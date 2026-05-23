@@ -995,6 +995,87 @@ class TestMLLMSchedulerIntegration:
             await scheduler.stop()
 
 
+class TestMLLMSchedulerErrorPropagation:
+    """Pin the contract that scheduler client errors (image/video fetch
+    failures) surface to the route as exceptions — NOT as silent
+    HTTP 200 + empty content + finish_reason=length.
+
+    Regression for #457: prior behavior was that the scheduler's
+    ``except (ValueError, RuntimeError)`` around ``batch_generator.next()``
+    caught image-fetch errors raised from ``mllm_batch_generator.py:485``
+    and synthesized a fake-success RequestOutput with empty text and
+    ``finish_reason="length"``. The route layer then returned 200 OK,
+    making client errors indistinguishable from model refusals or
+    aggressive max_tokens caps.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stream_outputs_raises_when_request_output_has_error(self):
+        """When a queued RequestOutput carries ``error``, stream_outputs
+        must raise ValueError instead of yielding the fake-success output."""
+        import asyncio
+
+        from vllm_mlx.mllm_scheduler import MLLMScheduler
+        from vllm_mlx.request import RequestOutput
+
+        sched = MLLMScheduler.__new__(MLLMScheduler)
+        sched.output_queues = {}
+
+        req_id = "req-test-image-fail"
+        queue: asyncio.Queue = asyncio.Queue()
+        sched.output_queues[req_id] = queue
+
+        await queue.put(
+            RequestOutput(
+                request_id=req_id,
+                output_text="",
+                finished=True,
+                error="Failed to process image: 404 Client Error",
+                finish_reason="error",
+            )
+        )
+
+        with pytest.raises(
+            ValueError, match=r"Failed to process image: 404 Client Error"
+        ):
+            async for _ in sched.stream_outputs(req_id):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_stream_outputs_yields_normally_when_no_error(self):
+        """Non-error outputs MUST continue to flow through stream_outputs
+        unchanged — the error check is additive, not a behavior swap."""
+        import asyncio
+
+        from vllm_mlx.mllm_scheduler import MLLMScheduler
+        from vllm_mlx.request import RequestOutput
+
+        sched = MLLMScheduler.__new__(MLLMScheduler)
+        sched.output_queues = {}
+
+        req_id = "req-test-normal"
+        queue: asyncio.Queue = asyncio.Queue()
+        sched.output_queues[req_id] = queue
+
+        await queue.put(
+            RequestOutput(
+                request_id=req_id,
+                output_text="hello",
+                new_text="hello",
+                finished=True,
+                finish_reason="stop",
+            )
+        )
+
+        outputs = []
+        async for output in sched.stream_outputs(req_id):
+            outputs.append(output)
+
+        assert len(outputs) == 1
+        assert outputs[0].finish_reason == "stop"
+        assert outputs[0].error is None
+
+
 # Run tests
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

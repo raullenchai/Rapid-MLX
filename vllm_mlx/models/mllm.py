@@ -809,14 +809,20 @@ class MLXMultimodalLM:
         return self.processor.tokenizer
 
     def _prepare_images(self, images: list) -> list[str]:
-        """Process image inputs and return local file paths."""
+        """Process image inputs and return local file paths.
+
+        Image-fetch failures are raised (not swallowed) so the route layer
+        can convert to HTTP 400 — the silent-failure pattern (continue with
+        zero images) caused #457 where requests hit upstream 4xx returned
+        200 with empty completion + finish_reason=length.
+        """
         processed = []
         for img in images:
             try:
                 path = process_image_input(img)
-                processed.append(path)
             except Exception as e:
-                logger.warning(f"Failed to process image: {e}")
+                raise ValueError(f"Failed to process image: {e}") from e
+            processed.append(path)
         return processed
 
     def _prepare_video(

@@ -202,6 +202,12 @@ async def create_anthropic_message(
                 raise HTTPException(
                     status_code=400, detail=f"Chat template error: {err_msg}"
                 )
+            # Multimodal fetch failures → 400 (parity with chat route, #457).
+            if (
+                "Failed to process image" in err_msg
+                or "Failed to process video" in err_msg
+            ):
+                raise HTTPException(status_code=400, detail=err_msg)
             raise
         if output is None:
             return Response(status_code=499)

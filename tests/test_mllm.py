@@ -200,6 +200,61 @@ class TestImageProcessing:
         result = process_image_input({"url": test_image_path})
         assert Path(result).exists()
 
+    def test_prepare_images_raises_on_fetch_failure(self, monkeypatch):
+        """MLLMModel._prepare_images must raise (not swallow) image-fetch errors.
+
+        Regression for #457: image-fetch errors used to be caught with
+        ``try/except + logger.warning + continue``, leaving the request to
+        proceed with zero images. VLMs then returned HTTP 200 + empty
+        completion + ``finish_reason=length`` (or hallucinated content from
+        no input), which was indistinguishable from a model refusal.
+
+        The fix raises ``ValueError("Failed to process image: ...")``, which
+        the chat/anthropic route exception handlers convert to HTTP 400 with
+        a descriptive detail.
+        """
+        from vllm_mlx import models
+        from vllm_mlx.models.mllm import MLXMultimodalLM
+
+        def _boom(img):
+            raise RuntimeError("404 Client Error: NOT FOUND for url: http://x/y.jpg")
+
+        monkeypatch.setattr(models.mllm, "process_image_input", _boom)
+
+        # Construct minimally — _prepare_images doesn't touch self at all,
+        # so __new__ avoids the heavy __init__ (no model load).
+        instance = MLXMultimodalLM.__new__(MLXMultimodalLM)
+
+        with pytest.raises(ValueError, match="Failed to process image"):
+            instance._prepare_images(["http://x/y.jpg"])
+
+    def test_prepare_images_propagates_first_failure(self, monkeypatch):
+        """First image failure raises immediately — no partial-image fallback.
+
+        OpenAI's GPT-4V fails strict on any image error. Mirroring that
+        prevents the silent-partial-failure mode where some images load but
+        others get skipped and the model answers based on incomplete input.
+        """
+        from vllm_mlx import models
+        from vllm_mlx.models.mllm import MLXMultimodalLM
+
+        call_count = {"n": 0}
+
+        def _boom_on_second(img):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return "/tmp/ok.jpg"
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(models.mllm, "process_image_input", _boom_on_second)
+        instance = MLXMultimodalLM.__new__(MLXMultimodalLM)
+
+        with pytest.raises(ValueError, match="Failed to process image"):
+            instance._prepare_images(["ok", "bad"])
+
+        # Failed on second image (after first succeeded) — strict semantics.
+        assert call_count["n"] == 2
+
 
 class TestVideoProcessing:
     """Test video processing functions."""

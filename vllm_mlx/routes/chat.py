@@ -782,6 +782,13 @@ async def _create_chat_completion_impl(
             raise HTTPException(
                 status_code=400, detail=f"Chat template error: {err_msg}"
             )
+        # Image / video fetch failures surface from multimodal_processor
+        # (and models/mllm.py:_prepare_images) as ValueError with a
+        # "Failed to process image|video" prefix. Convert to 400 so VLM
+        # clients get a clear error instead of a 200 with empty completion
+        # (#457).
+        if "Failed to process image" in err_msg or "Failed to process video" in err_msg:
+            raise HTTPException(status_code=400, detail=err_msg)
         raise
     finally:
         if cfg.gc_control and gc_was_enabled:

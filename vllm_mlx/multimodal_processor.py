@@ -121,16 +121,21 @@ class MultimodalProcessor:
         from mlx_vlm.utils import prepare_inputs
 
         # Process raw images
+        # Image-fetch failures used to be swallowed with logger.warning + continue,
+        # leaving the request to proceed with an empty image list. The model would
+        # then either emit an empty completion (case in #457) or hallucinate plausible
+        # content from no input. Raise to surface a clean HTTP 400 at the route layer
+        # — mirrors the pattern already used by mllm_batch_generator.py:485.
         all_images = []
         if images:
             for img in images:
                 try:
                     path = process_image_input(img)
-                    all_images.append(path)
                 except Exception as e:
-                    logger.warning(f"Failed to process image: {e}")
+                    raise ValueError(f"Failed to process image: {e}") from e
+                all_images.append(path)
 
-        # Extract frames from videos
+        # Extract frames from videos — same semantics as images above.
         if videos:
             for video in videos:
                 try:
@@ -141,10 +146,10 @@ class MultimodalProcessor:
                         max_frames=video_max_frames,
                     )
                     frame_paths = save_frames_to_temp(frames)
-                    all_images.extend(frame_paths)
-                    logger.debug(f"Extracted {len(frame_paths)} frames from video")
                 except Exception as e:
-                    logger.warning(f"Failed to process video: {e}")
+                    raise ValueError(f"Failed to process video: {e}") from e
+                all_images.extend(frame_paths)
+                logger.debug(f"Extracted {len(frame_paths)} frames from video")
 
         # Determine add_special_tokens based on model type
         if self.config and self.config.model_type in ["gemma3", "gemma3n"]:
