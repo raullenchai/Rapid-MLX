@@ -537,7 +537,9 @@ class TestBuildUsageReasoningBreakdown:
         )
         usage = _build_usage(output, "reason")
         rt = usage.completion_tokens_details.reasoning_tokens
-        assert rt >= 1, f"reasoning_tokens must be >= 1 when reasoning happened, got {rt}"
+        assert rt >= 1, (
+            f"reasoning_tokens must be >= 1 when reasoning happened, got {rt}"
+        )
         assert rt < usage.completion_tokens, (
             f"reasoning_tokens ({rt}) must leave room for content "
             f"(completion_tokens={usage.completion_tokens})"
