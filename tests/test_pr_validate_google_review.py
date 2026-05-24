@@ -27,7 +27,10 @@ from scripts.pr_validate.context import Context
 from scripts.pr_validate.steps.cl_description_quality import (
     CLDescriptionQualityStep,
 )
-from scripts.pr_validate.steps.deepseek_review import _split_findings_by_tier
+from scripts.pr_validate.steps.deepseek_review import (
+    _extract_findings,
+    _split_findings_by_tier,
+)
 
 # ---------------------------------------------------------------------------
 # _split_findings_by_tier
@@ -116,6 +119,37 @@ class TestSplitFindingsByTier:
         assert len(nits) == 1
         assert blocking[0].startswith("a.py")
         assert nits[0].startswith("b.py")
+
+    def test_pipeline_extract_then_split_realistic_model_output(self):
+        """End-to-end pipeline test: raw model review text →
+        ``_extract_findings`` → ``_split_findings_by_tier``. The two
+        helpers must compose correctly — if ``_extract_findings`` ever
+        starts preserving the leading list number, the tier-prefix
+        regex would silently fail to match and EVERY finding would
+        default to BLOCKING (defeating tiering). This test pins the
+        contract between the two helpers."""
+        review = (
+            "1. [BLOCKING] vllm_mlx/routes/chat.py:918 — `assert isinstance(_msg, dict)`\n"
+            "   is stripped under `python -O`, leaving the guard inert in production.\n"
+            "2. [NIT] tests/test_x.py:42 — assertion is loose; use `result.status_code`.\n"
+            "3. [BLOCKING] vllm_mlx/engine.py:55 — race condition on shared dict.\n"
+            "4. [NIT] tests/test_y.py:9 — comment could be clearer.\n"
+        )
+        findings = _extract_findings(review)
+        assert len(findings) == 4, (
+            f"_extract_findings produced {len(findings)} findings, expected 4"
+        )
+
+        blocking, nits = _split_findings_by_tier(findings)
+        # The contract: 2 blocking + 2 nits — NOT 4 blocking (which
+        # would mean leading numbers leaked through and broke tiering).
+        assert len(blocking) == 2, (
+            f"got {len(blocking)} blocking — leading list number likely "
+            f"leaked: {blocking!r}"
+        )
+        assert len(nits) == 2, f"got {len(nits)} nits, expected 2: {nits!r}"
+        assert "chat.py" in blocking[0]
+        assert "engine.py" in blocking[1]
 
 
 # ---------------------------------------------------------------------------
