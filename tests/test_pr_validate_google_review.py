@@ -153,6 +153,48 @@ class TestCLDescriptionQualityTitle:
     @pytest.mark.parametrize(
         "title",
         [
+            "fix: memory leak",  # bare = "memory leak" (2 words)
+            "feat: new endpoint",  # bare = "new endpoint" (2 words)
+            "fix(routes): null deref",  # bare = "null deref" (2 words)
+        ],
+    )
+    def test_two_word_non_blacklisted_title_still_fails(self, title: str):
+        """Policy choice: even non-blacklisted 2-word titles fail because
+        the repo's actual title corpus is 5-10 words and Google's
+        "informative for future grep" principle wants more specificity.
+        E.g. `fix: memory leak` doesn't tell future searchers where the
+        leak was — `fix(routes): memory leak on websocket close` does.
+        This test pins the threshold so a future relaxation is intentional,
+        not accidental."""
+        result = CLDescriptionQualityStep().run(_ctx(title=title, body="Why: x"))
+        assert result.status == "fail", f"expected fail for title {title!r}"
+        assert "short" in result.summary.lower() or "weak" in result.summary.lower()
+
+    def test_breaking_change_marker_is_stripped(self):
+        """Conventional-commit `!:` marks a breaking change (e.g.
+        `feat!: drop python 3.10 support`). The prefix-strip regex must
+        handle the `!` so the substantive title is what gets evaluated
+        — otherwise the bad-pattern blacklist would never apply to
+        breaking-change titles."""
+        # Good breaking-change title — 5 words after strip, should pass.
+        result = CLDescriptionQualityStep().run(
+            _ctx(title="feat!: drop python 3.10 support", body="Why: x")
+        )
+        assert result.status == "pass"
+
+        # Bad breaking-change title — bare is "wip", should fail.
+        result = CLDescriptionQualityStep().run(_ctx(title="feat!: wip", body="Why: x"))
+        assert result.status == "fail"
+
+        # Scoped breaking change: `feat(api)!: ...` should also strip.
+        result = CLDescriptionQualityStep().run(
+            _ctx(title="feat(api)!: rename foo endpoint to bar", body="Why: x")
+        )
+        assert result.status == "pass"
+
+    @pytest.mark.parametrize(
+        "title",
+        [
             "fix bug",
             "fix build",
             "fix tests",

@@ -68,9 +68,10 @@ _BAD_TITLE_PATTERNS = (
 )
 
 # Conventional-commit prefix (e.g. ``fix(routes):``, ``feat:``,
-# ``docs(benchmarks):``) is stripped before the bad-title check so the
-# substantive title is what we evaluate.
-_CC_PREFIX = re.compile(r"^[a-z]+(?:\([^)]+\))?:\s*", re.IGNORECASE)
+# ``docs(benchmarks):``, ``feat!:`` for breaking changes) is stripped
+# before the bad-title check so the substantive title is what we
+# evaluate. The ``!?`` permits the breaking-change marker spec uses.
+_CC_PREFIX = re.compile(r"^[a-z]+(?:\([^)]+\))?!?:\s*", re.IGNORECASE)
 
 # Rationale signals — any of these in the body satisfies the
 # "explain WHY" rule. Order = how cheap they are to look for.
