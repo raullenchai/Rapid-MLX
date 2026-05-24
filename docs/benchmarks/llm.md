@@ -74,6 +74,29 @@ rapid-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit --prompts 5 --m
 
 Average speedup: 1.79x
 
+## DFlash Speculative Decoding Results
+
+### DFlash (M3 Ultra, 512GB) — Qwen3.6-35B-A3B-8bit
+
+Community benchmark contributed by [@moc375](https://github.com/moc375) in [#472](https://github.com/raullenchai/Rapid-MLX/issues/472).
+Model: `Qwen3.6-35B-A3B-8bit` (8-bit, group_size=64). Comparison vs the
+no-spec-decode baseline on the same hardware.
+
+| Output Tokens | Baseline (tok/s) | DFlash (tok/s) | Speedup | Accept Rate |
+|---------------|-----------------:|---------------:|--------:|------------:|
+| 256           | 74.72            | 194.80         | **2.61×** | 85.16%   |
+| 512           | 73.76            | 214.78         | **2.91×** | 86.91%   |
+| 1024          | 72.94            | 235.75         | **3.24×** | 88.87%   |
+| 2048          | 72.66            | 234.52         | **3.23×** | 88.77%   |
+| 4096          | 71.84            | 189.89         | **2.64×** | 84.69%   |
+
+Notes:
+- Accept rate stays in the **84–89%** band across all output lengths, peaking at 1024 tokens.
+- Throughput peaks at **1024–2048** tokens, then dips at 4096 — consistent with KV-cache pressure as the rolling window fills.
+- Memory delta (baseline → DFlash) tracks the draft model + verification overhead; see the source benchmark for the exact figure.
+
+`Qwen3.6-35B-A3B-8bit` ships with DFlash enabled by default (`✨` in the alias table); these numbers reflect the out-of-the-box experience.
+
 ## Prefix Cache Results
 
 ### Prefix Cache (M4 Max, 128GB)
