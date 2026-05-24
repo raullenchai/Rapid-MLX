@@ -57,12 +57,11 @@ _BAD_TITLE_PATTERNS = (
     re.compile(r"^various\s+changes\.?$"),
     re.compile(r"^various\s+fixes\.?$"),
     re.compile(r"^tweaks?\.?$"),
-    re.compile(r"^update\.?$"),
+    re.compile(r"^updates?\.?$"),  # covers "update" and "updates"
     re.compile(r"^patch\.?$"),
     re.compile(r"^wip\.?$"),
     re.compile(r"^cleanup\.?$"),
     re.compile(r"^changes\.?$"),
-    re.compile(r"^updates?\.?$"),
     re.compile(r"^misc\.?$"),
     re.compile(r"^minor\s+(?:fix|change|update)\.?$"),
 )
