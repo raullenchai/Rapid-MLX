@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from .base import Step
 from .context import Context
 from .scorecard import render_scorecard, verdict
+from .steps.cl_description_quality import CLDescriptionQualityStep
 from .steps.deepseek_review import DeepSeekReviewStep
 from .steps.fetch import FetchStep
 from .steps.full_unit import FullUnitStep
@@ -30,6 +31,7 @@ from .steps.test_plan_check import TestPlanCheckStep
 STEPS: list[Step] = [
     FetchStep(),  # 0 — fetch PR + diff + classify blast radius
     TestPlanCheckStep(),  # 0.5 — unchecked test-plan items block merge (#427 lesson)
+    CLDescriptionQualityStep(),  # 0.7 — title + body rationale (Google eng-practices)
     DeepSeekReviewStep(),  # 6 — adversarial review (moved to front)
     SupplyChainStep(),  # 1 — pip-audit, license, install hooks
     LintStep(),  # 2 — ruff check + format

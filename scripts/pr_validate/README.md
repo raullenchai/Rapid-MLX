@@ -23,6 +23,8 @@ python3.12 -m scripts.pr_validate <PR#> -v
 | # | step | gate | runtime |
 |---|---|---|---|
 | 0 | `fetch` | always (fail-fast) | ~3s |
+| 0.5 | `test_plan_check` | always | <1s |
+| 0.7 | `cl_description_quality` | always (skip via `PR_VALIDATE_SKIP_DESC=1`) | <1s |
 | 6 | `deepseek_review` | always (skip if no API) | 30–90s |
 | 1 | `supply_chain` | always | ~5s |
 | 2 | `lint` | when diff has .py | ~3s |
@@ -30,12 +32,51 @@ python3.12 -m scripts.pr_validate <PR#> -v
 | 4 | `full_unit` | blast ≥ medium | ~25s |
 | 5 | `stress_e2e_bench` | blast == high | 5–10min |
 
-(DeepSeek review goes second by design: get cheap critical thinking
-*before* spending 10 minutes on tests.)
+(DeepSeek review goes near the front by design: get cheap critical
+thinking *before* spending 10 minutes on tests. The two cheapest
+description-quality gates run first so a bad title or empty body
+fails in under a second without burning the DeepSeek budget.)
 
 ## Verdict
 
 Strict — any single `fail` or `error` blocks merge. `skip` is neutral.
+
+The DeepSeek step uses [BLOCKING]/[NIT] tiering (see "Code Review
+Philosophy" below): only `[BLOCKING]` findings fail the gate; `[NIT]`
+findings surface in the scorecard so the author can decide.
+
+## Code Review Philosophy (Google eng-practices)
+
+The pipeline follows [Google's code-review standard](https://github.com/google/eng-practices/blob/master/review/reviewer/standard.md):
+
+> "Reviewers should favor approving a CL once it is in a state where
+> it definitely improves the overall code health, even if the CL
+> isn't perfect."
+
+Concretely we encode three principles:
+
+1. **Tiered findings.** The DeepSeek prompt requires every finding
+   to be prefixed `[BLOCKING]` (concrete bug, security issue, broken
+   contract, false-positive test) or `[NIT]` (style, future-proofing,
+   alternative naming). Only `[BLOCKING]` fails the gate. Default to
+   `[NIT]` if unsure. Caps: at most 5 BLOCKING + 5 NIT per review,
+   forcing the model to triage instead of pad. Untagged findings
+   default to `[BLOCKING]` so a forgotten prefix can't silently
+   downgrade a real bug.
+
+2. **Convergence over perfectionism.** Without tiering, DeepSeek
+   spirals: every round surfaces new style preferences and the PR
+   never merges. PR #467 hit this — 5 rounds, each producing fresh
+   "could be more defensive" findings. The tiered prompt converges
+   in 2–3 rounds because nits are visible but don't block.
+
+3. **Description quality is enforced, not advised.** The
+   `cl_description_quality` step rejects PRs with empty bodies, bad
+   titles (`fix bug`, `wip`, `update`, `tweaks`, …), and bodies with
+   no rationale signal (no `## Why` heading, no `Closes #NNN`, no
+   inline `Why:`). Google: "Should be informative enough that
+   future code searchers don't have to read your CL." Override with
+   `PR_VALIDATE_SKIP_DESC=1` for trivial dep-bumps; don't normalize.
 
 ## Blast radius
 
@@ -66,12 +107,39 @@ Wraps `gh pr view --json` + `gh pr diff`. Saves the diff to
 `<work_dir>/pr.diff`. Refuses CLOSED / MERGED / DIRTY (merge-conflict)
 PRs by design — re-open or rebase first.
 
-### `deepseek_review` (step 6, runs second)
+### `test_plan_check` (step 0.5)
+
+Reads the PR body for a `## Test plan` checklist. If any item is
+unchecked (`- [ ]`) the step fails — the author hasn't finished what
+they said they'd do. Lesson from #427.
+
+### `cl_description_quality` (step 0.7)
+
+Cheap title + body hygiene gate built from
+[Google's CL-descriptions guidance](https://github.com/google/eng-practices/blob/master/review/developer/cl-descriptions.md).
+Three checks:
+
+1. **Title**: not empty, ≥3 words after a conventional-commit prefix
+   strip (`fix(routes):`, `feat:`, …), and not in the bad-pattern
+   blacklist (`fix bug`, `wip`, `update`, `tweaks`, `cleanup`,
+   `various changes`, …).
+2. **Body exists**: empty body fails.
+3. **Body has rationale**: at least one of — a `## Why` /
+   `## Summary` / `## Rationale` / `## Motivation` / `## Background`
+   heading, an inline `Why:` line, a `Closes #` / `Fixes #` / `Refs #`
+   link, or a `because`-clause.
+
+Override: `PR_VALIDATE_SKIP_DESC=1` for two-line dep-bumps where
+rationale is genuinely overkill.
+
+### `deepseek_review` (step 6, runs early)
 
 Sends the diff to DeepSeek V4 Pro with the prompt at
-`prompts/deepseek_review.md`. Findings go in the scorecard. Skips if
-`PR_VALIDATE_NO_DEEPSEEK=1` or no API key. Skips on network failure
-(don't block PRs on a flaky API).
+`prompts/deepseek_review.md`. The prompt requires `[BLOCKING]`/`[NIT]`
+tiering on every finding (see "Code Review Philosophy" above). Only
+`[BLOCKING]` findings fail the gate; `[NIT]`s surface in the
+scorecard. Skips if `PR_VALIDATE_NO_DEEPSEEK=1` or no API key. Skips
+on network failure (don't block PRs on a flaky API).
 
 API key resolution: `$DEEPSEEK_API_KEY` → fallback to dev key in code
 (see `memory/knowledge/deepseek_api_key.md`).

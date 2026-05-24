@@ -192,21 +192,51 @@ class DeepSeekReviewStep(Step):
                 artifacts=[str(review_path), str(usage_path)],
             )
 
-        # Findings present → fail the step in strict mode. Maintainer
-        # decides per-finding whether to act; the scorecard surfaces
-        # them all in the details. (Some reviewers may want a
-        # human-decides flow here; that's what looking at the artifact
-        # is for. The step's role is to surface, not to triage.)
-        summary = f"{len(findings)} finding(s)"
+        # Tier findings: [BLOCKING] fails the gate, [NIT] surfaces but
+        # passes. This implements Google's "approve when improvement is
+        # clear" — see prompts/deepseek_review.md for the philosophy
+        # and the recurring-spiral failure mode this addresses.
+        blocking, nits = _split_findings_by_tier(findings)
+
+        truncation_note = ""
         if omitted_files:
-            summary += f" (diff truncated — {len(omitted_files)} file(s) not reviewed)"
+            truncation_note = (
+                f" (diff truncated — {len(omitted_files)} file(s) not reviewed)"
+            )
         elif truncated:
-            summary += " (diff truncated — single large file, partial review)"
+            truncation_note = " (diff truncated — single large file, partial review)"
+
+        # Build a labelled scorecard list — keep tier badges visible
+        # so a maintainer scanning the scorecard can decide instantly
+        # which findings to act on.
+        labelled = [f"[BLOCKING] {b}" for b in blocking] + [f"[NIT] {n}" for n in nits]
+
+        if not blocking:
+            # Only NITs → pass. Surface them in the scorecard for the
+            # author to consider, but don't block merge.
+            summary = (
+                f"no blocking findings ({len(nits)} nit(s) surfaced)" + truncation_note
+            )
+            return StepResult(
+                name=self.name,
+                status="pass",
+                summary=summary,
+                findings=labelled,
+                details=(
+                    "**Full review:**\n\n"
+                    f"{content}\n\n"
+                    f"_(Saved to `{review_path}`. "
+                    f"Token usage: {usage.get('total_tokens', '?')})_"
+                ),
+                artifacts=[str(review_path), str(usage_path)],
+            )
+
+        summary = f"{len(blocking)} blocking + {len(nits)} nit(s)" + truncation_note
         return StepResult(
             name=self.name,
             status="fail",
             summary=summary,
-            findings=findings,
+            findings=labelled,
             details=(
                 "**Full review:**\n\n"
                 f"{content}\n\n"
@@ -511,3 +541,35 @@ def _extract_findings(text: str) -> list[str]:
             out.append(f)
             seen.add(f)
     return out
+
+
+# Tier prefixes the prompt asks for. ``[BLOCKING]`` is what fails the
+# gate; ``[NIT]`` surfaces in the scorecard but doesn't block merge
+# (Google eng-practices "approve when improvement clear" — see
+# prompts/deepseek_review.md). Untagged findings default to BLOCKING
+# so the model can't accidentally downgrade real bugs by forgetting
+# the prefix.
+_BLOCKING_PREFIX = re.compile(r"^\s*\[BLOCKING\]\s*", re.IGNORECASE)
+_NIT_PREFIX = re.compile(r"^\s*\[NIT\]\s*", re.IGNORECASE)
+
+
+def _split_findings_by_tier(findings: list[str]) -> tuple[list[str], list[str]]:
+    """Partition findings into (blocking, nit) by their tier prefix.
+
+    The prompt requires every finding to start with ``[BLOCKING]`` or
+    ``[NIT]``. Untagged findings default to BLOCKING so a forgotten
+    prefix can't silently downgrade a real bug. The tier prefix is
+    stripped from the returned strings for cleaner scorecard rendering.
+    """
+    blocking: list[str] = []
+    nits: list[str] = []
+    for f in findings:
+        if _NIT_PREFIX.match(f):
+            nits.append(_NIT_PREFIX.sub("", f, count=1).strip())
+        elif _BLOCKING_PREFIX.match(f):
+            blocking.append(_BLOCKING_PREFIX.sub("", f, count=1).strip())
+        else:
+            # Untagged → treat as BLOCKING. Preserve the original text
+            # so the reviewer sees the model forgot the prefix.
+            blocking.append(f)
+    return blocking, nits
