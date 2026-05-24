@@ -259,6 +259,25 @@ class TestCLDescriptionQualityBody:
         )
         assert result.status == "pass"
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "  Why: the api shape changed",  # indented under no parent
+            "  - Why: bullet-nested rationale",  # bullet-nested
+            "    **Why:** indented bold form",  # 4-space indent (under list)
+            "  ## Why\n  indented heading",  # rare but legal
+        ],
+    )
+    def test_indented_rationale_signals_pass(self, body: str):
+        """Indented `Why:` / `**Why:**` / `## Why` lines (inside bullets,
+        block quotes, or list items) must still satisfy the gate.
+        Without leading-whitespace tolerance the regex misses valid PRs
+        whose rationale is nested under a parent bullet."""
+        result = CLDescriptionQualityStep().run(
+            _ctx(title="feat: add the new helper", body=body)
+        )
+        assert result.status == "pass", f"expected pass for body {body!r}"
+
 
 class TestCLDescriptionQualityOverride:
     """The ``PR_VALIDATE_SKIP_DESC=1`` escape hatch — for two-line
@@ -272,5 +291,19 @@ class TestCLDescriptionQualityOverride:
 
     def test_no_override_runs_normally(self, monkeypatch):
         monkeypatch.delenv("PR_VALIDATE_SKIP_DESC", raising=False)
+        result = CLDescriptionQualityStep().run(_ctx(title="wip", body=""))
+        assert result.status == "fail"
+
+    def test_override_env_zero_does_not_skip(self, monkeypatch):
+        """``PR_VALIDATE_SKIP_DESC=0`` should keep the gate enabled —
+        users naturally write ``=0`` to mean "off" but ``os.environ.get``
+        treats it as truthy. The step uses ``env_truthy`` to match the
+        rest of the codebase's truthiness convention."""
+        monkeypatch.setenv("PR_VALIDATE_SKIP_DESC", "0")
+        result = CLDescriptionQualityStep().run(_ctx(title="wip", body=""))
+        assert result.status == "fail"
+
+    def test_override_env_false_does_not_skip(self, monkeypatch):
+        monkeypatch.setenv("PR_VALIDATE_SKIP_DESC", "false")
         result = CLDescriptionQualityStep().run(_ctx(title="wip", body=""))
         assert result.status == "fail"

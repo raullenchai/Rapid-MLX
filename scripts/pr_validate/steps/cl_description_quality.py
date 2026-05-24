@@ -39,11 +39,10 @@ that the norm.
 
 from __future__ import annotations
 
-import os
 import re
 
 from ..base import Step, StepResult
-from ..context import Context
+from ..context import Context, env_truthy
 
 # Title patterns that fail. Matched against the LOWERCASED title with
 # leading conventional-commit prefix (e.g. ``fix:`` / ``feat(routes):``)
@@ -75,13 +74,18 @@ _CC_PREFIX = re.compile(r"^[a-z]+(?:\([^)]+\))?:\s*", re.IGNORECASE)
 
 # Rationale signals — any of these in the body satisfies the
 # "explain WHY" rule. Order = how cheap they are to look for.
+# Note: the leading ``[\s>*+\-]*`` tolerates whitespace and common
+# markdown list/quote prefixes (``- Why:``, ``* **Why:**``, ``> ##
+# Why``) so an indented or nested rationale line still counts.
+# ``re.MULTILINE`` makes ``^`` match each line's start.
+_LINE_PREFIX = r"[\s>*+\-]*"
 _RATIONALE_SIGNALS = (
     re.compile(
-        r"^#+\s*(?:why|summary|rationale|motivation|background|context)\b",
+        rf"^{_LINE_PREFIX}#+\s*(?:why|summary|rationale|motivation|background|context)\b",
         re.IGNORECASE | re.MULTILINE,
     ),
-    re.compile(r"^\*\*Why:\*\*", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"^Why:\s", re.IGNORECASE | re.MULTILINE),
+    re.compile(rf"^{_LINE_PREFIX}\*\*Why:\*\*", re.IGNORECASE | re.MULTILINE),
+    re.compile(rf"^{_LINE_PREFIX}Why:\s", re.IGNORECASE | re.MULTILINE),
     re.compile(r"\b(?:closes|fixes|resolves|refs)\s+#\d+", re.IGNORECASE),
     re.compile(r"\bbecause\b", re.IGNORECASE),
 )
@@ -94,7 +98,10 @@ class CLDescriptionQualityStep(Step):
     description = "PR title + body have rationale (Google eng-practices)"
 
     def run(self, ctx: Context) -> StepResult:
-        if os.environ.get(_OVERRIDE_ENV):
+        # Use env_truthy so ``PR_VALIDATE_SKIP_DESC=0`` correctly leaves
+        # the gate enabled — bare ``os.environ.get`` would return the
+        # string "0" which is truthy in Python and would silently skip.
+        if env_truthy(_OVERRIDE_ENV):
             return StepResult(
                 name=self.name,
                 status="skip",
