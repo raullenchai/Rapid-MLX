@@ -518,6 +518,96 @@ class TestRequestOutputCollectorThreadSafety:
         with RequestOutputCollector._waiting_lock:
             RequestOutputCollector._waiting_consumers = 0
 
+    def test_merge_outputs_preserves_cached_tokens(self):
+        """Producer-ahead aggregation must propagate ``cached_tokens``
+        through the merge ctor. The collector's default aggregating
+        mode rebuilds ``RequestOutput`` positionally from ``existing``
+        and ``new``; any new field added to ``RequestOutput`` that
+        isn't threaded into the merge silently zeroes out under load
+        (engine produces faster than the consumer drains). Pin the
+        propagation so future additions don't regress it.
+        """
+        from vllm_mlx.output_collector import RequestOutputCollector
+        from vllm_mlx.request import RequestOutput
+
+        collector = RequestOutputCollector(aggregate=True)
+        existing = RequestOutput(
+            request_id="r1",
+            new_token_ids=[1],
+            new_text="hi",
+            prompt_tokens=100,
+            completion_tokens=1,
+            cached_tokens=64,
+        )
+        new = RequestOutput(
+            request_id="r1",
+            new_token_ids=[2],
+            new_text=" there",
+            prompt_tokens=100,
+            completion_tokens=2,
+            cached_tokens=64,
+        )
+        merged = collector._merge_outputs(existing, new)
+        assert merged.cached_tokens == 64
+        assert merged.new_token_ids == [1, 2]
+        assert merged.completion_tokens == 2
+
+
+class TestEngineCoreStreamBufferMerge:
+    """Pin the second per-request-field propagation hazard:
+    ``EngineCore._merge_stream_buffer`` rebuilds ``RequestOutput``
+    positionally to accumulate per-step deltas when
+    ``stream_interval > 1``. Any new field on ``RequestOutput`` that
+    isn't threaded into the rebuild silently zeroes out on every
+    flush. Sibling to
+    ``TestRequestOutputCollectorThreadSafety::test_merge_outputs_preserves_cached_tokens``
+    for the other rebuild path.
+    """
+
+    def test_merge_into_empty_buffer_preserves_cached_tokens(self):
+        from vllm_mlx.engine_core import EngineCore
+        from vllm_mlx.request import RequestOutput
+
+        chunk = RequestOutput(
+            request_id="r1",
+            new_token_ids=[7],
+            new_text="hi",
+            prompt_tokens=200,
+            completion_tokens=1,
+            cached_tokens=128,
+        )
+        merged = EngineCore._merge_stream_buffer(None, chunk)
+        assert merged.cached_tokens == 128
+        assert merged.new_token_ids == [7]
+        assert merged.new_text == "hi"
+
+    def test_merge_into_existing_buffer_preserves_cached_tokens(self):
+        from vllm_mlx.engine_core import EngineCore
+        from vllm_mlx.request import RequestOutput
+
+        prev = RequestOutput(
+            request_id="r1",
+            new_token_ids=[1, 2],
+            new_text="ab",
+            prompt_tokens=200,
+            completion_tokens=2,
+            cached_tokens=128,
+        )
+        chunk = RequestOutput(
+            request_id="r1",
+            new_token_ids=[3],
+            new_text="c",
+            prompt_tokens=200,
+            completion_tokens=3,
+            cached_tokens=128,
+        )
+        merged = EngineCore._merge_stream_buffer(prev, chunk)
+        assert merged.cached_tokens == 128
+        # Per-step deltas concat; cumulative counts take the latest.
+        assert merged.new_token_ids == [1, 2, 3]
+        assert merged.new_text == "abc"
+        assert merged.completion_tokens == 3
+
 
 class TestRequestTimeoutField:
     """Test the new timeout field in request models."""

@@ -239,6 +239,13 @@ class RequestOutput:
     # runtime error caught in the engine loop). HTTP layer converts this to
     # 503. Plain finish reasons (stop / length / etc.) leave this as None.
     error: str | None = None
+    # Number of prompt tokens served from the prefix cache for this
+    # request. Mirrors ``Request.cached_tokens`` (set by the scheduler
+    # during prefix-cache lookup) so the engine and API layers don't
+    # need to reach back into the live ``Request`` to report cache
+    # effectiveness. Appended at the end of the dataclass so positional
+    # constructor args for the pre-existing fields keep their indices.
+    cached_tokens: int = 0
 
     @property
     def usage(self) -> dict[str, int]:
@@ -247,4 +254,5 @@ class RequestOutput:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.prompt_tokens + self.completion_tokens,
+            "cached_tokens": self.cached_tokens,
         }

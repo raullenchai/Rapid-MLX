@@ -468,6 +468,7 @@ async def _stream_anthropic_messages(
     think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
     prompt_tokens = 0
     completion_tokens = 0
+    cached_tokens = 0
 
     current_block_type = None
     block_index = 0
@@ -502,6 +503,8 @@ async def _stream_anthropic_messages(
             prompt_tokens = output.prompt_tokens
         if hasattr(output, "completion_tokens") and output.completion_tokens:
             completion_tokens = output.completion_tokens
+        if hasattr(output, "cached_tokens") and output.cached_tokens:
+            cached_tokens = output.cached_tokens
 
         # Capture engine-surfaced structured tool calls (HarmonyStreamingRouter
         # via openai-harmony's StreamableParser). The delta_text on these
@@ -732,10 +735,26 @@ async def _stream_anthropic_messages(
 
     stop_reason = "tool_use" if tool_calls else "end_turn"
 
+    # Anthropic-side cache fields mirror what the non-streaming adapter
+    # at ``api/anthropic_adapter.openai_to_anthropic`` produces. Per
+    # Anthropic's docs the three input fields are mutually exclusive
+    # (``total_input = input + cache_read + cache_creation``), so
+    # ``input_tokens`` is the *non-cached* share, NOT the whole prompt.
+    # ``cache_creation_input_tokens`` is intentionally omitted —
+    # Anthropic uses it for tokens written between explicit
+    # ``cache_control`` breakpoints (billed 1.25x), which has no
+    # analog on a local engine. Cache field stays absent when the
+    # engine didn't report a hit (e.g. dflash, MLLM).
+    usage_payload: dict[str, int] = {
+        "input_tokens": max(0, prompt_tokens - cached_tokens),
+        "output_tokens": completion_tokens,
+    }
+    if cached_tokens:
+        usage_payload["cache_read_input_tokens"] = cached_tokens
     message_delta = {
         "type": "message_delta",
         "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-        "usage": {"input_tokens": prompt_tokens, "output_tokens": completion_tokens},
+        "usage": usage_payload,
     }
     yield f"event: message_delta\ndata: {json.dumps(message_delta)}\n\n"
 

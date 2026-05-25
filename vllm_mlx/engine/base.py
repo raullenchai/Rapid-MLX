@@ -29,11 +29,15 @@ class GenerationOutput:
     logprobs: Any = None
     # Semantic channel: "content", "reasoning", "tool_call", or None
     channel: str | None = None
-    # NOTE: keep the following two fields LAST. They were added after v0.6.65
-    # and inserting them in the middle silently rebound positional
+    # NOTE: keep the following fields LAST, in the order they were added.
+    # ``raw_text`` and ``reasoning_text`` were added after v0.6.65 and
+    # inserting them in the middle silently rebound positional
     # constructor args for downstream callers (text, tokens, ...) — see
     # codex round-1 review of the v0.6.66 release. New optional fields go
-    # at the end of this dataclass to preserve positional compatibility.
+    # at the end of this dataclass to preserve positional compatibility,
+    # and existing trailing fields stay pinned in their original order
+    # (enforced by ``tests/test_server_utils.py::
+    # TestGenerationOutputFieldOrder``).
     # Pre-cleaning model output, preserved so the route's reasoning parser
     # can see harmony channel markers that ``clean_output_text`` strips out
     # of ``text``. Without this, ``HarmonyReasoningParser.extract_reasoning``
@@ -70,6 +74,15 @@ class GenerationOutput:
     # router did not surface structured calls; the route falls back to
     # the legacy regex-based parser path.
     tool_calls: list[dict] | None = None
+    # Number of input prompt tokens served from the prefix cache
+    # (``Request.cached_tokens`` from the scheduler). Surfaced through
+    # ``Usage.prompt_tokens_details.cached_tokens`` on the OpenAI
+    # response and ``cache_read_input_tokens`` on the Anthropic adapter
+    # so cost-tracking clients can attribute prefix-cache hits without
+    # tokenizer-side estimation. 0 when the engine doesn't run through
+    # the prefix-cache path (guided generation, dflash speculative
+    # server) — semantically "no cache hits", not "unknown".
+    cached_tokens: int = 0
 
 
 class BaseEngine(ABC):

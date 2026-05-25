@@ -1033,6 +1033,7 @@ class BatchedEngine(BaseEngine):
             completion_tokens=output.completion_tokens,
             finish_reason=output.finish_reason,
             tool_calls=structured_tool_calls,
+            cached_tokens=output.cached_tokens,
         )
 
     async def stream_generate(
@@ -1133,6 +1134,7 @@ class BatchedEngine(BaseEngine):
                 finished=output.finished,
                 finish_reason=output.finish_reason,
                 logprobs=output.logprobs,
+                cached_tokens=output.cached_tokens,
             )
 
     async def chat(
@@ -1443,6 +1445,7 @@ class BatchedEngine(BaseEngine):
             logprobs=logprobs,
             channel=_channel_name(event.channel),
             tool_calls=tool_calls,
+            cached_tokens=source.cached_tokens,
         )
 
     def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:
@@ -1456,6 +1459,7 @@ class BatchedEngine(BaseEngine):
             finish_reason=source.finish_reason,
             logprobs=source.logprobs,
             channel=None,
+            cached_tokens=source.cached_tokens,
         )
 
     def _finalize_output_router(

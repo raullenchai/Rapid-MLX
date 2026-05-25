@@ -1202,24 +1202,171 @@ class TestGenerationOutputFieldOrder:
 
     def test_field_order_appends_new_fields_at_end(self):
         """Make the rule machine-checkable: new fields added after
-        v0.6.65 (``raw_text``, ``reasoning_text``, ``tool_calls``) must
-        be APPENDED in chronological order at the end of the dataclass.
-        If a refactor ever reorders them back into the middle, this
-        test fails loud instead of producing silent positional-bind
-        regressions for downstream callers that still construct
-        GenerationOutput positionally.
+        v0.6.65 (``raw_text``, ``reasoning_text``, ``tool_calls``,
+        ``cached_tokens``) must be APPENDED in chronological order at
+        the end of the dataclass. If a refactor ever reorders them
+        back into the middle, this test fails loud instead of producing
+        silent positional-bind regressions for downstream callers that
+        still construct ``GenerationOutput`` positionally.
         """
         from dataclasses import fields
 
         names = [f.name for f in fields(GenerationOutput)]
         # The original v0.6.65-and-earlier surface ends at ``channel``.
-        # ``raw_text``, ``reasoning_text``, and ``tool_calls`` were
-        # appended in order and must stay in their append positions.
+        # ``raw_text``, ``reasoning_text``, ``tool_calls``, and
+        # ``cached_tokens`` were appended in order and must stay in
+        # their append positions.
         legacy_tail_idx = names.index("channel")
         appended = names[legacy_tail_idx + 1 :]
-        assert appended == ["raw_text", "reasoning_text", "tool_calls"], (
+        assert appended == [
+            "raw_text",
+            "reasoning_text",
+            "tool_calls",
+            "cached_tokens",
+        ], (
             f"new GenerationOutput fields must be APPENDED in order "
-            f"(raw_text → reasoning_text → tool_calls) to preserve "
-            f"positional-arg compatibility for the pre-v0.6.65 surface. "
-            f"Current trailing fields after ``channel``: {appended}"
+            f"(raw_text → reasoning_text → tool_calls → cached_tokens) "
+            f"to preserve positional-arg compatibility for the "
+            f"pre-v0.6.65 surface. Current trailing fields after "
+            f"``channel``: {appended}"
         )
+
+
+# ---------------------------------------------------------------------------
+# prefix-cache hit reporting (prompt_tokens_details.cached_tokens)
+# ---------------------------------------------------------------------------
+
+
+class TestGetUsageCachedTokens:
+    """Pin the OpenAI ``prompt_tokens_details.cached_tokens`` surface
+    for ``get_usage``. Clients that read prefix-cache hits off the usage
+    block (OpenAI's cookbook recipe, OpenRouter pass-through, downstream
+    cost trackers) rely on this field being populated when the engine
+    served any prompt tokens from cache, and absent when it didn't.
+    """
+
+    def test_cached_tokens_populated_when_nonzero(self):
+        from vllm_mlx.service.helpers import get_usage
+
+        output = GenerationOutput(
+            text="hi",
+            prompt_tokens=200,
+            completion_tokens=50,
+            cached_tokens=128,
+        )
+        usage = get_usage(output)
+        assert usage.prompt_tokens == 200
+        assert usage.completion_tokens == 50
+        assert usage.prompt_tokens_details is not None
+        assert usage.prompt_tokens_details.cached_tokens == 128
+
+    def test_prompt_tokens_details_absent_when_no_cache_hit(self):
+        """Distinguish "no hit" (field omitted) from "0 reported"
+        (field present, value 0). Matches what OpenAI emits when the
+        request is below the 1024-token cache threshold — the
+        ``prompt_tokens_details`` object simply isn't included.
+        """
+        from vllm_mlx.service.helpers import get_usage
+
+        output = GenerationOutput(
+            text="hi", prompt_tokens=200, completion_tokens=50, cached_tokens=0
+        )
+        usage = get_usage(output)
+        assert usage.prompt_tokens_details is None
+
+    def test_default_generation_output_has_no_prompt_details(self):
+        from vllm_mlx.service.helpers import get_usage
+
+        usage = get_usage(GenerationOutput(text=""))
+        assert usage.prompt_tokens_details is None
+
+
+class TestBuildUsageCachedTokens:
+    """Pin the OpenAI ``prompt_tokens_details.cached_tokens`` surface
+    for ``_build_usage``. Mirrors ``TestGetUsageCachedTokens`` plus the
+    reasoning-breakdown branch — the cache field is orthogonal to the
+    reasoning split and must coexist with it.
+    """
+
+    def test_cached_tokens_alongside_reasoning_breakdown(self, monkeypatch):
+        from vllm_mlx.config import get_config
+        from vllm_mlx.service.helpers import _build_usage
+
+        cfg = get_config()
+        monkeypatch.setattr(cfg, "reasoning_parser_name", "harmony", raising=False)
+
+        output = GenerationOutput(
+            text="answer",
+            prompt_tokens=400,
+            completion_tokens=120,
+            cached_tokens=256,
+        )
+        usage = _build_usage(output, "thought" * 20)
+
+        assert usage.completion_tokens_details is not None
+        assert usage.completion_tokens_details.reasoning_tokens > 0
+        assert usage.prompt_tokens_details is not None
+        assert usage.prompt_tokens_details.cached_tokens == 256
+
+    def test_cached_tokens_in_no_reasoning_branch(self, monkeypatch):
+        from vllm_mlx.config import get_config
+        from vllm_mlx.service.helpers import _build_usage
+
+        cfg = get_config()
+        monkeypatch.setattr(cfg, "reasoning_parser_name", None, raising=False)
+
+        output = GenerationOutput(
+            text="answer",
+            prompt_tokens=400,
+            completion_tokens=120,
+            cached_tokens=256,
+        )
+        usage = _build_usage(output, None)
+
+        assert usage.completion_tokens_details is None
+        assert usage.prompt_tokens_details is not None
+        assert usage.prompt_tokens_details.cached_tokens == 256
+
+    def test_no_cache_hit_leaves_details_absent_with_reasoning(self, monkeypatch):
+        from vllm_mlx.config import get_config
+        from vllm_mlx.service.helpers import _build_usage
+
+        cfg = get_config()
+        monkeypatch.setattr(cfg, "reasoning_parser_name", "harmony", raising=False)
+
+        output = GenerationOutput(
+            text="answer",
+            prompt_tokens=50,
+            completion_tokens=10,
+            cached_tokens=0,
+        )
+        usage = _build_usage(output, "thinking")
+        assert usage.prompt_tokens_details is None
+        assert usage.completion_tokens_details is not None
+
+    def test_synthetic_streaming_namespace_without_field(self, monkeypatch):
+        """The chat streaming path builds a ``_UsageOutput`` namespace
+        in ``routes/chat.py`` and calls ``_build_usage`` with it. Pre-
+        patch namespaces (or third-party engine wrappers) may not carry
+        ``cached_tokens`` — the builder must fall back gracefully to
+        "no cache hit reported" instead of raising AttributeError.
+        """
+        from vllm_mlx.config import get_config
+        from vllm_mlx.service.helpers import _build_usage
+
+        cfg = get_config()
+        monkeypatch.setattr(cfg, "reasoning_parser_name", None, raising=False)
+
+        class _UsageOutput:
+            pass
+
+        u = _UsageOutput()
+        u.prompt_tokens = 100
+        u.completion_tokens = 50
+        u.text = "answer"
+        # NOTE: no ``cached_tokens`` attribute set.
+
+        usage = _build_usage(u, None)
+        assert usage.prompt_tokens == 100
+        assert usage.completion_tokens == 50
+        assert usage.prompt_tokens_details is None

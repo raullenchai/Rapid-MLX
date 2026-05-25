@@ -327,6 +327,12 @@ class CompletionTokensDetails(BaseModel):
     reasoning_tokens: int = 0
 
 
+class PromptTokensDetails(BaseModel):
+    """Breakdown of prompt token usage (OpenAI-compatible)."""
+
+    cached_tokens: int = 0
+
+
 class Usage(BaseModel):
     """Token usage statistics."""
 
@@ -334,6 +340,7 @@ class Usage(BaseModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     completion_tokens_details: CompletionTokensDetails | None = None
+    prompt_tokens_details: PromptTokensDetails | None = None
 
 
 class ChatCompletionResponse(BaseModel):

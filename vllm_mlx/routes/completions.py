@@ -14,6 +14,7 @@ from ..api.models import (
     CompletionChoice,
     CompletionRequest,
     CompletionResponse,
+    PromptTokensDetails,
     Usage,
 )
 from ..config import get_config
@@ -95,6 +96,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         choices = []
         total_completion_tokens = 0
         total_prompt_tokens = 0
+        total_cached_tokens = 0
 
         extended_kwargs = build_extended_sampling_kwargs(request)
 
@@ -125,6 +127,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             total_prompt_tokens += (
                 output.prompt_tokens if hasattr(output, "prompt_tokens") else 0
             )
+            total_cached_tokens += getattr(output, "cached_tokens", 0) or 0
 
         elapsed = time.perf_counter() - start_time
         tokens_per_sec = total_completion_tokens / elapsed if elapsed > 0 else 0
@@ -139,6 +142,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 prompt_tokens=total_prompt_tokens,
                 completion_tokens=total_completion_tokens,
                 total_tokens=total_prompt_tokens + total_completion_tokens,
+                prompt_tokens_details=(
+                    PromptTokensDetails(cached_tokens=total_cached_tokens)
+                    if total_cached_tokens
+                    else None
+                ),
             ),
         )
         return Response(
@@ -179,7 +187,7 @@ async def stream_completion(
             ],
         }
         if output.finished:
-            data["usage"] = get_usage(output).model_dump()
+            data["usage"] = get_usage(output).model_dump(exclude_none=True)
         yield f"data: {json.dumps(data)}\n\n"
 
     yield "data: [DONE]\n\n"

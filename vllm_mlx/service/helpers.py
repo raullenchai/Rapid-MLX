@@ -21,6 +21,7 @@ from starlette.requests import Request
 from ..api.models import (
     CompletionTokensDetails,
     FunctionCall,
+    PromptTokensDetails,
     TokenLogProb,
     ToolCall,
     TopLogProb,
@@ -493,6 +494,15 @@ def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
     """
     cfg = get_config()
     total_completion = output.completion_tokens
+    # ``output`` is normally ``GenerationOutput``, but the streaming
+    # path builds an ad-hoc ``_UsageOutput`` namespace and the dflash
+    # speculative server passes its own result type. ``getattr`` keeps
+    # those alternative shapes working — they just report 0 cache hits
+    # (semantically: "this path doesn't go through the prefix cache").
+    cached_tokens = getattr(output, "cached_tokens", 0) or 0
+    prompt_details = (
+        PromptTokensDetails(cached_tokens=cached_tokens) if cached_tokens else None
+    )
     if reasoning_text and cfg.reasoning_parser_name:
         reasoning_chars = len(reasoning_text)
         # ``output`` is normally ``GenerationOutput`` but the streaming
@@ -527,11 +537,13 @@ def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:
             completion_tokens_details=CompletionTokensDetails(
                 reasoning_tokens=reasoning_tokens,
             ),
+            prompt_tokens_details=prompt_details,
         )
     return Usage(
         prompt_tokens=output.prompt_tokens,
         completion_tokens=total_completion,
         total_tokens=output.prompt_tokens + total_completion,
+        prompt_tokens_details=prompt_details,
     )
 
 
@@ -543,10 +555,14 @@ def get_usage(output: GenerationOutput) -> Usage:
     total_completion_tokens = (
         output.completion_tokens if hasattr(output, "completion_tokens") else 0
     )
+    cached_tokens = getattr(output, "cached_tokens", 0) or 0
     return Usage(
         prompt_tokens=total_prompt_tokens,
         completion_tokens=total_completion_tokens,
         total_tokens=total_prompt_tokens + total_completion_tokens,
+        prompt_tokens_details=(
+            PromptTokensDetails(cached_tokens=cached_tokens) if cached_tokens else None
+        ),
     )
 
 

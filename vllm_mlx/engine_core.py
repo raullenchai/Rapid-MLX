@@ -470,31 +470,8 @@ class EngineCore:
                                     # accumulate; cumulative status fields take
                                     # the latest value.
                                     buf = self._stream_buffers.get(rid)
-                                    # Wrap per-step logprobs (mx.array or None)
-                                    # into a list so subsequent merges concat
-                                    # instead of overwriting. The flushed
-                                    # RequestOutput's logprobs is therefore a
-                                    # list[mx.array] when stream_interval > 1.
-                                    new_lp = (
-                                        [req_output.logprobs]
-                                        if req_output.logprobs is not None
-                                        else []
-                                    )
-                                    prev_text = buf.new_text if buf else ""
-                                    prev_tokens = buf.new_token_ids if buf else []
-                                    prev_lp = (buf.logprobs if buf else None) or []
-                                    self._stream_buffers[rid] = RequestOutput(
-                                        request_id=rid,
-                                        new_token_ids=prev_tokens
-                                        + req_output.new_token_ids,
-                                        new_text=prev_text + req_output.new_text,
-                                        output_token_ids=req_output.output_token_ids,
-                                        output_text=req_output.output_text,
-                                        finished=req_output.finished,
-                                        finish_reason=req_output.finish_reason,
-                                        prompt_tokens=req_output.prompt_tokens,
-                                        completion_tokens=req_output.completion_tokens,
-                                        logprobs=(prev_lp + new_lp) or None,
+                                    self._stream_buffers[rid] = (
+                                        self._merge_stream_buffer(buf, req_output)
                                     )
                                     if state and state.should_send(
                                         req_output.completion_tokens,
@@ -725,6 +702,44 @@ class EngineCore:
         self._stream_buffers.pop(request_id, None)
         self._finished_events.pop(request_id, None)
         self.scheduler.remove_finished_request(request_id)
+
+    @staticmethod
+    def _merge_stream_buffer(
+        buf: RequestOutput | None, req_output: RequestOutput
+    ) -> RequestOutput:
+        """Accumulate this step's delta into the stream buffer.
+
+        Active when ``stream_interval > 1`` and the scheduler emits one
+        token's worth of delta per step. ``new_text``, ``new_token_ids``,
+        and ``logprobs`` are per-step deltas and must concat; cumulative
+        status fields (``output_token_ids``, counts, finish state) take
+        the latest value. Per-step ``logprobs`` (mx.array or None) is
+        wrapped in a list so subsequent merges concat instead of
+        overwriting — the flushed RequestOutput's ``logprobs`` ends up
+        as ``list[mx.array]`` when stream_interval > 1.
+
+        Pinned as a method so any new ``RequestOutput`` field must be
+        threaded here too; tested in
+        ``tests/test_server.py::TestEngineCoreStreamBufferMerge`` so a
+        future addition that misses this path fails loud.
+        """
+        new_lp = [req_output.logprobs] if req_output.logprobs is not None else []
+        prev_text = buf.new_text if buf else ""
+        prev_tokens = buf.new_token_ids if buf else []
+        prev_lp = (buf.logprobs if buf else None) or []
+        return RequestOutput(
+            request_id=req_output.request_id,
+            new_token_ids=prev_tokens + req_output.new_token_ids,
+            new_text=prev_text + req_output.new_text,
+            output_token_ids=req_output.output_token_ids,
+            output_text=req_output.output_text,
+            finished=req_output.finished,
+            finish_reason=req_output.finish_reason,
+            prompt_tokens=req_output.prompt_tokens,
+            completion_tokens=req_output.completion_tokens,
+            cached_tokens=req_output.cached_tokens,
+            logprobs=(prev_lp + new_lp) or None,
+        )
 
     async def stream_outputs(
         self,

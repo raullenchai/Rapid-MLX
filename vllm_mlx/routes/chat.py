@@ -21,6 +21,7 @@ from ..api.models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChoiceLogProbs,
+    PromptTokensDetails,
     TokenLogProb,
     Usage,
 )
@@ -1286,6 +1287,7 @@ async def stream_chat_completion(
         # Track token counts for usage reporting
         prompt_tokens = 0
         completion_tokens = 0
+        cached_tokens = 0
 
         # Buffer the terminal "finish" event so the cross-format fallback in
         # processor.finalize() (#425) gets a chance to recover a missed tool
@@ -1302,6 +1304,14 @@ async def stream_chat_completion(
                 prompt_tokens = output.prompt_tokens
             if hasattr(output, "completion_tokens") and output.completion_tokens:
                 completion_tokens = output.completion_tokens
+            # ``cached_tokens`` is a single per-request value (the
+            # prefix-cache hit count set once when the request is
+            # scheduled), so re-reading it on every chunk just
+            # re-stamps the same value; the guard mirrors the
+            # ``prompt_tokens`` branch above for ad-hoc engines that
+            # don't carry the field.
+            if hasattr(output, "cached_tokens") and output.cached_tokens:
+                cached_tokens = output.cached_tokens
 
             for event in processor.process_chunk(output):
                 if event.type == "content":
@@ -1496,6 +1506,7 @@ async def stream_chat_completion(
             _u = _UsageOutput()
             _u.prompt_tokens = prompt_tokens
             _u.completion_tokens = completion_tokens
+            _u.cached_tokens = cached_tokens
             # ``text`` carries the accumulated content (NOT reasoning) so
             # ``_build_usage`` can split ``completion_tokens`` between
             # reasoning and content by character ratio. Without this,
@@ -1642,6 +1653,7 @@ async def stream_chat_completion_guided(
 
         prompt_tokens = getattr(output, "prompt_tokens", 0) or 0
         completion_tokens = getattr(output, "completion_tokens", 0) or 0
+        cached_tokens = getattr(output, "cached_tokens", 0) or 0
         # Pass the engine's finish_reason through directly. Matches the
         # convention in ``stream_chat_completion`` (line ~925:
         # ``finish_reason=event.finish_reason``), which never coerces a
@@ -1669,6 +1681,11 @@ async def stream_chat_completion_guided(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=prompt_tokens + completion_tokens,
+                prompt_tokens_details=(
+                    PromptTokensDetails(cached_tokens=cached_tokens)
+                    if cached_tokens
+                    else None
+                ),
             )
         )
         # ``created`` must be passed explicitly: the SSE prefix-style
@@ -1710,6 +1727,11 @@ async def stream_chat_completion_guided(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=prompt_tokens + completion_tokens,
+                    prompt_tokens_details=(
+                        PromptTokensDetails(cached_tokens=cached_tokens)
+                        if cached_tokens
+                        else None
+                    ),
                 ),
             )
             yield f"data: {usage_chunk.model_dump_json(exclude_none=True)}\n\n"

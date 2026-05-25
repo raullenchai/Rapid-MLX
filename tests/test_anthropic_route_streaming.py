@@ -240,3 +240,95 @@ def test_anthropic_stream_route_reasoning_parser_with_thinking_default_still_wor
     # without binding to specific token boundaries the parser chooses.
     assert "real answer" in "".join(text_deltas), text_deltas
     assert "scratch" in "".join(thinking_deltas), thinking_deltas
+
+
+class _CacheReportingEngine:
+    """Streaming engine that reports a prefix-cache hit count, like
+    the prefix-cache scheduler does in production. Mirrors
+    ``_StreamingEngine`` but adds ``cached_tokens`` on each chunk so
+    the route's ``message_delta`` usage can pick it up.
+    """
+
+    preserve_native_tool_format = False
+    tokenizer = _ThinkingTemplateTokenizer()
+
+    def __init__(self, deltas: list[str], *, prompt_tokens: int, cached_tokens: int):
+        self._deltas = deltas
+        self._prompt_tokens = prompt_tokens
+        self._cached_tokens = cached_tokens
+
+    async def stream_chat(self, messages, **kwargs):
+        for i, text in enumerate(self._deltas, start=1):
+            yield SimpleNamespace(
+                new_text=text,
+                prompt_tokens=self._prompt_tokens,
+                completion_tokens=i,
+                cached_tokens=self._cached_tokens,
+            )
+
+
+def _find_message_delta(events: list[dict]) -> dict:
+    deltas = [e for e in events if e.get("type") == "message_delta"]
+    assert deltas, "message_delta event missing from stream"
+    return deltas[-1]
+
+
+def test_anthropic_stream_emits_cache_read_when_engine_reports_hit():
+    """When the underlying engine surfaces a prefix-cache hit on its
+    stream chunks, the Anthropic ``message_delta`` usage block must
+    populate ``cache_read_input_tokens`` and adjust ``input_tokens``
+    down by the cached share so Anthropic's spec identity
+    (``total_input = input + cache_read + cache_creation``) holds.
+    """
+    engine = _CacheReportingEngine(
+        ["Direct ", "answer"], prompt_tokens=100, cached_tokens=30
+    )
+    client = _make_client(engine)
+
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "answer directly"}],
+        },
+    )
+    assert response.status_code == 200
+
+    events = _parse_sse_data(response.text)
+    usage = _find_message_delta(events)["usage"]
+    assert usage["input_tokens"] == 70  # 100 prompt - 30 cached
+    assert usage["cache_read_input_tokens"] == 30
+    # cache_creation is intentionally absent (Anthropic's billing
+    # category has no local-engine analog).
+    assert "cache_creation_input_tokens" not in usage
+
+
+def test_anthropic_stream_omits_cache_fields_without_hit():
+    """When the engine reports no hit (``cached_tokens=0``), the
+    ``message_delta`` usage block must NOT include cache fields, and
+    ``input_tokens`` must reflect the full prompt. Mirrors the
+    non-streaming adapter's "engine doesn't report" semantic.
+    """
+    engine = _CacheReportingEngine(
+        ["Direct ", "answer"], prompt_tokens=100, cached_tokens=0
+    )
+    client = _make_client(engine)
+
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "answer directly"}],
+        },
+    )
+    assert response.status_code == 200
+
+    events = _parse_sse_data(response.text)
+    usage = _find_message_delta(events)["usage"]
+    assert usage["input_tokens"] == 100
+    assert "cache_read_input_tokens" not in usage
+    assert "cache_creation_input_tokens" not in usage

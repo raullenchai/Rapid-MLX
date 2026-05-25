@@ -165,13 +165,38 @@ def openai_to_anthropic(
     if not content:
         content.append(AnthropicResponseContentBlock(type="text", text=""))
 
+    # Map the OpenAI prefix-cache field onto Anthropic's usage shape.
+    # Per Anthropic's prompt-caching docs the three input fields are
+    # mutually exclusive and satisfy
+    #     total_input_tokens
+    #         = input_tokens
+    #         + cache_read_input_tokens
+    #         + cache_creation_input_tokens
+    # so ``input_tokens`` is "the non-cached share", NOT the whole
+    # prompt. We only populate ``cache_read_input_tokens`` — the prefix
+    # served from the local KV cache — and leave
+    # ``cache_creation_input_tokens`` unset: Anthropic's "creation"
+    # specifically means tokens being written between explicit
+    # ``cache_control`` breakpoints (billed 1.25x), which has no
+    # analog on a local engine that auto-caches every prefix without
+    # a billing dimension. Cache fields stay ``None`` when the engine
+    # didn't report a hit so clients can keep distinguishing "engine
+    # doesn't report" from "engine reported a hit".
+    prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+    output_tokens = response.usage.completion_tokens if response.usage else 0
+    cached_tokens = 0
+    if response.usage and response.usage.prompt_tokens_details is not None:
+        cached_tokens = response.usage.prompt_tokens_details.cached_tokens or 0
+    cache_read = cached_tokens if cached_tokens else None
+    input_tokens = max(0, prompt_tokens - cached_tokens)
     return AnthropicResponse(
         model=model,
         content=content,
         stop_reason=stop_reason,
         usage=AnthropicUsage(
-            input_tokens=response.usage.prompt_tokens if response.usage else 0,
-            output_tokens=response.usage.completion_tokens if response.usage else 0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_input_tokens=cache_read,
         ),
     )
 

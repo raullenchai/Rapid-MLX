@@ -418,6 +418,86 @@ class TestOpenaiToAnthropic:
         assert result.usage.input_tokens == 10
         assert result.usage.output_tokens == 5
 
+    def test_usage_mapping_no_cache_leaves_cache_fields_unset(self):
+        """When the OpenAI side reports no prefix-cache hit (the
+        ``prompt_tokens_details`` field is omitted), the Anthropic
+        cache fields stay ``None`` so downstream tools can distinguish
+        "engine doesn't report cache" from "engine reported a hit".
+        ``input_tokens`` falls back to the full prompt count since
+        nothing is attributed to cache.
+        """
+        resp = self._make_response()
+        result = openai_to_anthropic(resp, "default")
+        assert result.usage.input_tokens == 10
+        assert result.usage.cache_read_input_tokens is None
+        assert result.usage.cache_creation_input_tokens is None
+
+    def test_usage_mapping_with_cache_hit_preserves_anthropic_identity(self):
+        """Per Anthropic's prompt-caching docs the three input fields
+        are mutually exclusive:
+            total_input_tokens = input_tokens
+                + cache_read_input_tokens
+                + cache_creation_input_tokens
+        So ``input_tokens`` is the *non-cached* share, not the whole
+        prompt. We populate ``cache_read_input_tokens`` with the
+        local engine's hit count and leave
+        ``cache_creation_input_tokens`` unset — Anthropic's "creation"
+        means tokens written between explicit ``cache_control``
+        breakpoints (billed 1.25x), which has no analog on a local
+        KV-cache engine.
+        """
+        from vllm_mlx.api.models import PromptTokensDetails
+
+        msg = AssistantMessage(content="hi")
+        choice = ChatCompletionChoice(message=msg, finish_reason="stop")
+        resp = ChatCompletionResponse(
+            model="default",
+            choices=[choice],
+            usage=Usage(
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                prompt_tokens_details=PromptTokensDetails(cached_tokens=30),
+            ),
+        )
+        result = openai_to_anthropic(resp, "default")
+        assert result.usage.input_tokens == 70
+        assert result.usage.output_tokens == 20
+        assert result.usage.cache_read_input_tokens == 30
+        assert result.usage.cache_creation_input_tokens is None
+        # Anthropic-spec identity holds: 70 + 30 + 0 == 100
+        assert (
+            result.usage.input_tokens
+            + (result.usage.cache_read_input_tokens or 0)
+            + (result.usage.cache_creation_input_tokens or 0)
+            == 100
+        )
+
+    def test_usage_mapping_full_cache_hit(self):
+        """An exact re-run that hits 100% of the prompt prefix
+        produces ``input_tokens=0`` and ``cache_read_input_tokens``
+        equal to the full prompt — every input token is attributed
+        to cache.
+        """
+        from vllm_mlx.api.models import PromptTokensDetails
+
+        msg = AssistantMessage(content="hi")
+        choice = ChatCompletionChoice(message=msg, finish_reason="stop")
+        resp = ChatCompletionResponse(
+            model="default",
+            choices=[choice],
+            usage=Usage(
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                prompt_tokens_details=PromptTokensDetails(cached_tokens=100),
+            ),
+        )
+        result = openai_to_anthropic(resp, "default")
+        assert result.usage.input_tokens == 0
+        assert result.usage.cache_read_input_tokens == 100
+        assert result.usage.cache_creation_input_tokens is None
+
     def test_tool_calls_response(self):
         tc = ToolCall(
             id="call_1",
