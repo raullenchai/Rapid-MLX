@@ -1651,6 +1651,13 @@ async def stream_chat_completion_guided(
         if content:
             yield f'{_sse_prefix}"content":{json.dumps(content)}{_sse_suffix}'
 
+        # ``output`` is the single buffered ``GenerationOutput`` from
+        # ``engine.generate_with_schema`` (outlines integration has no
+        # native streaming interface — see this function's docstring).
+        # Token counts are therefore read once and final; the main
+        # ``stream_chat_completion`` path re-reads inside the stream
+        # loop because the engine emits a sequence of GenerationOutputs
+        # and the last one carries the authoritative counts.
         prompt_tokens = getattr(output, "prompt_tokens", 0) or 0
         completion_tokens = getattr(output, "completion_tokens", 0) or 0
         cached_tokens = getattr(output, "cached_tokens", 0) or 0

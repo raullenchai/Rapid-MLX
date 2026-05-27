@@ -129,6 +129,56 @@ async def test_stream_chat_routes_supported_tokenizer_channels():
 
 
 @pytest.mark.asyncio
+async def test_stream_chat_routed_outputs_preserve_cached_tokens():
+    """``_make_routed_output`` + ``_routed_finish_sentinel`` must
+    thread ``source.cached_tokens`` onto every routed chunk.
+    OutputRouter models (Gemma 4 / harmony / gpt-oss) rebuild each
+    emitted ``GenerationOutput`` from scratch — a missed propagation
+    here would silently zero out the prefix-cache hit count on the
+    routed flush, leaving usage at 0 while the engine actually
+    served the prefix from cache. Same failure shape as PR #454 /
+    #456 for ``reasoning_tokens`` and ``logprobs``.
+
+    Drives a harmony-style stream with ``cached_tokens=128`` on every
+    source chunk and asserts every routed output (content,
+    reasoning, finish sentinel) carries the value through.
+    """
+    engine = _make_engine(FakeTokenizer(HARMONY_VOCAB))
+
+    async def fake_stream_generate(**kwargs):
+        yield GenerationOutput(
+            text="",
+            new_text="<|channel|>analysis<|message|>Reason",
+            tokens=[200005, 35644, 200008, 2],
+            finished=False,
+            cached_tokens=128,
+        )
+        yield GenerationOutput(
+            text="",
+            new_text="ing<|start|><|channel|>final<|message|>Answer",
+            tokens=[3, 200006, 200005, 17196, 200008, 4],
+            finished=True,
+            finish_reason="stop",
+            cached_tokens=128,
+        )
+
+    engine.stream_generate = fake_stream_generate
+
+    outputs = await _collect(
+        engine.stream_chat(messages=[{"role": "user", "content": "hi"}])
+    )
+
+    # Every emitted routed output (per-token reasoning chunks, the
+    # content chunk, AND the finish sentinel) must carry the
+    # source's cached_tokens through.
+    assert outputs, "router should emit at least one output"
+    cached = [o.cached_tokens for o in outputs]
+    assert cached == [128] * len(outputs), (
+        f"cached_tokens must propagate to every routed output; got {cached!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_router_propagates_per_token_logprobs_to_routed_outputs():
     """OutputRouter must forward source.logprobs to each routed chunk.
 

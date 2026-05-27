@@ -79,6 +79,8 @@ class _CacheReportingCompletionEngine:
     """Mock completion engine. Returns a single ``GenerationOutput``
     from ``generate``; the ``/v1/completions`` route loops over the
     request's prompts and accumulates token counts across each.
+    Also implements ``stream_generate`` for the SSE streaming path
+    so the wire-shape regression tests can assert on the final chunk.
     """
 
     preserve_native_tool_format = False
@@ -99,6 +101,20 @@ class _CacheReportingCompletionEngine:
             finish_reason="stop",
             cached_tokens=self._cached_tokens,
         )
+
+    async def stream_generate(self, prompt, **kwargs):
+        deltas = ["ans", "wer"]
+        for i, delta in enumerate(deltas):
+            is_last = i == len(deltas) - 1
+            yield GenerationOutput(
+                text="answer"[: (i + 1) * 3],
+                new_text=delta,
+                prompt_tokens=self._prompt_tokens,
+                completion_tokens=i + 1,
+                finished=is_last,
+                finish_reason="stop" if is_last else None,
+                cached_tokens=self._cached_tokens,
+            )
 
 
 def _make_chat_client(engine) -> TestClient:
@@ -243,6 +259,78 @@ def test_chat_streaming_without_include_usage_carries_cached_tokens_on_finish_ch
 # ---------------------------------------------------------------------------
 # /v1/completions
 # ---------------------------------------------------------------------------
+
+
+def test_completions_streaming_final_chunk_omits_null_detail_fields():
+    """Pin the wire shape of the streaming ``/v1/completions`` final
+    usage chunk: with no cache hit and no reasoning split, the JSON
+    payload's ``usage`` block must NOT carry literal ``null``
+    ``prompt_tokens_details`` or ``completion_tokens_details`` keys.
+    ``model_dump(exclude_none=True)`` drops them; bare ``model_dump()``
+    leaves them in as nulls, which some SDK accumulators trip on.
+    Matches the cleanup ``routes/chat.py`` already does for its
+    trailing usage chunk and locks the streaming-completions sibling
+    so a future revert silently re-adds the null keys.
+    """
+    engine = _CacheReportingCompletionEngine(prompt_tokens=200, cached_tokens=0)
+    client = _make_completions_client(engine)
+
+    resp = client.post(
+        "/v1/completions",
+        json={
+            "model": "test-model",
+            "prompt": "Hello",
+            "max_tokens": 32,
+            "stream": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+    final_chunks = [e for e in events if e.get("usage")]
+    assert len(final_chunks) == 1, (
+        f"expected exactly one chunk with usage; got {len(final_chunks)}"
+    )
+    usage = final_chunks[0]["usage"]
+    assert "prompt_tokens_details" not in usage, (
+        f"null prompt_tokens_details must be excluded; got {usage!r}"
+    )
+    assert "completion_tokens_details" not in usage, (
+        f"null completion_tokens_details must be excluded; got {usage!r}"
+    )
+    # Sanity-check that the non-null keys survived the exclude_none.
+    assert usage["prompt_tokens"] == 200
+    assert usage["total_tokens"] == 202
+
+
+def test_completions_streaming_final_chunk_includes_cached_tokens_when_hit():
+    """Sibling assertion: when there IS a cache hit, the streaming
+    final usage chunk DOES include ``prompt_tokens_details`` with the
+    populated count — `exclude_none=True` only suppresses null
+    fields, not populated ones.
+    """
+    engine = _CacheReportingCompletionEngine(prompt_tokens=200, cached_tokens=128)
+    client = _make_completions_client(engine)
+
+    resp = client.post(
+        "/v1/completions",
+        json={
+            "model": "test-model",
+            "prompt": "Hello",
+            "max_tokens": 32,
+            "stream": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+    final_chunks = [e for e in events if e.get("usage")]
+    assert len(final_chunks) == 1
+    usage = final_chunks[0]["usage"]
+    details = usage.get("prompt_tokens_details")
+    assert details is not None
+    assert details["cached_tokens"] == 128
+    # No reasoning split on the completions path → completion_tokens_details
+    # stays null and gets excluded.
+    assert "completion_tokens_details" not in usage
 
 
 def test_completions_non_streaming_response_carries_cached_tokens():
