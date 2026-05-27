@@ -33,6 +33,7 @@ class _FakeOutput:
         self.new_text = new_text
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.cached_tokens = 0
 
 
 class _FakeEngine:

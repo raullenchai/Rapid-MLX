@@ -34,6 +34,7 @@ class _StubOutput:
         self.output_text = "stub-response"
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.cached_tokens = 0
         self.finish_reason = "stop"
         self.usage = None
         self.text = "stub-response"

@@ -32,11 +32,16 @@ class MockDeltaOutput:
     """Simulates one async chunk from engine.stream_chat()."""
 
     def __init__(
-        self, new_text: str, prompt_tokens: int = 10, completion_tokens: int = 1
+        self,
+        new_text: str,
+        prompt_tokens: int = 10,
+        completion_tokens: int = 1,
+        cached_tokens: int = 0,
     ):
         self.new_text = new_text
         self.prompt_tokens = prompt_tokens
         self.completion_tokens = completion_tokens
+        self.cached_tokens = cached_tokens
 
 
 class MockEngine:
