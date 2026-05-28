@@ -166,7 +166,7 @@ def test_confirm_returns_true_on_yes(monkeypatch, capsys):
     assert gate.confirm_or_abort("foo/huge", 41 * 1024**3) is True
     out = capsys.readouterr().out
     assert "foo/huge" in out
-    assert "41" in out  # size string contains 41 GB
+    assert "41" in out  # size string contains 41 GiB
     assert "Continue?" not in out  # input prompt itself isn't captured to stdout
 
 
@@ -240,9 +240,9 @@ def test_confirm_logfile_hint_appears_in_prompt(monkeypatch, capsys):
     [
         (0, "0 B"),
         (512, "512 B"),
-        (780 * 1024**2, "780.0 MB"),
-        (int(2.4 * 1024**3), "2.4 GB"),
-        (int(42.3 * 1024**3), "42.3 GB"),
+        (780 * 1024**2, "780.0 MiB"),
+        (int(2.4 * 1024**3), "2.4 GiB"),
+        (int(42.3 * 1024**3), "42.3 GiB"),
     ],
 )
 def test_format_size_friendly(num_bytes, expected):

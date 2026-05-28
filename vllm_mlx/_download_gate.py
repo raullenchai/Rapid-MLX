@@ -61,20 +61,23 @@ _HF_API_TIMEOUT_SECONDS: float = 5.0
 
 
 def _format_size(num_bytes: int) -> str:
-    """Render ``num_bytes`` as a human-friendly string (e.g. ``42.3 GB``).
+    """Render ``num_bytes`` as a human-friendly string (e.g. ``42.3 GiB``).
 
-    Uses base-1024 units to match the way HF Hub and macOS Finder
-    report file sizes. Picks the largest unit where the value is ``>= 1``.
+    Uses base-1024 units (KiB/MiB/GiB) to match the way HF Hub and
+    macOS Finder report file sizes. The ``iB`` suffix is the IEC
+    standard for base-1024 — clearer than bare ``KB``/``GB`` which is
+    ambiguous (powers of 10 in some tools, 2 in others) and matters
+    here because the confirmation threshold is denominated in 1024**3.
     """
     if num_bytes < 0:
         num_bytes = 0
-    units = ("B", "KB", "MB", "GB", "TB")
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
     size = float(num_bytes)
     for unit in units:
         if size < 1024.0 or unit == units[-1]:
             return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
         size /= 1024.0
-    return f"{size:.1f} TB"  # unreachable, keeps mypy happy
+    return f"{size:.1f} TiB"  # unreachable, keeps mypy happy
 
 
 def _is_weight_file(name: str) -> bool:
