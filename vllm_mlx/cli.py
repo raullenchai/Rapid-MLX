@@ -394,14 +394,22 @@ def _ensure_model_downloaded(model_name: str) -> None:
     """
     if os.path.exists(model_name):
         return
+    # Reuse the same weight-file-presence probe as ``is_repo_cached``:
+    # the older ``try_to_load_from_cache('config.json')`` check
+    # short-circuits on a partial cache (metadata downloaded, weight
+    # shards still in flight), letting the spawned ``serve`` quietly
+    # finish the download inside its logfile. Codex round-3 BLOCKING #2.
     try:
-        from huggingface_hub import try_to_load_from_cache
+        from vllm_mlx._download_gate import is_repo_cached
 
-        cached = try_to_load_from_cache(model_name, "config.json")
-        if isinstance(cached, str) and os.path.exists(cached):
+        if is_repo_cached(model_name):
             return
     except Exception:
-        return
+        # Probe failed (filesystem permission error, unexpected layout) —
+        # fall through to the heavy snapshot_download path; HF will
+        # short-circuit on its own cache check if the repo really is
+        # fully present.
+        pass
 
     # Disk-space gate: a 20 GB partial download that fails on the last
     # shard wastes the user's time. ``_check_disk_space`` queries HF for
@@ -2259,9 +2267,39 @@ def chat_command(args):
         # matter.
         if _cleanup_state["done"]:
             return
-        _cleanup_state["done"] = True
-        for p in list(_active_procs):
-            _teardown_proc(p)
+        # Mask BOTH SIGTERM and SIGINT for the duration of the loop.
+        # Codex round-3 BLOCKING #1: with only SIGTERM masked, a SIGINT
+        # landing mid-teardown raises KeyboardInterrupt, unwinds the
+        # for-loop, the surrounding ``finally`` issues ``sys.exit(143)``,
+        # and atexit's later call sees ``done=True`` (set at function
+        # entry, original implementation) → procs after the interrupted
+        # one get orphaned. Move the ``done`` flag to AFTER the loop AND
+        # mask SIGINT so a Ctrl-C-during-cleanup can't kill the unwind.
+        _prev_term = _prev_int = None
+        try:
+            _prev_term = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        except (ValueError, OSError):
+            pass
+        try:
+            _prev_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        except (ValueError, OSError):
+            pass
+        try:
+            for p in list(_active_procs):
+                _teardown_proc(p)
+            _cleanup_state["done"] = True
+        finally:
+            # Best-effort restore so post-cleanup signals route normally.
+            # If restore raises, swallow — we're about to exit anyway.
+            for signum, prev in (
+                (signal.SIGTERM, _prev_term),
+                (signal.SIGINT, _prev_int),
+            ):
+                if prev is not None:
+                    try:
+                        signal.signal(signum, prev)
+                    except (ValueError, OSError):
+                        pass
 
     # Install SIGTERM handler + atexit BEFORE any spawn. Otherwise a
     # SIGTERM landing in the window between `Popen()` and `signal.signal`
@@ -2277,19 +2315,13 @@ def chat_command(args):
     # supervisors that escalate after a short grace period) would
     # otherwise call _cleanup again — _teardown_proc's
     # ``proc.terminate() + proc.wait(timeout=5)`` would block while the
-    # outer cleanup is still mid-wait, leaving the child orphaned. Mask
-    # SIGTERM with SIG_IGN for the duration of the handler so the second
-    # signal is silently dropped.
+    # outer cleanup is still mid-wait, leaving the child orphaned.
+    # ``_cleanup`` masks both SIGTERM and SIGINT internally for the
+    # duration of its teardown loop (Codex round-3 BLOCKING #1), so the
+    # handler here only needs to drive the lifecycle: cleanup → exit.
+    # The try/finally guarantees sys.exit fires even if _teardown_proc
+    # raises (rare — only on the secondary proc.kill() escalation).
     def _sigterm_handler(*_):
-        try:
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        except (ValueError, OSError):
-            pass
-        # try/finally: a _teardown_proc raise (rare — only after the
-        # second proc.kill() escalation) must NOT prevent process exit,
-        # otherwise the supervisor sees a hung handler and SIGKILLs
-        # everything anyway. Bubble the failure to atexit (which will
-        # short-circuit on _cleanup_state["done"]) and continue exiting.
         try:
             _cleanup()
         finally:

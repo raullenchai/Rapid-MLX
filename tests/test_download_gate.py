@@ -328,6 +328,25 @@ def test_is_repo_cached_recognises_npz_weights(tmp_path, monkeypatch):
     assert gate.is_repo_cached("mlx-community/legacy") is True
 
 
+def test_is_repo_cached_rejects_pytorch_bin_only(tmp_path, monkeypatch):
+    """Codex round-3 BLOCKING #2: ``.bin`` is the PyTorch shard format,
+    not loadable by mlx-lm. A repo that has cached PyTorch ``.bin``
+    weights but no MLX ``.safetensors`` should be treated as
+    uncached — otherwise the spawned ``serve`` silently downloads the
+    real MLX weights inside its log file."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--torch--legacy" / "snapshots" / "feed"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "tokenizer.json").write_text("{}")
+    (snap / "pytorch_model-00001-of-00002.bin").write_bytes(b"z" * 4096)
+    (snap / "pytorch_model-00002-of-00002.bin").write_bytes(b"z" * 4096)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("torch/legacy") is False
+
+
 def test_is_repo_cached_walks_nested_snapshots(tmp_path, monkeypatch):
     """Sharded checkpoints sometimes nest weights one level deep. The
     walk must descend, not just glob the snapshot root."""

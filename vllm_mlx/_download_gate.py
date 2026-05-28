@@ -62,13 +62,17 @@ _WEIGHT_SUFFIXES: tuple[str, ...] = (
 # (Codex round-1 BLOCKING #3). Estimating download size, by contrast,
 # still cares about every payload byte (above).
 #
-# Codex round-2 BLOCKING #1: older mlx-community exports (and the
-# canonical mlx-lm convert format prior to the safetensors switch)
-# ship weights as ``weights.npz``. Without ``.npz`` here, cached
-# legacy repos returned False and re-prompted on every launch.
+# Format-by-format rationale (Codex round-3 BLOCKING #2 narrows this
+# to what mlx-lm actually loads):
+#   * ``.safetensors`` — canonical mlx-community / mlx-lm convert output
+#   * ``.gguf``        — mlx-lm has native GGUF loader support
+#   * ``.npz``         — legacy mlx-lm convert format (pre-safetensors)
+# ``.bin`` is INTENTIONALLY excluded: it's the PyTorch shard format,
+# not loadable by mlx-lm. A repo with cached PyTorch ``.bin`` weights
+# but missing MLX ``.safetensors`` would otherwise pass the gate and
+# the spawned ``serve`` would still silently pull the real weights.
 _WEIGHT_ONLY_SUFFIXES: tuple[str, ...] = (
     ".safetensors",
-    ".bin",
     ".gguf",
     ".npz",
 )

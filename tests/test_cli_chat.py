@@ -894,6 +894,42 @@ def test_ensure_model_downloaded_calls_disk_check(monkeypatch):
     assert called == ["mlx-community/Fake-Model-1B"]
 
 
+def test_ensure_model_downloaded_uses_strict_cache_probe(monkeypatch):
+    """Codex round-3 BLOCKING #2 (sibling fix): the chat REPL's pre-download
+    probe used to short-circuit on cached ``config.json`` alone — same
+    bypass we closed in ``is_repo_cached``. After the fix it must defer
+    to ``is_repo_cached`` (weight-file-required) so a partial cache no
+    longer skips the foreground download and re-throws the user back into
+    the silent-spawn-then-download trap."""
+    # Force not-a-local-path.
+    monkeypatch.setattr("os.path.exists", lambda _p: False)
+
+    cache_calls: list = []
+
+    def _fake_is_cached(name: str) -> bool:
+        cache_calls.append(name)
+        return True
+
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", _fake_is_cached)
+
+    # If the strict probe returns True the function must return without
+    # touching the disk gate or snapshot_download (cache hit path).
+    monkeypatch.setattr(
+        cli,
+        "_check_disk_space",
+        lambda *_a, **_kw: pytest.fail("disk gate must NOT fire on cache hit"),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: pytest.fail("download must NOT fire on cache hit"),
+    )
+
+    cli._ensure_model_downloaded("mlx-community/Cached-Model-1B")
+    assert cache_calls == ["mlx-community/Cached-Model-1B"], (
+        "cache probe must be invoked exactly once with the repo id"
+    )
+
+
 def test_chat_command_heredoc_preserves_indentation_and_blank_lines(monkeypatch):
     """Heredoc must preserve leading whitespace (Python indentation) and
     trailing blank lines verbatim — calling ``.strip()`` corrupts exactly
@@ -2052,6 +2088,100 @@ def test_sigterm_handler_exits_even_if_cleanup_raises(monkeypatch):
             cli.chat_command(ns)
         except SystemExit:
             pass
+
+
+def test_cleanup_masks_sigint_so_ctrl_c_cannot_orphan_remaining_procs(monkeypatch):
+    """Codex round-3 BLOCKING #1: ``_cleanup`` must mask SIGINT (not only
+    SIGTERM) for the duration of its teardown loop. Without the mask, a
+    Ctrl-C landing during the walk raises KeyboardInterrupt, unwinds the
+    loop, the surrounding try/finally exits, and atexit's later call
+    sees the early ``done=True`` flag → procs after the interrupted one
+    are orphaned."""
+    import signal as _signal
+
+    handler_holder: dict = {}
+    sigint_changes: list = []
+
+    real_signal = _signal.signal
+
+    def _spy_signal(signum, handler):
+        if signum == _signal.SIGINT:
+            sigint_changes.append(handler)
+        if signum == _signal.SIGTERM and not isinstance(handler, type(_signal.SIG_IGN)):
+            # Capture only the user-installed handler; ignore the
+            # SIG_IGN re-mask the cleanup path issues internally.
+            handler_holder["last"] = handler
+        return real_signal(signum, handler)
+
+    teardown_calls = {"n": 0}
+
+    class _DummyProc:
+        _rapid_mlx_log = None
+        _rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            teardown_calls["n"] += 1
+
+        def wait(self, timeout=None):
+            pass
+
+        def kill(self):
+            pass
+
+    procs: list = [_DummyProc(), _DummyProc(), _DummyProc()]
+
+    def _fake_spawn(*_a, **_kw):
+        register_in = _kw.get("register_in")
+        # Register all three so cleanup has to walk a non-trivial list.
+        if register_in is not None:
+            for p in procs:
+                register_in.append(p)
+        return procs[0], f"http://127.0.0.1:{port}"
+
+    monkeypatch.setattr("signal.signal", _spy_signal)
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: None)
+
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (fake_port, _payloads):
+        port = fake_port
+        first = {"sent": False}
+
+        def _input(_p=""):
+            if not first["sent"]:
+                first["sent"] = True
+                # Fire the user-installed SIGTERM handler, which calls
+                # _cleanup. Inside _cleanup, SIGINT must be masked.
+                handler = handler_holder["last"]
+                try:
+                    handler(_signal.SIGTERM, None)
+                except SystemExit:
+                    pass
+            return "exit"
+
+        monkeypatch.setattr("builtins.input", _input)
+        ns = _ns_for_chat(fake_port)
+        ns.base_url = None
+        ns.port = None
+        try:
+            cli.chat_command(ns)
+        except SystemExit:
+            pass
+
+    # All three procs must have been torn down (the SIGINT mask would
+    # have prevented any Ctrl-C-driven unwind from leaving leftovers).
+    assert teardown_calls["n"] == 3, (
+        f"Cleanup must walk every proc; got {teardown_calls['n']}/3"
+    )
+    # SIG_IGN must appear in sigint_changes — proof that _cleanup masked
+    # SIGINT (rather than only SIGTERM as it did in round-2).
+    assert _signal.SIG_IGN in sigint_changes, (
+        f"_cleanup must install SIG_IGN on SIGINT; sigint_changes={sigint_changes}"
+    )
 
 
 def test_chat_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
