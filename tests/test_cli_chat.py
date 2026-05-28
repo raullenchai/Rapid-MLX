@@ -1895,6 +1895,27 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
         def poll(self):
             return None
 
+    # Mock socket too so the test doesn't depend on the runner being
+    # allowed to bind to 127.0.0.1 (codex sandbox / restricted CI both
+    # block this). The port number is captured via captured["cmd"] so
+    # the assertion below is what we actually care about.
+    class _FakeSocket:
+        def __init__(self, *_, **__):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def bind(self, _addr):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 54321)
+
+    monkeypatch.setattr("socket.socket", _FakeSocket)
     monkeypatch.setattr("subprocess.Popen", _FakePopen)
 
     log_path = tmp_path / "fake.log"
