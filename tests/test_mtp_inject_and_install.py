@@ -3,10 +3,13 @@
 
 Two surfaces are pinned here:
 
-1. ``patches.qwen3_next_mtp._resolve_text_args`` — VLM checkpoints store LLM
-   args under ``text_config`` and expose the inner LLM as
-   ``model.language_model``. The injector must fall through:
-   ``model.args`` → ``model.language_model.args`` → ``config['text_config']``.
+1. ``patches.qwen3_next_mtp._looks_like_vlm_wrapper`` — VLM checkpoints
+   nest the LLM config under ``text_config`` and expose the inner LLM as
+   ``model.language_model``. The outer ``model.args`` lacks LLM fields.
+   ``inject_mtp_support`` must bail out cleanly in this shape rather than
+   patch the outer class and crash on the next forward (codex round-1
+   P1 on #477 — wrapper methods reference ``self.model.embed_tokens`` /
+   ``self.lm_head`` that don't exist on the outer VLM).
 
 2. ``scheduler._install_mtp`` — hybrid Gated-DeltaNet BatchGenerators (e.g.
    Qwen3.6-35B-A3B) route through their own step flow and lack ``_step``.
@@ -24,12 +27,12 @@ from unittest.mock import MagicMock
 import pytest
 
 # ----------------------------------------------------------------------
-# _resolve_text_args
+# _looks_like_vlm_wrapper — gate for VLM detection in inject_mtp_support
 # ----------------------------------------------------------------------
 
 
 def _llm_args_ns(**overrides):
-    """Build a SimpleNamespace shaped like a populated ``ModelArgs``."""
+    """SimpleNamespace shaped like a populated ``ModelArgs``."""
     defaults = {
         "hidden_size": 2048,
         "rms_norm_eps": 1e-6,
@@ -43,135 +46,65 @@ def _llm_args_ns(**overrides):
     return SimpleNamespace(**defaults)
 
 
-class _StubArgsCls:
-    """Stand-in for ``mlx_lm.models.qwen3_next.ModelArgs`` used by the
-    text_config fallback. Records the dict it was built from so the test
-    can assert the fall-through path was actually taken."""
+def test_looks_like_vlm_wrapper_false_for_text_only_model():
+    """Text-only path: ``model.args.hidden_size`` exists → not a VLM,
+    inject_mtp_support proceeds normally."""
+    from vllm_mlx.patches.qwen3_next_mtp import _looks_like_vlm_wrapper
 
-    last_built_from: dict | None = None
-
-    def __init__(self, *, hidden_size, **rest):
-        self.hidden_size = hidden_size
-        for k, v in rest.items():
-            setattr(self, k, v)
-
-    @classmethod
-    def from_dict(cls, d):
-        cls.last_built_from = dict(d)
-        return cls(**d)
+    model = SimpleNamespace(args=_llm_args_ns(hidden_size=4096))
+    assert _looks_like_vlm_wrapper(model) is False
 
 
-@pytest.fixture(autouse=True)
-def _reset_stub_args_cls():
-    """Class-level ``last_built_from`` is shared mutable state — reset it
-    between tests so order doesn't matter (e.g. a fallback-path test that
-    runs first must not poison a later text_config-untouched assertion).
-    DeepSeek round-1 BLOCKING #1."""
-    _StubArgsCls.last_built_from = None
-    yield
-    _StubArgsCls.last_built_from = None
+def test_looks_like_vlm_wrapper_true_for_vlm_with_language_model():
+    """VLM checkpoint: outer args lacks hidden_size AND
+    model.language_model is present → bail out so we don't deferred-crash
+    on the next forward. Pins codex round-1 P1 on issue #477."""
+    from vllm_mlx.patches.qwen3_next_mtp import _looks_like_vlm_wrapper
 
-
-def test_resolve_text_args_returns_model_args_when_populated():
-    """Text-only path: ``model.args.hidden_size`` exists → use it directly,
-    no language_model / text_config lookup needed."""
-    from vllm_mlx.patches.qwen3_next_mtp import _resolve_text_args
-
-    args = _llm_args_ns(hidden_size=4096)
-    model = SimpleNamespace(args=args, language_model=None)
-    config: dict = {}  # no text_config
-
-    out = _resolve_text_args(model, config, _StubArgsCls)
-    assert out is args, "must return the same object, not a copy"
-    assert _StubArgsCls.last_built_from is None, (
-        "must NOT have hit the text_config fallback"
-    )
-
-
-def test_resolve_text_args_falls_back_to_language_model_for_vlm():
-    """VLM checkpoint: outer ``model.args`` lacks LLM fields; the inner
-    ``model.language_model.args`` is the populated one. Pins issue #477
-    Issue 1 — Qwen3.6-35B-A3B-VLM had ``model.args`` without hidden_size,
-    causing inject_mtp_support to raise AttributeError."""
-    from vllm_mlx.patches.qwen3_next_mtp import _resolve_text_args
-
-    inner_args = _llm_args_ns(hidden_size=3584, rope_theta=10_000_000.0)
-    vlm_outer_args = SimpleNamespace(  # outer args without hidden_size
+    vlm_outer = SimpleNamespace(
         text_config={"hidden_size": 3584},
         vision_config={"hidden_size": 1280},
     )
     model = SimpleNamespace(
-        args=vlm_outer_args,
-        language_model=SimpleNamespace(args=inner_args),
+        args=vlm_outer,
+        language_model=SimpleNamespace(args=_llm_args_ns(hidden_size=3584)),
     )
-    config = {"text_config": {"hidden_size": 3584}}
-
-    out = _resolve_text_args(model, config, _StubArgsCls)
-    assert out is inner_args
-    assert _StubArgsCls.last_built_from is None, (
-        "language_model.args came first — text_config fallback must not run"
-    )
+    assert _looks_like_vlm_wrapper(model) is True
 
 
-def test_resolve_text_args_builds_from_text_config_when_no_inner_args():
-    """Edge case: no ``language_model`` (or it lacks ``args``). Build
-    fresh ModelArgs from ``config['text_config']`` as the user requested
-    in #477."""
-    from vllm_mlx.patches.qwen3_next_mtp import _resolve_text_args
-
-    _StubArgsCls.last_built_from = None
-    outer_args = SimpleNamespace()  # lacks hidden_size
-    model = SimpleNamespace(args=outer_args)  # no language_model attr
-    config = {
-        "text_config": {
-            "hidden_size": 5120,
-            "rope_theta": 1_000_000.0,
-            "rms_norm_eps": 1e-6,
-        }
-    }
-
-    out = _resolve_text_args(model, config, _StubArgsCls)
-    assert out is not None
-    assert out.hidden_size == 5120
-    assert _StubArgsCls.last_built_from == config["text_config"], (
-        "fallback path must rebuild via from_dict(text_config)"
-    )
-
-
-def test_resolve_text_args_returns_none_when_nothing_resolves():
-    """All three lookups fail → return None. The caller (inject_mtp_support)
-    must then log a warning and skip MTP rather than crash."""
-    from vllm_mlx.patches.qwen3_next_mtp import _resolve_text_args
-
-    model = SimpleNamespace(args=SimpleNamespace())  # bare args
-    config = {"text_config": {}}  # text_config present but no hidden_size
-
-    out = _resolve_text_args(model, config, _StubArgsCls)
-    assert out is None
-
-
-def test_resolve_text_args_does_not_crash_when_inner_language_model_is_none():
-    """``model.language_model`` exists but is None (e.g. text-only branch
-    of a multimodal class). Must not raise; should continue to text_config."""
-    from vllm_mlx.patches.qwen3_next_mtp import _resolve_text_args
+def test_looks_like_vlm_wrapper_false_when_language_model_is_none():
+    """Defensive — ``language_model`` attr exists but is None (e.g.
+    text-only branch of a multimodal class). Not a usable VLM; let the
+    "no fallback available" warning path fire instead of pretending it's
+    a VLM wrapper."""
+    from vllm_mlx.patches.qwen3_next_mtp import _looks_like_vlm_wrapper
 
     model = SimpleNamespace(args=SimpleNamespace(), language_model=None)
-    config = {"text_config": {"hidden_size": 1024}}
+    assert _looks_like_vlm_wrapper(model) is False
 
-    out = _resolve_text_args(model, config, _StubArgsCls)
-    assert out is not None
-    assert out.hidden_size == 1024
+
+def test_looks_like_vlm_wrapper_false_when_args_already_has_hidden_size():
+    """Even if ``language_model`` is somehow attached to a text-only
+    model, the populated ``model.args.hidden_size`` short-circuits the
+    check (text-only path always wins)."""
+    from vllm_mlx.patches.qwen3_next_mtp import _looks_like_vlm_wrapper
+
+    model = SimpleNamespace(
+        args=_llm_args_ns(hidden_size=2048),
+        language_model=SimpleNamespace(args=_llm_args_ns(hidden_size=1024)),
+    )
+    assert _looks_like_vlm_wrapper(model) is False
 
 
 # ----------------------------------------------------------------------
-# _install_mtp guard for hybrid BatchGenerator (Issue #477 Issue 2)
+# _install_mtp guard for hybrid BatchGenerator (issue #477 Issue 2)
 # ----------------------------------------------------------------------
 
 
 def test_install_mtp_skips_when_batch_gen_lacks_step(caplog):
     """Hybrid (Gated-DeltaNet) BatchGenerator routes through its own step
     flow and has no ``_step`` attribute. Before this fix, _install_mtp
-    crashed at line ``_orig_step = batch_gen._step`` with AttributeError.
+    crashed at ``_orig_step = batch_gen._step`` with AttributeError.
 
     Contract: return False and log a clear warning, do NOT raise, do NOT
     patch anything on the generator."""
@@ -193,7 +126,7 @@ def test_install_mtp_skips_when_batch_gen_lacks_step(caplog):
 
     # The warning must name the issue so users can find it.
     combined = "\n".join(r.message for r in caplog.records)
-    assert "no _step attribute" in combined or "_step" in combined
+    assert "_step" in combined
     assert "#477" in combined, "warning should reference the tracking issue"
 
 
@@ -208,26 +141,28 @@ def test_install_mtp_succeeds_on_compatible_batch_gen():
     # _step (the entry it monkey-patches) and active_batch (referenced
     # inside the patched _mtp_step closure during prefill guard — the
     # closure is never *called* in this test, so a placeholder is fine).
-    bg._step = MagicMock(name="orig_step")
+    orig_step = MagicMock(name="orig_step")
+    bg._step = orig_step
     bg.active_batch = None
     model = SimpleNamespace(mtp=SimpleNamespace())
 
     result = _install_mtp(bg, model=model, num_draft_tokens=1)
 
     assert result is True
-    # _step should now point at the wrapper, not the original.
-    assert bg._step is not None
+    # _step is now the wrapper closure, NOT the original — a misconfigured
+    # patch that left _step unchanged would still pass a callable check.
+    assert bg._step is not orig_step, "_step was not actually re-bound by _install_mtp"
     assert callable(bg._step)
+    # _next is also re-bound (the other half of the MTP install).
+    assert callable(bg._next)
 
 
-@pytest.mark.parametrize("force_spec_flag", [True, False])
-def test_install_mtp_hybrid_guard_independent_of_force_spec_decode(
-    caplog, force_spec_flag
-):
-    """The hybrid guard must trigger regardless of ``--force-spec-decode``.
-    Pre-fix, the gate at scheduler.py:1886-1907 was the only protection,
-    and ``--force-spec-decode`` bypassed it. The in-function guard is a
-    safety-net for any future call site that doesn't pre-check."""
+@pytest.mark.parametrize("optimistic_flag", [True, False])
+def test_install_mtp_hybrid_guard_independent_of_optimistic(caplog, optimistic_flag):
+    """The hybrid guard must trigger regardless of the ``optimistic``
+    flag (and by extension regardless of how ``--force-spec-decode``
+    routes through the scheduler). The in-function guard is a safety-net
+    for any call site that doesn't pre-check ``supports_spec_decode``."""
     from vllm_mlx.scheduler import _install_mtp
 
     class _HybridGen:
@@ -236,7 +171,10 @@ def test_install_mtp_hybrid_guard_independent_of_force_spec_decode(
     bg = _HybridGen()
     with caplog.at_level(logging.WARNING, logger="vllm_mlx.scheduler"):
         result = _install_mtp(
-            bg, model=SimpleNamespace(), num_draft_tokens=2, optimistic=force_spec_flag
+            bg,
+            model=SimpleNamespace(),
+            num_draft_tokens=2,
+            optimistic=optimistic_flag,
         )
     assert result is False
     assert not hasattr(bg, "_step")

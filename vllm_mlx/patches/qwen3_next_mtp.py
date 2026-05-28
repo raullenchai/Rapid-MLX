@@ -24,38 +24,25 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _resolve_text_args(model: Any, config: dict, args_cls: Any) -> Any | None:
-    """Resolve the LLM ``ModelArgs`` for a Qwen3-Next text or VLM checkpoint.
+def _looks_like_vlm_wrapper(model: Any) -> bool:
+    """Return True when ``model`` is a multimodal wrapper whose LLM lives
+    under ``model.language_model`` and whose top-level ``args`` lacks the
+    LLM fields (e.g. Qwen3-Next-VL — args sit under ``text_config`` in
+    config.json and the inner LLM is exposed as ``model.language_model``).
 
-    Multimodal Qwen3-Next-VL checkpoints nest the LLM config under
-    ``text_config`` and expose the inner LLM as ``model.language_model``.
-    The outer ``model.args`` then lacks ``hidden_size`` / ``rope_theta`` /
-    etc., which the MTP module construction needs. See issue #477.
-
-    Resolution order:
-      1. ``model.args`` if it already has ``hidden_size`` (text-only path)
-      2. ``model.language_model.args`` (mlx-lm / mlx-vlm VLM wrapping)
-      3. Build from ``config['text_config']`` via ``ModelArgs.from_dict``
+    Used as a conservative gate in :func:`inject_mtp_support`: even if we
+    can resolve the inner LLM args, the injected wrapper methods below
+    reference ``self.model.embed_tokens`` / ``self.lm_head`` / ``self.args``
+    — attributes the outer VLM doesn't expose — so swapping
+    ``model.__class__`` would just defer the crash to the next forward.
+    See codex round-1 P1 on issue #477; proper VLM+MTP support requires
+    patching the inner ``model.language_model`` object end-to-end and is
+    tracked separately.
     """
     args = getattr(model, "args", None)
     if args is not None and hasattr(args, "hidden_size"):
-        return args
-
-    inner = getattr(model, "language_model", None)
-    inner_args = getattr(inner, "args", None) if inner is not None else None
-    if inner_args is not None and hasattr(inner_args, "hidden_size"):
-        return inner_args
-
-    text_config = config.get("text_config")
-    if isinstance(text_config, dict) and "hidden_size" in text_config:
-        try:
-            return args_cls.from_dict(text_config)
-        except (TypeError, ValueError) as exc:
-            logger.warning(
-                "[MTP inject] Failed to build ModelArgs from text_config: %s", exc
-            )
-            return None
-    return None
+        return False
+    return getattr(model, "language_model", None) is not None
 
 
 def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
@@ -92,13 +79,30 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
     # Import model components
     from mlx_lm.models.base import create_attention_mask, create_ssm_mask
     from mlx_lm.models.cache import KVCache
-    from mlx_lm.models.qwen3_next import ModelArgs, Qwen3NextDecoderLayer
+    from mlx_lm.models.qwen3_next import Qwen3NextDecoderLayer
 
-    args = _resolve_text_args(model, config, ModelArgs)
-    if args is None:
+    # VLM checkpoints: outer ``model.args`` lacks LLM fields (hidden_size
+    # is under ``text_config``) and the wrapper methods below reference
+    # outer attributes (self.model.embed_tokens, self.lm_head, self.args)
+    # that don't exist on the multimodal wrapper. Swapping the outer
+    # class would just defer the crash to the next forward pass. Bail
+    # out cleanly here — proper VLM+MTP requires patching the inner
+    # language_model end-to-end and is tracked as a follow-up to #477.
+    if _looks_like_vlm_wrapper(model):
         logger.warning(
-            "[MTP inject] Could not resolve LLM args from model.args / "
-            "model.language_model.args / config['text_config']. Skipping MTP."
+            "[MTP inject] Model appears to be a multimodal wrapper "
+            "(model.args lacks hidden_size; model.language_model present). "
+            "MTP injection on the outer wrapper would crash on the next "
+            "forward — skipping. VLM + MTP is not yet supported (#477 "
+            "follow-up); request will run without MTP."
+        )
+        return False
+
+    args = model.args
+    if not hasattr(args, "hidden_size"):
+        logger.warning(
+            "[MTP inject] model.args lacks hidden_size and no language_model "
+            "fallback is available. Skipping MTP injection."
         )
         return False
 
