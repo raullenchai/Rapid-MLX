@@ -55,6 +55,18 @@ _WEIGHT_SUFFIXES: tuple[str, ...] = (
     ".tiktoken",
 )
 
+# Stricter set used by ``is_repo_cached`` only. A repo isn't usable
+# without actual model weight shards on disk — tokenizer.json /
+# config.json can land on their own (HF downloads metadata first), so
+# counting them as "cached" lets a partial download bypass the gate
+# (Codex round-1 BLOCKING #3). Estimating download size, by contrast,
+# still cares about every payload byte (above).
+_WEIGHT_ONLY_SUFFIXES: tuple[str, ...] = (
+    ".safetensors",
+    ".bin",
+    ".gguf",
+)
+
 # 5-second cap on the HF metadata call. Anything slower than this is a
 # signal we should fall through silently rather than block startup.
 _HF_API_TIMEOUT_SECONDS: float = 5.0
@@ -161,29 +173,17 @@ def estimate_repo_size_bytes(repo_id: str) -> int | None:
 
 
 def is_repo_cached(repo_id: str) -> bool:
-    """True if ``repo_id`` already has at least a config.json in the HF cache.
+    """True if ``repo_id`` has at least one weight file present in the HF cache.
 
-    Two probes:
-
-    1. ``huggingface_hub.try_to_load_from_cache(repo_id, "config.json")``
-       — the official "is this snapshot resolvable" hook.
-    2. Snapshot-directory fallback — handles repos whose layout is
-       non-standard (e.g. ``chat_template.jinja`` shipped without a
-       ``config.json`` at the same revision).
+    Codex review round 1 caught that an earlier "config.json exists →
+    cached" check let a partial cache (config + tokenizer only, weight
+    shards missing) bypass the gate. The serve subprocess would then
+    silently download the weights inside its log file. We require an
+    actual weight file in the snapshot before declaring "cached".
 
     Returns ``False`` on any internal exception so the caller defaults
     to the safe path (prompting, if the size warrants it).
     """
-    try:
-        from huggingface_hub import try_to_load_from_cache
-
-        cached = try_to_load_from_cache(repo_id, "config.json")
-        if isinstance(cached, str) and os.path.exists(cached):
-            return True
-    except Exception:
-        pass
-
-    # Snapshot-directory fallback.
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
 
@@ -192,11 +192,28 @@ def is_repo_cached(repo_id: str) -> bool:
             f"models--{repo_id.replace('/', '--')}",
             "snapshots",
         )
-        if os.path.isdir(snap_root):
-            for entry in os.listdir(snap_root):
-                snap_dir = os.path.join(snap_root, entry)
-                if os.path.isdir(snap_dir) and any(os.scandir(snap_dir)):
-                    return True
+        if not os.path.isdir(snap_root):
+            return False
+        for entry in os.listdir(snap_root):
+            snap_dir = os.path.join(snap_root, entry)
+            if not os.path.isdir(snap_dir):
+                continue
+            # Walk the snapshot tree (HF stores sharded weights in the
+            # snapshot root; some layouts may nest). Resolve through HF's
+            # symlinks: snapshot entries are symlinks into ``blobs/``, and
+            # a partially-downloaded blob exists as a 0-byte placeholder.
+            for root, _dirs, files in os.walk(snap_dir):
+                for name in files:
+                    lower = name.lower()
+                    if not any(lower.endswith(s) for s in _WEIGHT_ONLY_SUFFIXES):
+                        continue
+                    full = os.path.join(root, name)
+                    try:
+                        # ``getsize`` follows symlinks → real blob size.
+                        if os.path.getsize(full) > 0:
+                            return True
+                    except OSError:
+                        continue
     except Exception:
         pass
 

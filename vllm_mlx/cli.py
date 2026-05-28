@@ -1643,12 +1643,19 @@ def _spawn_chat_server(
     if served_name and served_name != model:
         cmd.extend(["--served-model-name", served_name])
     log = open(log_path, "w")  # noqa: SIM115 — kept open for proc lifetime
+    # Tell the child main() that the parent already gated (or that this is
+    # an internal spawn, where prompting would deadlock anyway because the
+    # child stdin is not a TTY). Without this, the child's B2 gate would
+    # see a stdin pipe and re-evaluate against a potentially-stale cache.
+    child_env = os.environ.copy()
+    child_env["RAPID_MLX_CHAT_SPAWN"] = "1"
     try:
         proc = subprocess.Popen(  # noqa: S603
             cmd,
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=child_env,
         )
     except (OSError, ValueError):
         # Popen raised before constructing the child — the log handle
@@ -2265,8 +2272,24 @@ def chat_command(args):
     # KeyboardInterrupt: break`` fires, and atexit runs ``_cleanup``.
     # On non-tty stdin (piped input) the SIGINT path is never exercised,
     # so the SIGTERM + atexit pair is what reaps the spawned server.
+    #
+    # Re-entry: a second SIGTERM landing mid-cleanup (common from process
+    # supervisors that escalate after a short grace period) would
+    # otherwise call _cleanup again — _teardown_proc's
+    # ``proc.terminate() + proc.wait(timeout=5)`` would block while the
+    # outer cleanup is still mid-wait, leaving the child orphaned. Mask
+    # SIGTERM with SIG_IGN for the duration of the handler so the second
+    # signal is silently dropped.
+    def _sigterm_handler(*_):
+        try:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        except (ValueError, OSError):
+            pass
+        _cleanup()
+        sys.exit(143)
+
     try:
-        signal.signal(signal.SIGTERM, lambda *_: (_cleanup(), sys.exit(143)))
+        signal.signal(signal.SIGTERM, _sigterm_handler)
     except (ValueError, OSError):
         pass
     atexit.register(_cleanup)
@@ -2528,6 +2551,31 @@ def chat_command(args):
 
         resolved = resolve_model(new_alias) or new_alias
         print(f"  {DIM}Preparing {new_alias} → {resolved} ...{RESET}")
+
+        # 1a. Gate before download: the main() entry-point gate only
+        #     fires on the CLI invocation, so an uncached /model swap
+        #     would otherwise start a 40+ GB pull with no prompt.
+        #     ``confirm_or_abort`` self-skips on non-TTY / env override.
+        if "/" in resolved and not os.path.exists(resolved):
+            from vllm_mlx._download_gate import (
+                confirm_or_abort,
+                estimate_repo_size_bytes,
+                is_repo_cached,
+            )
+
+            if not is_repo_cached(resolved):
+                try:
+                    confirm_or_abort(
+                        resolved,
+                        estimate_repo_size_bytes(resolved),
+                    )
+                except SystemExit:
+                    # User said no — keep the current server up.
+                    print(
+                        f"  {YELLOW}Model switch cancelled{RESET} "
+                        f"{DIM}(previous server still running).{RESET}\n"
+                    )
+                    return
 
         # 1. Pre-download the new model (this also runs the disk-space
         #    gate). The current server keeps running while we do this so
@@ -3131,8 +3179,17 @@ Examples:
     )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
-    # Serve command
-    serve_parser = subparsers.add_parser("serve", help="Start OpenAI-compatible server")
+    # Serve command. ``allow_abbrev=False`` blocks unique-prefix matches
+    # like ``--no-thin`` resolving silently to ``--no-thinking``: with the
+    # hidden ``--no-think`` cross-alias added in D4, both flags share the
+    # ``--no-thi`` prefix and prefix matching becomes ambiguous (an
+    # ambiguity which argparse does NOT report by default for hidden
+    # aliases). Force users to type the flag in full.
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Start OpenAI-compatible server",
+        allow_abbrev=False,
+    )
     serve_parser.add_argument("model", type=str, help="Model to serve")
     serve_parser.add_argument(
         "--served-model-name",
@@ -3922,6 +3979,11 @@ Examples:
             "Note: 'rapid-mlx run' is an alias for 'chat' (Ollama compatibility)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        # See serve_parser for the rationale: ``--think``/``--no-think`` +
+        # ``--thinking``/``--no-thinking`` cross-aliases create ambiguous
+        # prefixes that argparse silently resolves to whichever flag was
+        # added first.
+        allow_abbrev=False,
     )
     chat_parser.add_argument(
         "model",
@@ -4160,6 +4222,16 @@ Examples:
     # a multi-GB transfer. Cached repos and small downloads pass through
     # invisibly. Env override: RAPID_MLX_AUTO_PULL=1. See
     # ``vllm_mlx/_download_gate.py`` for the policy.
+    #
+    # Codex round 1 surfaced two ordering issues:
+    #   (a) the chat REPL spawns its own ``serve`` subprocess after the
+    #       parent already gated; without RAPID_MLX_CHAT_SPAWN=1 in the
+    #       child env, the second main() would re-prompt (or worse,
+    #       deadlock on a non-TTY child stdin path that doesn't reach
+    #       the early-return).
+    #   (b) the env / TTY checks belong *before* the 5-second HF
+    #       metadata fetch — otherwise every CI run that sets
+    #       RAPID_MLX_AUTO_PULL=1 still pays the network round-trip.
     _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench"}
     if (
         getattr(args, "command", None) in _GATED_COMMANDS
@@ -4167,18 +4239,27 @@ Examples:
         and args.model
         and "/" in args.model  # only HF-style repo ids; local paths skip
         and not os.path.exists(args.model)
+        and os.environ.get("RAPID_MLX_CHAT_SPAWN", "") != "1"
     ):
-        from vllm_mlx._download_gate import (
-            confirm_or_abort,
-            estimate_repo_size_bytes,
-            is_repo_cached,
-        )
-
-        if not is_repo_cached(args.model):
-            confirm_or_abort(
-                args.model,
-                estimate_repo_size_bytes(args.model),
+        # Cheap checks first: env override and non-TTY both short-circuit
+        # without touching the HF API. ``confirm_or_abort`` re-checks
+        # both internally; we mirror them here so we can skip the size
+        # estimate as well.
+        _env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
+        _auto_yes = _env_val in {"1", "true", "yes"}
+        _interactive = sys.stdin.isatty()
+        if not _auto_yes and _interactive:
+            from vllm_mlx._download_gate import (
+                confirm_or_abort,
+                estimate_repo_size_bytes,
+                is_repo_cached,
             )
+
+            if not is_repo_cached(args.model):
+                confirm_or_abort(
+                    args.model,
+                    estimate_repo_size_bytes(args.model),
+                )
     # --- END B2 --------------------------------------------------------
 
     if args.command == "serve":

@@ -1732,3 +1732,259 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
 
     assert full_log.exists(), "full log was unexpectedly removed"
     assert full_log.read_text() == "some real error trace\n"
+
+
+# ---------------------------------------------------------------------------
+# Codex round-1 regression coverage.
+# ---------------------------------------------------------------------------
+
+
+def test_main_skips_download_gate_when_chat_spawn_env_set(monkeypatch):
+    """When the chat REPL spawns its own ``serve`` subprocess, the child
+    sees ``RAPID_MLX_CHAT_SPAWN=1`` and must NOT re-run the B2 gate. A
+    re-run would either (a) re-prompt on a TTY or (b) call the HF API
+    needlessly in the child."""
+    monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", "1")
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    calls: list[str] = []
+
+    def _fake_gate(*_a, **_kw):  # pragma: no cover - assertion proves it isn't called
+        calls.append("gate")
+        return False
+
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", _fake_gate)
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.estimate_repo_size_bytes", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.confirm_or_abort",
+        lambda *_a, **_kw: calls.append("confirm") or True,
+    )
+
+    # Stub out serve_command so main() exits cleanly without booting an engine.
+    monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-uncached-fake-7b"],
+    )
+    cli.main()
+    assert calls == [], (
+        f"Spawn-child env should bypass the download gate entirely; got calls={calls}"
+    )
+
+
+def test_main_skips_size_estimate_in_non_tty_context(monkeypatch):
+    """The B2 gate must short-circuit on TTY/env checks BEFORE calling
+    ``estimate_repo_size_bytes`` — otherwise every CI run with
+    ``RAPID_MLX_AUTO_PULL=1`` pays a 5-second HF metadata round-trip."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_SPAWN", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.estimate_repo_size_bytes",
+        lambda *_a, **_kw: calls.append("estimate") or None,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.is_repo_cached",
+        lambda *_a, **_kw: calls.append("cached") or False,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.confirm_or_abort",
+        lambda *_a, **_kw: calls.append("confirm") or True,
+    )
+    monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-uncached-fake-7b"],
+    )
+    cli.main()
+
+    assert calls == [], (
+        f"Non-TTY context should never hit the HF metadata API or cache probe; "
+        f"got calls={calls}"
+    )
+
+
+def test_main_skips_size_estimate_when_auto_pull_env_set(monkeypatch):
+    """``RAPID_MLX_AUTO_PULL=1`` must short-circuit on the env check
+    BEFORE ``estimate_repo_size_bytes`` — the env is the documented
+    CI/unattended escape hatch and should not pay any network cost."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_SPAWN", raising=False)
+    monkeypatch.setenv("RAPID_MLX_AUTO_PULL", "1")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.estimate_repo_size_bytes",
+        lambda *_a, **_kw: calls.append("estimate") or None,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.is_repo_cached",
+        lambda *_a, **_kw: calls.append("cached") or False,
+    )
+    monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-uncached-fake-7b"],
+    )
+    cli.main()
+
+    assert calls == [], (
+        f"AUTO_PULL=1 should skip the cache probe and size estimate; got calls={calls}"
+    )
+
+
+def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
+    """``_spawn_chat_server`` must pass ``RAPID_MLX_CHAT_SPAWN=1`` to the
+    child so the child main() bypasses the download gate."""
+    captured: dict = {}
+
+    class _FakePopen:
+        def __init__(
+            self, cmd, *, stdout=None, stderr=None, start_new_session=False, env=None
+        ):
+            captured["env"] = env
+            captured["cmd"] = cmd
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    log_path = tmp_path / "fake.log"
+    proc, base_url = cli._spawn_chat_server("qwen3.5-4b", str(log_path))
+
+    assert captured["env"] is not None
+    assert captured["env"].get("RAPID_MLX_CHAT_SPAWN") == "1"
+
+
+def test_sigterm_handler_masks_second_sigterm(monkeypatch):
+    """A second SIGTERM landing mid-cleanup must be silently dropped via
+    ``signal.SIG_IGN``, not re-invoke ``_cleanup`` (which would block on
+    a second ``proc.wait()`` for an already-terminating child)."""
+    import signal as _signal
+
+    handler_holder: dict = {}
+    signal_changes: list = []
+
+    real_signal = _signal.signal
+
+    def _spy_signal(signum, handler):
+        if signum == _signal.SIGTERM:
+            signal_changes.append(handler)
+            handler_holder["last"] = handler
+        return real_signal(signum, handler)
+
+    cleanup_calls = {"n": 0}
+
+    class _FakeProc:
+        _rapid_mlx_log = None
+        _rapid_mlx_log_path = None
+        terminate_calls = 0
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            type(self).terminate_calls += 1
+            cleanup_calls["n"] += 1
+            # Simulate the supervisor escalating: second SIGTERM arrives
+            # while the first one's _cleanup walk is mid-flight. Invoke
+            # the installed handler directly (the real signal would do
+            # exactly this).
+            current = handler_holder["last"]
+            if current is _signal.SIG_IGN:
+                return  # masked — correct behaviour
+            # If still the original handler, calling it would recurse;
+            # capture that so the assertion fires.
+            raise AssertionError(
+                "Second SIGTERM was NOT masked; the handler is still live "
+                "and would recurse into _cleanup."
+            )
+
+        def wait(self, timeout=None):
+            pass
+
+        def kill(self):
+            pass
+
+    def _fake_spawn(*_a, **_kw):
+        proc = _FakeProc()
+        register_in = _kw.get("register_in")
+        if register_in is not None:
+            register_in.append(proc)
+        return proc, f"http://127.0.0.1:{port}"
+
+    monkeypatch.setattr("signal.signal", _spy_signal)
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: None)
+
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (fake_port, _payloads):
+        port = fake_port
+
+        def _trigger_after_input(_p=""):
+            # On the first prompt, fire the installed SIGTERM handler in
+            # the foreground. Use a SystemExit-suppressing wrapper so the
+            # test thread is the one to observe the masking.
+            handler = handler_holder["last"]
+            try:
+                handler(_signal.SIGTERM, None)
+            except SystemExit:
+                pass
+            return "exit"
+
+        monkeypatch.setattr("builtins.input", _trigger_after_input)
+
+        ns = _ns_for_chat(fake_port)
+        ns.base_url = None
+        ns.port = None
+        try:
+            cli.chat_command(ns)
+        except SystemExit:
+            pass
+
+    # The second SIGTERM (delivered inside terminate()) hit SIG_IGN; if
+    # it had re-invoked the handler we'd have recursed and the
+    # AssertionError above would have surfaced.
+    assert _FakeProc.terminate_calls >= 1
+    assert _signal.SIG_IGN in signal_changes, (
+        f"Cleanup must install SIG_IGN to mask re-entry; "
+        f"signal_changes={signal_changes}"
+    )
+
+
+def test_chat_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
+    """``--no-think`` and ``--no-thinking`` share the prefix ``--no-thi``.
+    With ``allow_abbrev=False`` argparse must reject the ambiguous form
+    instead of silently resolving it to whichever flag was added first."""
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "qwen3.5-4b", "--no-thi"]),
+        pytest.raises(SystemExit),
+    ):
+        cli.main()
+    err = capsys.readouterr().err
+    assert "--no-thi" in err or "unrecognized" in err.lower()
+
+
+def test_serve_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
+    """Same as the chat case — ``serve`` also got the hidden cross-alias
+    and the same ambiguity must be reported, not silently resolved."""
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b", "--no-thi"]),
+        pytest.raises(SystemExit),
+    ):
+        cli.main()
+    err = capsys.readouterr().err
+    assert "--no-thi" in err or "unrecognized" in err.lower()

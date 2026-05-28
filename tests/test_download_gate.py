@@ -254,30 +254,23 @@ def test_format_size_friendly(num_bytes, expected):
 # ---------------------------------------------------------------------------
 
 
-def test_is_repo_cached_true_when_try_to_load_finds_config(tmp_path, monkeypatch):
-    """The official ``try_to_load_from_cache`` hook is the primary probe."""
-    fake_cfg = tmp_path / "config.json"
-    fake_cfg.write_text("{}")
+def test_is_repo_cached_true_when_weight_file_present(tmp_path, monkeypatch):
+    """At least one non-empty weight file in the snapshot tree → True."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--foo--cached" / "snapshots" / "abcd1234"
+    snap.mkdir(parents=True)
+    # Real cache layouts include config + tokenizer + the actual weights.
+    (snap / "config.json").write_text("{}")
+    (snap / "tokenizer.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"x" * 2048)
 
-    import huggingface_hub
-
-    monkeypatch.setattr(
-        huggingface_hub,
-        "try_to_load_from_cache",
-        lambda repo_id, fname: str(fake_cfg),
-    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert gate.is_repo_cached("foo/cached") is True
 
 
 def test_is_repo_cached_false_when_no_snapshot(tmp_path, monkeypatch):
-    """No cache hit + empty HF cache directory → False."""
-    import huggingface_hub
-
-    monkeypatch.setattr(
-        huggingface_hub, "try_to_load_from_cache", lambda *_, **__: None
-    )
-
+    """Empty HF cache directory → False."""
     empty_cache = tmp_path / "hf-cache"
     empty_cache.mkdir()
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(empty_cache))
@@ -285,24 +278,51 @@ def test_is_repo_cached_false_when_no_snapshot(tmp_path, monkeypatch):
     assert gate.is_repo_cached("foo/missing") is False
 
 
-def test_is_repo_cached_falls_back_to_snapshot_dir(tmp_path, monkeypatch):
-    """If ``try_to_load_from_cache`` returns None but the snapshot dir exists
-    with at least one file, treat the repo as cached. Covers repos that
-    ship without a ``config.json`` at the same revision."""
-    import huggingface_hub
-
-    monkeypatch.setattr(
-        huggingface_hub, "try_to_load_from_cache", lambda *_, **__: None
-    )
-
+def test_is_repo_cached_false_on_partial_cache(tmp_path, monkeypatch):
+    """Codex round-1 BLOCKING: a partial cache (config + tokenizer only,
+    weight shards missing) must NOT pass the gate. The legacy
+    ``try_to_load_from_cache('config.json')`` probe returned True here,
+    letting the spawned ``serve`` subprocess silently download multi-GB
+    weight shards inside its log file."""
     cache_root = tmp_path / "hf-cache"
-    snap = cache_root / "models--foo--quirky" / "snapshots" / "abcd1234"
+    snap = cache_root / "models--foo--partial" / "snapshots" / "deadbeef"
     snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "tokenizer.json").write_text("{}")
     (snap / "chat_template.jinja").write_text("{{}}")
+    # Crucially: NO ``*.safetensors`` / ``*.bin`` / ``*.gguf`` file.
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    assert gate.is_repo_cached("foo/quirky") is True
+    assert gate.is_repo_cached("foo/partial") is False
+
+
+def test_is_repo_cached_false_on_zero_byte_weight(tmp_path, monkeypatch):
+    """HF stores in-flight blobs as 0-byte placeholders before the
+    download completes. A zero-byte ``*.safetensors`` must not count as
+    cached — same failure mode as the partial-cache case above."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--foo--inflight" / "snapshots" / "cafe"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"")  # placeholder
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("foo/inflight") is False
+
+
+def test_is_repo_cached_walks_nested_snapshots(tmp_path, monkeypatch):
+    """Sharded checkpoints sometimes nest weights one level deep. The
+    walk must descend, not just glob the snapshot root."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--foo--nested" / "snapshots" / "1234" / "shards"
+    snap.mkdir(parents=True)
+    (snap / "model-00001-of-00002.safetensors").write_bytes(b"y" * 4096)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("foo/nested") is True
 
 
 # ---------------------------------------------------------------------------
