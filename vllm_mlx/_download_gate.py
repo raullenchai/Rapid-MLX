@@ -247,14 +247,25 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
         shard_names = set(weight_map.values())
         # Codex round-6 BLOCKING #2: validate the shard filenames
         # themselves match the loader glob, not just that they exist.
-        # An adversarial / malformed index pointing at
-        # ``adapter.safetensors`` or ``Model-00001-of-00002.safetensors``
-        # (capital M) would otherwise pass while mlx-lm loads zero
-        # model weights.
+        # Codex round-7 BLOCKING #1: AND make sure the shard names
+        # don't escape ``snap_dir`` via ``..`` or an absolute path —
+        # ``mlx_lm`` only loads ``snap_dir/model*.safetensors``, so a
+        # validated basename pointing at ``../somewhere-else`` would
+        # otherwise pass while the loader sees nothing.
         for shard in shard_names:
-            if not isinstance(shard, str) or not _is_model_weight_filename(
-                os.path.basename(shard)
+            if not isinstance(shard, str):
+                return False
+            # No directory traversal, no absolute paths, no nested
+            # subdirectories — the loader's glob is non-recursive on
+            # the snapshot root.
+            if (
+                os.path.isabs(shard)
+                or os.sep in shard
+                or "/" in shard
+                or ".." in shard.split("/")
             ):
+                return False
+            if not _is_model_weight_filename(shard):
                 return False
             target = os.path.join(snap_dir, shard)
             try:
@@ -262,21 +273,63 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
                     return False
             except OSError:
                 return False
+        # Codex round-7 BLOCKING #3: the loader globs every
+        # ``model*.safetensors`` at the snapshot root — a stray
+        # zero-byte ``model-extra.safetensors`` next to a valid
+        # indexed cache would otherwise crash ``mx.load()``. Require
+        # every snapshot-root match to be non-zero.
+        if not _root_model_files_all_non_empty(snap_dir):
+            return False
         return True
 
     # Single-file (non-sharded) model. Match mlx-lm's actual loader
     # glob — ``adapter.safetensors`` / ``embeddings.safetensors`` and
-    # other sidecars don't count, only ``model*.safetensors``.
-    for root, _dirs, files in os.walk(snap_dir):
-        for name in files:
+    # other sidecars don't count; only ``model*.safetensors`` at the
+    # snapshot root (Codex round-7 BLOCKING #2: the glob is NOT
+    # recursive — a ``subdir/model.safetensors`` would not be picked
+    # up, so we must not credit it as cached).
+    if not _root_model_files_all_non_empty(snap_dir):
+        return False
+    try:
+        for name in os.listdir(snap_dir):
             if not _is_model_weight_filename(name):
                 continue
+            full = os.path.join(snap_dir, name)
             try:
-                if os.path.getsize(os.path.join(root, name)) > 0:
+                if os.path.isfile(full) and os.path.getsize(full) > 0:
                     return True
             except OSError:
                 continue
+    except OSError:
+        pass
     return False
+
+
+def _root_model_files_all_non_empty(snap_dir: str) -> bool:
+    """Every ``model*.safetensors`` at the snapshot root must have
+    non-zero size.
+
+    Codex round-7 BLOCKING #3 caught the asymmetry: even when the
+    index validation passes, a stray placeholder
+    ``model-extra.safetensors`` would still be loaded by mlx-lm's
+    non-recursive root glob and would crash on the zero-byte file.
+    """
+    try:
+        entries = os.listdir(snap_dir)
+    except OSError:
+        return False
+    for name in entries:
+        if not _is_model_weight_filename(name):
+            continue
+        full = os.path.join(snap_dir, name)
+        try:
+            if not os.path.isfile(full):
+                continue
+            if os.path.getsize(full) <= 0:
+                return False
+        except OSError:
+            return False
+    return True
 
 
 def is_repo_cached(repo_id: str) -> bool:

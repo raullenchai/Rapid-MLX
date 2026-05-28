@@ -457,6 +457,74 @@ def test_is_repo_cached_validates_shard_filenames_in_index(tmp_path, monkeypatch
     assert gate.is_repo_cached("user/capm-index") is False
 
 
+def test_is_repo_cached_rejects_path_traversal_in_index(tmp_path, monkeypatch):
+    """Codex round-7 BLOCKING #1: shard names containing ``..`` or
+    absolute paths escape the snapshot root. The loader's glob is
+    rooted at snap_dir, so an escaped path is invisible to it; we
+    must reject it explicitly rather than walking the resolved
+    file outside ``snap_dir``."""
+    import json
+
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--user--escape" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+
+    # Case A: relative traversal.
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "../model-00001.safetensors"}})
+    )
+    # File exists at the escaped location.
+    (cache_root / "model-00001.safetensors").write_bytes(b"x" * 4096)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    assert gate.is_repo_cached("user/escape") is False
+
+    # Case B: absolute path.
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "/tmp/model-00001.safetensors"}})
+    )
+    assert gate.is_repo_cached("user/escape") is False
+
+    # Case C: subdirectory (not nested loader behaviour).
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "shards/model-00001.safetensors"}})
+    )
+    (snap / "shards").mkdir()
+    (snap / "shards" / "model-00001.safetensors").write_bytes(b"x" * 4096)
+    assert gate.is_repo_cached("user/escape") is False
+
+
+def test_is_repo_cached_rejects_zero_byte_extra_root_shard(tmp_path, monkeypatch):
+    """Codex round-7 BLOCKING #3: ``mlx_lm`` globs EVERY
+    ``model*.safetensors`` at the snapshot root and calls ``mx.load``
+    on each. A zero-byte placeholder next to a valid sharded cache
+    would crash the loader, so the gate must catch it too."""
+    import json
+
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--user--extra-zero" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "w": "model-00001-of-00002.safetensors",
+                    "x": "model-00002-of-00002.safetensors",
+                }
+            }
+        )
+    )
+    (snap / "model-00001-of-00002.safetensors").write_bytes(b"x" * 4096)
+    (snap / "model-00002-of-00002.safetensors").write_bytes(b"y" * 4096)
+    # The extra zero-byte placeholder loader would still pick up.
+    (snap / "model-extra.safetensors").write_bytes(b"")
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/extra-zero") is False
+
+
 def test_is_repo_cached_rejects_index_with_no_weight_map(tmp_path, monkeypatch):
     """Codex round-5 BLOCKING #1: if ``model.safetensors.index.json``
     exists but the schema doesn't yield a usable shard list (corrupt
@@ -547,17 +615,21 @@ def test_is_repo_cached_rejects_pytorch_bin_only(tmp_path, monkeypatch):
     assert gate.is_repo_cached("torch/legacy") is False
 
 
-def test_is_repo_cached_walks_nested_snapshots(tmp_path, monkeypatch):
-    """Sharded checkpoints sometimes nest weights one level deep. The
-    walk must descend, not just glob the snapshot root."""
+def test_is_repo_cached_rejects_nested_weights(tmp_path, monkeypatch):
+    """Codex round-7 BLOCKING #2: ``mlx_lm`` calls
+    ``glob.glob(model_path / "model*.safetensors")`` — a NON-recursive
+    glob. A snapshot whose weights live under ``shards/`` (or any
+    subdirectory) is not picked up by the loader, so it must NOT pass
+    the gate either. The earlier walk-the-tree behaviour was the bug."""
     cache_root = tmp_path / "hf-cache"
-    snap = cache_root / "models--foo--nested" / "snapshots" / "1234" / "shards"
-    snap.mkdir(parents=True)
-    (snap / "model-00001-of-00002.safetensors").write_bytes(b"y" * 4096)
+    snap_root = cache_root / "models--foo--nested" / "snapshots" / "1234"
+    nested = snap_root / "shards"
+    nested.mkdir(parents=True)
+    (nested / "model-00001-of-00002.safetensors").write_bytes(b"y" * 4096)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    assert gate.is_repo_cached("foo/nested") is True
+    assert gate.is_repo_cached("foo/nested") is False
 
 
 # ---------------------------------------------------------------------------
