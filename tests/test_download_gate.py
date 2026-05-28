@@ -377,6 +377,73 @@ def test_is_repo_cached_requires_every_shard_listed_in_index(tmp_path, monkeypat
     assert gate.is_repo_cached("mlx-community/sharded") is True
 
 
+def test_is_repo_cached_rejects_adapter_only_safetensors(tmp_path, monkeypatch):
+    """Codex round-5 BLOCKING #2: rapid-mlx's load path globs
+    ``model*.safetensors`` literally. A cache containing only
+    ``adapter.safetensors`` (LoRA / PEFT fine-tune) or
+    ``embeddings.safetensors`` (sidecar) is unusable from rapid-mlx
+    and must NOT pass the gate — otherwise the spawned ``serve``
+    silently pulls the real model weights."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--user--lora" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "adapter.safetensors").write_bytes(b"x" * 4096)
+    (snap / "embeddings.safetensors").write_bytes(b"y" * 4096)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/lora") is False
+
+    # Once an actual ``model.safetensors`` lands, it does pass.
+    (snap / "model.safetensors").write_bytes(b"z" * 4096)
+    assert gate.is_repo_cached("user/lora") is True
+
+
+def test_is_repo_cached_rejects_index_with_no_weight_map(tmp_path, monkeypatch):
+    """Codex round-5 BLOCKING #1: if ``model.safetensors.index.json``
+    exists but the schema doesn't yield a usable shard list (corrupt
+    schema, alternate-key layout, metadata-only index), we must NOT
+    fall back to the single-file probe — the presence of the index
+    itself is the loader's signal that this is a sharded model."""
+    import json
+
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--user--quirky-index" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    # Index uses an alternate key (no ``weight_map`` at all).
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {"total_size": 4096}, "files": ["shard.safetensors"]})
+    )
+    # A stray single-file safetensors that would otherwise pass the
+    # single-file probe.
+    (snap / "model.safetensors").write_bytes(b"x" * 4096)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/quirky-index") is False
+
+
+def test_is_repo_cached_rejects_index_with_empty_weight_map(tmp_path, monkeypatch):
+    """Same as the no-weight-map case but the key exists with an
+    empty dict value. Both must be treated as 'incomplete sharded'."""
+    import json
+
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--user--empty-map" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {"total_size": 4096}, "weight_map": {}})
+    )
+    (snap / "model.safetensors").write_bytes(b"x" * 4096)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/empty-map") is False
+
+
 def test_is_repo_cached_rejects_zero_byte_shard_in_index(tmp_path, monkeypatch):
     """A shard that's listed in the index but zero-byte on disk (HF
     in-flight placeholder) must NOT count as cached. Same family as

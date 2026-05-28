@@ -177,21 +177,44 @@ def estimate_repo_size_bytes(repo_id: str) -> int | None:
     return total if total > 0 else None
 
 
+def _is_model_weight_filename(name: str) -> bool:
+    """True if ``name`` matches mlx-lm's loader glob ``model*.safetensors``.
+
+    mlx-lm's high-level load path (``mlx_lm/utils.py:316``) is literally
+    ``glob.glob(str(model_path / "model*.safetensors"))``. Adapter /
+    sidecar files (``adapter.safetensors``, LoRA fine-tunes,
+    ``embeddings.safetensors``, etc.) DON'T match this pattern and
+    aren't loaded by rapid-mlx's text path — so they must NOT count
+    as cache-proof either. Codex round-5 BLOCKING #2.
+    """
+    lower = name.lower()
+    if not lower.endswith(".safetensors"):
+        return False
+    return lower.startswith("model")
+
+
 def _snapshot_is_complete(snap_dir: str) -> bool:
     """True if ``snap_dir`` looks like a fully-downloaded model snapshot.
 
     Mirrors ``vllm_mlx.doctor.discovery._is_complete_snapshot`` so the
     two cache-completeness checks (doctor pre-flight + B2 gate) stay in
     sync. The only behavior difference is suffix scope: B2 only cares
-    about formats mlx-lm's loader actually consumes (``.safetensors``).
+    about formats mlx-lm's loader actually consumes (``model*.safetensors``).
 
     Strategy:
       1. ``model.safetensors.index.json`` present → parse ``weight_map``
          and require every referenced shard to exist with non-zero
-         size. Codex round-4 BLOCKING #1: a sharded model with shard 1
-         present but shard 2 missing must NOT count as cached.
-      2. Otherwise, a single non-empty ``*.safetensors`` is sufficient
-         (covers single-file models).
+         size. Codex round-4 BLOCKING #1.
+      2. Otherwise, a single non-empty ``model*.safetensors`` is
+         sufficient (covers single-file non-sharded models).
+
+    Index-but-no-shards (Codex round-5 BLOCKING #1): when an
+    ``model.safetensors.index.json`` exists but yields no shard names
+    (corrupt schema, alternate-key layout, metadata-only index), DO
+    NOT fall back to the single-file probe. The presence of the index
+    itself is the loader's signal that this is a sharded model — a
+    single stray ``model.safetensors`` next to a non-standard index
+    is incomplete by definition.
     """
     index_path = os.path.join(snap_dir, "model.safetensors.index.json")
     if os.path.exists(index_path):
@@ -203,25 +226,28 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
         except (OSError, json.JSONDecodeError):
             # Truncated index → safer to treat as incomplete and re-prompt.
             return False
-        weight_map = index.get("weight_map") or {}
+        weight_map = index.get("weight_map") if isinstance(index, dict) else None
+        if not isinstance(weight_map, dict) or not weight_map:
+            # Index exists but doesn't yield a usable shard list. We
+            # know SOMETHING expects shards here; refuse to fall
+            # through to the lax single-file probe.
+            return False
         shard_names = set(weight_map.values())
-        if shard_names:
-            for shard in shard_names:
-                target = os.path.join(snap_dir, shard)
-                try:
-                    if os.path.getsize(target) <= 0:
-                        return False
-                except OSError:
+        for shard in shard_names:
+            target = os.path.join(snap_dir, shard)
+            try:
+                if os.path.getsize(target) <= 0:
                     return False
-            return True
-        # Index parsed but empty weight_map — fall through to the
-        # single-file probe rather than declaring False on a quirk.
+            except OSError:
+                return False
+        return True
 
-    # Single-file (non-sharded) model.
+    # Single-file (non-sharded) model. Match mlx-lm's actual loader
+    # glob — ``adapter.safetensors`` / ``embeddings.safetensors`` and
+    # other sidecars don't count, only ``model*.safetensors``.
     for root, _dirs, files in os.walk(snap_dir):
         for name in files:
-            lower = name.lower()
-            if not any(lower.endswith(s) for s in _WEIGHT_ONLY_SUFFIXES):
+            if not _is_model_weight_filename(name):
                 continue
             try:
                 if os.path.getsize(os.path.join(root, name)) > 0:
