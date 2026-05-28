@@ -653,7 +653,7 @@ def _install_mtp(
     model: Any,
     num_draft_tokens: int = 1,
     optimistic: bool = False,
-) -> None:
+) -> bool:
     """
     Monkey-patch a BatchGenerator to use MTP (Multi-Token Prediction)
     with always-advance strategy for hybrid MambaCache + KVCache.
@@ -665,7 +665,23 @@ def _install_mtp(
     4. Accept: skip_state from pos 1, defer draft for next step emission
        Reject: trim KVCache by 1, skip_state from pos 0 (no cold start)
     5. Draft is emitted in the NEXT generation step after primary
+
+    Returns True when patches are installed, False when the BatchGenerator
+    is incompatible (e.g. hybrid Gated-DeltaNet generators that route through
+    their own step flow and lack ``_step`` / ``_orig_next``). In the
+    incompatible case the generator is left untouched so the request still
+    completes — MTP is just silently dropped after a clear warning. See #477.
     """
+    if not hasattr(batch_gen, "_step"):
+        logger.warning(
+            "[MTP] BatchGenerator %s has no _step attribute — this model "
+            "uses a different generation flow (likely hybrid Gated-DeltaNet, "
+            "e.g. Qwen3.6-35B-A3B). MTP install skipped; request will run "
+            "without speculative decode. Re-run without --enable-mtp / "
+            "--force-spec-decode to silence this warning. See issue #477.",
+            type(batch_gen).__name__,
+        )
+        return False
     _orig_step = batch_gen._step
 
     # Greedy sampler for MTP draft tokens
@@ -1074,6 +1090,7 @@ def _install_mtp(
     logger.info(
         f"[MTP] installed with num_draft_tokens={num_draft_tokens}, {mode_str} mode"
     )
+    return True
 
 
 def _install_suffix_decoding(

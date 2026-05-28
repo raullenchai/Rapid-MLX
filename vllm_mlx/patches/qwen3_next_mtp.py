@@ -24,6 +24,40 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _resolve_text_args(model: Any, config: dict, args_cls: Any) -> Any | None:
+    """Resolve the LLM ``ModelArgs`` for a Qwen3-Next text or VLM checkpoint.
+
+    Multimodal Qwen3-Next-VL checkpoints nest the LLM config under
+    ``text_config`` and expose the inner LLM as ``model.language_model``.
+    The outer ``model.args`` then lacks ``hidden_size`` / ``rope_theta`` /
+    etc., which the MTP module construction needs. See issue #477.
+
+    Resolution order:
+      1. ``model.args`` if it already has ``hidden_size`` (text-only path)
+      2. ``model.language_model.args`` (mlx-lm / mlx-vlm VLM wrapping)
+      3. Build from ``config['text_config']`` via ``ModelArgs.from_dict``
+    """
+    args = getattr(model, "args", None)
+    if args is not None and hasattr(args, "hidden_size"):
+        return args
+
+    inner = getattr(model, "language_model", None)
+    inner_args = getattr(inner, "args", None) if inner is not None else None
+    if inner_args is not None and hasattr(inner_args, "hidden_size"):
+        return inner_args
+
+    text_config = config.get("text_config")
+    if isinstance(text_config, dict) and "hidden_size" in text_config:
+        try:
+            return args_cls.from_dict(text_config)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "[MTP inject] Failed to build ModelArgs from text_config: %s", exc
+            )
+            return None
+    return None
+
+
 def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
     """Inject MTP module into a loaded Qwen3-Next model.
 
@@ -55,12 +89,18 @@ def inject_mtp_support(model: Any, model_path, config: dict) -> bool:
         logger.warning(f"[MTP inject] model-mtp.safetensors not found in {model_path}")
         return False
 
-    args = model.args
-
     # Import model components
     from mlx_lm.models.base import create_attention_mask, create_ssm_mask
     from mlx_lm.models.cache import KVCache
-    from mlx_lm.models.qwen3_next import Qwen3NextDecoderLayer
+    from mlx_lm.models.qwen3_next import ModelArgs, Qwen3NextDecoderLayer
+
+    args = _resolve_text_args(model, config, ModelArgs)
+    if args is None:
+        logger.warning(
+            "[MTP inject] Could not resolve LLM args from model.args / "
+            "model.language_model.args / config['text_config']. Skipping MTP."
+        )
+        return False
 
     # --- Step 1: Create MTP module ---
     logger.info(f"[MTP inject] Creating MTP module ({num_mtp_layers} layers)")
