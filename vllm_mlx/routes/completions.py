@@ -26,9 +26,9 @@ from ..service.helpers import (
     _resolve_model_name,
     _resolve_temperature,
     _resolve_top_p,
-    _validate_model_name,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    ensure_model_loaded,
     get_engine,
     get_usage,
 )
@@ -44,7 +44,7 @@ router = APIRouter()
 )
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
-    _validate_model_name(request.model)
+    await ensure_model_loaded(request.model)
     if request.suffix:
         raise HTTPException(
             status_code=400,

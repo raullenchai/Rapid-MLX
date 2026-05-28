@@ -57,10 +57,10 @@ from ..service.helpers import (
     _resolve_model_name,
     _resolve_temperature,
     _resolve_top_p,
-    _validate_model_name,
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    ensure_model_loaded,
     get_engine,
     get_usage,
 )
@@ -170,7 +170,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     }
     ```
     """
-    _validate_model_name(request.model)
+    await ensure_model_loaded(request.model)
     engine = get_engine(request.model)
 
     # Admission reservation is acquired LATER — after cloud-routing

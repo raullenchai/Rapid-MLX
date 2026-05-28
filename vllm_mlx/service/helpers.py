@@ -616,10 +616,44 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
     return cfg.engine
 
 
-def _validate_model_name(request_model: str) -> None:
-    """Validate that the request model name matches a served model."""
-    if request_model is None:
-        return
+def _is_model_loaded(model_name: str | None) -> bool:
+    """Return True when ``model_name`` refers to a currently served model.
+
+    Treats ``None`` as loaded — the request did not target a specific model,
+    so the default serves it. Treats ``"default"`` as loaded only when there
+    actually is a model to default to, so the helper's contract (returns True
+    iff the name maps to a served model) holds in the theoretical
+    unconfigured-server case too.
+
+    This unifies single-model and registry modes — the pre-fix behavior
+    accepted ``"default"`` only in registry mode, surfacing as a confusing
+    404 for clients sending ``model: "default"`` against a single-model
+    server (P2-1).
+    """
+    if model_name is None:
+        return True
+    cfg = get_config()
+    if model_name == "default":
+        return bool(cfg.model_name) or cfg.model_registry is not None
+    if cfg.model_registry is not None and model_name in cfg.model_registry:
+        return True
+    if not cfg.model_name:
+        return False
+    accepted = {cfg.model_name}
+    if cfg.model_alias:
+        accepted.add(cfg.model_alias)
+    if cfg.model_path:
+        accepted.add(cfg.model_path)
+    return model_name in accepted
+
+
+def _validate_model_name(request_model: str | None) -> None:
+    """Raise 400 (empty) / 404 (unknown) for model names the server can't serve.
+
+    Kept for ``/v1/messages`` (Anthropic adapter is model-name-agnostic — SDK
+    clients send ``claude-*`` names that should not 404 here). The async
+    counterpart for OpenAI-compatible routes is :func:`ensure_model_loaded`.
+    """
     # Empty string used to short-circuit to the default model silently,
     # masking client bugs (a typo or unset env var would still get a 200).
     # OpenAI returns 400 for empty model fields; do the same.
@@ -628,31 +662,36 @@ def _validate_model_name(request_model: str) -> None:
             status_code=400,
             detail="model must not be empty",
         )
-
+    if _is_model_loaded(request_model):
+        return
     cfg = get_config()
-    if cfg.model_registry and request_model in cfg.model_registry:
+    if not cfg.model_name and cfg.model_registry is None:
         return
-    if cfg.model_registry and request_model == "default":
-        return
+    available = (
+        ", ".join(cfg.model_registry.list_model_names())
+        if cfg.model_registry is not None
+        else cfg.model_name
+    )
+    raise HTTPException(
+        status_code=404,
+        detail=f"The model `{request_model}` does not exist. "
+        f"Available: {available}",
+    )
 
-    if not cfg.model_name:
-        return
-    accepted = {cfg.model_name}
-    if cfg.model_alias:
-        accepted.add(cfg.model_alias)
-    if cfg.model_path:
-        accepted.add(cfg.model_path)
-    if request_model not in accepted:
-        available = (
-            ", ".join(cfg.model_registry.list_model_names())
-            if cfg.model_registry
-            else cfg.model_name
-        )
-        raise HTTPException(
-            status_code=404,
-            detail=f"The model `{request_model}` does not exist. "
-            f"Available: {available}",
-        )
+
+async def ensure_model_loaded(model_name: str | None) -> None:
+    """Canonical async strict-404 (+ 400-on-empty) check for OpenAI routes.
+
+    Wired into ``/v1/chat/completions`` and ``/v1/completions`` — mirrors
+    :func:`_validate_model_name` so the two are genuinely interchangeable on
+    the strict-404 path today.
+
+    Extension point for on-demand auto-loading: a follow-up PR (#319) will
+    let an operator-set flag trigger a hot swap to the requested model here
+    instead of raising 404. The flag plumbing, swap machinery, and
+    security/concurrency model are intentionally out of scope for this PR.
+    """
+    _validate_model_name(model_name)
 
 
 # ── Tool call parsing ──────────────────────────────────────────────
