@@ -676,9 +676,10 @@ def _install_mtp(
         logger.warning(
             "[MTP] BatchGenerator %s has no _step attribute — this model "
             "uses a different generation flow (likely hybrid Gated-DeltaNet, "
-            "e.g. Qwen3.6-35B-A3B). MTP install skipped; request will run "
-            "without speculative decode. Re-run without --enable-mtp / "
-            "--force-spec-decode to silence this warning. See issue #477.",
+            "e.g. Qwen3.6-35B-A3B). MTP install skipped; the request "
+            "continues normally without MTP. Other spec-decode paths "
+            "(suffix / DFlash) installed via --force-spec-decode are "
+            "unaffected. See issue #477.",
             type(batch_gen).__name__,
         )
         return False

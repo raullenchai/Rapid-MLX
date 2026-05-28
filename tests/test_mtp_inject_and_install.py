@@ -61,6 +61,17 @@ class _StubArgsCls:
         return cls(**d)
 
 
+@pytest.fixture(autouse=True)
+def _reset_stub_args_cls():
+    """Class-level ``last_built_from`` is shared mutable state — reset it
+    between tests so order doesn't matter (e.g. a fallback-path test that
+    runs first must not poison a later text_config-untouched assertion).
+    DeepSeek round-1 BLOCKING #1."""
+    _StubArgsCls.last_built_from = None
+    yield
+    _StubArgsCls.last_built_from = None
+
+
 def test_resolve_text_args_returns_model_args_when_populated():
     """Text-only path: ``model.args.hidden_size`` exists → use it directly,
     no language_model / text_config lookup needed."""
