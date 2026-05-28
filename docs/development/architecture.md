@@ -32,15 +32,14 @@
 
 ## Engine Architecture
 
-### Simple Engine
-- Direct mlx-lm/mlx-vlm wrapper
-- Maximum throughput for single user
-- Zero batching overhead
+`BatchedEngine` is the sole engine (the older `SimpleEngine` was deleted —
+single-request workloads pay zero batching overhead, so the split was no
+longer earning its keep).
 
-### Batched Engine
-- AsyncEngineCore with continuous batching
-- Multiple concurrent requests
+### BatchedEngine
+- `AsyncEngineCore` with continuous batching
 - Scheduler with priority queue
+- One engine instance handles both single-request and multi-tenant workloads
 
 ## Paged KV Cache Architecture
 

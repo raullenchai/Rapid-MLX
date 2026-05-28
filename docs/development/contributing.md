@@ -72,15 +72,16 @@ ruff format --check .
 ### Running Benchmarks
 
 ```bash
-# LLM benchmark
-rapid-mlx-bench --model mlx-community/Qwen3-0.6B-8bit
+# LLM benchmark — short alias works
+rapid-mlx bench qwen3.5-4b
 
-# Image benchmark
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit
-
-# Video benchmark
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video
+# Or by full HF repo
+rapid-mlx bench mlx-community/Qwen3.5-9B-4bit
 ```
+
+Run `rapid-mlx bench --help` for the full flag list. For multimodal (image /
+video) benchmarks, use `scripts/` (e.g. `scripts/bench_*` for the dev-only
+benchmarks not shipped with pip).
 
 ## Areas for Contribution
 
@@ -108,7 +109,7 @@ See [Architecture](architecture.md) for details on the codebase structure.
 If you have access to different Apple Silicon chips (M1, M2, M3, M4), benchmark results are valuable:
 
 ```bash
-rapid-mlx-bench --model mlx-community/Qwen3-0.6B-8bit --output results_m4.json
+rapid-mlx bench qwen3.5-4b | tee results_m4.txt
 ```
 
 ## Questions?

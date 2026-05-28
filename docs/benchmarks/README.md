@@ -11,14 +11,12 @@ Performance benchmarks for rapid-mlx on Apple Silicon.
 ## Quick Commands
 
 ```bash
-# LLM benchmark
-rapid-mlx-bench --model mlx-community/Qwen3-0.6B-8bit
+# LLM benchmark — short aliases work
+rapid-mlx bench qwen3.5-4b
 
-# Image benchmark
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit
-
-# Video benchmark
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video
+# Or by full HF repo (vision/multimodal benches live in scripts/ — they are
+# dev-only and not shipped with `pip install rapid-mlx`)
+rapid-mlx bench mlx-community/Qwen3.5-9B-4bit
 ```
 
 ## Standalone Test Defaults
@@ -57,7 +55,7 @@ Results will vary on different Apple Silicon chips.
 If you have a different Apple Silicon chip, please share your results:
 
 ```bash
-rapid-mlx-bench --model mlx-community/Qwen3-0.6B-8bit --output results.json
+rapid-mlx bench qwen3.5-4b | tee results.txt
 ```
 
 Open an issue with your results at [GitHub Issues](https://github.com/raullenchai/Rapid-MLX/issues).

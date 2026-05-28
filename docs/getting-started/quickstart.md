@@ -1,18 +1,30 @@
 # Quick Start
 
-## Option 1: OpenAI-Compatible Server
+## Option 1: Interactive Chat (fastest first taste)
+
+The shortest path to talking to a model — `chat` spawns its own server,
+downloads the model on first run (~2.5 GB for the default `qwen3.5-4b`), and
+drops you into a REPL.
+
+```bash
+rapid-mlx chat                  # defaults to qwen3.5-4b
+rapid-mlx chat qwen3.5-9b       # a larger model (5 GB)
+rapid-mlx chat --think          # surface chain-of-thought reasoning
+```
+
+In-REPL: `/help`, `/reset`, `/save <path>`, `/model <alias>`, `/exit`. Type
+`"""` on its own line to start/end a multi-line block. See the
+[CLI reference](../reference/cli.md#rapid-mlx-chat) for all flags.
+
+## Option 2: OpenAI-Compatible Server
 
 Start the server:
 
 ```bash
-# Simple mode - maximum throughput for single user
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
-
-# Continuous batching - for multiple concurrent users
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --continuous-batching
+rapid-mlx serve qwen3.5-4b --port 8000
 ```
 
-Use with OpenAI Python SDK:
+Use with the OpenAI Python SDK:
 
 ```python
 from openai import OpenAI
@@ -20,7 +32,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
 
 response = client.chat.completions.create(
-    model="mlx-community/Llama-3.2-3B-Instruct-4bit",
+    model="default",
     messages=[{"role": "user", "content": "Hello!"}],
 )
 print(response.choices[0].message.content)
@@ -34,35 +46,22 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{"model": "default", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-## Option 2: Python Client
+## Option 3: Gradio Web UI
 
-```python
-from openai import OpenAI
-
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
-
-response = client.chat.completions.create(
-    model="default",
-    messages=[{"role": "user", "content": "What is the capital of France?"}],
-    max_tokens=100,
-)
-print(response.choices[0].message.content)
-```
-
-## Option 3: Gradio Chat UI
+A browser-based chat UI ships in the optional `[chat]` extra:
 
 ```bash
-rapid-mlx-chat --model mlx-community/Llama-3.2-3B-Instruct-4bit
+pip install 'rapid-mlx[chat]'
+# Then launch — see `rapid-mlx help` for the UI entry point in your install.
 ```
-
-Opens a web interface at http://localhost:7860
 
 ## Multimodal Models
 
-For image/video understanding, use a VLM model:
+For image / video understanding, use a VLM (requires the `[vision]` extra —
+`pip install 'rapid-mlx[vision]'`):
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+rapid-mlx serve gemma-4-26b --mllm --port 8000
 ```
 
 ```python
@@ -81,10 +80,12 @@ response = client.chat.completions.create(
 
 ## Reasoning Models
 
-Separate the model's thinking process from the final answer:
+Reasoning parsers are auto-detected from the model name. The server splits
+chain-of-thought into a separate `reasoning_content` field, leaving `content`
+clean.
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-8B-4bit --reasoning-parser qwen3
+rapid-mlx serve qwen3.5-9b --port 8000   # qwen3 reasoning parser auto-detected
 ```
 
 ```python
@@ -92,15 +93,17 @@ response = client.chat.completions.create(
     model="default",
     messages=[{"role": "user", "content": "What is 17 × 23?"}]
 )
-print(response.choices[0].message.content)  # Final answer
+print(response.choices[0].message.content)            # final answer
+print(response.choices[0].message.reasoning_content)  # thinking trace
 ```
 
 ## Embeddings
 
-Generate text embeddings for semantic search and RAG:
+Generate text embeddings for semantic search and RAG (install the
+`[embeddings]` extra first):
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-4B-4bit --embedding-model mlx-community/multilingual-e5-small-mlx
+rapid-mlx serve qwen3.5-4b --embedding-model mlx-community/multilingual-e5-small-mlx
 ```
 
 ```python
@@ -112,11 +115,18 @@ response = client.embeddings.create(
 
 ## Tool Calling
 
-Enable function calling with any supported model:
+Tool/function calling is on by default for supported model families (Qwen3.x,
+GLM-4.7, GPT-OSS, Llama, Mistral, etc.) — the right parser is auto-detected:
 
 ```bash
-rapid-mlx serve mlx-community/Devstral-Small-2507-4bit \
-  --enable-auto-tool-choice --tool-call-parser mistral
+rapid-mlx serve qwen3.5-9b --port 8000
+```
+
+If you need to pin the parser manually:
+
+```bash
+rapid-mlx serve devstral-24b \
+  --enable-auto-tool-choice --tool-call-parser hermes
 ```
 
 ## Next Steps

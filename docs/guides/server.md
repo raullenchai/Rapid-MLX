@@ -1,31 +1,26 @@
 # OpenAI-Compatible Server
 
 rapid-mlx provides a FastAPI server with full OpenAI API compatibility.
+Continuous batching is on by default; `--continuous-batching` is accepted as
+a no-op for back-compat.
 
 ## Starting the Server
 
-### Simple Mode (Default)
-
-Maximum throughput for single user:
+### Default
 
 ```bash
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
+rapid-mlx serve qwen3.5-4b --port 8000
 ```
 
-### Continuous Batching Mode
-
-For multiple concurrent users:
-
-```bash
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --continuous-batching
-```
+Short aliases (see `rapid-mlx models`) work everywhere a model name is
+accepted. Full HuggingFace repo IDs (`mlx-community/...`) work too.
 
 ### With Paged Cache
 
-Memory-efficient caching for production:
+Memory-efficient caching for production / shared system prompts:
 
 ```bash
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --continuous-batching --use-paged-cache
+rapid-mlx serve qwen3.5-9b --port 8000 --use-paged-cache
 ```
 
 ## Server Options
@@ -37,7 +32,7 @@ rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --continuou
 | `--api-key` | API key for authentication | None |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | 0 |
 | `--timeout` | Request timeout in seconds | 300 |
-| `--continuous-batching` | Enable batching for multi-user | False |
+| `--continuous-batching` | Accepted for back-compat (continuous batching is always on) | on |
 | `--use-paged-cache` | Enable paged KV cache | False |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
 | `--cache-memory-percent` | Fraction of RAM for cache | 0.20 |
@@ -46,7 +41,7 @@ rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --continuou
 | `--default-top-p` | Default top_p when not specified | None |
 | `--stream-interval` | Tokens per stream chunk | 1 |
 | `--mcp-config` | Path to MCP config file | None |
-| `--reasoning-parser` | Parser for reasoning models (`qwen3`, `deepseek_r1`) | None |
+| `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
 | `--embedding-model` | Pre-load an embedding model at startup | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (see [Tool Calling](tool-calling.md)) | None |

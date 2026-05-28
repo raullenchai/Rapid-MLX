@@ -5,64 +5,60 @@
 - macOS on Apple Silicon (M1/M2/M3/M4)
 - Python 3.10+
 
-## Install with uv (Recommended)
+## Install with Homebrew (recommended)
 
 ```bash
-git clone https://github.com/raullenchai/Rapid-MLX.git
-cd Rapid-MLX
-
-uv pip install -e .
+brew install raullenchai/rapid-mlx/rapid-mlx
 ```
 
 ## Install with pip
 
 ```bash
+pip install rapid-mlx
+```
+
+If `python3 --version` reports 3.9 (macOS default), install a newer Python
+first: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`.
+
+### One-liner with auto-setup
+
+```bash
+curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
+```
+
+### From source (for development)
+
+```bash
 git clone https://github.com/raullenchai/Rapid-MLX.git
 cd Rapid-MLX
-
 pip install -e .
 ```
 
-### Optional: Vision Support
+## Optional Extras
 
-For video processing with transformers:
+The base text-only install is ~460 MB. Vision/audio/etc. ship as opt-in extras.
 
-```bash
-pip install -e ".[vision]"
-```
-
-### Optional: Audio Support (STT/TTS)
-
-```bash
-pip install mlx-audio
-```
-
-### Optional: Embeddings
-
-```bash
-pip install mlx-embeddings
-```
-
-## What Gets Installed
-
-- `mlx`, `mlx-lm`, `mlx-vlm` - MLX framework and model libraries
-- `transformers`, `tokenizers` - HuggingFace libraries
-- `opencv-python` - Video processing
-- `gradio` - Chat UI
-- `psutil` - Resource monitoring
-- `mlx-audio` (optional) - Speech-to-Text and Text-to-Speech
-- `mlx-embeddings` (optional) - Text embeddings
+| Extra | Install | Adds |
+|---|---|---|
+| `vision` | `pip install 'rapid-mlx[vision]'` | mlx-vlm + opencv + torch (~322 MB) for VLMs (Gemma 4, Qwen-VL, video) |
+| `audio` | `pip install 'rapid-mlx[audio]'` | mlx-audio + spacy + scipy (~600 MB) for TTS / STT |
+| `embeddings` | `pip install 'rapid-mlx[embeddings]'` | mlx-embeddings (~50 MB) for `/v1/embeddings` |
+| `chat` | `pip install 'rapid-mlx[chat]'` | Gradio web UI (~150 MB) |
+| `guided` | `pip install 'rapid-mlx[guided]'` | outlines (~80 MB) for schema-constrained JSON |
+| `all` | `pip install 'rapid-mlx[all]'` | Everything above (~1.1 GB) |
 
 ## Verify Installation
 
 ```bash
-# Check CLI commands
+# Check CLI
 rapid-mlx --help
-rapid-mlx-bench --help
-rapid-mlx-chat --help
+rapid-mlx version
 
-# Test with a small model
-rapid-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit --prompts 1
+# Self-diagnostic (works without downloading a model)
+rapid-mlx doctor
+
+# Smallest interactive smoke test (downloads ~2.5 GB on first run)
+rapid-mlx chat qwen3.5-4b
 ```
 
 ## Troubleshooting
@@ -85,5 +81,15 @@ huggingface-cli login
 
 Use a smaller quantized model:
 ```bash
-rapid-mlx serve mlx-community/Llama-3.2-1B-Instruct-4bit
+rapid-mlx serve qwen3.5-4b
+```
+
+### `brew install` fails with `Operation not permitted`
+
+Brew 5.x's install sandbox sometimes can't auto-tap `homebrew/core` mid-install.
+Pre-tap it once, then retry:
+
+```bash
+brew tap homebrew/core --force   # ~1.3 GB, one-time
+brew install raullenchai/rapid-mlx/rapid-mlx
 ```

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
-CLI for vllm-mlx.
+CLI for rapid-mlx (package name: ``vllm_mlx``).
 
 Commands:
-    vllm-mlx serve <model> --port 8000    Start OpenAI-compatible server
-    vllm-mlx bench <model>                Run benchmark
+    rapid-mlx serve <model> --port 8000    Start OpenAI-compatible server
+    rapid-mlx bench <model>                Run benchmark
+    rapid-mlx chat <model>                 Interactive chat REPL
 
 Usage:
-    vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
-    vllm-mlx bench mlx-community/Llama-3.2-1B-Instruct-4bit --num-prompts 10
+    rapid-mlx serve qwen3.5-4b --port 8000
+    rapid-mlx bench qwen3.5-4b --num-prompts 10
+    rapid-mlx chat qwen3.5-4b
 """
 
 import argparse
@@ -1208,6 +1210,7 @@ def models_command(_args):
 def pull_command(args):
     """Download a model to the HuggingFace cache without serving."""
     from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import HFValidationError
     from huggingface_hub.utils import RepositoryNotFoundError
 
     repo_id = args.model  # already alias-resolved by main()
@@ -1215,6 +1218,19 @@ def pull_command(args):
     print(f"\n  Pulling {repo_id} ...")
     try:
         path = snapshot_download(repo_id)
+    except HFValidationError:
+        # Malformed HF repo id (e.g. ``foo/bar/baz``) — surface the same
+        # friendly "unknown model" hint the alias path uses instead of a
+        # raw stack trace.
+        shown = getattr(args, "_original_alias", repo_id)
+        print(
+            f"\n  Error: '{shown}' is not a valid HuggingFace repo id "
+            "(expected ``namespace/name``)."
+        )
+        _print_unknown_model_help(
+            shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
+        )
+        sys.exit(1)
     except Exception as e:
         is_404 = isinstance(e, RepositoryNotFoundError) or (
             "404" in str(e) or "not found" in str(e).lower()
@@ -2757,12 +2773,15 @@ def main():
     parser = argparse.ArgumentParser(
         description="Rapid-MLX: AI inference for Apple Silicon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog="""\
 Examples:
-  rapid-mlx serve qwen3.5-9b --port 8000
-  rapid-mlx serve mlx-community/Qwen3.5-9B-4bit --port 8000
-  rapid-mlx models
-        """,
+  rapid-mlx chat                                      # interactive REPL (defaults to qwen3.5-4b)
+  rapid-mlx chat qwen3.5-9b --think                   # larger model, surface reasoning
+  rapid-mlx serve qwen3.5-9b --port 8000              # OpenAI-compatible server
+  rapid-mlx serve mlx-community/Qwen3.5-9B-4bit       # full HF repo also works
+  rapid-mlx models                                    # list all aliases
+  rapid-mlx info qwen3.5-9b                           # show per-alias profile
+""",
     )
     parser.add_argument(
         "--version", "-V", action="version", version=f"rapid-mlx {_version}"

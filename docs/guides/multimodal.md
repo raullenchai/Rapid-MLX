@@ -227,15 +227,12 @@ Tested on Apple M4 Max with 128 GB unified memory.
 
 ### Running Benchmarks
 
+The shipped `rapid-mlx bench` is text-only. Multi-resolution image and video
+benches live in the dev-only `scripts/` directory (source checkout only). For
+a quick text-only sanity bench against a VLM, you can still run:
+
 ```bash
-# Quick benchmark
-rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --quick
-
-# Full benchmark with more resolutions
-rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit
-
-# Video benchmark
-rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video
+rapid-mlx bench qwen3-vl-4b
 ```
 
 ## MLLM Cache
@@ -306,10 +303,12 @@ When memory pressure occurs, least recently accessed entries are evicted first.
 
 ## Gradio Chat UI
 
-For interactive multimodal chat:
+For an interactive multimodal session, start a server and use any OpenAI-
+compatible web UI (Open WebUI, LibreChat, etc.) pointed at it:
 
 ```bash
-rapid-mlx-chat --model mlx-community/Qwen3-VL-4B-Instruct-3bit
+rapid-mlx serve qwen3-vl-4b --mllm --port 8000
 ```
 
-Supports drag-and-drop images and videos.
+The shipped `rapid-mlx chat` REPL is text-only. The optional Gradio web UI
+(`pip install 'rapid-mlx[chat]'`) supports image / video uploads.

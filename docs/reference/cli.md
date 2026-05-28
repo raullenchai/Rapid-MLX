@@ -5,8 +5,21 @@
 | Command | Description |
 |---------|-------------|
 | `rapid-mlx serve` | Start OpenAI-compatible server |
-| `rapid-mlx-bench` | Run performance benchmarks |
-| `rapid-mlx-chat` | Start Gradio chat interface |
+| `rapid-mlx chat` | Interactive chat REPL with a model |
+| `rapid-mlx bench` | Run performance benchmarks |
+| `rapid-mlx models` | List available model aliases |
+| `rapid-mlx info` | Show the per-model profile for an alias or repo |
+| `rapid-mlx pull` | Download a model into the HuggingFace cache |
+| `rapid-mlx rm` | Remove a cached model |
+| `rapid-mlx ps` | List running rapid-mlx servers |
+| `rapid-mlx agents` | List, configure, and test agent integrations |
+| `rapid-mlx doctor` | Run self-diagnostic / regression harness |
+| `rapid-mlx telemetry` | Manage anonymous usage telemetry (opt-in) |
+| `rapid-mlx upgrade` | Upgrade rapid-mlx (brew / pip / install.sh) |
+| `rapid-mlx version` | Show version number |
+| `rapid-mlx help <cmd>` | Show help for a subcommand |
+
+Run `rapid-mlx <cmd> --help` for the full flag list of any subcommand.
 
 ## `rapid-mlx serve`
 
@@ -41,65 +54,49 @@ rapid-mlx serve <model> [options]
 | `--gpu-memory-utilization` | Fraction of device memory for Metal allocation limit (0.0-1.0) | 0.90 |
 | `--default-temperature` | Default temperature when not specified in request | None |
 | `--default-top-p` | Default top_p when not specified in request | None |
-| `--reasoning-parser` | Parser for reasoning models (`qwen3`, `deepseek_r1`) | None |
+| `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
 | `--embedding-model` | Pre-load an embedding model at startup | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
-| `--tool-call-parser` | Tool call parser (`auto`, `mistral`, `qwen`, `llama`, `hermes`, `deepseek`, `kimi`, `granite`, `nemotron`, `xlam`, `functionary`, `glm47`) | None |
+| `--tool-call-parser` | Tool call parser (e.g. `hermes`, `llama`, `deepseek`, `deepseek_v31`, `glm47`, `gemma4`, `minimax`, `kimi`, `harmony`, `qwen3_coder_xml`). Auto-detected from the model name; explicit flag overrides. | auto |
 
 ### Examples
 
 ```bash
-# Simple mode (single user, max throughput)
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit
+# Default — continuous batching is on by default; short aliases work
+rapid-mlx serve qwen3.5-4b
 
-# Continuous batching (multiple users)
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --continuous-batching
+# A larger general-purpose model (5 GB)
+rapid-mlx serve qwen3.5-9b --port 8000
 
-# With memory limit for large models
-rapid-mlx serve mlx-community/GLM-4.7-Flash-4bit \
-  --continuous-batching \
-  --cache-memory-mb 2048
-
-# Production with paged cache
-rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
-  --continuous-batching \
-  --use-paged-cache \
-  --port 8000
+# Paged KV cache (memory-efficient prefix sharing)
+rapid-mlx serve qwen3.5-9b --use-paged-cache --port 8000
 
 # With MCP tools
-rapid-mlx serve mlx-community/Qwen3-4B-4bit --mcp-config mcp.json
+rapid-mlx serve qwen3.5-9b --mcp-config mcp.json
 
-# Multimodal model
-rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit
+# Multimodal (vision) model — requires the [vision] extra
+rapid-mlx serve gemma-4-26b --mllm
 
-# Reasoning model (separates thinking from answer)
-rapid-mlx serve mlx-community/Qwen3-8B-4bit --reasoning-parser qwen3
+# Reasoning model — parser is auto-detected, but you can pin it
+rapid-mlx serve qwen3.5-9b --reasoning-parser qwen3
 
 # DeepSeek reasoning model
-rapid-mlx serve mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit --reasoning-parser deepseek_r1
+rapid-mlx serve deepseek-r1-8b --reasoning-parser deepseek_r1
 
 # Tool calling with Mistral/Devstral
-rapid-mlx serve mlx-community/Devstral-Small-2507-4bit \
-  --enable-auto-tool-choice --tool-call-parser mistral
+rapid-mlx serve devstral-24b --enable-auto-tool-choice --tool-call-parser hermes
 
-# Tool calling with Granite
-rapid-mlx serve mlx-community/granite-4.0-tiny-preview-4bit \
-  --enable-auto-tool-choice --tool-call-parser granite
+# DFlash speculative decoding (single-user, single supported alias)
+rapid-mlx serve qwen3.5-27b-8bit --enable-dflash --port 8000
 
-# With API key authentication
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --api-key your-secret-key
-
-# Large models (200GB+) — raise memory limit to avoid cache thrashing
-rapid-mlx serve mlx-community/Qwen3.5-397B-A17B-nvfp4 \
-  --continuous-batching \
-  --gpu-memory-utilization 0.95
+# API key authentication
+rapid-mlx serve qwen3.5-9b --api-key your-secret-key
 
 # Production setup with security options
-rapid-mlx serve mlx-community/Qwen3-4B-4bit \
+rapid-mlx serve qwen3.5-9b \
   --api-key your-secret-key \
   --rate-limit 60 \
-  --timeout 120 \
-  --continuous-batching
+  --timeout 120
 ```
 
 ### Security
@@ -126,75 +123,89 @@ curl http://localhost:8000/v1/models \
   -H "Authorization: Bearer your-secret-key"
 ```
 
-## `rapid-mlx-bench`
+## `rapid-mlx bench`
 
-Run performance benchmarks.
+Run a built-in performance benchmark against a model.
 
 ### Usage
 
 ```bash
-rapid-mlx-bench --model <model> [options]
+rapid-mlx bench <model> [options]
 ```
 
-### Options
+### Common Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--model` | Model name | Required |
-| `--prompts` | Number of prompts | 5 |
+| `<model>` | Model alias (e.g. `qwen3.5-4b`) or HF repo (positional) | *(required)* |
+| `--num-prompts` | Number of prompts | 5 |
 | `--max-tokens` | Max tokens per prompt | 256 |
-| `--quick` | Quick benchmark mode | False |
-| `--video` | Run video benchmark | False |
-| `--video-url` | Custom video URL | None |
-| `--video-path` | Custom video path | None |
+| `--enable-prefix-cache` / `--disable-prefix-cache` | Toggle prefix caching | enabled |
+| `--use-paged-cache` | Use paged KV cache layout | off |
+| `--kv-cache-quantization` | Quantize prefix cache entries | off |
+
+Run `rapid-mlx bench --help` for the full list (memory limits, batch sizes, etc.).
 
 ### Examples
 
 ```bash
-# LLM benchmark
-rapid-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit
+# Quick LLM benchmark using a short alias
+rapid-mlx bench qwen3.5-4b
 
-# Quick benchmark
-rapid-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit --quick
-
-# Image benchmark (auto-detected for VLM models)
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit
-
-# Video benchmark
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video
-
-# Custom video
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit \
-  --video --video-url https://example.com/video.mp4
+# Bench a vision-language model by full HF repo
+rapid-mlx bench mlx-community/Qwen3-VL-8B-Instruct-4bit
 ```
 
-## `rapid-mlx-chat`
+## `rapid-mlx chat`
 
-Start Gradio chat interface.
+Spawn (or attach to) a server and start an interactive REPL with a model. This
+is a terminal chat — not a web UI. (For the Gradio web UI, install the optional
+`[chat]` extra: `pip install 'rapid-mlx[chat]'`.)
 
 ### Usage
 
 ```bash
-rapid-mlx-chat --model <model> [options]
+rapid-mlx chat [model] [options]
 ```
 
 ### Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--model` | Model name | Required |
-| `--port` | Gradio port | 7860 |
-| `--text-only` | Disable multimodal | False |
+| `model` | Model alias or HF repo (positional, optional) | `qwen3.5-4b` |
+| `--system` | System prompt prepended to the conversation | *(none)* |
+| `--think` / `--no-think` | Enable / disable reasoning output in the REPL | off |
+| `--max-tokens` | Max tokens per assistant response | 2048 |
+| `--temperature` | Sampling temperature | 0.7 |
+| `--port` | Connect to an existing server on `127.0.0.1:<port>` instead of spawning | *(spawn)* |
+| `--base-url` | Connect to an existing server URL (overrides `--port`) | *(spawn)* |
+| `--ready-timeout` | Seconds to wait for the spawned server to become ready | 600 |
+| `--response-timeout` | Seconds to wait for a single response | 600 |
+
+> The REPL defaults to `--no-think` because reasoning models (Qwen3.5, etc.)
+> otherwise leak raw chain-of-thought and can loop until `max-tokens`. Pass
+> `--think` to surface reasoning.
 
 ### Examples
 
 ```bash
-# Multimodal chat (text + images + video)
-rapid-mlx-chat --model mlx-community/Qwen3-VL-4B-Instruct-3bit
+# Fastest path — defaults to qwen3.5-4b, spawns its own server
+rapid-mlx chat
 
-# Text-only chat
-rapid-mlx-chat --model mlx-community/Llama-3.2-3B-Instruct-4bit --text-only
+# A reasoning model with thinking surfaced
+rapid-mlx chat qwen3.5-9b --think
+
+# Attach to a server you're already running on :8000
+rapid-mlx serve qwen3.5-27b --port 8000 &
+rapid-mlx chat --port 8000
+
+# Pin a system prompt
+rapid-mlx chat qwen3.5-4b --system "You are a terse, friendly Mac shell tutor."
 ```
+
+In-REPL slash commands: `/help`, `/reset` (alias `/clear`), `/model <alias>`,
+`/save <path>` (write conversation to markdown), `/exit` (alias `/quit`).
+Type `"""` on its own line to start/end a multi-line block (pasting code).
 
 ## Environment Variables
 

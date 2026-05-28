@@ -2,16 +2,10 @@
 
 ## Running Video Benchmarks
 
-```bash
-# Full benchmark (10 configurations, 2-64 frames)
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video
-
-# Quick benchmark (3 frame counts)
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video --quick
-
-# Custom video
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video --video-url https://example.com/video.mp4
-```
+The shipped `rapid-mlx bench` subcommand benches text generation only. The
+video benchmarks below were collected with the dev-only scripts under
+`scripts/` (not packaged with `pip install rapid-mlx`) — clone the repo to
+reproduce them. The numbers shown here are kept as a reference data point.
 
 ## Results - Qwen3-VL-8B-Instruct-4bit (M4 Max, 128GB)
 

@@ -74,15 +74,21 @@ curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
 > brew install raullenchai/rapid-mlx/rapid-mlx
 > ```
 
-**Step 2 — Serve a model:**
+**Step 2 — Talk to a model right now** (one command, no second terminal):
+```bash
+rapid-mlx chat
+```
+Defaults to `qwen3.5-4b`. First run downloads the model (~2.5 GB) — you'll see a progress bar. Drops you into a REPL when it's ready. Type `/help` for slash commands, `/exit` to quit. Pass `--think` to surface chain-of-thought.
+
+**Step 2b — Or serve a model for use from other apps:**
 ```bash
 rapid-mlx serve qwen3.5-4b
 ```
-First run downloads the model (~2.5 GB) — you'll see a progress bar. Wait for `Ready: http://localhost:8000/v1`.
+Same model, same download — but this starts an OpenAI-compatible HTTP server instead of a REPL. Wait for `Ready: http://localhost:8000/v1`.
 
 > Want vision? `pip install 'rapid-mlx[vision]'` then `rapid-mlx serve gemma-4-26b` (~14 GB).
 
-**Step 3 — Chat** (open a **second** terminal tab):
+**Step 3 — Hit the API** (from a second terminal tab):
 ```bash
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -384,10 +390,10 @@ The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monit
 
 ### Full model lineup
 
-58 short aliases across 21 families ship in v0.6.37. Run `rapid-mlx models` for the live list with quant tier, MoE / hybrid flags, and DFlash eligibility.
+65 short aliases across 21 families ship today. Run `rapid-mlx models` for the live list with quant tier, MoE / hybrid flags, and DFlash eligibility.
 
 <details>
-<summary><strong>Show all 58 aliases by family</strong></summary>
+<summary><strong>Show all 65 aliases by family</strong></summary>
 
 | Family | Aliases | Notable |
 |---|---|---|

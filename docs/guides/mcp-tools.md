@@ -51,11 +51,7 @@ Create `mcp.json`:
 ### 2. Start Server with MCP
 
 ```bash
-# Simple mode
-rapid-mlx serve mlx-community/Qwen3-4B-4bit --mcp-config mcp.json
-
-# Continuous batching
-rapid-mlx serve mlx-community/Qwen3-4B-4bit --mcp-config mcp.json --continuous-batching
+rapid-mlx serve qwen3.5-4b --mcp-config mcp.json
 ```
 
 ### 3. Verify MCP Status

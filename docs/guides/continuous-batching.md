@@ -1,11 +1,13 @@
 # Continuous Batching
 
-Continuous batching enables higher throughput when serving multiple concurrent users.
+Continuous batching enables higher throughput when serving multiple concurrent
+users. It is **on by default** — the `--continuous-batching` flag is accepted
+for back-compat but is a no-op.
 
-## Enabling Continuous Batching
+## Default Behaviour
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-0.6B-8bit --continuous-batching
+rapid-mlx serve qwen3.5-4b
 ```
 
 ## With Paged Cache
@@ -13,20 +15,16 @@ rapid-mlx serve mlx-community/Qwen3-0.6B-8bit --continuous-batching
 For memory-efficient prefix sharing:
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-0.6B-8bit --continuous-batching --use-paged-cache
+rapid-mlx serve qwen3.5-4b --use-paged-cache
 ```
 
 ## How It Works
 
-### Simple Mode (Default)
-- One request at a time
-- Maximum throughput for single user
-- No overhead from batching
-
-### Continuous Batching Mode
-- Multiple requests processed together
-- Better throughput for concurrent users
-- Small overhead per request
+### Continuous Batching (always on)
+- Multiple requests processed together when concurrency > 1
+- Single-request workloads pay zero overhead
+- Implemented in `BatchedEngine` (the sole engine; the old `SimpleEngine` was
+  removed)
 
 ### Paged Cache
 - KV cache stored in fixed-size blocks
@@ -67,10 +65,10 @@ Control token delivery with `--stream-interval`:
 
 ```bash
 # Every token (smoothest)
-rapid-mlx serve model --continuous-batching --stream-interval 1
+rapid-mlx serve model --stream-interval 1
 
 # Batch tokens (better for high-latency)
-rapid-mlx serve model --continuous-batching --stream-interval 5
+rapid-mlx serve model --stream-interval 5
 ```
 
 | Value | Behavior |
@@ -85,13 +83,13 @@ For large models, the prefix cache can consume significant memory. The memory-aw
 
 ```bash
 # Auto-detect (uses 20% of available RAM)
-rapid-mlx serve model --continuous-batching
+rapid-mlx serve model
 
 # Explicit limit
-rapid-mlx serve model --continuous-batching --cache-memory-mb 2048
+rapid-mlx serve model --cache-memory-mb 2048
 
 # Custom percentage
-rapid-mlx serve model --continuous-batching --cache-memory-percent 0.10
+rapid-mlx serve model --cache-memory-percent 0.10
 ```
 
 | Option | Description |
@@ -157,18 +155,16 @@ python tests/test_prefix_cache.py
 
 ## When to Use
 
-| Scenario | Mode |
-|----------|------|
-| Single user, maximum speed | Simple (default) |
-| Multiple concurrent users | `--continuous-batching` |
-| Large models (7B+) | `--continuous-batching --cache-memory-mb 2048` |
-| Production with shared prompts | `--continuous-batching --use-paged-cache` |
+| Scenario | Flags |
+|----------|-------|
+| Default — any concurrency, any model | *(none — batching is on)* |
+| Large models on tight RAM | `--cache-memory-mb 2048` |
+| Production with shared prompts | `--use-paged-cache` |
 
 ## Production Setup
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
-  --continuous-batching \
+rapid-mlx serve qwen3.5-9b \
   --use-paged-cache \
   --port 8000
 ```

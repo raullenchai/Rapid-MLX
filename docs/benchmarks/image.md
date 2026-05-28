@@ -2,12 +2,13 @@
 
 ## Running Image Benchmarks
 
-```bash
-# Full benchmark (10 resolutions)
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit
+The shipped `rapid-mlx bench` subcommand benches text generation only. The
+multi-resolution image benchmarks below were collected with the dev-only
+scripts under `scripts/` (not packaged with `pip install rapid-mlx`) — clone
+the repo if you want to reproduce them.
 
-# Quick benchmark (4 resolutions)
-rapid-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --quick
+```bash
+rapid-mlx serve gemma-4-26b --mllm --port 8000   # then exercise the VLM via /v1/chat/completions
 ```
 
 ## Results - Qwen3-VL-8B-Instruct-4bit (M4 Max, 128GB)

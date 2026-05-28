@@ -27,7 +27,7 @@ rapid-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 
 ### Getting Started
 - [Installation](getting-started/installation.md)
-- [Quick Start](getting-started/quickstart.md)
+- [Quick Start](getting-started/quickstart.md) — including `rapid-mlx chat` for an instant REPL
 
 ### User Guides
 - [OpenAI-Compatible Server](guides/server.md)
