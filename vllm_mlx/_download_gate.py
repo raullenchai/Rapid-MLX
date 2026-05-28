@@ -306,13 +306,16 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
 
 
 def _root_model_files_all_non_empty(snap_dir: str) -> bool:
-    """Every ``model*.safetensors`` at the snapshot root must have
-    non-zero size.
+    """Every ``model*.safetensors`` at the snapshot root must be a
+    non-zero regular file (or a symlink to one).
 
-    Codex round-7 BLOCKING #3 caught the asymmetry: even when the
-    index validation passes, a stray placeholder
-    ``model-extra.safetensors`` would still be loaded by mlx-lm's
-    non-recursive root glob and would crash on the zero-byte file.
+    Codex round-7 BLOCKING #3 caught the zero-byte placeholder case;
+    round-8 BLOCKING extended it: ``glob`` returns symlinks to
+    directories and dangling symlinks too, and mlx-lm then calls
+    ``mx.load`` on them. So any entry matching the loader glob that
+    is not a real file must REJECT the snapshot (not be silently
+    skipped) — otherwise a ``model-extra.safetensors -> some_dir``
+    sibling would crash the loader after the gate said "cached".
     """
     try:
         entries = os.listdir(snap_dir)
@@ -323,8 +326,12 @@ def _root_model_files_all_non_empty(snap_dir: str) -> bool:
             continue
         full = os.path.join(snap_dir, name)
         try:
+            # ``isfile`` follows symlinks → a healthy
+            # symlink-into-blobs counts; a symlink-to-dir or dangling
+            # symlink does NOT, and the loader's glob would still
+            # return it. Reject rather than continue.
             if not os.path.isfile(full):
-                continue
+                return False
             if os.path.getsize(full) <= 0:
                 return False
         except OSError:

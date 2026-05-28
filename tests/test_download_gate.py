@@ -494,6 +494,43 @@ def test_is_repo_cached_rejects_path_traversal_in_index(tmp_path, monkeypatch):
     assert gate.is_repo_cached("user/escape") is False
 
 
+def test_is_repo_cached_rejects_symlink_to_directory(tmp_path, monkeypatch):
+    """Codex round-8 BLOCKING: ``glob.glob("model*.safetensors")``
+    returns symlinks-to-directories and dangling symlinks too, and
+    mlx-lm then calls ``mx.load`` on them and crashes. The gate must
+    REJECT such entries, not silently skip them via ``isfile``."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--user--badsymlink" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    # Real weight file present.
+    (snap / "model.safetensors").write_bytes(b"x" * 4096)
+    # Symlink at a model*.safetensors path that points to a directory.
+    a_dir = tmp_path / "decoy_dir"
+    a_dir.mkdir()
+    (snap / "model-extra.safetensors").symlink_to(a_dir)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/badsymlink") is False
+
+
+def test_is_repo_cached_rejects_dangling_symlink_at_model_path(tmp_path, monkeypatch):
+    """Same family: a dangling symlink whose name matches the loader
+    glob would also be returned by ``glob``. The loader's subsequent
+    ``mx.load`` raises; the gate must catch it."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--user--dangling" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"x" * 4096)
+    (snap / "model-broken.safetensors").symlink_to(tmp_path / "nonexistent")
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/dangling") is False
+
+
 def test_is_repo_cached_rejects_zero_byte_extra_root_shard(tmp_path, monkeypatch):
     """Codex round-7 BLOCKING #3: ``mlx_lm`` globs EVERY
     ``model*.safetensors`` at the snapshot root and calls ``mx.load``
