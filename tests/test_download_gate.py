@@ -494,6 +494,86 @@ def test_is_repo_cached_rejects_path_traversal_in_index(tmp_path, monkeypatch):
     assert gate.is_repo_cached("user/escape") is False
 
 
+def test_is_repo_cached_honours_resolved_revision_ref(tmp_path, monkeypatch):
+    """Codex round-9 BLOCKING: an old complete snapshot must not mask
+    the current incomplete one. After an interrupted ``snapshot_download``
+    update, HF leaves an empty snapshot dir at the new sha while the
+    previous sha's snapshot is still on disk. The loader resolves via
+    ``refs/main`` to the NEW sha and would crash on its incomplete
+    contents — so the gate must honour the ref, not fall through to
+    the older complete snapshot."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--user--mid-update"
+    snap_root = repo_root / "snapshots"
+
+    # Old complete snapshot — has a valid model.safetensors.
+    old_sha = "deadbeefdeadbeefdeadbeefdeadbeef"
+    old = snap_root / old_sha
+    old.mkdir(parents=True)
+    (old / "config.json").write_text("{}")
+    (old / "model.safetensors").write_bytes(b"x" * 4096)
+
+    # New snapshot dir exists (metadata fetched, weight pull
+    # interrupted) — but no weights yet.
+    new_sha = "feedfacefeedfacefeedfacefeedface"
+    new = snap_root / new_sha
+    new.mkdir()
+    (new / "config.json").write_text("{}")  # only metadata so far
+
+    # refs/main points at the NEW sha (this is the post-update state).
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text(new_sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    # Old complete snapshot must NOT mask the new incomplete one.
+    assert gate.is_repo_cached("user/mid-update") is False
+
+    # Once the new weights land, gate flips to True.
+    (new / "model.safetensors").write_bytes(b"y" * 4096)
+    assert gate.is_repo_cached("user/mid-update") is True
+
+
+def test_is_repo_cached_falls_back_when_no_refs_dir(tmp_path, monkeypatch):
+    """When ``refs/`` doesn't exist (very fresh or non-standard cache
+    layout), the gate falls back to "any complete snapshot" rather
+    than over-prompting. The revision-mask attack from round-9
+    requires ``refs/`` to exist."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--user--no-refs" / "snapshots" / "abcd"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"x" * 4096)
+    # NOTE: no refs/ dir.
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/no-refs") is True
+
+
+def test_is_repo_cached_handles_non_main_default_branch(tmp_path, monkeypatch):
+    """Repos whose default branch is renamed (``master``, ``trunk``,
+    etc.) ship a single non-main ref. The resolver falls back to the
+    single ref so the gate still pins to the right snapshot."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--user--master"
+    snap_root = repo_root / "snapshots"
+    sha = "1234123412341234123412341234123412341234"
+    snap = snap_root / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"x" * 4096)
+
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "master").write_text(sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/master") is True
+
+
 def test_is_repo_cached_rejects_symlink_to_directory(tmp_path, monkeypatch):
     """Codex round-8 BLOCKING: ``glob.glob("model*.safetensors")``
     returns symlinks-to-directories and dangling symlinks too, and

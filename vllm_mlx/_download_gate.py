@@ -339,6 +339,42 @@ def _root_model_files_all_non_empty(snap_dir: str) -> bool:
     return True
 
 
+def _resolved_snapshot_sha(repo_root: str) -> str | None:
+    """Read the sha that ``snapshot_download`` would resolve to.
+
+    HF's cache layout stores the resolved sha for each branch under
+    ``models--<repo>/refs/<branch>``. ``snapshot_download(repo_id)``
+    with no explicit revision defaults to ``main``; if ``main`` isn't
+    present we fall back to whatever single ref does exist (covers
+    repos whose default branch is renamed).
+
+    Codex round-9 BLOCKING: without this check, an old complete
+    snapshot could mask a newer-but-incomplete snapshot (interrupted
+    update). The loader resolves through ``refs/main`` to the NEWER
+    sha and crashes on the incomplete one even though we said "cached".
+    """
+    refs_dir = os.path.join(repo_root, "refs")
+    if not os.path.isdir(refs_dir):
+        return None
+    main_ref = os.path.join(refs_dir, "main")
+    try:
+        if os.path.isfile(main_ref):
+            with open(main_ref) as fh:
+                sha = fh.read().strip()
+            return sha or None
+        # Fallback for repos whose default branch isn't named "main".
+        entries = [
+            e for e in os.listdir(refs_dir) if os.path.isfile(os.path.join(refs_dir, e))
+        ]
+        if len(entries) == 1:
+            with open(os.path.join(refs_dir, entries[0])) as fh:
+                sha = fh.read().strip()
+            return sha or None
+    except OSError:
+        return None
+    return None
+
+
 def is_repo_cached(repo_id: str) -> bool:
     """True if ``repo_id`` has a usable model snapshot in the HF cache.
 
@@ -350,8 +386,15 @@ def is_repo_cached(repo_id: str) -> bool:
     sharded cache (shard 1/2 present, shard 2/2 missing) bypass the
     gate; mlx-lm's loader globs every shard and fails halfway through.
 
+    Revision pinning (Codex round-9 BLOCKING): when ``refs/main``
+    (or the single resolved ref) exists, ONLY the snapshot pointed to
+    by that ref counts — the loader resolves through the ref, and an
+    unrelated old-but-complete snapshot must not mask a current-but-
+    incomplete one after an interrupted ``snapshot_download`` update.
+
     The check delegates to ``_snapshot_is_complete`` so the doctor
-    pre-flight and the B2 gate share one source of truth.
+    pre-flight and the B2 gate share one source of truth (with the
+    intentional policy divergence documented there).
 
     Returns ``False`` on any internal exception so the caller defaults
     to the safe path (prompting, if the size warrants it).
@@ -359,13 +402,27 @@ def is_repo_cached(repo_id: str) -> bool:
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
 
-        snap_root = os.path.join(
+        repo_root = os.path.join(
             HF_HUB_CACHE,
             f"models--{repo_id.replace('/', '--')}",
-            "snapshots",
         )
+        snap_root = os.path.join(repo_root, "snapshots")
         if not os.path.isdir(snap_root):
             return False
+
+        # Prefer the resolved-revision check so a stale-but-complete
+        # snapshot can't mask the active-but-incomplete one.
+        resolved_sha = _resolved_snapshot_sha(repo_root)
+        if resolved_sha is not None:
+            snap_dir = os.path.join(snap_root, resolved_sha)
+            if not os.path.isdir(snap_dir):
+                return False
+            return _snapshot_is_complete(snap_dir)
+
+        # No refs/ entry at all — first-time cache or non-standard
+        # layout. Fall back to "any complete snapshot" rather than
+        # forcing a re-prompt; the revision-mask attack requires the
+        # refs/ entry to exist by definition.
         for entry in os.listdir(snap_root):
             snap_dir = os.path.join(snap_root, entry)
             if not os.path.isdir(snap_dir):
