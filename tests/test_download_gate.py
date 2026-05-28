@@ -312,6 +312,22 @@ def test_is_repo_cached_false_on_zero_byte_weight(tmp_path, monkeypatch):
     assert gate.is_repo_cached("foo/inflight") is False
 
 
+def test_is_repo_cached_recognises_npz_weights(tmp_path, monkeypatch):
+    """Codex round-2 BLOCKING #1: older mlx-community exports + the
+    canonical mlx-lm convert format (pre-safetensors) ship as
+    ``weights.npz``. Must count as cached, otherwise legacy repos
+    re-prompt on every launch."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--mlx-community--legacy" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "weights.npz").write_bytes(b"x" * 4096)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("mlx-community/legacy") is True
+
+
 def test_is_repo_cached_walks_nested_snapshots(tmp_path, monkeypatch):
     """Sharded checkpoints sometimes nest weights one level deep. The
     walk must descend, not just glob the snapshot root."""

@@ -2285,8 +2285,15 @@ def chat_command(args):
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
         except (ValueError, OSError):
             pass
-        _cleanup()
-        sys.exit(143)
+        # try/finally: a _teardown_proc raise (rare — only after the
+        # second proc.kill() escalation) must NOT prevent process exit,
+        # otherwise the supervisor sees a hung handler and SIGKILLs
+        # everything anyway. Bubble the failure to atexit (which will
+        # short-circuit on _cleanup_state["done"]) and continue exiting.
+        try:
+            _cleanup()
+        finally:
+            sys.exit(143)
 
     try:
         signal.signal(signal.SIGTERM, _sigterm_handler)
@@ -2555,27 +2562,35 @@ def chat_command(args):
         # 1a. Gate before download: the main() entry-point gate only
         #     fires on the CLI invocation, so an uncached /model swap
         #     would otherwise start a 40+ GB pull with no prompt.
-        #     ``confirm_or_abort`` self-skips on non-TTY / env override.
+        #     Mirror main()'s cheap env/TTY short-circuit so we don't
+        #     pay the 5-second HF metadata round-trip on every /model
+        #     swap when the user opted into AUTO_PULL or is on non-TTY
+        #     stdin. ``confirm_or_abort`` self-skips again internally
+        #     but skipping ``estimate_repo_size_bytes`` saves the wait.
         if "/" in resolved and not os.path.exists(resolved):
-            from vllm_mlx._download_gate import (
-                confirm_or_abort,
-                estimate_repo_size_bytes,
-                is_repo_cached,
-            )
+            _env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
+            _auto_yes = _env_val in {"1", "true", "yes"}
+            _interactive = sys.stdin.isatty()
+            if not _auto_yes and _interactive:
+                from vllm_mlx._download_gate import (
+                    confirm_or_abort,
+                    estimate_repo_size_bytes,
+                    is_repo_cached,
+                )
 
-            if not is_repo_cached(resolved):
-                try:
-                    confirm_or_abort(
-                        resolved,
-                        estimate_repo_size_bytes(resolved),
-                    )
-                except SystemExit:
-                    # User said no — keep the current server up.
-                    print(
-                        f"  {YELLOW}Model switch cancelled{RESET} "
-                        f"{DIM}(previous server still running).{RESET}\n"
-                    )
-                    return
+                if not is_repo_cached(resolved):
+                    try:
+                        confirm_or_abort(
+                            resolved,
+                            estimate_repo_size_bytes(resolved),
+                        )
+                    except SystemExit:
+                        # User said no — keep the current server up.
+                        print(
+                            f"  {YELLOW}Model switch cancelled{RESET} "
+                            f"{DIM}(previous server still running).{RESET}\n"
+                        )
+                        return
 
         # 1. Pre-download the new model (this also runs the disk-space
         #    gate). The current server keeps running while we do this so
@@ -4232,6 +4247,12 @@ Examples:
     #   (b) the env / TTY checks belong *before* the 5-second HF
     #       metadata fetch — otherwise every CI run that sets
     #       RAPID_MLX_AUTO_PULL=1 still pays the network round-trip.
+    # Single-use marker: pop the env var as soon as we observe it so a
+    # grandchild ``rapid-mlx`` spawn (e.g. a nested invocation from a
+    # user hook, a doctor self-probe, or some future hub helper) does
+    # NOT inherit the bypass. Codex round-2 BLOCKING #2.
+    _chat_spawn_child = os.environ.pop("RAPID_MLX_CHAT_SPAWN", "") == "1"
+
     _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench"}
     if (
         getattr(args, "command", None) in _GATED_COMMANDS
@@ -4239,7 +4260,7 @@ Examples:
         and args.model
         and "/" in args.model  # only HF-style repo ids; local paths skip
         and not os.path.exists(args.model)
-        and os.environ.get("RAPID_MLX_CHAT_SPAWN", "") != "1"
+        and not _chat_spawn_child
     ):
         # Cheap checks first: env override and non-TTY both short-circuit
         # without touching the HF API. ``confirm_or_abort`` re-checks

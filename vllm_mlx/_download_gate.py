@@ -61,10 +61,16 @@ _WEIGHT_SUFFIXES: tuple[str, ...] = (
 # counting them as "cached" lets a partial download bypass the gate
 # (Codex round-1 BLOCKING #3). Estimating download size, by contrast,
 # still cares about every payload byte (above).
+#
+# Codex round-2 BLOCKING #1: older mlx-community exports (and the
+# canonical mlx-lm convert format prior to the safetensors switch)
+# ship weights as ``weights.npz``. Without ``.npz`` here, cached
+# legacy repos returned False and re-prompted on every launch.
 _WEIGHT_ONLY_SUFFIXES: tuple[str, ...] = (
     ".safetensors",
     ".bin",
     ".gguf",
+    ".npz",
 )
 
 # 5-second cap on the HF metadata call. Anything slower than this is a

@@ -1965,6 +1965,95 @@ def test_sigterm_handler_masks_second_sigterm(monkeypatch):
     )
 
 
+def test_main_pops_chat_spawn_env_so_grandchildren_do_not_inherit(monkeypatch):
+    """Codex round-2 BLOCKING #2: ``RAPID_MLX_CHAT_SPAWN=1`` must be
+    treated as a single-use marker. If the spawned ``serve`` itself
+    forks any subprocess (HF auth helper, doctor self-probe, future
+    hub plugin), that grandchild would otherwise inherit the bypass
+    and skip its own download gate."""
+    monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", "1")
+    monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-fake-7b"],
+    )
+    cli.main()
+    assert "RAPID_MLX_CHAT_SPAWN" not in os.environ, (
+        "main() must pop the marker so it does not leak to grandchildren; "
+        "this is what makes the 'single-use' contract real."
+    )
+
+
+def test_sigterm_handler_exits_even_if_cleanup_raises(monkeypatch):
+    """Codex round-2 NIT #3: the SIGTERM handler must call sys.exit(143)
+    via try/finally so a _teardown_proc raise (rare — only on
+    proc.kill() escalation) doesn't strand the process running. A hung
+    handler defeats the entire 'reap before exit' contract."""
+    import signal as _signal
+
+    handler_holder: dict = {}
+    real_signal = _signal.signal
+
+    def _spy_signal(signum, handler):
+        if signum == _signal.SIGTERM:
+            handler_holder["last"] = handler
+        return real_signal(signum, handler)
+
+    class _RaisingProc:
+        _rapid_mlx_log = None
+        _rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            raise RuntimeError("simulated _teardown_proc failure")
+
+        def wait(self, timeout=None):
+            pass
+
+        def kill(self):
+            pass
+
+    def _fake_spawn(*_a, **_kw):
+        proc = _RaisingProc()
+        register_in = _kw.get("register_in")
+        if register_in is not None:
+            register_in.append(proc)
+        return proc, f"http://127.0.0.1:{port}"
+
+    monkeypatch.setattr("signal.signal", _spy_signal)
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: None)
+
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (fake_port, _payloads):
+        port = fake_port
+        first = {"sent": False}
+
+        def _input(_p=""):
+            if not first["sent"]:
+                first["sent"] = True
+                handler = handler_holder["last"]
+                # The cleanup raise propagates inside the handler — but
+                # the try/finally must still hand off to sys.exit(143).
+                with pytest.raises(SystemExit) as excinfo:
+                    handler(_signal.SIGTERM, None)
+                assert excinfo.value.code == 143
+            return "exit"
+
+        monkeypatch.setattr("builtins.input", _input)
+        ns = _ns_for_chat(fake_port)
+        ns.base_url = None
+        ns.port = None
+        try:
+            cli.chat_command(ns)
+        except SystemExit:
+            pass
+
+
 def test_chat_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
     """``--no-think`` and ``--no-thinking`` share the prefix ``--no-thi``.
     With ``allow_abbrev=False`` argparse must reject the ambiguous form
