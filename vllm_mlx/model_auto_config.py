@@ -579,8 +579,7 @@ def _suffix_tier_cell(cfg: "ModelConfig", max_width: int | None = None) -> str:
         elif tier == "avoid" and speedup:
             worst_key = min(speedup, key=speedup.get)
             text = (
-                f"avoid ({worst_key} {speedup[worst_key]:.2f}x"
-                " regression — leave off)"
+                f"avoid ({worst_key} {speedup[worst_key]:.2f}x regression — leave off)"
             )
         else:
             text = tier

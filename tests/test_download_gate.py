@@ -225,9 +225,7 @@ def test_confirm_logfile_hint_appears_in_prompt(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: "y")
 
-    gate.confirm_or_abort(
-        "foo/huge", 41 * 1024**3, logfile_hint="/tmp/serve.log"
-    )
+    gate.confirm_or_abort("foo/huge", 41 * 1024**3, logfile_hint="/tmp/serve.log")
     out = capsys.readouterr().out
     assert "/tmp/serve.log" in out
 
@@ -282,9 +280,7 @@ def test_is_repo_cached_false_when_no_snapshot(tmp_path, monkeypatch):
 
     empty_cache = tmp_path / "hf-cache"
     empty_cache.mkdir()
-    monkeypatch.setattr(
-        "huggingface_hub.constants.HF_HUB_CACHE", str(empty_cache)
-    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(empty_cache))
 
     assert gate.is_repo_cached("foo/missing") is False
 
@@ -304,9 +300,7 @@ def test_is_repo_cached_falls_back_to_snapshot_dir(tmp_path, monkeypatch):
     snap.mkdir(parents=True)
     (snap / "chat_template.jinja").write_text("{{}}")
 
-    monkeypatch.setattr(
-        "huggingface_hub.constants.HF_HUB_CACHE", str(cache_root)
-    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert gate.is_repo_cached("foo/quirky") is True
 

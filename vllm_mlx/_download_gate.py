@@ -241,8 +241,10 @@ def confirm_or_abort(
         print()
         print(f"  About to download {repo_id}")
         print("    Estimated size: unknown (HF metadata lookup failed)")
-        print("    Proceeding without confirmation. Set "
-              f"{auto_yes_env}=1 to silence this notice.")
+        print(
+            "    Proceeding without confirmation. Set "
+            f"{auto_yes_env}=1 to silence this notice."
+        )
         print()
         return True
 
@@ -255,10 +257,7 @@ def confirm_or_abort(
     print(f"  About to download {repo_id}")
     print(f"    Estimated size: {size_str} (this may take a while on first run)")
     if logfile_hint:
-        print(
-            "    Download progress will appear in "
-            f"{logfile_hint}; tail it to watch."
-        )
+        print(f"    Download progress will appear in {logfile_hint}; tail it to watch.")
     print()
     try:
         answer = input("  Continue? [y/N]: ").strip().lower()

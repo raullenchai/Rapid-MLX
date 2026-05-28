@@ -224,9 +224,7 @@ class TestProfileTableCell:
         )
         table = format_profile_table("mlx-community/gemma-4-26b-a4b-it-4bit", cfg)
         widths = {
-            len(line)
-            for line in table.splitlines()
-            if line.startswith(("│", "┌", "└"))
+            len(line) for line in table.splitlines() if line.startswith(("│", "┌", "└"))
         }
         assert len(widths) == 1, (
             f"All rows must be same printable width, got: {widths}\n{table}"
