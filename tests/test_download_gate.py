@@ -400,6 +400,63 @@ def test_is_repo_cached_rejects_adapter_only_safetensors(tmp_path, monkeypatch):
     assert gate.is_repo_cached("user/lora") is True
 
 
+def test_is_repo_cached_is_case_sensitive(tmp_path, monkeypatch):
+    """Codex round-6 BLOCKING #1: ``mlx_lm`` calls ``glob.glob`` which
+    is case-sensitive on Linux and on case-sensitive macOS volumes. A
+    repo whose file is named ``Model.safetensors`` (capital M) is NOT
+    picked up by the loader, so it must not pass the gate either."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--user--capital-m" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "Model.safetensors").write_bytes(b"x" * 4096)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/capital-m") is False
+
+
+def test_is_repo_cached_validates_shard_filenames_in_index(tmp_path, monkeypatch):
+    """Codex round-6 BLOCKING #2: the indexed path validated only that
+    ``weight_map`` values *exist*, not that the filenames match the
+    loader glob. An index pointing at ``adapter.safetensors`` or
+    ``Model-00001-of-00002.safetensors`` (capital M) would pass while
+    ``mlx_lm`` actually loads zero model weights."""
+    import json
+
+    # Case A: index references an adapter file (loader can't open).
+    cache_root = tmp_path / "hf-cache-adapter"
+    snap = cache_root / "models--user--adapter-index" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "adapter.safetensors"}})
+    )
+    (snap / "adapter.safetensors").write_bytes(b"x" * 4096)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    assert gate.is_repo_cached("user/adapter-index") is False
+
+    # Case B: index references capital-M shard names — same loader miss.
+    cache_root_b = tmp_path / "hf-cache-cap"
+    snap_b = cache_root_b / "models--user--capm-index" / "snapshots" / "abc"
+    snap_b.mkdir(parents=True)
+    (snap_b / "config.json").write_text("{}")
+    (snap_b / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "w1": "Model-00001-of-00002.safetensors",
+                    "w2": "Model-00002-of-00002.safetensors",
+                }
+            }
+        )
+    )
+    (snap_b / "Model-00001-of-00002.safetensors").write_bytes(b"x" * 4096)
+    (snap_b / "Model-00002-of-00002.safetensors").write_bytes(b"y" * 4096)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root_b))
+    assert gate.is_repo_cached("user/capm-index") is False
+
+
 def test_is_repo_cached_rejects_index_with_no_weight_map(tmp_path, monkeypatch):
     """Codex round-5 BLOCKING #1: if ``model.safetensors.index.json``
     exists but the schema doesn't yield a usable shard list (corrupt

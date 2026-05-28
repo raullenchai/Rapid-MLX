@@ -186,20 +186,32 @@ def _is_model_weight_filename(name: str) -> bool:
     ``embeddings.safetensors``, etc.) DON'T match this pattern and
     aren't loaded by rapid-mlx's text path — so they must NOT count
     as cache-proof either. Codex round-5 BLOCKING #2.
+
+    Case sensitivity (Codex round-6 BLOCKING #1): the glob is case-
+    sensitive on case-sensitive filesystems (Linux, default macOS APFS
+    with case-sensitive volumes). A repo whose file is named
+    ``Model.safetensors`` would not be picked up by mlx-lm and so must
+    not pass the gate either. We mirror Python's ``glob`` rather than
+    being lax with a ``.lower()`` comparison.
     """
-    lower = name.lower()
-    if not lower.endswith(".safetensors"):
+    if not name.endswith(".safetensors"):
         return False
-    return lower.startswith("model")
+    return name.startswith("model")
 
 
 def _snapshot_is_complete(snap_dir: str) -> bool:
     """True if ``snap_dir`` looks like a fully-downloaded model snapshot.
 
-    Mirrors ``vllm_mlx.doctor.discovery._is_complete_snapshot`` so the
-    two cache-completeness checks (doctor pre-flight + B2 gate) stay in
-    sync. The only behavior difference is suffix scope: B2 only cares
-    about formats mlx-lm's loader actually consumes (``model*.safetensors``).
+    Originally factored to mirror ``vllm_mlx.doctor.discovery``;
+    rounds 4-6 of the codex review tightened this path beyond doctor's.
+    The two now have *intentionally* different policies (Codex round-6
+    NIT #3 on convergence):
+      * Doctor cares "is there a model directory I could try to run?"
+        and accepts a single safetensors / npz / gguf as a hint.
+      * B2 gate cares "will mlx_lm.load successfully open this without
+        downloading more shards?" — answerable only by mirroring the
+        actual loader glob (``model*.safetensors``, case-sensitive).
+    Unifying would loosen B2 or tighten doctor; both are wrong.
 
     Strategy:
       1. ``model.safetensors.index.json`` present → parse ``weight_map``
@@ -233,7 +245,17 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
             # through to the lax single-file probe.
             return False
         shard_names = set(weight_map.values())
+        # Codex round-6 BLOCKING #2: validate the shard filenames
+        # themselves match the loader glob, not just that they exist.
+        # An adversarial / malformed index pointing at
+        # ``adapter.safetensors`` or ``Model-00001-of-00002.safetensors``
+        # (capital M) would otherwise pass while mlx-lm loads zero
+        # model weights.
         for shard in shard_names:
+            if not isinstance(shard, str) or not _is_model_weight_filename(
+                os.path.basename(shard)
+            ):
+                return False
             target = os.path.join(snap_dir, shard)
             try:
                 if os.path.getsize(target) <= 0:
