@@ -55,27 +55,22 @@ _WEIGHT_SUFFIXES: tuple[str, ...] = (
     ".tiktoken",
 )
 
-# Stricter set used by ``is_repo_cached`` only. A repo isn't usable
-# without actual model weight shards on disk — tokenizer.json /
-# config.json can land on their own (HF downloads metadata first), so
-# counting them as "cached" lets a partial download bypass the gate
-# (Codex round-1 BLOCKING #3). Estimating download size, by contrast,
-# still cares about every payload byte (above).
+# Suffixes treated as cache-proving by ``is_repo_cached``. mlx-lm's
+# high-level loader (the path rapid-mlx serve takes) only globs
+# ``model*.safetensors`` — see ``mlx_lm/utils.py:316``.
 #
-# Format-by-format rationale (Codex round-3 BLOCKING #2 narrows this
-# to what mlx-lm actually loads):
-#   * ``.safetensors`` — canonical mlx-community / mlx-lm convert output
-#   * ``.gguf``        — mlx-lm has native GGUF loader support
-#   * ``.npz``         — legacy mlx-lm convert format (pre-safetensors)
-# ``.bin`` is INTENTIONALLY excluded: it's the PyTorch shard format,
-# not loadable by mlx-lm. A repo with cached PyTorch ``.bin`` weights
-# but missing MLX ``.safetensors`` would otherwise pass the gate and
-# the spawned ``serve`` would still silently pull the real weights.
-_WEIGHT_ONLY_SUFFIXES: tuple[str, ...] = (
-    ".safetensors",
-    ".gguf",
-    ".npz",
-)
+# Codex round-4 BLOCKING #2 trimmed this list to ``.safetensors`` only:
+#   * ``.bin``  — PyTorch shards, never loaded by mlx-lm.
+#   * ``.gguf`` — mlx-lm has *export* support (convert_to_gguf) but
+#                 no load path; ``mx.save_gguf`` is one-way.
+#   * ``.npz``  — older mlx-lm convert format; current mlx-lm load
+#                 doesn't reach it either.
+#
+# Keeping these in the cache-proving set lets a non-loadable cache
+# (e.g. cached ``weights.npz`` from a 2024-era mlx-community fork) pass
+# the gate and route the user back into "silent download in the
+# spawned serve subprocess" — which is exactly what B2 exists to fix.
+_WEIGHT_ONLY_SUFFIXES: tuple[str, ...] = (".safetensors",)
 
 # 5-second cap on the HF metadata call. Anything slower than this is a
 # signal we should fall through silently rather than block startup.
@@ -182,14 +177,73 @@ def estimate_repo_size_bytes(repo_id: str) -> int | None:
     return total if total > 0 else None
 
 
+def _snapshot_is_complete(snap_dir: str) -> bool:
+    """True if ``snap_dir`` looks like a fully-downloaded model snapshot.
+
+    Mirrors ``vllm_mlx.doctor.discovery._is_complete_snapshot`` so the
+    two cache-completeness checks (doctor pre-flight + B2 gate) stay in
+    sync. The only behavior difference is suffix scope: B2 only cares
+    about formats mlx-lm's loader actually consumes (``.safetensors``).
+
+    Strategy:
+      1. ``model.safetensors.index.json`` present → parse ``weight_map``
+         and require every referenced shard to exist with non-zero
+         size. Codex round-4 BLOCKING #1: a sharded model with shard 1
+         present but shard 2 missing must NOT count as cached.
+      2. Otherwise, a single non-empty ``*.safetensors`` is sufficient
+         (covers single-file models).
+    """
+    index_path = os.path.join(snap_dir, "model.safetensors.index.json")
+    if os.path.exists(index_path):
+        import json
+
+        try:
+            with open(index_path) as fh:
+                index = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            # Truncated index → safer to treat as incomplete and re-prompt.
+            return False
+        weight_map = index.get("weight_map") or {}
+        shard_names = set(weight_map.values())
+        if shard_names:
+            for shard in shard_names:
+                target = os.path.join(snap_dir, shard)
+                try:
+                    if os.path.getsize(target) <= 0:
+                        return False
+                except OSError:
+                    return False
+            return True
+        # Index parsed but empty weight_map — fall through to the
+        # single-file probe rather than declaring False on a quirk.
+
+    # Single-file (non-sharded) model.
+    for root, _dirs, files in os.walk(snap_dir):
+        for name in files:
+            lower = name.lower()
+            if not any(lower.endswith(s) for s in _WEIGHT_ONLY_SUFFIXES):
+                continue
+            try:
+                if os.path.getsize(os.path.join(root, name)) > 0:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def is_repo_cached(repo_id: str) -> bool:
-    """True if ``repo_id`` has at least one weight file present in the HF cache.
+    """True if ``repo_id`` has a usable model snapshot in the HF cache.
 
     Codex review round 1 caught that an earlier "config.json exists →
     cached" check let a partial cache (config + tokenizer only, weight
     shards missing) bypass the gate. The serve subprocess would then
-    silently download the weights inside its log file. We require an
-    actual weight file in the snapshot before declaring "cached".
+    silently download the weights inside its log file. Round 4 then
+    caught that even "any one safetensors file present" let a partial
+    sharded cache (shard 1/2 present, shard 2/2 missing) bypass the
+    gate; mlx-lm's loader globs every shard and fails halfway through.
+
+    The check delegates to ``_snapshot_is_complete`` so the doctor
+    pre-flight and the B2 gate share one source of truth.
 
     Returns ``False`` on any internal exception so the caller defaults
     to the safe path (prompting, if the size warrants it).
@@ -208,25 +262,10 @@ def is_repo_cached(repo_id: str) -> bool:
             snap_dir = os.path.join(snap_root, entry)
             if not os.path.isdir(snap_dir):
                 continue
-            # Walk the snapshot tree (HF stores sharded weights in the
-            # snapshot root; some layouts may nest). Resolve through HF's
-            # symlinks: snapshot entries are symlinks into ``blobs/``, and
-            # a partially-downloaded blob exists as a 0-byte placeholder.
-            for root, _dirs, files in os.walk(snap_dir):
-                for name in files:
-                    lower = name.lower()
-                    if not any(lower.endswith(s) for s in _WEIGHT_ONLY_SUFFIXES):
-                        continue
-                    full = os.path.join(root, name)
-                    try:
-                        # ``getsize`` follows symlinks → real blob size.
-                        if os.path.getsize(full) > 0:
-                            return True
-                    except OSError:
-                        continue
+            if _snapshot_is_complete(snap_dir):
+                return True
     except Exception:
         pass
-
     return False
 
 

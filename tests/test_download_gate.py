@@ -312,11 +312,13 @@ def test_is_repo_cached_false_on_zero_byte_weight(tmp_path, monkeypatch):
     assert gate.is_repo_cached("foo/inflight") is False
 
 
-def test_is_repo_cached_recognises_npz_weights(tmp_path, monkeypatch):
-    """Codex round-2 BLOCKING #1: older mlx-community exports + the
-    canonical mlx-lm convert format (pre-safetensors) ship as
-    ``weights.npz``. Must count as cached, otherwise legacy repos
-    re-prompt on every launch."""
+def test_is_repo_cached_rejects_npz_only(tmp_path, monkeypatch):
+    """Codex round-4 BLOCKING #2 (refinement of round-2): rapid-mlx
+    serves via ``mlx_lm.load``, which globs ``model*.safetensors`` and
+    never reads ``.npz``. A cache containing only ``weights.npz`` is
+    unusable from the chat code path, so it must NOT pass the gate —
+    otherwise the spawned ``serve`` will silently download the real
+    ``.safetensors`` shards inside its log file."""
     cache_root = tmp_path / "hf-cache"
     snap = cache_root / "models--mlx-community--legacy" / "snapshots" / "abc"
     snap.mkdir(parents=True)
@@ -325,7 +327,81 @@ def test_is_repo_cached_recognises_npz_weights(tmp_path, monkeypatch):
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    assert gate.is_repo_cached("mlx-community/legacy") is True
+    assert gate.is_repo_cached("mlx-community/legacy") is False
+
+
+def test_is_repo_cached_rejects_gguf_only(tmp_path, monkeypatch):
+    """Codex round-4 BLOCKING #2: mlx-lm has GGUF *export* support
+    (``convert_to_gguf``) but no load path — ``mlx_lm.load`` only globs
+    ``model*.safetensors``. A GGUF-only cache must NOT pass the gate."""
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--ggml--quant" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model-q4.gguf").write_bytes(b"x" * 4096)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("ggml/quant") is False
+
+
+def test_is_repo_cached_requires_every_shard_listed_in_index(tmp_path, monkeypatch):
+    """Codex round-4 BLOCKING #1: ``model.safetensors.index.json`` lists
+    every shard mlx-lm will load. A snapshot with shard 1/2 present but
+    shard 2/2 missing must NOT pass — mlx-lm globs all shards and
+    crashes halfway through deserialisation, with the failure surfaced
+    in the spawned-serve log file instead of as a B2 prompt."""
+    import json
+
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--mlx-community--sharded" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    index = {
+        "metadata": {"total_size": 2048},
+        "weight_map": {
+            "model.embed.weight": "model-00001-of-00002.safetensors",
+            "model.layers.0.weight": "model-00002-of-00002.safetensors",
+        },
+    }
+    (snap / "model.safetensors.index.json").write_text(json.dumps(index))
+    # Shard 1 cached, shard 2 absent.
+    (snap / "model-00001-of-00002.safetensors").write_bytes(b"x" * 4096)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("mlx-community/sharded") is False
+
+    # And once shard 2 lands it does pass.
+    (snap / "model-00002-of-00002.safetensors").write_bytes(b"y" * 4096)
+    assert gate.is_repo_cached("mlx-community/sharded") is True
+
+
+def test_is_repo_cached_rejects_zero_byte_shard_in_index(tmp_path, monkeypatch):
+    """A shard that's listed in the index but zero-byte on disk (HF
+    in-flight placeholder) must NOT count as cached. Same family as
+    the partial-cache and zero-byte-weight cases above; the index
+    path needs the same check the single-file path got in round 1."""
+    import json
+
+    cache_root = tmp_path / "hf-cache"
+    snap = cache_root / "models--mlx-community--inflight" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    index = {
+        "metadata": {"total_size": 4096},
+        "weight_map": {
+            "model.embed.weight": "model-00001-of-00002.safetensors",
+            "model.layers.0.weight": "model-00002-of-00002.safetensors",
+        },
+    }
+    (snap / "model.safetensors.index.json").write_text(json.dumps(index))
+    (snap / "model-00001-of-00002.safetensors").write_bytes(b"x" * 4096)
+    (snap / "model-00002-of-00002.safetensors").write_bytes(b"")  # placeholder
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("mlx-community/inflight") is False
 
 
 def test_is_repo_cached_rejects_pytorch_bin_only(tmp_path, monkeypatch):
