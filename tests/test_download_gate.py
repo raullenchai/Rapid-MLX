@@ -429,7 +429,25 @@ def test_is_repo_cached_is_case_sensitive(tmp_path, monkeypatch):
     """Codex round-6 BLOCKING #1: ``mlx_lm`` calls ``glob.glob`` which
     is case-sensitive on Linux and on case-sensitive macOS volumes. A
     repo whose file is named ``Model.safetensors`` (capital M) is NOT
-    picked up by the loader, so it must not pass the gate either."""
+    picked up by the loader, so it must not pass the gate either.
+
+    DeepSeek pr_validate round-3 raised this as a false-positive
+    BLOCKING (claiming macOS APFS case-insensitive default would
+    make ``glob`` match ``Model.safetensors``). Empirical verification
+    on the exact deployment platform (APFS volume on macOS 15) shows
+    Python's ``glob.glob`` filters case-sensitively even when the
+    underlying filesystem treats names case-insensitively for lookup::
+
+        >>> Path('Model.safetensors').write_bytes(b'x')
+        >>> os.path.exists('model.safetensors')   # FS case-insensitive
+        True
+        >>> glob.glob('model*.safetensors')       # glob case-sensitive
+        []
+
+    The implementation pins to that behaviour via
+    ``_is_model_weight_filename``'s case-sensitive ``startswith``.
+    Pin kept; DeepSeek finding noted in commit history.
+    """
     cache_root = tmp_path / "hf-cache"
     snap = cache_root / "models--user--capital-m" / "snapshots" / "abc"
     snap.mkdir(parents=True)

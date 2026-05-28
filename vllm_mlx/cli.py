@@ -1227,17 +1227,24 @@ def bench_command(args):
 
 
 def _format_bytes(n: int) -> str:
-    """Render a byte count as a 1-decimal G/M/K/B string (mirrors ``du -sh``).
+    """Render a byte count as a 1-decimal IEC-suffixed string (GiB/MiB/KiB).
 
     Picks the largest unit where the value is >= 1; falls back to bytes.
     Returns ``"0 B"`` for zero / negative.
+
+    Aligned with ``vllm_mlx._download_gate._format_size`` so the same
+    byte count rendered by ``ls --cached`` and by the B2 confirmation
+    prompt uses the same suffix convention (Codex/DeepSeek round-3 NIT:
+    ``5.0 G`` vs ``5.0 GiB`` for the same model is the kind of paper-
+    cut that makes users think two screens are talking about different
+    sizes).
     """
     if n <= 0:
         return "0 B"
     for unit, factor in (
-        ("G", 1024**3),
-        ("M", 1024**2),
-        ("K", 1024),
+        ("GiB", 1024**3),
+        ("MiB", 1024**2),
+        ("KiB", 1024),
     ):
         if n >= factor:
             return f"{n / factor:.1f} {unit}"

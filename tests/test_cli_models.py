@@ -226,12 +226,17 @@ def test_cached_view_renders_unmapped_for_unknown_repo(monkeypatch, capsys):
 
 
 def test_format_bytes_unit_selection():
-    """``_format_bytes`` picks the largest unit where value >= 1."""
+    """``_format_bytes`` picks the largest unit where value >= 1.
+
+    Suffixes are IEC base-1024 (KiB/MiB/GiB) — aligned with
+    ``_format_size`` in ``vllm_mlx._download_gate`` so the same byte
+    count is rendered identically by ``ls --cached`` and the B2 prompt
+    (DeepSeek round-3 NIT #4)."""
     assert cli._format_bytes(0) == "0 B"
     assert cli._format_bytes(512) == "512 B"
-    assert cli._format_bytes(2048) == "2.0 K"
-    assert cli._format_bytes(5 * 1024 * 1024) == "5.0 M"
-    assert cli._format_bytes(int(2.5 * 1024**3)) == "2.5 G"
+    assert cli._format_bytes(2048) == "2.0 KiB"
+    assert cli._format_bytes(5 * 1024 * 1024) == "5.0 MiB"
+    assert cli._format_bytes(int(2.5 * 1024**3)) == "2.5 GiB"
 
 
 def test_scan_hf_cache_models_filters_to_models_only(tmp_path, monkeypatch):

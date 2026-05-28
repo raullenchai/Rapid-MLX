@@ -1448,15 +1448,37 @@ def test_run_alias_accepts_chat_flags():
 
 
 def test_chat_command_bye_exits_like_exit(monkeypatch, capsys):
-    """``/bye`` must terminate the REPL like ``/exit``."""
+    """``/bye`` must terminate the REPL like ``/exit``.
+
+    DeepSeek round-3 NIT #2: the original assertion only checked
+    ``len(payloads) == 1`` and relied on a comment to explain that the
+    third input was deliberately never consumed. A future REPL change
+    that consumes an extra prompt could pass that count assertion
+    while ``/bye`` is broken. Track consumption explicitly via a
+    sentinel that raises if reached.
+    """
+    sentinel = "this would crash if /bye didnt exit"
+    consumed: list = []
+
+    def _input(_prompt="") -> str:
+        for value in ("hello", "/bye", sentinel):
+            if value in consumed:
+                continue
+            consumed.append(value)
+            return value
+        raise AssertionError("inputs exhausted — REPL kept asking past /bye")
+
     canned = [_delta("hi")]
     with _fake_server(canned) as (port, payloads):
-        inputs = iter(["hello", "/bye", "this would crash if /bye didnt exit"])
-        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        monkeypatch.setattr("builtins.input", _input)
         cli.chat_command(_ns_for_chat(port))
-    # /bye stopped iteration BEFORE the 3rd input was consumed → the
-    # iterator still has it. If /bye were ignored we'd hit StopIteration.
-    # The first turn ran, the second turn was the /bye exit.
+
+    # /bye terminates the REPL → the sentinel is never asked for.
+    assert sentinel not in consumed, (
+        f"/bye must stop the input loop before the sentinel; consumed={consumed}"
+    )
+    assert consumed == ["hello", "/bye"]
+    # And the first turn (and only the first) hit the server.
     assert len(payloads) == 1
 
 
@@ -1520,26 +1542,29 @@ def test_serve_accepts_no_think_as_alias_for_no_thinking():
     assert captured[0].no_thinking is True
 
 
-def test_chat_no_thinking_hidden_from_help():
+def test_chat_no_thinking_hidden_from_help(capsys):
     """The cross-alias is back-compat-only; it must NOT appear in
-    ``chat --help`` (otherwise we double-document the same flag)."""
-    import argparse as _argparse
+    ``chat --help`` (otherwise we double-document the same flag).
 
-    parser = _argparse.ArgumentParser()
-    sp = parser.add_subparsers(dest="command")
-    # Re-create the chat parser via main() inspection — easier to run
-    # the real CLI and capture --help output.
-    import subprocess as _sp
-
-    out = _sp.run(
-        [sys.executable, "-m", "vllm_mlx.cli", "chat", "--help"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "--no-thinking" not in out.stdout, (
+    In-process help capture (DeepSeek round-3 NIT #3) — earlier version
+    forked ``python -m vllm_mlx.cli`` which is the only test in the
+    file that forks a subprocess, adds ~1s overhead, depends on
+    PYTHONPATH/install state, and breaks in restricted CI runners.
+    """
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "--help"]),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        cli.main()
+    # argparse exits 0 on --help.
+    assert excinfo.value.code == 0
+    captured = capsys.readouterr()
+    help_text = captured.out + captured.err
+    assert "--no-thinking" not in help_text, (
         "hidden cross-alias must not appear in chat --help"
     )
+    # Sanity check that we actually captured the chat help (not stdlib's).
+    assert "--think" in help_text or "--no-think" in help_text
 
 
 # ----------------------------------------------------------------------
