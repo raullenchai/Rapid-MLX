@@ -254,15 +254,34 @@ def test_format_size_friendly(num_bytes, expected):
 # ---------------------------------------------------------------------------
 
 
+def _seed_refs_main(repo_root, sha: str) -> None:
+    """Helper: write the ``refs/main`` file the round-9/10 fix requires.
+
+    ``snapshot_download(repo_id)`` resolves through ``refs/main`` by
+    default. ``is_repo_cached`` now pins to that specific snapshot
+    (no "any complete snapshot" fallback), so test fixtures must
+    populate ``refs/main`` for the True cases. The False / partial
+    cases either also populate it (to test that the pinned snapshot
+    is incomplete) or omit it (to assert the round-10 "no refs/main
+    → False" contract).
+    """
+    refs = repo_root / "refs"
+    refs.mkdir(exist_ok=True)
+    (refs / "main").write_text(sha)
+
+
 def test_is_repo_cached_true_when_weight_file_present(tmp_path, monkeypatch):
     """At least one non-empty weight file in the snapshot tree → True."""
     cache_root = tmp_path / "hf-cache"
-    snap = cache_root / "models--foo--cached" / "snapshots" / "abcd1234"
+    sha = "abcd1234"
+    repo_root = cache_root / "models--foo--cached"
+    snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     # Real cache layouts include config + tokenizer + the actual weights.
     (snap / "config.json").write_text("{}")
     (snap / "tokenizer.json").write_text("{}")
     (snap / "model.safetensors").write_bytes(b"x" * 2048)
+    _seed_refs_main(repo_root, sha)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
@@ -354,7 +373,9 @@ def test_is_repo_cached_requires_every_shard_listed_in_index(tmp_path, monkeypat
     import json
 
     cache_root = tmp_path / "hf-cache"
-    snap = cache_root / "models--mlx-community--sharded" / "snapshots" / "abc"
+    repo_root = cache_root / "models--mlx-community--sharded"
+    sha = "abc"
+    snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
     index = {
@@ -367,6 +388,7 @@ def test_is_repo_cached_requires_every_shard_listed_in_index(tmp_path, monkeypat
     (snap / "model.safetensors.index.json").write_text(json.dumps(index))
     # Shard 1 cached, shard 2 absent.
     (snap / "model-00001-of-00002.safetensors").write_bytes(b"x" * 4096)
+    _seed_refs_main(repo_root, sha)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
@@ -385,11 +407,14 @@ def test_is_repo_cached_rejects_adapter_only_safetensors(tmp_path, monkeypatch):
     and must NOT pass the gate — otherwise the spawned ``serve``
     silently pulls the real model weights."""
     cache_root = tmp_path / "hf-cache"
-    snap = cache_root / "models--user--lora" / "snapshots" / "abc"
+    repo_root = cache_root / "models--user--lora"
+    sha = "abc"
+    snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
     (snap / "adapter.safetensors").write_bytes(b"x" * 4096)
     (snap / "embeddings.safetensors").write_bytes(b"y" * 4096)
+    _seed_refs_main(repo_root, sha)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
@@ -535,11 +560,14 @@ def test_is_repo_cached_honours_resolved_revision_ref(tmp_path, monkeypatch):
     assert gate.is_repo_cached("user/mid-update") is True
 
 
-def test_is_repo_cached_falls_back_when_no_refs_dir(tmp_path, monkeypatch):
-    """When ``refs/`` doesn't exist (very fresh or non-standard cache
-    layout), the gate falls back to "any complete snapshot" rather
-    than over-prompting. The revision-mask attack from round-9
-    requires ``refs/`` to exist."""
+def test_is_repo_cached_rejects_when_no_refs_main(tmp_path, monkeypatch):
+    """Codex round-10 BLOCKING: when ``refs/main`` doesn't exist (fresh
+    cache, non-standard layout, or a repo whose default branch is not
+    ``main``), we DON'T know which sha ``snapshot_download(repo_id)``
+    will resolve to — so a complete snapshot at some other sha could
+    silently mask the actual current sha. The gate must err on the
+    side of re-prompting; the round-9 fallback to ``any complete
+    snapshot`` was the very bypass we're closing here."""
     cache_root = tmp_path / "hf-cache"
     snap = cache_root / "models--user--no-refs" / "snapshots" / "abcd"
     snap.mkdir(parents=True)
@@ -549,13 +577,16 @@ def test_is_repo_cached_falls_back_when_no_refs_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    assert gate.is_repo_cached("user/no-refs") is True
+    assert gate.is_repo_cached("user/no-refs") is False
 
 
-def test_is_repo_cached_handles_non_main_default_branch(tmp_path, monkeypatch):
-    """Repos whose default branch is renamed (``master``, ``trunk``,
-    etc.) ship a single non-main ref. The resolver falls back to the
-    single ref so the gate still pins to the right snapshot."""
+def test_is_repo_cached_rejects_non_main_only_ref(tmp_path, monkeypatch):
+    """Codex round-10 BLOCKING: ``snapshot_download(repo_id)`` defaults
+    to the ``main`` revision via the HF API. A cache that only has
+    ``refs/master`` (e.g. a legacy repo whose default branch was
+    renamed upstream since the last download) doesn't tell us what
+    the current ``main`` resolves to — must re-prompt. The cost is a
+    one-time redundant prompt; the benefit is no silent download."""
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--user--master"
     snap_root = repo_root / "snapshots"
@@ -571,7 +602,7 @@ def test_is_repo_cached_handles_non_main_default_branch(tmp_path, monkeypatch):
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    assert gate.is_repo_cached("user/master") is True
+    assert gate.is_repo_cached("user/master") is False
 
 
 def test_is_repo_cached_rejects_symlink_to_directory(tmp_path, monkeypatch):

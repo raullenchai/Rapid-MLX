@@ -340,39 +340,35 @@ def _root_model_files_all_non_empty(snap_dir: str) -> bool:
 
 
 def _resolved_snapshot_sha(repo_root: str) -> str | None:
-    """Read the sha that ``snapshot_download`` would resolve to.
+    """Read the sha that ``snapshot_download(repo_id)`` would resolve to.
 
-    HF's cache layout stores the resolved sha for each branch under
-    ``models--<repo>/refs/<branch>``. ``snapshot_download(repo_id)``
-    with no explicit revision defaults to ``main``; if ``main`` isn't
-    present we fall back to whatever single ref does exist (covers
-    repos whose default branch is renamed).
+    ``snapshot_download`` with no explicit revision asks the HF API for
+    the default branch's HEAD sha and writes it to
+    ``models--<repo>/refs/<default_branch>``. For modern repos that
+    file is ``refs/main``.
 
-    Codex round-9 BLOCKING: without this check, an old complete
-    snapshot could mask a newer-but-incomplete snapshot (interrupted
-    update). The loader resolves through ``refs/main`` to the NEWER
-    sha and crashes on the incomplete one even though we said "cached".
+    Codex round-9 BLOCKING: without any pinning, an old complete
+    snapshot could mask a newer-but-incomplete one (interrupted
+    update). Codex round-10 BLOCKING: the round-9 fallbacks (single
+    non-main ref, "any complete snapshot" when no refs/ exists) could
+    mask the same attack a different way — a legacy ``refs/master``
+    can shadow what ``main`` resolves to upstream now, and a
+    no-refs/ cache could shadow any sha.
+
+    We now ONLY honour ``refs/main``. The cost is a redundant prompt
+    for repos whose default branch is renamed (rare; legacy
+    ``master`` mostly); the benefit is no silent download in any
+    other scenario.
     """
-    refs_dir = os.path.join(repo_root, "refs")
-    if not os.path.isdir(refs_dir):
-        return None
-    main_ref = os.path.join(refs_dir, "main")
+    main_ref = os.path.join(repo_root, "refs", "main")
     try:
-        if os.path.isfile(main_ref):
-            with open(main_ref) as fh:
-                sha = fh.read().strip()
-            return sha or None
-        # Fallback for repos whose default branch isn't named "main".
-        entries = [
-            e for e in os.listdir(refs_dir) if os.path.isfile(os.path.join(refs_dir, e))
-        ]
-        if len(entries) == 1:
-            with open(os.path.join(refs_dir, entries[0])) as fh:
-                sha = fh.read().strip()
-            return sha or None
+        if not os.path.isfile(main_ref):
+            return None
+        with open(main_ref) as fh:
+            sha = fh.read().strip()
+        return sha or None
     except OSError:
         return None
-    return None
 
 
 def is_repo_cached(repo_id: str) -> bool:
@@ -410,25 +406,18 @@ def is_repo_cached(repo_id: str) -> bool:
         if not os.path.isdir(snap_root):
             return False
 
-        # Prefer the resolved-revision check so a stale-but-complete
-        # snapshot can't mask the active-but-incomplete one.
+        # Codex round-10 BLOCKING: no "any complete snapshot"
+        # fallback. The only safe cache-presence answer is "the
+        # snapshot ``snapshot_download(repo_id)`` will actually use".
+        # Without ``refs/main``, we don't know which sha will resolve,
+        # so we must re-prompt and let the next run populate refs/.
         resolved_sha = _resolved_snapshot_sha(repo_root)
-        if resolved_sha is not None:
-            snap_dir = os.path.join(snap_root, resolved_sha)
-            if not os.path.isdir(snap_dir):
-                return False
-            return _snapshot_is_complete(snap_dir)
-
-        # No refs/ entry at all — first-time cache or non-standard
-        # layout. Fall back to "any complete snapshot" rather than
-        # forcing a re-prompt; the revision-mask attack requires the
-        # refs/ entry to exist by definition.
-        for entry in os.listdir(snap_root):
-            snap_dir = os.path.join(snap_root, entry)
-            if not os.path.isdir(snap_dir):
-                continue
-            if _snapshot_is_complete(snap_dir):
-                return True
+        if resolved_sha is None:
+            return False
+        snap_dir = os.path.join(snap_root, resolved_sha)
+        if not os.path.isdir(snap_dir):
+            return False
+        return _snapshot_is_complete(snap_dir)
     except Exception:
         pass
     return False
