@@ -28,6 +28,86 @@ def _log_level_choice(value: str) -> str:
     return value.upper()
 
 
+def _port_arg(value: str) -> int:
+    """Argparse ``type`` callable: validate ``--port`` is in [1, 65535].
+
+    Without this, ``rapid-mlx chat --port 99999`` parsed successfully and
+    dropped the user into a REPL whose first turn failed with a confusing
+    ``Failed to parse: http://127.0.0.1:99999/...``. Validate early so the
+    user sees a one-line argparse error instead.
+    """
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"port must be an integer, got {value!r}"
+        ) from None
+    if not (1 <= port <= 65535):
+        raise argparse.ArgumentTypeError(
+            f"port must be between 1 and 65535, got {port}"
+        )
+    return port
+
+
+def _chat_config_dir() -> str:
+    """Directory for first-launch tip markers (and future per-user chat
+    state). Honors ``RAPID_MLX_CONFIG_HOME`` override; otherwise falls back
+    to ``~/.config/rapid-mlx``. The directory is created lazily by the
+    writer; callers don't need to ensure it exists for reads.
+    """
+    override = os.environ.get("RAPID_MLX_CONFIG_HOME")
+    if override:
+        return override
+    return os.path.join(os.path.expanduser("~"), ".config", "rapid-mlx")
+
+
+def _seen_tips_path() -> str:
+    return os.path.join(_chat_config_dir(), "seen-tips.json")
+
+
+def _has_seen_tip(key: str) -> bool:
+    """Return True iff the marker file records ``key: true``.
+
+    Any IO/parse error is treated as "not seen" — better to show the tip
+    one extra time than to hide it forever on a corrupt marker.
+    """
+    import json
+
+    try:
+        with open(_seen_tips_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and bool(data.get(key))
+
+
+def _mark_tip_seen(key: str) -> None:
+    """Persist ``key: true`` to the seen-tips marker. Best-effort —
+    failures are swallowed so a read-only config dir never aborts chat.
+    """
+    import json
+
+    path = _seen_tips_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError:
+        return
+    try:
+        existing: dict = {}
+        try:
+            with open(path, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                existing = loaded
+        except (OSError, ValueError):
+            existing = {}
+        existing[key] = True
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(existing, fh)
+    except OSError:
+        return
+
+
 def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     """Print fuzzy suggestions + a curated popular-models hint.
 
@@ -1138,18 +1218,176 @@ def bench_command(args):
     asyncio.run(run_benchmark())
 
 
-def models_command(_args):
+def _format_bytes(n: int) -> str:
+    """Render a byte count as a 1-decimal G/M/K/B string (mirrors ``du -sh``).
+
+    Picks the largest unit where the value is >= 1; falls back to bytes.
+    Returns ``"0 B"`` for zero / negative.
+    """
+    if n <= 0:
+        return "0 B"
+    for unit, factor in (
+        ("G", 1024**3),
+        ("M", 1024**2),
+        ("K", 1024),
+    ):
+        if n >= factor:
+            return f"{n / factor:.1f} {unit}"
+    return f"{n} B"
+
+
+def _dir_size_bytes(path: str) -> int:
+    """Recursive on-disk size of ``path`` (follows blob symlinks).
+
+    HF cache stores model weights as ``blobs/<sha>`` files referenced via
+    symlinks under ``snapshots/<rev>/<file>``. ``os.scandir`` recurses
+    through both — we follow links so a snapshot's reported size matches
+    the user's mental model of "how much disk this model uses".
+    """
+    total = 0
+    try:
+        for entry in os.scandir(path):
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    total += _dir_size_bytes(entry.path)
+                else:
+                    # follow_symlinks=True so blob symlinks count their
+                    # underlying file size, matching ``du -sL``.
+                    total += entry.stat(follow_symlinks=True).st_size
+            except OSError:
+                continue
+    except OSError:
+        return total
+    return total
+
+
+def _scan_hf_cache_models() -> list[tuple[str, int, float]]:
+    """Return ``[(hf_repo, size_bytes, last_modified_epoch), ...]`` for every
+    ``models--<org>--<name>`` directory in the HF cache.
+
+    Empty list when the cache dir doesn't exist (fresh install) or has no
+    model entries (e.g. only datasets were downloaded). Datasets/spaces
+    (``datasets--*``, ``spaces--*``) are deliberately skipped.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+    except Exception:
+        HF_HUB_CACHE = os.path.expanduser("~/.cache/huggingface/hub")
+    if not os.path.isdir(HF_HUB_CACHE):
+        return []
+    out: list[tuple[str, int, float]] = []
+    for name in os.listdir(HF_HUB_CACHE):
+        if not name.startswith("models--"):
+            continue
+        # ``models--org--name`` → ``org/name``. Some legacy entries are
+        # ``models--name`` (no org) for single-segment repos; pass those
+        # through unchanged so the user still sees them in the listing.
+        parts = name[len("models--") :].split("--", 1)
+        repo = "/".join(parts) if len(parts) == 2 else parts[0]
+        full = os.path.join(HF_HUB_CACHE, name)
+        try:
+            mtime = os.path.getmtime(full)
+        except OSError:
+            mtime = 0.0
+        size = _dir_size_bytes(full)
+        out.append((repo, size, mtime))
+    return out
+
+
+def _print_cached_models() -> None:
+    """Render the ``--cached`` view: locally-downloaded HF cache entries
+    cross-referenced against the alias registry.
+
+    Each row: ``Alias | HF repo | Size on disk | Last modified``. Models
+    not in the alias registry are shown with alias=``(unmapped)`` so the
+    user still sees what's eating disk space. Empty cache prints a hint
+    pointing at ``pull`` / ``chat``.
+    """
+    import time as _time
+
+    from vllm_mlx.model_aliases import list_profiles
+
+    rows = _scan_hf_cache_models()
+    print()
+    if not rows:
+        print(
+            "  No models cached yet. Run 'rapid-mlx pull <alias>' or "
+            "'rapid-mlx chat <alias>' to download one."
+        )
+        print()
+        return
+
+    # Reverse-map HF repo path → alias name so the alias column matches the
+    # user's mental model (``qwen3.5-4b`` not ``mlx-community/Qwen3.5-4B...``).
+    profiles = list_profiles()
+    hf_to_alias: dict[str, str] = {}
+    for alias, p in profiles.items():
+        hf_to_alias.setdefault(p.hf_path, alias)
+
+    cols = (
+        ("Alias", 22),
+        ("HF repo", 50),
+        ("Size", 9),
+        ("Modified", 12),
+    )
+    width = sum(w for _, w in cols) + len(cols) - 1
+    sep = "  " + "─" * width
+    header = "  " + " ".join(f"{name:<{w}}" for name, w in cols)
+    print(f"  Cached models ({len(rows)} on disk)")
+    print(sep)
+    print(header)
+    print(sep)
+
+    now = _time.time()
+    total_bytes = 0
+    # Sort by size descending so the biggest-disk-hog row is first — the
+    # most useful ordering for "what do I rm to free space?".
+    for repo, size, mtime in sorted(rows, key=lambda r: -r[1]):
+        total_bytes += size
+        alias = hf_to_alias.get(repo, "(unmapped)")
+        # Render modified as a human delta: "2 days ago" beats raw epoch.
+        if mtime <= 0:
+            mod = "?"
+        else:
+            delta = max(0, int(now - mtime))
+            if delta < 3600:
+                mod = f"{delta // 60}m ago"
+            elif delta < 86400:
+                mod = f"{delta // 3600}h ago"
+            else:
+                mod = f"{delta // 86400}d ago"
+        # Truncate over-long HF paths so the row doesn't wrap on a
+        # narrow terminal; the alias column carries the canonical name.
+        repo_disp = repo if len(repo) <= 50 else (repo[:47] + "...")
+        print(f"  {alias:<22} {repo_disp:<50} {_format_bytes(size):<9} {mod:<12}")
+    print(sep)
+    print(f"  Total: {_format_bytes(total_bytes)}")
+    print()
+    print("  Tip: `rapid-mlx rm <hf-repo>` to free disk space")
+    print()
+
+
+def models_command(args):
     """List available model aliases with their per-model profile capabilities.
 
-    Pulls from ``list_profiles()`` so every alias's ``tool_call_parser`` /
-    ``reasoning_parser`` / ``is_hybrid`` / ``supports_spec_decode`` /
-    ``suffix_decoding_tier`` shows up in the table — letting users pick a
-    model on capabilities, not just on name.
+    Default view pulls from ``list_profiles()`` so every alias's
+    ``tool_call_parser`` / ``reasoning_parser`` / ``is_hybrid`` /
+    ``supports_spec_decode`` / ``suffix_decoding_tier`` shows up — letting
+    users pick a model on capabilities, not just on name.
+
+    ``--cached`` swaps to a disk-only view: scans the HuggingFace cache,
+    cross-references against the alias registry, and renders
+    ``Alias | HF repo | Size on disk | Last modified``. Also reachable as
+    the top-level ``rapid-mlx ls`` alias.
     """
     from vllm_mlx._version_check import print_staleness_warning_if_any
     from vllm_mlx.model_aliases import list_profiles
 
     print_staleness_warning_if_any()
+
+    if getattr(args, "cached", False):
+        _print_cached_models()
+        return
 
     profiles = list_profiles()
     print()
@@ -1792,6 +2030,14 @@ def _stream_chat_response(
             # against an IndexError there.
             choices = chunk.get("choices") or []
             delta = choices[0].get("delta", {}) if choices else {}
+            # ``finish_reason`` arrives on the last token chunk (after
+            # which the server may still emit a usage-only chunk).
+            # Capture the most recent non-null value so the caller can
+            # surface a "length" warning if the answer was truncated.
+            if choices and metrics is not None:
+                fr = choices[0].get("finish_reason")
+                if fr is not None:
+                    metrics["finish_reason"] = fr
             reasoning = delta.get("reasoning_content")
             piece = delta.get("content")
             if reasoning:
@@ -1958,9 +2204,17 @@ def chat_command(args):
                 _active_procs.remove(p)
             except ValueError:
                 pass
-            # Close the log handle and unlink the tempfile so /model
-            # swaps don't leak FDs and tempfiles. Both attributes set
-            # by _spawn_chat_server.
+            # Close the log handle and reap the tempfile so /model
+            # swaps don't leak FDs. Both attributes set by
+            # _spawn_chat_server.
+            #
+            # Log file unlink policy: zero-byte logs (no server output
+            # ever flushed — typical for a clean spawn that never logged
+            # a warning) are unlinked; non-empty logs are LEFT IN PLACE
+            # so a user investigating a crash or post-mortem error still
+            # has the server's stderr to look at. Previously every log
+            # was unlinked, which scrubbed useful debugging breadcrumbs
+            # along with the noise.
             fh = getattr(p, "_rapid_mlx_log", None)
             if fh is not None:
                 try:
@@ -1970,16 +2224,35 @@ def chat_command(args):
             lp = getattr(p, "_rapid_mlx_log_path", None)
             if lp:
                 try:
-                    os.unlink(lp)
-                except FileNotFoundError:
-                    pass
+                    size = os.path.getsize(lp)
                 except OSError:
-                    pass
+                    size = -1  # treat unknown as "leave alone"
+                if size == 0:
+                    try:
+                        os.unlink(lp)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        pass
+
+    # Guard against re-entry: ``_cleanup`` is registered once with
+    # ``atexit`` AND fired from the SIGTERM handler. Without an idempotent
+    # check, a SIGTERM during shutdown would walk ``_active_procs``,
+    # _teardown_proc would empty it, then atexit's invocation would walk
+    # an empty list — harmless today, but the explicit flag keeps the
+    # contract obvious and survives future helpers that read the list
+    # before iterating.
+    _cleanup_state = {"done": False}
 
     def _cleanup():
         # Walk every tracked proc — covers the active server and any
         # in-flight /model candidate. Iterate over a snapshot since
-        # _teardown_proc mutates _active_procs.
+        # _teardown_proc mutates _active_procs. Idempotent: a second call
+        # short-circuits so atexit + SIGTERM-handler ordering doesn't
+        # matter.
+        if _cleanup_state["done"]:
+            return
+        _cleanup_state["done"] = True
         for p in list(_active_procs):
             _teardown_proc(p)
 
@@ -1990,6 +2263,8 @@ def chat_command(args):
     # default handler so Ctrl-C unblocks ``input()`` via the natural
     # KeyboardInterrupt path, the REPL loop's ``except
     # KeyboardInterrupt: break`` fires, and atexit runs ``_cleanup``.
+    # On non-tty stdin (piped input) the SIGINT path is never exercised,
+    # so the SIGTERM + atexit pair is what reaps the spawned server.
     try:
         signal.signal(signal.SIGTERM, lambda *_: (_cleanup(), sys.exit(143)))
     except (ValueError, OSError):
@@ -2001,6 +2276,25 @@ def chat_command(args):
         if base_url.endswith("/v1"):
             base_url = base_url[:-3]
     elif args.port is not None:
+        # Pre-flight probe: a valid-range but unbound port previously
+        # dropped the user into the REPL and only failed on the first
+        # message with a raw HTTPConnectionPool stack trace. Probe once
+        # with a 1 s timeout so the failure is friendly + actionable.
+        import socket as _socket
+
+        try:
+            with _socket.create_connection(("127.0.0.1", args.port), timeout=1):
+                pass
+        except OSError:
+            # OSError covers ConnectionRefusedError + socket.timeout
+            # (which is an alias for ``TimeoutError`` in Python 3.10+).
+            print(
+                f"\n  {RED}Error:{RESET} no rapid-mlx server reachable at "
+                f"127.0.0.1:{args.port}."
+            )
+            print(f"    Start one with: rapid-mlx serve <alias> --port {args.port}")
+            print("    Or omit --port to spawn one automatically.")
+            sys.exit(1)
         base_url = f"http://127.0.0.1:{args.port}"
     else:
         # Pre-download in the foreground so the HF tqdm progress bar lands
@@ -2034,15 +2328,43 @@ def chat_command(args):
 
     print_staleness_warning_if_any()
 
+    # Resolve ``--max-tokens``. Default is None at the argparse layer so
+    # we can distinguish "user did not pass it" from "user passed 2048
+    # explicitly". When ``--think`` is set and the user did not supply a
+    # value, raise the default from 2048 to 4096 so the reasoning trace +
+    # final answer both fit (the round-1 finding: ``chat qwen3.5-4b
+    # --think`` filled the 2048 budget with reasoning and emitted an
+    # empty answer with ``finish_reason='length'``).
+    user_passed_max_tokens = args.max_tokens is not None
+    if args.max_tokens is None:
+        args.max_tokens = 4096 if args.think else 2048
+    if args.think and not user_passed_max_tokens:
+        print(
+            f"  {DIM}(--think on; raised --max-tokens to {args.max_tokens} — "
+            f"pass --max-tokens to override){RESET}"
+        )
+
     print(
         f"  {BOLD}Chat{RESET} — "
         f"{DIM}type {RESET}{BOLD}/help{RESET}{DIM} for commands, "
         f"Ctrl-D to exit.{RESET}"
     )
-    print(
-        f"  {DIM}For a Claude Code-like TUI: `rapid-mlx agents codex --setup`, "
-        f"then run `codex` in any project.{RESET}\n"
-    )
+    # First-launch-only banner for the agents/codex tip. The marker-file
+    # gate keeps the tip from re-appearing on every chat launch (persona-3
+    # finding: irritating by launch #50). Marker logic is skipped entirely
+    # when stdout is not a TTY or NO_COLOR is set — pipe/CI runs shouldn't
+    # pollute the user's config dir, and the banner is fluff there anyway.
+    _is_pipe_or_no_color = (not sys.stdout.isatty()) or ("NO_COLOR" in os.environ)
+    if not _is_pipe_or_no_color and not _has_seen_tip("chat_intro_codex"):
+        print(
+            f"  {DIM}For a Claude Code-like TUI: `rapid-mlx agents codex --setup`, "
+            f"then run `codex` in any project.{RESET}\n"
+        )
+        _mark_tip_seen("chat_intro_codex")
+    else:
+        # Maintain the existing blank-line spacing the banner used to
+        # provide — keeps the prompt layout consistent across runs.
+        print()
 
     served_name = getattr(args, "_original_alias", args.model)
     messages: list[dict] = []
@@ -2100,12 +2422,13 @@ def chat_command(args):
     def _print_help():
         print(
             f"\n  {BOLD}Slash commands{RESET}\n"
-            f"    {BOLD}/help{RESET}              show this help\n"
+            f"    {BOLD}/help{RESET}, {BOLD}/?{RESET}          show this help\n"
             f"    {BOLD}/reset{RESET}, {BOLD}/clear{RESET}     clear conversation history\n"
             f"    {BOLD}/model <alias>{RESET}     switch model "
             f"{DIM}(restarts the server, resets history){RESET}\n"
             f"    {BOLD}/save <path>{RESET}       save conversation to a markdown file\n"
-            f"    {BOLD}/exit{RESET}, {BOLD}/quit{RESET}       exit chat\n"
+            f"    {BOLD}/exit{RESET}, {BOLD}/quit{RESET}, {BOLD}/bye{RESET}    "
+            f"exit chat {DIM}(or Ctrl-D){RESET}\n"
             f"\n  {BOLD}Multi-line input{RESET}\n"
             f'    type {BOLD}"""{RESET} on its own line to start, again to end '
             f"{DIM}(paste code blocks){RESET}\n"
@@ -2301,7 +2624,10 @@ def chat_command(args):
             parts = line.split(maxsplit=1)
             cmd = parts[0] if parts else ""
             rest = parts[1].strip() if len(parts) > 1 else ""
-            if cmd in ("exit", "quit", "/exit", "/quit"):
+            # ``/bye`` is an Ollama-muscle-memory alias for ``/exit`` /
+            # ``/quit``. ``/?`` mirrors ``/help`` and was already
+            # supported; both alias sets are advertised in ``/help``.
+            if cmd in ("exit", "quit", "/exit", "/quit", "/bye"):
                 break
             if cmd in ("/help", "/?"):
                 _print_help()
@@ -2391,6 +2717,17 @@ def chat_command(args):
             )
         else:
             print()
+        # Length-cut + empty-content warning. When the server stops
+        # because ``finish_reason == "length"`` AND no visible content
+        # was streamed (only reasoning), the user otherwise sees an
+        # empty bullet and has no signal that the budget was the
+        # problem. This is the round-1 ``--think`` regression: 2048-
+        # token budget filled by reasoning on small models, zero answer.
+        if metrics.get("finish_reason") == "length" and not assistant:
+            print(
+                f"  {YELLOW}(reasoning consumed the full --max-tokens "
+                f"budget; bump --max-tokens for a final answer){RESET}\n"
+            )
         if assistant:
             messages.append({"role": "assistant", "content": assistant})
         else:
@@ -3221,6 +3558,16 @@ Examples:
             "Useful for faster responses when chain-of-thought is not needed."
         ),
     )
+    # Hidden cross-alias mirroring ``chat --no-thinking`` (see the chat
+    # parser for the full rationale). ``serve --no-think`` lands on the
+    # same ``no_thinking`` destination so users who reach for the shorter
+    # name don't get an ``unrecognized arguments`` error.
+    serve_parser.add_argument(
+        "--no-think",
+        dest="no_thinking",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     serve_parser.add_argument(
         "--no-tool-call-parser",
         dest="no_tool_call_parser",
@@ -3512,8 +3859,21 @@ Examples:
         help="Maximum number of cache blocks (default: 1000)",
     )
 
-    # Models command
-    subparsers.add_parser("models", help="List available model aliases")
+    # Models command. ``ls`` is registered as a top-level alias that
+    # defaults to ``models --cached`` (the locally-cached view) — two
+    # muscle-memory entry points, one underlying impl.
+    models_parser = subparsers.add_parser("models", help="List available model aliases")
+    models_parser.add_argument(
+        "--cached",
+        action="store_true",
+        default=False,
+        help="Only list models that are downloaded to the local HuggingFace "
+        "cache (alias, HF repo, size on disk, last modified).",
+    )
+    subparsers.add_parser(
+        "ls",
+        help="List models in the local HuggingFace cache (alias for `models --cached`)",
+    )
 
     # Version + help — utility commands that mirror the existing flags but
     # are scriptable as plain subcommands.
@@ -3550,9 +3910,18 @@ Examples:
         help="Skip the confirmation prompt and run the upgrade immediately.",
     )
 
-    # Chat — interactive REPL backed by a (spawned or existing) server
+    # Chat — interactive REPL backed by a (spawned or existing) server.
+    # ``run`` is exposed as a subparser alias purely for Ollama-muscle-memory
+    # parity (``ollama run <model>``). Both names route to ``chat_command``.
     chat_parser = subparsers.add_parser(
-        "chat", help="Interactive chat REPL with a model"
+        "chat",
+        aliases=["run"],
+        help="Interactive chat REPL with a model",
+        description=(
+            "Interactive chat REPL with a model.\n\n"
+            "Note: 'rapid-mlx run' is an alias for 'chat' (Ollama compatibility)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     chat_parser.add_argument(
         "model",
@@ -3576,11 +3945,25 @@ Examples:
         "and can loop until max-tokens). Use --think to surface reasoning, "
         "--no-think is also accepted for back-compat.",
     )
+    # Hidden cross-alias for users who picked up the ``--no-thinking`` muscle
+    # memory from ``rapid-mlx serve``. ``serve --no-thinking`` and
+    # ``chat --no-think`` mean different things internally (server-side
+    # parser disable vs. per-request ``enable_thinking=false``), but the
+    # flag-name difference trips users. We accept the wrong-side name as
+    # an alias for the right-side semantics: ``chat --no-thinking`` simply
+    # forwards to the same destination as ``--no-think``.
+    chat_parser.add_argument(
+        "--no-thinking",
+        dest="think",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
     chat_parser.add_argument(
         "--max-tokens",
         type=int,
-        default=2048,
-        help="Max tokens per assistant response (default: 2048)",
+        default=None,
+        help="Max tokens per assistant response (default: 2048; raised to "
+        "4096 when --think is set so reasoning + answer fit the budget).",
     )
     chat_parser.add_argument(
         "--temperature",
@@ -3590,7 +3973,7 @@ Examples:
     )
     chat_parser.add_argument(
         "--port",
-        type=int,
+        type=_port_arg,
         default=None,
         help="Connect to existing server on 127.0.0.1:<port> instead of spawning",
     )
@@ -3771,11 +4154,44 @@ Examples:
             )
             sys.exit(1)
 
+    # --- BEGIN B2: auto-pull confirmation gate -------------------------
+    # For subcommands that may trigger a first-time download of a large
+    # repo (chat/run/serve/pull/bench), warn the user before kicking off
+    # a multi-GB transfer. Cached repos and small downloads pass through
+    # invisibly. Env override: RAPID_MLX_AUTO_PULL=1. See
+    # ``vllm_mlx/_download_gate.py`` for the policy.
+    _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench"}
+    if (
+        getattr(args, "command", None) in _GATED_COMMANDS
+        and hasattr(args, "model")
+        and args.model
+        and "/" in args.model  # only HF-style repo ids; local paths skip
+        and not os.path.exists(args.model)
+    ):
+        from vllm_mlx._download_gate import (
+            confirm_or_abort,
+            estimate_repo_size_bytes,
+            is_repo_cached,
+        )
+
+        if not is_repo_cached(args.model):
+            confirm_or_abort(
+                args.model,
+                estimate_repo_size_bytes(args.model),
+            )
+    # --- END B2 --------------------------------------------------------
+
     if args.command == "serve":
         serve_command(args)
     elif args.command == "bench":
         bench_command(args)
     elif args.command == "models":
+        models_command(args)
+    elif args.command == "ls":
+        # `ls` is a top-level alias for `models --cached`. Synthesize the
+        # missing flag so models_command's branch fires without having to
+        # know which command name it was invoked under.
+        args.cached = True
         models_command(args)
     elif args.command == "version":
         print(f"rapid-mlx {_version}")
@@ -3797,7 +4213,10 @@ Examples:
         ps_command(args)
     elif args.command == "upgrade":
         upgrade_command(args)
-    elif args.command == "chat":
+    elif args.command in ("chat", "run"):
+        # ``run`` is exposed as a subparser alias for Ollama compatibility;
+        # argparse routes via ``aliases=`` but reports the user-typed name
+        # on ``args.command``. Both names land here.
         chat_command(args)
     elif args.command == "info":
         info_command(args)

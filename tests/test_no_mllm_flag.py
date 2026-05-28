@@ -154,6 +154,10 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         "--disable-prefix-cache",
         # Chat-template toggle, not engine routing.
         "--no-thinking",
+        # `--no-think` is a hidden back-compat alias of `--no-thinking` on
+        # `serve` (and the canonical name on `chat`). Same dest, same
+        # semantics — pure UX symmetry between the two subcommands.
+        "--no-think",
         # CORS toggle.
         "--enable-cors",
         # Perf / UX toggles, not routing decisions.

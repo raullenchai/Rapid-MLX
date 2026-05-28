@@ -126,3 +126,131 @@ def test_models_command_subparser_smoke():
     ):
         cli.main()
     assert exc.value.code == 0
+
+
+# ----------------------------------------------------------------------
+# D2 — --cached / ls view
+# ----------------------------------------------------------------------
+
+
+def test_ls_subcommand_registered():
+    """``rapid-mlx ls --help`` exits 0 (top-level alias is wired)."""
+    import pytest
+
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "ls", "--help"]),
+        pytest.raises(SystemExit) as exc,
+    ):
+        cli.main()
+    assert exc.value.code == 0
+
+
+def test_ls_routes_to_models_with_cached(monkeypatch):
+    """``rapid-mlx ls`` invokes the cached view via ``models_command``
+    with ``args.cached = True``. We patch ``models_command`` to capture
+    the args namespace before the body runs."""
+    captured: list = []
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "ls"]),
+        patch.object(cli, "models_command", side_effect=captured.append),
+    ):
+        cli.main()
+    assert len(captured) == 1
+    assert captured[0].cached is True
+
+
+def test_models_cached_flag_routes_to_cached_view(monkeypatch, capsys):
+    """``models --cached`` must call the cached-view path (not the
+    full alias table). We assert via the printed header difference."""
+    # No cached models will be found in a fresh tmp HF cache.
+    monkeypatch.setenv("HF_HOME", "/nonexistent_path_for_this_test_xyz")
+    # huggingface_hub.constants.HF_HUB_CACHE is evaluated at module load,
+    # so we instead patch the helper directly.
+    monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [])
+
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "models", "--cached"]),
+        patch("vllm_mlx._version_check.print_staleness_warning_if_any"),
+    ):
+        cli.main()
+    out = capsys.readouterr().out
+    assert "No models cached yet" in out
+    # And the full alias table header is absent.
+    assert "Available models" not in out
+
+
+def test_models_default_view_unchanged(monkeypatch, capsys):
+    """Bare ``rapid-mlx models`` still prints the capability table —
+    --cached is opt-in. Backward-compat contract."""
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "models"]),
+        patch("vllm_mlx._version_check.print_staleness_warning_if_any"),
+    ):
+        cli.main()
+    out = capsys.readouterr().out
+    assert "Available models" in out
+    assert "Tools" in out and "Reasoning" in out
+
+
+def test_cached_view_renders_alias_for_known_repo(tmp_path, monkeypatch, capsys):
+    """A cached HF repo whose path matches an alias should render under
+    the alias name (e.g. ``qwen3.5-4b``), not the raw HF path."""
+    from vllm_mlx.model_aliases import list_profiles
+
+    profiles = list_profiles()
+    # Pick any alias for the test; we'll synthesize a fake cache entry
+    # at its hf_path.
+    alias = next(iter(profiles))
+    hf_path = profiles[alias].hf_path
+
+    monkeypatch.setattr(
+        cli, "_scan_hf_cache_models", lambda: [(hf_path, 1024 * 1024 * 100, 0.0)]
+    )
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+    assert alias in out, f"expected alias {alias!r} in cached view"
+    assert hf_path[:40] in out, "expected HF path in cached view"
+
+
+def test_cached_view_renders_unmapped_for_unknown_repo(monkeypatch, capsys):
+    """A cached HF repo with no alias entry must show ``(unmapped)``."""
+    monkeypatch.setattr(
+        cli,
+        "_scan_hf_cache_models",
+        lambda: [("some/totally-unmapped-repo", 1024, 0.0)],
+    )
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+    assert "(unmapped)" in out
+    assert "totally-unmapped-repo" in out
+
+
+def test_format_bytes_unit_selection():
+    """``_format_bytes`` picks the largest unit where value >= 1."""
+    assert cli._format_bytes(0) == "0 B"
+    assert cli._format_bytes(512) == "512 B"
+    assert cli._format_bytes(2048) == "2.0 K"
+    assert cli._format_bytes(5 * 1024 * 1024) == "5.0 M"
+    assert cli._format_bytes(int(2.5 * 1024**3)) == "2.5 G"
+
+
+def test_scan_hf_cache_models_filters_to_models_only(tmp_path, monkeypatch):
+    """Only ``models--*`` directories should show in the listing — not
+    ``datasets--*`` or ``spaces--*``."""
+    cache_root = tmp_path / "hub"
+    cache_root.mkdir()
+    (cache_root / "models--mlx-community--FakeModel").mkdir()
+    (cache_root / "models--mlx-community--FakeModel" / "blob1").write_bytes(b"x" * 128)
+    (cache_root / "datasets--squad").mkdir()
+    (cache_root / "datasets--squad" / "data").write_bytes(b"y" * 999)
+    (cache_root / "spaces--gradio--demo").mkdir()
+
+    # Patch the constants lookup inside _scan_hf_cache_models.
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(cache_root), raising=False
+    )
+    rows = cli._scan_hf_cache_models()
+    repos = [r[0] for r in rows]
+    assert "mlx-community/FakeModel" in repos
+    assert all("squad" not in r for r in repos)
+    assert all("demo" not in r for r in repos)

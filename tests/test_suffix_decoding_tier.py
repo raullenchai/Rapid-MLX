@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from vllm_mlx.model_auto_config import (
     ModelConfig,
+    _suffix_tier_cell,
     classify_suffix_decoding_tier,
     format_profile_table,
     suffix_decoding_hint,
@@ -155,7 +156,13 @@ class TestProfileTableCell:
         table = format_profile_table("test/Model", cfg)
         assert "Suffix tier" in table
         assert "unknown" in table.lower()
-        assert "bench_suffix_decoding_integrated" in table
+        # The boxed table truncates the script name to keep alignment,
+        # but a discoverable prefix must remain so the user knows where
+        # to look. The un-truncated helper (called without ``max_width``)
+        # must still emit the full path for log scrapers / non-boxed
+        # callers.
+        assert "bench_suffix_decod" in table
+        assert "bench_suffix_decoding_integrated" in _suffix_tier_cell(cfg)
 
     def test_hybrid_says_n_a(self):
         cfg = ModelConfig(supports_spec_decode=False, is_hybrid=True)
@@ -182,6 +189,48 @@ class TestProfileTableCell:
         # AVOID surfaces the regression, not the peak.
         assert "chat" in table
         assert "0.78" in table
+
+    def test_long_avoid_note_fits_box_when_max_width_set(self):
+        """Regression: long ``avoid`` notes (e.g. ``gemma-4-26b``) used
+        to overflow the right ``│`` border. Truncation must keep the
+        tier word + numeric speedup whole while shortening the trailing
+        rationale to ``…)``."""
+        cfg = ModelConfig(
+            suffix_decoding_tier="avoid",
+            suffix_bench_speedup={"json_array": 0.20},
+        )
+        # 41 cols == the value-column width inside the rapid-mlx info
+        # box (inner=60 minus the 17-char key field and 2-char ``: ``).
+        cell = _suffix_tier_cell(cfg, max_width=41)
+        assert len(cell) <= 41
+        assert cell.startswith("avoid (json_array 0.20x")
+        assert cell.endswith("…)")
+
+    def test_short_tier_note_is_not_wrongly_truncated(self):
+        """Tier notes that already fit must pass through untouched —
+        the truncator should be a no-op on the common case."""
+        cfg = ModelConfig(supports_spec_decode=False, is_hybrid=True)
+        cell = _suffix_tier_cell(cfg, max_width=41)
+        assert cell == "n/a (hybrid arch — spec decode off)"
+        assert "…" not in cell
+
+    def test_table_rows_all_same_width_for_long_avoid(self):
+        """Box-frame alignment invariant: every bordered row must end at
+        the same column. Pre-fix the ``Suffix tier`` row for an alias
+        like ``gemma-4-26b`` would render past the right ``│``."""
+        cfg = ModelConfig(
+            suffix_decoding_tier="avoid",
+            suffix_bench_speedup={"json_array": 0.20},
+        )
+        table = format_profile_table("mlx-community/gemma-4-26b-a4b-it-4bit", cfg)
+        widths = {
+            len(line)
+            for line in table.splitlines()
+            if line.startswith(("│", "┌", "└"))
+        }
+        assert len(widths) == 1, (
+            f"All rows must be same printable width, got: {widths}\n{table}"
+        )
 
 
 class TestModelConfigDefaults:

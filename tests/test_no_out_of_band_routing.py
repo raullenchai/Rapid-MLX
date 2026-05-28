@@ -116,6 +116,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_TELEMETRY",
         # Port for doctor harness probe checks, not engine routing.
         "RAPID_MLX_PORT",
+        # Skip the [y/N] confirmation prompt before large model downloads
+        # (UX knob for unattended/CI usage; not consulted by the engine).
+        "RAPID_MLX_AUTO_PULL",
+        # Override the per-user config dir used to remember "seen-tips"
+        # banner state (chat REPL first-launch tip gating).
+        "RAPID_MLX_CONFIG_HOME",
     }
 )
 

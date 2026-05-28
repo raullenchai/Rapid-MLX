@@ -537,7 +537,7 @@ def _arch_label(cfg: "ModelConfig") -> str:
     return "pure attention"
 
 
-def _suffix_tier_cell(cfg: "ModelConfig") -> str:
+def _suffix_tier_cell(cfg: "ModelConfig", max_width: int | None = None) -> str:
     """Format the ``Suffix tier`` row for ``rapid-mlx info``.
 
     AGENT/STRUCTURED — surface the peak workload speedup (the reason the
@@ -545,31 +545,81 @@ def _suffix_tier_cell(cfg: "ModelConfig") -> str:
     the user understands the warning. UNKNOWN — point them at the bench
     script. Hybrid arches always render ``n/a`` regardless of tier
     because ``supports_spec_decode=False`` gates the flag off anyway.
+
+    When ``max_width`` is set and the produced string would exceed it,
+    the parenthetical note after the tier word (``avoid``/``prefer``/
+    ``neutral``/…) is truncated so the value fits inside the caller's
+    box column without breaking alignment. The tier word itself is kept
+    intact because it's the load-bearing signal. Truncated notes end
+    with ``…)`` instead of ``)``.
     """
     if not cfg.supports_spec_decode:
-        return "n/a (hybrid arch — spec decode off)"
-    tier = cfg.suffix_decoding_tier
-    speedup = cfg.suffix_bench_speedup or {}
-    if tier == "unknown":
-        return "unknown — run scripts/bench_suffix_decoding_integrated"
-    if tier == "agent" and speedup:
-        peak_key = (
-            "tool_loop" if "tool_loop" in speedup else max(speedup, key=speedup.get)
-        )
-        return (
-            f"agent ({peak_key} {speedup[peak_key]:.2f}x — recommend --suffix-decoding)"
-        )
-    if tier == "structured" and speedup:
-        peak_key = max(speedup, key=speedup.get)
-        return (
-            f"structured ({peak_key} {speedup[peak_key]:.2f}x — try if traffic matches)"
-        )
-    if tier == "neutral":
-        return "neutral (within noise — leave off)"
-    if tier == "avoid" and speedup:
-        worst_key = min(speedup, key=speedup.get)
-        return f"avoid ({worst_key} {speedup[worst_key]:.2f}x regression — leave off)"
-    return tier
+        text = "n/a (hybrid arch — spec decode off)"
+    else:
+        tier = cfg.suffix_decoding_tier
+        speedup = cfg.suffix_bench_speedup or {}
+        if tier == "unknown":
+            text = "unknown — run scripts/bench_suffix_decoding_integrated"
+        elif tier == "agent" and speedup:
+            peak_key = (
+                "tool_loop" if "tool_loop" in speedup else max(speedup, key=speedup.get)
+            )
+            text = (
+                f"agent ({peak_key} {speedup[peak_key]:.2f}x"
+                " — recommend --suffix-decoding)"
+            )
+        elif tier == "structured" and speedup:
+            peak_key = max(speedup, key=speedup.get)
+            text = (
+                f"structured ({peak_key} {speedup[peak_key]:.2f}x"
+                " — try if traffic matches)"
+            )
+        elif tier == "neutral":
+            text = "neutral (within noise — leave off)"
+        elif tier == "avoid" and speedup:
+            worst_key = min(speedup, key=speedup.get)
+            text = (
+                f"avoid ({worst_key} {speedup[worst_key]:.2f}x"
+                " regression — leave off)"
+            )
+        else:
+            text = tier
+    return _truncate_tier_note(text, max_width)
+
+
+def _truncate_tier_note(text: str, max_width: int | None) -> str:
+    """Shorten a ``tier (note)`` string to fit within ``max_width`` chars.
+
+    Only the parenthetical note is trimmed; the leading tier word stays
+    whole. If the tier word alone already overflows (shouldn't happen
+    with current tiers but kept defensive), the full text is returned
+    unchanged — the caller's column will visibly break, surfacing the
+    bug instead of silently dropping load-bearing data.
+
+    The ``tier — note`` (em-dash) form used by the ``unknown`` tier is
+    handled as a fallback so that variant also fits inside the box.
+    """
+    if max_width is None or len(text) <= max_width:
+        return text
+    open_paren = text.find("(")
+    if open_paren != -1 and text.endswith(")"):
+        # ``prefix`` = ``tier (`` — keep verbatim. Available room for
+        # note body = max_width − len(prefix) − len("…)").
+        prefix = text[: open_paren + 1]
+        available = max_width - len(prefix) - len("…)")
+        if available < 1:
+            return text
+        note_body = text[open_paren + 1 : -1]
+        return prefix + note_body[:available].rstrip() + "…)"
+    em_dash = text.find(" — ")
+    if em_dash != -1:
+        prefix = text[: em_dash + 3]  # include the `` — `` separator
+        available = max_width - len(prefix) - len("…")
+        if available < 1:
+            return text
+        note_body = text[em_dash + 3 :]
+        return prefix + note_body[:available].rstrip() + "…"
+    return text
 
 
 def format_profile_summary(model_path: str, cfg: "ModelConfig | None") -> str:
@@ -598,6 +648,10 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
     Note: Unicode check/cross marks count as 1 char each (no double-width).
     """
     inner = 60  # printable width between ``│ `` and `` │`` markers
+    # Value column = ``inner`` minus the 17-char key field and the
+    # 2-char ``": "`` separator. Used by ``_suffix_tier_cell`` to keep
+    # long parenthetical notes inside the box.
+    value_width = inner - 17 - 2
     sep = "─" * inner
 
     def _row(text: str) -> str:
@@ -616,7 +670,13 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ("Architecture", "unknown"),
             ("Spec decode", "✓ default-on"),
             ("Throttle", "✗ default-off"),
-            ("Suffix tier", "unknown — run scripts/bench_suffix_decoding_integrated"),
+            (
+                "Suffix tier",
+                _truncate_tier_note(
+                    "unknown — run scripts/bench_suffix_decoding_integrated",
+                    value_width,
+                ),
+            ),
         ]
     else:
         spec = "✓ supported" if cfg.supports_spec_decode else "✗ disabled (hybrid arch)"
@@ -627,7 +687,7 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ("Architecture", _arch_label(cfg)),
             ("Spec decode", spec),
             ("Throttle", throttle),
-            ("Suffix tier", _suffix_tier_cell(cfg)),
+            ("Suffix tier", _suffix_tier_cell(cfg, max_width=value_width)),
         ]
 
     body = [_row(header), _row(sep)]
