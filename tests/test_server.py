@@ -170,6 +170,46 @@ class TestChatCompletionRequest:
             )
 
 
+class TestPromptCanonicalization:
+    """Test OpenAI-path system prompt canonicalization."""
+
+    def test_prepare_chat_completion_canonicalizes_system_prompt(self):
+        from vllm_mlx.server import (
+            ChatCompletionRequest,
+            Message,
+            _prepare_chat_completion_invocation,
+        )
+
+        engine = SimpleNamespace(is_mllm=False, preserve_native_tool_format=False)
+        system_text = (
+            "You are a coding assistant.\n"
+            "x-anthropic-billing-header: account=abc; cch=rotating-hash\n"
+            "Follow the repository instructions."
+        )
+        request = ChatCompletionRequest(
+            model="test-model",
+            messages=[
+                Message(role="system", content=system_text),
+                Message(
+                    role="user",
+                    content="x-anthropic-billing-header: keep user content",
+                ),
+            ],
+        )
+
+        prepared = _prepare_chat_completion_invocation(engine, request, 128)
+
+        expected_system_text = "\n".join(
+            ["You are a coding assistant.", "Follow the repository instructions."]
+        )
+        assert prepared.messages[0]["content"] == expected_system_text
+        assert (
+            prepared.messages[1]["content"]
+            == "x-anthropic-billing-header: keep user content"
+        )
+        assert request.messages[0].content == system_text
+
+
 class TestCompletionRequest:
     """Test CompletionRequest model."""
 

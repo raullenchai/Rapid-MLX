@@ -416,6 +416,30 @@ class TestResponsesEndpoint:
         assert messages[1]["role"] == "user"
         assert messages[1]["content"] == "Hi"
 
+    def test_system_prompt_canonicalization_strips_billing_header(self, client):
+        import vllm_mlx.server as srv
+
+        engine = _mock_engine(_output("Ready"))
+        srv._engine = engine
+
+        resp = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "instructions": (
+                    "Be terse.\n"
+                    "x-anthropic-billing-header: account=abc; cch=rotating-hash\n"
+                    "Answer directly."
+                ),
+                "input": "Say hello",
+            },
+        )
+
+        assert resp.status_code == 200
+        messages = engine.chat.call_args.kwargs["messages"]
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == "Be terse.\nAnswer directly."
+
     def test_instructions_and_developer_message_are_merged(self, client):
         import vllm_mlx.server as srv
 
