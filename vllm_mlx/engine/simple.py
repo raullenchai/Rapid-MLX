@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -185,10 +186,25 @@ class SimpleEngine(BaseEngine):
         # Lock to serialize MLX operations (prevents Metal command buffer conflicts)
         self._generation_lock = asyncio.Lock()
 
-        # System prompt KV cache (reduces repeated prefill across requests)
-        self._system_kv_snapshot = None  # List of (keys, values) per backbone layer
-        self._system_kv_hash = None  # Hash of system prefix text
-        self._system_kv_token_count = 0  # Tokens in cached prefix
+        # System prompt KV cache (reduces repeated prefill across requests).
+        # OrderedDict acts as an LRU keyed by system-prefix hash so that the
+        # main agent and any sub-agents with different toolsets can coexist
+        # without thrashing a single snapshot slot.
+        # Value is (snapshot_list, system_token_count).
+        self._system_kv_capacity = max(
+            1, int(os.environ.get("VLLM_MLX_SYSTEM_KV_SLOTS", "4"))
+        )
+        self._system_kv_cache: "OrderedDict[str, tuple[list, int]]" = OrderedDict()
+        # Cache-effectiveness counters. Incremented only from inside the
+        # serialized worker (single writer) so plain ``+=`` is safe; reads
+        # from ``get_stats`` may be slightly stale, which is fine for
+        # metrics.
+        self._system_kv_cache_stats = {
+            "hits": 0,
+            "misses": 0,
+            "stores": 0,
+            "evictions": 0,
+        }
         # True only when the model's prompt cache is composed entirely of
         # plain ``KVCache`` entries. Sliding-window models (gemma3_text,
         # olmo3, recurrent_gemma) return ``RotatingKVCache`` whose ``.state``
@@ -324,6 +340,46 @@ class SimpleEngine(BaseEngine):
                                 self._text_tokenizer.convert_tokens_to_ids("<|im_end|>")
                             )
 
+                        # Probe the derived TextModel's prompt cache for snapshot-safety
+                        # (same gate stream_chat uses for the pure-LLM path).
+                        # _stream_generate_text only enters the system-KV cache branch
+                        # when this flag is True, so sliding-window text models won't
+                        # desynchronize on restore.
+                        #
+                        # Probe args must match the runtime constructor in
+                        # _stream_generate_text (max_kv_size=self._max_kv_size or None).
+                        # Under bounded-KV serving (max_kv_size > 0) make_prompt_cache
+                        # returns RotatingKVCache for models without a custom
+                        # make_cache; probing with default args would mis-classify that
+                        # path as snapshot-safe.
+                        try:
+                            from mlx_lm.models.cache import KVCache, make_prompt_cache
+
+                            probe_cache = make_prompt_cache(
+                                self._text_model, max_kv_size=self._max_kv_size or None
+                            )
+                            self._supports_system_kv_cache = bool(probe_cache) and all(
+                                isinstance(c, KVCache) for c in probe_cache
+                            )
+                            if not self._supports_system_kv_cache:
+                                cache_types = sorted(
+                                    {type(c).__name__ for c in probe_cache}
+                                )
+                                logger.info(
+                                    "System KV cache snapshot disabled for MLLM "
+                                    "text routing: TextModel returned non-KVCache "
+                                    "entries (%s); _stream_generate_text will use "
+                                    "the uncached path",
+                                    cache_types,
+                                )
+                        except Exception as e:
+                            logger.debug(
+                                "MLLM TextModel KV cache support probe failed "
+                                "(%s); disabling snapshot path",
+                                e,
+                            )
+                            self._supports_system_kv_cache = False
+
                         has_mtp = (
                             hasattr(self._text_model, "mtp")
                             and self._text_model.mtp is not None
@@ -393,9 +449,9 @@ class SimpleEngine(BaseEngine):
         self._text_tokenizer = None
         self._draft_model = None
         self._loaded = False
-        self._system_kv_snapshot = None
-        self._system_kv_hash = None
-        self._system_kv_token_count = 0
+        self._system_kv_cache.clear()
+        for k in self._system_kv_cache_stats:
+            self._system_kv_cache_stats[k] = 0
         self._supports_system_kv_cache = False
         logger.info("SimpleEngine stopped")
 
@@ -958,9 +1014,9 @@ class SimpleEngine(BaseEngine):
         system_hash = None
         kv_cache_eligible = False
         # Snapshot reference captured at gate time so a concurrent MISS that
-        # reassigns ``self._system_kv_snapshot`` between the gate and the
-        # restore (which runs later inside ``_run_blocking_serialized``)
-        # can't desynchronize the restored KV from the hash that decided HIT.
+        # mutates ``self._system_kv_cache`` between the gate and the restore
+        # (which runs later inside ``_run_blocking_serialized``) can't
+        # desynchronize the restored KV from the hash that decided HIT.
         hit_snapshot: Any = None
 
         # Decode-control gate.
@@ -1118,19 +1174,16 @@ class SimpleEngine(BaseEngine):
                         suffix_tokens = full_tokens_list[system_token_count:]
                         kv_cache_eligible = True
                         # Read the snapshot reference once. If we promote to
-                        # HIT, ``hit_snapshot`` is the exact list the hash
-                        # check just validated against. A later concurrent
-                        # MISS that reassigns ``self._system_kv_snapshot``
-                        # before our serialized worker restores it cannot
-                        # alias what we captured here.
-                        candidate_snapshot = self._system_kv_snapshot
-                        if (
-                            system_hash == self._system_kv_hash
-                            and candidate_snapshot is not None
-                            and system_token_count == self._system_kv_token_count
-                        ):
+                        # HIT, ``hit_snapshot`` is the exact list the dict
+                        # lookup just returned. A later concurrent MISS that
+                        # mutates ``self._system_kv_cache`` before our
+                        # serialized worker restores it cannot alias what we
+                        # captured here — dict.get is atomic under the GIL
+                        # and returns a reference to an immutable tuple.
+                        candidate = self._system_kv_cache.get(system_hash)
+                        if candidate is not None and system_token_count == candidate[1]:
                             cache_hit = True
-                            hit_snapshot = candidate_snapshot
+                            hit_snapshot = candidate[0]
                             logger.info(
                                 "System KV cache HIT (stream_chat): reusing %d "
                                 "tokens, prefilling %d new (hash=%s)",
@@ -1178,12 +1231,16 @@ class SimpleEngine(BaseEngine):
                 if cache_hit:
                     bc = make_prompt_cache(model)
                     # Restore from the closure-local reference captured at the
-                    # gate, never from ``self._system_kv_snapshot`` directly:
-                    # a concurrent MISS could have replaced the instance
-                    # attribute with a snapshot for a different system prefix
-                    # between the gate check and this point.
+                    # gate, never from ``self._system_kv_cache`` directly:
+                    # a concurrent MISS could have evicted the entry between
+                    # the gate check and this point.
                     for i, saved_state in enumerate(hit_snapshot):
                         bc[i].state = saved_state
+                    # Bump LRU position. Safe to mutate here because the
+                    # worker is serialized under ``_generation_lock``.
+                    if system_hash in self._system_kv_cache:
+                        self._system_kv_cache.move_to_end(system_hash)
+                    self._system_kv_cache_stats["hits"] += 1
                 else:
                     bc = make_prompt_cache(model)
                     sys_arr = mx.array(system_tokens)
@@ -1206,9 +1263,26 @@ class SimpleEngine(BaseEngine):
 
                     snapshot = [c.state for c in bc]
                     mx.eval([s for pair in snapshot for s in pair])
-                    self._system_kv_snapshot = snapshot
-                    self._system_kv_hash = system_hash
-                    self._system_kv_token_count = system_token_count
+                    self._system_kv_cache[system_hash] = (snapshot, system_token_count)
+                    self._system_kv_cache.move_to_end(system_hash)
+                    evicted_count = 0
+                    while len(self._system_kv_cache) > self._system_kv_capacity:
+                        evicted_hash, _ = self._system_kv_cache.popitem(last=False)
+                        self._system_kv_cache_stats["evictions"] += 1
+                        evicted_count += 1
+                        logger.info(
+                            "System KV cache EVICTED (stream_chat): hash=%s "
+                            "(capacity=%d)",
+                            evicted_hash,
+                            self._system_kv_capacity,
+                        )
+                    if evicted_count:
+                        # Eviction dropped MLX array refs; reclaim Metal heap.
+                        # Skip on the common non-eviction path to avoid
+                        # flushing the Metal allocator's reuse pool.
+                        mx.clear_cache()
+                    self._system_kv_cache_stats["misses"] += 1
+                    self._system_kv_cache_stats["stores"] += 1
                     try:
                         cache_mb = sum(c.nbytes for c in bc) / 1e6
                     except Exception:
@@ -1611,7 +1685,14 @@ class SimpleEngine(BaseEngine):
         # Extract system messages for caching
         has_system = any(m.get("role") == "system" for m in messages)
 
-        if has_system and self._text_model is not None:
+        # Snapshot-safety: only enter the system-KV cache branch when start()'s
+        # probe verified the derived TextModel returns KVCache entries (and not
+        # RotatingKVCache, which aliases buffers mutated in place).
+        if (
+            has_system
+            and self._text_model is not None
+            and self._supports_system_kv_cache
+        ):
             # Find system prefix boundary in full prompt text.
             # ChatML format: system section ends where first non-system message begins.
             # Works with tools (rendered inside system section by Qwen templates).
@@ -1653,10 +1734,10 @@ class SimpleEngine(BaseEngine):
                     system_tokens = system_tokens_list
                     suffix_tokens = full_tokens_list[system_token_count:]
 
+                    hit_candidate = self._system_kv_cache.get(system_hash)
                     if (
-                        system_hash == self._system_kv_hash
-                        and self._system_kv_snapshot is not None
-                        and system_token_count == self._system_kv_token_count
+                        hit_candidate is not None
+                        and system_token_count == hit_candidate[1]
                     ):
                         # Cache HIT — restore KV state into fresh backbone cache
                         def make_cache_with_snapshot(
@@ -1680,9 +1761,13 @@ class SimpleEngine(BaseEngine):
                             await self._run_blocking_serialized(
                                 make_cache_with_snapshot,
                                 self._text_model,
-                                self._system_kv_snapshot,
+                                hit_candidate[0],
                             )
                         )
+                        # Bump LRU position now that we know we'll use it.
+                        if system_hash in self._system_kv_cache:
+                            self._system_kv_cache.move_to_end(system_hash)
+                        self._system_kv_cache_stats["hits"] += 1
                         cache_hit = True
 
                         logger.info(
@@ -1858,9 +1943,25 @@ class SimpleEngine(BaseEngine):
                 snapshot = [c.state for c in mc]
                 mx.eval([s for pair in snapshot for s in pair])
 
-                self._system_kv_snapshot = snapshot
-                self._system_kv_hash = system_hash
-                self._system_kv_token_count = system_token_count
+                self._system_kv_cache[system_hash] = (snapshot, system_token_count)
+                self._system_kv_cache.move_to_end(system_hash)
+                evicted_count = 0
+                while len(self._system_kv_cache) > self._system_kv_capacity:
+                    evicted_hash, _ = self._system_kv_cache.popitem(last=False)
+                    self._system_kv_cache_stats["evictions"] += 1
+                    evicted_count += 1
+                    logger.info(
+                        "System KV cache EVICTED: hash=%s (capacity=%d)",
+                        evicted_hash,
+                        self._system_kv_capacity,
+                    )
+                if evicted_count:
+                    # Eviction dropped MLX array refs; reclaim Metal heap.
+                    # Skip on the common non-eviction path to avoid flushing
+                    # the Metal allocator's reuse pool.
+                    mx.clear_cache()
+                self._system_kv_cache_stats["misses"] += 1
+                self._system_kv_cache_stats["stores"] += 1
 
                 backbone_cache = mc
                 prompt_to_send = mx.array(suffix_tokens)
@@ -2222,18 +2323,36 @@ class SimpleEngine(BaseEngine):
                 "keep_pct": self._specprefill_keep_pct,
             }
 
-        # System KV cache stats
-        if self._system_kv_snapshot is not None:
-            cache_bytes = 0
-            for entry in self._system_kv_snapshot:
-                if isinstance(entry, tuple) and len(entry) == 2:
-                    cache_bytes += entry[0].nbytes + entry[1].nbytes
-                elif isinstance(entry, list):
-                    cache_bytes += sum(a.nbytes for a in entry if a is not None)
+        # System KV cache stats (LRU over multiple system prefixes)
+        if self._system_kv_cache:
+            slots = []
+            total_bytes = 0
+            for slot_hash, (snapshot, tokens) in self._system_kv_cache.items():
+                slot_bytes = 0
+                for entry in snapshot:
+                    if isinstance(entry, tuple) and len(entry) == 2:
+                        slot_bytes += entry[0].nbytes + entry[1].nbytes
+                    elif isinstance(entry, list):
+                        slot_bytes += sum(a.nbytes for a in entry if a is not None)
+                total_bytes += slot_bytes
+                slots.append(
+                    {
+                        "hash": slot_hash,
+                        "tokens": tokens,
+                        "memory_mb": round(slot_bytes / 1e6, 1),
+                    }
+                )
+            counters = dict(self._system_kv_cache_stats)
+            denom = counters["hits"] + counters["misses"]
+            counters["hit_ratio"] = (
+                round(counters["hits"] / denom, 3) if denom > 0 else None
+            )
             stats["system_kv_cache"] = {
-                "tokens": self._system_kv_token_count,
-                "hash": self._system_kv_hash,
-                "memory_mb": round(cache_bytes / 1e6, 1),
+                "capacity": self._system_kv_capacity,
+                "in_use": len(self._system_kv_cache),
+                "total_memory_mb": round(total_bytes / 1e6, 1),
+                "slots": slots,
+                "counters": counters,
             }
 
         # Include Metal memory stats
@@ -2250,14 +2369,55 @@ class SimpleEngine(BaseEngine):
         return stats
 
     def get_cache_stats(self) -> dict[str, Any] | None:
-        """Get cache statistics (for MLLM models)."""
+        """Get cache statistics for the system-prompt KV LRU plus, when the
+        model is multimodal, the MLLM's own cache stats.
+        """
+        result: dict[str, Any] = {}
+        if self._supports_system_kv_cache:
+            counters = dict(self._system_kv_cache_stats)
+            denom = counters["hits"] + counters["misses"]
+            counters["hit_ratio"] = (
+                round(counters["hits"] / denom, 3) if denom > 0 else None
+            )
+            result["system_kv_cache"] = {
+                "capacity": self._system_kv_capacity,
+                "in_use": len(self._system_kv_cache),
+                "counters": counters,
+            }
         if self._is_mllm and self._model is not None:
-            return self._model.get_cache_stats()
-        return None
+            result["mllm_cache"] = self._model.get_cache_stats()
+        return result or None
 
     def clear_runtime_caches(self) -> dict[str, Any] | None:
-        """Clear engine-managed runtime caches."""
+        """Clear engine-managed runtime caches.
+
+        Includes the multi-slot system-prompt KV LRU — each retained snapshot
+        is multi-GB on the Metal heap, so DELETE /v1/cache must drop them or
+        the operator's reset is silently incomplete. Counters reset alongside
+        so /v1/cache/stats reflects the cleared state immediately.
+
+        OrderedDict ops are atomic under the GIL: a concurrent worker that has
+        already captured a tuple reference from .get() finishes safely against
+        its own copy; any new request after this call hits MISS and repopulates
+        from scratch. No need to acquire _generation_lock for the clear itself.
+        """
+        result: dict[str, Any] = {}
+
+        dropped = len(self._system_kv_cache)
+        if dropped or any(self._system_kv_cache_stats.values()):
+            self._system_kv_cache.clear()
+            for k in self._system_kv_cache_stats:
+                self._system_kv_cache_stats[k] = 0
+            try:
+                import mlx.core as mx
+
+                mx.clear_cache()
+            except Exception:
+                pass
+            result["system_kv_cache"] = {"dropped_entries": dropped}
+
         if self._is_mllm and self._model is not None:
             self._model.clear_cache()
-            return {"model_cache": True}
-        return None
+            result["model_cache"] = True
+
+        return result or None

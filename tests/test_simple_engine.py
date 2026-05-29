@@ -790,22 +790,229 @@ class TestSimpleEngineConcurrency:
         assert chunks and chunks[0].text == "ok"
 
     @pytest.mark.anyio
+    async def test_stream_generate_text_skips_cache_path_when_text_model_unsafe(self):
+        """Same snapshot-safety contract as the LLM path, but for MLLM text
+        routing: ``_stream_generate_text`` must not enter the system-KV cache
+        branch when ``start()``'s probe of the derived ``_text_model`` returned
+        non-KVCache entries (e.g. a sliding-window text head). The gate must
+        fall back to the uncached path — no encode of the system prefix, no
+        snapshot store, no LRU mutation."""
+        from collections import OrderedDict
+
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        tokenizer = MagicMock()
+        tokenizer.apply_chat_template.return_value = (
+            "<|im_start|>system\nYou are helpful.<|im_end|>\n"
+            "<|im_start|>user\nhello<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        )
+        tokenizer.bos_token = None
+        tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+        tokenizer.decode = MagicMock(return_value="")
+        tokenizer.eos_token_id = 99
+
+        text_model = MagicMock()
+        text_model.mtp = None
+
+        engine = SimpleEngine("test-model", force_mllm=True)
+        engine._loaded = True
+        engine._text_model = text_model
+        engine._text_tokenizer = tokenizer
+        # Probe at start() decided this text model is NOT snapshot-safe.
+        engine._supports_system_kv_cache = False
+        engine._system_kv_cache = OrderedDict()
+        # Seed counters to verify they don't move on the uncached path.
+        engine._system_kv_cache_stats = {
+            "hits": 0,
+            "misses": 0,
+            "stores": 0,
+            "evictions": 0,
+        }
+
+        def fake_stream_generate(*args, **kw):
+            # _run_all iterates this synchronously (`for resp in ...`), so the
+            # mock must be a sync generator, not an async one.
+            yield SimpleNamespace(
+                text="ok",
+                new_text="ok",
+                prompt_tokens=3,
+                completion_tokens=1,
+                finished=True,
+                finish_reason="stop",
+                token=99,
+            )
+
+        with (
+            patch("vllm_mlx.engine.simple._bind_worker_generation_streams"),
+            patch(
+                "mlx_lm.models.cache.make_prompt_cache",
+                return_value=["backbone-cache"],
+            ),
+            patch("mlx_lm.sample_utils.make_sampler", return_value=MagicMock()),
+            patch(
+                "mlx_lm.sample_utils.make_logits_processors",
+                return_value=[],
+            ),
+            patch("mlx_lm.stream_generate", side_effect=fake_stream_generate),
+        ):
+            chunks = [
+                c
+                async for c in engine._stream_generate_text(
+                    messages=[
+                        {"role": "system", "content": "You are helpful."},
+                        {"role": "user", "content": "hello"},
+                    ],
+                    max_tokens=4,
+                    temperature=0.7,
+                    top_p=0.95,
+                )
+            ]
+
+        assert chunks, "expected uncached fallback to emit at least one chunk"
+        # System-prefix tokenization must NOT have been invoked: the only
+        # encode() call is the full-prompt one for the uncached path. The
+        # cache branch would have issued a second encode() for the system
+        # prefix before storing.
+        assert tokenizer.encode.call_count <= 1, (
+            "snapshot path ran despite _supports_system_kv_cache=False: "
+            f"encode called {tokenizer.encode.call_count} times"
+        )
+        # And nothing should have landed in the LRU or moved counters.
+        assert len(engine._system_kv_cache) == 0
+        assert engine._system_kv_cache_stats == {
+            "hits": 0,
+            "misses": 0,
+            "stores": 0,
+            "evictions": 0,
+        }
+
+    @pytest.mark.anyio
+    async def test_stream_generate_text_skips_cache_path_under_bounded_kv(self):
+        """Bounded-KV snapshot-safety contract for the MLLM text route.
+
+        When ``_max_kv_size > 0`` the runtime cache branch builds the prompt
+        cache via ``make_prompt_cache(model, max_kv_size=N)``. For models
+        without a custom ``make_cache``, ``mlx_lm.models.cache.make_prompt_cache``
+        returns ``RotatingKVCache`` whose ``.state`` aliases buffers that
+        ``update_and_fetch`` mutates in place — snapshot capture would corrupt
+        the cached prefix on the next decode.
+
+        The startup probe is now wired with the same ``max_kv_size`` arg as
+        the runtime constructor, so under bounded KV the probe sees
+        ``RotatingKVCache`` and sets ``_supports_system_kv_cache=False``.
+        This test locks in the runtime side of that chain: with the flag set
+        False (the correct post-probe state for ``_max_kv_size > 0``),
+        ``_stream_generate_text`` must fall back to the uncached path — no
+        encode of the system prefix, no LRU store, no counter movement.
+
+        Regression for PR #541 review (Thump604, 2026-05-17 16:04 UTC).
+        """
+        from collections import OrderedDict
+
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        tokenizer = MagicMock()
+        tokenizer.apply_chat_template.return_value = (
+            "<|im_start|>system\nYou are helpful.<|im_end|>\n"
+            "<|im_start|>user\nhello<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        )
+        tokenizer.bos_token = None
+        tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+        tokenizer.decode = MagicMock(return_value="")
+        tokenizer.eos_token_id = 99
+
+        text_model = MagicMock()
+        text_model.mtp = None
+
+        engine = SimpleEngine("test-model", force_mllm=True)
+        engine._loaded = True
+        engine._text_model = text_model
+        engine._text_tokenizer = tokenizer
+        # Bounded-KV serving: the startup probe (called with the same
+        # max_kv_size as runtime) would have built RotatingKVCache and
+        # flipped this flag to False.
+        engine._max_kv_size = 2048
+        engine._supports_system_kv_cache = False
+        engine._system_kv_cache = OrderedDict()
+        engine._system_kv_cache_stats = {
+            "hits": 0,
+            "misses": 0,
+            "stores": 0,
+            "evictions": 0,
+        }
+
+        def fake_stream_generate(*args, **kw):
+            yield SimpleNamespace(
+                text="ok",
+                new_text="ok",
+                prompt_tokens=3,
+                completion_tokens=1,
+                finished=True,
+                finish_reason="stop",
+                token=99,
+            )
+
+        with (
+            patch("vllm_mlx.engine.simple._bind_worker_generation_streams"),
+            patch(
+                "mlx_lm.models.cache.make_prompt_cache",
+                return_value=["backbone-cache"],
+            ),
+            patch("mlx_lm.sample_utils.make_sampler", return_value=MagicMock()),
+            patch(
+                "mlx_lm.sample_utils.make_logits_processors",
+                return_value=[],
+            ),
+            patch("mlx_lm.stream_generate", side_effect=fake_stream_generate),
+        ):
+            chunks = [
+                c
+                async for c in engine._stream_generate_text(
+                    messages=[
+                        {"role": "system", "content": "You are helpful."},
+                        {"role": "user", "content": "hello"},
+                    ],
+                    max_tokens=4,
+                    temperature=0.7,
+                    top_p=0.95,
+                )
+            ]
+
+        assert chunks, "expected uncached fallback to emit at least one chunk"
+        # The cache branch would have issued a second encode() for the system
+        # prefix before storing; under bounded KV the gate must skip that.
+        assert tokenizer.encode.call_count <= 1, (
+            "snapshot path ran under _max_kv_size>0: "
+            f"encode called {tokenizer.encode.call_count} times"
+        )
+        assert len(engine._system_kv_cache) == 0
+        assert engine._system_kv_cache_stats == {
+            "hits": 0,
+            "misses": 0,
+            "stores": 0,
+            "evictions": 0,
+        }
+
+    @pytest.mark.anyio
     async def test_stream_chat_uses_gate_time_snapshot_under_concurrent_mutation(
         self,
     ):
-        """A concurrent MISS that reassigns ``self._system_kv_snapshot`` between
+        """A concurrent MISS that mutates ``self._system_kv_cache`` between
         the cache-hit gate (which runs outside ``_run_blocking_serialized``) and
         the snapshot restore (which runs inside the serialized worker) must not
         corrupt the HIT. The restore must use the snapshot reference captured at
-        gate time, not re-read ``self._system_kv_snapshot`` later — otherwise a
+        gate time, not re-read ``self._system_kv_cache`` later — otherwise a
         different system prefix's KV would be loaded under the hash that decided
         HIT.
 
-        Simulates the race by reassigning ``engine._system_kv_snapshot`` inside
+        Simulates the race by replacing the cache entry for the same hash inside
         the ``_run_blocking_serialized`` hook (executed after the gate but
         before the worker enters the cache branch), then asserts the restore
         loop wrote the gate-time entries, not the post-gate intruder."""
         import hashlib
+        from collections import OrderedDict
 
         from vllm_mlx.engine.simple import SimpleEngine
 
@@ -871,14 +1078,16 @@ class TestSimpleEngineConcurrency:
             engine._loaded = True
             engine._supports_system_kv_cache = True
             # Pre-seed HIT state matching the divergence-detected prefix.
-            engine._system_kv_hash = expected_hash
-            engine._system_kv_token_count = 20
-            engine._system_kv_snapshot = original_snapshot
+            engine._system_kv_cache = OrderedDict(
+                [(expected_hash, (original_snapshot, 20))]
+            )
 
             async def serialized_with_race(func, *args, on_cancel=None, **kw):
-                # Simulate a concurrent MISS overwriting the instance attribute
-                # AFTER the gate's HIT decision but BEFORE the worker restores.
-                engine._system_kv_snapshot = intruder_snapshot
+                # Simulate a concurrent MISS replacing the cache entry for the
+                # same hash AFTER the gate's HIT decision but BEFORE the worker
+                # restores. The gate captured a reference to the original
+                # tuple; replacement here must not affect that capture.
+                engine._system_kv_cache[expected_hash] = (intruder_snapshot, 20)
                 await asyncio.to_thread(func)
                 return None
 
@@ -905,7 +1114,7 @@ class TestSimpleEngineConcurrency:
                 ]
 
         # Restore wrote the gate-time snapshot exactly once.
-        # If the worker had re-read ``self._system_kv_snapshot`` we would see
+        # If the worker had re-read ``self._system_kv_cache`` we would see
         # ``("INTRUDER_K", "INTRUDER_V")`` instead — that's the TOCTOU bug.
         assert captured_states == [("ORIGINAL_K", "ORIGINAL_V")], (
             "Snapshot restore did not use the gate-time reference; "
@@ -2086,3 +2295,63 @@ class TestSimpleEngineConcurrency:
                 with pytest.raises(asyncio.CancelledError):
                     await task
         assert await asyncio.to_thread(prefill_cancelled.wait, 1.0)
+
+
+class TestSimpleEngineClearRuntimeCaches:
+    """Operational reset (DELETE /v1/cache) must actually release the
+    multi-slot system-prompt KV cache state introduced in the LRU patch —
+    otherwise multi-GB Metal-heap snapshots can survive a reset while
+    /v1/cache/stats still reports them.
+    """
+
+    def test_clear_runtime_caches_drops_lru_and_resets_counters(self):
+        from collections import OrderedDict
+
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        engine = SimpleEngine("test-model")
+        # Seed a populated LRU + non-zero counters as if the engine had been
+        # serving traffic with two distinct system prefixes.
+        engine._system_kv_cache = OrderedDict(
+            [
+                ("hash_a", ([b"snap_a_layer_0", b"snap_a_layer_1"], 28000)),
+                ("hash_b", ([b"snap_b_layer_0", b"snap_b_layer_1"], 6500)),
+            ]
+        )
+        engine._system_kv_cache_stats = {
+            "hits": 5,
+            "misses": 2,
+            "stores": 2,
+            "evictions": 0,
+        }
+
+        result = engine.clear_runtime_caches()
+
+        assert len(engine._system_kv_cache) == 0, "LRU must be empty after clear"
+        assert engine._system_kv_cache_stats == {
+            "hits": 0,
+            "misses": 0,
+            "stores": 0,
+            "evictions": 0,
+        }, "counters must reset so /v1/cache/stats reflects cleared state"
+        assert result is not None
+        assert result["system_kv_cache"] == {"dropped_entries": 2}
+
+    def test_clear_runtime_caches_no_op_when_lru_empty_and_counters_zero(self):
+        from collections import OrderedDict
+
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        engine = SimpleEngine("test-model")
+        engine._system_kv_cache = OrderedDict()
+        engine._system_kv_cache_stats = {
+            "hits": 0,
+            "misses": 0,
+            "stores": 0,
+            "evictions": 0,
+        }
+
+        result = engine.clear_runtime_caches()
+
+        # Non-MLLM, empty LRU, zeroed counters → nothing to report.
+        assert result is None
