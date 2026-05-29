@@ -996,11 +996,12 @@ def serve_command(args):
 def bench_command(args):
     """Run benchmark."""
     import asyncio
+    import concurrent.futures
     import time
 
     from mlx_lm import load
 
-    from .engine_core import AsyncEngineCore, EngineConfig
+    from .engine_core import AsyncEngineCore, EngineConfig, _init_mlx_step_thread
     from .request import SamplingParams
     from .scheduler import SchedulerConfig
 
@@ -1012,8 +1013,21 @@ def bench_command(args):
 
     async def run_benchmark():
         print(f"Loading model: {args.model}")
+
+        # Load model on the mlx-step worker thread so that model weights and
+        # KV cache arrays are tagged with that thread's MLX stream. Loading on
+        # the asyncio loop thread causes "There is no Stream(gpu, N)" errors
+        # when the mlx-step worker later tries to eval those arrays.
+        mlx_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="mlx-step",
+            initializer=_init_mlx_step_thread,
+        )
+
         try:
-            model, tokenizer = load(args.model)
+            model, tokenizer = await asyncio.get_running_loop().run_in_executor(
+                mlx_executor, lambda: load(args.model)
+            )
         except Exception as e:
             # Mirror serve_command: clean message instead of a 30-line
             # traceback when the user typed a missing repo / bad alias.
@@ -1030,6 +1044,7 @@ def bench_command(args):
                 )
             else:
                 print(f"\n  Error loading model: {e}")
+            mlx_executor.shutdown(wait=False)
             sys.exit(1)
 
         scheduler_config = SchedulerConfig(
@@ -1093,7 +1108,7 @@ def bench_command(args):
         total_prompt_tokens = 0
         total_completion_tokens = 0
 
-        async with AsyncEngineCore(model, tokenizer, engine_config) as engine:
+        async with AsyncEngineCore(model, tokenizer, engine_config, executor=mlx_executor) as engine:
             await asyncio.sleep(0.1)  # Warm up
 
             start_time = time.perf_counter()
@@ -1132,6 +1147,8 @@ def bench_command(args):
         print(f"  Total tokens: {total_tokens}")
         print(f"  Tokens/second: {total_completion_tokens / total_time:.2f}")
         print(f"  Throughput: {total_tokens / total_time:.2f} tok/s")
+
+        mlx_executor.shutdown(wait=False)
 
     asyncio.run(run_benchmark())
 
