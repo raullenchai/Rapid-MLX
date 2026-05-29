@@ -243,6 +243,13 @@ class Usage(BaseModel):
     total_tokens: int = 0
 
 
+class GenerationMetadata(BaseModel):
+    """Optional generation diagnostics emitted for feature-bearing requests."""
+
+    no_final_content_watchdog_tokens: int | None = None
+    no_final_content_watchdog_enforced: bool = False
+
+
 class ChatCompletionResponse(BaseModel):
     """Response for chat completion."""
 
@@ -252,6 +259,7 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[ChatCompletionChoice]
     usage: Usage = Field(default_factory=Usage)
+    generation_metadata: GenerationMetadata | None = None
 
 
 # =============================================================================

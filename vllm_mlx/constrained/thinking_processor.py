@@ -85,6 +85,8 @@ class ThinkingAwareLogitsProcessor:
         "_processed_len",
         "_processed_token_ids",
         "_snapshots",
+        "watchdog_was_enforced",
+        "_no_final_content_token_limit",
     )
 
     def __init__(
@@ -95,6 +97,7 @@ class ThinkingAwareLogitsProcessor:
         inner: Callable[[mx.array, mx.array], mx.array] | None = None,
         vocab_size: int = 152064,
         prompt_has_think_tag: bool = False,
+        no_final_content_token_limit: int | None = None,
     ) -> None:
         self._start_matcher = BoundedSuffixMatcher(start_token_ids)
         self._end_matcher = BoundedSuffixMatcher(end_token_ids)
@@ -109,6 +112,8 @@ class ThinkingAwareLogitsProcessor:
         self._vocab_size = vocab_size
         self._thinking_tokens = 0
         self._transition_index = 0
+        self.watchdog_was_enforced = False
+        self._no_final_content_token_limit = no_final_content_token_limit
         # When the chat template already injected <think> into the prompt,
         # the first generated token is already inside the thinking span.
         # Start in THINKING (or TRANSITIONING if budget=0) instead of IDLE.
@@ -189,13 +194,14 @@ class ThinkingAwareLogitsProcessor:
 
     def _snapshot_state(
         self,
-    ) -> tuple[Phase, int, int, tuple[int, ...], tuple[int, ...]]:
+    ) -> tuple[Phase, int, int, tuple[int, ...], tuple[int, ...], bool]:
         return (
             self._state,
             self._thinking_tokens,
             self._transition_index,
             self._start_matcher.snapshot(),
             self._end_matcher.snapshot(),
+            self.watchdog_was_enforced,
         )
 
     def _restore_snapshot(self, processed_len: int) -> None:
@@ -210,6 +216,7 @@ class ThinkingAwareLogitsProcessor:
             self._transition_index,
             start_state,
             end_state,
+            self.watchdog_was_enforced,
         ) = self._snapshots[snap_idx]
         self._start_matcher.restore(start_state)
         self._end_matcher.restore(end_state)
@@ -257,6 +264,13 @@ class ThinkingAwareLogitsProcessor:
             if self._thinking_tokens >= self._thinking_token_budget:
                 self._state = Phase.TRANSITIONING
                 self._transition_index = 0
+            elif (
+                self._no_final_content_token_limit is not None
+                and self._thinking_tokens >= self._no_final_content_token_limit
+            ):
+                self._state = Phase.TRANSITIONING
+                self._transition_index = 0
+                self.watchdog_was_enforced = True
             return
 
         if self._state == Phase.TRANSITIONING:
