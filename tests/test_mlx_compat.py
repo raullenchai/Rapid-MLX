@@ -211,16 +211,23 @@ def test_every_mlx_lm_consumer_installs_shim():
         a deferred (function/lambda) scope. The walk descends into
         ``If``/``Try``/``With``/``For``/``While``/``ClassDef`` bodies —
         all of which run at module load time when the enclosing module
-        is imported. ``if TYPE_CHECKING:`` is treated as deferred since
-        its body never runs at import time."""
+        is imported. For ``if TYPE_CHECKING:`` the ``body`` is treated
+        as deferred (runs only under static analysis) but the ``orelse``
+        IS walked: ``TYPE_CHECKING`` is False at runtime so ``else:`` runs
+        at module load and any ``import mlx_lm`` there must still install
+        the shim first."""
         for child in ast.iter_child_nodes(node):
             if isinstance(child, DEFERRED_SCOPES):
                 continue
             if _is_type_checking_guard(child):
-                # Yield the If node itself (for parent-tracking) but DO NOT
-                # descend into its body / orelse — the imports there only
-                # run under static analysis, never at module load.
+                # Yield the If node itself (for parent-tracking). Skip the
+                # body (dead at module load) but descend into orelse —
+                # ``else:`` of an ``if TYPE_CHECKING:`` block runs at
+                # import time on every Python interpreter.
                 yield child, parents
+                for sub in child.orelse:
+                    yield sub, parents + (child,)
+                    yield from _walk_module_level(sub, parents + (child,))
                 continue
             yield child, parents
             yield from _walk_module_level(child, parents + (child,))
