@@ -1010,6 +1010,10 @@ class TestMLLMBatchGeneratorMTPGuards:
         assert stats["requested_draft_tokens"] == 4
         assert stats["effective_draft_tokens"] == 1
         assert stats["attempted"] == 0
+        assert (
+            stats["bypass_counts_semantics"]
+            == "per_condition_overlapping_not_total_steps"
+        )
         assert stats["bypass_counts"] == {
             "prefill": 0,
             "no_active_batch": 0,

@@ -2023,6 +2023,7 @@ def install_mtp_mllm(
             "errors": errors,
             "acceptance_rate": acceptance_rate,
             "bypass_counts": bypass_counts,
+            "bypass_counts_semantics": "per_condition_overlapping_not_total_steps",
         }
 
     batch_gen.get_mtp_stats = _get_mtp_stats
