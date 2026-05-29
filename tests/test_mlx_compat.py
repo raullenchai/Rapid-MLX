@@ -141,6 +141,28 @@ def test_every_mlx_lm_consumer_installs_shim():
         if isinstance(node, ast.ImportFrom):
             mod = node.module or ""
             return mod == "mlx_lm" or mod.startswith("mlx_lm.")
+        # ``importlib.import_module("mlx_lm…")`` — dynamic import with
+        # the same module-load effect as a static one. DeepSeek
+        # pr_validate round 4 flagged that the AST-only walk silently
+        # dropped this shape, which the prior text-based guard caught
+        # via a literal `import_module("mlx_lm.generate")` substring.
+        # We also accept the keyword-arg form
+        # ``import_module(name="mlx_lm.…")``.
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "import_module":
+                if isinstance(func.value, ast.Name) and func.value.id == "importlib":
+                    arg = None
+                    if node.args:
+                        arg = node.args[0]
+                    else:
+                        for kw in node.keywords:
+                            if kw.arg == "name":
+                                arg = kw.value
+                                break
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        s = arg.value
+                        return s == "mlx_lm" or s.startswith("mlx_lm.")
         return False
 
     def _is_install_call(node: ast.AST) -> bool:
@@ -162,7 +184,15 @@ def test_every_mlx_lm_consumer_installs_shim():
         real runtime flag) is NOT skipped — DeepSeek pr_validate round
         3 flagged the un-narrowed version as [BLOCKING]: a real
         ``True`` flag named ``TYPE_CHECKING`` on some other namespace
-        would have hidden an unprotected ``mlx_lm`` import."""
+        would have hidden an unprotected ``mlx_lm`` import.
+
+        Known limitation (DeepSeek round 4 NIT): aliased typing imports
+        like ``import typing as t; if t.TYPE_CHECKING: import mlx_lm``
+        get the false-positive treatment (the test would flag the
+        ``mlx_lm`` import as unshielded). Convention in this codebase
+        is ``from typing import TYPE_CHECKING`` — don't alias the
+        ``typing`` module in files that import ``mlx_lm`` under a
+        ``TYPE_CHECKING`` guard."""
         if not isinstance(node, ast.If):
             return False
         test = node.test
