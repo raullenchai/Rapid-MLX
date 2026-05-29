@@ -639,6 +639,10 @@ MLLM_PATTERNS = [
     "InternVL",
     "deepseek-vl",
     "DeepSeek-VL",
+    "gemma-3",
+    "gemma3",  # Gemma 3 (multimodal)
+    "gemma-4",
+    "gemma4",  # Gemma 4 (multimodal)
 ]
 
 # Test image URL (Yellow Labrador from Wikimedia Commons)
