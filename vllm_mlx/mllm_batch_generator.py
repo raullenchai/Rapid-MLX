@@ -24,6 +24,11 @@ from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
+
+from . import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
 from mlx_lm.sample_utils import make_sampler
 
 from .multimodal_processor import MultimodalProcessor
