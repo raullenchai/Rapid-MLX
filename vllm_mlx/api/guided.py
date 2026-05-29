@@ -11,6 +11,16 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# MUST install the MLX hardware-compat shim BEFORE the `mlx_lm` import below.
+# Even though the import is inside a `try`, the body still runs at module
+# load time; on success it triggers `mlx_lm/__init__.py` → `mlx_lm.generate`
+# → `mx.new_thread_local_stream(...)` capture, which on M5 single-stream
+# GPUs would be unusable (#404). The shim is idempotent and a no-op on
+# hardware where the original API works.
+from .. import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
 # Check for outlines availability
 try:
     import mlx_lm

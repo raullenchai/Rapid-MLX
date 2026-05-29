@@ -77,8 +77,9 @@ def test_vllm_mlx_init_does_not_install_shim_or_import_mlx():
 
 
 def test_every_mlx_lm_consumer_installs_shim():
-    """Any vllm_mlx file with a *top-level* ``from mlx_lm…`` / ``import
-    mlx_lm…`` MUST also call ``_mlx_compat.install()`` in the same file.
+    """Any vllm_mlx file that runs a ``from mlx_lm…`` / ``import mlx_lm…``
+    *at module load time* MUST also call ``_mlx_compat.install()`` before
+    the first such import.
 
     Why ANY ``mlx_lm`` submodule, not just ``mlx_lm.generate``: importing
     e.g. ``mlx_lm.sample_utils`` or ``mlx_lm.models.base`` still triggers
@@ -89,20 +90,69 @@ def test_every_mlx_lm_consumer_installs_shim():
     time. The #404 single-stream crash on M5 happens on the same code
     path regardless of which submodule the import statement names.
 
+    Why AST-based and not text-based: imports inside top-level ``try /
+    except ImportError`` blocks are indented but still execute at module
+    load time. ``vllm_mlx/utils/mamba_cache.py`` and ``vllm_mlx/api/
+    guided.py`` both use that pattern for optional-dep guards, and a
+    line-prefix check misses them. We walk the AST and accept any
+    ``Import`` / ``ImportFrom`` whose parent chain contains only ``If``,
+    ``Try``, or ``With`` — i.e. unconditionally-executed at module load
+    — while excluding ``FunctionDef`` / ``AsyncFunctionDef`` / ``ClassDef``
+    (those are deferred to call time).
+
     Surfaced by community PR #485 (Michael Ledin / @mxl, 2026-05-29):
     ``mllm_batch_generator.py``, ``mllm_scheduler.py``, and
     ``models/deepseek_v4.py`` all had top-level ``mlx_lm.<sub>`` imports
     without the shim; the prior version of this guard (which matched
-    only ``mlx_lm.generate``) missed all three. Indented / function-local
-    imports are out of scope here — by the time they run, scheduler.py's
-    install is usually already in effect.
+    only literal ``mlx_lm.generate``) missed all three. Codex round 1
+    review against this PR then surfaced the indented-import gap above.
 
-    This is a structural audit: a new file that adds a top-level
+    This is a structural audit: a new file that adds a module-load-time
     ``mlx_lm.*`` import without ``_mlx_compat.install()`` first will
     fail here at unit-test time, catching the slip before any M5 user
     does.
     """
+    import ast
     import pathlib
+
+    # AST node types that defer execution — an mlx_lm import nested under
+    # any of these does NOT run at module load, so it's out of scope.
+    DEFERRED_SCOPES = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+        ast.Lambda,
+    )
+
+    def _is_mlx_lm_node(node: ast.AST) -> bool:
+        if isinstance(node, ast.Import):
+            return any(
+                alias.name == "mlx_lm" or alias.name.startswith("mlx_lm.")
+                for alias in node.names
+            )
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            return mod == "mlx_lm" or mod.startswith("mlx_lm.")
+        return False
+
+    def _is_install_call(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Call):
+            return False
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "install":
+            return False
+        return isinstance(func.value, ast.Name) and func.value.id == "_mlx_compat"
+
+    def _walk_module_level(node: ast.AST, parents: tuple[ast.AST, ...] = ()):
+        """Yield (node, parents) for every descendant that is NOT inside
+        a deferred (function/class/lambda) scope. The walk descends into
+        ``If``/``Try``/``With``/``For``/``While`` bodies, which all run
+        at module load time."""
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, DEFERRED_SCOPES):
+                continue
+            yield child, parents
+            yield from _walk_module_level(child, parents + (child,))
 
     pkg_root = pathlib.Path(
         str(importlib.resources.files("vllm_mlx").joinpath(""))
@@ -112,18 +162,31 @@ def test_every_mlx_lm_consumer_installs_shim():
         if path.name == "_mlx_compat.py":
             continue  # the shim itself; nothing to install
         source = path.read_text()
-        has_top_level_mlx_lm_import = any(
-            line.startswith(("from mlx_lm", "import mlx_lm"))
-            for line in source.splitlines()
-        )
-        if has_top_level_mlx_lm_import and "_mlx_compat.install()" not in source:
-            offenders.append(str(path.relative_to(pkg_root)))
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue  # not our problem here
+        first_mlx_lm_line = None
+        first_install_line = None
+        for node, _parents in _walk_module_level(tree):
+            if first_mlx_lm_line is None and _is_mlx_lm_node(node):
+                first_mlx_lm_line = node.lineno
+            if first_install_line is None and _is_install_call(node):
+                first_install_line = node.lineno
+        if first_mlx_lm_line is None:
+            continue
+        if first_install_line is None or first_install_line > first_mlx_lm_line:
+            rel = str(path.relative_to(pkg_root))
+            offenders.append(
+                f"{rel} (mlx_lm import @ line {first_mlx_lm_line}, "
+                f"install @ line {first_install_line})"
+            )
     assert not offenders, (
-        "Files have top-level `from mlx_lm` / `import mlx_lm` without "
-        "calling `_mlx_compat.install()` first — #404 M5 regression "
-        "risk (any mlx_lm submodule triggers mlx_lm/__init__.py which "
-        "loads mlx_lm.generate which captures the GPU stream):\n  "
-        + "\n  ".join(offenders)
+        "Files run a module-load-time `from mlx_lm` / `import mlx_lm` "
+        "without calling `_mlx_compat.install()` first — #404 M5 "
+        "regression risk (any mlx_lm submodule triggers "
+        "mlx_lm/__init__.py which loads mlx_lm.generate which captures "
+        "the GPU stream):\n  " + "\n  ".join(offenders)
     )
 
 
