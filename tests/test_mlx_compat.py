@@ -95,17 +95,20 @@ def test_every_mlx_lm_consumer_installs_shim():
     load time. ``vllm_mlx/utils/mamba_cache.py`` and ``vllm_mlx/api/
     guided.py`` both use that pattern for optional-dep guards, and a
     line-prefix check misses them. We walk the AST and accept any
-    ``Import`` / ``ImportFrom`` whose parent chain contains only ``If``,
-    ``Try``, or ``With`` — i.e. unconditionally-executed at module load
-    — while excluding ``FunctionDef`` / ``AsyncFunctionDef`` / ``ClassDef``
-    (those are deferred to call time).
+    ``Import`` / ``ImportFrom`` whose parent chain stays inside
+    module-load-time scopes (``If`` / ``Try`` / ``With`` / ``For`` /
+    ``While`` bodies, plus ``ClassDef`` bodies — class statements run
+    at definition time), while excluding ``FunctionDef`` /
+    ``AsyncFunctionDef`` / ``Lambda`` (deferred to call time).
 
     Surfaced by community PR #485 (Michael Ledin / @mxl, 2026-05-29):
     ``mllm_batch_generator.py``, ``mllm_scheduler.py``, and
     ``models/deepseek_v4.py`` all had top-level ``mlx_lm.<sub>`` imports
     without the shim; the prior version of this guard (which matched
     only literal ``mlx_lm.generate``) missed all three. Codex round 1
-    review against this PR then surfaced the indented-import gap above.
+    review against this PR then surfaced the indented-import gap above,
+    and DeepSeek pr_validate round 2 added the ``ClassDef``-descent
+    requirement (class bodies execute at module load).
 
     This is a structural audit: a new file that adds a module-load-time
     ``mlx_lm.*`` import without ``_mlx_compat.install()`` first will
@@ -117,10 +120,15 @@ def test_every_mlx_lm_consumer_installs_shim():
 
     # AST node types that defer execution — an mlx_lm import nested under
     # any of these does NOT run at module load, so it's out of scope.
+    # NB: ``ClassDef`` is *not* deferred. A class body runs at the class's
+    # definition site; for a module-level class that's still at module
+    # load time, so an ``import mlx_lm`` at class scope captures the
+    # GPU stream exactly as a top-level import would. Method bodies
+    # inside the class are still skipped via ``FunctionDef``. Flagged
+    # as [BLOCKING] by DeepSeek pr_validate round 2 on PR #487.
     DEFERRED_SCOPES = (
         ast.FunctionDef,
         ast.AsyncFunctionDef,
-        ast.ClassDef,
         ast.Lambda,
     )
 
@@ -159,10 +167,11 @@ def test_every_mlx_lm_consumer_installs_shim():
 
     def _walk_module_level(node: ast.AST, parents: tuple[ast.AST, ...] = ()):
         """Yield (node, parents) for every descendant that is NOT inside
-        a deferred (function/class/lambda) scope. The walk descends into
-        ``If``/``Try``/``With``/``For``/``While`` bodies, which all run
-        at module load time. ``if TYPE_CHECKING:`` is treated as deferred
-        since its body never runs at import time."""
+        a deferred (function/lambda) scope. The walk descends into
+        ``If``/``Try``/``With``/``For``/``While``/``ClassDef`` bodies —
+        all of which run at module load time when the enclosing module
+        is imported. ``if TYPE_CHECKING:`` is treated as deferred since
+        its body never runs at import time."""
         for child in ast.iter_child_nodes(node):
             if isinstance(child, DEFERRED_SCOPES):
                 continue
