@@ -24,10 +24,20 @@ from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.sample_utils import make_sampler
 
-from .multimodal_processor import MultimodalProcessor
-from .vision_embedding_cache import VisionEmbeddingCache
+# MUST install the MLX hardware-compat shim BEFORE any `from mlx_lm.*` import.
+# `mlx_lm/__init__.py` re-exports from `mlx_lm.generate`, which captures
+# `mx.new_thread_local_stream(mx.default_device())` at module-import time; on
+# M5 single-stream GPUs that stream is unusable (#404). The shim is
+# idempotent and a no-op on hardware where the original API works.
+from . import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
+from mlx_lm.sample_utils import make_sampler  # noqa: E402
+
+from .multimodal_processor import MultimodalProcessor  # noqa: E402
+from .vision_embedding_cache import VisionEmbeddingCache  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

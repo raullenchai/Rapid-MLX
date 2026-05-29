@@ -1088,6 +1088,17 @@ def bench_command(args):
     import asyncio
     import time
 
+    # Install the MLX hardware-compat shim BEFORE `from mlx_lm import load`.
+    # `mlx_lm/__init__.py` re-exports from `mlx_lm.generate`, which captures
+    # `mx.new_thread_local_stream(mx.default_device())` at module-import time;
+    # on M5 single-stream GPUs that stream is unusable (#404). Bench is a
+    # separate entry point from `serve` so it doesn't inherit the
+    # scheduler-side install — wire the shim here directly. Idempotent, no-op
+    # on hardware where the original API works.
+    from . import _mlx_compat as _mlx_compat
+
+    _mlx_compat.install()
+
     from mlx_lm import load
 
     from .engine_core import AsyncEngineCore, EngineConfig

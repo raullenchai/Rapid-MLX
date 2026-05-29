@@ -60,8 +60,8 @@ def test_vllm_mlx_init_does_not_install_shim_or_import_mlx():
 
     Pure source-text audit; no module manipulation so the test is safe
     in a shared pytest process. The shim must be installed lazily at
-    the top of every module that imports `mlx_lm.generate` instead
-    (verified by `test_every_mlx_lm_generate_consumer_installs_shim`)."""
+    the top of every module that imports `mlx_lm.*` instead
+    (verified by `test_every_mlx_lm_consumer_installs_shim`)."""
     init_source = (
         importlib.resources.files("vllm_mlx").joinpath("__init__.py").read_text()
     )
@@ -76,17 +76,31 @@ def test_vllm_mlx_init_does_not_install_shim_or_import_mlx():
     )
 
 
-def test_every_mlx_lm_generate_consumer_installs_shim():
-    """Any vllm_mlx file that imports `mlx_lm.generate` (either via
-    `from mlx_lm.generate import ...` or `importlib.import_module(
-    "mlx_lm.generate")`) MUST also call `_mlx_compat.install()` in the
-    same file. Otherwise that import path triggers `mlx_lm/generate.py`
-    module-level `mx.new_thread_local_stream` capture on M5 before our
-    shim runs, and the bug from #404 returns.
+def test_every_mlx_lm_consumer_installs_shim():
+    """Any vllm_mlx file with a *top-level* ``from mlx_lm…`` / ``import
+    mlx_lm…`` MUST also call ``_mlx_compat.install()`` in the same file.
 
-    This is a structural audit: a new file that adds the import without
-    the install will fail here at unit-test time, catching the slip
-    before any M5 user does.
+    Why ANY ``mlx_lm`` submodule, not just ``mlx_lm.generate``: importing
+    e.g. ``mlx_lm.sample_utils`` or ``mlx_lm.models.base`` still triggers
+    ``mlx_lm/__init__.py`` execution, which does ``from .generate import
+    batch_generate, generate, stream_generate`` and therefore runs
+    ``mlx_lm/generate.py:226`` ``generation_stream =
+    mx.new_thread_local_stream(mx.default_device())`` at module-import
+    time. The #404 single-stream crash on M5 happens on the same code
+    path regardless of which submodule the import statement names.
+
+    Surfaced by community PR #485 (Michael Ledin / @mxl, 2026-05-29):
+    ``mllm_batch_generator.py``, ``mllm_scheduler.py``, and
+    ``models/deepseek_v4.py`` all had top-level ``mlx_lm.<sub>`` imports
+    without the shim; the prior version of this guard (which matched
+    only ``mlx_lm.generate``) missed all three. Indented / function-local
+    imports are out of scope here — by the time they run, scheduler.py's
+    install is usually already in effect.
+
+    This is a structural audit: a new file that adds a top-level
+    ``mlx_lm.*`` import without ``_mlx_compat.install()`` first will
+    fail here at unit-test time, catching the slip before any M5 user
+    does.
     """
     import pathlib
 
@@ -98,16 +112,18 @@ def test_every_mlx_lm_generate_consumer_installs_shim():
         if path.name == "_mlx_compat.py":
             continue  # the shim itself; nothing to install
         source = path.read_text()
-        imports_generate = (
-            "from mlx_lm.generate" in source
-            or 'import_module("mlx_lm.generate")' in source
-            or "import_module('mlx_lm.generate')" in source
+        has_top_level_mlx_lm_import = any(
+            line.startswith(("from mlx_lm", "import mlx_lm"))
+            for line in source.splitlines()
         )
-        if imports_generate and "_mlx_compat.install()" not in source:
+        if has_top_level_mlx_lm_import and "_mlx_compat.install()" not in source:
             offenders.append(str(path.relative_to(pkg_root)))
     assert not offenders, (
-        "Files import mlx_lm.generate without calling _mlx_compat.install() "
-        "first — #404 M5 regression risk:\n  " + "\n  ".join(offenders)
+        "Files have top-level `from mlx_lm` / `import mlx_lm` without "
+        "calling `_mlx_compat.install()` first — #404 M5 regression "
+        "risk (any mlx_lm submodule triggers mlx_lm/__init__.py which "
+        "loads mlx_lm.generate which captures the GPU stream):\n  "
+        + "\n  ".join(offenders)
     )
 
 

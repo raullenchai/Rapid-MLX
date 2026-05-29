@@ -28,16 +28,26 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import mlx.core as mx
-from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer
 
-from .mllm_batch_generator import (
+# MUST install the MLX hardware-compat shim BEFORE any `from mlx_lm.*` import.
+# `mlx_lm/__init__.py` re-exports from `mlx_lm.generate`, which captures
+# `mx.new_thread_local_stream(mx.default_device())` at module-import time; on
+# M5 single-stream GPUs that stream is unusable (#404). The shim is
+# idempotent and a no-op on hardware where the original API works.
+from . import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
+from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
+
+from .mllm_batch_generator import (  # noqa: E402
     MLLMBatchGenerator,
     MLLMBatchRequest,
     MLLMBatchResponse,
 )
-from .mllm_cache import MLLMCacheManager
-from .multimodal_processor import MultimodalProcessor
-from .request import RequestOutput, RequestStatus, SamplingParams
+from .mllm_cache import MLLMCacheManager  # noqa: E402
+from .multimodal_processor import MultimodalProcessor  # noqa: E402
+from .request import RequestOutput, RequestStatus, SamplingParams  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

@@ -9,11 +9,24 @@ import mlx.nn as nn
 from mlx.nn.layers.distributed import shard_inplace, shard_linear, sum_gradients
 from mlx.utils import tree_flatten
 
-from mlx_lm.models.base import BaseModelArgs, create_attention_mask, scaled_dot_product_attention
-from mlx_lm.models.cache import BatchRotatingKVCache, RotatingKVCache
-from mlx_lm.models.mla import MultiLinear
-from mlx_lm.models.pipeline import PipelineMixin
-from mlx_lm.models.switch_layers import SwitchGLU
+# MUST install the MLX hardware-compat shim BEFORE any `from mlx_lm.*` import.
+# `mlx_lm/__init__.py` re-exports from `mlx_lm.generate`, which captures
+# `mx.new_thread_local_stream(mx.default_device())` at module-import time; on
+# M5 single-stream GPUs that stream is unusable (#404). The shim is
+# idempotent and a no-op on hardware where the original API works.
+from .. import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
+from mlx_lm.models.base import (
+    BaseModelArgs,
+    create_attention_mask,
+    scaled_dot_product_attention,
+)  # noqa: E402
+from mlx_lm.models.cache import BatchRotatingKVCache, RotatingKVCache  # noqa: E402
+from mlx_lm.models.mla import MultiLinear  # noqa: E402
+from mlx_lm.models.pipeline import PipelineMixin  # noqa: E402
+from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 
 
 @dataclass
@@ -1453,7 +1466,6 @@ class DeepseekV4Cache:
 
 
 class Compressor(nn.Module):
-
     def __init__(self, config: ModelArgs, compress_ratio: int, head_dim: int):
         super().__init__()
         self.compress_ratio = compress_ratio
