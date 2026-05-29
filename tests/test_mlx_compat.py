@@ -152,17 +152,28 @@ def test_every_mlx_lm_consumer_installs_shim():
         return isinstance(func.value, ast.Name) and func.value.id == "_mlx_compat"
 
     def _is_type_checking_guard(node: ast.AST) -> bool:
-        """``True`` for ``if TYPE_CHECKING:`` and ``if typing.TYPE_CHECKING:``
-        — both evaluate to ``False`` at runtime, so the body never executes
-        at module load and isn't a stream-capture hazard. Flagged by
-        DeepSeek pr_validate review on PR #487 as a future-proofing nit."""
+        """``True`` for ``if TYPE_CHECKING:`` and
+        ``if {typing,typing_extensions}.TYPE_CHECKING:`` — both evaluate
+        to ``False`` at runtime, so the body never executes at module
+        load and isn't a stream-capture hazard.
+
+        Narrowed to those two attribute owners specifically so an
+        unrelated ``if config.TYPE_CHECKING:`` (where the attribute is a
+        real runtime flag) is NOT skipped — DeepSeek pr_validate round
+        3 flagged the un-narrowed version as [BLOCKING]: a real
+        ``True`` flag named ``TYPE_CHECKING`` on some other namespace
+        would have hidden an unprotected ``mlx_lm`` import."""
         if not isinstance(node, ast.If):
             return False
         test = node.test
         if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
             return True
         if isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING":
-            return True
+            owner = test.value
+            return isinstance(owner, ast.Name) and owner.id in (
+                "typing",
+                "typing_extensions",
+            )
         return False
 
     def _walk_module_level(node: ast.AST, parents: tuple[ast.AST, ...] = ()):
