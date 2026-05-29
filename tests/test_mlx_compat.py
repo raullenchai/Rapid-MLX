@@ -143,13 +143,34 @@ def test_every_mlx_lm_consumer_installs_shim():
             return False
         return isinstance(func.value, ast.Name) and func.value.id == "_mlx_compat"
 
+    def _is_type_checking_guard(node: ast.AST) -> bool:
+        """``True`` for ``if TYPE_CHECKING:`` and ``if typing.TYPE_CHECKING:``
+        — both evaluate to ``False`` at runtime, so the body never executes
+        at module load and isn't a stream-capture hazard. Flagged by
+        DeepSeek pr_validate review on PR #487 as a future-proofing nit."""
+        if not isinstance(node, ast.If):
+            return False
+        test = node.test
+        if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+            return True
+        if isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING":
+            return True
+        return False
+
     def _walk_module_level(node: ast.AST, parents: tuple[ast.AST, ...] = ()):
         """Yield (node, parents) for every descendant that is NOT inside
         a deferred (function/class/lambda) scope. The walk descends into
         ``If``/``Try``/``With``/``For``/``While`` bodies, which all run
-        at module load time."""
+        at module load time. ``if TYPE_CHECKING:`` is treated as deferred
+        since its body never runs at import time."""
         for child in ast.iter_child_nodes(node):
             if isinstance(child, DEFERRED_SCOPES):
+                continue
+            if _is_type_checking_guard(child):
+                # Yield the If node itself (for parent-tracking) but DO NOT
+                # descend into its body / orelse — the imports there only
+                # run under static analysis, never at module load.
+                yield child, parents
                 continue
             yield child, parents
             yield from _walk_module_level(child, parents + (child,))
