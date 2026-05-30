@@ -234,6 +234,52 @@ def test_unified_path_suppresses_partial_tool_call_chunks(monkeypatch):
     )
 
 
+def test_unified_path_suppresses_tool_prefix_on_split_boundary_chunk(monkeypatch):
+    """Codex round-6 regression. Chunk split pattern:
+
+      chunk 1: ``<think>plan``     (reasoning body)
+      chunk 2: ``</think><tool_call>``  (boundary + opening tag)
+      chunk 3: ``{...}</tool_call>``   (tool-call body)
+
+    On chunk 2 the reasoning parser emits ``content=<tool_call>``
+    while the tool parser returns None (buffering until the closing
+    tag arrives in chunk 3). The orchestrator must NOT let the
+    reasoning parser's content side flow through — the raw
+    ``<tool_call>`` markup must stay suppressed.
+    """
+    monkeypatch.setenv("RAPID_MLX_UNIFIED_PARSER", "1")
+    cfg = _make_cfg(
+        reasoning_parser_name="qwen3",
+        tool_call_parser="hermes",
+        enable_auto_tool_choice=True,
+    )
+    pp = StreamingPostProcessor(cfg, tools_requested=True)
+    pp.reset()
+
+    payload = json.dumps({"name": "x", "arguments": {}})
+    events = _stream_chunks(
+        pp,
+        [
+            "<think>plan",
+            "</think><tool_call>",
+            f"{payload}</tool_call>",
+        ],
+    )
+
+    leaked = [
+        e
+        for e in events
+        if e.type == "content" and e.content and "<tool_call" in e.content
+    ]
+    assert not leaked, (
+        f"tool-call prefix leaked on split boundary chunk: "
+        f"{[(e.type, e.content) for e in leaked]}"
+    )
+    # The real tool call still must surface.
+    tool_events = [e for e in events if e.type == "tool_call" and e.tool_calls]
+    assert tool_events, f"tool_call dropped: {_event_types(events)}"
+
+
 def test_unified_path_does_not_leak_reasoning_into_tool_parser(monkeypatch):
     """Codex round-5 regression (exact POC reproduction).
 

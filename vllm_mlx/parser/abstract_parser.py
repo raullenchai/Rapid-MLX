@@ -338,9 +338,21 @@ class DelegatingParser(Parser):
                 # (``<tool_call>`` etc) — emitting it would leak the raw
                 # markup to the client. Only ``reasoning_to_preserve``
                 # is safe to surface.
-                if reasoning_to_preserve:
-                    delta_message = DeltaMessage(reasoning=reasoning_to_preserve)
-                # else: leave delta_message = None to suppress this chunk
+                #
+                # CRITICAL: explicitly rebuild ``delta_message`` (or
+                # clear to None). The reasoning parser may have set
+                # ``delta_message`` above with ``content=<tool_call>``
+                # — without the explicit reset that raw markup would
+                # flow through as a content delta (codex R6). For
+                # split chunks like ``</think>`` arriving in one chunk
+                # then ``<tool_call>...`` in the next, the reasoning
+                # parser's content side is the tool-call prefix and
+                # MUST be suppressed.
+                delta_message = (
+                    DeltaMessage(reasoning=reasoning_to_preserve)
+                    if reasoning_to_preserve
+                    else None
+                )
 
         # Final fallback — pass the raw delta through as content in
         # exactly two cases:

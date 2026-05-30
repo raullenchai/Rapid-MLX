@@ -104,6 +104,10 @@ class _FakeToolParser(ToolParser):
         delta_token_ids: Any = None,
         request: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
+        # Mirror real hermes-style tristate:
+        # - {"tool_calls": [...]} when a complete tool call is parsed
+        # - None when buffering (saw <tool_call> but not </tool_call> yet)
+        # - {"content": delta_text} for plain-text passthrough
         if "</tool_call>" in current_text and not self.emitted:
             self.emitted = True
             return {
@@ -116,7 +120,9 @@ class _FakeToolParser(ToolParser):
                     }
                 ]
             }
-        return None
+        if "<tool_call>" in current_text and "</tool_call>" not in current_text:
+            return None  # buffering
+        return {"content": delta_text}
 
     def reset(self) -> None:
         self.emitted = False
@@ -195,10 +201,15 @@ def test_boundary_delta_preserves_reasoning_when_tool_starts_in_same_chunk():
     d2 = p.parse_delta("</think><tool_call>")
     # After this delta, the boundary state should be ended
     assert p._stream_state.reasoning_ended is True
-    # Reasoning parser emitted post-</think> content (the "<tool_call>"
-    # prefix); tool parser hasn't seen </tool_call> yet, so it returns
-    # None and the post-boundary content flows through.
-    assert d2 is not None
+    # The reasoning parser surfaces ``<tool_call>`` as
+    # ``content_to_preserve`` but the tool parser is now buffering
+    # (sees ``<tool_call>`` without ``</tool_call>``). Orchestrator
+    # MUST suppress the raw markup — d2 is either None or carries no
+    # ``<tool_call>`` text. This is the codex R6 contract.
+    if d2 is not None:
+        assert (d2.content or "") == "" or "<tool_call" not in (d2.content or ""), (
+            f"raw <tool_call> prefix leaked: {d2}"
+        )
 
 
 def test_no_reasoning_parser_means_tool_phase_from_start():
