@@ -202,16 +202,74 @@ def test_boundary_delta_preserves_reasoning_when_tool_starts_in_same_chunk():
 
 
 def test_no_reasoning_parser_means_tool_phase_from_start():
+    """Codex round-3 regression: tool-only parser must enter tool phase
+    from chunk 0. Without this, reasoning_ended starts False and never
+    flips (no reasoning parser to consult), so the orchestrator would
+    suppress every chunk and the tool call would never surface."""
     p = _build_parser(with_reasoning=False)
-    assert p._in_reasoning_phase(p._stream_state) is False
-    # Without reasoning parser, _is_reasoning_end_streaming defaults to
-    # True so we're immediately in the tool-call phase (or content if
-    # tool parser is also absent).
-    p.parse_delta("<tool_call>{")
-    p.parse_delta('"x":1}</tool_call>')
-    # FakeToolParser only emits on </tool_call>; last delta carries it.
     state = p._stream_state
-    assert state.reasoning_ended is True or p._reasoning_parser is None
+    # Tool phase active from the very first chunk.
+    assert p._in_reasoning_phase(state) is False
+    assert p._in_tool_call_phase(state) is True
+
+    p.parse_delta("<tool_call>{")
+    d_final = p.parse_delta('"x":1}</tool_call>')
+    # FakeToolParser emits on </tool_call> — must materialize.
+    assert d_final is not None
+    assert d_final.tool_calls is not None
+
+
+def test_content_only_reasoning_delta_flips_reasoning_ended():
+    """Codex round-3 regression: parsers that decide a delta is
+    content-only (no reasoning text) must hand off to the tool parser
+    even without seeing ``</think>``. Otherwise the next chunk's
+    ``<tool_call>`` markup leaks as content."""
+
+    class _ContentOnlyReasoningParser(_FakeReasoningParser):
+        def extract_reasoning_streaming(self, previous_text, current_text, delta_text):
+            # Pretend we decided no reasoning is happening — return
+            # content-only directly. No </think> in the stream.
+            return DeltaMessage(content=delta_text, reasoning=None)
+
+        def is_reasoning_end_streaming(self, previous_text, current_text):
+            # Never flips through the canonical end-token signal.
+            return False
+
+    _WrappedParser.reasoning_parser_cls = _ContentOnlyReasoningParser
+    _WrappedParser.tool_parser_cls = _FakeToolParser
+    p = _WrappedParser()
+
+    p.parse_delta("hi")
+    assert p._stream_state.reasoning_ended is True, (
+        "content-only reasoning delta must flip reasoning_ended so the "
+        "tool parser starts seeing subsequent chunks"
+    )
+    # Subsequent tool call should now be parsed.
+    d_final = p.parse_delta("<tool_call>{}</tool_call>")
+    assert d_final is not None
+    assert d_final.tool_calls is not None
+
+
+def test_boundary_chunk_prefers_reasoning_parser_content_over_tool_passthrough():
+    """Codex round-3 regression: on a boundary chunk like
+    ``final thought</think>Answer`` with no tool call, the reasoning
+    parser splits content as ``Answer`` while the tool parser's
+    pass-through content is the raw delta. Orchestrator must surface
+    the reasoning parser's stripped version, not the raw markup."""
+    p = _build_parser()
+    # Prime: open reasoning
+    p.parse_delta("<think>")
+    p.parse_delta("step 1")
+    # Boundary chunk: reasoning text, end token, then plain content
+    d = p.parse_delta("final thought</think>Answer")
+    assert d is not None
+    # The content side must be "Answer" (reasoning parser's stripped
+    # split), not "final thought</think>Answer" (raw passthrough).
+    assert d.content == "Answer", (
+        f"expected reasoning parser's stripped content 'Answer', "
+        f"got {d.content!r} (likely raw tool passthrough including "
+        f"</think>)"
+    )
 
 
 def test_reset_state_clears_stream_and_subparsers():

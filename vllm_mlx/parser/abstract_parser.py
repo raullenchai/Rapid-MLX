@@ -173,6 +173,12 @@ class DelegatingParser(Parser):
     def _in_tool_call_phase(self, state: StreamState) -> bool:
         if self._tool_parser is None:
             return False
+        if self._reasoning_parser is None:
+            # No reasoning to wait for — start in tool-call phase from
+            # chunk 0. Without this branch a tool-only parser would
+            # never be invoked (state.reasoning_ended starts False and
+            # nothing flips it), so every chunk would be suppressed.
+            return True
         return state.reasoning_ended
 
     def _extract_reasoning_streaming(
@@ -243,6 +249,10 @@ class DelegatingParser(Parser):
             )
             if self._is_reasoning_end_streaming(
                 previous_text=previous_text, current_text=current_text
+            ) or (
+                delta_message is not None
+                and delta_message.content
+                and not delta_message.reasoning
             ):
                 state.reasoning_ended = True
 
@@ -270,12 +280,24 @@ class DelegatingParser(Parser):
                 # Boundary chunk preservation — tool parser produced a
                 # delta (either tool_calls or pass-through content). Keep
                 # the reasoning side so callers don't lose pre-boundary
-                # reasoning; only overwrite content if the tool parser
-                # didn't already set it.
+                # reasoning.
                 if reasoning_to_preserve:
                     delta_message.reasoning = reasoning_to_preserve
-                if content_to_preserve and not delta_message.content:
-                    delta_message.content = content_to_preserve
+                if content_to_preserve:
+                    if delta_message.tool_calls is None:
+                        # Tool parser is just passing the raw delta
+                        # through (no tool call detected). The reasoning
+                        # parser is authoritative for the boundary's
+                        # content/reasoning split — it has already
+                        # stripped ``</think>``, while the tool parser
+                        # got the unprocessed delta_text. Prefer the
+                        # reasoning parser's stripped content.
+                        delta_message.content = content_to_preserve
+                    elif not delta_message.content:
+                        # Tool call emitted alongside boundary content
+                        # the tool parser didn't touch — attach it so
+                        # both sides surface.
+                        delta_message.content = content_to_preserve
             else:
                 # Tool parser returned None → intentionally buffering an
                 # incomplete tool-call body. Suppress the tool-call
