@@ -154,6 +154,23 @@ class StreamingPostProcessor:
         ):
             self.unified_parser = self._build_unified_parser()
 
+        # When the unified path is active it OWNS the post-reasoning
+        # ``tool_accumulated_text`` value — finalize() must treat an
+        # empty string as "scoped tool text is intentionally empty" and
+        # NOT fall back to the full ``accumulated_text`` (which would
+        # re-run the cross-format parser over the reasoning body and
+        # synthesize a bogus tool call from any bare JSON shape
+        # mentioned there). Codex R9 #1.
+        self._unified_tool_scope_active = self.unified_parser is not None
+        # MiniMax redirect (tool calls embedded in ``<think>``) runs the
+        # legacy ``_detect_tool_calls`` to mutate
+        # ``tool_accumulated_text``. While that path is engaged for the
+        # current stream, the per-chunk mirror from the orchestrator's
+        # ``tool_phase_text`` MUST stop — it never saw the redirected
+        # text and would otherwise clobber the buffer between chunks,
+        # losing the opening ``<minimax:tool_call>`` marker. Codex R9 #2.
+        self._minimax_redirect_active = False
+
     @staticmethod
     def _create_reasoning_parser(cfg: ServerConfig):
         """Create a per-request reasoning parser instance."""
@@ -238,6 +255,11 @@ class StreamingPostProcessor:
         self._think_prefix_sent = False
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
+        # ``_unified_tool_scope_active`` is derived from ``unified_parser``
+        # at construction time; it stays constant across resets in the
+        # current stream. ``_minimax_redirect_active`` is per-stream
+        # state — clear it on every reset.
+        self._minimax_redirect_active = False
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
@@ -488,7 +510,18 @@ class StreamingPostProcessor:
         # otherwise produce bogus end-of-stream tool_call events under
         # the unified path while the legacy ``_detect_tool_calls``
         # path is correctly scoped (codex R7).
-        self.tool_accumulated_text = self.unified_parser._stream_state.tool_phase_text
+        #
+        # GATE: skip the mirror once the MiniMax redirect has engaged
+        # for this stream. The redirect runs the legacy
+        # ``_detect_tool_calls`` which appends the reclassified
+        # reasoning text into ``tool_accumulated_text``; the unified
+        # state never saw that content so mirroring would clobber the
+        # opening ``<minimax:tool_call>`` marker between chunks and the
+        # tool parser would lose the split tool call (codex R9 #2).
+        if not self._minimax_redirect_active:
+            self.tool_accumulated_text = (
+                self.unified_parser._stream_state.tool_phase_text
+            )
 
         if delta_msg is None:
             if output.finished:
@@ -558,6 +591,11 @@ class StreamingPostProcessor:
                 or "<tool_call>" in _check
                 or '<invoke name="' in _check
             ):
+                # Latch the redirect for the rest of this stream so the
+                # per-chunk mirror to ``tool_accumulated_text`` stays
+                # out of the way (codex R9 #2). ``_detect_tool_calls``
+                # is now the source of truth for the buffer.
+                self._minimax_redirect_active = True
                 content = (content or "") + reasoning
                 reasoning = None
                 # Re-run tool detection on the now-content portion so the
@@ -740,7 +778,22 @@ class StreamingPostProcessor:
         # on PR #424 — high-throughput servers with tool-enabled
         # endpoints would otherwise pay the parser cost on every reply
         # that didn't actually call a tool).
-        _fallback_text = self.tool_accumulated_text or self.accumulated_text
+        # When the unified Parser path owns the post-reasoning tool
+        # scope, ``tool_accumulated_text`` is authoritative — including
+        # the "" case which means "nothing post-reasoning to parse".
+        # The legacy ``or self.accumulated_text`` fallback would
+        # otherwise re-run ``extract_tool_calls`` over the reasoning
+        # body and synthesize a bogus tool call from any bare JSON
+        # shape mentioned there (codex R9 #1). The MiniMax redirect
+        # exception (``_minimax_redirect_active``) lets the legacy
+        # ``_detect_tool_calls`` path keep ownership when it engages —
+        # in that mode ``tool_accumulated_text`` is non-empty and the
+        # fallback would behave correctly anyway, so we still take the
+        # scoped value.
+        if self._unified_tool_scope_active:
+            _fallback_text = self.tool_accumulated_text
+        else:
+            _fallback_text = self.tool_accumulated_text or self.accumulated_text
         _has_plausible_markup = bool(_fallback_text) and (
             "<" in _fallback_text
             or "{" in _fallback_text

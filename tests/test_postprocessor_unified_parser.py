@@ -234,6 +234,43 @@ def test_unified_path_suppresses_partial_tool_call_chunks(monkeypatch):
     )
 
 
+def test_unified_path_finalize_with_empty_tool_scope_does_not_fall_back(monkeypatch):
+    """Codex round-9 #1 regression. Stream ends with ALL output inside
+    the reasoning block (e.g. ``<think>...{"name":"x","arguments":{}}``
+    with no closing ``</think>`` and no post-boundary content).
+    ``tool_phase_text`` is the empty string. The legacy fallback would
+    treat ``""`` as falsey and use ``self.accumulated_text`` (the
+    full reasoning body), then run ``extract_tool_calls`` over it and
+    emit a bogus tool_call. The unified-scope flag must short-circuit
+    the ``or`` fallback so empty-on-purpose stays empty.
+    """
+    monkeypatch.setenv("RAPID_MLX_UNIFIED_PARSER", "1")
+    cfg = _make_cfg(
+        reasoning_parser_name="qwen3",
+        tool_call_parser="hermes",
+        enable_auto_tool_choice=True,
+    )
+    pp = StreamingPostProcessor(cfg, tools_requested=True)
+    pp.reset()
+
+    # Stream is all reasoning, no post-boundary content. Note the
+    # absence of any ``</think>`` so reasoning_ended never flips —
+    # tool_phase_text is "".
+    fake_call = '{"name":"x","arguments":{}}'
+    _stream_chunks(pp, [f"<think>plan to call x: {fake_call}"])
+
+    assert pp.tool_accumulated_text == "", (
+        f"expected empty tool scope, got {pp.tool_accumulated_text!r}"
+    )
+
+    final_events = pp.finalize()
+    tool_events = [e for e in final_events if e.type == "tool_call"]
+    assert not tool_events, (
+        f"finalize fell back to accumulated_text and parsed reasoning: "
+        f"{[(e.type, e.tool_calls) for e in tool_events]}"
+    )
+
+
 def test_unified_path_finalize_does_not_parse_reasoning_as_tool(monkeypatch):
     """Codex round-7 regression. The model can mention a bare JSON
     tool-call shape inside its ``<think>`` block:
