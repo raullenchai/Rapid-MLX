@@ -283,21 +283,21 @@ class DelegatingParser(Parser):
                 # reasoning.
                 if reasoning_to_preserve:
                     delta_message.reasoning = reasoning_to_preserve
-                if content_to_preserve:
-                    if delta_message.tool_calls is None:
-                        # Tool parser is just passing the raw delta
-                        # through (no tool call detected). The reasoning
-                        # parser is authoritative for the boundary's
-                        # content/reasoning split — it has already
-                        # stripped ``</think>``, while the tool parser
-                        # got the unprocessed delta_text. Prefer the
-                        # reasoning parser's stripped content.
-                        delta_message.content = content_to_preserve
-                    elif not delta_message.content:
-                        # Tool call emitted alongside boundary content
-                        # the tool parser didn't touch — attach it so
-                        # both sides surface.
-                        delta_message.content = content_to_preserve
+                if content_to_preserve and delta_message.tool_calls is None:
+                    # Tool parser is just passing the raw delta through
+                    # (no tool call detected). The reasoning parser is
+                    # authoritative for the boundary's content/reasoning
+                    # split — it has already stripped ``</think>`` while
+                    # the tool parser got the unprocessed delta_text.
+                    # Prefer the reasoning parser's stripped content.
+                    delta_message.content = content_to_preserve
+                # Note: when the tool parser emitted a structured
+                # ``tool_calls`` payload we deliberately discard
+                # ``content_to_preserve`` — on the boundary chunk that
+                # value IS the raw ``<tool_call>{...}</tool_call>``
+                # markup the tool parser just consumed. Attaching it
+                # would leak the tool-call JSON as a content delta
+                # alongside the structured emission.
             else:
                 # Tool parser returned None → intentionally buffering an
                 # incomplete tool-call body. Suppress the tool-call

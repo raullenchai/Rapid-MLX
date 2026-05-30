@@ -185,15 +185,29 @@ class ParserManager:
                 except KeyError:
                     pass
 
-        # Strategy 3: compose a _WrappedParser from the individual classes
+        # Strategy 3: compose a _WrappedParser subclass from the
+        # individual classes. A fresh subclass per resolve avoids the
+        # class-attribute-mutation race: if two callers resolved
+        # different (reasoning, tool) pairs before either instantiated
+        # their result, mutating ``_WrappedParser`` itself would make
+        # both pick up whichever pair was assigned last.
         reasoning_cls = cls.get_reasoning_parser(reasoning_parser_name)
         tool_cls = cls.get_tool_parser(tool_parser_name, enable_auto_tools)
         if reasoning_cls is None and tool_cls is None:
             return None
 
-        _WrappedParser.reasoning_parser_cls = reasoning_cls
-        _WrappedParser.tool_parser_cls = tool_cls
-        return _WrappedParser
+        subclass_name = (
+            f"_WrappedParser__"
+            f"{reasoning_parser_name or 'none'}__{tool_parser_name or 'none'}"
+        )
+        return type(
+            subclass_name,
+            (_WrappedParser,),
+            {
+                "reasoning_parser_cls": reasoning_cls,
+                "tool_parser_cls": tool_cls,
+            },
+        )
 
 
 __all__ = ["ParserManager"]

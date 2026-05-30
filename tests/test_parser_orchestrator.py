@@ -250,6 +250,35 @@ def test_content_only_reasoning_delta_flips_reasoning_ended():
     assert d_final.tool_calls is not None
 
 
+def test_coalesced_boundary_with_full_tool_call_drops_raw_markup():
+    """Codex round-4 regression: when a single chunk carries the
+    reasoning end-token plus a complete tool call
+    (e.g. ``</think><tool_call>{...}</tool_call>``), ``content_to_preserve``
+    is the raw tool markup the reasoning parser surfaced as the
+    post-``</think>`` remainder. With ``tool_delta.tool_calls`` set the
+    tool parser has already consumed that text — the orchestrator must
+    NOT attach it as content, or clients would see the raw tool JSON
+    alongside the structured tool_calls emission."""
+    p = _build_parser()
+
+    # Open the reasoning block first.
+    p.parse_delta("<think>")
+    p.parse_delta("plan")
+
+    # Coalesced boundary: closing tag + full tool call in one chunk.
+    d = p.parse_delta("</think><tool_call>{}</tool_call>")
+    assert d is not None
+    assert d.tool_calls is not None, f"expected tool_calls, got {d}"
+
+    # Hard contract: content must NOT contain raw tool markup.
+    assert (d.content or "") == "" or (
+        "<tool_call" not in d.content and "</tool_call>" not in d.content
+    ), (
+        f"raw tool markup leaked as content on coalesced boundary: "
+        f"content={d.content!r} tool_calls={d.tool_calls!r}"
+    )
+
+
 def test_boundary_chunk_prefers_reasoning_parser_content_over_tool_passthrough():
     """Codex round-3 regression: on a boundary chunk like
     ``final thought</think>Answer`` with no tool call, the reasoning
@@ -312,11 +341,45 @@ def test_manager_strategy_3_wraps_individual_parsers():
         reasoning_parser_name="qwen3",
         enable_auto_tools=True,
     )
-    assert cls is _WrappedParser
+    # Strategy 3 returns a fresh subclass per resolve (not the shared
+    # ``_WrappedParser`` base — codex round-4 regression).
+    assert issubclass(cls, _WrappedParser)
+    assert cls is not _WrappedParser
     inst = cls()
     # Real parsers wired in
     assert type(inst.reasoning_parser).__name__ == "Qwen3ReasoningParser"
     assert type(inst.tool_parser).__name__ == "HermesToolParser"
+
+
+def test_manager_strategy_3_returns_distinct_classes_per_pair():
+    """Codex round-4 regression: each resolve must produce a fresh
+    subclass so concurrent / interleaved resolves don't collide on the
+    shared ``_WrappedParser`` class attributes. Without this, the
+    second ``get_parser`` call would overwrite the first's
+    ``reasoning_parser_cls`` and both instances would pick up
+    whichever pair was assigned last."""
+    cls_qwen_hermes = ParserManager.get_parser(
+        tool_parser_name="hermes",
+        reasoning_parser_name="qwen3",
+        enable_auto_tools=True,
+    )
+    cls_minimax = ParserManager.get_parser(
+        tool_parser_name="minimax",
+        reasoning_parser_name="minimax",
+        enable_auto_tools=True,
+    )
+    # If they're the same class, the assignment ran on the shared base
+    # and the first resolve was clobbered.
+    assert cls_qwen_hermes is not cls_minimax
+    assert cls_qwen_hermes.reasoning_parser_cls.__name__ == "Qwen3ReasoningParser"
+    assert cls_minimax.reasoning_parser_cls.__name__ == "MiniMaxReasoningParser"
+
+    # Instantiating the first resolve AFTER the second resolve must
+    # still pick up the first's wiring — proving the class isn't
+    # shared.
+    inst_qwen_hermes = cls_qwen_hermes()
+    assert type(inst_qwen_hermes.reasoning_parser).__name__ == "Qwen3ReasoningParser"
+    assert type(inst_qwen_hermes.tool_parser).__name__ == "HermesToolParser"
 
 
 def test_manager_strategy_3_only_reasoning_when_tool_disabled():
@@ -325,7 +388,7 @@ def test_manager_strategy_3_only_reasoning_when_tool_disabled():
         reasoning_parser_name="qwen3",
         enable_auto_tools=False,  # disables tool parser resolution
     )
-    assert cls is _WrappedParser
+    assert issubclass(cls, _WrappedParser)
     inst = cls()
     assert inst.tool_parser is None
     assert inst.reasoning_parser is not None
