@@ -480,6 +480,16 @@ class StreamingPostProcessor:
             delta_text=delta_text, request=self.request
         )
 
+        # Mirror the orchestrator's post-reasoning ``tool_phase_text``
+        # into ``self.tool_accumulated_text`` so ``finalize()``'s
+        # fallback (which scans tool_accumulated_text or
+        # accumulated_text) doesn't reparse the full raw stream
+        # — bare JSON shapes mentioned inside ``<think>`` would
+        # otherwise produce bogus end-of-stream tool_call events under
+        # the unified path while the legacy ``_detect_tool_calls``
+        # path is correctly scoped (codex R7).
+        self.tool_accumulated_text = self.unified_parser._stream_state.tool_phase_text
+
         if delta_msg is None:
             if output.finished:
                 return [self._make_finish_event(output)]

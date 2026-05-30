@@ -234,6 +234,51 @@ def test_unified_path_suppresses_partial_tool_call_chunks(monkeypatch):
     )
 
 
+def test_unified_path_finalize_does_not_parse_reasoning_as_tool(monkeypatch):
+    """Codex round-7 regression. The model can mention a bare JSON
+    tool-call shape inside its ``<think>`` block:
+
+      <think>I should call x with {"name":"x","arguments":{}}</think>
+      The answer is 42.
+
+    finalize() runs a fallback ``extract_tool_calls`` on the
+    accumulated text when no streaming tool call surfaced — that
+    fallback must be scoped to post-reasoning text only, otherwise
+    the reasoning mention would synthesize a bogus tool_call event
+    at end-of-stream.
+    """
+    monkeypatch.setenv("RAPID_MLX_UNIFIED_PARSER", "1")
+    cfg = _make_cfg(
+        reasoning_parser_name="qwen3",
+        tool_call_parser="hermes",
+        enable_auto_tool_choice=True,
+    )
+    pp = StreamingPostProcessor(cfg, tools_requested=True)
+    pp.reset()
+
+    fake_call = '{"name":"x","arguments":{}}'
+    events = _stream_chunks(
+        pp,
+        [
+            f"<think>I should call x with {fake_call}",
+            "</think>",
+            "The answer is 42.",
+        ],
+    )
+    events.extend(pp.finalize())
+
+    tool_events = [e for e in events if e.type == "tool_call"]
+    assert not tool_events, (
+        f"finalize parsed bare JSON from reasoning as a bogus tool call: "
+        f"{[(e.type, e.tool_calls) for e in tool_events]}"
+    )
+    # tool_accumulated_text must NOT contain the reasoning prefix.
+    assert fake_call not in pp.tool_accumulated_text or (
+        "<think>" not in pp.tool_accumulated_text
+        and "I should call x" not in pp.tool_accumulated_text
+    ), f"tool_accumulated_text leaked reasoning prefix: {pp.tool_accumulated_text!r}"
+
+
 def test_unified_path_suppresses_tool_prefix_on_split_boundary_chunk(monkeypatch):
     """Codex round-6 regression. Chunk split pattern:
 
