@@ -1,0 +1,319 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+#
+# Adapted from vLLM's vllm/parser/abstract_parser.py (Apache-2.0). The
+# original ships an OpenAI Responses-API surface and CUDA-shaped tool
+# infrastructure that we don't use; we keep the unified ``Parser`` /
+# ``DelegatingParser`` / ``_WrappedParser`` abstraction and the
+# ``parse_delta`` state machine that resolves the reasoning↔tool-call
+# boundary in a single place — that's the piece worth borrowing. Routes
+# in this codebase carry text, not token IDs, so the boundary check is
+# text-based (``is_reasoning_end_streaming(previous_text, current_text)``)
+# rather than token-ID based.
+"""
+Unified ``Parser`` abstraction for streaming chat completions.
+
+Closes the bug class where stream and non-stream paths re-implement the
+"reasoning first, then tool calls, but watch the boundary" sequence and
+silently diverge. ``DelegatingParser.parse_delta`` is the single seam.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any
+
+from transformers import PreTrainedTokenizerBase
+
+from vllm_mlx.reasoning.base import DeltaMessage, ReasoningParser
+from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+
+
+@dataclass
+class StreamState:
+    """Mutable per-stream state for ``Parser.parse_delta``."""
+
+    reasoning_ended: bool = False
+    tool_call_text_started: bool = False
+    previous_text: str = ""
+    history_tool_call_cnt: int = 0
+
+
+def _delta_from_tool_parser_result(
+    result: dict[str, Any] | DeltaMessage | None,
+) -> DeltaMessage | None:
+    """Adapt a tool parser's streaming return to ``DeltaMessage``.
+
+    Existing rapid-mlx tool parsers return ``dict | None`` with OpenAI
+    ChoiceDelta-shaped keys (``content``, ``tool_calls``). Wrap that into
+    the same ``DeltaMessage`` the orchestrator emits everywhere else, so
+    callers downstream only ever see one type.
+    """
+    if result is None or isinstance(result, DeltaMessage):
+        return result
+    return DeltaMessage(
+        content=result.get("content"),
+        tool_calls=result.get("tool_calls"),
+    )
+
+
+class Parser(ABC):
+    """
+    Abstract Parser unifying ``ReasoningParser`` and ``ToolParser`` behind
+    a single ``parse_delta`` entry point.
+
+    Concrete subclasses either:
+
+    1. Override ``parse_delta`` directly with model-specific logic
+       (channel-routed models like Harmony, Gemma 4 — see Phase 2).
+    2. Set ``self._reasoning_parser`` and ``self._tool_parser`` in
+       ``__init__`` and inherit ``DelegatingParser``'s orchestration.
+
+    ``reasoning_parser_cls`` / ``tool_parser_cls`` mirror vLLM's pattern
+    for code that needs the class (not the instance) — e.g.
+    ``ParserManager.get_parser`` composing a ``_WrappedParser``.
+    """
+
+    reasoning_parser_cls: type[ReasoningParser] | None = None
+    tool_parser_cls: type[ToolParser] | None = None
+
+    def __init__(self, tokenizer: PreTrainedTokenizerBase | None = None) -> None:
+        self.model_tokenizer = tokenizer
+        self._reasoning_parser: ReasoningParser | None = None
+        self._tool_parser: ToolParser | None = None
+        self._stream_state = StreamState()
+
+    @property
+    def reasoning_parser(self) -> ReasoningParser | None:
+        return self._reasoning_parser
+
+    @reasoning_parser.setter
+    def reasoning_parser(self, parser: ReasoningParser | None) -> None:
+        self._reasoning_parser = parser
+
+    @property
+    def tool_parser(self) -> ToolParser | None:
+        return self._tool_parser
+
+    @tool_parser.setter
+    def tool_parser(self, parser: ToolParser | None) -> None:
+        self._tool_parser = parser
+
+    def reset_state(self) -> None:
+        """Reset stream state for a new request."""
+        self._stream_state = StreamState()
+        if self._reasoning_parser is not None:
+            self._reasoning_parser.reset_state()
+        if self._tool_parser is not None and hasattr(self._tool_parser, "reset"):
+            self._tool_parser.reset()
+
+    @abstractmethod
+    def extract_reasoning(self, model_output: str) -> tuple[str | None, str | None]:
+        """Extract ``(reasoning, content)`` from a complete model output."""
+
+    @abstractmethod
+    def extract_tool_calls(
+        self, model_output: str, request: dict[str, Any] | None = None
+    ) -> Any:
+        """Extract tool calls from a complete model output.
+
+        Returns ``ExtractedToolCallInformation`` (see
+        ``vllm_mlx.tool_parsers.abstract_tool_parser``).
+        """
+
+    @abstractmethod
+    def parse_delta(
+        self,
+        delta_text: str,
+        request: dict[str, Any] | None = None,
+    ) -> DeltaMessage | None:
+        """Parse a single streaming delta, advancing internal stream state.
+
+        The orchestration runs reasoning extraction first, then tool-call
+        extraction on the same delta, merging boundary chunks where a
+        single token flush spans both phases. Returns the merged
+        ``DeltaMessage`` (or ``None`` if the delta should be suppressed).
+        """
+
+
+class DelegatingParser(Parser):
+    """
+    The default ``Parser`` composite: holds an optional reasoning parser
+    and an optional tool parser and runs the orchestration state machine.
+
+    Subclasses should populate ``self._reasoning_parser`` and
+    ``self._tool_parser`` in ``__init__``. Either may be ``None`` —
+    methods short-circuit.
+    """
+
+    def extract_reasoning(self, model_output: str) -> tuple[str | None, str | None]:
+        if self._reasoning_parser is None:
+            return None, model_output
+        return self._reasoning_parser.extract_reasoning(model_output)
+
+    def extract_tool_calls(
+        self, model_output: str, request: dict[str, Any] | None = None
+    ) -> Any:
+        from vllm_mlx.tool_parsers.abstract_tool_parser import (
+            ExtractedToolCallInformation,
+        )
+
+        if self._tool_parser is None:
+            return ExtractedToolCallInformation(
+                tools_called=False, tool_calls=[], content=model_output
+            )
+        return self._tool_parser.extract_tool_calls(model_output, request)
+
+    def _in_reasoning_phase(self, state: StreamState) -> bool:
+        if self._reasoning_parser is None:
+            return False
+        return not state.reasoning_ended
+
+    def _in_tool_call_phase(self, state: StreamState) -> bool:
+        if self._tool_parser is None:
+            return False
+        return state.reasoning_ended
+
+    def _extract_reasoning_streaming(
+        self,
+        previous_text: str,
+        current_text: str,
+        delta_text: str,
+    ) -> DeltaMessage | None:
+        if self._reasoning_parser is None:
+            return DeltaMessage(content=delta_text)
+        return self._reasoning_parser.extract_reasoning_streaming(
+            previous_text=previous_text,
+            current_text=current_text,
+            delta_text=delta_text,
+        )
+
+    def _is_reasoning_end_streaming(
+        self, previous_text: str, current_text: str
+    ) -> bool:
+        if self._reasoning_parser is None:
+            return True  # no reasoning parser → always in "content" phase
+        return self._reasoning_parser.is_reasoning_end_streaming(
+            previous_text=previous_text, current_text=current_text
+        )
+
+    def _extract_tool_calls_streaming(
+        self,
+        previous_text: str,
+        current_text: str,
+        delta_text: str,
+        request: dict[str, Any] | None,
+    ) -> DeltaMessage | None:
+        if self._tool_parser is None:
+            return None
+        # Phase 1 scope: only the default ``tool_choice="auto"`` path is
+        # wired here. Named / "required" tool_choice streaming (vLLM PR
+        # #41876) is a Phase 2 follow-up — until then the route layer
+        # continues to enforce those modes upstream.
+        raw = self._tool_parser.extract_tool_calls_streaming(
+            previous_text=previous_text,
+            current_text=current_text,
+            delta_text=delta_text,
+            previous_token_ids=None,
+            current_token_ids=None,
+            delta_token_ids=None,
+            request=request,
+        )
+        return _delta_from_tool_parser_result(raw)
+
+    def parse_delta(
+        self,
+        delta_text: str,
+        request: dict[str, Any] | None = None,
+    ) -> DeltaMessage | None:
+        state = self._stream_state
+        previous_text = state.previous_text
+        current_text = previous_text + delta_text
+        delta_message: DeltaMessage | None = None
+
+        # ---- Reasoning phase ----
+        if self._in_reasoning_phase(state):
+            delta_message = self._extract_reasoning_streaming(
+                previous_text=previous_text,
+                current_text=current_text,
+                delta_text=delta_text,
+            )
+            if self._is_reasoning_end_streaming(
+                previous_text=previous_text, current_text=current_text
+            ):
+                state.reasoning_ended = True
+
+        # ---- Tool call phase ----
+        if self._in_tool_call_phase(state):
+            # Boundary delta carries reasoning AND a tool-call prefix in
+            # the same chunk; preserve the reasoning side before the tool
+            # parser overwrites delta_message. This is the literal fix
+            # for vLLM PR #42691 / rapid-mlx PR #436's bug class.
+            reasoning_to_preserve: str | None = None
+            content_to_preserve: str | None = None
+            if delta_message is not None:
+                reasoning_to_preserve = delta_message.reasoning
+                content_to_preserve = delta_message.content
+
+            tool_delta = self._extract_tool_calls_streaming(
+                previous_text=previous_text,
+                current_text=current_text,
+                delta_text=delta_text,
+                request=request,
+            )
+
+            if tool_delta is not None:
+                delta_message = tool_delta
+            elif delta_message is None:
+                # Tool parser suppressed and we have nothing else — pass
+                # the raw delta through as content so the route can still
+                # advance the SSE stream.
+                delta_message = DeltaMessage(content=delta_text)
+
+            if reasoning_to_preserve:
+                delta_message.reasoning = reasoning_to_preserve
+            if content_to_preserve and not delta_message.content:
+                # Preserve any pre-boundary content the reasoning parser
+                # already extracted (the post-</think> remainder).
+                delta_message.content = content_to_preserve
+
+        # Neither phase active (no reasoning parser, no tool parser) →
+        # pass through the raw delta as content.
+        if delta_message is None:
+            delta_message = DeltaMessage(content=delta_text)
+
+        state.previous_text = current_text
+        return delta_message
+
+
+class _WrappedParser(DelegatingParser):
+    """
+    ``DelegatingParser`` that instantiates its ReasoningParser / ToolParser
+    from class attributes — the shape ``ParserManager.get_parser`` builds
+    when no model-specific unified ``Parser`` is registered.
+
+    The manager sets ``_WrappedParser.reasoning_parser_cls`` and
+    ``_WrappedParser.tool_parser_cls`` before instantiation; ``__init__``
+    materializes the underlying parsers.
+    """
+
+    reasoning_parser_cls: type[ReasoningParser] | None = None
+    tool_parser_cls: type[ToolParser] | None = None
+
+    def __init__(
+        self, tokenizer: PreTrainedTokenizerBase | None = None, **kwargs: Any
+    ) -> None:
+        super().__init__(tokenizer)
+        if self.__class__.reasoning_parser_cls is not None:
+            self._reasoning_parser = self.__class__.reasoning_parser_cls(tokenizer)
+        if self.__class__.tool_parser_cls is not None:
+            self._tool_parser = self.__class__.tool_parser_cls(tokenizer)
+
+
+__all__ = [
+    "DelegatingParser",
+    "Parser",
+    "StreamState",
+    "_WrappedParser",
+]
