@@ -492,6 +492,12 @@ class StreamingPostProcessor:
         # same StreamEvent shape the legacy ``_detect_tool_calls`` path
         # produces, so downstream SSE encoding is unchanged.
         if delta_msg.tool_calls:
+            # Pin tool_calls_detected so finalize() knows not to re-parse
+            # accumulated_text (which would duplicate this call) and so
+            # the terminal finish event is stamped "tool_calls" rather
+            # than "stop". Mirrors the legacy ``_detect_tool_calls``
+            # branch that sets the same flag.
+            self.tool_calls_detected = True
             return [
                 StreamEvent(
                     type="tool_call",

@@ -265,26 +265,45 @@ class DelegatingParser(Parser):
 
             if tool_delta is not None:
                 delta_message = tool_delta
-            elif delta_message is None:
-                # Tool parser suppressed and we have nothing else — pass
-                # the raw delta through as content so the route can still
-                # advance the SSE stream.
+            elif delta_message is None and not self._has_tool_parser():
+                # No tool parser involved — pass the raw delta through as
+                # content so the route still advances the SSE stream.
                 delta_message = DeltaMessage(content=delta_text)
+            # else: tool parser intentionally returned None to buffer a
+            # partial tool-call (the closing tag hasn't arrived yet).
+            # Suppress this delta entirely — emitting the raw
+            # ``<tool_call>...`` markup as content would leak it to the
+            # client before the structured ``tool_calls`` delta lands.
+            # The route's stream loop already handles ``None`` gracefully.
 
-            if reasoning_to_preserve:
-                delta_message.reasoning = reasoning_to_preserve
-            if content_to_preserve and not delta_message.content:
-                # Preserve any pre-boundary content the reasoning parser
-                # already extracted (the post-</think> remainder).
-                delta_message.content = content_to_preserve
+            if delta_message is not None:
+                if reasoning_to_preserve:
+                    delta_message.reasoning = reasoning_to_preserve
+                if content_to_preserve and not delta_message.content:
+                    # Preserve any pre-boundary content the reasoning
+                    # parser already extracted (the post-</think>
+                    # remainder).
+                    delta_message.content = content_to_preserve
+            elif reasoning_to_preserve or content_to_preserve:
+                # Tool parser is buffering, but the boundary chunk carried
+                # reasoning / content that must still surface. Emit them
+                # without touching the suppressed tool-call body.
+                delta_message = DeltaMessage(
+                    reasoning=reasoning_to_preserve,
+                    content=content_to_preserve,
+                )
 
         # Neither phase active (no reasoning parser, no tool parser) →
         # pass through the raw delta as content.
-        if delta_message is None:
+        if delta_message is None and not self._has_tool_parser():
             delta_message = DeltaMessage(content=delta_text)
 
         state.previous_text = current_text
         return delta_message
+
+    def _has_tool_parser(self) -> bool:
+        """Return True when a tool parser is wired and can buffer chunks."""
+        return self._tool_parser is not None
 
 
 class _WrappedParser(DelegatingParser):

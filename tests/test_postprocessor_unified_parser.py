@@ -176,6 +176,87 @@ def test_qwen3_plus_hermes_emits_tool_call_through_unified_path(monkeypatch):
     tool_events = [e for e in events if e.type == "tool_call" and e.tool_calls]
     assert tool_events, f"expected tool_call event, got: {_event_types(events)}"
 
+    # Codex round-1 regression: no content event may carry the raw
+    # ``<tool_call>`` / closing-tag markup. The orchestrator must
+    # suppress those chunks while the tool parser is buffering.
+    leaked = [
+        e
+        for e in events
+        if e.type == "content"
+        and e.content
+        and ("<tool_call" in e.content or "</tool_call>" in e.content)
+    ]
+    assert not leaked, (
+        f"tool-call markup leaked as content: {[(e.type, e.content) for e in leaked]}"
+    )
+
+    # Codex round-1 regression: tool_calls_detected must be set on the
+    # post-processor so finalize() doesn't re-parse accumulated_text and
+    # duplicate the call (or stamp the finish event as 'stop').
+    assert pp.tool_calls_detected, (
+        "expected tool_calls_detected=True after unified path emitted tool_calls"
+    )
+
+
+def test_unified_path_suppresses_partial_tool_call_chunks(monkeypatch):
+    """Codex round-1 regression: while the tool parser buffers an
+    incomplete ``<tool_call>{...`` body it returns ``None``. The
+    orchestrator must NOT fabricate a content chunk from that delta —
+    doing so leaks the raw markup to the SSE stream before the
+    structured ``tool_calls`` delta arrives."""
+    monkeypatch.setenv("RAPID_MLX_UNIFIED_PARSER", "1")
+    cfg = _make_cfg(
+        reasoning_parser_name="qwen3",
+        tool_call_parser="hermes",
+        enable_auto_tool_choice=True,
+    )
+    pp = StreamingPostProcessor(cfg, tools_requested=True)
+    pp.reset()
+
+    # Stream up to the OPENING ``<tool_call>`` marker only — no closing
+    # tag yet, so the hermes parser will buffer (return None each time).
+    out = _make_output("<think>")
+    pp.process_chunk(out)
+    out = _make_output("</think>")
+    pp.process_chunk(out)
+    partial_events = pp.process_chunk(_make_output("<tool_call>"))
+    partial_events += pp.process_chunk(_make_output('{"name": "x"'))
+
+    # Zero content events should carry the raw markup.
+    leaked = [
+        e
+        for e in partial_events
+        if e.type == "content" and e.content and "<tool_call" in e.content
+    ]
+    assert not leaked, (
+        f"<tool_call> markup leaked as content while buffering: "
+        f"{[(e.type, e.content) for e in leaked]}"
+    )
+
+
+def test_minimax_unified_path_transitions_to_tool_phase(monkeypatch):
+    """Codex round-1 regression: MiniMax doesn't carry a
+    ``reasoning_ended`` attribute, so the default
+    ``is_reasoning_end_streaming`` (which reads that attr) would keep
+    the orchestrator stuck in the reasoning phase forever. MiniMax now
+    overrides the method to read ``_decided and not _is_reasoning``."""
+    from vllm_mlx.reasoning.minimax_parser import MiniMaxReasoningParser
+
+    p = MiniMaxReasoningParser()
+    # Initial state: not decided yet.
+    assert p.is_reasoning_end_streaming("", "") is False
+
+    # Force into the "decided to content" state — the unified
+    # orchestrator should now consider reasoning ended.
+    p._decided = True
+    p._is_reasoning = False
+    assert p.is_reasoning_end_streaming("", "any content") is True
+
+    # Force into the "decided to reasoning" state — still in the
+    # reasoning phase.
+    p._is_reasoning = True
+    assert p.is_reasoning_end_streaming("", "still thinking") is False
+
 
 # ----------------------- channel-routed bypass -----------------------
 

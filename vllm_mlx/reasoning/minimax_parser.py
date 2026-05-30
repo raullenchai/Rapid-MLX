@@ -117,6 +117,20 @@ class MiniMaxReasoningParser(ReasoningParser):
         self._is_reasoning = False
         self._transition_pos = 0
 
+    def is_reasoning_end_streaming(self, previous_text: str, current_text: str) -> bool:
+        """Boundary signal for the unified ``Parser.parse_delta`` orchestrator.
+
+        MiniMax doesn't carry a ``reasoning_ended`` attribute the default
+        implementation can read. Reasoning is "done" once the parser has
+        decided AND classified the current emission as non-reasoning —
+        i.e. the model crossed into content (or a tool-call shape) and
+        the next chunk must flow through the tool parser. Without this
+        override the unified path would keep MiniMax stuck in the
+        reasoning phase and tool calls embedded inside its think block
+        would never be parsed.
+        """
+        return self._decided and not self._is_reasoning
+
     def extract_reasoning(self, model_output: str) -> tuple[str | None, str | None]:
         """
         Extract reasoning from complete MiniMax output.
