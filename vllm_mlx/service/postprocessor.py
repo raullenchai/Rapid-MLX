@@ -154,14 +154,19 @@ class StreamingPostProcessor:
         ):
             self.unified_parser = self._build_unified_parser()
 
-        # When the unified path is active it OWNS the post-reasoning
-        # ``tool_accumulated_text`` value — finalize() must treat an
-        # empty string as "scoped tool text is intentionally empty" and
-        # NOT fall back to the full ``accumulated_text`` (which would
+        # Latches True the first time ``_process_with_unified_parser``
+        # actually runs on this stream. Then finalize() treats
+        # ``tool_accumulated_text`` as authoritative (including ""), so
+        # the legacy ``or self.accumulated_text`` fallback does not
         # re-run the cross-format parser over the reasoning body and
-        # synthesize a bogus tool call from any bare JSON shape
-        # mentioned there). Codex R9 #1.
-        self._unified_tool_scope_active = self.unified_parser is not None
+        # synthesize a bogus tool call from any bare JSON shape there
+        # (codex R9 #1).
+        #
+        # CANNOT be derived from ``self.unified_parser is not None`` —
+        # channel-routed streams (Gemma 4, harmony) skip the unified
+        # path entirely and rely on ``accumulated_text`` for fallback
+        # tool detection (DeepSeek review BLOCKING).
+        self._unified_tool_scope_active = False
         # MiniMax redirect (tool calls embedded in ``<think>``) runs the
         # legacy ``_detect_tool_calls`` to mutate
         # ``tool_accumulated_text``. While that path is engaged for the
@@ -255,10 +260,10 @@ class StreamingPostProcessor:
         self._think_prefix_sent = False
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
-        # ``_unified_tool_scope_active`` is derived from ``unified_parser``
-        # at construction time; it stays constant across resets in the
-        # current stream. ``_minimax_redirect_active`` is per-stream
-        # state — clear it on every reset.
+        # Per-stream state — clear on every reset. ``_unified_tool_scope_active``
+        # latches True only when ``_process_with_unified_parser`` actually
+        # runs; channel-routed streams never set it.
+        self._unified_tool_scope_active = False
         self._minimax_redirect_active = False
 
         if self.reasoning_parser:
@@ -266,11 +271,7 @@ class StreamingPostProcessor:
         if self.tool_parser:
             self.tool_parser.reset()
         if self.unified_parser is not None:
-            # The reasoning/tool sub-parsers are reset above; only the
-            # orchestrator's own StreamState needs to be cleared here.
-            from ..parser import StreamState
-
-            self.unified_parser._stream_state = StreamState()
+            self.unified_parser.reset_state()
 
     def process_chunk(self, output: GenerationOutput) -> list[StreamEvent]:
         """Process a single engine output chunk.
@@ -495,6 +496,12 @@ class StreamingPostProcessor:
         so that the only behavior difference is the boundary handling
         the orchestrator now owns.
         """
+        # Latch the scope flag the first time the unified path actually
+        # consumes a delta on this stream. Channel-routed streams (Gemma 4,
+        # harmony) skip this method entirely, so finalize() correctly falls
+        # back to ``accumulated_text`` for them (DeepSeek review BLOCKING).
+        self._unified_tool_scope_active = True
+
         previous_text = self.accumulated_text
         self.accumulated_text += delta_text
 

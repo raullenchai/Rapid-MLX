@@ -35,7 +35,6 @@ class StreamState:
     """Mutable per-stream state for ``Parser.parse_delta``."""
 
     reasoning_ended: bool = False
-    tool_call_text_started: bool = False
     previous_text: str = ""
     # ``tool_phase_text`` accumulates only the post-reasoning portion of
     # the stream — what the tool parser is allowed to see. Without this

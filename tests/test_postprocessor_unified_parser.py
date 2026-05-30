@@ -539,6 +539,43 @@ def test_channel_routed_bypasses_unified_path(monkeypatch):
     )
 
 
+def test_channel_routed_finalize_uses_accumulated_text_fallback(monkeypatch):
+    """DeepSeek review BLOCKING regression.
+
+    When the env flag is on but the entire stream is channel-routed
+    (OutputRouter — Gemma 4, harmony), ``_process_with_unified_parser``
+    never runs and ``_unified_tool_scope_active`` must stay False. If it
+    were latched to True at construction (the pre-fix behavior), finalize
+    would short-circuit the legacy ``or self.accumulated_text`` fallback
+    and lose any tool_call that the channel-routed path accumulated only
+    in ``accumulated_text``.
+    """
+    monkeypatch.setenv("RAPID_MLX_UNIFIED_PARSER", "1")
+    cfg = _make_cfg(
+        reasoning_parser_name="qwen3",
+        tool_call_parser="hermes",
+        enable_auto_tool_choice=True,
+    )
+    pp = StreamingPostProcessor(cfg, tools_requested=True)
+    pp.reset()
+
+    # Sanity: parser exists but scope flag is OFF until a delta consumed.
+    assert pp.unified_parser is not None
+    assert pp._unified_tool_scope_active is False
+
+    # Drive ONLY channel-routed chunks (output.channel set). These
+    # bypass the unified path entirely.
+    for chunk in ["<tool_call>", '{"name":"x","arguments":{}}', "</tool_call>"]:
+        pp.process_chunk(_make_output(chunk, channel="content"))
+
+    # Flag must STILL be False — channel-routed path never latched it.
+    assert pp._unified_tool_scope_active is False, (
+        "Channel-routed stream must not latch _unified_tool_scope_active; "
+        "doing so would suppress finalize()'s accumulated_text fallback "
+        "and lose tool calls accumulated by the channel path."
+    )
+
+
 # ----------------------- reset clears orchestrator state -----------------------
 
 
