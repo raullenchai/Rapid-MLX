@@ -126,6 +126,13 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # so the child's B2 download gate no-ops (parent already gated).
         # Pure UX flag — never read by the engine or scheduler.
         "RAPID_MLX_CHAT_SPAWN",
+        # Opt-in to the unified Parser orchestrator path in
+        # StreamingPostProcessor (PR #488). Default OFF; ON re-routes the
+        # exact same reasoning+tool parser instances through a single
+        # ``parse_delta`` seam. Not a model/route/engine selector — purely
+        # a code-path A/B for the parser layer. Sole reader:
+        # ``vllm_mlx/service/postprocessor.py``.
+        "RAPID_MLX_UNIFIED_PARSER",
     }
 )
 
