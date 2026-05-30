@@ -231,9 +231,11 @@ class DelegatingParser(Parser):
         previous_text = state.previous_text
         current_text = previous_text + delta_text
         delta_message: DeltaMessage | None = None
+        reasoning_parser_consulted = False
 
         # ---- Reasoning phase ----
         if self._in_reasoning_phase(state):
+            reasoning_parser_consulted = True
             delta_message = self._extract_reasoning_streaming(
                 previous_text=previous_text,
                 current_text=current_text,
@@ -265,38 +267,49 @@ class DelegatingParser(Parser):
 
             if tool_delta is not None:
                 delta_message = tool_delta
-            elif delta_message is None and not self._has_tool_parser():
-                # No tool parser involved — pass the raw delta through as
-                # content so the route still advances the SSE stream.
-                delta_message = DeltaMessage(content=delta_text)
-            # else: tool parser intentionally returned None to buffer a
-            # partial tool-call (the closing tag hasn't arrived yet).
-            # Suppress this delta entirely — emitting the raw
-            # ``<tool_call>...`` markup as content would leak it to the
-            # client before the structured ``tool_calls`` delta lands.
-            # The route's stream loop already handles ``None`` gracefully.
-
-            if delta_message is not None:
+                # Boundary chunk preservation — tool parser produced a
+                # delta (either tool_calls or pass-through content). Keep
+                # the reasoning side so callers don't lose pre-boundary
+                # reasoning; only overwrite content if the tool parser
+                # didn't already set it.
                 if reasoning_to_preserve:
                     delta_message.reasoning = reasoning_to_preserve
                 if content_to_preserve and not delta_message.content:
-                    # Preserve any pre-boundary content the reasoning
-                    # parser already extracted (the post-</think>
-                    # remainder).
                     delta_message.content = content_to_preserve
-            elif reasoning_to_preserve or content_to_preserve:
-                # Tool parser is buffering, but the boundary chunk carried
-                # reasoning / content that must still surface. Emit them
-                # without touching the suppressed tool-call body.
-                delta_message = DeltaMessage(
-                    reasoning=reasoning_to_preserve,
-                    content=content_to_preserve,
-                )
+            else:
+                # Tool parser returned None → intentionally buffering an
+                # incomplete tool-call body. Suppress the tool-call
+                # markup entirely. ``content_to_preserve`` here is the
+                # post-``</think>`` text the reasoning parser handed us,
+                # which on the boundary chunk IS the tool-call prefix
+                # (``<tool_call>`` etc) — emitting it would leak the raw
+                # markup to the client. Only ``reasoning_to_preserve``
+                # is safe to surface.
+                if reasoning_to_preserve:
+                    delta_message = DeltaMessage(reasoning=reasoning_to_preserve)
+                # else: leave delta_message = None to suppress this chunk
 
-        # Neither phase active (no reasoning parser, no tool parser) →
-        # pass through the raw delta as content.
-        if delta_message is None and not self._has_tool_parser():
-            delta_message = DeltaMessage(content=delta_text)
+        # Final fallback — pass the raw delta through as content in
+        # exactly two cases:
+        #   (a) no parser is wired at all
+        #   (b) reasoning has already ended AND no tool parser is wired
+        #       (post-reasoning plain-text passthrough — the reasoning
+        #       parser handed off and the tool parser isn't there to
+        #       interpret the rest)
+        # The case we DO NOT cover: reasoning parser was consulted and
+        # returned ``None`` deliberately (e.g. standalone ``<think>``
+        # special token suppression). Fabricating content there would
+        # leak the marker to the SSE stream.
+        if delta_message is None:
+            if not self._has_any_parser():
+                delta_message = DeltaMessage(content=delta_text)
+            elif (
+                not reasoning_parser_consulted
+                and not self._in_tool_call_phase(state)
+                and not self._has_tool_parser()
+            ):
+                # Post-reasoning passthrough with no tool parser wired.
+                delta_message = DeltaMessage(content=delta_text)
 
         state.previous_text = current_text
         return delta_message
@@ -304,6 +317,10 @@ class DelegatingParser(Parser):
     def _has_tool_parser(self) -> bool:
         """Return True when a tool parser is wired and can buffer chunks."""
         return self._tool_parser is not None
+
+    def _has_any_parser(self) -> bool:
+        """Return True when at least one of reasoning / tool parsers is wired."""
+        return self._reasoning_parser is not None or self._tool_parser is not None
 
 
 class _WrappedParser(DelegatingParser):

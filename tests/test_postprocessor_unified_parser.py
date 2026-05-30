@@ -234,6 +234,84 @@ def test_unified_path_suppresses_partial_tool_call_chunks(monkeypatch):
     )
 
 
+def test_unified_path_suppresses_lone_think_tag_without_tools(monkeypatch):
+    """Codex round-2 regression: when a reasoning parser is wired but
+    no tool parser exists, the reasoning parser intentionally returns
+    ``None`` for standalone special tokens (e.g. ``<think>``,
+    ``</think>``). The orchestrator must NOT fabricate a content delta
+    from those — that would leak the marker to the SSE stream.
+    """
+    monkeypatch.setenv("RAPID_MLX_UNIFIED_PARSER", "1")
+    cfg = _make_cfg(reasoning_parser_name="qwen3")
+    pp = StreamingPostProcessor(cfg, tools_requested=False)
+    pp.reset()
+
+    events: list = []
+    for chunk in ["<think>", "</think>"]:
+        events.extend(pp.process_chunk(_make_output(chunk)))
+
+    leaked = [
+        e
+        for e in events
+        if e.type == "content" and e.content and ("<think" in e.content)
+    ]
+    assert not leaked, (
+        f"<think>/</think> markers leaked as content with no tool parser: "
+        f"{[(e.type, e.content) for e in leaked]}"
+    )
+
+
+def test_unified_path_coalesced_boundary_preserves_reasoning_with_tool_call(
+    monkeypatch,
+):
+    """Codex round-2 regression: when a single chunk closes reasoning
+    AND completes a tool call (e.g. ``final thought</think><tool_call>
+    {...}</tool_call>``), the unified path must surface the trailing
+    reasoning text before / alongside the tool_call event. Previously
+    it dropped reasoning and content because the early return on
+    ``delta_msg.tool_calls`` skipped the reasoning emit.
+    """
+    monkeypatch.setenv("RAPID_MLX_UNIFIED_PARSER", "1")
+    cfg = _make_cfg(
+        reasoning_parser_name="qwen3",
+        tool_call_parser="hermes",
+        enable_auto_tool_choice=True,
+    )
+    pp = StreamingPostProcessor(cfg, tools_requested=True)
+    pp.reset()
+
+    payload = json.dumps({"name": "x", "arguments": {}})
+    # Coalesced boundary: reasoning body, </think> closes reasoning,
+    # tool_call opens + closes — all in one chunk sequence.
+    events = _stream_chunks(
+        pp,
+        [
+            "<think>",
+            "final thought",
+            f"</think><tool_call>{payload}</tool_call>",
+        ],
+    )
+
+    reasoning_events = [
+        e for e in events if e.type == "reasoning" and (e.reasoning or "")
+    ]
+    tool_events = [e for e in events if e.type == "tool_call" and e.tool_calls]
+
+    # Both the reasoning body and the tool call must materialize.
+    assert reasoning_events, (
+        f"reasoning text was dropped on coalesced boundary chunk: "
+        f"{_event_types(events)}"
+    )
+    assert tool_events, (
+        f"tool_call event missing on coalesced boundary chunk: {_event_types(events)}"
+    )
+
+    # accumulated_reasoning must include the pre-boundary thinking text.
+    assert "final thought" in pp.accumulated_reasoning, (
+        f"accumulated_reasoning lost pre-boundary text: {pp.accumulated_reasoning!r}"
+    )
+
+
 def test_minimax_unified_path_transitions_to_tool_phase(monkeypatch):
     """Codex round-1 regression: MiniMax doesn't carry a
     ``reasoning_ended`` attribute, so the default

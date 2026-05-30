@@ -498,14 +498,38 @@ class StreamingPostProcessor:
             # than "stop". Mirrors the legacy ``_detect_tool_calls``
             # branch that sets the same flag.
             self.tool_calls_detected = True
-            return [
+
+            # Coalesced boundary chunk — the orchestrator may attach
+            # reasoning / content from the pre-boundary side of the
+            # same delta. Surface those first (mirroring the legacy
+            # path which would have emitted them on the previous
+            # process_chunk call) so clients don't lose the final
+            # reasoning text or partial content that preceded the
+            # tool call.
+            events: list[StreamEvent] = []
+            if reasoning:
+                cleaned_reasoning = strip_special_tokens(reasoning)
+                if cleaned_reasoning:
+                    self.accumulated_reasoning += cleaned_reasoning
+                    events.append(
+                        StreamEvent(type="reasoning", reasoning=cleaned_reasoning)
+                    )
+            if content:
+                cleaned_content = strip_special_tokens(content)
+                if cleaned_content:
+                    cleaned_content = sanitize_output(cleaned_content)
+                if cleaned_content:
+                    events.append(StreamEvent(type="content", content=cleaned_content))
+
+            events.append(
                 StreamEvent(
                     type="tool_call",
                     tool_calls=delta_msg.tool_calls,
                     finish_reason="tool_calls" if output.finished else None,
                     tool_calls_detected=True,
                 )
-            ]
+            )
+            return events
 
         if reasoning:
             self.accumulated_reasoning += reasoning
