@@ -376,12 +376,10 @@ class DelegatingParser(Parser):
         if delta_message is None:
             if not self._has_any_parser():
                 delta_message = DeltaMessage(content=delta_text)
-            elif (
-                not reasoning_parser_consulted
-                and not self._in_tool_call_phase(state)
-                and not self._has_tool_parser()
-            ):
+            elif not reasoning_parser_consulted and not self._has_tool_parser():
                 # Post-reasoning passthrough with no tool parser wired.
+                # ``not _has_tool_parser`` implies ``not _in_tool_call_phase``
+                # already — the explicit phase check was redundant.
                 delta_message = DeltaMessage(content=delta_text)
 
         state.previous_text = current_text
