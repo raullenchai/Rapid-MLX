@@ -9,6 +9,7 @@ one cohesive orchestrator, because reasoning/tool/sanitize are tightly coupled.
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from ..api.tool_calling import parse_tool_calls
@@ -137,6 +138,22 @@ class StreamingPostProcessor:
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
 
+        # Optional unified Parser path (Phase 2 of the vllm-style parser
+        # orchestrator migration — see ``vllm_mlx/parser/``). Activated by
+        # ``RAPID_MLX_UNIFIED_PARSER=1`` so the old per-call sequence
+        # (``extract_reasoning_streaming`` → ``_detect_tool_calls``) and
+        # the new single-call orchestrator (``parse_delta``) coexist while
+        # we bake parity. Channel-routed models (Gemma 4, harmony) still
+        # take the OutputRouter path; this flag only swaps the text-based
+        # reasoning + tool flow that was the source of #436 / #443 /
+        # #454 / #456 / #460 / #462.
+        self.unified_parser = None
+        if (
+            os.environ.get("RAPID_MLX_UNIFIED_PARSER", "0") == "1"
+            and self.reasoning_parser is not None
+        ):
+            self.unified_parser = self._build_unified_parser()
+
     @staticmethod
     def _create_reasoning_parser(cfg: ServerConfig):
         """Create a per-request reasoning parser instance."""
@@ -181,6 +198,26 @@ class StreamingPostProcessor:
 
         return None
 
+    def _build_unified_parser(self):
+        """Construct a unified ``Parser`` from the already-built reasoning
+        and tool parser instances.
+
+        Direct instantiation (rather than ``ParserManager.get_parser``)
+        because the manager would re-build the parsers from class names
+        and lose the request-scoped wiring this constructor already did
+        (mock injection, MiniMax inference, Nemotron heuristic, etc.).
+        We only borrow the orchestration shape — ``DelegatingParser.parse_delta``.
+        """
+        from ..parser import DelegatingParser
+
+        parser = DelegatingParser(
+            tokenizer=getattr(self.cfg, "engine", None)
+            and getattr(self.cfg.engine, "_tokenizer", None)
+        )
+        parser._reasoning_parser = self.reasoning_parser
+        parser._tool_parser = self.tool_parser
+        return parser
+
     def set_thinking_model(self, model_name: str):
         """Enable Nemotron-style thinking prefix injection."""
         self._is_thinking_model = (
@@ -206,6 +243,12 @@ class StreamingPostProcessor:
             self.reasoning_parser.reset_state()
         if self.tool_parser:
             self.tool_parser.reset()
+        if self.unified_parser is not None:
+            # The reasoning/tool sub-parsers are reset above; only the
+            # orchestrator's own StreamState needs to be cleared here.
+            from ..parser import StreamState
+
+            self.unified_parser._stream_state = StreamState()
 
     def process_chunk(self, output: GenerationOutput) -> list[StreamEvent]:
         """Process a single engine output chunk.
@@ -227,6 +270,15 @@ class StreamingPostProcessor:
             # skip thinking and answer directly. Bypass the reasoning parser
             # so its implicit-think heuristic doesn't reroute the answer to
             # reasoning_content.
+            if self.unified_parser is not None:
+                # Phase 2 opt-in: route the reasoning + tool sequence
+                # through the unified ``Parser.parse_delta`` orchestrator
+                # instead of the legacy two-call sequence. The surrounding
+                # post-processing (MiniMax redirect, sanitize, accumulate,
+                # finish_reason) is the same — only the boundary handling
+                # changes, structurally eliminating the bug class behind
+                # PRs #436 / #443 / #454 / #456 / #460 / #462.
+                return self._process_with_unified_parser(delta_text, output)
             return self._process_with_reasoning(delta_text, output)
         return self._process_standard(delta_text, output)
 
@@ -376,6 +428,127 @@ class StreamingPostProcessor:
             return []
 
         # Sanitize
+        if content:
+            content = strip_special_tokens(content)
+        if reasoning:
+            reasoning = strip_special_tokens(reasoning)
+
+        finish_reason = self._compute_finish_reason(output)
+        if not content and not reasoning and not finish_reason:
+            return []
+
+        if content:
+            content = sanitize_output(content)
+            if not content:
+                content = None
+
+        if finish_reason:
+            return [
+                StreamEvent(
+                    type="finish",
+                    finish_reason=finish_reason,
+                    content=content,
+                    reasoning=reasoning,
+                    tool_calls_detected=self.tool_calls_detected,
+                )
+            ]
+        events = []
+        if content:
+            events.append(StreamEvent(type="content", content=content))
+        if reasoning:
+            events.append(StreamEvent(type="reasoning", reasoning=reasoning))
+        return events
+
+    def _process_with_unified_parser(
+        self, delta_text: str, output: GenerationOutput
+    ) -> list[StreamEvent]:
+        """Unified-Parser variant of ``_process_with_reasoning``.
+
+        Replaces the two-call ``extract_reasoning_streaming`` +
+        ``_detect_tool_calls`` sequence with a single
+        ``parse_delta(delta_text)`` call. The surrounding pipeline
+        (accumulators, MiniMax tool-in-think redirect, sanitizers,
+        ``finish_reason`` computation, ``StreamEvent`` shaping) is
+        intentionally kept byte-identical to ``_process_with_reasoning``
+        so that the only behavior difference is the boundary handling
+        the orchestrator now owns.
+        """
+        previous_text = self.accumulated_text
+        self.accumulated_text += delta_text
+
+        delta_msg = self.unified_parser.parse_delta(
+            delta_text=delta_text, request=self.request
+        )
+
+        if delta_msg is None:
+            if output.finished:
+                return [self._make_finish_event(output)]
+            return []
+
+        content = delta_msg.content
+        reasoning = delta_msg.reasoning
+        # ``parse_delta`` may emit a fully formed tool_calls payload when
+        # the underlying tool parser flushes — translate that into the
+        # same StreamEvent shape the legacy ``_detect_tool_calls`` path
+        # produces, so downstream SSE encoding is unchanged.
+        if delta_msg.tool_calls:
+            return [
+                StreamEvent(
+                    type="tool_call",
+                    tool_calls=delta_msg.tool_calls,
+                    finish_reason="tool_calls" if output.finished else None,
+                    tool_calls_detected=True,
+                )
+            ]
+
+        if reasoning:
+            self.accumulated_reasoning += reasoning
+
+        # MiniMax redirect — same heuristic as the legacy path. parse_delta
+        # routes ``<think>...<tool_call>`` reasoning into ``reasoning`` and
+        # leaves the tool detection for the tool parser's text inspection,
+        # but MiniMax wraps its tool calls inside the think block so the
+        # tool parser would never see them. Reclassify reasoning → content
+        # on the trigger tags so the next delta's tool parser run can
+        # consume them.
+        if self.tool_parser and reasoning:
+            _check = self.tool_accumulated_text + reasoning
+            if (
+                "<minimax:tool_call>" in _check
+                or "<tool_call>" in _check
+                or '<invoke name="' in _check
+            ):
+                content = (content or "") + reasoning
+                reasoning = None
+                # Re-run tool detection on the now-content portion so the
+                # tool call surfaces in this delta — the legacy path
+                # called ``_detect_tool_calls`` unconditionally below; we
+                # keep that contract.
+                result = self._detect_tool_calls(content)
+                if result is None:
+                    return []
+                if result.get("tool_calls"):
+                    return [
+                        StreamEvent(
+                            type="tool_call",
+                            tool_calls=result["tool_calls"],
+                            finish_reason="tool_calls" if output.finished else None,
+                            tool_calls_detected=True,
+                        )
+                    ]
+                content = result.get("content", "")
+
+        if self.tool_calls_detected:
+            if output.finished:
+                return [
+                    StreamEvent(
+                        type="finish",
+                        finish_reason="tool_calls",
+                        tool_calls_detected=True,
+                    )
+                ]
+            return []
+
         if content:
             content = strip_special_tokens(content)
         if reasoning:
