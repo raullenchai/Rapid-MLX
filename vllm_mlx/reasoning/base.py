@@ -14,21 +14,18 @@ from typing import Any
 @dataclass
 class DeltaMessage:
     """
-    Delta message for streaming model output.
+    Delta message for streaming reasoning output.
 
-    Contains reasoning content, regular content, and/or tool calls. A single
-    delta typically populates one field; the boundary chunk between phases
-    can populate both reasoning and content, or reasoning and tool_calls.
+    Contains either reasoning content, regular content, or both when
+    transitioning from reasoning to content phase.
 
-    tool_calls follows the OpenAI ChoiceDeltaToolCall shape:
-        [{"index": 0, "id": "...", "type": "function",
-          "function": {"name": "...", "arguments": "..."}}, ...]
+    Note: reasoning and content should typically not both be non-None
+    except during the transition chunk.
     """
 
     role: str | None = None
     content: str | None = None
     reasoning: str | None = None
-    tool_calls: list[dict[str, Any]] | None = None
 
     @property
     def reasoning_content(self) -> str | None:
@@ -101,19 +98,6 @@ class ReasoningParser(ABC):
             or None if this delta should be skipped (e.g., special tokens).
         """
         pass
-
-    def is_reasoning_end_streaming(self, previous_text: str, current_text: str) -> bool:
-        """
-        Check whether the reasoning phase has ended after the latest delta.
-
-        Used by the unified ``Parser.parse_delta`` orchestrator to decide
-        when to hand off from reasoning extraction to tool-call extraction
-        within the same stream. Default implementation reads a
-        ``reasoning_ended`` attribute that most concrete parsers (qwen3,
-        deepseek_r1, glm4, harmony) already set during streaming. Parsers
-        without that flag can override this method directly.
-        """
-        return bool(getattr(self, "reasoning_ended", False))
 
     def reset_state(self):  # noqa: B027
         """

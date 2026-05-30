@@ -50,18 +50,6 @@ class BaseThinkingReasoningParser(ReasoningParser):
         super().reset_state()
         self._saw_any_tag = False
 
-    def is_reasoning_end_streaming(self, previous_text: str, current_text: str) -> bool:
-        """Boundary signal for the unified ``Parser.parse_delta`` orchestrator.
-
-        For ``<think>`` / ``</think>`` style markers the appearance of the
-        end-token anywhere in ``current_text`` is the definitive signal —
-        same check ``extract_reasoning_streaming`` already uses internally
-        for Case 1/2 handling. Implicit-mode (``<think>`` only in prompt)
-        gets covered by the same check because the model output starts
-        emitting ``</think>`` mid-stream when reasoning concludes.
-        """
-        return self.end_token in current_text
-
     def extract_reasoning(
         self,
         model_output: str,
