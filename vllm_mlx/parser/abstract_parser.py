@@ -37,6 +37,16 @@ class StreamState:
     reasoning_ended: bool = False
     tool_call_text_started: bool = False
     previous_text: str = ""
+    # ``tool_phase_text`` accumulates only the post-reasoning portion of
+    # the stream — what the tool parser is allowed to see. Without this
+    # the tool parser receives the full ``previous_text`` (including the
+    # reasoning body), and any ``<tool_call>`` / ``</tool_call>``
+    # mentions hidden inside reasoning (e.g. a model thinking aloud
+    # about the syntax it's about to emit) skew the parser's
+    # open/close counting and drop the first real tool call. See codex
+    # R5 (PR #488). Reset alongside ``previous_text`` on every
+    # ``reset_state``.
+    tool_phase_text: str = ""
     history_tool_call_cnt: int = 0
 
 
@@ -268,10 +278,31 @@ class DelegatingParser(Parser):
                 reasoning_to_preserve = delta_message.reasoning
                 content_to_preserve = delta_message.content
 
+            # The tool parser must only see the post-reasoning portion
+            # of the stream — feeding it the full text would let
+            # ``<tool_call>`` / ``</tool_call>`` mentions hidden inside
+            # reasoning skew its open/close counting and drop the first
+            # real tool call (codex R5).
+            #
+            # - Boundary chunk (reasoning parser was consulted AND
+            #   emitted content_to_preserve): seed tool_phase_text from
+            #   the reasoning parser's stripped post-``</think>`` body.
+            # - Past-boundary chunks (reasoning parser not consulted):
+            #   append the full delta to tool_phase_text.
+            # - Tool-only mode (no reasoning parser ever consulted):
+            #   tool_phase_text accumulates from chunk 0.
+            if reasoning_parser_consulted:
+                tool_delta_text = content_to_preserve or ""
+            else:
+                tool_delta_text = delta_text
+            tool_previous_text = state.tool_phase_text
+            tool_current_text = tool_previous_text + tool_delta_text
+            state.tool_phase_text = tool_current_text
+
             tool_delta = self._extract_tool_calls_streaming(
-                previous_text=previous_text,
-                current_text=current_text,
-                delta_text=delta_text,
+                previous_text=tool_previous_text,
+                current_text=tool_current_text,
+                delta_text=tool_delta_text,
                 request=request,
             )
 

@@ -234,6 +234,58 @@ def test_unified_path_suppresses_partial_tool_call_chunks(monkeypatch):
     )
 
 
+def test_unified_path_does_not_leak_reasoning_into_tool_parser(monkeypatch):
+    """Codex round-5 regression (exact POC reproduction).
+
+    When the model thinks aloud about tool-call syntax inside its
+    reasoning block (e.g. ``<think>...the closing tag is
+    ``</tool_call>``...</think>``), the orchestrator must NOT feed
+    those mentions to the tool parser. Otherwise the tool parser's
+    open/close counter goes negative (sees ``</tool_call>`` before
+    any ``<tool_call>``) and the next real tool-call chunk gets
+    treated as pass-through content instead of buffered + emitted.
+
+    Symptom under the bug: legacy path emits a ``tool_call``
+    StreamEvent; unified path emits the raw ``<tool_call>{...}``
+    JSON as ``content``.
+    """
+    monkeypatch.setenv("RAPID_MLX_UNIFIED_PARSER", "1")
+    cfg = _make_cfg(
+        reasoning_parser_name="qwen3",
+        tool_call_parser="hermes",
+        enable_auto_tool_choice=True,
+    )
+    pp = StreamingPostProcessor(cfg, tools_requested=True)
+    pp.reset()
+
+    payload = json.dumps({"name": "x", "arguments": {}})
+    events = _stream_chunks(
+        pp,
+        [
+            "<think>remember closing tag is </tool_call>",
+            "</think>",
+            f"<tool_call>{payload}</tool_call>",
+        ],
+    )
+
+    # The real tool call must surface as a structured tool_call event.
+    tool_events = [e for e in events if e.type == "tool_call" and e.tool_calls]
+    assert tool_events, (
+        f"tool_call dropped — reasoning mention of </tool_call> "
+        f"poisoned the tool parser's counter. events: {_event_types(events)}"
+    )
+
+    # And no content event may carry raw ``<tool_call>`` JSON.
+    leaked = [
+        e
+        for e in events
+        if e.type == "content" and e.content and "<tool_call" in e.content
+    ]
+    assert not leaked, (
+        f"tool-call JSON leaked as content: {[(e.type, e.content) for e in leaked]}"
+    )
+
+
 def test_unified_path_suppresses_lone_think_tag_without_tools(monkeypatch):
     """Codex round-2 regression: when a reasoning parser is wired but
     no tool parser exists, the reasoning parser intentionally returns
