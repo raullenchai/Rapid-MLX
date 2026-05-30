@@ -259,11 +259,19 @@ class DelegatingParser(Parser):
             )
             if self._is_reasoning_end_streaming(
                 previous_text=previous_text, current_text=current_text
-            ) or (
-                delta_message is not None
-                and delta_message.content
-                and not delta_message.reasoning
-            ):
+            ) or (delta_message is not None and delta_message.content):
+                # Content surfaced from the reasoning parser →
+                # we're past the boundary on this chunk. Covers:
+                #   (a) GLM-4 no-tag / DeepSeek-R1 threshold:
+                #       content-only delta with no end-token (R3).
+                #   (b) Mixed boundary delta (Gemma 4-style): parser
+                #       returns both reasoning AND content in one
+                #       chunk. Must still flip — the boundary content
+                #       may itself be a ``<tool_call>...`` payload
+                #       that needs to go through the tool parser
+                #       this same chunk (R8). Old code's
+                #       ``and not delta_message.reasoning`` clause
+                #       blocked this case.
                 state.reasoning_ended = True
 
         # ---- Tool call phase ----

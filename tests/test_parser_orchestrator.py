@@ -230,6 +230,46 @@ def test_no_reasoning_parser_means_tool_phase_from_start():
     assert d_final.tool_calls is not None
 
 
+def test_mixed_reasoning_plus_content_delta_flips_reasoning_ended():
+    """Codex round-8 regression. Some reasoning parsers (Gemma 4 on a
+    thought→content transition) emit BOTH ``reasoning`` and
+    ``content`` on the same boundary delta. The orchestrator must
+    flip ``reasoning_ended`` on that delta so the tool parser sees
+    the content side this same chunk — otherwise a boundary chunk
+    carrying ``<tool_call>...</tool_call>`` would skip the tool
+    phase and leak as raw content."""
+
+    class _MixedReasoningParser(_FakeReasoningParser):
+        def __init__(self, tokenizer=None):
+            super().__init__(tokenizer)
+            self._emitted = False
+
+        def extract_reasoning_streaming(self, previous_text, current_text, delta_text):
+            # On the first chunk emit BOTH reasoning and content (a
+            # Gemma 4-style mixed boundary delta).
+            if not self._emitted:
+                self._emitted = True
+                return DeltaMessage(reasoning="r", content=delta_text)
+            return DeltaMessage(content=delta_text)
+
+        def is_reasoning_end_streaming(self, previous_text, current_text):
+            # Never reports via the canonical end-token signal — the
+            # orchestrator must flip via the content-set fallback.
+            return False
+
+    _WrappedParser.reasoning_parser_cls = _MixedReasoningParser
+    _WrappedParser.tool_parser_cls = _FakeToolParser
+    p = _WrappedParser()
+
+    # Boundary chunk: parser emits reasoning AND content
+    # (content = the tool-call markup that follows).
+    p.parse_delta("<tool_call>{}</tool_call>")
+    assert p._stream_state.reasoning_ended is True, (
+        "mixed reasoning+content delta must flip reasoning_ended so "
+        "the tool parser sees boundary content this same chunk"
+    )
+
+
 def test_content_only_reasoning_delta_flips_reasoning_ended():
     """Codex round-3 regression: parsers that decide a delta is
     content-only (no reasoning text) must hand off to the tool parser
