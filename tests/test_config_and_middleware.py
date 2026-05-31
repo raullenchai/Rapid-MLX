@@ -353,3 +353,64 @@ class TestGlobalExceptionHandler:
         client = TestClient(app, raise_server_exceptions=False)
         r = client.get("/boom")
         assert "type" not in r.json()["error"]
+class TestHTTPExceptionHandler:
+    def _make_app_with_handler(self):
+        from starlette.responses import JSONResponse as _JSONResponse
+        from fastapi import FastAPI, HTTPException
+
+        app = FastAPI()
+
+        @app.exception_handler(HTTPException)
+        async def handler(request, exc):  # noqa: ARG001
+            error_type_map = {
+                400: "invalid_request_error",
+                401: "authentication_error",
+                403: "permission_error",
+                404: "not_found_error",
+                409: "conflict_error",
+                429: "rate_limit_error",
+            }
+
+            return _JSONResponse(
+                status_code=exc.status_code,
+                content={
+                    "error": {
+                        "message": str(exc.detail),
+                        "type": error_type_map.get(
+                            exc.status_code,
+                            "api_error",
+                        ),
+                        "code": None,
+                        "param": None,
+                    }
+                },
+                headers=exc.headers,
+            )
+
+        @app.get("/rate-limit")
+        async def rate_limit():
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded",
+                headers={"Retry-After": "60"},
+            )
+
+        return app
+
+    def test_429_returns_openai_style_error(self):
+        app = self._make_app_with_handler()
+        client = TestClient(app)
+
+        r = client.get("/rate-limit")
+
+        assert r.status_code == 429
+        assert r.headers["Retry-After"] == "60"
+
+        assert r.json() == {
+            "error": {
+                "message": "Rate limit exceeded",
+                "type": "rate_limit_error",
+                "code": None,
+                "param": None,
+            }
+        }

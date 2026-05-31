@@ -43,7 +43,7 @@ import logging
 import os
 
 import uvicorn
-from fastapi import FastAPI, Request
+
 from fastapi.middleware.cors import CORSMiddleware
 
 # Re-export for backwards compatibility with tests
@@ -130,6 +130,8 @@ from .service.helpers import (  # noqa: F401 — re-export for backward compat
     get_usage,
 )
 from .tool_parsers import ToolParserManager
+from fastapi import FastAPI, HTTPException, Request
+from starlette.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -402,7 +404,32 @@ from .middleware.auth import (
     rate_limiter as _rate_limiter,  # noqa: F401 — configured in main()
 )
 
+@app.exception_handler(HTTPException)
+async def _http_exception_handler(
+    request: Request,  # noqa: ARG001
+    exc: HTTPException,
+):
+    error_type_map = {
+        400: "invalid_request_error",
+        401: "authentication_error",
+        403: "permission_error",
+        404: "not_found_error",
+        409: "conflict_error",
+        429: "rate_limit_error",
+    }
 
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "message": str(exc.detail),
+                "type": error_type_map.get(exc.status_code, "api_error"),
+                "code": None,
+                "param": None,
+            }
+        },
+        headers=exc.headers,
+    )
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception):
     """Catch unhandled exceptions so they return JSON 500 instead of killing
@@ -420,7 +447,6 @@ async def _global_exception_handler(request: Request, exc: Exception):
         exc,
         exc_info=True,
     )
-    from starlette.responses import JSONResponse
 
     return JSONResponse(
         status_code=500,
