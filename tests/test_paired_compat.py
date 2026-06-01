@@ -49,6 +49,9 @@ class _StreamingEngine:
         self._deltas = deltas
         self.calls: list[dict] = []
 
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        return ""
+
     async def stream_chat(self, messages, **kwargs):
         self.calls.append({"messages": messages, "kwargs": kwargs})
         n = len(self._deltas)
