@@ -54,6 +54,9 @@ SERVER_LOG="$LOG_DIR/server.log"
 TUNNEL_LOG="$LOG_DIR/tunnel.log"
 STATE_DIR="$LOG_DIR/state"
 mkdir -p "$STATE_DIR"
+# State dir holds the API key — keep it owner-only so a shared host doesn't
+# leak the bearer token used by the public tunnel.
+chmod 700 "$STATE_DIR"
 SERVER_PID="$STATE_DIR/server.pid"
 TUNNEL_PID="$STATE_DIR/tunnel.pid"
 URL_FILE="$STATE_DIR/url"
@@ -195,6 +198,21 @@ fi
 
 echo "$URL" > "$URL_FILE"
 echo "$API_KEY" > "$KEY_FILE"
+chmod 600 "$KEY_FILE"
+
+# Probe the tunnel itself — quick mode often surfaces the URL before the
+# tunnel is actually forwarding traffic. We allow up to 30s; that's well
+# below the cloudflared registration timeout (60s loop above) but enough
+# to weed out "URL was printed but 502s for 10 seconds" races.
+echo -n "Probing $URL/healthz "
+for _ in $(seq 1 30); do
+  if curl -sSf -m 3 "$URL/healthz" >/dev/null 2>&1; then
+    echo " ok"
+    break
+  fi
+  echo -n "."
+  sleep 1
+done
 
 cat <<EOF
 
