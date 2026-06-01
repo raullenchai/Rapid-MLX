@@ -743,6 +743,40 @@ class BatchedEngine(BaseEngine):
         self._engine_started = False
         logger.info("BatchedEngine stopped")
 
+    def build_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict] | None = None,
+        enable_thinking: bool | None = None,
+    ) -> str:
+        """Render the chat prompt for ``messages`` + ``tools`` without starting
+        generation.
+
+        Used by:
+          * Cloud routing (``routes/chat.py``) — needs the prompt to estimate
+            new-token count before deciding whether to offload to the remote
+            LLM. Without this method, the ``hasattr(engine, "build_prompt")``
+            guard at the call site silently disables cloud routing entirely
+            (issue #500 — regression introduced when SimpleEngine was deleted
+            in #155, which previously hosted this method).
+          * Streaming chat-template eager validation — surface ``TemplateError``
+            as HTTP 400 instead of mid-stream failures.
+
+        MLLM models are intentionally rejected: cloud routing requires text
+        token estimation and the relevant guard sites already exclude
+        ``engine.is_mllm``.
+        """
+        if not self._loaded:
+            raise RuntimeError("Engine not loaded — call start() first")
+        if self._is_mllm:
+            raise RuntimeError("build_prompt is not supported for MLLM models")
+        template_tools = convert_tools_for_template(tools) if tools else None
+        return self._apply_chat_template(
+            messages,
+            tools=template_tools,
+            enable_thinking=enable_thinking,
+        )
+
     def _apply_chat_template(
         self,
         messages: list[dict[str, Any]],

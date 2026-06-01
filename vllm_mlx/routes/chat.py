@@ -533,7 +533,7 @@ async def _create_chat_completion_impl(
         chat_kwargs["enable_thinking"] = resolved_thinking
 
     # Cloud routing: offload large-context requests to cloud LLM
-    if cfg.cloud_router and not engine.is_mllm and hasattr(engine, "build_prompt"):
+    if cfg.cloud_router and not engine.is_mllm:
         try:
             prompt = engine.build_prompt(messages, tools=request.tools)
             total_tokens, new_tokens = engine.model.estimate_new_tokens(prompt)
@@ -669,7 +669,7 @@ async def _create_chat_completion_impl(
 
     if request.stream:
         # Validate chat template eagerly so template errors return 400
-        if hasattr(engine, "build_prompt") and not engine.is_mllm:
+        if not engine.is_mllm:
             try:
                 engine.build_prompt(
                     messages,

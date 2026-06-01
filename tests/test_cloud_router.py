@@ -423,3 +423,60 @@ class TestCloudRouterStreamCompletion:
 
         # Should only have [DONE] since all chunks have empty choices
         assert result_chunks == ["data: [DONE]\n\n"]
+
+
+# ---------------------------------------------------------------------------
+# Engine contract — regression gates for #500
+# ---------------------------------------------------------------------------
+
+
+class TestEngineCloudRoutingContract:
+    """Pins the engine API that ``routes/chat.py`` cloud-routing depends on.
+
+    These tests would have caught issue #500 (cloud routing silently never
+    fires) where ``BatchedEngine`` did not implement ``build_prompt``. The
+    bug was a regression introduced by #155 (deletion of ``SimpleEngine``,
+    which previously hosted the method). Because the call sites in
+    ``routes/chat.py`` were guarded by ``hasattr(engine, "build_prompt")``,
+    the failure was silent: cloud routing was disabled for every user with
+    no log line, while the startup banner still printed
+    ``"Cloud routing enabled: ..."``.
+    """
+
+    def test_batched_engine_exposes_build_prompt(self):
+        """BatchedEngine MUST expose ``build_prompt`` — cloud routing in
+        ``routes/chat.py`` depends on the method existing on the live engine
+        (not just on test mocks). #500.
+        """
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        assert hasattr(BatchedEngine, "build_prompt"), (
+            "BatchedEngine.build_prompt is required for cloud routing "
+            "(routes/chat.py) and streaming chat-template validation. "
+            "If you removed it, also remove the call sites in routes/chat.py "
+            "and the --cloud-model CLI flag."
+        )
+        # And it must be a callable, not a class attribute placeholder.
+        assert callable(BatchedEngine.build_prompt)
+
+    def test_chat_route_does_not_guard_on_build_prompt_existence(self):
+        """``routes/chat.py`` must NOT wrap ``engine.build_prompt`` in
+        ``hasattr(engine, "build_prompt")``. That guard was the mechanism
+        that silently disabled cloud routing in #500 — when ``SimpleEngine``
+        was deleted, the guard turned false and there was no signal at
+        runtime that anything had broken.
+
+        If a future engine genuinely doesn't support prompt rendering, fail
+        loudly at engine construction or at the call site — not by silently
+        disabling cloud routing.
+        """
+        import pathlib
+
+        src = pathlib.Path("vllm_mlx/routes/chat.py").read_text()
+        assert 'hasattr(engine, "build_prompt")' not in src, (
+            'Found `hasattr(engine, "build_prompt")` in routes/chat.py. '
+            "This guard silently disables cloud routing if the engine class "
+            "doesn't expose the method — exactly the failure mode of #500. "
+            "Remove the guard; require all production engines to implement "
+            "build_prompt (it's now on the BaseEngine contract)."
+        )
