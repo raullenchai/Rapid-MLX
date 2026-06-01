@@ -407,6 +407,13 @@
     "is_hybrid": false,
     "supports_spec_decode": true
   },
+  "minimax-m2.7": {
+    "hf_path": "mlx-community/MiniMax-M2.7-4bit-mxfp4",
+    "tool_call_parser": "minimax",
+    "reasoning_parser": "minimax",
+    "is_hybrid": false,
+    "supports_spec_decode": true
+  },
   "deepseek-r1-8b": {
     "hf_path": "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit",
     "tool_call_parser": "deepseek_v31",
