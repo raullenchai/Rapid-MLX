@@ -79,25 +79,19 @@ def _parse(file: pathlib.Path) -> ast.AST:
 
 
 def _base_engine_public_attrs() -> set[str]:
-    """Names declared on ``BaseEngine`` that routes may legitimately use.
+    """Names declared **on** ``BaseEngine`` itself that routes may use.
+
+    Reads only ``vars(BaseEngine)`` — not the MRO — so inherited names
+    from ``ABC`` (``__subclasshook__``, etc.) and ``object`` (``__init__``,
+    ``__repr__``, etc.) don't accidentally become part of the "contract"
+    and let route-layer typos through (codex round-1 review on PR #502).
 
     Includes ``@abstractmethod`` methods, ``@property`` declarations, and
-    concrete methods with default implementations.
+    concrete methods with default implementations declared in this class.
     """
     from vllm_mlx.engine import base as base_mod
 
-    base = base_mod.BaseEngine
-    # Walk the MRO so concrete defaults declared on ``BaseEngine`` (not
-    # only on subclasses) are picked up.
-    names = set()
-    for cls in base.__mro__:
-        if cls is object:
-            continue
-        for name, value in vars(cls).items():
-            if name.startswith("_"):
-                continue
-            names.add(name)
-    return names
+    return {name for name in vars(base_mod.BaseEngine) if not name.startswith("_")}
 
 
 # ---------------------------------------------------------------------------

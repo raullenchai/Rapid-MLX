@@ -688,7 +688,7 @@ class TestCloudRoutingFiresEndToEnd:
     """
 
     def test_above_threshold_routes_to_cloud(self, _reset_after):
-        client, engine, _ = _make_cloud_routed_client(
+        client, engine, cloud_router = _make_cloud_routed_client(
             prompt_tokens=500,
             threshold=10,
             cloud_response={
@@ -745,6 +745,14 @@ class TestCloudRoutingFiresEndToEnd:
         assert engine.chat_calls == [], (
             "engine.chat was called even though the request should have routed "
             "to cloud — the cloud branch fell through to local."
+        )
+        # Positive evidence the cloud call itself fired — guards against a
+        # future refactor where the response payload happens to match
+        # ``ROUTED_TO_CLOUD`` via the local path (codex round-1 review:
+        # asserting response content alone is necessary-but-not-sufficient).
+        assert cloud_router._litellm.acompletion.called, (
+            "cloud_router.completion was never invoked — the response "
+            "matched 'ROUTED_TO_CLOUD' for the wrong reason."
         )
 
     def test_below_threshold_stays_local(self, _reset_after):

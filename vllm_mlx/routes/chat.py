@@ -85,13 +85,28 @@ router = APIRouter()
 def _cloud_call_recoverable_exceptions() -> tuple[type[BaseException], ...]:
     """Build the allowlist of exception types we treat as recoverable from
     the cloud call. Lazy so cloud routing being disabled doesn't pay the
-    litellm import cost."""
+    litellm import cost.
+
+    Covered failure shapes (codex round-1 review on PR #502 — broaden
+    beyond ``httpx.HTTPError`` to catch real production cases):
+      * ``asyncio.TimeoutError`` / ``TimeoutError`` — request budget hit
+      * ``ConnectionError`` — TCP/UDP transport down
+      * ``ssl.SSLError`` — certificate / handshake — common w/ corp MITM
+      * ``json.JSONDecodeError`` — provider returned malformed body
+      * ``httpx.HTTPError`` — covers ``HTTPStatusError``, ``RequestError``,
+        ``ConnectError``, ``ProxyError``, ``ReadTimeout``, etc.
+      * ``litellm.exceptions.APIError`` — provider-side surface
+    """
     import asyncio
+    import json
+    import ssl
 
     exc_types: list[type[BaseException]] = [
         asyncio.TimeoutError,
         ConnectionError,
         TimeoutError,
+        ssl.SSLError,
+        json.JSONDecodeError,
     ]
     try:
         import httpx
