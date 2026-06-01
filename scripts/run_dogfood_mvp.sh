@@ -14,6 +14,11 @@
 #     MODEL            alias to serve (default: qwen3.5-35b)
 #     PORT             local port (default: 8765)
 #     API_KEY          bearer token (default: random 24 hex bytes)
+#     RAPID_MLX_CMD    serve command (default: auto — editable `python3.12 -m
+#                      vllm_mlx.cli` if we're inside the vllm-mlx repo,
+#                      else system `rapid-mlx`). The editable path sees
+#                      newly-added aliases.json entries; the brew-installed
+#                      binary only knows the aliases bundled at install time.
 #     TUNNEL_MODE      quick | named (default: auto — named iff ~/.cloudflared/config.yml exists)
 #     TUNNEL_NAME      named tunnel name (default: rapid-mlx-mvp)
 #     TUNNEL_HOSTNAME  named tunnel hostname (default: parsed from config.yml)
@@ -39,7 +44,8 @@ if [ -z "${TUNNEL_MODE:-}" ]; then
   if [ -f "$CF_CONFIG" ]; then TUNNEL_MODE="named"; else TUNNEL_MODE="quick"; fi
 fi
 if [ -z "${TUNNEL_HOSTNAME:-}" ] && [ -f "$CF_CONFIG" ]; then
-  TUNNEL_HOSTNAME="$(awk '/^\s*-\s*hostname:/ {print $NF; exit}' "$CF_CONFIG")"
+  # POSIX bracket class — macOS BSD awk doesn't support \s.
+  TUNNEL_HOSTNAME="$(awk '/^[[:space:]]*-[[:space:]]*hostname:/ {print $NF; exit}' "$CF_CONFIG")"
 fi
 
 LOG_DIR="$HOME/.cache/rapid-mlx/dogfood"
@@ -103,16 +109,27 @@ if is_alive "$SERVER_PID" || is_alive "$TUNNEL_PID"; then
   exit 1
 fi
 
-if ! command -v rapid-mlx >/dev/null; then
-  echo "rapid-mlx not found in PATH" >&2; exit 1
+# Pick the serve command. Prefer the editable repo CLI when we're inside
+# vllm-mlx — the brew-installed `rapid-mlx` ships an older aliases.json
+# and won't see recent additions like `minimax-m2.7`.
+if [ -z "${RAPID_MLX_CMD:-}" ]; then
+  if [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/vllm_mlx/cli.py" ] \
+       && python3.12 -c "import vllm_mlx" >/dev/null 2>&1; then
+    RAPID_MLX_CMD="python3.12 -m vllm_mlx.cli"
+  else
+    RAPID_MLX_CMD="rapid-mlx"
+  fi
+fi
+if ! $RAPID_MLX_CMD --help >/dev/null 2>&1; then
+  echo "RAPID_MLX_CMD=$RAPID_MLX_CMD not runnable" >&2; exit 1
 fi
 if ! command -v cloudflared >/dev/null; then
   echo "cloudflared not found — brew install cloudflared" >&2; exit 1
 fi
 
-echo "Starting rapid-mlx ($MODEL on :$PORT) [extra: $EXTRA_SERVE_ARGS] …"
-# shellcheck disable=SC2086  # intentional word splitting on EXTRA_SERVE_ARGS
-nohup rapid-mlx serve "$MODEL" --port "$PORT" --api-key "$API_KEY" \
+echo "Starting $RAPID_MLX_CMD ($MODEL on :$PORT) [extra: $EXTRA_SERVE_ARGS] …"
+# shellcheck disable=SC2086  # intentional word splitting on CMD + EXTRA args
+nohup $RAPID_MLX_CMD serve "$MODEL" --port "$PORT" --api-key "$API_KEY" \
   --log-level INFO $EXTRA_SERVE_ARGS >"$SERVER_LOG" 2>&1 &
 echo $! > "$SERVER_PID"
 
