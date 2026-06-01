@@ -205,14 +205,21 @@ chmod 600 "$KEY_FILE"
 # below the cloudflared registration timeout (60s loop above) but enough
 # to weed out "URL was printed but 502s for 10 seconds" races.
 echo -n "Probing $URL/healthz "
+probe_ok=0
 for _ in $(seq 1 30); do
   if curl -sSf -m 3 "$URL/healthz" >/dev/null 2>&1; then
     echo " ok"
+    probe_ok=1
     break
   fi
   echo -n "."
   sleep 1
 done
+if [ "$probe_ok" -ne 1 ]; then
+  echo " FAIL — tunnel did not become reachable; see $TUNNEL_LOG"
+  do_stop
+  exit 1
+fi
 
 cat <<EOF
 
