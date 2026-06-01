@@ -520,3 +520,253 @@ class TestEngineCloudRoutingContract:
             "deleted in #155). Use `engine.estimate_new_tokens(prompt)` — the "
             "method is now part of the engine contract."
         )
+
+
+# ---------------------------------------------------------------------------
+# Live cloud-routing repro — would have caught #500 + the v0.6.70 hotfix
+# ---------------------------------------------------------------------------
+
+
+from vllm_mlx.engine.base import BaseEngine, GenerationOutput
+
+
+class _ContractEngine(BaseEngine):
+    """Real ``BaseEngine`` subclass — instantiation enforces the abstract
+    contract, so a missing route-layer method (``build_prompt``,
+    ``estimate_new_tokens``) raises ``TypeError`` at construction instead of
+    a silent runtime degradation.
+
+    This is the property the previous regression tests lacked: every
+    existing route test mocks the engine with ``MagicMock``, which
+    auto-satisfies any attribute access and so let #500 and the v0.6.70
+    hotfix ship green. Subclassing ``BaseEngine`` here means a future PR
+    can't remove ``build_prompt`` without this file failing to import.
+
+    Only the slice the cloud-routing branch needs is wired up; the
+    remaining abstracts return placeholders so the ABC check passes.
+    """
+
+    preserve_native_tool_format = False
+
+    def __init__(self, *, prompt_tokens: int):
+        self._prompt_tokens = prompt_tokens
+        self.build_prompt_calls: list[dict] = []
+        self.estimate_calls: list[str] = []
+        self.chat_calls: list[dict] = []
+
+    @property
+    def model_name(self) -> str:
+        return "test-model"
+
+    @property
+    def is_mllm(self) -> bool:
+        return False
+
+    @property
+    def tokenizer(self):
+        return None
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    def build_prompt(
+        self,
+        messages,
+        tools=None,
+        enable_thinking=None,
+    ) -> str:
+        self.build_prompt_calls.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "enable_thinking": enable_thinking,
+            }
+        )
+        return "RENDERED_PROMPT"
+
+    def estimate_new_tokens(self, prompt: str) -> tuple[int, int]:
+        self.estimate_calls.append(prompt)
+        return self._prompt_tokens, self._prompt_tokens
+
+    async def generate(self, prompt, **kwargs):  # pragma: no cover
+        raise NotImplementedError
+
+    async def stream_generate(self, prompt, **kwargs):  # pragma: no cover
+        if False:
+            yield None
+
+    async def chat(self, messages, **kwargs):
+        self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+        return GenerationOutput(
+            text="local",
+            new_text="local",
+            tokens=[1],
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="stop",
+            channel=None,
+        )
+
+    async def stream_chat(self, messages, **kwargs):  # pragma: no cover
+        if False:
+            yield None
+
+
+def _make_cloud_routed_client(
+    *,
+    prompt_tokens: int,
+    threshold: int,
+    cloud_response: dict | None = None,
+):
+    """Wire ``routes/chat.py`` against a ``_ContractEngine`` + a stubbed
+    ``CloudRouter`` whose ``completion()`` returns ``cloud_response``.
+
+    Returns ``(client, engine, cloud_router)`` so tests can inspect both the
+    HTTP response AND whether the engine methods were actually called (the
+    silent-skip bug signature).
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.cloud_router import CloudRouter
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.chat import router as chat_router
+
+    cfg = reset_config()
+    engine = _ContractEngine(prompt_tokens=prompt_tokens)
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.reasoning_parser = None
+    cfg.tool_parser = None
+    cfg.no_thinking = True
+
+    cloud_router = CloudRouter(cloud_model="test/cloud", threshold=threshold)
+    if cloud_response is not None:
+        mock_litellm = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.model_dump.return_value = cloud_response
+        mock_litellm.acompletion = AsyncMock(return_value=mock_resp)
+        cloud_router._litellm = mock_litellm
+    cfg.cloud_router = cloud_router
+
+    app = FastAPI()
+    app.include_router(chat_router)
+    return TestClient(app), engine, cloud_router
+
+
+@pytest.fixture
+def _reset_after():
+    yield
+    from vllm_mlx.config import reset_config
+
+    reset_config()
+
+
+class TestCloudRoutingFiresEndToEnd:
+    """Repro for #500 + the v0.6.70 hotfix.
+
+    Before the fixes, this class of test would have failed in two ways:
+
+    * #500 / pre-v0.6.69: ``hasattr(engine, "build_prompt")`` returned False
+      → cloud branch skipped, response came from the local engine.
+    * v0.6.70 hotfix / pre-3839a1b: route called ``engine.model.estimate_
+      new_tokens`` → AttributeError, try/except logged
+      ``[CLOUD ROUTE] Error during routing check ... falling back to local``,
+      response came from the local engine.
+
+    Both failure modes produce the same observable: the response payload
+    comes from the LOCAL engine instead of the cloud stub. This test
+    asserts the cloud branch is reached, the methods are called in order,
+    and the cloud response is returned.
+    """
+
+    def test_above_threshold_routes_to_cloud(self, _reset_after):
+        client, engine, _ = _make_cloud_routed_client(
+            prompt_tokens=500,
+            threshold=10,
+            cloud_response={
+                "id": "cloud-resp-1",
+                "model": "test/cloud",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "ROUTED_TO_CLOUD",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 500,
+                    "completion_tokens": 3,
+                    "total_tokens": 503,
+                },
+            },
+        )
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "doesn't matter"}],
+                "max_tokens": 16,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # The cloud branch fired → response carries the cloud content,
+        # not the local "local" string.
+        assert body["choices"][0]["message"]["content"] == "ROUTED_TO_CLOUD", (
+            "cloud-routing branch did not return the cloud response — "
+            "the route silently fell back to local (see #500, v0.6.70 hotfix). "
+            f"got: {body['choices'][0]['message']}"
+        )
+        # The contract methods were actually called.
+        assert engine.build_prompt_calls, (
+            "engine.build_prompt was NOT called — the cloud branch was skipped "
+            "before reaching the body (the #500 silent-skip shape)."
+        )
+        assert engine.estimate_calls == ["RENDERED_PROMPT"], (
+            "engine.estimate_new_tokens was NOT called with the rendered prompt "
+            "— the cloud branch crashed silently before reaching this line "
+            "(the v0.6.70 hotfix shape)."
+        )
+        # And the local chat() path was NOT exercised.
+        assert engine.chat_calls == [], (
+            "engine.chat was called even though the request should have routed "
+            "to cloud — the cloud branch fell through to local."
+        )
+
+    def test_below_threshold_stays_local(self, _reset_after):
+        client, engine, _ = _make_cloud_routed_client(
+            prompt_tokens=5,
+            threshold=10,
+            cloud_response=None,
+        )
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 16,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        # Local path → content is "local" from the stub.
+        assert resp.json()["choices"][0]["message"]["content"] == "local"
+        # estimate_new_tokens still ran (the route always evaluates the
+        # threshold before deciding), but the cloud branch chose local.
+        assert engine.estimate_calls == ["RENDERED_PROMPT"]
+        assert engine.chat_calls, "local engine.chat was not called"

@@ -70,6 +70,47 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# Exceptions worth catching around the cloud call so the local engine can
+# take over: provider/network/auth/quota — transient or out-of-our-control.
+# Anything outside this allowlist (AttributeError, TypeError,
+# NotImplementedError, …) is an engine-contract violation or programming
+# bug and MUST surface as 500. The original ``except Exception`` here hid
+# both #500 (missing ``build_prompt``) and the v0.6.70 hotfix (missing
+# the token-estimation helper on the engine) as silent fallback warnings.
+#
+# ``litellm.exceptions`` is imported lazily — its presence depends on
+# whether cloud routing was configured at startup. ``httpx`` and the
+# stdlib timeout/connection set are always available, so we fall back
+# to those when litellm isn't importable.
+def _cloud_call_recoverable_exceptions() -> tuple[type[BaseException], ...]:
+    """Build the allowlist of exception types we treat as recoverable from
+    the cloud call. Lazy so cloud routing being disabled doesn't pay the
+    litellm import cost."""
+    import asyncio
+
+    exc_types: list[type[BaseException]] = [
+        asyncio.TimeoutError,
+        ConnectionError,
+        TimeoutError,
+    ]
+    try:
+        import httpx
+
+        exc_types.append(httpx.HTTPError)
+    except ImportError:
+        pass
+    try:
+        from litellm import exceptions as _litellm_exc
+
+        exc_types.append(_litellm_exc.APIError)
+    except (ImportError, AttributeError):
+        pass
+    return tuple(exc_types)
+
+
+_CLOUD_CALL_RECOVERABLE_EXCEPTIONS = _cloud_call_recoverable_exceptions()
+
+
 # Matches a single backslash directly followed by a non-ASCII codepoint.
 # ``lm-format-enforcer``'s grammar permits ``\\`` followed by any codepoint
 # as a valid JSON escape, so a model emitting JSON with CJK / emoji content
@@ -532,46 +573,57 @@ async def _create_chat_completion_impl(
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
 
-    # Cloud routing: offload large-context requests to cloud LLM
+    # Cloud routing: offload large-context requests to cloud LLM.
+    #
+    # The token-budget computation (``build_prompt`` + ``estimate_new_
+    # tokens``) is part of the BaseEngine contract — any exception there
+    # is a real bug and must surface, NOT be silently swallowed as
+    # "falling back to local". The two regressions this scope-narrowing
+    # closes (#500 + the v0.6.70 hotfix) both hid behind a broad
+    # ``except Exception`` that turned engine-contract violations into
+    # warning logs while cloud routing silently never fired.
+    #
+    # Only the cloud call itself is wrapped, and only "expected,
+    # transient" failure shapes (network, auth, provider) are caught.
     if cfg.cloud_router and not engine.is_mllm:
-        try:
-            prompt = engine.build_prompt(messages, tools=request.tools)
-            total_tokens, new_tokens = engine.estimate_new_tokens(prompt)
-            if cfg.cloud_router.should_route_to_cloud(new_tokens):
-                logger.info(
-                    f"[CLOUD ROUTE] {new_tokens} new tokens (total {total_tokens}) "
-                    f"> threshold {cfg.cloud_router.threshold}, "
-                    f"routing to {cfg.cloud_router.cloud_model}"
+        prompt = engine.build_prompt(messages, tools=request.tools)
+        total_tokens, new_tokens = engine.estimate_new_tokens(prompt)
+        if cfg.cloud_router.should_route_to_cloud(new_tokens):
+            logger.info(
+                f"[CLOUD ROUTE] {new_tokens} new tokens (total {total_tokens}) "
+                f"> threshold {cfg.cloud_router.threshold}, "
+                f"routing to {cfg.cloud_router.cloud_model}"
+            )
+            cloud_messages = _cloud_original_messages
+            cloud_kwargs = {
+                "temperature": chat_kwargs.get("temperature"),
+                "max_tokens": chat_kwargs.get("max_tokens"),
+                "top_p": chat_kwargs.get("top_p"),
+            }
+            if request.stop:
+                cloud_kwargs["stop"] = request.stop
+            if request.tool_choice is not None:
+                cloud_kwargs["tool_choice"] = request.tool_choice
+            if request.response_format:
+                rf = request.response_format
+                cloud_kwargs["response_format"] = (
+                    rf.model_dump() if hasattr(rf, "model_dump") else rf
                 )
-                cloud_messages = _cloud_original_messages
-                cloud_kwargs = {
-                    "temperature": chat_kwargs.get("temperature"),
-                    "max_tokens": chat_kwargs.get("max_tokens"),
-                    "top_p": chat_kwargs.get("top_p"),
-                }
-                if request.stop:
-                    cloud_kwargs["stop"] = request.stop
-                if request.tool_choice is not None:
-                    cloud_kwargs["tool_choice"] = request.tool_choice
-                if request.response_format:
-                    rf = request.response_format
-                    cloud_kwargs["response_format"] = (
-                        rf.model_dump() if hasattr(rf, "model_dump") else rf
-                    )
-                if request.tools:
-                    cloud_kwargs["tools"] = [
-                        t.model_dump() if hasattr(t, "model_dump") else t
-                        for t in request.tools
-                    ]
-                # Cloud-routed request: the local scheduler/Metal path
-                # is bypassed entirely, so admission is not acquired
-                # for cloud paths. The wrapper's ``finally`` checks
-                # ``_admission_acquired[0]`` (still False here) and
-                # skips the release. Without this ordering (admission
-                # check moved BELOW the cloud routing block), a burst
-                # of local requests filling the cap would 503
-                # cloud-routable requests that never touch the local
-                # engine (codex R9).
+            if request.tools:
+                cloud_kwargs["tools"] = [
+                    t.model_dump() if hasattr(t, "model_dump") else t
+                    for t in request.tools
+                ]
+            # Cloud-routed request: the local scheduler/Metal path
+            # is bypassed entirely, so admission is not acquired
+            # for cloud paths. The wrapper's ``finally`` checks
+            # ``_admission_acquired[0]`` (still False here) and
+            # skips the release. Without this ordering (admission
+            # check moved BELOW the cloud routing block), a burst
+            # of local requests filling the cap would 503
+            # cloud-routable requests that never touch the local
+            # engine (codex R9).
+            try:
                 if request.stream:
                     return StreamingResponse(
                         _disconnect_guard(
@@ -596,14 +648,19 @@ async def _create_chat_completion_impl(
                         content=json.dumps(result),
                         media_type="application/json",
                     )
-            else:
-                logger.info(
-                    f"[LOCAL] {new_tokens} new tokens (total {total_tokens}) "
-                    f"<= threshold {cfg.cloud_router.threshold}, using local inference"
+            except _CLOUD_CALL_RECOVERABLE_EXCEPTIONS as e:
+                # Provider/network failures are transient and the local
+                # engine is a reasonable fallback. Engine-contract
+                # violations (AttributeError, TypeError, …) are NOT in
+                # this allowlist on purpose — they must surface as 500.
+                logger.warning(
+                    f"[CLOUD ROUTE] Cloud call failed ({type(e).__name__}: {e}), "
+                    "falling back to local"
                 )
-        except Exception as e:
-            logger.warning(
-                f"[CLOUD ROUTE] Error during routing check: {e}, falling back to local"
+        else:
+            logger.info(
+                f"[LOCAL] {new_tokens} new tokens (total {total_tokens}) "
+                f"<= threshold {cfg.cloud_router.threshold}, using local inference"
             )
 
     # Local-path admission gate: reserve a slot before kicking the
@@ -628,21 +685,16 @@ async def _create_chat_completion_impl(
     json_schema = None
     if response_format and not request.tools:
         json_schema = extract_json_schema_for_guided(response_format)
-        if json_schema and hasattr(engine, "supports_guided_generation"):
+        if json_schema:
+            # ``supports_guided_generation`` and ``generate_with_schema``
+            # are on the BaseEngine contract — defaults are False /
+            # NotImplementedError, so engines without guided decoding
+            # opt out by leaving the property at False. The previous
+            # ``hasattr`` guards were artifacts of the engine API being
+            # informal; they're the same silent-skip shape that produced
+            # #500 and the v0.6.70 hotfix and have no role now that the
+            # contract is explicit.
             use_guided = engine.supports_guided_generation
-            # Belt-and-suspenders: a future custom engine could advertise
-            # ``supports_guided_generation=True`` yet not implement
-            # ``generate_with_schema``. Without this guard the streaming
-            # path would 500 with AttributeError on the first guided
-            # request; the non-stream branch would do the same. Match
-            # the contract surface that ``stream_chat_completion_guided``
-            # and the non-stream guided dispatch actually call.
-            if use_guided and not hasattr(engine, "generate_with_schema"):
-                logger.warning(
-                    "Engine advertises supports_guided_generation=True but "
-                    "is missing generate_with_schema; disabling guided path"
-                )
-                use_guided = False
             if use_guided:
                 logger.info("Using guided generation for JSON schema enforcement")
             else:

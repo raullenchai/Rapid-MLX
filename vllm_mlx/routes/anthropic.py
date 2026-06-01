@@ -439,7 +439,12 @@ async def _stream_anthropic_messages(
     accumulated_text = ""
     accumulated_raw = ""
     tool_filter = StreamingToolCallFilter()
-    _tokenizer = engine.tokenizer if hasattr(engine, "tokenizer") else None
+    # ``tokenizer`` is on the BaseEngine contract; the old ``hasattr``
+    # guard predated the abstract declaration and is the same silent-skip
+    # shape that produced #500. The inner ``chat_template`` guard stays
+    # because that attribute is HF-tokenizer-specific, not part of our
+    # contract.
+    _tokenizer = engine.tokenizer
     _chat_template = ""
     if _tokenizer and hasattr(_tokenizer, "chat_template"):
         _chat_template = _tokenizer.chat_template or ""

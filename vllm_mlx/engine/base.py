@@ -238,3 +238,78 @@ class BaseEngine(ABC):
     async def abort_request(self, request_id: str) -> bool:
         """Abort an active or queued request when the engine supports it."""
         return False
+
+    # ------------------------------------------------------------------
+    # Route-layer contract
+    #
+    # The OpenAI / Anthropic routes call these directly on the engine —
+    # they're declared here so a missing implementation fails at
+    # instantiation (ABC enforcement) instead of silently degrading at
+    # request time under a ``hasattr`` guard or broad ``try/except``.
+    #
+    # Bug history this contract closes: #500 (``hasattr(engine,
+    # "build_prompt")`` silently disabled cloud routing for ~6 weeks
+    # after #155 deleted SimpleEngine which hosted the method) and the
+    # v0.6.70 hotfix (``engine.model.estimate_new_tokens`` AttributeError
+    # was swallowed by the cloud branch's broad try/except → silent
+    # fallback). Both regressions surfaced only via Gate 6 (real-server
+    # live repro); none of the unit/integration suites caught them
+    # because every test mocked the engine with a MagicMock that
+    # auto-satisfies any attribute access.
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def build_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict] | None = None,
+        enable_thinking: bool | None = None,
+    ) -> str:
+        """Render the chat prompt for ``messages`` + ``tools`` without
+        starting generation.
+
+        Called by ``routes/chat.py`` for cloud-routing token estimation
+        and for eager streaming chat-template validation (so template
+        errors surface as HTTP 400 instead of mid-stream failures).
+        """
+
+    @abstractmethod
+    def estimate_new_tokens(self, prompt: str) -> tuple[int, int]:
+        """Return ``(total_tokens, new_tokens)`` for ``prompt``.
+
+        Called by ``routes/chat.py`` cloud routing to decide whether the
+        request crosses ``--cloud-threshold`` and should be offloaded.
+        ``new_tokens`` is the count that would need fresh prefill — i.e.
+        total minus the prefix already warm in cache. A conservative
+        ``(total, total)`` is acceptable; correctness only requires that
+        the threshold semantics hold.
+        """
+
+    @property
+    def supports_guided_generation(self) -> bool:
+        """Whether the engine can constrain output to a JSON schema.
+
+        Default ``False``; override to return ``True`` only when
+        ``generate_with_schema`` is also implemented (the route checks
+        this flag before calling). Allows engines without ``outlines`` /
+        guided decoding to participate in the contract without
+        implementing the optional schema path.
+        """
+        return False
+
+    async def generate_with_schema(
+        self,
+        messages: list[dict[str, Any]],
+        json_schema: dict[str, Any],
+        **kwargs,
+    ) -> "GenerationOutput":
+        """Generate output constrained to ``json_schema``.
+
+        Default raises ``NotImplementedError``. The route only calls this
+        when ``supports_guided_generation`` is ``True``, so engines that
+        leave that flag at the default ``False`` need not override.
+        """
+        raise NotImplementedError(
+            "generate_with_schema is not implemented for this engine. "
+            "Override supports_guided_generation to advertise capability."
+        )
