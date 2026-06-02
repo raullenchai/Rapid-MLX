@@ -40,7 +40,7 @@ def render(url: str, api_key: str, model: str) -> str:
         f"    curl -sS {url}/v1/chat/completions \\\n"
         f"      -H 'Authorization: Bearer {api_key}' \\\n"
         f"      -H 'Content-Type: application/json' \\\n"
-        f"      -d '{{\"model\":\"{model}\",\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}]}}'\n"
+        f'      -d \'{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}\'\n'
         f"\n"
         f"  Press Ctrl-C to stop sharing.\n"
     )

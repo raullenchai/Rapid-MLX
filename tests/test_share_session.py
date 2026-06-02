@@ -61,15 +61,17 @@ def test_request_raises_on_4xx_with_actionable_message():
         hdrs=None,  # type: ignore[arg-type]
         fp=None,
     )
-    with patch("urllib.request.urlopen", side_effect=err), pytest.raises(
-        RuntimeError, match="HTTP 429"
+    with (
+        patch("urllib.request.urlopen", side_effect=err),
+        pytest.raises(RuntimeError, match="HTTP 429"),
     ):
         session.request(model="qwen3.5-4b")
 
 
 def test_request_raises_on_unreachable_with_dev_override_hint():
     err = urllib.error.URLError("connection refused")
-    with patch("urllib.request.urlopen", side_effect=err), pytest.raises(
-        RuntimeError, match="RAPID_MLX_RELAY_URL"
+    with (
+        patch("urllib.request.urlopen", side_effect=err),
+        pytest.raises(RuntimeError, match="RAPID_MLX_RELAY_URL"),
     ):
         session.request(model="qwen3.5-4b")

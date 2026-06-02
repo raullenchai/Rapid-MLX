@@ -281,7 +281,10 @@ def share_command(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\nStopping share…", file=sys.stderr)
     finally:
-        for proc_name, proc in (("frpc", locals().get("frpc_proc")), ("serve", serve_proc)):
+        for proc_name, proc in (
+            ("frpc", locals().get("frpc_proc")),
+            ("serve", serve_proc),
+        ):
             if proc is None or proc.poll() is not None:
                 continue
             try:

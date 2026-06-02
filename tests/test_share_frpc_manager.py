@@ -31,28 +31,33 @@ def _fake_tarball(frpc_bytes: bytes) -> bytes:
 
 
 def test_platform_tag_recognized_on_supported_hosts():
-    with patch("platform.system", return_value="Darwin"), patch(
-        "platform.machine", return_value="arm64"
+    with (
+        patch("platform.system", return_value="Darwin"),
+        patch("platform.machine", return_value="arm64"),
     ):
         assert frpc_manager._platform_tag() == "darwin_arm64"
 
-    with patch("platform.system", return_value="Linux"), patch(
-        "platform.machine", return_value="x86_64"
+    with (
+        patch("platform.system", return_value="Linux"),
+        patch("platform.machine", return_value="x86_64"),
     ):
         assert frpc_manager._platform_tag() == "linux_amd64"
 
 
 def test_platform_tag_rejects_unsupported_os():
-    with patch("platform.system", return_value="Windows"), pytest.raises(
-        RuntimeError, match="only supported on macOS and Linux"
+    with (
+        patch("platform.system", return_value="Windows"),
+        pytest.raises(RuntimeError, match="only supported on macOS and Linux"),
     ):
         frpc_manager._platform_tag()
 
 
 def test_platform_tag_rejects_unsupported_arch():
-    with patch("platform.system", return_value="Linux"), patch(
-        "platform.machine", return_value="riscv64"
-    ), pytest.raises(RuntimeError, match="riscv64"):
+    with (
+        patch("platform.system", return_value="Linux"),
+        patch("platform.machine", return_value="riscv64"),
+        pytest.raises(RuntimeError, match="riscv64"),
+    ):
         frpc_manager._platform_tag()
 
 
@@ -64,11 +69,13 @@ def test_ensure_downloads_verifies_and_extracts(tmp_path: Path):
     def fake_urlretrieve(url, dest):
         Path(dest).write_bytes(tarball)
 
-    with patch.object(frpc_manager, "_cache_dir", return_value=tmp_path), patch.dict(
-        frpc_manager.FRPC_SHA256, {"darwin_arm64": expected_sha}
-    ), patch("platform.system", return_value="Darwin"), patch(
-        "platform.machine", return_value="arm64"
-    ), patch.object(frpc_manager, "_download", side_effect=fake_urlretrieve):
+    with (
+        patch.object(frpc_manager, "_cache_dir", return_value=tmp_path),
+        patch.dict(frpc_manager.FRPC_SHA256, {"darwin_arm64": expected_sha}),
+        patch("platform.system", return_value="Darwin"),
+        patch("platform.machine", return_value="arm64"),
+        patch.object(frpc_manager, "_download", side_effect=fake_urlretrieve),
+    ):
         binp = frpc_manager.ensure()
 
     assert binp.exists()
@@ -80,15 +87,18 @@ def test_ensure_rejects_corrupted_download(tmp_path: Path):
     tarball = _fake_tarball(b"frpc")
     wrong_sha = "0" * 64
 
-    with patch.object(frpc_manager, "_cache_dir", return_value=tmp_path), patch.dict(
-        frpc_manager.FRPC_SHA256, {"darwin_arm64": wrong_sha}
-    ), patch("platform.system", return_value="Darwin"), patch(
-        "platform.machine", return_value="arm64"
-    ), patch.object(
-        frpc_manager,
-        "_download",
-        side_effect=lambda url, dest: Path(dest).write_bytes(tarball),
-    ), pytest.raises(RuntimeError, match="sha256 mismatch"):
+    with (
+        patch.object(frpc_manager, "_cache_dir", return_value=tmp_path),
+        patch.dict(frpc_manager.FRPC_SHA256, {"darwin_arm64": wrong_sha}),
+        patch("platform.system", return_value="Darwin"),
+        patch("platform.machine", return_value="arm64"),
+        patch.object(
+            frpc_manager,
+            "_download",
+            side_effect=lambda url, dest: Path(dest).write_bytes(tarball),
+        ),
+        pytest.raises(RuntimeError, match="sha256 mismatch"),
+    ):
         frpc_manager.ensure()
 
     # Mismatch path must not leave a stale binary or tmp file behind that
@@ -102,9 +112,10 @@ def test_ensure_reuses_cached_binary(tmp_path: Path):
     cached.write_bytes(b"already there")
     cached.chmod(0o755)
 
-    with patch.object(frpc_manager, "_cache_dir", return_value=tmp_path), patch.object(
-        frpc_manager, "_download"
-    ) as mock_download:
+    with (
+        patch.object(frpc_manager, "_cache_dir", return_value=tmp_path),
+        patch.object(frpc_manager, "_download") as mock_download,
+    ):
         binp = frpc_manager.ensure()
 
     assert binp == cached

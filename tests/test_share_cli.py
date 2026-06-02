@@ -67,14 +67,13 @@ def test_share_command_happy_path(fake_session, capsys):
     frpc_proc.poll.return_value = None
     frpc_proc.wait.return_value = None
 
-    with patch.object(share_cli, "_spawn_serve", return_value=serve_proc), patch.object(
-        share_cli, "_wait_for_healthz", return_value=True
-    ), patch.object(
-        share_cli.session, "request", return_value=fake_session
-    ), patch.object(
-        share_cli.frpc_manager, "spawn", return_value=frpc_proc
-    ), patch.object(share_cli, "_pick_port", return_value=18765), patch(
-        "time.sleep"
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch("time.sleep"),
     ):
         share_cli.share_command(_make_args())
 
@@ -93,12 +92,14 @@ def test_share_command_aborts_when_serve_exits_before_ready(fake_session):
     serve_proc = MagicMock()
     serve_proc.poll.return_value = 1  # already exited; cleanup is a no-op
 
-    with patch.object(share_cli, "_spawn_serve", return_value=serve_proc), patch.object(
-        share_cli, "_wait_for_healthz", return_value=False
-    ), patch.object(share_cli, "_pick_port", return_value=18765), patch(
-        "time.sleep"
-    ), pytest.raises(SystemExit) as exc_info:
-            share_cli.share_command(_make_args())
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=False),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(_make_args())
 
     assert exc_info.value.code == 1
     # Process is already dead; we shouldn't bother re-terminating it.
@@ -112,16 +113,16 @@ def test_share_command_aborts_when_frpc_dies_immediately(fake_session):
     frpc_proc = MagicMock()
     frpc_proc.poll.return_value = 2  # frpc exited during 3s settle window
 
-    with patch.object(share_cli, "_spawn_serve", return_value=serve_proc), patch.object(
-        share_cli, "_wait_for_healthz", return_value=True
-    ), patch.object(
-        share_cli.session, "request", return_value=fake_session
-    ), patch.object(
-        share_cli.frpc_manager, "spawn", return_value=frpc_proc
-    ), patch.object(share_cli, "_pick_port", return_value=18765), patch(
-        "time.sleep"
-    ), pytest.raises(SystemExit) as exc_info:
-            share_cli.share_command(_make_args())
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(_make_args())
 
     assert exc_info.value.code == 1
     # Serve was alive (poll=None) so cleanup terminates it.
@@ -132,16 +133,19 @@ def test_share_command_surfaces_relay_failure(fake_session):
     serve_proc = MagicMock()
     serve_proc.poll.return_value = None
 
-    with patch.object(share_cli, "_spawn_serve", return_value=serve_proc), patch.object(
-        share_cli, "_wait_for_healthz", return_value=True
-    ), patch.object(
-        share_cli.session,
-        "request",
-        side_effect=RuntimeError("relay unreachable"),
-    ), patch.object(share_cli, "_pick_port", return_value=18765), patch(
-        "time.sleep"
-    ), pytest.raises(SystemExit) as exc_info:
-            share_cli.share_command(_make_args())
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(
+            share_cli.session,
+            "request",
+            side_effect=RuntimeError("relay unreachable"),
+        ),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(_make_args())
 
     assert exc_info.value.code == 1
     serve_proc.terminate.assert_called_once()
@@ -188,9 +192,10 @@ def test_share_command_rejects_explicit_port_zero():
 
 def test_spawn_serve_passes_loopback_host():
     """Codex review P2: serve must bind 127.0.0.1, not 0.0.0.0."""
-    with patch("subprocess.Popen") as mock_popen, patch(
-        "pathlib.Path.open"
-    ) as mock_open:
+    with (
+        patch("subprocess.Popen") as mock_popen,
+        patch("pathlib.Path.open") as mock_open,
+    ):
         mock_open.return_value = MagicMock()
         share_cli._spawn_serve(
             alias="qwen3.5-4b",
@@ -210,8 +215,9 @@ def test_wait_for_healthz_returns_false_if_serve_exits():
     serve_proc = MagicMock()
     # Simulate serve exiting on the third poll without /healthz ever responding.
     serve_proc.poll.side_effect = [None, None, 1]
-    with patch("urllib.request.urlopen", side_effect=ConnectionError), patch(
-        "time.sleep"
+    with (
+        patch("urllib.request.urlopen", side_effect=ConnectionError),
+        patch("time.sleep"),
     ):
         result = share_cli._wait_for_healthz(18765, serve_proc)
     assert result is False
@@ -243,16 +249,16 @@ def test_share_command_sigterm_runs_cleanup(fake_session):
     frpc_proc = MagicMock()
     frpc_proc.poll.return_value = None
 
-    with patch.object(share_cli, "_spawn_serve", return_value=serve_proc), patch.object(
-        share_cli, "_wait_for_healthz", return_value=True
-    ), patch.object(
-        share_cli.session, "request", return_value=fake_session
-    ), patch.object(
-        share_cli.frpc_manager, "spawn", return_value=frpc_proc
-    ), patch.object(share_cli, "_pick_port", return_value=18765), patch.object(
-        share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
-    ), patch(
-        "time.sleep"
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch.object(
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+        ),
+        patch("time.sleep"),
     ):
         share_cli.share_command(_make_args())
 
@@ -283,8 +289,9 @@ def test_resolve_served_model_name_sends_bearer():
 
         return _R()
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen), patch(
-        "json.load", return_value={"data": [{"id": "mlx-community/X"}]}
+    with (
+        patch("urllib.request.urlopen", side_effect=fake_urlopen),
+        patch("json.load", return_value={"data": [{"id": "mlx-community/X"}]}),
     ):
         out = share_cli._resolve_served_model_name(18765, "shhhh")
 

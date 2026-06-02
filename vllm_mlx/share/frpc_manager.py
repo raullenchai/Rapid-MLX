@@ -90,9 +90,7 @@ def ensure() -> Path:
     cache = _cache_dir()
     cache.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".tar.gz", dir=cache, delete=False
-    ) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", dir=cache, delete=False) as tmp:
         archive = Path(tmp.name)
 
     try:
