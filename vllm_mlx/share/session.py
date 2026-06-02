@@ -16,6 +16,7 @@ just consumes the response and feeds it into the frpc config.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import sys
@@ -68,10 +69,20 @@ def relay_base_url() -> str:
             f"expected e.g. https://api.example.com or http://localhost:8080."
         )
     host = parsed.hostname.lower()
-    # ``::1`` is the IPv6 loopback; ``parsed.hostname`` already strips
-    # the square brackets that bracket IPv6 hosts in URL form (so the
-    # raw input ``http://[::1]:8080`` arrives here as ``::1``).
-    is_loopback = host == "localhost" or host == "::1" or host.startswith("127.")
+    # Strict loopback check: ``localhost`` literal OR a numeric IP that
+    # ``ipaddress`` confirms is in the loopback range. Codex round 1
+    # BLOCKING: a string prefix check like ``host.startswith("127.")``
+    # also matches the hostname ``127.attacker.example``, which is a
+    # remote DNS name that an attacker could register to coax the
+    # bearer key onto a plaintext channel.
+    is_loopback = host == "localhost"
+    if not is_loopback:
+        try:
+            is_loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            # Not a numeric IP literal — treat as non-loopback so the
+            # HTTPS-required path applies.
+            is_loopback = False
     if parsed.scheme == "https":
         return override.rstrip("/")
     if parsed.scheme == "http" and is_loopback:

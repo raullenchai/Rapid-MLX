@@ -36,12 +36,19 @@ def render(url: str, api_key: str, model: str, subdomain: str) -> str:
             }
         )
     )
-    # One-click chat link. ``#k=<sub>-<key>`` — splash splits on first
-    # ``-``, derives ``https://<sub>.rapidmlx.com``, and shows it for
-    # confirmation before sending the key. The combined token sits in
-    # the URL fragment so it never reaches the server log; the splash
+    # One-click chat link. ``#k=<sub>.<key>`` — splash splits on the
+    # ``.`` delimiter, derives ``https://<sub>.rapidmlx.com``, and shows
+    # it for confirmation before sending the key. The combined token sits
+    # in the URL fragment so it never reaches the server log; the splash
     # immediately clears it via history.replaceState.
-    chat_link = f"https://chat.rapidmlx.com/#k={subdomain}-{api_key}"
+    #
+    # Codex round 1 BLOCKING: an earlier ``<sub>-<key>`` format was
+    # ambiguous because the relay's subdomain charset permits ``-`` —
+    # ``foo-bar-<key>`` would parse to subdomain ``foo`` + key
+    # ``bar-<key>``. ``.`` is forbidden in both the subdomain charset
+    # (``[a-z0-9-]``) and the API key (hex from ``secrets.token_hex``),
+    # so it cleanly separates the two even for hyphenated subdomains.
+    chat_link = f"https://chat.rapidmlx.com/#k={subdomain}.{api_key}"
 
     return (
         f"\n{red}╔══════════════════════════════════════════════════════════════════╗{reset}\n"

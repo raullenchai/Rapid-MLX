@@ -225,8 +225,50 @@ def _state_dir() -> Path:
     return d
 
 
+def _maybe_confirm_download(alias: str) -> None:
+    """Replicate the top-level B2 auto-pull gate for share.
+
+    ``vllm_mlx/cli.py`` runs a confirmation prompt for chat/run/serve/pull/bench
+    when the first positional argument is an HF-style repo id that isn't
+    already cached. ``share`` is NOT on that list (the parent didn't add
+    it; ``_GATED_COMMANDS`` lives outside this module's scope), so a
+    ``rapid-mlx share <uncached HF repo>`` invocation would silently
+    spawn a non-interactive child that pulls multi-GB of weights with no
+    confirmation. Codex round-1 BLOCKING: replicate the same check here
+    so the share entrypoint enforces the policy too.
+
+    Mirrors the logic at ``cli.py:4322`` — env override / non-TTY both
+    short-circuit before any HF API round-trip.
+    """
+    if "/" not in alias or os.path.exists(alias):
+        # Not an HF-style repo id, or a local path — nothing to prompt for.
+        return
+    if os.environ.get("RAPID_MLX_CHAT_SPAWN", "") == "1":
+        # Grandchild safety: a parent ``rapid-mlx`` invocation already
+        # gated and set this marker. Don't re-prompt.
+        return
+    env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
+    if env_val in {"1", "true", "yes"}:
+        return
+    if not sys.stdin.isatty():
+        return
+    from vllm_mlx._download_gate import (
+        confirm_or_abort,
+        estimate_repo_size_bytes,
+        is_repo_cached,
+    )
+
+    if not is_repo_cached(alias):
+        confirm_or_abort(alias, estimate_repo_size_bytes(alias))
+
+
 def share_command(args: argparse.Namespace) -> None:
     alias: str = args.model
+    # Mirror the B2 download-confirmation gate that ``cli.py`` applies to
+    # chat/run/serve/pull/bench — share is not on that list, so without
+    # this call a first-time ``rapid-mlx share <big-repo>`` would pull
+    # multi-GB of weights with no prompt.
+    _maybe_confirm_download(alias)
     extra_serve_args: list[str] = []
     # ``args.thinking`` comes from BooleanOptionalAction so ``--thinking``
     # turns it on and ``--no-thinking`` (or the default) turns it off. We
@@ -292,6 +334,14 @@ def share_command(args: argparse.Namespace) -> None:
     serve_proc: subprocess.Popen[bytes] | None = None
     frpc_proc: subprocess.Popen[bytes] | None = None
     config_path: Path | None = None
+    # Codex round-1 BLOCKING: an OOM or crash in the serve child would
+    # previously bubble out of ``serve_proc.wait()`` as a non-zero return
+    # code that the parent silently discarded — so a failed share looked
+    # like a successful one to systemd / docker / supervisor wrappers.
+    # Capture the exit code here and translate to a non-zero exit at the
+    # very end (after cleanup). User-interrupt paths (KeyboardInterrupt)
+    # keep their exit-0 contract since the operator chose to stop.
+    serve_exit_code = 0
     try:
         print(f"Starting rapid-mlx serve ({alias} on :{port})…", file=sys.stderr)
         serve_proc = _spawn_serve(
@@ -395,8 +445,11 @@ def share_command(args: argparse.Namespace) -> None:
             flush=True,
         )
 
-        # Block on the serve process; if it exits, share's done.
-        serve_proc.wait()
+        # Block on the serve process; if it exits, share's done. Capture
+        # the exit code so we can surface a non-zero return to the caller
+        # — supervised runs need to distinguish "serve crashed" from
+        # "user pressed Ctrl-C" (the KeyboardInterrupt branch below).
+        serve_exit_code = serve_proc.wait()
     except KeyboardInterrupt:
         print("\nStopping share…", file=sys.stderr)
     finally:
@@ -428,6 +481,19 @@ def share_command(args: argparse.Namespace) -> None:
             signal.signal(signal.SIGTERM, original_sigterm)
         except (ValueError, OSError, TypeError):
             pass
+
+    # Cleanup is done; if the serve child exited with a non-zero status
+    # (crash / OOM / supervisor SIGKILL on the child) surface that as
+    # the share exit code. Ctrl-C took the KeyboardInterrupt branch
+    # above without ever assigning ``serve_exit_code`` so it stays 0
+    # and we exit cleanly.
+    if serve_exit_code:
+        print(
+            f"share: serve process exited with status {serve_exit_code} — "
+            f"see {serve_log}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:

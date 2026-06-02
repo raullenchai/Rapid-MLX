@@ -101,6 +101,29 @@ def test_relay_base_url_accepts_loopback_http_override():
         assert session.relay_base_url() == "http://127.0.0.1:8080"
 
 
+def test_relay_base_url_rejects_pseudo_loopback_hostname():
+    """Codex round-1 BLOCKING: an earlier prefix check ``host.startswith('127.')``
+    matched the hostname ``127.attacker.example`` — an attacker-controlled
+    DNS name that happens to start with ``127.``. The new check parses
+    the host as an IP literal and only accepts it if ``is_loopback`` is
+    true; non-IP hostnames take the HTTPS-required path."""
+    with (
+        patch.dict(
+            "os.environ", {"RAPID_MLX_RELAY_URL": "http://127.attacker.example/"}
+        ),
+        pytest.raises(RuntimeError, match="unsafe"),
+    ):
+        session.relay_base_url()
+
+
+def test_relay_base_url_accepts_127_range_loopback():
+    """The entire 127.0.0.0/8 range is loopback — verify a non-127.0.0.1
+    address in the range is still accepted (this is the legitimate use
+    case the prefix check was originally trying to cover)."""
+    with patch.dict("os.environ", {"RAPID_MLX_RELAY_URL": "http://127.0.0.2:8080"}):
+        assert session.relay_base_url() == "http://127.0.0.2:8080"
+
+
 def test_relay_base_url_accepts_ipv6_loopback():
     """DeepSeek round-5 NIT #4: ``::1`` is the IPv6 loopback and equally
     safe for local dev — just was overlooked in the IPv4-only check."""

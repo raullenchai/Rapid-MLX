@@ -456,7 +456,7 @@ def test_banner_includes_one_click_chat_link():
         "mlx-community/X",
         "abc",
     )
-    expected_link = "https://chat.rapidmlx.com/#k=abc-REAL_KEY_42"
+    expected_link = "https://chat.rapidmlx.com/#k=abc.REAL_KEY_42"
     assert expected_link in out, (
         f"banner must include the one-click chat link {expected_link!r}"
     )
@@ -475,7 +475,28 @@ def test_banner_chat_link_uses_subdomain_param_not_url_parse():
         "M",
         "xyz123",
     )
-    assert "https://chat.rapidmlx.com/#k=xyz123-K" in out
+    assert "https://chat.rapidmlx.com/#k=xyz123.K" in out
+
+
+def test_banner_chat_link_handles_hyphenated_subdomain():
+    """Codex round-1 BLOCKING regression: the relay's subdomain charset
+    permits hyphens (``^[a-z0-9][a-z0-9-]{0,62}$``), so a ``-`` delimiter
+    between subdomain and key would split ambiguously on the splash
+    side. The delimiter must be a character forbidden in both the
+    subdomain set and the hex API key — ``.`` qualifies.
+    """
+    from vllm_mlx.share import warning
+
+    out = warning.render(
+        "https://foo-bar-baz.rapidmlx.com",
+        "abcdef1234",
+        "mlx-community/X",
+        "foo-bar-baz",
+    )
+    assert "https://chat.rapidmlx.com/#k=foo-bar-baz.abcdef1234" in out
+    # Negative assertion: the old hyphen-delimited shape must NOT appear
+    # (would prove the regression came back).
+    assert "#k=foo-bar-baz-abcdef1234" not in out
 
 
 def test_share_command_surfaces_pick_port_failure():
@@ -526,3 +547,138 @@ def test_resolve_served_model_name_sends_bearer():
     assert out == "mlx-community/X"
     # Header keys are title-cased by urllib's Request.
     assert captured["headers"].get("Authorization") == "Bearer shhhh"
+
+
+def test_share_command_exits_nonzero_when_serve_crashes(fake_session):
+    """Codex round-1 BLOCKING: when serve exits with a non-zero status
+    after the tunnel is up (OOM / crash), the parent must surface that
+    as a non-zero exit code. Otherwise systemd / docker / supervisor
+    wrappers see exit-0 and treat the failed share as a success.
+    """
+    serve_proc = MagicMock()
+    # Keep poll=None until the blocking wait returns; flip to crashed
+    # status so the finally-block cleanup loop skips it (it would be
+    # double-waited otherwise).
+    serve_proc.poll.return_value = None
+    frpc_proc = MagicMock()
+    # frpc must stay alive past the post-spawn ``poll()`` check (line ~371)
+    # so we reach the blocking serve_proc.wait(); flip to dead so cleanup
+    # also skips it.
+    frpc_proc.poll.return_value = None
+
+    def _serve_wait(*_args, **_kwargs):  # accept timeout= kwarg from cleanup
+        serve_proc.poll.return_value = 137
+        return 137
+
+    serve_proc.wait.side_effect = _serve_wait
+    frpc_proc.wait.return_value = None
+
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_wait_for_public_url", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(_make_args())
+
+    assert exc_info.value.code == 1
+
+
+def test_share_command_ctrl_c_keeps_exit_zero(fake_session):
+    """Companion to the crash-exit test: pressing Ctrl-C is a user-driven
+    shutdown and must NOT be conflated with a serve crash. Exit code
+    stays 0 in that path."""
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+    serve_proc.wait.side_effect = [KeyboardInterrupt, None]
+    frpc_proc = MagicMock()
+    frpc_proc.poll.return_value = None
+    frpc_proc.wait.return_value = None
+
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_wait_for_public_url", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch("time.sleep"),
+    ):
+        # Should NOT raise SystemExit — Ctrl-C is a clean stop.
+        share_cli.share_command(_make_args())
+
+
+def test_share_command_runs_download_gate_for_uncached_hf_repo():
+    """Codex round-1 BLOCKING: ``rapid-mlx share <uncached HF repo>``
+    must run the same B2 confirmation gate that chat/run/serve/pull/bench
+    do. Without it, a non-interactive child silently kicks off a
+    multi-GB download.
+
+    Verifies the share-side helper calls ``confirm_or_abort`` via the
+    download-gate module when the repo isn't cached. We patch
+    ``is_repo_cached`` to False and assert ``confirm_or_abort`` is
+    invoked exactly once with the repo id."""
+    fake_confirm = MagicMock()
+    with (
+        patch("sys.stdin") as fake_stdin,
+        patch.dict("os.environ", {}, clear=False),
+        patch("vllm_mlx._download_gate.is_repo_cached", return_value=False),
+        patch("vllm_mlx._download_gate.estimate_repo_size_bytes", return_value=42),
+        patch("vllm_mlx._download_gate.confirm_or_abort", fake_confirm),
+    ):
+        fake_stdin.isatty.return_value = True
+        # Remove the auto-pull env override if it's set in the runtime
+        # so the prompt path is the one under test.
+        import os as _os
+
+        _os.environ.pop("RAPID_MLX_AUTO_PULL", None)
+        _os.environ.pop("RAPID_MLX_CHAT_SPAWN", None)
+        share_cli._maybe_confirm_download("mlx-community/Qwen3.5-4B-MLX-4bit")
+    fake_confirm.assert_called_once()
+    assert fake_confirm.call_args.args[0] == "mlx-community/Qwen3.5-4B-MLX-4bit"
+
+
+def test_share_command_skips_download_gate_for_local_alias():
+    """Local short aliases (``qwen3.5-4b``) don't have a ``/`` so they
+    can never trigger an HF API round-trip. Verify the helper
+    short-circuits without importing ``_download_gate``."""
+    with patch(
+        "vllm_mlx._download_gate.is_repo_cached",
+        side_effect=AssertionError("should not be called"),
+    ):
+        share_cli._maybe_confirm_download("qwen3.5-4b")
+
+
+def test_share_command_skips_download_gate_when_env_override_set():
+    """``RAPID_MLX_AUTO_PULL=1`` is the documented opt-out for CI / cron
+    / docker. The share gate must honor it the same way the top-level
+    one does — no HF API call, no prompt."""
+    with (
+        patch.dict("os.environ", {"RAPID_MLX_AUTO_PULL": "1"}, clear=False),
+        patch(
+            "vllm_mlx._download_gate.is_repo_cached",
+            side_effect=AssertionError("should not be called"),
+        ),
+    ):
+        share_cli._maybe_confirm_download("mlx-community/Qwen3.5-4B-MLX-4bit")
+
+
+def test_share_command_skips_download_gate_for_chat_spawn_child():
+    """When the chat REPL spawns ``rapid-mlx share`` as a child, the
+    parent has already run the gate and set ``RAPID_MLX_CHAT_SPAWN=1``.
+    Re-prompting in the child would deadlock on the non-TTY stdin path
+    — mirror the top-level CLI's grandchild safety."""
+    with (
+        patch.dict("os.environ", {"RAPID_MLX_CHAT_SPAWN": "1"}, clear=False),
+        patch(
+            "vllm_mlx._download_gate.is_repo_cached",
+            side_effect=AssertionError("should not be called"),
+        ),
+    ):
+        share_cli._maybe_confirm_download("mlx-community/Qwen3.5-4B-MLX-4bit")
