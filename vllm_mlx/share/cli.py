@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -41,6 +42,73 @@ from . import frpc_manager, session, warning
 # f-string error message would yield "RAPID_MLX_SHARE_PORT must be an…"
 # which is NOT on the allowlist and tripwires the audit.
 _PORT_ENV_VAR = "RAPID_MLX_SHARE_PORT"
+# Same out-of-band-routing carve-out as ``RAPID_MLX_SHARE_PORT`` — see
+# ``ALLOWED_RAPID_MLX_ENV_VARS`` in ``tests/test_no_out_of_band_routing.py``.
+_CHAT_FRONTEND_ENV_VAR = "RAPID_MLX_CHAT_FRONTEND"
+_DEFAULT_CHAT_FRONTEND = "https://chat.rapidmlx.com"
+
+
+def _resolve_chat_frontend(flag_value: str | None) -> str | None:
+    """Resolve the chat-frontend URL from the CLI flag and env var.
+
+    Precedence: ``--chat-frontend`` > ``$RAPID_MLX_CHAT_FRONTEND`` >
+    built-in default (``https://chat.rapidmlx.com``). An explicit empty
+    string at either layer disables the one-click chat link entirely —
+    useful when the user is wiring up an OpenAI-compatible frontend
+    like OpenWebUI that doesn't implement the splash share-key protocol.
+
+    Returns the validated origin (``scheme://host[:port]``) or ``None``
+    when disabled. Raises ``ValueError`` on malformed input — the share
+    command surfaces that as exit 2 (user error, not crash).
+
+    Validation rules (defense against a hostile env var or copy-pasted
+    snippet from somewhere the user shouldn't trust):
+
+    * Scheme must be ``https`` or ``http`` — no ``javascript:``, no
+      ``ftp:``, no ``file:``. We're going to embed the user's bearer
+      key in the URL fragment so anything that could parse the URL as
+      "do something other than open a chat tab" is a foot-gun.
+    * Plain ``http://`` is only allowed for loopback hosts. Embedding
+      a bearer key in a URL pointed at a non-loopback HTTP origin
+      means an attacker on-path between the user and that origin can
+      see the key (the fragment is parsed by JS but the *user* still
+      types the URL, and some browsers and link-handlers log the
+      request URL including the fragment — better safe).
+    * No path, query, or fragment — we own the ``/#k=...`` shape and
+      need a clean origin to append onto. ``foo.com/bar`` would yield
+      a banner link that points at ``foo.com/bar/#k=...`` which the
+      receiving splash wouldn't recognise as its own bootstrap path.
+    """
+    if flag_value is not None:
+        raw = flag_value
+    else:
+        raw = os.environ.get(_CHAT_FRONTEND_ENV_VAR)
+        if raw is None:
+            raw = _DEFAULT_CHAT_FRONTEND
+    raw = raw.strip()
+    if not raw:
+        return None
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in ("https", "http"):
+        raise ValueError(f"--chat-frontend must use https:// or http:// (got {raw!r})")
+    if not parsed.netloc:
+        raise ValueError(f"--chat-frontend must include a host (got {raw!r})")
+    if parsed.scheme == "http":
+        host = parsed.hostname or ""
+        if host not in ("localhost", "127.0.0.1", "::1"):
+            raise ValueError(
+                f"--chat-frontend over plain http:// only allowed for "
+                f"loopback hosts (got {raw!r})"
+            )
+    if parsed.path not in ("", "/"):
+        raise ValueError(
+            f"--chat-frontend must be an origin without a path (got {raw!r})"
+        )
+    if parsed.query or parsed.fragment:
+        raise ValueError(
+            f"--chat-frontend must not include a query or fragment (got {raw!r})"
+        )
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _pick_port(preferred: int) -> int:
@@ -353,6 +421,18 @@ def share_command(args: argparse.Namespace) -> None:
         extra_serve_args.append("--cors-origins")
         extra_serve_args.extend(origins)
 
+    # Resolve --chat-frontend ahead of any subprocess work — a malformed
+    # URL is a user error that should exit 2 BEFORE we spawn serve / pay
+    # the model-load cost. (Same lazy-validation rationale as the
+    # ``--port`` block below: keeping it out of register() avoids a
+    # broken env var crashing every other rapid-mlx subcommand at
+    # parser-build time.)
+    try:
+        chat_frontend = _resolve_chat_frontend(args.chat_frontend)
+    except ValueError as exc:
+        print(f"share: {exc}", file=sys.stderr)
+        sys.exit(2)
+
     api_key = secrets.token_hex(24)
     # Port parsing is lazy on purpose: validating RAPID_MLX_SHARE_PORT at
     # parser-build time crashes ``rapid-mlx models`` (and every other
@@ -519,7 +599,13 @@ def share_command(args: argparse.Namespace) -> None:
         # (``rapid-mlx share … | tee``), Python block-buffers and the
         # banner doesn't reach the terminal until the process exits.
         print(
-            warning.render(sess.public_url, api_key, display_model, sess.subdomain),
+            warning.render(
+                sess.public_url,
+                api_key,
+                display_model,
+                sess.subdomain,
+                chat_frontend,
+            ),
             flush=True,
         )
 
@@ -661,5 +747,21 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "shape as ``rapid-mlx serve --cors-origins``. Default: '*' so "
             "browser chat UIs like Open WebUI work without extra config. "
             "Example: --cors-origins http://localhost:3000 https://myapp.com"
+        ),
+    )
+    p.add_argument(
+        "--chat-frontend",
+        type=str,
+        default=None,
+        metavar="URL",
+        help=(
+            "Override the one-click chat link printed in the share banner. "
+            "Default: https://chat.rapidmlx.com (or $RAPID_MLX_CHAT_FRONTEND "
+            "if set). The frontend must implement the rapidmlx splash "
+            "share-key protocol — point this at your own fork if you host "
+            "one. Pass an empty string ('') to suppress the chat link "
+            "entirely (useful for OpenWebUI and other frontends that don't "
+            "speak the splash protocol; the URL+Key lines below still let "
+            "you wire it up by hand)."
         ),
     )

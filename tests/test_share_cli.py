@@ -40,6 +40,7 @@ def _make_args(**overrides):
         port=18765,  # explicit so the env-var fallback path isn't exercised
         thinking=False,  # default: forward --no-thinking to serve
         cors_origins=["*"],  # nargs='+' returns a list
+        chat_frontend=None,  # use built-in default https://chat.rapidmlx.com
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -533,6 +534,7 @@ def test_banner_does_not_inline_key_in_curl_command():
         "REAL_KEY_42",
         "mlx-community/X",
         "abc",
+        "https://chat.rapidmlx.com",
     )
     # The key still appears (so the user can see and export it), but the
     # curl line itself reads from the env var, not the literal key.
@@ -554,6 +556,7 @@ def test_banner_includes_one_click_chat_link():
         "REAL_KEY_42",
         "mlx-community/X",
         "abc",
+        "https://chat.rapidmlx.com",
     )
     expected_link = "https://chat.rapidmlx.com/#k=abc.REAL_KEY_42"
     assert expected_link in out, (
@@ -573,6 +576,7 @@ def test_banner_chat_link_uses_subdomain_param_not_url_parse():
         "K",
         "M",
         "xyz123",
+        "https://chat.rapidmlx.com",
     )
     assert "https://chat.rapidmlx.com/#k=xyz123.K" in out
 
@@ -591,6 +595,7 @@ def test_banner_chat_link_handles_hyphenated_subdomain():
         "abcdef1234",
         "mlx-community/X",
         "foo-bar-baz",
+        "https://chat.rapidmlx.com",
     )
     assert "https://chat.rapidmlx.com/#k=foo-bar-baz.abcdef1234" in out
     # Negative assertion: the old hyphen-delimited shape must NOT appear
@@ -1089,3 +1094,265 @@ def test_share_command_skips_download_gate_for_chat_spawn_child():
         ),
     ):
         share_cli._maybe_confirm_download("mlx-community/Qwen3.5-4B-MLX-4bit")
+
+
+# ─────────────────────────── --chat-frontend ────────────────────────────────
+
+
+def test_resolve_chat_frontend_defaults_to_rapidmlx(monkeypatch):
+    """No flag, no env var → built-in default ``https://chat.rapidmlx.com``.
+    Returning an origin string (not the trailing-slash form) lets
+    ``warning.render`` construct ``<origin>/#k=...`` predictably for
+    every code path."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    assert share_cli._resolve_chat_frontend(None) == "https://chat.rapidmlx.com"
+
+
+def test_resolve_chat_frontend_flag_overrides_env(monkeypatch):
+    """CLI flag wins over env var even when both are set — same
+    precedence shape as other rapid-mlx UX knobs."""
+    monkeypatch.setenv("RAPID_MLX_CHAT_FRONTEND", "https://env-set.example.com")
+    out = share_cli._resolve_chat_frontend("https://flag-set.example.com")
+    assert out == "https://flag-set.example.com"
+
+
+def test_resolve_chat_frontend_env_var_fallback(monkeypatch):
+    """No flag → fall back to ``RAPID_MLX_CHAT_FRONTEND``. Lets
+    operators ship a host-wide default without retyping the flag every
+    invocation."""
+    monkeypatch.setenv("RAPID_MLX_CHAT_FRONTEND", "https://my-fork.example.com")
+    assert share_cli._resolve_chat_frontend(None) == "https://my-fork.example.com"
+
+
+def test_resolve_chat_frontend_empty_flag_disables(monkeypatch):
+    """``--chat-frontend ""`` is the documented opt-out. Returns None so
+    the banner omits the Chat: line entirely — useful when wiring up an
+    OpenWebUI / arbitrary OpenAI-compatible frontend by hand."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    assert share_cli._resolve_chat_frontend("") is None
+
+
+def test_resolve_chat_frontend_empty_env_disables(monkeypatch):
+    """``RAPID_MLX_CHAT_FRONTEND=""`` mirrors the empty-flag opt-out so
+    a shell rc one-liner can suppress the chat link host-wide without
+    having to remember the flag on every invocation."""
+    monkeypatch.setenv("RAPID_MLX_CHAT_FRONTEND", "")
+    assert share_cli._resolve_chat_frontend(None) is None
+
+
+def test_resolve_chat_frontend_strips_trailing_path(monkeypatch):
+    """``warning.render`` appends ``/#k=...`` itself — the resolver must
+    normalise to scheme://host[:port] so a configured value with a
+    trailing slash doesn't produce ``https://x.com//#k=...``."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    # A bare trailing slash is the only path we tolerate (common from
+    # copy-paste / browser address bars). Anything else is a user error.
+    assert (
+        share_cli._resolve_chat_frontend("https://chat.rapidmlx.com/")
+        == "https://chat.rapidmlx.com"
+    )
+
+
+def test_resolve_chat_frontend_rejects_javascript_scheme(monkeypatch):
+    """Defense against a hostile env var: ``javascript:alert(1)`` (or
+    any non-http(s) scheme) must be rejected — the banner would
+    otherwise advertise a clickable link that executes JS in the
+    user's browser. ValueError → CLI exit 2."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    with pytest.raises(ValueError, match="https:// or http://"):
+        share_cli._resolve_chat_frontend("javascript:alert(1)")
+
+
+def test_resolve_chat_frontend_rejects_ftp_scheme(monkeypatch):
+    """Same defense as javascript: — any non-http(s) scheme produces a
+    nonsensical banner link and must be rejected."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    with pytest.raises(ValueError, match="https:// or http://"):
+        share_cli._resolve_chat_frontend("ftp://example.com")
+
+
+def test_resolve_chat_frontend_rejects_path_component(monkeypatch):
+    """The frontend URL must be an origin — we own the ``/#k=...``
+    path. ``https://x.com/chat`` would produce ``https://x.com/chat/#k=...``
+    which a stock splash bootstrap wouldn't serve."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    with pytest.raises(ValueError, match="without a path"):
+        share_cli._resolve_chat_frontend("https://chat.example.com/app")
+
+
+def test_resolve_chat_frontend_rejects_query(monkeypatch):
+    """No query allowed — would collide with the fragment-encoded
+    share key and confuse the splash parser."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    with pytest.raises(ValueError, match="query or fragment"):
+        share_cli._resolve_chat_frontend("https://chat.example.com?ref=abc")
+
+
+def test_resolve_chat_frontend_rejects_fragment(monkeypatch):
+    """No fragment allowed — we own the ``#k=...`` fragment for the
+    share key, and a pre-existing fragment would overwrite it."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    with pytest.raises(ValueError, match="query or fragment"):
+        share_cli._resolve_chat_frontend("https://chat.example.com#anchor")
+
+
+def test_resolve_chat_frontend_rejects_http_for_public_host(monkeypatch):
+    """Plain ``http://`` to a non-loopback host would leak the API key
+    over the wire (the link itself includes ``#k=<sub>.<key>`` and the
+    fragment can land in browser history / referer headers on some
+    paths). Only loopback hosts are allowed over plain http."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    with pytest.raises(ValueError, match="loopback"):
+        share_cli._resolve_chat_frontend("http://chat.example.com")
+
+
+def test_resolve_chat_frontend_allows_http_localhost(monkeypatch):
+    """Loopback exception so dev / private-LAN setups (``rapid-mlx share``
+    pointed at a locally-hosted BCG fork) work without faking certs."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    assert (
+        share_cli._resolve_chat_frontend("http://localhost:5173")
+        == "http://localhost:5173"
+    )
+    assert (
+        share_cli._resolve_chat_frontend("http://127.0.0.1:5173")
+        == "http://127.0.0.1:5173"
+    )
+
+
+def test_resolve_chat_frontend_rejects_missing_host(monkeypatch):
+    """``https://`` with nothing else is a copy-paste accident, not a
+    real intent. Reject so the user sees the error at flag-validation
+    time, not when the banner suddenly has ``https:///#k=...``."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    with pytest.raises(ValueError, match="host"):
+        share_cli._resolve_chat_frontend("https://")
+
+
+def test_register_share_chat_frontend_default_is_none():
+    """The argparse default must be None so the resolver can tell the
+    "user didn't pass the flag" case apart from the "user passed
+    --chat-frontend ''" opt-out. ``default=""`` would conflate the two."""
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    share_cli.register(subparsers)
+    args = parser.parse_args(["share", "qwen3.5-4b"])
+    assert args.chat_frontend is None
+
+
+def test_register_share_chat_frontend_accepts_value():
+    """Sanity: argparse wires --chat-frontend through verbatim."""
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    share_cli.register(subparsers)
+    args = parser.parse_args(
+        ["share", "qwen3.5-4b", "--chat-frontend", "https://my-fork.example"]
+    )
+    assert args.chat_frontend == "https://my-fork.example"
+
+
+def test_share_command_rejects_malformed_chat_frontend_with_exit_2():
+    """User error (malformed flag) must exit 2 — same convention as
+    --port out-of-range — and must NOT spawn serve. Otherwise a typo
+    pays the model-load cost before failing."""
+    spawn_called = MagicMock()
+    args = _make_args(chat_frontend="javascript:alert(1)")
+    with (
+        patch.object(share_cli, "_spawn_serve", side_effect=spawn_called),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(args)
+    assert exc_info.value.code == 2
+    spawn_called.assert_not_called()
+
+
+def test_share_command_forwards_chat_frontend_to_banner(fake_session, capsys):
+    """End-to-end: a user-supplied ``--chat-frontend`` lands as the
+    banner's one-click link prefix (instead of chat.rapidmlx.com)."""
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+    serve_proc.wait.return_value = 0
+    frpc_proc = MagicMock()
+    frpc_proc.poll.return_value = None
+    frpc_proc.wait.return_value = None
+
+    args = _make_args(chat_frontend="https://my-fork.example.com")
+
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_wait_for_public_url", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch.object(share_cli, "_maybe_confirm_download"),
+        patch.object(
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+        ),
+        patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
+    ):
+        share_cli.share_command(args)
+
+    out = capsys.readouterr().out
+    assert "https://my-fork.example.com/#k=testabc." in out
+    # And the default frontend MUST NOT leak — we want to be sure the
+    # override actually overrode rather than appending.
+    assert "https://chat.rapidmlx.com/#k=" not in out
+
+
+def test_share_command_omits_chat_line_when_frontend_disabled(fake_session, capsys):
+    """``--chat-frontend ""`` opts out — the banner must NOT advertise
+    a chat link (URL + Key are enough to wire up any OpenAI-compatible
+    frontend by hand)."""
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+    serve_proc.wait.return_value = 0
+    frpc_proc = MagicMock()
+    frpc_proc.poll.return_value = None
+    frpc_proc.wait.return_value = None
+
+    args = _make_args(chat_frontend="")
+
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_wait_for_public_url", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch.object(share_cli, "_maybe_confirm_download"),
+        patch.object(
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+        ),
+        patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
+    ):
+        share_cli.share_command(args)
+
+    out = capsys.readouterr().out
+    # The URL + Key lines must still appear — only the Chat: link goes
+    # away.
+    assert "https://testabc.rapidmlx.com" in out
+    assert "#k=testabc." not in out
+    assert "Chat:" not in out
+
+
+def test_banner_omits_chat_line_when_frontend_is_none():
+    """Direct check on ``warning.render`` — ``chat_frontend=None``
+    suppresses the Chat: row but keeps the model + URL + key surfaces."""
+    from vllm_mlx.share import warning
+
+    out = warning.render(
+        "https://abc.rapidmlx.com",
+        "REAL_KEY_42",
+        "mlx-community/X",
+        "abc",
+        None,
+    )
+    assert "Chat:" not in out
+    # The other rows survive — banner must still be useful.
+    assert "Model:" in out
+    assert "URL:" in out
+    assert "Key:" in out
+    assert "REAL_KEY_42" in out
