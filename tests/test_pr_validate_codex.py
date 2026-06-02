@@ -1748,3 +1748,64 @@ class TestRound14CleanReplyMustBeOnlyTheCleanPhrase:
             assert _is_clean_review(text) is False, (
                 f"trailing content must FAIL: {text!r}"
             )
+
+
+class TestRound15BrokenCodexBinaryDoesNotCrashPipeline:
+    """Codex round-15 BLOCKER on PR #505: only ``FileNotFoundError`` was
+    caught around ``subprocess.run``. A present-but-broken codex path
+    (not executable / wrong format / partial write) raises
+    ``PermissionError`` / ``OSError`` and the whole pr_validate
+    pipeline crashes — instead of cleanly skipping the gate.
+    """
+
+    @staticmethod
+    def _drive(monkeypatch, tmp_path, exc):
+        captured: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            raise exc
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.shutil.which",
+            lambda _: "/usr/bin/broken-codex",
+        )
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run", fake_run
+        )
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=505)
+        ctx.work_dir = tmp_path
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+        ctx.pr_body = "x"
+
+        return CodexReviewStep().run(ctx)
+
+    def test_permission_error_yields_skip_not_crash(self, monkeypatch, tmp_path):
+        result = self._drive(
+            monkeypatch, tmp_path, PermissionError(13, "Permission denied")
+        )
+        assert result.status == "skip"
+        assert "PermissionError" in result.summary
+
+    def test_oserror_yields_skip_not_crash(self, monkeypatch, tmp_path):
+        """Generic OSError — e.g. ENOEXEC (bad binary format), ETXTBSY
+        (executable being written), or any other kernel-level exec
+        rejection — must also degrade to skip."""
+        result = self._drive(monkeypatch, tmp_path, OSError(8, "Exec format error"))
+        assert result.status == "skip"
+        assert "OSError" in result.summary
+
+    def test_filenotfounderror_still_yields_skip(self, monkeypatch, tmp_path):
+        """The original case (binary disappeared mid-run) still skips
+        — same handler, but the exception name in the summary is now
+        explicit rather than hardcoded."""
+        result = self._drive(monkeypatch, tmp_path, FileNotFoundError(2, "No such"))
+        assert result.status == "skip"
+        assert "FileNotFoundError" in result.summary

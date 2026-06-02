@@ -409,14 +409,24 @@ class CodexReviewStep(Step):
                     "re-run pr_validate if the cause was network/backend"
                 ),
             )
-        except FileNotFoundError:
-            # ``shutil.which`` claimed the binary existed but it
-            # disappeared between resolution and exec — very rare race
-            # (e.g. homebrew upgrade mid-run). Don't crash the pipeline.
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            # ``shutil.which`` claimed the binary existed but exec
+            # failed: it disappeared between resolution and exec
+            # (homebrew upgrade mid-run → ``FileNotFoundError``), the
+            # file is not executable (``PermissionError``), or the
+            # kernel rejected the exec for another reason (other
+            # ``OSError`` subclasses — ``ENOEXEC`` for a broken binary,
+            # ``ETXTBSY`` mid-write). Codex round-15 BLOCKER on PR #505:
+            # the previous ``FileNotFoundError``-only catch let a
+            # broken/unexecutable codex path crash the whole pipeline
+            # instead of skipping the gate cleanly.
             return StepResult(
                 name=self.name,
                 status="skip",
-                summary="codex binary disappeared mid-exec",
+                summary=(
+                    f"codex exec failed ({type(exc).__name__}: {exc}) — "
+                    "binary present but unusable; treating as skip"
+                ),
             )
 
         if proc.returncode != 0:
