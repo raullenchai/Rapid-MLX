@@ -1441,3 +1441,44 @@ class TestRound9DirectoryContextFenced:
         assert meta.group(1) == dirs.group(1) == diff.group(1), (
             "all three fence kinds share one per-invocation nonce"
         )
+
+
+class TestRound10TransientMarkersAreStructured:
+    """Codex round-10 BLOCKER on PR #505: the previous
+    ``_TRANSIENT_FAILURE_MARKERS`` tuple used bare substrings like
+    ``"401"`` and ``"429"``. Non-transient crash stderr containing
+    those digits in an unrelated context (port number, memory address,
+    a filename, a line number) would be misclassified as transient and
+    silently skip the review, bypassing the gate.
+    """
+
+    @pytest.mark.parametrize(
+        "stderr,expected",
+        [
+            # Round-10 attack stderr: bare 401/429 digits in non-auth
+            # context. Must NOT be transient — must fail.
+            ("traceback at vllm_mlx/foo.py:401:23", False),
+            ("listening on port 4290", False),
+            ("OutOfMemoryError at address 0x4290abcdef", False),
+            ("file size 401 bytes exceeded budget", False),
+            ("Error 0xC0000401: assertion failed", False),
+            # Negative control: bare "5xx" string (which was in the
+            # old substring tuple) is obviously bogus marker text — a
+            # real HTTP error would say "500" or "502". With the regex
+            # rewrite this can no longer be a false positive either.
+            ("path /usr/local/lib/5xx_compat/foo.py", False),
+            # Positive control: structured status codes still trigger
+            # skip — the regex requires HTTP/status context or the
+            # canonical reason phrase.
+            ("HTTP 401 Unauthorized: token expired", True),
+            ("status: 429 Too Many Requests", True),
+            ("response 500 Internal Server Error from upstream", True),
+            ("got 502 Bad Gateway", True),
+            ("rate-limited by upstream — retry after 60s", True),
+            ("rate limit exceeded", True),
+        ],
+    )
+    def test_structured_marker_discriminator(self, stderr, expected):
+        assert _is_transient_codex_failure(stderr) is expected, (
+            f"stderr {stderr!r} expected transient={expected}"
+        )

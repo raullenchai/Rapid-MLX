@@ -840,33 +840,51 @@ def _split_findings_by_tier(findings: list[str]) -> tuple[list[str], list[str]]:
 # matching one of these is treated as a hard ``fail`` so a malicious
 # diff can't bypass the review by inducing a non-transient crash.
 # Case-insensitive substring match.
-_TRANSIENT_FAILURE_MARKERS = (
-    "not logged in",
-    "authentication",
-    "auth required",
-    "401",
-    "rate limit",
-    "429",
-    "5xx",
-    "500 internal",
-    "502 bad gateway",
-    "503 service unavailable",
-    "504 gateway timeout",
-    "connection refused",
-    "connection reset",
-    "could not resolve host",
-    "name or service not known",
-    "network is unreachable",
-    "ssl",
-    "tls handshake",
-    # NB: bare "timeout" / "timed out" markers are deliberately NOT
-    # listed here. They are ambiguous: a model-side timeout caused by
-    # an attacker-crafted prompt would also stamp the stderr with
-    # "timeout" and skipping would be the bypass. ``504 Gateway
-    # Timeout`` IS listed because it's specifically a transport-layer
-    # failure. The ``subprocess.TimeoutExpired`` branch handles the
-    # "we hit the wall-clock cap" case explicitly as ``fail`` for the
-    # same reason. Codex round-7 BLOCKER on PR #505.
+# Patterns that indicate the codex backend hit a transient issue
+# (network, auth, rate limit) — caller should ``skip`` rather than
+# block the PR. Each is a structured regex (with context) — codex
+# round-10 BLOCKER on PR #505 closed the previous bare-substring
+# approach where e.g. ``"401"`` could match a port number, memory
+# address, or filename containing those digits anywhere in stderr
+# and silently bypass the review gate.
+#
+# Each pattern is compiled with ``re.IGNORECASE``. Status-code
+# patterns require either an HTTP marker (``HTTP 401``, ``status: 401``)
+# or a colon-separated reason phrase (``401 Unauthorized``). Bare
+# ``timeout`` / ``timed out`` are deliberately NOT listed: they are
+# ambiguous and an attacker-induced crash could also stamp them.
+_TRANSIENT_FAILURE_PATTERNS = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bnot logged in\b",
+        r"\bauthentication\b",
+        r"\bauth(?:entication)?\s+required\b",
+        # 401 / 429 must appear in a status-code context — every branch
+        # requires either an ``HTTP``/``status:`` prefix or the canonical
+        # reason phrase. Bare digits in unrelated stderr (port numbers,
+        # memory addresses, paths, line numbers) no longer trigger skip.
+        r"\bhttp[/ ]?401\b",
+        r"\bstatus[:\s]+401\b",
+        r"\b401\s+(?:unauthorized|client\s+error|forbidden)\b",
+        r"\bhttp[/ ]?429\b",
+        r"\bstatus[:\s]+429\b",
+        r"\b429\s+too\s+many\s+requests\b",
+        r"\brate[\s-]?limit(?:ed|ing)?\b",
+        # 5xx server errors — canonical reason phrase OR explicit
+        # ``HTTP``/``status:`` prefix.
+        r"\bhttp[/ ]?5\d\d\b",
+        r"\bstatus[:\s]+5\d\d\b",
+        r"\b500\s+internal\s+server\s+error\b",
+        r"\b502\s+bad\s+gateway\b",
+        r"\b503\s+service\s+unavailable\b",
+        r"\b504\s+gateway\s+timeout\b",
+        r"\bconnection\s+(?:refused|reset)\b",
+        r"\bcould\s+not\s+resolve\s+host\b",
+        r"\bname\s+or\s+service\s+not\s+known\b",
+        r"\bnetwork\s+is\s+unreachable\b",
+        r"\bssl\s+(?:error|handshake|certificate)\b",
+        r"\btls\s+handshake\b",
+    )
 )
 
 
@@ -882,5 +900,4 @@ def _is_transient_codex_failure(stderr_blob: str) -> bool:
     """
     if not stderr_blob:
         return False
-    s = stderr_blob.lower()
-    return any(marker in s for marker in _TRANSIENT_FAILURE_MARKERS)
+    return any(p.search(stderr_blob) for p in _TRANSIENT_FAILURE_PATTERNS)
