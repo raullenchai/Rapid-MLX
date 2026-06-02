@@ -1614,3 +1614,67 @@ class TestRound12PromptEmbeddedAsConstant:
         # round-12 constant fix makes both irrelevant.
         result = CodexReviewStep().run(ctx)
         assert result.status == "pass"
+
+
+class TestRound13CleanPhrasePrecededOnlyByHeadings:
+    """Codex round-13 BLOCKER on PR #505: round-9's "last non-empty line
+    must be the clean phrase" check still passed when the model emitted
+    a refusal sentence followed by the clean phrase. Example:
+
+        I could not review this diff.
+        No blocking issues found.
+
+    Tighten: every line BEFORE the clean phrase must be a markdown
+    heading or a single-word section marker (``Verdict:``,
+    ``**Conclusion:**``). Sentences and refusals must invalidate.
+    """
+
+    def test_refusal_then_clean_phrase_is_not_clean(self):
+        """The canonical round-13 attack — must NOT pass."""
+        from scripts.pr_validate.steps.codex_review import _is_clean_review
+
+        text = "I could not review this diff.\nNo blocking issues found."
+        assert _is_clean_review(text) is False, (
+            "round-13 bypass: refusal sentence + clean phrase as last line"
+        )
+
+    def test_caveat_paragraph_then_clean_phrase_is_not_clean(self):
+        from scripts.pr_validate.steps.codex_review import _is_clean_review
+
+        text = (
+            "The diff is large and parts were truncated, so my review may be "
+            "incomplete.\nNo blocking issues found."
+        )
+        assert _is_clean_review(text) is False
+
+    def test_heading_then_clean_phrase_still_passes(self):
+        """Negative control: markdown heading + clean phrase is a
+        legitimate clean review and must still pass."""
+        from scripts.pr_validate.steps.codex_review import _is_clean_review
+
+        for text in (
+            "# Findings\nNo blocking issues found.",
+            "## Verdict\nNo issues found.",
+            "Verdict:\nNo issues found.",
+            "**Verdict:**\nNo blocking issues found.",
+            "---\nNo blocking issues found.",
+        ):
+            assert _is_clean_review(text) is True, (
+                f"heading + clean phrase must pass: {text!r}"
+            )
+
+    def test_clean_phrase_alone_still_passes(self):
+        """Negative control: the bare clean phrase is still clean."""
+        from scripts.pr_validate.steps.codex_review import _is_clean_review
+
+        assert _is_clean_review("No blocking issues found.") is True
+        assert _is_clean_review("\n\n  No issues found.  \n\n") is True
+
+    def test_freeform_summary_then_clean_phrase_is_not_clean(self):
+        """Even a benign-looking summary sentence invalidates: if the
+        model has something to say beyond a section marker, the review
+        is not purely clean."""
+        from scripts.pr_validate.steps.codex_review import _is_clean_review
+
+        text = "The implementation looks solid overall.\nNo issues found."
+        assert _is_clean_review(text) is False

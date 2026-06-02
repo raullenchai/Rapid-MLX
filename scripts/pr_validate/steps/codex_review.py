@@ -929,12 +929,39 @@ _CLEAN_PATTERNS = (
 )
 
 
+# A "structural" line that's allowed to precede the clean phrase
+# without invalidating it: a markdown heading (`# ...`, `## ...`),
+# a bold-only label (`**Verdict:**`), or a single capitalized word
+# followed by a colon (`Verdict:`, `Conclusion:`). Anything else
+# (a full sentence, a refusal, a caveat) makes the reply NOT clean.
+# Codex round-13 BLOCKER on PR #505 — see ``_is_clean_review``.
+_HEADING_OR_MARKER_RE = re.compile(
+    r"""
+    ^(?:
+        \#{1,6}\s+\w.*               # markdown heading: # / ## / ### ...
+        |
+        \*{0,2}[A-Z][A-Za-z]*:?\*{0,2}:?   # Verdict, **Verdict**, **Verdict:**, **Verdict**:
+        |
+        -{3,}                        # horizontal rule
+    )$
+    """,
+    re.VERBOSE,
+)
+
+
 def _is_clean_review(text: str) -> bool:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return False
     last_line = lines[-1]
-    return any(p.fullmatch(last_line) for p in _CLEAN_PATTERNS)
+    if not any(p.fullmatch(last_line) for p in _CLEAN_PATTERNS):
+        return False
+    # Every line BEFORE the clean phrase must be a heading or
+    # section marker — not a full sentence, refusal, or caveat.
+    # Codex round-13 BLOCKER on PR #505: ``"I could not review this
+    # diff.\\nNo blocking issues found."`` would otherwise pass the
+    # last-line check and let a refusal be treated as a clean review.
+    return all(_HEADING_OR_MARKER_RE.fullmatch(line) for line in lines[:-1])
 
 
 _FINDING_RE = re.compile(
