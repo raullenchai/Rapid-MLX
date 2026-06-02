@@ -685,6 +685,45 @@ def test_share_command_exits_nonzero_when_serve_crashes(fake_session):
     assert exc_info.value.code == 1
 
 
+def test_share_command_exits_nonzero_when_serve_exits_cleanly(fake_session, capsys):
+    """Codex round-6 BLOCKING: a child exiting with status 0 is STILL
+    a share failure — the public URL has disappeared even though the
+    exit was "clean" (uvicorn graceful shutdown, a direct ``kill <pid>``
+    of the child, etc.). Only the parent's KeyboardInterrupt path is
+    allowed to keep exit 0; every other exit-from-the-monitor-loop
+    translates to a non-zero share exit code so supervisors restart us.
+    """
+    serve_proc = MagicMock()
+    # poll returns None on the post-spawn settle check, then 0 (clean
+    # exit) on the monitor-loop call.
+    serve_proc.poll.side_effect = [None, 0, 0]
+    serve_proc.wait.return_value = 0
+    frpc_proc = MagicMock()
+    frpc_proc.poll.return_value = None
+    frpc_proc.wait.return_value = 0
+
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_wait_for_public_url", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(_make_args())
+
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    # User-readable message must explain that the public share is gone
+    # — supervisor logs would otherwise show just "exit 1" with no
+    # actionable signal.
+    assert "exited cleanly" in err
+    assert "public share is no longer live" in err
+
+
 def test_share_command_exits_when_frpc_tunnel_dies_post_banner(fake_session, capsys):
     """Codex round-4 BLOCKING: after the banner prints, blocking only on
     ``serve_proc.wait()`` meant an frpc crash / frps disconnect was

@@ -532,10 +532,26 @@ def share_command(args: argparse.Namespace) -> None:
         # The slow tick is fine because both processes write to log
         # files on their own; we only need to notice "exited", not
         # forward output.
+        #
+        # Codex round-6 BLOCKING: a child exiting with status 0 is
+        # ALSO a share failure — the public URL has disappeared even
+        # if the exit was "clean" (uvicorn graceful shutdown, a direct
+        # ``kill <pid>`` of the child, etc.). Only the parent's
+        # KeyboardInterrupt path is allowed to keep exit 0; every other
+        # exit-from-the-monitor-loop translates to a non-zero share
+        # exit code so supervisors restart us. We use the child's
+        # actual exit code when non-zero, and the sentinel 1 when the
+        # child happened to exit cleanly.
         while True:
             serve_rc = serve_proc.poll()
             if serve_rc is not None:
-                serve_exit_code = serve_rc
+                serve_exit_code = serve_rc if serve_rc != 0 else 1
+                if serve_rc == 0:
+                    print(
+                        f"share: serve process exited cleanly but the "
+                        f"public share is no longer live — see {serve_log}.",
+                        file=sys.stderr,
+                    )
                 break
             frpc_rc = frpc_proc.poll()
             if frpc_rc is not None:
@@ -585,17 +601,14 @@ def share_command(args: argparse.Namespace) -> None:
         except (ValueError, OSError, TypeError):
             pass
 
-    # Cleanup is done; if the serve child exited with a non-zero status
-    # (crash / OOM / supervisor SIGKILL on the child) surface that as
-    # the share exit code. Ctrl-C took the KeyboardInterrupt branch
-    # above without ever assigning ``serve_exit_code`` so it stays 0
-    # and we exit cleanly.
+    # Cleanup is done; surface a non-zero share exit code whenever the
+    # monitor loop broke out (either child exited, for any reason). The
+    # in-loop messages already wrote the actionable details to stderr;
+    # this branch just translates to the process exit code. Ctrl-C took
+    # the KeyboardInterrupt branch above without ever assigning
+    # ``serve_exit_code`` so it stays 0 and the parent exits cleanly —
+    # the only path where a share shutdown is "successful".
     if serve_exit_code:
-        print(
-            f"share: serve process exited with status {serve_exit_code} — "
-            f"see {serve_log}",
-            file=sys.stderr,
-        )
         sys.exit(1)
 
 
