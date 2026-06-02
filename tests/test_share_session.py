@@ -118,9 +118,11 @@ def test_request_raises_runtimeerror_on_invalid_json_body():
         def __exit__(self, *_):
             return False
 
-    with patch("urllib.request.urlopen", return_value=_NotJsonResp()):
-        with pytest.raises(RuntimeError, match="non-JSON"):
-            session.request(model="qwen3.5-4b")
+    with (
+        patch("urllib.request.urlopen", return_value=_NotJsonResp()),
+        pytest.raises(RuntimeError, match="non-JSON"),
+    ):
+        session.request(model="qwen3.5-4b")
 
 
 def test_relay_base_url_rejects_empty_hostname():
