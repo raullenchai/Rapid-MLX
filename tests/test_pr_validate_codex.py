@@ -448,3 +448,99 @@ class TestBackwardsCompatOptOut:
         captured = capsys.readouterr()
         assert "deprecated" in captured.err.lower()
         assert "PR_VALIDATE_NO_CODEX" in captured.err
+
+
+class TestPromptInjectionGuards:
+    """The codex prompt and the PR diff share one ``codex exec`` prompt
+    slot — they are not naturally role-separated. A malicious diff could
+    inject ``ignore previous instructions`` or invoke tools. We mitigate
+    by (a) fencing the diff with explicit ``UNTRUSTED USER INPUT``
+    boundary markers and (b) appending a final-instruction block AFTER
+    the diff that re-asserts the no-tool-use rule (codex round-2 BLOCKER
+    on PR #505).
+
+    We pin the prompt assembly by capturing what gets sent to codex via
+    monkeypatched ``subprocess.run`` and asserting the marker strings
+    are present in the right relative order.
+    """
+
+    @staticmethod
+    def _capture_combined_prompt(monkeypatch, tmp_path, diff_body: str) -> str:
+        """Drive the step and return whatever combined prompt was passed
+        to ``subprocess.run``'s ``input=`` kwarg."""
+        captured: dict = {}
+
+        class _FakeProc:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "agent_message",
+                        "text": "No blocking issues found.",
+                    },
+                }
+            )
+
+        def fake_run(cmd, **kwargs):
+            captured["input"] = kwargs.get("input", "")
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.shutil.which",
+            lambda _: "/usr/bin/codex-stub",
+        )
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run", fake_run
+        )
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=505)
+        ctx.work_dir = tmp_path
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text(diff_body)
+        ctx.diff_path = diff_path
+
+        CodexReviewStep().run(ctx)
+        return captured["input"]
+
+    def test_diff_is_fenced_with_untrusted_input_markers(self, monkeypatch, tmp_path):
+        """The diff block must sit between explicit BEGIN/END markers so
+        the model can identify the boundary even when the diff content
+        contains markdown-looking sequences."""
+        diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n+content\n"
+        prompt = self._capture_combined_prompt(monkeypatch, tmp_path, diff)
+
+        begin_idx = prompt.find("BEGIN UNTRUSTED USER INPUT")
+        end_idx = prompt.find("END UNTRUSTED USER INPUT")
+        diff_idx = prompt.find("+content")
+        assert begin_idx >= 0, "missing BEGIN marker"
+        assert end_idx > begin_idx, "missing/misordered END marker"
+        assert begin_idx < diff_idx < end_idx, (
+            "diff content must sit between BEGIN and END markers"
+        )
+
+    def test_final_instructions_appear_after_the_diff(self, monkeypatch, tmp_path):
+        """Prompt-injection mitigation hinges on the no-tool-use rule
+        getting the *last word*. An attacker writing 'ignore previous
+        instructions' inside the diff fails because the model also sees
+        the same rule re-asserted AFTER the diff block."""
+        diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n+x\n"
+        prompt = self._capture_combined_prompt(monkeypatch, tmp_path, diff)
+
+        end_marker_idx = prompt.find("END UNTRUSTED USER INPUT")
+        final_block_idx = prompt.find("FINAL INSTRUCTIONS")
+        assert final_block_idx > end_marker_idx, (
+            "FINAL INSTRUCTIONS block must come AFTER the diff so it "
+            "gets the last word over any in-diff injection attempt"
+        )
+        # The final block must re-assert the no-tool-use rule (the
+        # specific defence against 'invoke a shell tool to read repo'
+        # injection attempts).
+        final_section = prompt[final_block_idx:]
+        assert "do not call tools" in final_section.lower()
+        assert "untrusted" in final_section.lower()
