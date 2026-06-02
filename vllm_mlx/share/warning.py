@@ -16,7 +16,7 @@ def _supports_color() -> bool:
     return sys.stdout.isatty() and not sys.platform.startswith("win")
 
 
-def render(url: str, api_key: str, model: str) -> str:
+def render(url: str, api_key: str, model: str, subdomain: str) -> str:
     red = "\033[1;31m" if _supports_color() else ""
     yellow = "\033[1;33m" if _supports_color() else ""
     reset = "\033[0m" if _supports_color() else ""
@@ -36,6 +36,12 @@ def render(url: str, api_key: str, model: str) -> str:
             }
         )
     )
+    # One-click chat link. ``#k=<sub>-<key>`` — splash splits on first
+    # ``-``, derives ``https://<sub>.rapidmlx.com``, and shows it for
+    # confirmation before sending the key. The combined token sits in
+    # the URL fragment so it never reaches the server log; the splash
+    # immediately clears it via history.replaceState.
+    chat_link = f"https://chat.rapidmlx.com/#k={subdomain}-{api_key}"
 
     return (
         f"\n{red}╔══════════════════════════════════════════════════════════════════╗{reset}\n"
@@ -50,6 +56,7 @@ def render(url: str, api_key: str, model: str) -> str:
         f"{red}╚══════════════════════════════════════════════════════════════════╝{reset}\n"
         f"\n"
         f"  {bold}Model:{reset}  {model}\n"
+        f"  {bold}Chat:{reset}   {yellow}{chat_link}{reset}\n"
         f"  {bold}URL:{reset}    {url}\n"
         f"  {bold}Key:{reset}    {yellow}{api_key}{reset}\n"
         f"\n"

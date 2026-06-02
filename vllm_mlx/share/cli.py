@@ -142,12 +142,17 @@ def _wait_for_public_url(public_url: str, timeout: float = 15.0) -> bool:
     while the proxy registration silently fails — the banner prints with
     a URL that 502s. Bounded so we don't hang forever if Cloudflare /
     frps are degraded.
+
+    A User-Agent header is required: Cloudflare's default WAF rules
+    return HTTP 403 for the bare ``Python-urllib/3.x`` user agent, so
+    without this the probe would always time out on a healthy tunnel.
     """
     url = f"{public_url.rstrip('/')}/healthz"
+    req = urllib.request.Request(url, headers={"User-Agent": "rapid-mlx-share"})
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=3) as r:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=3) as r:  # noqa: S310
                 if r.status == 200:
                     return True
         except (urllib.error.URLError, ConnectionError):
@@ -385,7 +390,10 @@ def share_command(args: argparse.Namespace) -> None:
         # ``flush=True`` is load-bearing: when stdout is a pipe
         # (``rapid-mlx share … | tee``), Python block-buffers and the
         # banner doesn't reach the terminal until the process exits.
-        print(warning.render(sess.public_url, api_key, display_model), flush=True)
+        print(
+            warning.render(sess.public_url, api_key, display_model, sess.subdomain),
+            flush=True,
+        )
 
         # Block on the serve process; if it exits, share's done.
         serve_proc.wait()

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import signal
+import urllib.request
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -254,6 +255,35 @@ def test_wait_for_healthz_returns_false_if_serve_exits():
     assert result is False
 
 
+def test_wait_for_public_url_sends_user_agent_header():
+    """Cloudflare WAF returns HTTP 403 for the default ``Python-urllib/3.x``
+    User-Agent. Without an explicit UA the probe loops on 403 until the
+    15s deadline expires and share kills a perfectly-healthy tunnel.
+    """
+    captured: list[urllib.request.Request] = []
+
+    def _capture(req, timeout):  # noqa: ARG001
+        captured.append(req)
+        resp = MagicMock()
+        resp.status = 200
+        resp.__enter__ = lambda self: self
+        resp.__exit__ = lambda *_: None
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=_capture):
+        result = share_cli._wait_for_public_url("https://abc.rapidmlx.com")
+
+    assert result is True
+    assert len(captured) == 1
+    ua = captured[0].get_header("User-agent")
+    assert ua, (
+        "_wait_for_public_url must send a User-Agent (Cloudflare 403s the default)"
+    )
+    assert "python-urllib" not in ua.lower(), (
+        f"User-Agent {ua!r} would be 403'd by Cloudflare WAF"
+    )
+
+
 def test_share_command_sigterm_runs_cleanup(fake_session):
     """SIGTERM (systemd / supervisor kill) must trigger the same
     cleanup as Ctrl-C, otherwise the serve + frpc children orphan and
@@ -403,6 +433,7 @@ def test_banner_does_not_inline_key_in_curl_command():
         "https://abc.rapidmlx.com",
         "REAL_KEY_42",
         "mlx-community/X",
+        "abc",
     )
     # The key still appears (so the user can see and export it), but the
     # curl line itself reads from the env var, not the literal key.
@@ -410,6 +441,41 @@ def test_banner_does_not_inline_key_in_curl_command():
     # Specifically: the curl example must not put the literal key in
     # ``-H "Authorization: Bearer <KEY>"`` — that lands in shell history.
     assert "Bearer REAL_KEY_42" not in out
+
+
+def test_banner_includes_one_click_chat_link():
+    """The banner must surface a clickable chat.rapidmlx.com link with
+    the subdomain + key baked into the fragment so a friend can paste
+    once. Fragment-encoded so the combined token never reaches a
+    server log."""
+    from vllm_mlx.share import warning
+
+    out = warning.render(
+        "https://abc.rapidmlx.com",
+        "REAL_KEY_42",
+        "mlx-community/X",
+        "abc",
+    )
+    expected_link = "https://chat.rapidmlx.com/#k=abc-REAL_KEY_42"
+    assert expected_link in out, (
+        f"banner must include the one-click chat link {expected_link!r}"
+    )
+
+
+def test_banner_chat_link_uses_subdomain_param_not_url_parse():
+    """The subdomain is a separate parameter, not parsed out of ``url``.
+    Verifies the call site passes the relay-provided subdomain rather
+    than the warning module string-splitting the host. Different
+    subdomain → different chat link, even if URL looks similar."""
+    from vllm_mlx.share import warning
+
+    out = warning.render(
+        "https://something-other.rapidmlx.com",
+        "K",
+        "M",
+        "xyz123",
+    )
+    assert "https://chat.rapidmlx.com/#k=xyz123-K" in out
 
 
 def test_share_command_surfaces_pick_port_failure():
