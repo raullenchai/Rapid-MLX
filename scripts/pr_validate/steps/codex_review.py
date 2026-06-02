@@ -929,39 +929,25 @@ _CLEAN_PATTERNS = (
 )
 
 
-# A "structural" line that's allowed to precede the clean phrase
-# without invalidating it: a markdown heading (`# ...`, `## ...`),
-# a bold-only label (`**Verdict:**`), or a single capitalized word
-# followed by a colon (`Verdict:`, `Conclusion:`). Anything else
-# (a full sentence, a refusal, a caveat) makes the reply NOT clean.
-# Codex round-13 BLOCKER on PR #505 — see ``_is_clean_review``.
-_HEADING_OR_MARKER_RE = re.compile(
-    r"""
-    ^(?:
-        \#{1,6}\s+\w.*               # markdown heading: # / ## / ### ...
-        |
-        \*{0,2}[A-Z][A-Za-z]*:?\*{0,2}:?   # Verdict, **Verdict**, **Verdict:**, **Verdict**:
-        |
-        -{3,}                        # horizontal rule
-    )$
-    """,
-    re.VERBOSE,
-)
-
-
 def _is_clean_review(text: str) -> bool:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        return False
-    last_line = lines[-1]
-    if not any(p.fullmatch(last_line) for p in _CLEAN_PATTERNS):
-        return False
-    # Every line BEFORE the clean phrase must be a heading or
-    # section marker — not a full sentence, refusal, or caveat.
-    # Codex round-13 BLOCKER on PR #505: ``"I could not review this
-    # diff.\\nNo blocking issues found."`` would otherwise pass the
-    # last-line check and let a refusal be treated as a clean review.
-    return all(_HEADING_OR_MARKER_RE.fullmatch(line) for line in lines[:-1])
+    """Return True iff the model's reply is ONLY the canonical clean
+    phrase (modulo leading/trailing whitespace).
+
+    The prompt asks the model to "say 'No blocking issues found.' and
+    stop" when there are no findings. So a clean reply is structurally
+    very short: zero or one line, that line being the clean phrase.
+
+    Iterative ratcheting got us here: rounds 8/9/13 each closed a
+    bypass against a more permissive check (substring → last-line →
+    headings-allowed), and round-14 found the next bypass (the heading
+    IS the refusal: ``"# I could not review this diff\\nNo blocking
+    issues found."``). Cutting the spiral: nothing other than the
+    clean phrase is allowed. Any extra content — headings, prose,
+    refusals — disqualifies. Models that add benign noise pay the cost
+    of a re-run; the gate stays defensible.
+    """
+    stripped = text.strip()
+    return any(p.fullmatch(stripped) for p in _CLEAN_PATTERNS)
 
 
 _FINDING_RE = re.compile(

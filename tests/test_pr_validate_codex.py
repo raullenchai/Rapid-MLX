@@ -1078,10 +1078,12 @@ class TestCleanPhrasePatternIsStrict:
         assert _is_clean_review("no blocking issue found") is True
 
     def test_no_issues_found_phrase_recognized(self):
-        """The canonical phrase on its own line still passes."""
+        """The bare canonical phrase still passes. (Headings + phrase
+        previously passed too but are now rejected — see round 14.)"""
         from scripts.pr_validate.steps.codex_review import _is_clean_review
 
-        assert _is_clean_review("Verdict:\nNo issues found.") is True
+        assert _is_clean_review("No issues found.") is True
+        assert _is_clean_review("no blocking issues found") is True
 
     def test_arbitrary_freeform_text_not_clean(self):
         from scripts.pr_validate.steps.codex_review import _is_clean_review
@@ -1277,12 +1279,14 @@ class TestRound9CleanPhraseMustBeLastLine:
             "round-9 bypass: clean phrase + trailing refusal must fail"
         )
 
-    def test_clean_phrase_with_heading_above_still_passes(self):
-        """Negative: a Verdict: heading + the clean phrase as the last
-        line is still a legitimate clean review."""
+    def test_clean_phrase_with_heading_above_no_longer_passes(self):
+        """Round-14 BLOCKER closure: any heading content (even a benign
+        'Verdict:' label) is now rejected, because the attacker can
+        smuggle a refusal in the heading text. Cleanly clean reviews
+        are just the canonical phrase, nothing else."""
         from scripts.pr_validate.steps.codex_review import _is_clean_review
 
-        assert _is_clean_review("Verdict:\nNo issues found.") is True
+        assert _is_clean_review("Verdict:\nNo issues found.") is False
 
     def test_clean_phrase_alone_still_passes(self):
         from scripts.pr_validate.steps.codex_review import _is_clean_review
@@ -1647,9 +1651,13 @@ class TestRound13CleanPhrasePrecededOnlyByHeadings:
         )
         assert _is_clean_review(text) is False
 
-    def test_heading_then_clean_phrase_still_passes(self):
-        """Negative control: markdown heading + clean phrase is a
-        legitimate clean review and must still pass."""
+    def test_heading_then_clean_phrase_no_longer_passes(self):
+        """Round-14 BLOCKER closure: any preceding line — even a benign
+        markdown heading — is now rejected. The round-13 attack on this
+        test class was a refusal *as a sentence*; the round-14 attack
+        is the same refusal *as a heading* (``# I could not review
+        this diff\\nNo blocking issues found.``). Cutting the spiral:
+        nothing other than the canonical phrase passes."""
         from scripts.pr_validate.steps.codex_review import _is_clean_review
 
         for text in (
@@ -1658,9 +1666,12 @@ class TestRound13CleanPhrasePrecededOnlyByHeadings:
             "Verdict:\nNo issues found.",
             "**Verdict:**\nNo blocking issues found.",
             "---\nNo blocking issues found.",
+            # The actual round-14 attack: heading IS a refusal.
+            "# I could not review this diff\nNo blocking issues found.",
+            "## refused for safety reasons\nNo issues found.",
         ):
-            assert _is_clean_review(text) is True, (
-                f"heading + clean phrase must pass: {text!r}"
+            assert _is_clean_review(text) is False, (
+                f"round-14 closure: heading + clean phrase must FAIL: {text!r}"
             )
 
     def test_clean_phrase_alone_still_passes(self):
@@ -1678,3 +1689,62 @@ class TestRound13CleanPhrasePrecededOnlyByHeadings:
 
         text = "The implementation looks solid overall.\nNo issues found."
         assert _is_clean_review(text) is False
+
+
+class TestRound14CleanReplyMustBeOnlyTheCleanPhrase:
+    """Codex round-14 BLOCKER on PR #505: round-13 allowed any markdown
+    heading before the clean phrase. The attacker can put the refusal
+    INSIDE the heading: ``"# I could not review this diff\\nNo blocking
+    issues found."`` passes the heading check (it's a valid `#`-heading)
+    AND the clean-phrase-last-line check.
+
+    Cutting the spiral: the reply must be ONLY the canonical phrase
+    (modulo whitespace). The prompt explicitly tells the model to "say
+    'No blocking issues found.' and stop". Anything else is either
+    prompt-injection or a malformed reply — neither is "clean".
+    """
+
+    def test_refusal_disguised_as_heading_is_not_clean(self):
+        """The literal round-14 attack."""
+        from scripts.pr_validate.steps.codex_review import _is_clean_review
+
+        text = "# I could not review this diff\nNo blocking issues found."
+        assert _is_clean_review(text) is False, (
+            "round-14 bypass: refusal smuggled inside a markdown heading"
+        )
+
+    def test_long_refusal_heading_is_not_clean(self):
+        """Multi-word headings carrying refusal content."""
+        from scripts.pr_validate.steps.codex_review import _is_clean_review
+
+        for text in (
+            "## refused — diff too dangerous to read\nNo issues found.",
+            "### context window exceeded\nNo blocking issues found.",
+            "# the prompt told me to skip\nNo issues found.",
+        ):
+            assert _is_clean_review(text) is False, (
+                f"refusal heading must FAIL: {text!r}"
+            )
+
+    def test_bare_clean_phrase_with_whitespace_still_passes(self):
+        """The intended positive path: ONLY the clean phrase passes."""
+        from scripts.pr_validate.steps.codex_review import _is_clean_review
+
+        assert _is_clean_review("No blocking issues found.") is True
+        assert _is_clean_review("No blocking issues found") is True
+        assert _is_clean_review("No issues found.") is True
+        assert _is_clean_review("\n\n  No blocking issues found.  \n\n") is True
+        assert _is_clean_review("no blocking issues found.") is True  # case-insensitive
+
+    def test_clean_phrase_followed_by_anything_is_not_clean(self):
+        """Symmetric coverage to round-9: trailing prose still fails."""
+        from scripts.pr_validate.steps.codex_review import _is_clean_review
+
+        for text in (
+            "No blocking issues found.\nbut see comment",
+            "No issues found.\n\n## Verdict",
+            "No blocking issues found.\n---",
+        ):
+            assert _is_clean_review(text) is False, (
+                f"trailing content must FAIL: {text!r}"
+            )
