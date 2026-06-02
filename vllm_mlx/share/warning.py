@@ -7,6 +7,8 @@ of their share URL and bearer key.
 
 from __future__ import annotations
 
+import json
+import shlex
 import sys
 
 
@@ -20,12 +22,27 @@ def render(url: str, api_key: str, model: str) -> str:
     reset = "\033[0m" if _supports_color() else ""
     bold = "\033[1m" if _supports_color() else ""
 
+    # Quote every interpolated value before it lands in the copy-paste
+    # curl line. The key NEVER appears in argv: it goes into an env var
+    # the user exports first, so shell history doesn't capture it inline.
+    # (Bonus: most shells ignore leading-space lines via HISTCONTROL, so
+    # the export itself can also stay out of history — documented below.)
+    safe_url = shlex.quote(f"{url}/v1/chat/completions")
+    safe_body = shlex.quote(
+        json.dumps(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+        )
+    )
+
     return (
         f"\n{red}╔══════════════════════════════════════════════════════════════════╗{reset}\n"
         f"{red}║  ⚠  PUBLIC INTERNET — read this before sharing                   ║{reset}\n"
         f"{red}╠══════════════════════════════════════════════════════════════════╣{reset}\n"
-        f"{red}║{reset} rapid-mlx share is now exposing this Mac to the public internet.{red} ║{reset}\n"
-        f"{red}║{reset} Anyone who has the API key below can:                          {red}  ║{reset}\n"
+        f"{red}║{reset} rapid-mlx share is now exposing this machine to the public      {red} ║{reset}\n"
+        f"{red}║{reset} internet. Anyone who has the API key below can:                {red} ║{reset}\n"
         f"{red}║{reset}   • use your compute (free inference on your bill)              {red} ║{reset}\n"
         f"{red}║{reset}   • see every prompt and response that goes through              {red}║{reset}\n"
         f"{red}║{reset}                                                                  {red}║{reset}\n"
@@ -36,11 +53,12 @@ def render(url: str, api_key: str, model: str) -> str:
         f"  {bold}URL:{reset}    {url}\n"
         f"  {bold}Key:{reset}    {yellow}{api_key}{reset}\n"
         f"\n"
-        f"  Test it:\n"
-        f"    curl -sS {url}/v1/chat/completions \\\n"
-        f"      -H 'Authorization: Bearer {api_key}' \\\n"
+        f"  Test it (key stays out of shell history via env-var):\n"
+        f"    export RAPID_MLX_SHARE_KEY={yellow}<paste-key>{reset}\n"
+        f"    curl -sS {safe_url} \\\n"
+        f'      -H "Authorization: Bearer $RAPID_MLX_SHARE_KEY" \\\n'
         f"      -H 'Content-Type: application/json' \\\n"
-        f'      -d \'{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}\'\n'
+        f"      -d {safe_body}\n"
         f"\n"
         f"  Press Ctrl-C to stop sharing.\n"
     )

@@ -112,6 +112,49 @@ def _wait_for_healthz(
         time.sleep(1)
 
 
+def _verify_auth_gate(port: int, api_key: str) -> bool:
+    """Auth-gated proof that the process answering on ``port`` is OURS.
+
+    /healthz is unauthenticated by design (load-balancers need it). On a
+    busy host another local process can race us to the same port and
+    answer /healthz while having nothing to do with rapid-mlx — and the
+    tunnel would happily forward to it. We require an authenticated
+    /v1/models 200 with the freshly-generated bearer before requesting a
+    tunnel: only our serve has that key, so a 200 here means we're
+    pointing the tunnel at our own process.
+    """
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/models",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:  # noqa: S310
+            return r.status == 200
+    except (urllib.error.URLError, ConnectionError, ValueError):
+        return False
+
+
+def _wait_for_public_url(public_url: str, timeout: float = 15.0) -> bool:
+    """Confirm the tunnel is live by probing the public URL's /healthz.
+
+    Without this, frpc can stay up (process alive, TCP connected to frps)
+    while the proxy registration silently fails — the banner prints with
+    a URL that 502s. Bounded so we don't hang forever if Cloudflare /
+    frps are degraded.
+    """
+    url = f"{public_url.rstrip('/')}/healthz"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:  # noqa: S310
+                if r.status == 200:
+                    return True
+        except (urllib.error.URLError, ConnectionError):
+            pass
+        time.sleep(1)
+    return False
+
+
 def _spawn_serve(
     *,
     alias: str,
@@ -164,7 +207,11 @@ def _state_dir() -> Path:
 def share_command(args: argparse.Namespace) -> None:
     alias: str = args.model
     extra_serve_args: list[str] = []
-    if args.no_thinking:
+    # ``args.thinking`` comes from BooleanOptionalAction so ``--thinking``
+    # turns it on and ``--no-thinking`` (or the default) turns it off. We
+    # forward ``--no-thinking`` to serve only when explicitly disabled —
+    # serve's own default is on, so an explicit flag is needed.
+    if not args.thinking:
         extra_serve_args.append("--no-thinking")
     if args.cors_origins:
         extra_serve_args.extend(["--cors-origins", args.cors_origins])
@@ -210,19 +257,35 @@ def share_command(args: argparse.Namespace) -> None:
 
     signal.signal(signal.SIGTERM, _term_handler)
 
-    print(f"Starting rapid-mlx serve ({alias} on :{port})…", file=sys.stderr)
-    serve_proc = _spawn_serve(
-        alias=alias,
-        port=port,
-        api_key=api_key,
-        log_path=serve_log,
-        extra_args=extra_serve_args,
-    )
-
+    serve_proc: subprocess.Popen[bytes] | None = None
+    frpc_proc: subprocess.Popen[bytes] | None = None
+    config_path: Path | None = None
     try:
+        print(f"Starting rapid-mlx serve ({alias} on :{port})…", file=sys.stderr)
+        serve_proc = _spawn_serve(
+            alias=alias,
+            port=port,
+            api_key=api_key,
+            log_path=serve_log,
+            extra_args=extra_serve_args,
+        )
         if not _wait_for_healthz(port, serve_proc):
             print(
                 f"serve exited before becoming ready — see {serve_log}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # Auth-gated proof: even though /healthz returned 200, confirm the
+        # process answering on this port is ours (it has our key). On a
+        # busy host another local serve could win the race to bind the
+        # same port we asked for, and tunneling THAT process would leak
+        # someone else's model + their data. Bearer-gating /v1/models
+        # eliminates this class of bug — no other process has our key.
+        if not _verify_auth_gate(port, api_key):
+            print(
+                f"serve on :{port} did not answer authenticated /v1/models — "
+                f"another process may be bound to the same port. Aborting "
+                f"before opening a public tunnel.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -238,30 +301,43 @@ def share_command(args: argparse.Namespace) -> None:
             f"Starting frpc → {sess.subdomain}.{sess.frps_host.split('.', 1)[-1]}",
             file=sys.stderr,
         )
+        # render_config validates the relay-provided strings against
+        # strict allow-lists (see frpc_manager._validate_session_fields)
+        # so a hostile/buggy control plane can't inject TOML keys here.
+        try:
+            rendered = frpc_manager.render_config(
+                server_addr=sess.frps_host,
+                server_port=sess.frps_port,
+                auth_token=sess.token,
+                subdomain=sess.subdomain,
+                local_port=port,
+            )
+        except RuntimeError as exc:
+            print(f"share: {exc}", file=sys.stderr)
+            sys.exit(1)
         with tempfile.NamedTemporaryFile(
             "w", dir=state_dir, suffix=".toml", delete=False
         ) as f:
-            f.write(
-                frpc_manager.render_config(
-                    server_addr=sess.frps_host,
-                    server_port=sess.frps_port,
-                    auth_token=sess.token,
-                    subdomain=sess.subdomain,
-                    local_port=port,
-                )
-            )
+            f.write(rendered)
             config_path = Path(f.name)
         config_path.chmod(0o600)
         frpc_proc = frpc_manager.spawn(config_path, tunnel_log)
 
-        # frpc takes ~1-3s to establish. After the settling window, if
-        # the process has already exited we know the relay rejected the
-        # token / the config is malformed / frps is unreachable — bail
-        # instead of printing a URL pointing at a dead tunnel.
-        time.sleep(3)
+        # Liveness ladder: short settle, then poll the actual public URL.
+        # frpc can stay up (process alive, TCP connected to frps) while
+        # the proxy registration silently fails — printing a banner with
+        # a URL that 502s is worse than failing here.
+        time.sleep(1)
         if frpc_proc.poll() is not None:
             print(
                 f"frpc exited before tunnel was ready — see {tunnel_log}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not _wait_for_public_url(sess.public_url):
+            print(
+                f"tunnel did not respond at {sess.public_url} within 15s — "
+                f"see {tunnel_log}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -281,10 +357,7 @@ def share_command(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\nStopping share…", file=sys.stderr)
     finally:
-        for proc_name, proc in (
-            ("frpc", locals().get("frpc_proc")),
-            ("serve", serve_proc),
-        ):
+        for _name, proc in (("frpc", frpc_proc), ("serve", serve_proc)):
             if proc is None or proc.poll() is not None:
                 continue
             try:
@@ -295,9 +368,8 @@ def share_command(args: argparse.Namespace) -> None:
             except OSError:
                 pass
         # Wipe the frpc config — it contains the relay token.
-        cp = locals().get("config_path")
-        if isinstance(cp, Path):
-            cp.unlink(missing_ok=True)
+        if isinstance(config_path, Path):
+            config_path.unlink(missing_ok=True)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -324,13 +396,19 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "$RAPID_MLX_SHARE_PORT if set)"
         ),
     )
+    # BooleanOptionalAction is the only way to get both ``--thinking``
+    # and ``--no-thinking`` from a single declaration. The previous
+    # ``store_true`` + ``default=True`` was unreachable — there's no
+    # ``--no-no-thinking`` and the flag silently couldn't be disabled.
     p.add_argument(
-        "--no-thinking",
-        action="store_true",
-        default=True,
+        "--thinking",
+        action=argparse.BooleanOptionalAction,
+        default=False,
         help=(
-            "Pass --no-thinking to serve (default: on; chat UIs see "
-            "content immediately instead of waiting on a <think> prelude)"
+            "Forward thinking-mode behavior to serve. Default off "
+            "(``--no-thinking``) so chat UIs see content immediately "
+            "instead of waiting on a <think> prelude. Pass ``--thinking`` "
+            "to keep upstream defaults."
         ),
     )
     p.add_argument(

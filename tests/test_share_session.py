@@ -75,3 +75,43 @@ def test_request_raises_on_unreachable_with_dev_override_hint():
         pytest.raises(RuntimeError, match="RAPID_MLX_RELAY_URL"),
     ):
         session.request(model="qwen3.5-4b")
+
+
+def test_relay_base_url_rejects_plaintext_remote_override():
+    """Codex CONCERN: the override must NOT silently send a freshly-minted
+    bearer key to an arbitrary plaintext URL. HTTPS-only, except for
+    explicit loopback."""
+    with (
+        patch.dict("os.environ", {"RAPID_MLX_RELAY_URL": "http://attacker.example/"}),
+        pytest.raises(RuntimeError, match="unsafe"),
+    ):
+        session.relay_base_url()
+
+
+def test_relay_base_url_accepts_https_override():
+    with patch.dict(
+        "os.environ", {"RAPID_MLX_RELAY_URL": "https://staging.rapidmlx.com/"}
+    ):
+        assert session.relay_base_url() == "https://staging.rapidmlx.com"
+
+
+def test_relay_base_url_accepts_loopback_http_override():
+    """Local dev convenience — but only loopback, not arbitrary plaintext."""
+    with patch.dict("os.environ", {"RAPID_MLX_RELAY_URL": "http://127.0.0.1:8080"}):
+        assert session.relay_base_url() == "http://127.0.0.1:8080"
+
+
+def test_request_raises_runtimeerror_on_missing_field():
+    """DeepSeek BLOCKER #4: relay payload missing a field must surface as
+    a user-readable error, not a raw KeyError traceback."""
+    payload = {  # ``token`` deliberately absent
+        "subdomain": "abc123",
+        "frps_host": "tunnel.rapidmlx.com",
+        "frps_port": 7000,
+        "public_url": "https://abc123.rapidmlx.com",
+        "expires_at": "2026-06-02T12:00:00Z",
+    }
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value.__enter__.return_value = _ok_response(payload)
+        with pytest.raises(RuntimeError, match="unexpected response shape"):
+            session.request(model="qwen3.5-4b")

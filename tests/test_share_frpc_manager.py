@@ -144,3 +144,82 @@ def test_render_config_emits_valid_toml_shape():
     # Proxy block present and HTTP-typed (not TCP — required for subdomain routing).
     assert "[[proxies]]" in cfg
     assert 'type = "http"' in cfg
+
+
+def test_render_config_rejects_toml_injection_in_subdomain():
+    """Codex BLOCKER: relay strings are interpolated raw into TOML; a
+    subdomain like ``x"\\nauth.token = "attacker`` must be rejected, not
+    interpolated, or it would inject extra TOML keys."""
+    with pytest.raises(RuntimeError, match="subdomain"):
+        frpc_manager.render_config(
+            server_addr="tunnel.rapidmlx.com",
+            server_port=7000,
+            auth_token="t0ken",
+            subdomain='x"\nauth.token = "evil',
+            local_port=8765,
+        )
+
+
+def test_render_config_rejects_toml_injection_in_token():
+    with pytest.raises(RuntimeError, match="token"):
+        frpc_manager.render_config(
+            server_addr="tunnel.rapidmlx.com",
+            server_port=7000,
+            auth_token='evil"\nrootKey = "x',
+            subdomain="abc123",
+            local_port=8765,
+        )
+
+
+def test_render_config_rejects_malformed_server_addr():
+    with pytest.raises(RuntimeError, match="server_addr"):
+        frpc_manager.render_config(
+            server_addr='tunnel.rapidmlx.com"\nadminAddr = "evil',
+            server_port=7000,
+            auth_token="t0ken",
+            subdomain="abc123",
+            local_port=8765,
+        )
+
+
+def test_ensure_does_not_leave_partial_binary_on_extract_failure(tmp_path: Path):
+    """DeepSeek BLOCKER #2: if ``shutil.copyfileobj`` fails mid-extract
+    (disk full, broken pipe), we must NOT leave a half-written
+    ``frpc-<ver>`` that the next ``ensure()`` would happily reuse.
+    """
+    tarball = _fake_tarball(b"#!/fake/frpc\n")
+    expected_sha = hashlib.sha256(tarball).hexdigest()
+
+    def boom_copy(src, dst, *_):  # noqa: ARG001
+        # Simulate failure midway through extracting frpc.
+        raise OSError("disk full")
+
+    with (
+        patch.object(frpc_manager, "_cache_dir", return_value=tmp_path),
+        patch.dict(frpc_manager.FRPC_SHA256, {"darwin_arm64": expected_sha}),
+        patch("platform.system", return_value="Darwin"),
+        patch("platform.machine", return_value="arm64"),
+        patch.object(
+            frpc_manager,
+            "_download",
+            side_effect=lambda url, dest: Path(dest).write_bytes(tarball),
+        ),
+        patch("shutil.copyfileobj", side_effect=boom_copy),
+        pytest.raises(OSError, match="disk full"),
+    ):
+        frpc_manager.ensure()
+
+    # Crucial: NO ``frpc-<ver>`` and NO ``.part`` file left behind.
+    assert not (tmp_path / f"frpc-{FRPC_VERSION}").exists()
+    assert not (tmp_path / f"frpc-{FRPC_VERSION}.part").exists()
+
+
+def test_render_config_rejects_out_of_range_ports():
+    with pytest.raises(RuntimeError, match="port"):
+        frpc_manager.render_config(
+            server_addr="tunnel.rapidmlx.com",
+            server_port=70000,
+            auth_token="t0ken",
+            subdomain="abc123",
+            local_port=8765,
+        )

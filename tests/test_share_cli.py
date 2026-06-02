@@ -37,7 +37,7 @@ def _make_args(**overrides):
     defaults = dict(
         model="qwen3.5-4b",
         port=18765,  # explicit so the env-var fallback path isn't exercised
-        no_thinking=True,
+        thinking=False,  # default: forward --no-thinking to serve
         cors_origins="*",
     )
     defaults.update(overrides)
@@ -70,6 +70,8 @@ def test_share_command_happy_path(fake_session, capsys):
     with (
         patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
         patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_wait_for_public_url", return_value=True),
         patch.object(share_cli.session, "request", return_value=fake_session),
         patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
         patch.object(share_cli, "_pick_port", return_value=18765),
@@ -116,6 +118,8 @@ def test_share_command_aborts_when_frpc_dies_immediately(fake_session):
     with (
         patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
         patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_wait_for_public_url", return_value=True),
         patch.object(share_cli.session, "request", return_value=fake_session),
         patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
         patch.object(share_cli, "_pick_port", return_value=18765),
@@ -136,6 +140,7 @@ def test_share_command_surfaces_relay_failure(fake_session):
     with (
         patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
         patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
         patch.object(
             share_cli.session,
             "request",
@@ -228,6 +233,14 @@ def test_share_command_sigterm_runs_cleanup(fake_session):
     cleanup as Ctrl-C, otherwise the serve + frpc children orphan and
     keep a public tunnel open after the parent dies.
     """
+    # share_command installs its own SIGTERM handler (converting it to
+    # KeyboardInterrupt for cleanup). Without restoring the original,
+    # subsequent tests in the same process pick up that handler and any
+    # incidental SIGTERM (CI runner timeout, fixture teardown) raises an
+    # unrelated KeyboardInterrupt — flaky cross-test failure. Snapshot
+    # + restore here. (Codex / DeepSeek BLOCKER #3 on PR #504.)
+    original_sigterm = signal.getsignal(signal.SIGTERM)
+
     serve_proc = MagicMock()
     serve_proc.poll.return_value = None
 
@@ -252,6 +265,8 @@ def test_share_command_sigterm_runs_cleanup(fake_session):
     with (
         patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
         patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_wait_for_public_url", return_value=True),
         patch.object(share_cli.session, "request", return_value=fake_session),
         patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
         patch.object(share_cli, "_pick_port", return_value=18765),
@@ -260,10 +275,86 @@ def test_share_command_sigterm_runs_cleanup(fake_session):
         ),
         patch("time.sleep"),
     ):
-        share_cli.share_command(_make_args())
+        try:
+            share_cli.share_command(_make_args())
+        finally:
+            signal.signal(signal.SIGTERM, original_sigterm)
 
     serve_proc.terminate.assert_called_once()
     frpc_proc.terminate.assert_called_once()
+
+
+def test_share_command_aborts_if_auth_gate_fails(fake_session):
+    """Codex BLOCKER: if /v1/models doesn't 200 with our bearer key (e.g.
+    a different process raced us to the port), we must NOT open a tunnel
+    to it — that would relay random local traffic over a public URL.
+    """
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        # /healthz passed but /v1/models did not — port-race scenario.
+        patch.object(share_cli, "_verify_auth_gate", return_value=False),
+        # session.request must NEVER be called if the auth gate failed.
+        patch.object(share_cli.session, "request") as mock_session,
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(_make_args())
+
+    assert exc_info.value.code == 1
+    mock_session.assert_not_called()
+    serve_proc.terminate.assert_called_once()
+
+
+def test_share_command_aborts_if_public_url_unreachable(fake_session):
+    """Codex CONCERN: frpc can stay alive (TCP connected to frps) while
+    proxy registration silently fails. Don't print a banner with a URL
+    that 502s.
+    """
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+    frpc_proc = MagicMock()
+    frpc_proc.poll.return_value = None  # frpc still alive
+
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_wait_for_public_url", return_value=False),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(_make_args())
+
+    assert exc_info.value.code == 1
+    # BOTH children must be terminated, banner must NOT have printed.
+    serve_proc.terminate.assert_called_once()
+    frpc_proc.terminate.assert_called_once()
+
+
+def test_banner_does_not_inline_key_in_curl_command():
+    """Codex BLOCKER: the banner's copy-paste curl line must NOT embed the
+    bearer key in argv (= shell history). Use ``$RAPID_MLX_SHARE_KEY``."""
+    from vllm_mlx.share import warning
+
+    out = warning.render(
+        "https://abc.rapidmlx.com",
+        "REAL_KEY_42",
+        "mlx-community/X",
+    )
+    # The key still appears (so the user can see and export it), but the
+    # curl line itself reads from the env var, not the literal key.
+    assert "$RAPID_MLX_SHARE_KEY" in out
+    # Specifically: the curl example must not put the literal key in
+    # ``-H "Authorization: Bearer <KEY>"`` — that lands in shell history.
+    assert "Bearer REAL_KEY_42" not in out
 
 
 def test_resolve_served_model_name_sends_bearer():

@@ -18,12 +18,21 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
 from .. import __version__
 from ._constants import DEFAULT_RELAY_URL
+
+# Pulled out so the routing-shape audit
+# (tests/test_no_out_of_band_routing.py::test_no_routing_shaped_rapid_mlx_env_vars)
+# sees one clean RAPID_MLX_* literal — embedding it in an f-string error
+# message yields ``RAPID_MLX_RELAY_URL `` (with trailing space) which is
+# NOT in the allowlist and tripwires the audit.
+_RELAY_URL_ENV_VAR = "RAPID_MLX_RELAY_URL"
 
 
 @dataclass(frozen=True)
@@ -37,7 +46,36 @@ class Session:
 
 
 def relay_base_url() -> str:
-    return os.environ.get("RAPID_MLX_RELAY_URL", DEFAULT_RELAY_URL).rstrip("/")
+    """Resolve the control-plane URL.
+
+    The default is ``https://api.rapidmlx.com``. The ``RAPID_MLX_RELAY_URL``
+    override exists for docker-compose dev (``http://localhost:8080``) but
+    must NEVER silently send a freshly-minted bearer key to an arbitrary
+    plaintext URL — that would be a leak vector if an attacker can poison
+    the user's environment. So we require either HTTPS, or a loopback
+    target (``localhost``/``127.0.0.0/8``) for the override to apply.
+    """
+    override = os.environ.get(_RELAY_URL_ENV_VAR)
+    if override is None:
+        return DEFAULT_RELAY_URL.rstrip("/")
+    parsed = urllib.parse.urlparse(override)
+    host = (parsed.hostname or "").lower()
+    is_loopback = host == "localhost" or host.startswith("127.")
+    if parsed.scheme == "https":
+        return override.rstrip("/")
+    if parsed.scheme == "http" and is_loopback:
+        # Loud warning: the operator chose plaintext; it's their call but
+        # we don't want this to feel safe.
+        print(
+            f"rapid-mlx share: {_RELAY_URL_ENV_VAR} points at a plaintext "
+            f"loopback target — fine for local dev, NEVER for production.",
+            file=sys.stderr,
+        )
+        return override.rstrip("/")
+    raise RuntimeError(
+        f"{_RELAY_URL_ENV_VAR}={override!r} is unsafe: must be HTTPS, or "
+        f"http://localhost / http://127.0.0.0/8 for local dev."
+    )
 
 
 def request(model: str, *, timeout: float = 10.0) -> Session:
@@ -63,21 +101,31 @@ def request(model: str, *, timeout: float = 10.0) -> Session:
     except urllib.error.HTTPError as exc:
         raise RuntimeError(
             f"relay rejected share request (HTTP {exc.code}): {exc.reason}. "
-            f"If this is a dev environment, point RAPID_MLX_RELAY_URL at "
+            f"If this is a dev environment, point {_RELAY_URL_ENV_VAR} at "
             f"your local control plane."
         ) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(
             f"could not reach rapidmlx.com relay at {relay_base_url()}: "
             f"{exc.reason}. Check your network or override with "
-            f"RAPID_MLX_RELAY_URL=http://localhost:8080 for local dev."
+            f"{_RELAY_URL_ENV_VAR}=http://localhost:8080 for local dev."
         ) from exc
 
-    return Session(
-        subdomain=payload["subdomain"],
-        token=payload["token"],
-        frps_host=payload["frps_host"],
-        frps_port=int(payload["frps_port"]),
-        public_url=payload["public_url"],
-        expires_at=payload["expires_at"],
-    )
+    # The relay is owned by us but we want a clear user-readable error if
+    # a future schema change drops a field — better than a bare KeyError
+    # traceback that looks like a client bug.
+    try:
+        return Session(
+            subdomain=payload["subdomain"],
+            token=payload["token"],
+            frps_host=payload["frps_host"],
+            frps_port=int(payload["frps_port"]),
+            public_url=payload["public_url"],
+            expires_at=payload["expires_at"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"relay returned an unexpected response shape "
+            f"(missing/invalid field: {exc}). Upgrade rapid-mlx or check "
+            f"{_RELAY_URL_ENV_VAR}."
+        ) from exc
