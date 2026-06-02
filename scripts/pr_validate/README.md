@@ -136,8 +136,9 @@ rationale is genuinely overkill.
 
 ### `codex_review` (step 6, runs early)
 
-Sends the diff to `codex exec` (OpenAI gpt-5.5) with the prompt at
-`prompts/codex_review.md`. The prompt requires `[BLOCKING]`/`[NIT]`
+Sends the diff to `codex exec` (OpenAI gpt-5.5) with the prompt
+embedded as the `PROMPT_TEMPLATE` string constant in
+`steps/codex_review.py`. The prompt requires `[BLOCKING]`/`[NIT]`
 tiering on every finding (see "Code Review Philosophy" above). Only
 `[BLOCKING]` findings fail the gate; `[NIT]`s surface in the
 scorecard. Skips if `PR_VALIDATE_NO_CODEX=1` or the `codex` binary is

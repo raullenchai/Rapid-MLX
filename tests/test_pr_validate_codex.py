@@ -1484,97 +1484,42 @@ class TestRound10TransientMarkersAreStructured:
         )
 
 
-class TestRound11PromptLoadedFromMain:
-    """Codex round-11 BLOCKER on PR #505: the reviewer prompt was loaded
-    from the PR-controlled working tree via ``PROMPT_PATH.read_text()``.
-    An attacker PR that edits ``prompts/codex_review.md`` to remove the
-    `[BLOCKING]`/`[NIT]` taxonomy or instruct the model to "approve
-    everything" could weaken the gate that is supposed to review it.
+class TestRound12PromptEmbeddedAsConstant:
+    """Codex round-12 BLOCKER on PR #505: the round-11 ``git show main``
+    approach had a bootstrap problem — when this PR is itself adding
+    the prompt file, ``main:scripts/pr_validate/prompts/codex_review.md``
+    doesn't exist yet, so the step falls back to the PR-controlled
+    working tree on the very first run.
 
-    Fix: load the prompt from ``main`` via ``git show``. The OLD
-    (trusted) prompt always reviews the PR — including PRs that modify
-    the prompt itself.
+    Fix: embed the prompt as a string constant (``PROMPT_TEMPLATE``)
+    in ``codex_review.py``. The prompt now ships with the module
+    itself — no filesystem read, no git subprocess, no bootstrap
+    issue. Modifying the prompt requires editing reviewed Python code.
     """
 
-    def test_load_prompt_from_main_invokes_git_show(self, monkeypatch):
-        from scripts.pr_validate.steps.codex_review import _load_prompt_from_main
+    def test_prompt_template_is_string_constant(self):
+        """PROMPT_TEMPLATE must be a non-empty string baked into the module."""
+        from scripts.pr_validate.steps.codex_review import PROMPT_TEMPLATE
 
+        assert isinstance(PROMPT_TEMPLATE, str)
+        assert len(PROMPT_TEMPLATE) > 1000, (
+            "the embedded prompt is the actual reviewer prompt — multi-KB"
+        )
+        # Core gate-defining content must be present (catches accidental
+        # truncation / replacement during refactors).
+        assert "[BLOCKING]" in PROMPT_TEMPLATE
+        assert "[NIT]" in PROMPT_TEMPLATE
+        assert "No blocking issues found." in PROMPT_TEMPLATE
+        assert "Google" in PROMPT_TEMPLATE  # eng-practices reference
+
+    def test_step_uses_embedded_prompt_not_filesystem(self, monkeypatch, tmp_path):
+        """The codex input must contain PROMPT_TEMPLATE verbatim. We
+        verify by sentinel: the prompt's distinctive 'adversarial code
+        reviewer for Rapid-MLX' opening line must appear in the
+        assembled prompt sent to codex."""
         captured: dict = {}
 
-        class _Proc:
-            returncode = 0
-            stderr = ""
-            stdout = "TRUSTED PROMPT FROM MAIN"
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            return _Proc()
-
-        monkeypatch.setattr(
-            "scripts.pr_validate.steps.codex_review.subprocess.run", fake_run
-        )
-
-        assert _load_prompt_from_main() == "TRUSTED PROMPT FROM MAIN"
-        assert captured["cmd"][:2] == ["git", "show"]
-        assert captured["cmd"][2] == "main:scripts/pr_validate/prompts/codex_review.md"
-
-    def test_load_prompt_from_main_raises_on_nonzero_exit(self, monkeypatch):
-        from scripts.pr_validate.steps.codex_review import (
-            _load_prompt_from_main,
-            _PromptFromMainError,
-        )
-
-        class _Proc:
-            returncode = 128
-            stderr = "fatal: not a git repository"
-            stdout = ""
-
-        monkeypatch.setattr(
-            "scripts.pr_validate.steps.codex_review.subprocess.run",
-            lambda cmd, **kw: _Proc(),
-        )
-
-        with pytest.raises(_PromptFromMainError, match="not a git repository"):
-            _load_prompt_from_main()
-
-    def test_load_prompt_from_main_raises_on_empty_main(self, monkeypatch):
-        """Empty stdout from a successful git show means the file exists
-        on main but is empty — distinct from "main can't be read". We
-        still refuse because reviewing with an empty prompt is worse
-        than skipping."""
-        from scripts.pr_validate.steps.codex_review import (
-            _load_prompt_from_main,
-            _PromptFromMainError,
-        )
-
-        class _Proc:
-            returncode = 0
-            stderr = ""
-            stdout = "   \n   \n"
-
-        monkeypatch.setattr(
-            "scripts.pr_validate.steps.codex_review.subprocess.run",
-            lambda cmd, **kw: _Proc(),
-        )
-
-        with pytest.raises(_PromptFromMainError, match="empty prompt"):
-            _load_prompt_from_main()
-
-    def test_step_falls_back_to_working_tree_when_main_unreachable(
-        self, monkeypatch, tmp_path
-    ):
-        """Detached HEAD / shallow clone: main is unreachable. The step
-        must not hard-fail (would block PRs in pathological CI envs)
-        but should LOG that the gate is now PR-controllable for the run."""
-        captured_logs: list = []
-        captured_subproc: dict = {}
-
-        class _GitFailProc:
-            returncode = 128
-            stderr = "fatal: ambiguous argument 'main'"
-            stdout = ""
-
-        class _CodexProc:
+        class _FakeProc:
             returncode = 0
             stderr = ""
             stdout = json.dumps(
@@ -1588,10 +1533,9 @@ class TestRound11PromptLoadedFromMain:
             )
 
         def fake_run(cmd, **kwargs):
-            if cmd[:2] == ["git", "show"]:
-                return _GitFailProc()
-            captured_subproc["codex_input"] = kwargs.get("input", "")
-            return _CodexProc()
+            captured["input"] = kwargs.get("input", "")
+            captured["cmd"] = cmd
+            return _FakeProc()
 
         monkeypatch.setattr(
             "scripts.pr_validate.steps.codex_review.shutil.which",
@@ -1605,36 +1549,33 @@ class TestRound11PromptLoadedFromMain:
 
         from scripts.pr_validate.context import Context
 
-        ctx = Context(pr_number=505, verbose=True)
+        ctx = Context(pr_number=505)
         ctx.work_dir = tmp_path
         diff_path = tmp_path / "pr.diff"
         diff_path.write_text("diff --git a/x b/x\n")
         ctx.diff_path = diff_path
         ctx.pr_body = "x"
 
-        original_log = ctx.run_log
-        ctx.run_log = lambda msg: (captured_logs.append(msg), original_log(msg))
+        CodexReviewStep().run(ctx)
 
-        result = CodexReviewStep().run(ctx)
-
-        assert result.status == "pass"
-        assert any("could not read prompt from main" in m for m in captured_logs), (
-            "must surface the fact that the gate is now PR-controllable"
+        assert "adversarial code reviewer for Rapid-MLX" in captured["input"], (
+            "the embedded PROMPT_TEMPLATE constant must appear in the "
+            "assembled prompt sent to codex"
+        )
+        # No git subprocess: the step should NOT spawn `git show` —
+        # if it does, we have a regression back to round-11's approach
+        # with the bootstrap issue.
+        assert captured["cmd"][:2] != ["git", "show"], (
+            "round-12 fix: no `git show` subprocess for prompt loading"
         )
 
-    def test_step_reads_prompt_from_main_when_available(self, monkeypatch, tmp_path):
-        """Happy path: ``git show main:...`` succeeds. The system prompt
-        in the assembled codex input must be the main-branch content,
-        not the working-tree file (which could be PR-modified)."""
+    def test_step_runs_without_working_tree_prompt_file(self, monkeypatch, tmp_path):
+        """Symmetric coverage: deleting ``prompts/codex_review.md`` from
+        the working tree must NOT break the step — the embedded
+        constant is the canonical source. (Round-11's approach would
+        have errored without the file.)"""
 
-        class _GitProc:
-            returncode = 0
-            stderr = ""
-            stdout = "TRUSTED_PROMPT_SENTINEL_FROM_MAIN_BRANCH"
-
-        captured_input: dict = {}
-
-        class _CodexProc:
+        class _FakeProc:
             returncode = 0
             stderr = ""
             stdout = json.dumps(
@@ -1647,23 +1588,16 @@ class TestRound11PromptLoadedFromMain:
                 }
             )
 
-        def fake_run(cmd, **kwargs):
-            if cmd[:2] == ["git", "show"]:
-                return _GitProc()
-            captured_input["data"] = kwargs.get("input", "")
-            return _CodexProc()
-
         monkeypatch.setattr(
             "scripts.pr_validate.steps.codex_review.shutil.which",
             lambda _: "/usr/bin/codex-stub",
         )
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.codex_review.subprocess.run", fake_run
+            "scripts.pr_validate.steps.codex_review.subprocess.run",
+            lambda cmd, **kw: _FakeProc(),
         )
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "pyproject.toml").write_text(
-            "WORKING_TREE_PROMPT_THE_PR_TRIED_TO_INJECT"
-        )
+        (tmp_path / "pyproject.toml").write_text("")
 
         from scripts.pr_validate.context import Context
 
@@ -1674,9 +1608,9 @@ class TestRound11PromptLoadedFromMain:
         ctx.diff_path = diff_path
         ctx.pr_body = "x"
 
-        CodexReviewStep().run(ctx)
-
-        assert "TRUSTED_PROMPT_SENTINEL_FROM_MAIN_BRANCH" in captured_input["data"], (
-            "the prompt sent to codex must be the main-branch version, "
-            "not the PR-controlled working tree"
-        )
+        # Note: we deliberately do NOT create prompts/codex_review.md
+        # under tmp_path. Round-11 would have hit either the git
+        # fallback or the "prompt template missing" error path. The
+        # round-12 constant fix makes both irrelevant.
+        result = CodexReviewStep().run(ctx)
+        assert result.status == "pass"
