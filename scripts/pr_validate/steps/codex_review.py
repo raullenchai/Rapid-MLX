@@ -276,11 +276,18 @@ class CodexReviewStep(Step):
         content, usage = _parse_codex_jsonl(proc.stdout)
         if not content.strip():
             # Codex emitted only thread/turn events with no agent
-            # message — e.g. policy refusal. Surface for debugging.
+            # message — could be a benign policy refusal OR an
+            # attacker-induced response truncation. Either way the
+            # gate must NOT pass-silently: treat as ``fail`` so the
+            # PR can't slip through. Codex round-6 BLOCKER on PR #505.
             return StepResult(
                 name=self.name,
-                status="skip",
-                summary="codex returned no agent message",
+                status="fail",
+                summary=(
+                    "codex returned a zero-exit success but no agent message — "
+                    "policy refusal / truncation / format failure; re-run or "
+                    "address manually"
+                ),
                 details=f"```\n{proc.stdout[:1500]}\n```",
             )
 

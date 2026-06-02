@@ -140,9 +140,12 @@ Sends the diff to `codex exec` (OpenAI gpt-5.5) with the prompt at
 `prompts/codex_review.md`. The prompt requires `[BLOCKING]`/`[NIT]`
 tiering on every finding (see "Code Review Philosophy" above). Only
 `[BLOCKING]` findings fail the gate; `[NIT]`s surface in the
-scorecard. Skips if `PR_VALIDATE_NO_CODEX=1`, the `codex` binary is
-missing, or the codex CLI exits non-zero (e.g. not logged in, network
-outage) — don't block PRs on a flaky LLM backend.
+scorecard. Skips if `PR_VALIDATE_NO_CODEX=1` or the `codex` binary is
+missing. For non-zero codex exits, stderr is matched against a
+transient-backend marker list (network, auth, rate-limit, 5xx) — a
+match skips (flaky LLM mustn't block PRs), anything else fails (a
+malicious diff shouldn't be able to bypass review by inducing a
+crash). See "Failure-mode classification" below for the full table.
 
 Authentication: codex uses its own ChatGPT login at
 `~/.codex/auth.json`. No env var is read here; the repo is public and

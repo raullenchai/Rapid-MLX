@@ -703,6 +703,50 @@ class TestNonZeroExitDiscrimination:
         )
 
 
+class TestZeroExitEmptyContentFails:
+    """Codex round-6 BLOCKER on PR #505: a zero-exit codex run that
+    emits NO agent message (only thread/turn events) was previously
+    classified as ``skip`` — letting an empty/refused/truncated
+    successful response bypass the gate. Must be ``fail``.
+    """
+
+    def test_zero_exit_empty_stdout_fails(self, monkeypatch, tmp_path):
+        class _FakeProc:
+            returncode = 0
+            stderr = ""
+            # Only thread/turn events, no agent_message item.
+            stdout = "\n".join(
+                [
+                    json.dumps({"type": "thread.started"}),
+                    json.dumps({"type": "turn.started"}),
+                    json.dumps({"type": "turn.completed", "usage": {}}),
+                ]
+            )
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.shutil.which",
+            lambda _: "/usr/bin/codex-stub",
+        )
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run",
+            lambda *a, **kw: _FakeProc(),
+        )
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=1)
+        ctx.work_dir = tmp_path
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+
+        result = CodexReviewStep().run(ctx)
+        assert result.status == "fail"
+        assert "no agent message" in result.summary
+
+
 class TestMalformedReplyDoesNotPass:
     """Codex round-5 BLOCKER on PR #505: a non-empty Codex reply with no
     numbered findings AND no "no blocking issues found" phrase must
