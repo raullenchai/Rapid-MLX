@@ -357,6 +357,15 @@ def share_command(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\nStopping share…", file=sys.stderr)
     finally:
+        # DeepSeek round-2 NIT: if a second SIGTERM arrives mid-cleanup,
+        # the installed handler raises KeyboardInterrupt again and we
+        # leak the second child (serve). Ignore SIGTERM for the
+        # duration of cleanup — supervisor "kill -9" can still force
+        # us, that's fine.
+        try:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        except (ValueError, OSError):
+            pass
         for _name, proc in (("frpc", frpc_proc), ("serve", serve_proc)):
             if proc is None or proc.poll() is not None:
                 continue
