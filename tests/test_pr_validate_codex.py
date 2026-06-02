@@ -524,6 +524,66 @@ class TestPromptInjectionGuards:
             "diff content must sit between BEGIN and END markers"
         )
 
+    def test_codex_subprocess_runs_in_isolated_cwd(self, monkeypatch, tmp_path):
+        """Defence-in-depth: ``--sandbox read-only`` still permits reads,
+        so if a prompt-injection bypasses the in-prompt guards and the
+        model runs ``ls`` / ``cat *`` / ``find``, we want it to land in
+        an empty directory rather than the repo root (codex round-3
+        BLOCKER on PR #505). The cwd kwarg must NOT be the repo root
+        or any user dir — it must be an isolated temp dir."""
+        captured: dict = {}
+
+        class _FakeProc:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "agent_message",
+                        "text": "No blocking issues found.",
+                    },
+                }
+            )
+
+        def fake_run(cmd, **kwargs):
+            captured["cwd"] = kwargs.get("cwd")
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.shutil.which",
+            lambda _: "/usr/bin/codex-stub",
+        )
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run", fake_run
+        )
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=505)
+        ctx.work_dir = tmp_path
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+
+        CodexReviewStep().run(ctx)
+
+        cwd = captured["cwd"]
+        assert cwd is not None, "codex subprocess MUST be given a cwd= kwarg"
+        # The cwd must not be the repo root / pyproject parent — it has
+        # to be an isolated tempdir so the model can't `ls` into anything
+        # useful. We check by listing the dir contents *while it still
+        # exists* — but TemporaryDirectory has already cleaned up by the
+        # time run() returns. Instead, assert the path looks like a temp
+        # dir (system tempdir prefix) and contains the marker prefix
+        # we picked.
+        assert "codex-review-cwd-" in cwd, (
+            f"cwd should be a TemporaryDirectory with the codex-review prefix, "
+            f"got {cwd!r}"
+        )
+
     def test_final_instructions_appear_after_the_diff(self, monkeypatch, tmp_path):
         """Prompt-injection mitigation hinges on the no-tool-use rule
         getting the *last word*. An attacker writing 'ignore previous
@@ -541,6 +601,7 @@ class TestPromptInjectionGuards:
         # The final block must re-assert the no-tool-use rule (the
         # specific defence against 'invoke a shell tool to read repo'
         # injection attempts).
-        final_section = prompt[final_block_idx:]
-        assert "do not call tools" in final_section.lower()
-        assert "untrusted" in final_section.lower()
+        final_section = prompt[final_block_idx:].lower()
+        assert "do not call shell tools" in final_section
+        assert "do not read files" in final_section
+        assert "untrusted" in final_section
