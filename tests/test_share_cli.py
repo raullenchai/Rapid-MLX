@@ -669,6 +669,122 @@ def test_share_command_skips_download_gate_when_env_override_set():
         share_cli._maybe_confirm_download("mlx-community/Qwen3.5-4B-MLX-4bit")
 
 
+def test_share_command_forwards_original_alias_to_child(fake_session, capsys):
+    """Codex round-3 BLOCKING: ``main()`` rewrites ``args.model`` to the
+    HF repo before dispatching to share, stashing the user-typed alias
+    on ``args._original_alias``. share_command must forward the
+    ORIGINAL alias to the child ``serve`` subprocess — otherwise the
+    child runs without ``_model_alias`` and the public ``/v1/models``
+    advertises the HF id instead of the short name the user typed,
+    breaking clients configured with that alias.
+    """
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+    serve_proc.wait.side_effect = [KeyboardInterrupt, None]
+    frpc_proc = MagicMock()
+    frpc_proc.poll.return_value = None
+    frpc_proc.wait.return_value = None
+
+    args = _make_args()
+    # Simulate what cli.main() does before dispatch: rewrite to HF repo
+    # and stash the typed alias.
+    args.model = "mlx-community/Qwen3.5-4B-MLX-4bit"
+    args._original_alias = "qwen3.5-4b"
+
+    captured = {}
+
+    def fake_spawn_serve(**kwargs):
+        captured.update(kwargs)
+        return serve_proc
+
+    with (
+        patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn_serve),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_wait_for_public_url", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch.object(share_cli, "_maybe_confirm_download"),
+        patch("time.sleep"),
+    ):
+        share_cli.share_command(args)
+
+    # Child gets the SHORT alias, not the HF id — so its own main()
+    # rerun lands on the same _model_alias path as ``rapid-mlx serve``.
+    assert captured["alias"] == "qwen3.5-4b"
+
+
+def test_share_command_falls_back_to_args_model_when_no_original_alias(
+    fake_session,
+):
+    """When ``rapid-mlx share <raw HF id>`` is typed directly (no alias),
+    ``_original_alias`` is never set. The share command must fall back
+    to ``args.model`` rather than crashing on the missing attribute or
+    forwarding ``None`` to the child."""
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+    serve_proc.wait.side_effect = [KeyboardInterrupt, None]
+    frpc_proc = MagicMock()
+    frpc_proc.poll.return_value = None
+    frpc_proc.wait.return_value = None
+
+    args = _make_args(model="mlx-community/SomeRepo-MLX-4bit")
+    # No _original_alias — this is the raw-HF-id path.
+    captured = {}
+
+    def fake_spawn_serve(**kwargs):
+        captured.update(kwargs)
+        return serve_proc
+
+    with (
+        patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn_serve),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_wait_for_public_url", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(share_cli.frpc_manager, "spawn", return_value=frpc_proc),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch.object(share_cli, "_maybe_confirm_download"),
+        patch("time.sleep"),
+    ):
+        share_cli.share_command(args)
+
+    assert captured["alias"] == "mlx-community/SomeRepo-MLX-4bit"
+
+
+def test_share_command_surfaces_frpc_oserror(fake_session):
+    """Codex round-3: a local filesystem / exec error during frpc spawn
+    (disk full while extracting, PermissionError on the cache dir,
+    FileNotFoundError on the binary) raises OSError, which the prior
+    handler didn't catch — escaping as a raw traceback AFTER the serve
+    child was already started. The handler must cover OSError too."""
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        patch.object(
+            share_cli.frpc_manager,
+            "spawn",
+            side_effect=PermissionError("read-only cache dir"),
+        ),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch.object(share_cli, "_maybe_confirm_download"),
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(_make_args())
+
+    assert exc_info.value.code == 1
+    # The serve child was already up — must be terminated on the way
+    # out so we don't leak a process.
+    serve_proc.terminate.assert_called_once()
+
+
 def test_verify_auth_gate_rejects_unauthenticated_server():
     """Codex round-2 BLOCKING: a process started WITHOUT --api-key (e.g.
     a different OpenAI-compatible server that won the port race) returns

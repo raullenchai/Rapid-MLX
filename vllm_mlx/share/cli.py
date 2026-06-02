@@ -292,12 +292,26 @@ def _maybe_confirm_download(alias: str) -> None:
 
 
 def share_command(args: argparse.Namespace) -> None:
-    alias: str = args.model
+    # Codex round-2 BLOCKING: ``main()`` in ``vllm_mlx/cli.py`` runs
+    # alias resolution BEFORE dispatching to us — by the time we get
+    # here ``args.model`` is the rewritten HF repo (e.g.
+    # ``mlx-community/Qwen3.5-4B-MLX-4bit``) and the user-typed alias
+    # lives on ``args._original_alias`` (e.g. ``qwen3.5-4b``). The child
+    # ``serve`` subprocess re-runs alias resolution on whatever we pass
+    # it. We want the child to land the same way ``rapid-mlx serve
+    # qwen3.5-4b`` does — including setting ``_model_alias`` on the
+    # server so the public ``/v1/models`` endpoint advertises (and
+    # accepts) the short alias the user actually typed. So we forward
+    # the original alias to the child when one is set; fall back to
+    # ``args.model`` (HF repo) when share was called with a raw HF id.
+    alias: str = getattr(args, "_original_alias", None) or args.model
     # Mirror the B2 download-confirmation gate that ``cli.py`` applies to
     # chat/run/serve/pull/bench — share is not on that list, so without
     # this call a first-time ``rapid-mlx share <big-repo>`` would pull
-    # multi-GB of weights with no prompt.
-    _maybe_confirm_download(alias)
+    # multi-GB of weights with no prompt. The gate keys off
+    # ``args.model`` (HF repo) because the cache lookup uses the
+    # resolved id, not the typed alias.
+    _maybe_confirm_download(args.model)
     extra_serve_args: list[str] = []
     # ``args.thinking`` comes from BooleanOptionalAction so ``--thinking``
     # turns it on and ``--no-thinking`` (or the default) turns it off. We
@@ -438,7 +452,11 @@ def share_command(args: argparse.Namespace) -> None:
         # instead of bare tracebacks. (DeepSeek round-4 BLOCKER #2.)
         try:
             frpc_proc = frpc_manager.spawn(config_path, tunnel_log)
-        except (RuntimeError, urllib.error.URLError) as exc:
+        except (RuntimeError, urllib.error.URLError, OSError) as exc:
+            # OSError covers local-filesystem / exec failures: disk full
+            # while extracting the cached binary, PermissionError on the
+            # cache dir, ``FileNotFoundError`` if the binary disappeared
+            # between the cache check and ``Popen``. Codex round-3 P3.
             print(f"share: failed to start frpc tunnel: {exc}", file=sys.stderr)
             sys.exit(1)
 
