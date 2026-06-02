@@ -320,7 +320,18 @@ def share_command(args: argparse.Namespace) -> None:
     if not args.thinking:
         extra_serve_args.append("--no-thinking")
     if args.cors_origins:
-        extra_serve_args.extend(["--cors-origins", args.cors_origins])
+        # ``--cors-origins`` accepts ``nargs='+'`` — pass each value as a
+        # separate argv element so the child's argparse sees the same
+        # shape as a direct ``rapid-mlx serve --cors-origins ...`` call.
+        # A single-string value (legacy default) is wrapped in a list so
+        # the same code path handles both.
+        origins = (
+            args.cors_origins
+            if isinstance(args.cors_origins, list)
+            else [args.cors_origins]
+        )
+        extra_serve_args.append("--cors-origins")
+        extra_serve_args.extend(origins)
 
     api_key = secrets.token_hex(24)
     # Port parsing is lazy on purpose: validating RAPID_MLX_SHARE_PORT at
@@ -492,11 +503,36 @@ def share_command(args: argparse.Namespace) -> None:
             flush=True,
         )
 
-        # Block on the serve process; if it exits, share's done. Capture
-        # the exit code so we can surface a non-zero return to the caller
-        # — supervised runs need to distinguish "serve crashed" from
-        # "user pressed Ctrl-C" (the KeyboardInterrupt branch below).
-        serve_exit_code = serve_proc.wait()
+        # Monitor BOTH children: share is healthy only while serve AND
+        # frpc are running. Codex round-4 BLOCKING: blocking only on
+        # ``serve_proc.wait()`` meant share kept running with a dead
+        # public URL after an frpc crash / frps disconnect — the model
+        # stayed exposed locally but every public request 502'd. We
+        # poll once a second and exit as soon as either child dies.
+        # The slow tick is fine because both processes write to log
+        # files on their own; we only need to notice "exited", not
+        # forward output.
+        while True:
+            serve_rc = serve_proc.poll()
+            if serve_rc is not None:
+                serve_exit_code = serve_rc
+                break
+            frpc_rc = frpc_proc.poll()
+            if frpc_rc is not None:
+                # frpc died after the banner — the public URL is dead.
+                # Surface as a non-zero exit so supervisor wrappers
+                # restart us; keep the serve exit code 0 (it's still
+                # running, we'll terminate it in cleanup below).
+                print(
+                    f"share: frpc tunnel exited with status {frpc_rc} — "
+                    f"see {tunnel_log}. Stopping serve.",
+                    file=sys.stderr,
+                )
+                # Use a sentinel exit code distinct from serve crashes
+                # so log-readers can tell the two cases apart.
+                serve_exit_code = frpc_rc if frpc_rc != 0 else 1
+                break
+            time.sleep(1)
     except KeyboardInterrupt:
         print("\nStopping share…", file=sys.stderr)
     finally:
@@ -584,9 +620,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--cors-origins",
-        default="*",
+        nargs="+",
+        default=["*"],
+        metavar="ORIGIN",
         help=(
-            "Pass --cors-origins to serve (default: '*' so browser chat "
-            "UIs like Open WebUI work without extra config)"
+            "Pass --cors-origins to serve. Accepts multiple values, same "
+            "shape as ``rapid-mlx serve --cors-origins``. Default: '*' so "
+            "browser chat UIs like Open WebUI work without extra config. "
+            "Example: --cors-origins http://localhost:3000 https://myapp.com"
         ),
     )
