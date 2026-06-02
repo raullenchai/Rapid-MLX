@@ -123,16 +123,45 @@ def _verify_auth_gate(port: int, api_key: str) -> bool:
     /v1/models 200 with the freshly-generated bearer before requesting a
     tunnel: only our serve has that key, so a 200 here means we're
     pointing the tunnel at our own process.
+
+    Codex round-2 BLOCKING: a process started WITHOUT auth (any other
+    OpenAI-compatible server, or a rapid-mlx serve without --api-key)
+    returns 200 for every bearer header — so this gate would silently
+    accept it. To make the proof meaningful we also send a known-bad
+    key first: if THAT returns 200, the endpoint isn't auth-gated and
+    the answering process isn't ours. Only after the bad-key 401 do we
+    trust the real-key 200.
     """
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/v1/models",
-        headers={"Authorization": f"Bearer {api_key}"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=3) as r:  # noqa: S310
-            return r.status == 200
-    except (urllib.error.URLError, ConnectionError, ValueError):
+
+    def _probe(bearer: str) -> int | None:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/models",
+            headers={"Authorization": f"Bearer {bearer}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:  # noqa: S310
+                return r.status
+        except urllib.error.HTTPError as exc:
+            # 401/403 are legitimate "auth is wired up" signals; surface
+            # the code so the caller can distinguish "no auth at all"
+            # (200) from "auth enforced" (401/403).
+            return exc.code
+        except (urllib.error.URLError, ConnectionError, ValueError):
+            return None
+
+    # Step 1: a deliberately-wrong key must NOT return 200. If the
+    # answering process accepts any bearer it isn't ours.
+    # ``secrets.token_hex(24)`` matches the shape of the real key so a
+    # too-strict server can't reject by length/charset.
+    bad_status = _probe(secrets.token_hex(24))
+    if bad_status == 200:
         return False
+    # We accept anything-other-than-200 here (401/403/404/None) as
+    # "endpoint is auth-protected or unreachable" — both are fine for
+    # the gate; the real check is the next step.
+
+    # Step 2: the real key must return 200.
+    return _probe(api_key) == 200
 
 
 def _wait_for_public_url(public_url: str, timeout: float = 15.0) -> bool:

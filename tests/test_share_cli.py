@@ -669,6 +669,71 @@ def test_share_command_skips_download_gate_when_env_override_set():
         share_cli._maybe_confirm_download("mlx-community/Qwen3.5-4B-MLX-4bit")
 
 
+def test_verify_auth_gate_rejects_unauthenticated_server():
+    """Codex round-2 BLOCKING: a process started WITHOUT --api-key (e.g.
+    a different OpenAI-compatible server that won the port race) returns
+    200 for any Authorization header because there is no auth. Our gate
+    must NOT trust that 200 — otherwise we'd open a public tunnel to
+    someone else's process.
+
+    Simulate the no-auth path: every probe (bad key + good key) returns
+    200. The gate must report False.
+    """
+
+    class _OkResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    with patch("urllib.request.urlopen", return_value=_OkResp()):
+        assert share_cli._verify_auth_gate(18765, "real-key") is False
+
+
+def test_verify_auth_gate_accepts_properly_protected_server():
+    """The positive path: the bad key returns 401 and the real key
+    returns 200. That ordering — auth IS enforced, AND we hold the
+    correct key — is the only safe state for the gate to allow."""
+    call_count = {"n": 0}
+
+    def fake_urlopen(req, timeout):  # noqa: ARG001
+        call_count["n"] += 1
+        auth = dict(req.header_items()).get("Authorization", "")
+        if auth == "Bearer real-key":
+
+            class _Ok:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return False
+
+            return _Ok()
+        raise urllib.error.HTTPError(
+            req.full_url, 401, "Unauthorized", hdrs=None, fp=None
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        assert share_cli._verify_auth_gate(18765, "real-key") is True
+    # Both probes ran: bad-key check + real-key confirmation.
+    assert call_count["n"] == 2
+
+
+def test_verify_auth_gate_handles_unreachable_endpoint():
+    """If the answering process is offline / TCP-resets between probes
+    the gate must return False (defensive default), not crash."""
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.URLError("connection refused"),
+    ):
+        assert share_cli._verify_auth_gate(18765, "real-key") is False
+
+
 def test_share_command_skips_download_gate_for_chat_spawn_child():
     """When the chat REPL spawns ``rapid-mlx share`` as a child, the
     parent has already run the gate and set ``RAPID_MLX_CHAT_SPAWN=1``.
