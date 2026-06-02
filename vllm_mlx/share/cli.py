@@ -49,10 +49,22 @@ def _pick_port(preferred: int) -> int:
     raise RuntimeError("no free port available for share")
 
 
-def _wait_for_healthz(port: int, *, timeout_s: float = 180.0) -> bool:
-    deadline = time.time() + timeout_s
+def _wait_for_healthz(
+    port: int, serve_proc: subprocess.Popen[bytes] | None = None
+) -> bool:
+    """Poll /healthz until the child serve reports ready or exits.
+
+    No fixed timeout: a cold first-time pull of a 70B model legitimately
+    takes 10+ minutes, and silently SIGTERM-ing a healthy download is
+    one of the worst UX failure modes we can ship. Instead we watch the
+    child process — if it exits without ever serving /healthz we give
+    up, otherwise we wait as long as it takes. Caller can Ctrl-C any
+    time to abort.
+    """
     url = f"http://127.0.0.1:{port}/healthz"
-    while time.time() < deadline:
+    while True:
+        if serve_proc is not None and serve_proc.poll() is not None:
+            return False
         try:
             with urllib.request.urlopen(url, timeout=2) as r:
                 if r.status == 200:
@@ -60,7 +72,6 @@ def _wait_for_healthz(port: int, *, timeout_s: float = 180.0) -> bool:
         except (urllib.error.URLError, ConnectionError):
             pass
         time.sleep(1)
-    return False
 
 
 def _spawn_serve(
@@ -74,12 +85,17 @@ def _spawn_serve(
     # Use sys.executable + ``-m`` instead of the ``rapid-mlx`` script so
     # the share command works inside editable installs and CI environments
     # where the entrypoint script may not be on PATH.
+    # ``--host 127.0.0.1`` is load-bearing here: without it serve binds
+    # 0.0.0.0 and the bearer-key-gated API becomes reachable from anyone
+    # on the user's LAN, not just through the frp tunnel as intended.
     cmd = [
         sys.executable,
         "-m",
         "vllm_mlx.cli",
         "serve",
         alias,
+        "--host",
+        "127.0.0.1",
         "--port",
         str(port),
         "--api-key",
@@ -116,7 +132,25 @@ def share_command(args: argparse.Namespace) -> None:
         extra_serve_args.extend(["--cors-origins", args.cors_origins])
 
     api_key = secrets.token_hex(24)
-    port = _pick_port(args.port)
+    # Port parsing is lazy on purpose: validating RAPID_MLX_SHARE_PORT at
+    # parser-build time crashes ``rapid-mlx models`` (and every other
+    # unrelated subcommand) when the env var is set to garbage.
+    raw_port = os.environ.get("RAPID_MLX_SHARE_PORT") if args.port is None else None
+    try:
+        preferred_port = int(raw_port) if raw_port is not None else (args.port or 8765)
+    except ValueError:
+        print(
+            f"RAPID_MLX_SHARE_PORT must be an integer (got {raw_port!r})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if not (1 <= preferred_port <= 65535):
+        print(
+            f"share port {preferred_port} is outside the valid range (1-65535)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    port = _pick_port(preferred_port)
     state_dir = _state_dir()
     serve_log = state_dir / "serve.log"
     tunnel_log = state_dir / "tunnel.log"
@@ -131,9 +165,9 @@ def share_command(args: argparse.Namespace) -> None:
     )
 
     try:
-        if not _wait_for_healthz(port):
+        if not _wait_for_healthz(port, serve_proc):
             print(
-                f"serve never became ready — see {serve_log}",
+                f"serve exited before becoming ready — see {serve_log}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -165,10 +199,17 @@ def share_command(args: argparse.Namespace) -> None:
         config_path.chmod(0o600)
         frpc_proc = frpc_manager.spawn(config_path, tunnel_log)
 
-        # frpc takes ~1-3s to establish; we don't have a clean ready
-        # signal short of parsing its log, so a short sleep + best-effort
-        # health probe through the public URL keeps the UX honest.
+        # frpc takes ~1-3s to establish. After the settling window, if
+        # the process has already exited we know the relay rejected the
+        # token / the config is malformed / frps is unreachable — bail
+        # instead of printing a URL pointing at a dead tunnel.
         time.sleep(3)
+        if frpc_proc.poll() is not None:
+            print(
+                f"frpc exited before tunnel was ready — see {tunnel_log}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         print(warning.render(sess.public_url, api_key, alias))
 
@@ -211,8 +252,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("RAPID_MLX_SHARE_PORT", "8765")),
-        help="Local port to bind serve to (default: 8765)",
+        default=None,
+        help=(
+            "Local port to bind serve to (default: 8765, or "
+            "$RAPID_MLX_SHARE_PORT if set)"
+        ),
     )
     p.add_argument(
         "--no-thinking",

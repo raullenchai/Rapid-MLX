@@ -21,7 +21,7 @@ from vllm_mlx.share.session import Session
 def _make_args(**overrides):
     defaults = dict(
         model="qwen3.5-4b",
-        port=18765,
+        port=18765,  # explicit so the env-var fallback path isn't exercised
         no_thinking=True,
         cors_origins="*",
     )
@@ -74,21 +74,42 @@ def test_share_command_happy_path(fake_session, capsys):
     frpc_proc.terminate.assert_called_once()
 
 
-def test_share_command_aborts_when_healthz_never_ready(fake_session):
+def test_share_command_aborts_when_serve_exits_before_ready(fake_session):
     serve_proc = MagicMock()
-    serve_proc.poll.return_value = None
+    serve_proc.poll.return_value = 1  # already exited; cleanup is a no-op
 
     with patch.object(share_cli, "_spawn_serve", return_value=serve_proc), patch.object(
         share_cli, "_wait_for_healthz", return_value=False
     ), patch.object(share_cli, "_pick_port", return_value=18765), patch(
         "time.sleep"
-    ):
-        with pytest.raises(SystemExit) as exc_info:
+    ), pytest.raises(SystemExit) as exc_info:
             share_cli.share_command(_make_args())
 
     assert exc_info.value.code == 1
-    # Serve must still be torn down — leaking processes on failure is the
-    # most user-hostile bug class for this command.
+    # Process is already dead; we shouldn't bother re-terminating it.
+    serve_proc.terminate.assert_not_called()
+
+
+def test_share_command_aborts_when_frpc_dies_immediately(fake_session):
+    """Codex review P2: dead frpc must not produce a "share ready" banner."""
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+    frpc_proc = MagicMock()
+    frpc_proc.poll.return_value = 2  # frpc exited during 3s settle window
+
+    with patch.object(share_cli, "_spawn_serve", return_value=serve_proc), patch.object(
+        share_cli, "_wait_for_healthz", return_value=True
+    ), patch.object(
+        share_cli.session, "request", return_value=fake_session
+    ), patch.object(
+        share_cli.frpc_manager, "spawn", return_value=frpc_proc
+    ), patch.object(share_cli, "_pick_port", return_value=18765), patch(
+        "time.sleep"
+    ), pytest.raises(SystemExit) as exc_info:
+            share_cli.share_command(_make_args())
+
+    assert exc_info.value.code == 1
+    # Serve was alive (poll=None) so cleanup terminates it.
     serve_proc.terminate.assert_called_once()
 
 
@@ -102,8 +123,9 @@ def test_share_command_surfaces_relay_failure(fake_session):
         share_cli.session,
         "request",
         side_effect=RuntimeError("relay unreachable"),
-    ), patch.object(share_cli, "_pick_port", return_value=18765), patch("time.sleep"):
-        with pytest.raises(SystemExit) as exc_info:
+    ), patch.object(share_cli, "_pick_port", return_value=18765), patch(
+        "time.sleep"
+    ), pytest.raises(SystemExit) as exc_info:
             share_cli.share_command(_make_args())
 
     assert exc_info.value.code == 1
@@ -120,3 +142,53 @@ def test_register_adds_share_to_subparsers():
     assert args.command == "share"
     assert args.model == "qwen3.5-4b"
     assert args.cors_origins == "*"
+    # ``--port`` defaults to None so the env-var lookup happens lazily
+    # inside share_command. If we eager-int(env) at parser build time,
+    # a malformed RAPID_MLX_SHARE_PORT would crash unrelated subcommands.
+    assert args.port is None
+
+
+def test_share_command_rejects_garbage_port_env(monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_SHARE_PORT", "not-a-number")
+    args = _make_args(port=None)
+    with pytest.raises(SystemExit) as exc_info:
+        share_cli.share_command(args)
+    assert exc_info.value.code == 2
+
+
+def test_share_command_rejects_out_of_range_port():
+    args = _make_args(port=70000)
+    with pytest.raises(SystemExit) as exc_info:
+        share_cli.share_command(args)
+    assert exc_info.value.code == 2
+
+
+def test_spawn_serve_passes_loopback_host():
+    """Codex review P2: serve must bind 127.0.0.1, not 0.0.0.0."""
+    with patch("subprocess.Popen") as mock_popen, patch(
+        "pathlib.Path.open"
+    ) as mock_open:
+        mock_open.return_value = MagicMock()
+        share_cli._spawn_serve(
+            alias="qwen3.5-4b",
+            port=18765,
+            api_key="key",
+            log_path=share_cli._state_dir() / "serve.log",
+            extra_args=[],
+        )
+    cmd = mock_popen.call_args[0][0]
+    # The pair must appear adjacently — argparse rejects "--host" without a value.
+    host_idx = cmd.index("--host")
+    assert cmd[host_idx + 1] == "127.0.0.1"
+
+
+def test_wait_for_healthz_returns_false_if_serve_exits():
+    """Codex review P2: bounded poll on serve_proc.poll(), not a wall clock."""
+    serve_proc = MagicMock()
+    # Simulate serve exiting on the third poll without /healthz ever responding.
+    serve_proc.poll.side_effect = [None, None, 1]
+    with patch("urllib.request.urlopen", side_effect=ConnectionError), patch(
+        "time.sleep"
+    ):
+        result = share_cli._wait_for_healthz(18765, serve_proc)
+    assert result is False

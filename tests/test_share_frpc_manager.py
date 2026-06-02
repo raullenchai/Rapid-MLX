@@ -43,17 +43,17 @@ def test_platform_tag_recognized_on_supported_hosts():
 
 
 def test_platform_tag_rejects_unsupported_os():
-    with patch("platform.system", return_value="Windows"):
-        with pytest.raises(RuntimeError, match="only supported on macOS and Linux"):
-            frpc_manager._platform_tag()
+    with patch("platform.system", return_value="Windows"), pytest.raises(
+        RuntimeError, match="only supported on macOS and Linux"
+    ):
+        frpc_manager._platform_tag()
 
 
 def test_platform_tag_rejects_unsupported_arch():
     with patch("platform.system", return_value="Linux"), patch(
         "platform.machine", return_value="riscv64"
-    ):
-        with pytest.raises(RuntimeError, match="riscv64"):
-            frpc_manager._platform_tag()
+    ), pytest.raises(RuntimeError, match="riscv64"):
+        frpc_manager._platform_tag()
 
 
 def test_ensure_downloads_verifies_and_extracts(tmp_path: Path):
@@ -88,9 +88,8 @@ def test_ensure_rejects_corrupted_download(tmp_path: Path):
         frpc_manager,
         "_download",
         side_effect=lambda url, dest: Path(dest).write_bytes(tarball),
-    ):
-        with pytest.raises(RuntimeError, match="sha256 mismatch"):
-            frpc_manager.ensure()
+    ), pytest.raises(RuntimeError, match="sha256 mismatch"):
+        frpc_manager.ensure()
 
     # Mismatch path must not leave a stale binary or tmp file behind that
     # a subsequent call would silently reuse.
