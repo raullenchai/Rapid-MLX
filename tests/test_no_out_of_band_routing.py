@@ -133,6 +133,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # ``rapid-mlx share`` local-port override for the spawned serve
         # subprocess. UX knob; not consulted by the engine or scheduler.
         "RAPID_MLX_SHARE_PORT",
+        # Server-side: fallback for ``--api-key`` when the inline flag is
+        # not provided. Used by ``rapid-mlx share`` to avoid exposing the
+        # bearer key in argv (visible to ``ps`` for any local user).
+        # Pure auth-config knob; routing decisions never read it.
+        "RAPID_MLX_API_KEY",
     }
 )
 

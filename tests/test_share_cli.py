@@ -215,6 +215,32 @@ def test_spawn_serve_passes_loopback_host():
     assert cmd[host_idx + 1] == "127.0.0.1"
 
 
+def test_spawn_serve_passes_api_key_via_env_not_argv():
+    """DeepSeek BLOCKING round 3: ``--api-key <KEY>`` in argv leaks the
+    secret to every local user via ``ps``. The bearer must travel as
+    ``RAPID_MLX_API_KEY`` in the subprocess environment instead.
+    """
+    with (
+        patch("subprocess.Popen") as mock_popen,
+        patch("pathlib.Path.open") as mock_open,
+    ):
+        mock_open.return_value = MagicMock()
+        share_cli._spawn_serve(
+            alias="qwen3.5-4b",
+            port=18765,
+            api_key="TOPSECRETKEY",
+            log_path=share_cli._state_dir() / "serve.log",
+            extra_args=[],
+        )
+    cmd = mock_popen.call_args[0][0]
+    env = mock_popen.call_args[1]["env"]
+    # 1) Argv must NOT contain --api-key or the secret value anywhere.
+    assert "--api-key" not in cmd, "key would be visible to `ps`"
+    assert "TOPSECRETKEY" not in cmd, "secret leaked into argv"
+    # 2) The env var IS set so serve can pick it up.
+    assert env.get("RAPID_MLX_API_KEY") == "TOPSECRETKEY"
+
+
 def test_wait_for_healthz_returns_false_if_serve_exits():
     """Codex review P2: bounded poll on serve_proc.poll(), not a wall clock."""
     serve_proc = MagicMock()

@@ -169,6 +169,12 @@ def _spawn_serve(
     # ``--host 127.0.0.1`` is load-bearing here: without it serve binds
     # 0.0.0.0 and the bearer-key-gated API becomes reachable from anyone
     # on the user's LAN, not just through the frp tunnel as intended.
+    #
+    # The bearer key is passed via ``RAPID_MLX_API_KEY`` env var, NOT
+    # argv. ``ps`` exposes argv to every local user — landing the key
+    # there leaks the secret that gates the public tunnel. The env var
+    # is only visible to the owning process (and root). (DeepSeek
+    # BLOCKING on PR #504 round 3.)
     cmd = [
         sys.executable,
         "-m",
@@ -179,18 +185,27 @@ def _spawn_serve(
         "127.0.0.1",
         "--port",
         str(port),
-        "--api-key",
-        api_key,
         "--log-level",
         "INFO",
         *extra_args,
     ]
+    env = dict(os.environ)
+    env["RAPID_MLX_API_KEY"] = api_key
     log_fp = log_path.open("ab", buffering=0)
+    # Tighten permissions: log files default to umask-derived modes
+    # (often 644 = world-readable). If serve ever logs the key as part
+    # of an error or debug line, world-read leaks it. 600 forces
+    # owner-only. (DeepSeek round-3 NIT #3.)
+    try:
+        Path(log_fp.name).chmod(0o600)
+    except OSError:
+        pass
     return subprocess.Popen(
         cmd,
         stdout=log_fp,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
+        env=env,
         # New process group so Ctrl-C in our terminal doesn't deliver
         # SIGINT to serve before we've had a chance to tear down frpc.
         start_new_session=True,
@@ -252,10 +267,14 @@ def share_command(args: argparse.Namespace) -> None:
     # block runs cleanup. Without this, a supervisor (systemd, docker,
     # ``kill <pid>``) terminates the share parent and orphans the serve
     # + frpc children, leaking a public tunnel until the user notices.
+    # ``original_sigterm`` is the handler we replace; we restore it on
+    # function exit so future code in the same process (e.g.
+    # command-chaining) sees the prior behavior instead of inheriting
+    # our KeyboardInterrupt translator. (DeepSeek round-3 NIT #2.)
     def _term_handler(signum, frame):  # noqa: ARG001
         raise KeyboardInterrupt
 
-    signal.signal(signal.SIGTERM, _term_handler)
+    original_sigterm = signal.signal(signal.SIGTERM, _term_handler)
 
     serve_proc: subprocess.Popen[bytes] | None = None
     frpc_proc: subprocess.Popen[bytes] | None = None
@@ -379,6 +398,12 @@ def share_command(args: argparse.Namespace) -> None:
         # Wipe the frpc config — it contains the relay token.
         if isinstance(config_path, Path):
             config_path.unlink(missing_ok=True)
+        # Restore whatever SIGTERM handler we replaced. Keeps share_command
+        # idempotent within the same Python process.
+        try:
+            signal.signal(signal.SIGTERM, original_sigterm)
+        except (ValueError, OSError, TypeError):
+            pass
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
