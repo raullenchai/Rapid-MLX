@@ -81,7 +81,11 @@ def _resolve_served_model_name(port: int, api_key: str) -> str | None:
         data = payload.get("data") or []
         if data and isinstance(data[0], dict):
             return data[0].get("id")
-    except (urllib.error.URLError, ConnectionError, ValueError):
+    except (urllib.error.URLError, ConnectionError, TimeoutError, ValueError):
+        # ``TimeoutError`` (== ``socket.timeout`` since Python 3.10) is
+        # NOT a ``URLError`` subclass — urlopen raises it bare when a
+        # TCP connection is accepted but the server stalls before
+        # sending headers. Codex round-5 BLOCKING.
         return None
     return None
 
@@ -108,7 +112,12 @@ def _wait_for_healthz(port: int, serve_proc: subprocess.Popen[bytes]) -> bool:
             with urllib.request.urlopen(url, timeout=2) as r:
                 if r.status == 200:
                     return True
-        except (urllib.error.URLError, ConnectionError):
+        except (urllib.error.URLError, ConnectionError, TimeoutError):
+            # ``TimeoutError`` is NOT a ``URLError`` subclass — urlopen
+            # raises it bare when the TCP connection is accepted but
+            # the server stalls before sending headers. Without this
+            # branch a stalled /healthz escapes as a raw traceback
+            # instead of being retried until serve exits or comes up.
             pass
         time.sleep(1)
 
@@ -146,7 +155,11 @@ def _verify_auth_gate(port: int, api_key: str) -> bool:
             # the code so the caller can distinguish "no auth at all"
             # (200) from "auth enforced" (401/403).
             return exc.code
-        except (urllib.error.URLError, ConnectionError, ValueError):
+        except (urllib.error.URLError, ConnectionError, TimeoutError, ValueError):
+            # ``TimeoutError`` (== ``socket.timeout`` in Python 3.10+) is
+            # raised bare by urlopen on connect-then-stall. Catching only
+            # URLError would let a degraded local server escape as a raw
+            # traceback during the auth gate.
             return None
 
     # Step 1: a deliberately-wrong key must NOT return 200. If the
@@ -184,7 +197,14 @@ def _wait_for_public_url(public_url: str, timeout: float = 15.0) -> bool:
             with urllib.request.urlopen(req, timeout=3) as r:  # noqa: S310
                 if r.status == 200:
                     return True
-        except (urllib.error.URLError, ConnectionError):
+        except (urllib.error.URLError, ConnectionError, TimeoutError):
+            # ``TimeoutError`` (== ``socket.timeout`` in Python 3.10+)
+            # is what urlopen raises when the TCP connection is accepted
+            # but the tunnel stalls before sending headers — a real-world
+            # frps-degraded scenario codex empirically reproduced in
+            # round 5. Catching only URLError would let the probe escape
+            # as a raw traceback instead of polling until the 15s
+            # deadline and reporting the intended tunnel failure message.
             pass
         time.sleep(1)
     return False

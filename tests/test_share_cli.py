@@ -306,6 +306,81 @@ def test_wait_for_public_url_sends_user_agent_header():
     )
 
 
+def test_wait_for_public_url_handles_timeout_error():
+    """Codex round-5 BLOCKING: ``urlopen(..., timeout=3)`` raises bare
+    ``TimeoutError`` (== ``socket.timeout`` in Python 3.10+) when the
+    TCP connection is accepted but the server stalls before sending
+    headers — this is NOT a ``URLError`` subclass. The previous
+    handler caught only URLError/ConnectionError, so a stalled tunnel
+    escaped as a raw traceback instead of polling until the 15s
+    deadline.
+
+    Verifies the probe swallows ``TimeoutError`` and falls through to
+    the deadline as ``False``.
+    """
+    # Patch time.monotonic so the loop deadline is reached after one
+    # urlopen call; otherwise the test would real-time wait 15 seconds.
+    t = {"now": 0.0}
+
+    def _mono():
+        t["now"] += 4.0  # past the 15s deadline after a few ticks
+        return t["now"]
+
+    with (
+        patch("urllib.request.urlopen", side_effect=TimeoutError("stalled")),
+        patch("time.sleep"),
+        patch("time.monotonic", side_effect=_mono),
+    ):
+        # Should NOT raise — TimeoutError gets swallowed and the loop
+        # eventually returns False on deadline.
+        result = share_cli._wait_for_public_url("https://abc.rapidmlx.com")
+    assert result is False
+
+
+def test_wait_for_healthz_handles_timeout_error():
+    """Same exception family as the public-url probe — ``_wait_for_healthz``
+    must also tolerate ``TimeoutError`` from a stalled local serve.
+    Otherwise an unhealthy serve that accepts connections but never
+    answers would crash the share parent with a raw traceback instead
+    of being caught by the ``serve_proc.poll()`` exit check."""
+    serve_proc = MagicMock()
+    # First poll: still running (so the loop iterates). Second poll
+    # (post-TimeoutError, post-sleep): exited — break out.
+    serve_proc.poll.side_effect = [None, 1, 1]
+
+    with (
+        patch("urllib.request.urlopen", side_effect=TimeoutError("stalled")),
+        patch("time.sleep"),
+    ):
+        result = share_cli._wait_for_healthz(18765, serve_proc)
+    # TimeoutError was swallowed; the loop saw serve exit on the second
+    # poll and returned False.
+    assert result is False
+
+
+def test_verify_auth_gate_handles_timeout_error():
+    """The auth-gate probes also raise bare ``TimeoutError`` on a
+    stalled local server. Returning False (rather than escaping a
+    traceback) is the correct safe default — the tunnel must NOT be
+    opened against an unverifiable endpoint."""
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=TimeoutError("connect-then-stall"),
+    ):
+        assert share_cli._verify_auth_gate(18765, "real-key") is False
+
+
+def test_resolve_served_model_name_handles_timeout_error():
+    """``_resolve_served_model_name`` falls back to the user-typed alias
+    when the probe fails. A stalled serve must NOT crash the banner —
+    it should just take the fallback path silently."""
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=TimeoutError("stalled"),
+    ):
+        assert share_cli._resolve_served_model_name(18765, "key") is None
+
+
 def test_share_command_sigterm_runs_cleanup(fake_session):
     """SIGTERM (systemd / supervisor kill) must trigger the same
     cleanup as Ctrl-C, otherwise the serve + frpc children orphan and

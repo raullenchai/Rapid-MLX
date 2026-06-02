@@ -132,6 +132,19 @@ def request(model: str, *, timeout: float = 10.0) -> Session:
             f"{exc.reason}. Check your network or override with "
             f"{_RELAY_URL_ENV_VAR}=http://localhost:8080 for local dev."
         ) from exc
+    except TimeoutError as exc:
+        # ``TimeoutError`` (== ``socket.timeout`` in Python 3.10+) is
+        # NOT a ``URLError`` subclass — urlopen raises it bare when the
+        # TCP connection is accepted but the relay stalls before
+        # sending headers. Without this branch a stalled control plane
+        # leaks as a raw traceback instead of the intended
+        # "could not reach rapidmlx.com relay" message. (Codex round-5
+        # BLOCKING, same exception family as share/cli.py probes.)
+        raise RuntimeError(
+            f"timed out waiting for rapidmlx.com relay at {relay_base_url()}. "
+            f"Check your network or override with "
+            f"{_RELAY_URL_ENV_VAR}=http://localhost:8080 for local dev."
+        ) from exc
     except (json.JSONDecodeError, ValueError) as exc:
         # The 2xx-body-is-malformed-JSON path — common if a reverse proxy
         # serves an HTML error page in front of the relay. Without this

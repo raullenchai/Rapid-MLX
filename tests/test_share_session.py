@@ -131,6 +131,21 @@ def test_relay_base_url_accepts_ipv6_loopback():
         assert session.relay_base_url() == "http://[::1]:8080"
 
 
+def test_request_raises_runtimeerror_on_timeout():
+    """Codex round-5 BLOCKING: ``urllib.request.urlopen(..., timeout=10)``
+    raises bare ``TimeoutError`` (== ``socket.timeout`` in Python 3.10+)
+    when the TCP connection is accepted but the relay stalls before
+    sending headers. ``TimeoutError`` is NOT a ``URLError`` subclass,
+    so the previous handler let it escape as a raw traceback instead
+    of the intended "could not reach rapidmlx.com relay" message.
+    """
+    with (
+        patch("urllib.request.urlopen", side_effect=TimeoutError("stalled")),
+        pytest.raises(RuntimeError, match="timed out"),
+    ):
+        session.request(model="qwen3.5-4b")
+
+
 def test_request_raises_runtimeerror_on_invalid_json_body():
     """DeepSeek round-4 BLOCKER #1: a 2xx response with non-JSON body
     (e.g. an upstream proxy serving an HTML error page) must surface
