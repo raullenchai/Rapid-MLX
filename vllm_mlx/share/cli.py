@@ -57,7 +57,7 @@ def _pick_port(preferred: int) -> int:
     raise RuntimeError("no free port available for share")
 
 
-def _resolve_served_model_name(port: int) -> str | None:
+def _resolve_served_model_name(port: int, api_key: str) -> str | None:
     """Read the model id rapid-mlx serve is exposing via /v1/models.
 
     The CLI accepts a short alias (``qwen3.5-4b``) but the OpenAI
@@ -65,11 +65,17 @@ def _resolve_served_model_name(port: int) -> str | None:
     (``mlx-community/Qwen3.5-4B-MLX-4bit``). Without this lookup the
     curl example we paste into the security banner fails on first
     try — a confusing UX for the user (and their friend).
+
+    ``api_key`` is required because we spawn serve with ``--api-key``
+    so /v1/models is bearer-gated; without the header the probe 401s
+    and silently falls back to the alias.
     """
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/models",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
     try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/v1/models", timeout=2
-        ) as r:
+        with urllib.request.urlopen(req, timeout=2) as r:
             import json
 
             payload = json.load(r)
@@ -264,7 +270,7 @@ def share_command(args: argparse.Namespace) -> None:
         # short alias the user typed — so the curl example needs that
         # name to actually run. Falls back to the typed alias if the
         # /v1/models probe fails (the banner still prints).
-        display_model = _resolve_served_model_name(port) or alias
+        display_model = _resolve_served_model_name(port, api_key) or alias
         # ``flush=True`` is load-bearing: when stdout is a pipe
         # (``rapid-mlx share … | tee``), Python block-buffers and the
         # banner doesn't reach the terminal until the process exits.

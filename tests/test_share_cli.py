@@ -258,3 +258,36 @@ def test_share_command_sigterm_runs_cleanup(fake_session):
 
     serve_proc.terminate.assert_called_once()
     frpc_proc.terminate.assert_called_once()
+
+
+def test_resolve_served_model_name_sends_bearer():
+    """Codex round-3 P2: serve is launched with --api-key, so /v1/models
+    is auth-protected. Without the Authorization header the probe 401s
+    and the banner silently falls back to the typed alias.
+    """
+    captured = {}
+
+    def fake_urlopen(req, timeout):  # noqa: ARG001
+        captured["headers"] = dict(req.header_items())
+        captured["url"] = req.full_url
+
+        class _R:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"data":[{"id":"mlx-community/X"}]}'
+
+        return _R()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen), patch(
+        "json.load", return_value={"data": [{"id": "mlx-community/X"}]}
+    ):
+        out = share_cli._resolve_served_model_name(18765, "shhhh")
+
+    assert out == "mlx-community/X"
+    # Header keys are title-cased by urllib's Request.
+    assert captured["headers"].get("Authorization") == "Bearer shhhh"
