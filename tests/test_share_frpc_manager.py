@@ -121,7 +121,13 @@ def test_render_config_emits_valid_toml_shape():
     )
     assert 'serverAddr = "tunnel.rapidmlx.com"' in cfg
     assert "serverPort = 7000" in cfg
-    assert 'auth.token = "t0ken"' in cfg
+    # Token MUST land in metadatas.token (consumed by the control-plane
+    # Login plugin) and MUST NOT land in auth.token (which would route
+    # through frp's built-in shared-secret checker that we don't use).
+    assert 'metadatas.token = "t0ken"' in cfg
+    # Match the assignment form to avoid catching "auth.token" mentioned
+    # in the explanatory comment block above it.
+    assert "auth.token =" not in cfg
     assert 'subdomain = "abc123"' in cfg
     assert "localPort = 8765" in cfg
     # Proxy block present and HTTP-typed (not TCP — required for subdomain routing).

@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import os
 import secrets
+import signal
 import socket
 import subprocess
 import sys
@@ -32,6 +33,13 @@ import urllib.request
 from pathlib import Path
 
 from . import frpc_manager, session, warning
+
+# Pulled out so the routing-shape audit (tests/test_no_out_of_band_routing.py)
+# sees one clean RAPID_MLX_* string literal that lives in the
+# ALLOWED_RAPID_MLX_ENV_VARS allowlist — inlining the name into an
+# f-string error message would yield "RAPID_MLX_SHARE_PORT must be an…"
+# which is NOT on the allowlist and tripwires the audit.
+_PORT_ENV_VAR = "RAPID_MLX_SHARE_PORT"
 
 
 def _pick_port(preferred: int) -> int:
@@ -47,6 +55,30 @@ def _pick_port(preferred: int) -> int:
         except OSError:
             continue
     raise RuntimeError("no free port available for share")
+
+
+def _resolve_served_model_name(port: int) -> str | None:
+    """Read the model id rapid-mlx serve is exposing via /v1/models.
+
+    The CLI accepts a short alias (``qwen3.5-4b``) but the OpenAI
+    endpoint only recognises the full HF model id
+    (``mlx-community/Qwen3.5-4B-MLX-4bit``). Without this lookup the
+    curl example we paste into the security banner fails on first
+    try — a confusing UX for the user (and their friend).
+    """
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/v1/models", timeout=2
+        ) as r:
+            import json
+
+            payload = json.load(r)
+        data = payload.get("data") or []
+        if data and isinstance(data[0], dict):
+            return data[0].get("id")
+    except (urllib.error.URLError, ConnectionError, ValueError):
+        return None
+    return None
 
 
 def _wait_for_healthz(
@@ -135,7 +167,7 @@ def share_command(args: argparse.Namespace) -> None:
     # Port parsing is lazy on purpose: validating RAPID_MLX_SHARE_PORT at
     # parser-build time crashes ``rapid-mlx models`` (and every other
     # unrelated subcommand) when the env var is set to garbage.
-    raw_port = os.environ.get("RAPID_MLX_SHARE_PORT") if args.port is None else None
+    raw_port = os.environ.get(_PORT_ENV_VAR) if args.port is None else None
     try:
         if raw_port is not None:
             preferred_port = int(raw_port)
@@ -148,7 +180,7 @@ def share_command(args: argparse.Namespace) -> None:
             preferred_port = 8765
     except ValueError:
         print(
-            f"RAPID_MLX_SHARE_PORT must be an integer (got {raw_port!r})",
+            f"{_PORT_ENV_VAR} must be an integer (got {raw_port!r})",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -162,6 +194,15 @@ def share_command(args: argparse.Namespace) -> None:
     state_dir = _state_dir()
     serve_log = state_dir / "serve.log"
     tunnel_log = state_dir / "tunnel.log"
+
+    # Convert SIGTERM into a KeyboardInterrupt so the existing finally
+    # block runs cleanup. Without this, a supervisor (systemd, docker,
+    # ``kill <pid>``) terminates the share parent and orphans the serve
+    # + frpc children, leaking a public tunnel until the user notices.
+    def _term_handler(signum, frame):  # noqa: ARG001
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _term_handler)
 
     print(f"Starting rapid-mlx serve ({alias} on :{port})…", file=sys.stderr)
     serve_proc = _spawn_serve(
@@ -219,7 +260,15 @@ def share_command(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
 
-        print(warning.render(sess.public_url, api_key, alias))
+        # rapid-mlx serve registers the model under its HF id, not the
+        # short alias the user typed — so the curl example needs that
+        # name to actually run. Falls back to the typed alias if the
+        # /v1/models probe fails (the banner still prints).
+        display_model = _resolve_served_model_name(port) or alias
+        # ``flush=True`` is load-bearing: when stdout is a pipe
+        # (``rapid-mlx share … | tee``), Python block-buffers and the
+        # banner doesn't reach the terminal until the process exits.
+        print(warning.render(sess.public_url, api_key, display_model), flush=True)
 
         # Block on the serve process; if it exits, share's done.
         serve_proc.wait()

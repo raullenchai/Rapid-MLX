@@ -10,6 +10,7 @@ the security banner content, frpc config shape, and ordered shutdown.
 from __future__ import annotations
 
 import argparse
+import signal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -214,3 +215,46 @@ def test_wait_for_healthz_returns_false_if_serve_exits():
     ):
         result = share_cli._wait_for_healthz(18765, serve_proc)
     assert result is False
+
+
+def test_share_command_sigterm_runs_cleanup(fake_session):
+    """SIGTERM (systemd / supervisor kill) must trigger the same
+    cleanup as Ctrl-C, otherwise the serve + frpc children orphan and
+    keep a public tunnel open after the parent dies.
+    """
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+
+    # Use a side_effect *function* so the SIGTERM is delivered exactly
+    # when share_command blocks on serve_proc.wait(), not at mock setup
+    # time. The SIGTERM handler installed by share_command raises
+    # KeyboardInterrupt, which the existing finally-block catches.
+    call_count = {"n": 0}
+
+    def wait_then_sigterm(*_, **__):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            import os as _os
+
+            _os.kill(_os.getpid(), signal.SIGTERM)
+        return None
+
+    serve_proc.wait.side_effect = wait_then_sigterm
+    frpc_proc = MagicMock()
+    frpc_proc.poll.return_value = None
+
+    with patch.object(share_cli, "_spawn_serve", return_value=serve_proc), patch.object(
+        share_cli, "_wait_for_healthz", return_value=True
+    ), patch.object(
+        share_cli.session, "request", return_value=fake_session
+    ), patch.object(
+        share_cli.frpc_manager, "spawn", return_value=frpc_proc
+    ), patch.object(share_cli, "_pick_port", return_value=18765), patch.object(
+        share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+    ), patch(
+        "time.sleep"
+    ):
+        share_cli.share_command(_make_args())
+
+    serve_proc.terminate.assert_called_once()
+    frpc_proc.terminate.assert_called_once()

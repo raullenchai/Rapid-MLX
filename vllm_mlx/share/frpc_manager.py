@@ -134,12 +134,23 @@ def render_config(
 ) -> str:
     """Build a single-proxy frpc.toml. Kept stringly-typed because frpc
     only needs to read it once at startup — no config-object overhead.
+
+    Authentication shape: we deliberately rely on frps's *server-plugin*
+    Login hook (the control plane) to validate the session token, not
+    frp's built-in shared-secret ``auth.token``. The plugin reads
+    ``metas.token`` from the Login payload, which is populated by
+    frpc's ``metadatas`` table. Putting the token in ``auth.token``
+    would route it through frp's built-in checker — that expects frps
+    to hold the *same* token, which our zero-shared-secret deploy
+    doesn't (and shouldn't). The plugin path is the source of truth.
     """
     return (
         f'serverAddr = "{server_addr}"\n'
         f"serverPort = {server_port}\n"
-        f'auth.method = "token"\n'
-        f'auth.token = "{auth_token}"\n'
+        f"\n"
+        f"# Token is consumed by the control-plane Login plugin via\n"
+        f"# metas.token; do not move it to auth.token.\n"
+        f'metadatas.token = "{auth_token}"\n'
         f"\n"
         f"[[proxies]]\n"
         f'name = "share-{subdomain}"\n'
