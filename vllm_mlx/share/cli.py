@@ -137,7 +137,15 @@ def share_command(args: argparse.Namespace) -> None:
     # unrelated subcommand) when the env var is set to garbage.
     raw_port = os.environ.get("RAPID_MLX_SHARE_PORT") if args.port is None else None
     try:
-        preferred_port = int(raw_port) if raw_port is not None else (args.port or 8765)
+        if raw_port is not None:
+            preferred_port = int(raw_port)
+        elif args.port is not None:
+            # ``is not None`` (not truthy): an explicit ``--port 0`` is a
+            # user error that should surface as exit-2, not get silently
+            # rewritten to the 8765 default.
+            preferred_port = args.port
+        else:
+            preferred_port = 8765
     except ValueError:
         print(
             f"RAPID_MLX_SHARE_PORT must be an integer (got {raw_port!r})",

@@ -18,6 +18,20 @@ from vllm_mlx.share import cli as share_cli
 from vllm_mlx.share.session import Session
 
 
+@pytest.fixture(autouse=True)
+def _isolated_state_dir(tmp_path, monkeypatch):
+    """Redirect ``_state_dir()`` to a per-test tmp_path so we don't
+    mkdir/chmod the user's real ``~/.cache/rapid-mlx/share``. Sandboxed
+    CI runs (codex review, Docker builds) lack permission to chmod a
+    cache dir owned by another uid, which surfaces as PermissionError
+    rather than a code bug.
+    """
+    d = tmp_path / "share-state"
+    d.mkdir()
+    monkeypatch.setattr(share_cli, "_state_dir", lambda: d)
+    return d
+
+
 def _make_args(**overrides):
     defaults = dict(
         model="qwen3.5-4b",
@@ -158,6 +172,14 @@ def test_share_command_rejects_garbage_port_env(monkeypatch):
 
 def test_share_command_rejects_out_of_range_port():
     args = _make_args(port=70000)
+    with pytest.raises(SystemExit) as exc_info:
+        share_cli.share_command(args)
+    assert exc_info.value.code == 2
+
+
+def test_share_command_rejects_explicit_port_zero():
+    """``--port 0`` is a user error, not a silent fallback to 8765."""
+    args = _make_args(port=0)
     with pytest.raises(SystemExit) as exc_info:
         share_cli.share_command(args)
     assert exc_info.value.code == 2
