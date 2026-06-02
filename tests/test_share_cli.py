@@ -412,6 +412,22 @@ def test_banner_does_not_inline_key_in_curl_command():
     assert "Bearer REAL_KEY_42" not in out
 
 
+def test_share_command_surfaces_pick_port_failure():
+    """DeepSeek round-5 BLOCKING #2: _pick_port can raise RuntimeError
+    on a maxed-out ephemeral pool. Must surface as exit-1 + readable
+    message, not a bare traceback."""
+    with (
+        patch.object(
+            share_cli,
+            "_pick_port",
+            side_effect=RuntimeError("no free port available for share"),
+        ),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(_make_args())
+    assert exc_info.value.code == 1
+
+
 def test_resolve_served_model_name_sends_bearer():
     """Codex round-3 P2: serve is launched with --api-key, so /v1/models
     is auth-protected. Without the Authorization header the probe 401s

@@ -68,7 +68,10 @@ def relay_base_url() -> str:
             f"expected e.g. https://api.example.com or http://localhost:8080."
         )
     host = parsed.hostname.lower()
-    is_loopback = host == "localhost" or host.startswith("127.")
+    # ``::1`` is the IPv6 loopback; ``parsed.hostname`` already strips
+    # the square brackets that bracket IPv6 hosts in URL form (so the
+    # raw input ``http://[::1]:8080`` arrives here as ``::1``).
+    is_loopback = host == "localhost" or host == "::1" or host.startswith("127.")
     if parsed.scheme == "https":
         return override.rstrip("/")
     if parsed.scheme == "http" and is_loopback:

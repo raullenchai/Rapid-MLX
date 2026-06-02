@@ -20,6 +20,7 @@ config. Key + URL are NOT persisted: each invocation issues a new key
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import secrets
 import signal
@@ -76,8 +77,6 @@ def _resolve_served_model_name(port: int, api_key: str) -> str | None:
     )
     try:
         with urllib.request.urlopen(req, timeout=2) as r:
-            import json
-
             payload = json.load(r)
         data = payload.get("data") or []
         if data and isinstance(data[0], dict):
@@ -87,9 +86,7 @@ def _resolve_served_model_name(port: int, api_key: str) -> str | None:
     return None
 
 
-def _wait_for_healthz(
-    port: int, serve_proc: subprocess.Popen[bytes] | None = None
-) -> bool:
+def _wait_for_healthz(port: int, serve_proc: subprocess.Popen[bytes]) -> bool:
     """Poll /healthz until the child serve reports ready or exits.
 
     No fixed timeout: a cold first-time pull of a 70B model legitimately
@@ -98,10 +95,14 @@ def _wait_for_healthz(
     child process — if it exits without ever serving /healthz we give
     up, otherwise we wait as long as it takes. Caller can Ctrl-C any
     time to abort.
+
+    ``serve_proc`` is required (no ``None`` default) so the
+    process-watch loop is always armed. DeepSeek round-5 BLOCKING #3:
+    a None default + no timeout would loop forever.
     """
     url = f"http://127.0.0.1:{port}/healthz"
     while True:
-        if serve_proc is not None and serve_proc.poll() is not None:
+        if serve_proc.poll() is not None:
             return False
         try:
             with urllib.request.urlopen(url, timeout=2) as r:
@@ -258,7 +259,14 @@ def share_command(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    port = _pick_port(preferred_port)
+    # _pick_port raises RuntimeError if the OS can't allocate any port
+    # (would happen on a maxed-out ephemeral pool). Surface as a normal
+    # exit, not a raw traceback. (DeepSeek round-5 BLOCKING #2.)
+    try:
+        port = _pick_port(preferred_port)
+    except RuntimeError as exc:
+        print(f"share: {exc}", file=sys.stderr)
+        sys.exit(1)
     state_dir = _state_dir()
     serve_log = state_dir / "serve.log"
     tunnel_log = state_dir / "tunnel.log"

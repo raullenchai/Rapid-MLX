@@ -101,6 +101,13 @@ def test_relay_base_url_accepts_loopback_http_override():
         assert session.relay_base_url() == "http://127.0.0.1:8080"
 
 
+def test_relay_base_url_accepts_ipv6_loopback():
+    """DeepSeek round-5 NIT #4: ``::1`` is the IPv6 loopback and equally
+    safe for local dev — just was overlooked in the IPv4-only check."""
+    with patch.dict("os.environ", {"RAPID_MLX_RELAY_URL": "http://[::1]:8080"}):
+        assert session.relay_base_url() == "http://[::1]:8080"
+
+
 def test_request_raises_runtimeerror_on_invalid_json_body():
     """DeepSeek round-4 BLOCKER #1: a 2xx response with non-JSON body
     (e.g. an upstream proxy serving an HTML error page) must surface

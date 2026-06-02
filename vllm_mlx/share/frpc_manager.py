@@ -25,6 +25,12 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+# Wall-clock cap on the frpc download. Without it, urlretrieve falls back
+# to socket.getdefaulttimeout() — which is ``None`` on most installs, so a
+# network stall would freeze share with no feedback. The 13 MB tarball
+# takes ~5s on a normal home connection; 60s is generous.
+_DOWNLOAD_TIMEOUT_SECS = 60.0
+
 from ._constants import FRPC_SHA256, FRPC_VERSION
 
 # Strict allow-lists for relay-provided strings interpolated into the frpc
@@ -74,10 +80,15 @@ def binary_path() -> Path:
 
 
 def _download(url: str, dest: Path) -> None:
-    # urlretrieve is sync + simple; for ~13 MB it's fine. We deliberately
-    # don't show a progress bar — the call site prints a one-line status
-    # message instead, so the UX stays predictable for non-TTY callers.
-    urllib.request.urlretrieve(url, dest)  # noqa: S310 — trusted CDN
+    # urlopen + chunked write so we can pass an explicit timeout
+    # (urlretrieve has no timeout knob — relies on the socket default,
+    # which is None on most installs). DeepSeek round-5 BLOCKING: an
+    # unset timeout means a hung connection freezes share indefinitely.
+    with (
+        urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT_SECS) as resp,  # noqa: S310
+        dest.open("wb") as fp,
+    ):
+        shutil.copyfileobj(resp, fp)
 
 
 def ensure() -> Path:
@@ -209,6 +220,12 @@ def spawn(config_path: Path, log_path: Path) -> subprocess.Popen[bytes]:
     """Start frpc as a child subprocess; stdout+stderr go to ``log_path``."""
     binp = ensure()
     log_fp = log_path.open("ab", buffering=0)
+    # Tighten log perms: defense-in-depth alongside the state dir's 0o700.
+    # Same pattern as ``share.cli._spawn_serve`` for serve.log.
+    try:
+        log_path.chmod(0o600)
+    except OSError:
+        pass
     return subprocess.Popen(
         [str(binp), "-c", str(config_path)],
         stdout=log_fp,
