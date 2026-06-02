@@ -3,17 +3,17 @@
 
 Covers two new pieces of functionality:
 
-1. ``_split_findings_by_tier`` — partitions DeepSeek findings into
-   ``[BLOCKING]`` (fails the gate) vs ``[NIT]`` (surfaces but passes),
-   with untagged findings defaulting to BLOCKING so a forgotten prefix
-   can't silently downgrade a real bug.
+1. ``_split_findings_by_tier`` — partitions codex review findings
+   into ``[BLOCKING]`` (fails the gate) vs ``[NIT]`` (surfaces but
+   passes), with untagged findings defaulting to BLOCKING so a
+   forgotten prefix can't silently downgrade a real bug.
 
 2. ``CLDescriptionQualityStep`` — title + body hygiene gate from
    Google's CL-descriptions guidance. Rejects bad titles, empty
    bodies, and bodies with no rationale signal.
 
 Motivating example: PR #467 (chat-route empty content fix) spent 5
-rounds in a DeepSeek spiral because every reply produced fresh style
+rounds in a review spiral because every reply produced fresh style
 preferences and the previous prompt couldn't downgrade them. With
 tiering, those would have been single-round ``[NIT]``s and the PR
 would have merged after one round of substantive fixes.
@@ -27,7 +27,7 @@ from scripts.pr_validate.context import Context
 from scripts.pr_validate.steps.cl_description_quality import (
     CLDescriptionQualityStep,
 )
-from scripts.pr_validate.steps.deepseek_review import (
+from scripts.pr_validate.steps.codex_review import (
     _extract_findings,
     _split_findings_by_tier,
 )

@@ -1,27 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the DeepSeek review step's pure helpers.
+"""Tests for the codex review step's pure helpers.
 
-The DeepSeek API call itself is integration-level (requires a key, hits
-the network) and lives in ``scripts/pr_validate/steps/deepseek_review.py``.
-We test only the helpers that have isolated logic:
+The ``codex exec`` call itself is integration-level (requires the
+codex CLI to be installed and logged in, hits the network) and lives
+in ``scripts/pr_validate/steps/codex_review.py``. We test only the
+helpers that have isolated logic plus the JSONL parser:
 
 - ``_truncate_diff_at_file_boundary`` — file-boundary aware diff cap
-- ``_gather_directory_context`` path filter (via the inline normalization
-  block; we exercise it through a small repro)
+- ``_is_safe_listing_path`` — path-traversal filter for the dir-listing
+  enhancement that feeds ``gh api``
+- ``_parse_codex_jsonl`` — codex exec stdout parser (agent_message
+  concatenation + ``turn.completed`` usage extraction)
 
-These were the surfaces that PR review (round 2 of #202's fix) caught
-real bugs in: regex missing git's quoted-filename form, ``startswith("..")``
-over-filter, and the ``.``-current-dir leak.
+The diff-cap and path-filter tests were carried over from the prior
+DeepSeek step verbatim: regex missing git's quoted-filename form,
+``startswith("..")`` over-filter, and the ``.``-current-dir leak are
+all real bugs surfaced by PR review on the original implementation.
 """
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
 
-from scripts.pr_validate.steps.deepseek_review import (
+from scripts.pr_validate.steps.codex_review import (
     _is_safe_listing_path,
+    _parse_codex_jsonl,
     _truncate_diff_at_file_boundary,
 )
 
@@ -183,3 +189,119 @@ class TestPathFilter:
     )
     def test_filter(self, path, expected):
         assert _is_safe_listing_path(os.path.dirname(path)) is expected
+
+
+class TestParseCodexJsonl:
+    """``_parse_codex_jsonl`` reads ``codex exec --json`` stdout (one
+    JSON object per line) and returns ``(reply_text, usage_dict)``.
+
+    The contract is: only ``item.completed`` events whose ``item.type``
+    is ``agent_message`` contribute to the reply (concatenated in
+    stream order); ``turn.completed`` carries the token usage; every
+    other event type is ignored without crashing. Malformed lines are
+    silently dropped so a half-streamed reply is still reviewable.
+    """
+
+    @staticmethod
+    def _stream(*events: dict) -> str:
+        return "\n".join(json.dumps(e) for e in events)
+
+    def test_extracts_agent_message_and_usage(self):
+        stdout = self._stream(
+            {"type": "thread.started", "thread_id": "abc"},
+            {"type": "turn.started"},
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "i0",
+                    "type": "agent_message",
+                    "text": "1. [BLOCKING] x.py:1 — bug.",
+                },
+            },
+            {
+                "type": "turn.completed",
+                "usage": {"input_tokens": 100, "output_tokens": 20},
+            },
+        )
+        text, usage = _parse_codex_jsonl(stdout)
+        assert text == "1. [BLOCKING] x.py:1 — bug."
+        assert usage == {"input_tokens": 100, "output_tokens": 20}
+
+    def test_concatenates_multiple_agent_messages_in_order(self):
+        """gpt-5.5 streams in chunks; the parser must keep order."""
+        stdout = self._stream(
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "1. First."},
+            },
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "2. Second."},
+            },
+            {"type": "turn.completed", "usage": {}},
+        )
+        text, _ = _parse_codex_jsonl(stdout)
+        # The parser joins chunks with a blank line so numbered list
+        # entries don't collide visually in the artifact.
+        assert text == "1. First.\n\n2. Second."
+
+    def test_ignores_non_agent_item_types(self):
+        """``item.completed`` also fires for reasoning, tool_use, etc.
+        Only ``agent_message`` should contribute."""
+        stdout = self._stream(
+            {
+                "type": "item.completed",
+                "item": {"type": "reasoning", "text": "thinking…"},
+            },
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}},
+            {
+                "type": "item.completed",
+                "item": {"type": "tool_use", "name": "read_file"},
+            },
+        )
+        text, usage = _parse_codex_jsonl(stdout)
+        assert text == "ok"
+        # No turn.completed → usage is empty dict (defensive default).
+        assert usage == {}
+
+    def test_skips_malformed_lines(self):
+        """Codex can emit a partial line on SIGINT / network blip. The
+        parser must not crash; everything else is still extracted."""
+        stdout = "\n".join(
+            [
+                "not json at all",
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "kept"},
+                    }
+                ),
+                "{broken json",
+                json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5}}),
+            ]
+        )
+        text, usage = _parse_codex_jsonl(stdout)
+        assert text == "kept"
+        assert usage == {"input_tokens": 5}
+
+    def test_empty_stdout_returns_empty(self):
+        """Codex exited 0 but emitted nothing (rare; policy refusal
+        sometimes lands here). Parser returns falsy values so the
+        caller can surface a 'no agent message' skip."""
+        text, usage = _parse_codex_jsonl("")
+        assert text == ""
+        assert usage == {}
+
+    def test_empty_text_chunks_dropped(self):
+        """An ``agent_message`` with empty/missing ``text`` should not
+        contribute a stray separator to the concatenated reply."""
+        stdout = self._stream(
+            {"type": "item.completed", "item": {"type": "agent_message", "text": ""}},
+            {"type": "item.completed", "item": {"type": "agent_message"}},
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "real"},
+            },
+        )
+        text, _ = _parse_codex_jsonl(stdout)
+        assert text == "real"

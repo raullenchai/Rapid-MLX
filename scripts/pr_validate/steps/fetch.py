@@ -79,8 +79,8 @@ class FetchStep(Step):
             f["path"] for f in (meta.get("files") or []) if "path" in f
         )
 
-        # Pull the full diff. We save to disk so DeepSeek and supply
-        # chain can stream-read it without re-running gh.
+        # Pull the full diff. We save to disk so the codex review and
+        # supply chain steps can stream-read it without re-running gh.
         diff_path = ctx.artifact_path("pr.diff")
         try:
             diff = _gh(f"pr diff {ctx.pr_number} --repo {ctx.repo}")

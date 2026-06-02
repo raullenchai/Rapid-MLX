@@ -1,25 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Step 6 — DeepSeek V4 Pro adversarial review of the diff.
+"""Adversarial review of the PR diff via ``codex exec``.
 
-Productionizes the one-off /tmp/deepseek_review_*.py scripts we've been
-building per-PR. Reads the prompt template from
-``scripts/pr_validate/prompts/deepseek_review.md``, sends the diff,
-parses the response. Findings are surfaced in the scorecard verbatim
-so a maintainer can decide whether to act on each.
+Replaces the previous DeepSeek-V4-Pro HTTP step. Same Google
+eng-practices philosophy and the same `[BLOCKING]`/`[NIT]` taxonomy —
+the only change is the backend LLM. We chose codex because per the
+``codex_deepseek_convergence_asymmetry`` knowledge note, codex
+converges in a small bounded number of rounds whereas DeepSeek is
+asymptotic — five rounds against PR #504 surfaced zero new findings
+each, which is the failure mode that note warns about.
 
-Failure policy is deliberately conservative: we mark the step ``fail``
-ONLY if DeepSeek's reply contains markers that look like blocking
-findings (lines starting with "1.", "2.", … and mentioning specific
-files). A reply of "No blocking issues found." → ``pass``. Network
-failures or a missing API key → ``skip`` with a clear summary, NOT
-``fail`` — we don't want a temporarily-down API to block every PR.
-The strictness is at the human-review layer, not the API layer.
+Codex authentication is the user's own ChatGPT login (``~/.codex/
+auth.json``) — no API key is read from the environment. The repo is
+public; we do not want a fallback key in source. If ``codex`` is
+missing or not logged in, the step skips (a temporarily-broken codex
+must not block every PR).
 
-The API key MUST be supplied via ``DEEPSEEK_API_KEY`` — there is no
-in-source default (the repo is public). Without the env var the step
-skips gracefully so contributors without keys can still run the rest
-of the pipeline. The user's personal key is documented in
-``memory/knowledge/deepseek_api_key.md`` for local development.
+Failure policy mirrors the previous step:
+* Reply containing "No blocking issues found." → ``pass``.
+* Findings tagged ``[BLOCKING]`` → ``fail``.
+* Findings tagged only ``[NIT]`` → ``pass`` (still surfaced).
+* Untagged findings default to ``[BLOCKING]`` so a model that forgets
+  the prefix can't silently downgrade a real bug.
 """
 
 from __future__ import annotations
@@ -27,80 +28,56 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
 from ..base import Step, StepResult
 from ..context import Context, env_truthy
 
-# NB: do NOT default the API key here. The repo is public; even a
-# personal review-budget key should never live in version control.
-# Users provide it via ``DEEPSEEK_API_KEY`` (see
-# ``memory/knowledge/deepseek_api_key.md`` for where the key is stored
-# locally). Without the env var the step skips gracefully.
-ENDPOINT = "https://api.deepseek.com/v1/chat/completions"
-MODEL = "deepseek-v4-pro"
+# Codex CLI binary. We resolve via ``shutil.which`` at runtime; this
+# fallback path is the default Homebrew location and only used in
+# error messages.
+DEFAULT_CODEX_PATH = "/opt/homebrew/bin/codex"
 
-# Hard cap on diff size we send. DeepSeek can take more, but past
-# ~120KB of diff the signal-to-noise of the review drops sharply (the
-# model starts skimming). For very large PRs we send the diff
-# truncated at a file boundary and note which files were omitted.
+# Same byte budget as the previous DeepSeek step. Past ~120KB the
+# signal-to-noise of any LLM review drops sharply — the model starts
+# skimming. Truncation always happens at a file boundary; partially-
+# cut files would produce false "missing brace" / "undefined symbol"
+# findings.
 MAX_DIFF_BYTES = 120_000
 
-# Token budget. Reasoning-model behavior is highly variable: a simple
-# diff burns ~6K reasoning tokens; a complex multi-commit one (like
-# PR #203's 22KB / 5-commit diff) burns ~16K reasoning tokens before
-# emitting any visible content. We observed the response getting cut
-# mid-finding at MAX_TOKENS=16384 because reasoning consumed the full
-# budget. 32K leaves room for ~16K reasoning + ~16K visible reply.
-MAX_TOKENS = 32_768
-
-# How long we wait for the API. DeepSeek V4 Pro reasoning takes
-# 30-90s typical, up to 5min for big diffs.
+# Wall-clock cap on the codex subprocess. gpt-5.5 reviews a typical
+# diff in 20–90s; complex multi-commit diffs (e.g. PR #504's 73 KB
+# diff) take 2–4 min. 10 min is generous and matches the DeepSeek
+# previous cap.
 TIMEOUT_SECONDS = 600
 
-PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "deepseek_review.md"
+PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "codex_review.md"
 
 
-class DeepSeekReviewStep(Step):
-    name = "deepseek_review"
-    description = "DeepSeek V4 Pro adversarial review of diff"
+class CodexReviewStep(Step):
+    name = "codex_review"
+    description = "Codex (gpt-5.5) adversarial review of diff"
 
     def should_run(self, ctx: Context) -> bool:
-        # Allow opt-out (CI without API access, offline dev, etc.).
-        if env_truthy("PR_VALIDATE_NO_DEEPSEEK"):
+        # Allow opt-out (offline dev, CI without codex auth, etc.).
+        if env_truthy("PR_VALIDATE_NO_CODEX"):
             return False
-        # Skip if there's no diff to review (shouldn't happen post-fetch
-        # but defend against it — empty review wastes API budget).
         return bool(ctx.diff_path) and Path(ctx.diff_path).stat().st_size > 0
 
     def run(self, ctx: Context) -> StepResult:
-        # httpx is in our deps already; importing inside the method
-        # keeps the framework import-light for steps that don't need it.
-        try:
-            import httpx
-        except ImportError:
-            return StepResult(
-                name=self.name,
-                status="skip",
-                summary="httpx not installed — `pip install httpx`",
-            )
-
-        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-        if not api_key:
+        codex_bin = shutil.which("codex") or (
+            DEFAULT_CODEX_PATH if Path(DEFAULT_CODEX_PATH).exists() else None
+        )
+        if codex_bin is None:
             return StepResult(
                 name=self.name,
                 status="skip",
                 summary=(
-                    "no DEEPSEEK_API_KEY set (export it to enable adversarial "
-                    "review; see memory/knowledge/deepseek_api_key.md)"
+                    "codex CLI not found on PATH (install: `npm i -g @openai/codex`)"
                 ),
             )
-
-        diff_full = Path(ctx.diff_path).read_text()
-        diff, omitted_files, truncated = _truncate_diff_at_file_boundary(
-            diff_full, MAX_DIFF_BYTES
-        )
 
         if not PROMPT_PATH.exists():
             return StepResult(
@@ -110,77 +87,84 @@ class DeepSeekReviewStep(Step):
             )
         system_prompt = PROMPT_PATH.read_text()
 
-        user_prompt = _build_user_prompt(ctx, diff, omitted_files, truncated)
-
-        # Save what we sent — useful for debugging "why did the review
-        # say X" without re-running.
-        sent_path = ctx.artifact_path("deepseek-request.txt")
-        sent_path.write_text(
-            f"=== SYSTEM ===\n{system_prompt}\n\n=== USER ===\n{user_prompt}"
+        diff_full = Path(ctx.diff_path).read_text()
+        diff, omitted_files, truncated = _truncate_diff_at_file_boundary(
+            diff_full, MAX_DIFF_BYTES
         )
 
-        ctx.run_log(f"calling {MODEL} ({len(diff.encode())} bytes of diff)…")
+        user_prompt = _build_user_prompt(ctx, diff, omitted_files, truncated)
+        combined_prompt = f"{system_prompt}\n\n# REVIEW REQUEST\n\n{user_prompt}"
+
+        sent_path = ctx.artifact_path("codex-request.txt")
+        sent_path.write_text(combined_prompt)
+
+        ctx.run_log(f"calling codex exec ({len(diff.encode())} bytes of diff)…")
 
         try:
-            with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
-                resp = client.post(
-                    ENDPOINT,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": MODEL,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "temperature": 0.0,
-                        "max_tokens": MAX_TOKENS,
-                    },
-                )
-        except httpx.RequestError as e:
-            # Catch the whole request-failure tree: TimeoutException,
-            # NetworkError (ConnectError, ReadError), and ProtocolError
-            # (RemoteProtocolError when the server cuts the connection
-            # mid-response — observed under DeepSeek API load).
+            proc = subprocess.run(  # noqa: S603 — codex_bin is resolved via shutil.which
+                [
+                    codex_bin,
+                    "exec",
+                    # Skip the "is this a git repo?" check — pr_validate
+                    # runs from anywhere, including /tmp scratch dirs.
+                    "--skip-git-repo-check",
+                    # Read-only sandbox: codex must not touch the repo.
+                    # This is a pure static review.
+                    "--sandbox",
+                    "read-only",
+                    "--json",
+                    "-",  # read prompt from stdin
+                ],
+                input=combined_prompt,
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
             return StepResult(
                 name=self.name,
                 status="skip",
-                summary=f"API unreachable: {type(e).__name__}",
+                summary=f"codex exec exceeded {TIMEOUT_SECONDS}s timeout",
             )
-
-        if resp.status_code != 200:
+        except FileNotFoundError:
+            # ``shutil.which`` claimed the binary existed but it
+            # disappeared between resolution and exec — very rare race
+            # (e.g. homebrew upgrade mid-run). Don't crash the pipeline.
             return StepResult(
                 name=self.name,
                 status="skip",
-                summary=f"API returned {resp.status_code}",
-                details=f"```\n{resp.text[:1000]}\n```",
+                summary="codex binary disappeared mid-exec",
             )
 
-        body = resp.json()
-        choices = body.get("choices") or []
-        if not choices:
-            # DeepSeek can return an empty choices array on rate-limit
-            # or content-policy refusal. Don't crash — surface as skip
-            # with the body for debugging.
+        if proc.returncode != 0:
+            # Common causes: not logged in (auth failure), network
+            # outage, model-side error. Don't block PRs on a flaky LLM
+            # backend.
+            short_err = (proc.stderr or "").strip().splitlines()
+            tail = "\n".join(short_err[-5:]) if short_err else "(no stderr)"
             return StepResult(
                 name=self.name,
                 status="skip",
-                summary="API returned no choices (rate limit? policy?)",
-                details=f"```json\n{json.dumps(body, indent=2)[:1000]}\n```",
+                summary=f"codex exec exited {proc.returncode}",
+                details=f"```\n{tail}\n```",
             )
-        content = choices[0].get("message", {}).get("content", "") or ""
-        usage = body.get("usage", {})
 
-        review_path = ctx.artifact_path("deepseek-review.md")
+        content, usage = _parse_codex_jsonl(proc.stdout)
+        if not content.strip():
+            # Codex emitted only thread/turn events with no agent
+            # message — e.g. policy refusal. Surface for debugging.
+            return StepResult(
+                name=self.name,
+                status="skip",
+                summary="codex returned no agent message",
+                details=f"```\n{proc.stdout[:1500]}\n```",
+            )
+
+        review_path = ctx.artifact_path("codex-review.md")
         review_path.write_text(content)
-        usage_path = ctx.artifact_path("deepseek-usage.json")
+        usage_path = ctx.artifact_path("codex-usage.json")
         usage_path.write_text(json.dumps(usage, indent=2))
 
-        # Parse the response. The prompt asks for a numbered list; we
-        # detect "no findings" by an explicit phrase, otherwise we
-        # extract numbered items as findings.
         findings = _extract_findings(content)
         no_issues = _is_clean_review(content)
 
@@ -188,14 +172,10 @@ class DeepSeekReviewStep(Step):
             return StepResult(
                 name=self.name,
                 status="pass",
-                summary="DeepSeek found no blocking issues",
+                summary="codex found no blocking issues",
                 artifacts=[str(review_path), str(usage_path)],
             )
 
-        # Tier findings: [BLOCKING] fails the gate, [NIT] surfaces but
-        # passes. This implements Google's "approve when improvement is
-        # clear" — see prompts/deepseek_review.md for the philosophy
-        # and the recurring-spiral failure mode this addresses.
         blocking, nits = _split_findings_by_tier(findings)
 
         truncation_note = ""
@@ -206,14 +186,14 @@ class DeepSeekReviewStep(Step):
         elif truncated:
             truncation_note = " (diff truncated — single large file, partial review)"
 
-        # Build a labelled scorecard list — keep tier badges visible
-        # so a maintainer scanning the scorecard can decide instantly
-        # which findings to act on.
         labelled = [f"[BLOCKING] {b}" for b in blocking] + [f"[NIT] {n}" for n in nits]
 
+        usage_str = (
+            f"{usage.get('input_tokens', '?')} in / "
+            f"{usage.get('output_tokens', '?')} out"
+        )
+
         if not blocking:
-            # Only NITs → pass. Surface them in the scorecard for the
-            # author to consider, but don't block merge.
             summary = (
                 f"no blocking findings ({len(nits)} nit(s) surfaced)" + truncation_note
             )
@@ -225,8 +205,7 @@ class DeepSeekReviewStep(Step):
                 details=(
                     "**Full review:**\n\n"
                     f"{content}\n\n"
-                    f"_(Saved to `{review_path}`. "
-                    f"Token usage: {usage.get('total_tokens', '?')})_"
+                    f"_(Saved to `{review_path}`. Token usage: {usage_str})_"
                 ),
                 artifacts=[str(review_path), str(usage_path)],
             )
@@ -240,11 +219,47 @@ class DeepSeekReviewStep(Step):
             details=(
                 "**Full review:**\n\n"
                 f"{content}\n\n"
-                f"_(Saved to `{review_path}`. "
-                f"Token usage: {usage.get('total_tokens', '?')})_"
+                f"_(Saved to `{review_path}`. Token usage: {usage_str})_"
             ),
             artifacts=[str(review_path), str(usage_path)],
         )
+
+
+def _parse_codex_jsonl(stdout: str) -> tuple[str, dict]:
+    """Extract the agent's reply + token usage from ``codex exec --json`` stdout.
+
+    The stream is JSON-Lines. We care about two event shapes:
+
+    * ``item.completed`` where ``item.type == "agent_message"`` carries
+      the model's text reply. There can be more than one if the model
+      streams chunks; we concatenate in order.
+    * ``turn.completed`` carries ``usage`` (input/output token counts).
+
+    Anything else (thread.started, turn.started, reasoning items,
+    tool-use events the read-only sandbox would have rejected) is
+    ignored. Malformed lines are silently dropped — a partial stream
+    is still reviewable.
+    """
+    chunks: list[str] = []
+    usage: dict = {}
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        etype = event.get("type")
+        if etype == "item.completed":
+            item = event.get("item") or {}
+            if item.get("type") == "agent_message":
+                text = item.get("text") or ""
+                if text:
+                    chunks.append(text)
+        elif etype == "turn.completed":
+            usage = event.get("usage") or {}
+    return ("\n\n".join(chunks).strip(), usage)
 
 
 def _build_user_prompt(
@@ -254,7 +269,7 @@ def _build_user_prompt(
 
     The directory-context section is what stops the canonical false
     positive class "you added X but didn't update Y" / "X is missing"
-    when X actually exists outside the diff. Without it, DeepSeek
+    when X actually exists outside the diff. Without it, the model
     flagged PR #179 for having no ``feature_request.yml`` even though
     the file already lived in ``.github/ISSUE_TEMPLATE/`` (just outside
     the diff). With it, the listing makes sibling files visible.
@@ -287,7 +302,6 @@ def _build_user_prompt(
         )
         lines.append("")
     elif truncated:
-        # Single large file that had to be raw-sliced (no earlier boundary).
         lines.append(
             f"_Note: diff truncated to {MAX_DIFF_BYTES} bytes (single large file). "
             "The shown diff may be incomplete; review cautiously._"
@@ -322,26 +336,18 @@ def _truncate_diff_at_file_boundary(
     (better than nothing) and list all remaining files as omitted.
 
     Sizes are measured in UTF-8 bytes (not Python character counts) to match
-    what the HTTP layer actually sends.
+    what the underlying transport actually sends.
     """
     diff_bytes = diff.encode()
     if len(diff_bytes) <= max_bytes:
         return diff, [], False
 
-    # Find every per-file header — byte offset and a-side path.
     positions: list[tuple[int, str]] = []
     for m in _FILE_HEADER_RE.finditer(diff_bytes):
         path_bytes = m.group(1) if m.group(1) is not None else m.group(2)
-        # Quoted form uses C-style escapes (\\, \", \t, \n, octal); we don't
-        # try to fully unescape — the path is only used for human-readable
-        # "files NOT reviewed" listings, slight visual artifact is OK.
         path = path_bytes.decode("utf-8", errors="replace")
         positions.append((m.start(), path))
 
-    # Walk forward and find the last file whose header fits within max_bytes.
-    # If we never break, kept_end naturally lands on the last header position
-    # — which is exactly what we want: drop the last file (its content is
-    # what overflows) so we only ship complete per-file diffs.
     kept_end = 0
     for pos, _ in positions:
         if pos > max_bytes:
@@ -349,29 +355,16 @@ def _truncate_diff_at_file_boundary(
         kept_end = pos
 
     if kept_end == 0:
-        # Either no headers found, or even the first file alone overflows.
-        # Raw-slice to the byte limit and list the remaining files (if any)
-        # as omitted; the first file is shown partially.  ``errors="ignore"``
-        # drops a trailing incomplete UTF-8 sequence rather than replacing
-        # it with U+FFFD — the latter would re-encode to 3 bytes and could
-        # push us *over* ``max_bytes``, defeating the cap.
         raw = diff_bytes[:max_bytes].decode("utf-8", errors="ignore")
         omitted = [path for _, path in positions[1:]]
         return raw, omitted, True
 
-    # Slice at the byte boundary, then decode — safe because the boundary
-    # is always at the start of a header line (pure ASCII).
     kept_diff = diff_bytes[:kept_end].decode()
     omitted = [path for pos, path in positions if pos >= kept_end]
     return kept_diff, omitted, True
 
 
-# Cap on how many directories we'll list — a 50-file refactor PR
-# shouldn't bloat the prompt with 20 directory listings. Most PRs touch
-# 1-5 dirs.
 _MAX_DIRS_LISTED = 15
-# Per-directory cap. Anything more is noise; we tag the overflow with
-# a count so the model knows there's more.
 _MAX_FILES_PER_DIR = 30
 
 
@@ -412,13 +405,6 @@ def _gather_directory_context(ctx: Context) -> str:
     if not ctx.head_sha or not ctx.files_changed:
         return ""
 
-    # Collect unique directory paths from changed files. Root files
-    # (no dirname) get represented by "" which we map to the repo root
-    # listing — usually less interesting, so we skip it. Reject any
-    # path that escapes via ``..`` or is absolute — git+GitHub usually
-    # block these on commit but we'd rather not feed an unsanitized
-    # path to ``gh api`` (the URL-resolved request could probe outside
-    # the PR's tree on a misbehaving server).
     dirs: set[str] = set()
     for path in ctx.files_changed:
         d = os.path.dirname(path)
@@ -436,9 +422,6 @@ def _gather_directory_context(ctx: Context) -> str:
     for d in capped:
         files = _list_repo_dir(ctx.repo, ctx.head_sha, d)
         if not files:
-            # Either dir is gone at HEAD, gh failed, or empty — skip
-            # silently rather than misleading the model with "(empty)"
-            # which could itself trigger a false positive.
             continue
         listing_lines = [f"  - `{f}`" for f in files[:_MAX_FILES_PER_DIR]]
         if len(files) > _MAX_FILES_PER_DIR:
@@ -496,9 +479,6 @@ def _list_repo_dir(repo: str, ref: str, path: str) -> list[str]:
     return sorted(names)
 
 
-# Phrases that indicate a clean review. Match case-insensitively. If
-# any of these appear in the response and we extract zero numbered
-# findings, treat it as a clean pass.
 _CLEAN_PATTERNS = (
     re.compile(r"no\s+blocking\s+issues?\s+found", re.IGNORECASE),
     re.compile(r"no\s+issues?\s+found", re.IGNORECASE),
@@ -510,9 +490,6 @@ def _is_clean_review(text: str) -> bool:
     return any(p.search(text) for p in _CLEAN_PATTERNS)
 
 
-# Extract numbered findings — match lines starting with "1.", "2.",
-# etc. (with optional leading whitespace and bold). One short line
-# per finding for the scorecard table.
 _FINDING_RE = re.compile(
     r"^\s*(?:\*\*)?(\d+)\.?\)?\s*(?:\*\*)?\s+(.+?)(?:\*\*)?\s*$",
     re.MULTILINE,
@@ -526,14 +503,9 @@ def _extract_findings(text: str) -> list[str]:
     findings = []
     for match in _FINDING_RE.finditer(text):
         body = match.group(2).strip().rstrip("*").strip()
-        # Cap per-finding length; long ones go in the artifact.
         if len(body) > 240:
             body = body[:237] + "…"
         findings.append(body)
-    # Sometimes the model returns markdown headings like "### 1. Title"
-    # which the regex above catches via the leading number; that's
-    # fine. Deduplicate just in case (very long replies sometimes
-    # repeat the summary at the bottom).
     seen = set()
     out = []
     for f in findings:
@@ -543,12 +515,6 @@ def _extract_findings(text: str) -> list[str]:
     return out
 
 
-# Tier prefixes the prompt asks for. ``[BLOCKING]`` is what fails the
-# gate; ``[NIT]`` surfaces in the scorecard but doesn't block merge
-# (Google eng-practices "approve when improvement clear" — see
-# prompts/deepseek_review.md). Untagged findings default to BLOCKING
-# so the model can't accidentally downgrade real bugs by forgetting
-# the prefix.
 _BLOCKING_PREFIX = re.compile(r"^\s*\[BLOCKING\]\s*", re.IGNORECASE)
 _NIT_PREFIX = re.compile(r"^\s*\[NIT\]\s*", re.IGNORECASE)
 
@@ -569,7 +535,5 @@ def _split_findings_by_tier(findings: list[str]) -> tuple[list[str], list[str]]:
         elif _BLOCKING_PREFIX.match(f):
             blocking.append(_BLOCKING_PREFIX.sub("", f, count=1).strip())
         else:
-            # Untagged → treat as BLOCKING. Preserve the original text
-            # so the reviewer sees the model forgot the prefix.
             blocking.append(f)
     return blocking, nits

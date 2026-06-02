@@ -16,7 +16,7 @@ from .base import Step
 from .context import Context
 from .scorecard import render_scorecard, verdict
 from .steps.cl_description_quality import CLDescriptionQualityStep
-from .steps.deepseek_review import DeepSeekReviewStep
+from .steps.codex_review import CodexReviewStep
 from .steps.fetch import FetchStep
 from .steps.full_unit import FullUnitStep
 from .steps.lint import LintStep
@@ -26,13 +26,13 @@ from .steps.targeted_tests import TargetedTestsStep
 from .steps.test_plan_check import TestPlanCheckStep
 
 # Step order — see scripts/pr_validate/README.md for the rationale.
-# DeepSeek review goes early so cheap critical thinking happens before
+# Codex review goes early so cheap critical thinking happens before
 # we spend 10 minutes on tests.
 STEPS: list[Step] = [
     FetchStep(),  # 0 — fetch PR + diff + classify blast radius
     TestPlanCheckStep(),  # 0.5 — unchecked test-plan items block merge (#427 lesson)
     CLDescriptionQualityStep(),  # 0.7 — title + body rationale (Google eng-practices)
-    DeepSeekReviewStep(),  # 6 — adversarial review (moved to front)
+    CodexReviewStep(),  # 6 — adversarial review (codex exec, gpt-5.5)
     SupplyChainStep(),  # 1 — pip-audit, license, install hooks
     LintStep(),  # 2 — ruff check + format
     TargetedTestsStep(),  # 3 — diff-aware test selection + neg control
@@ -65,7 +65,7 @@ def run_pipeline(
     With ``fail_fast=True`` the pipeline stops at the first ``fail`` /
     ``error`` after fetch — useful for CI gating where running the
     expensive stress/bench step on a PR that already failed lint or
-    DeepSeek review is just wasted compute.
+    the codex review is just wasted compute.
 
     ``steps`` is an injection seam for tests; production callers leave
     it ``None`` and the module-level ``STEPS`` list is used.

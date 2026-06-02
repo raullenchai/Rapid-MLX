@@ -160,6 +160,6 @@ class Context:
 
 
 def env_truthy(name: str) -> bool:
-    """Helper for env-var feature flags (``PR_VALIDATE_NO_DEEPSEEK=1``
+    """Helper for env-var feature flags (``PR_VALIDATE_NO_CODEX=1``
     style)."""
     return os.environ.get(name, "").lower() in ("1", "true", "yes", "on")
