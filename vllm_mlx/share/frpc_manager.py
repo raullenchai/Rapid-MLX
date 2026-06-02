@@ -175,12 +175,14 @@ def render_config(
 
     Authentication shape: we deliberately rely on frps's *server-plugin*
     Login hook (the control plane) to validate the session token, not
-    frp's built-in shared-secret ``auth.token``. The plugin reads
-    ``metas.token`` from the Login payload, which is populated by
-    frpc's ``metadatas`` table. Putting the token in ``auth.token``
-    would route it through frp's built-in checker — that expects frps
-    to hold the *same* token, which our zero-shared-secret deploy
-    doesn't (and shouldn't). The plugin path is the source of truth.
+    frp's built-in shared-secret ``auth.token``. frpc serializes the
+    ``metadatas`` table into the Login payload's ``metas`` map; the
+    server-side plugin then reads ``metas.token`` (the de-prefixed
+    field name on the wire) from that map. Putting the token in
+    ``auth.token`` would route it through frp's built-in checker —
+    that expects frps to hold the *same* token, which our
+    zero-shared-secret deploy doesn't (and shouldn't). The plugin
+    path is the source of truth.
     """
     _validate_session_fields(server_addr, auth_token, subdomain)
     if not (1 <= server_port <= 65535 and 1 <= local_port <= 65535):

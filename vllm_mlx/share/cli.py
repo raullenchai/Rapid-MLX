@@ -340,7 +340,15 @@ def share_command(args: argparse.Namespace) -> None:
             f.write(rendered)
             config_path = Path(f.name)
         config_path.chmod(0o600)
-        frpc_proc = frpc_manager.spawn(config_path, tunnel_log)
+        # ``spawn`` chains into ``ensure()``, which can raise on a fresh
+        # checkout (download failure, sha256 mismatch, unsupported
+        # platform/arch). Surface those as user-readable messages
+        # instead of bare tracebacks. (DeepSeek round-4 BLOCKER #2.)
+        try:
+            frpc_proc = frpc_manager.spawn(config_path, tunnel_log)
+        except (RuntimeError, urllib.error.URLError) as exc:
+            print(f"share: failed to start frpc tunnel: {exc}", file=sys.stderr)
+            sys.exit(1)
 
         # Liveness ladder: short settle, then poll the actual public URL.
         # frpc can stay up (process alive, TCP connected to frps) while

@@ -101,6 +101,38 @@ def test_relay_base_url_accepts_loopback_http_override():
         assert session.relay_base_url() == "http://127.0.0.1:8080"
 
 
+def test_request_raises_runtimeerror_on_invalid_json_body():
+    """DeepSeek round-4 BLOCKER #1: a 2xx response with non-JSON body
+    (e.g. an upstream proxy serving an HTML error page) must surface
+    as RuntimeError, not a raw ValueError traceback."""
+
+    class _NotJsonResp:
+        status = 200
+
+        def read(self):
+            return b"<html>upstream down</html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    with patch("urllib.request.urlopen", return_value=_NotJsonResp()):
+        with pytest.raises(RuntimeError, match="non-JSON"):
+            session.request(model="qwen3.5-4b")
+
+
+def test_relay_base_url_rejects_empty_hostname():
+    """DeepSeek round-4 NIT #4: ``https://`` parses but has no hostname.
+    Reject it loudly instead of building ``https:///share/session``."""
+    with (
+        patch.dict("os.environ", {"RAPID_MLX_RELAY_URL": "https://"}),
+        pytest.raises(RuntimeError, match="hostname"),
+    ):
+        session.relay_base_url()
+
+
 def test_request_raises_runtimeerror_on_missing_field():
     """DeepSeek BLOCKER #4: relay payload missing a field must surface as
     a user-readable error, not a raw KeyError traceback."""

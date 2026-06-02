@@ -336,6 +336,35 @@ def test_share_command_aborts_if_auth_gate_fails(fake_session):
     serve_proc.terminate.assert_called_once()
 
 
+def test_share_command_surfaces_frpc_spawn_failure(fake_session):
+    """DeepSeek round-4 BLOCKER #2: ``frpc_manager.spawn`` chains into
+    ``ensure()`` which can raise (sha256 mismatch, download failure,
+    unsupported platform). Without a try/except the user sees a raw
+    traceback instead of an actionable error."""
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+
+    with (
+        patch.object(share_cli, "_spawn_serve", return_value=serve_proc),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli.session, "request", return_value=fake_session),
+        # ensure() failure surfaces through spawn.
+        patch.object(
+            share_cli.frpc_manager,
+            "spawn",
+            side_effect=RuntimeError("frpc sha256 mismatch"),
+        ),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        share_cli.share_command(_make_args())
+
+    assert exc_info.value.code == 1
+    serve_proc.terminate.assert_called_once()
+
+
 def test_share_command_aborts_if_public_url_unreachable(fake_session):
     """Codex CONCERN: frpc can stay alive (TCP connected to frps) while
     proxy registration silently fails. Don't print a banner with a URL

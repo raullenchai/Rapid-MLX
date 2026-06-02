@@ -59,7 +59,15 @@ def relay_base_url() -> str:
     if override is None:
         return DEFAULT_RELAY_URL.rstrip("/")
     parsed = urllib.parse.urlparse(override)
-    host = (parsed.hostname or "").lower()
+    if not parsed.hostname:
+        # ``RAPID_MLX_RELAY_URL=https://`` parses but has hostname=None;
+        # otherwise we'd build ``https:///share/session`` and fail with
+        # a confusing low-level error. (DeepSeek round-4 NIT #4.)
+        raise RuntimeError(
+            f"{_RELAY_URL_ENV_VAR}={override!r} has no hostname; "
+            f"expected e.g. https://api.example.com or http://localhost:8080."
+        )
+    host = parsed.hostname.lower()
     is_loopback = host == "localhost" or host.startswith("127.")
     if parsed.scheme == "https":
         return override.rstrip("/")
@@ -109,6 +117,16 @@ def request(model: str, *, timeout: float = 10.0) -> Session:
             f"could not reach rapidmlx.com relay at {relay_base_url()}: "
             f"{exc.reason}. Check your network or override with "
             f"{_RELAY_URL_ENV_VAR}=http://localhost:8080 for local dev."
+        ) from exc
+    except (json.JSONDecodeError, ValueError) as exc:
+        # The 2xx-body-is-malformed-JSON path — common if a reverse proxy
+        # serves an HTML error page in front of the relay. Without this
+        # branch ValueError leaks as a raw traceback. (DeepSeek round-4
+        # BLOCKER #1.)
+        raise RuntimeError(
+            f"relay returned a non-JSON body (rapidmlx.com edge "
+            f"intermediary may be down): {exc}. Try again, or check "
+            f"{_RELAY_URL_ENV_VAR}."
         ) from exc
 
     # The relay is owned by us but we want a clear user-readable error if
