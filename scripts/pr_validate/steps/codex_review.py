@@ -219,10 +219,20 @@ class CodexReviewStep(Step):
                     cwd=cwd,
                 )
         except subprocess.TimeoutExpired:
+            # Timeout could be a transient backend issue OR a malicious
+            # diff designed to hang codex. We treat it as ``fail``
+            # because a hang is exactly the kind of bypass an attacker
+            # would aim for — they craft a prompt that consumes the
+            # full 10-minute budget and then the gate skips and the PR
+            # merges unreviewed. Codex round-5 BLOCKER on PR #505.
             return StepResult(
                 name=self.name,
-                status="skip",
-                summary=f"codex exec exceeded {TIMEOUT_SECONDS}s timeout",
+                status="fail",
+                summary=(
+                    f"codex exec exceeded {TIMEOUT_SECONDS}s timeout — treating as "
+                    "fail (a crafted diff could hang codex to bypass the gate); "
+                    "re-run pr_validate if the cause was network/backend"
+                ),
             )
         except FileNotFoundError:
             # ``shutil.which`` claimed the binary existed but it
@@ -287,6 +297,31 @@ class CodexReviewStep(Step):
                 name=self.name,
                 status="pass",
                 summary="codex found no blocking issues",
+                artifacts=[str(review_path), str(usage_path)],
+            )
+
+        if not findings and not no_issues:
+            # Non-empty reply with no numbered findings AND no clean-
+            # review phrase ("no blocking issues found"). Two failure
+            # modes both land here: (a) policy refusal where codex says
+            # "I can't review this", (b) malformed reply that diverges
+            # from the prompt's numbered-list format. In both cases the
+            # gate must NOT slip past — treating this as a clean pass
+            # would let any malformed/refused review look identical to
+            # a clean approval. Codex round-5 BLOCKER on PR #505.
+            return StepResult(
+                name=self.name,
+                status="fail",
+                summary=(
+                    "codex reply has no findings AND no clean-review phrase — "
+                    "treating as malformed/refusal; rerun or address manually"
+                ),
+                details=(
+                    "**Codex reply (no numbered findings, no `no blocking issues "
+                    "found` phrase):**\n\n"
+                    f"{content[:2000]}\n\n"
+                    f"_(Saved to `{review_path}`.)_"
+                ),
                 artifacts=[str(review_path), str(usage_path)],
             )
 
@@ -580,13 +615,24 @@ def _list_repo_dir(repo: str, ref: str, path: str) -> list[str]:
     Returns just file/dir basenames sorted. Empty list on any failure
     (network, 404, malformed JSON, missing gh) — caller treats absence
     of context as "no enhancement", never a hard error.
+
+    Path components are URL-encoded so directories with ``?``, ``#``,
+    ``&``, or other URL metacharacters can't confuse ``gh api`` into
+    querying the wrong endpoint (codex round-5 NIT on PR #505).
+    Slash separators are preserved so nested directories still work.
     """
+    import urllib.parse
+
+    encoded_path = "/".join(
+        urllib.parse.quote(component, safe="") for component in path.split("/")
+    )
+    encoded_ref = urllib.parse.quote(ref, safe="")
     try:
         proc = subprocess.run(  # noqa: S603
             [
                 "gh",
                 "api",
-                f"repos/{repo}/contents/{path}?ref={ref}",
+                f"repos/{repo}/contents/{encoded_path}?ref={encoded_ref}",
                 "--jq",
                 ".[] | .name",
             ],

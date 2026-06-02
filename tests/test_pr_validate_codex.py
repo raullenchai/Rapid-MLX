@@ -701,3 +701,177 @@ class TestNonZeroExitDiscrimination:
         assert result.status == expected, (
             f"expected {expected}, got {result.status}: {result.summary}"
         )
+
+
+class TestMalformedReplyDoesNotPass:
+    """Codex round-5 BLOCKER on PR #505: a non-empty Codex reply with no
+    numbered findings AND no "no blocking issues found" phrase must
+    NOT slip past as a clean pass — it's either a policy refusal or a
+    malformed reply that diverges from the prompt's required format.
+    The previous "if not blocking → pass" branch would have treated
+    both as approvals.
+    """
+
+    @staticmethod
+    def _drive(monkeypatch, tmp_path, reply_text: str):
+        class _FakeProc:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": reply_text},
+                }
+            )
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.shutil.which",
+            lambda _: "/usr/bin/codex-stub",
+        )
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run",
+            lambda *a, **kw: _FakeProc(),
+        )
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=1)
+        ctx.work_dir = tmp_path
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+
+        return CodexReviewStep().run(ctx)
+
+    def test_policy_refusal_fails(self, monkeypatch, tmp_path):
+        """A refusal narrative ('I can't review this') has no findings
+        and no clean phrase — must fail, not pass."""
+        result = self._drive(
+            monkeypatch, tmp_path, "I'm unable to review this content."
+        )
+        assert result.status == "fail"
+        assert "malformed" in result.summary or "refusal" in result.summary
+
+    def test_malformed_freeform_reply_fails(self, monkeypatch, tmp_path):
+        """A wall of prose that doesn't follow the numbered-list format
+        but isn't an explicit clean-pass either — must fail."""
+        result = self._drive(
+            monkeypatch,
+            tmp_path,
+            "The code looks reasonable overall but I have some thoughts about "
+            "the design that aren't really specific enough to call findings.",
+        )
+        assert result.status == "fail"
+
+    def test_explicit_clean_phrase_still_passes(self, monkeypatch, tmp_path):
+        """Regression check: the explicit clean phrase must still pass."""
+        result = self._drive(monkeypatch, tmp_path, "No blocking issues found.")
+        assert result.status == "pass"
+
+    def test_valid_findings_still_processed(self, monkeypatch, tmp_path):
+        """Regression check: legitimate numbered findings still go down
+        the normal blocking/nit-split path, not the malformed branch."""
+        result = self._drive(
+            monkeypatch,
+            tmp_path,
+            "1. [BLOCKING] foo.py:10 — wrong default. Fix: change to None.\n"
+            "2. [NIT] bar.py:5 — naming. Fix: rename to better_name.",
+        )
+        assert result.status == "fail"
+        assert "1 blocking + 1 nit" in result.summary
+
+
+class TestTimeoutIsFail:
+    """Codex round-5 BLOCKER on PR #505: ``subprocess.TimeoutExpired``
+    was previously mapped to ``skip``, letting a crafted diff that
+    hangs codex bypass the review gate. Must be ``fail``.
+    """
+
+    def test_timeout_classified_as_fail(self, monkeypatch, tmp_path):
+        def fake_run_raises(*a, **kw):
+            raise subprocess.TimeoutExpired(cmd="codex", timeout=600)
+
+        import subprocess
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.shutil.which",
+            lambda _: "/usr/bin/codex-stub",
+        )
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run", fake_run_raises
+        )
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=1)
+        ctx.work_dir = tmp_path
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+
+        result = CodexReviewStep().run(ctx)
+        assert result.status == "fail"
+        assert "timeout" in result.summary.lower()
+
+
+class TestRepoDirURLEncoding:
+    """Codex round-5 NIT on PR #505: ``_list_repo_dir`` used to
+    interpolate the dir path directly into the ``gh api`` URL, so a
+    valid repo path containing URL metacharacters (``?``, ``#``, ``&``)
+    would query a different endpoint than intended. Path components
+    must be URL-encoded.
+    """
+
+    def test_path_with_question_mark_is_encoded(self, monkeypatch):
+        """A path containing ``?`` must not become a query-string
+        delimiter — encoding it as ``%3F`` keeps it as part of the
+        path component."""
+        captured: dict = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = ""
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            return _Proc()
+
+        from scripts.pr_validate.steps import codex_review
+
+        monkeypatch.setattr(codex_review.subprocess, "run", fake_run)
+        codex_review._list_repo_dir("raullenchai/Rapid-MLX", "abc123", "weird?dir/sub")
+        url_arg = captured["cmd"][2]
+        # The encoded ``?`` (``%3F``) must appear in the path portion
+        # of the URL, before the genuine ``?ref=`` delimiter.
+        ref_idx = url_arg.index("?ref=")
+        path_portion = url_arg[:ref_idx]
+        assert "weird%3Fdir/sub" in path_portion, (
+            f"path component must be URL-encoded; got {path_portion!r}"
+        )
+
+    def test_normal_path_still_works(self, monkeypatch):
+        """Regression: ordinary paths like ``scripts/pr_validate`` must
+        still produce the unencoded form — encoding is a no-op for
+        chars in the unreserved set."""
+        captured: dict = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = ""
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            return _Proc()
+
+        from scripts.pr_validate.steps import codex_review
+
+        monkeypatch.setattr(codex_review.subprocess, "run", fake_run)
+        codex_review._list_repo_dir(
+            "raullenchai/Rapid-MLX", "abc123", "scripts/pr_validate"
+        )
+        url_arg = captured["cmd"][2]
+        assert "scripts/pr_validate?ref=abc123" in url_arg
