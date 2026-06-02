@@ -156,6 +156,22 @@ reviewer underneath the gate.
 deprecation notice) so CI/local workflows that pre-date the codex
 swap don't unexpectedly re-enable the paid LLM review.
 
+**Failure-mode classification.** A non-zero `codex exec` exit is
+discriminated: stderr matching transient-backend patterns (network,
+auth, rate-limit, 5xx) → `skip`; anything else → `fail`. This stops
+a malicious PR from bypassing the review gate by inducing a content-
+side codex crash.
+
+**Sandbox-read residual risk.** Codex's `--sandbox read-only` is the
+strictest mode the CLI exposes; absolute-path reads (e.g.
+`~/.codex/auth.json`) cannot be defended against here without external
+sandboxing. Mitigations in place: untrusted-input prompt fence,
+no-tool-use rule with "last word" placement, `cwd=` empty tempdir,
+no `--dangerously-bypass-approvals-and-sandbox`. Treating absolute-
+path reads as an upstream limit is intentional; the codex review step
+is "best effort" against that vector. See the module docstring in
+`steps/codex_review.py` for the full threat model.
+
 Replaces the previous DeepSeek V4 Pro step. See the
 `codex_deepseek_convergence_asymmetry` knowledge note for why we
 switched — DeepSeek is asymptotic across rounds; codex converges in a

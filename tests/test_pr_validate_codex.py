@@ -29,6 +29,7 @@ from scripts.pr_validate.steps.codex_review import (
     CODEX_MODEL,
     CodexReviewStep,
     _is_safe_listing_path,
+    _is_transient_codex_failure,
     _parse_codex_jsonl,
     _truncate_diff_at_file_boundary,
 )
@@ -605,3 +606,98 @@ class TestPromptInjectionGuards:
         assert "do not call shell tools" in final_section
         assert "do not read files" in final_section
         assert "untrusted" in final_section
+
+
+class TestNonZeroExitDiscrimination:
+    """Codex round-4 BLOCKER on PR #505: mapping every non-zero exit to
+    ``skip`` lets a malicious diff bypass the review gate by inducing a
+    crash. The discriminator must distinguish "backend transiently
+    broken" (skip) from "diff plausibly caused this" (fail).
+    """
+
+    @pytest.mark.parametrize(
+        "stderr,expected",
+        [
+            # Transient — should skip
+            ("error: not logged in to ChatGPT", True),
+            ("HTTP 401 Unauthorized", True),
+            ("rate limit exceeded (429)", True),
+            ("upstream returned 502 Bad Gateway", True),
+            ("503 Service Unavailable", True),
+            ("504 Gateway Timeout", True),
+            ("connection refused", True),
+            ("connection reset by peer", True),
+            ("Could not resolve host: api.openai.com", True),
+            ("network is unreachable", True),
+            ("SSL handshake failed", True),
+            ("tls handshake timeout", True),
+            ("request timed out after 600s", True),
+            # Non-transient — should fail
+            ("panic: runtime error: index out of range", False),
+            ("model returned malformed response", False),
+            ("Error: prompt exceeds context window", False),
+            # Empty stderr — no evidence of transience, must fail
+            ("", False),
+            ("   \n", False),
+        ],
+    )
+    def test_discriminator(self, stderr, expected):
+        assert _is_transient_codex_failure(stderr) is expected
+
+    def test_codex_skip_on_transient_backend(self, monkeypatch, tmp_path):
+        """Network-down stderr → skip (don't block PRs on flaky API)."""
+
+        class _FakeProc:
+            returncode = 1
+            stderr = "error: could not resolve host: api.openai.com"
+            stdout = ""
+
+        self._drive_and_assert(monkeypatch, tmp_path, _FakeProc(), expected="skip")
+
+    def test_codex_fail_on_content_induced_crash(self, monkeypatch, tmp_path):
+        """Non-transient stderr → fail (a malicious diff might be the cause)."""
+
+        class _FakeProc:
+            returncode = 1
+            stderr = "panic: runtime error in model inference"
+            stdout = ""
+
+        self._drive_and_assert(monkeypatch, tmp_path, _FakeProc(), expected="fail")
+
+    def test_codex_fail_on_empty_stderr_nonzero_exit(self, monkeypatch, tmp_path):
+        """Silent crash → fail. Without stderr evidence of transience we
+        must NOT default to skip — that's the exact bypass the round-4
+        BLOCKER identified."""
+
+        class _FakeProc:
+            returncode = 137  # SIGKILL — could be OOM induced by diff
+            stderr = ""
+            stdout = ""
+
+        self._drive_and_assert(monkeypatch, tmp_path, _FakeProc(), expected="fail")
+
+    @staticmethod
+    def _drive_and_assert(monkeypatch, tmp_path, fake_proc, *, expected: str):
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.shutil.which",
+            lambda _: "/usr/bin/codex-stub",
+        )
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run",
+            lambda *a, **kw: fake_proc,
+        )
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=1)
+        ctx.work_dir = tmp_path
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+
+        result = CodexReviewStep().run(ctx)
+        assert result.status == expected, (
+            f"expected {expected}, got {result.status}: {result.summary}"
+        )

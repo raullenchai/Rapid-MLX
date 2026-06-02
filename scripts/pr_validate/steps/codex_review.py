@@ -21,6 +21,28 @@ Failure policy mirrors the previous step:
 * Findings tagged only ``[NIT]`` → ``pass`` (still surfaced).
 * Untagged findings default to ``[BLOCKING]`` so a model that forgets
   the prefix can't silently downgrade a real bug.
+
+Sandbox-read residual risk (known limitation, do not re-iterate):
+Codex's ``--sandbox read-only`` is the strictest mode the CLI exposes.
+It blocks writes but permits reads, and a prompt-injected diff that
+bypasses our in-prompt guards could in principle make the model run
+``cat /etc/hostname`` or ``cat ~/.codex/auth.json`` and echo the
+contents into the review text. Defences in place:
+
+* The diff is fenced as ``UNTRUSTED USER INPUT`` and the no-tool-use
+  rule is re-asserted in a final block AFTER the fence so it gets the
+  last word over any in-diff "ignore previous" patterns.
+* ``cwd=`` is set to an empty ``TemporaryDirectory`` so relative-path
+  shell commands (``ls``, ``cat *``, ``find .``) land in nothing.
+* ``codex exec`` runs without ``--dangerously-bypass-approvals-and-
+  sandbox`` so shell tool calls require approval; in headless exec
+  mode there's no human, so they auto-reject.
+* Absolute-path reads (``cat ~/.codex/auth.json``) are NOT defended
+  against here — that would require external sandboxing (Docker,
+  ``sandbox-exec``, ``bwrap``). The combination of the prompt-side
+  guards and the codex tool layer is "best effort". Treating this
+  as a known upstream limit is intentional; do not file repeat
+  findings against this in future review iterations.
 """
 
 from __future__ import annotations
@@ -213,15 +235,31 @@ class CodexReviewStep(Step):
             )
 
         if proc.returncode != 0:
-            # Common causes: not logged in (auth failure), network
-            # outage, model-side error. Don't block PRs on a flaky LLM
-            # backend.
-            short_err = (proc.stderr or "").strip().splitlines()
+            # Discriminate "backend transiently broken" (skip — don't
+            # block PRs on a flaky LLM) from "codex crashed in a way
+            # the PR diff plausibly caused" (fail — a malicious diff
+            # mustn't be able to bypass the review gate by inducing a
+            # crash). Codex round-4 BLOCKER on PR #505.
+            stderr_blob = (proc.stderr or "").strip()
+            stdout_had_agent_msg = bool(_parse_codex_jsonl(proc.stdout)[0].strip())
+            short_err = stderr_blob.splitlines()
             tail = "\n".join(short_err[-5:]) if short_err else "(no stderr)"
+            if _is_transient_codex_failure(stderr_blob) and not stdout_had_agent_msg:
+                return StepResult(
+                    name=self.name,
+                    status="skip",
+                    summary=f"codex exec exited {proc.returncode} (transient backend)",
+                    details=f"```\n{tail}\n```",
+                )
+            # Non-transient: treat as a hard fail so a content-induced
+            # crash cannot let an unreviewed PR slip past the gate.
             return StepResult(
                 name=self.name,
-                status="skip",
-                summary=f"codex exec exited {proc.returncode}",
+                status="fail",
+                summary=(
+                    f"codex exec exited {proc.returncode} — non-transient failure; "
+                    "may indicate the diff triggered a model-side crash"
+                ),
                 details=f"```\n{tail}\n```",
             )
 
@@ -622,3 +660,49 @@ def _split_findings_by_tier(findings: list[str]) -> tuple[list[str], list[str]]:
         else:
             blocking.append(f)
     return blocking, nits
+
+
+# Stderr substrings that signal a transient backend problem (network
+# blip, auth expiry, rate-limit, OpenAI 5xx) — these should ``skip``
+# the gate because a flaky LLM must not block every PR. Anything NOT
+# matching one of these is treated as a hard ``fail`` so a malicious
+# diff can't bypass the review by inducing a non-transient crash.
+# Case-insensitive substring match.
+_TRANSIENT_FAILURE_MARKERS = (
+    "not logged in",
+    "authentication",
+    "auth required",
+    "401",
+    "rate limit",
+    "429",
+    "5xx",
+    "500 internal",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway timeout",
+    "connection refused",
+    "connection reset",
+    "could not resolve host",
+    "name or service not known",
+    "network is unreachable",
+    "ssl",
+    "tls handshake",
+    "timed out",
+    "timeout",
+)
+
+
+def _is_transient_codex_failure(stderr_blob: str) -> bool:
+    """Return True if codex's stderr looks like a transient backend
+    issue (network, auth, rate limit) — caller should ``skip``.
+
+    Returns False for stderr that does NOT match a known transient
+    pattern. Caller should treat that as a hard ``fail`` so an
+    attacker-induced crash can't bypass the review gate.
+
+    Empty stderr → False (no evidence it's transient → don't trust it).
+    """
+    if not stderr_blob:
+        return False
+    s = stderr_blob.lower()
+    return any(marker in s for marker in _TRANSIENT_FAILURE_MARKERS)
