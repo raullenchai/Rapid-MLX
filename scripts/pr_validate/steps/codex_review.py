@@ -125,13 +125,33 @@ class CodexReviewStep(Step):
                 ),
             )
 
-        if not PROMPT_PATH.exists():
-            return StepResult(
-                name=self.name,
-                status="error",
-                summary=f"prompt template missing at {PROMPT_PATH}",
+        # Load the reviewer prompt from the trusted main-branch version,
+        # NOT the PR-controlled working tree. Codex round-11 BLOCKER on
+        # PR #505: an attacker PR that edits ``prompts/codex_review.md``
+        # could weaken the gate that is supposed to review it. By
+        # reading the prompt from ``git show main:...`` we always review
+        # the PR's prompt change with the OLD prompt, which is the
+        # trusted gate. Falls back to the working-tree file only when
+        # main is unreachable (e.g. detached HEAD, freshly cloned
+        # shallow worktree) — in which case the original file-system
+        # check applies.
+        try:
+            system_prompt = _load_prompt_from_main()
+        except _PromptFromMainError as exc:
+            if not PROMPT_PATH.exists():
+                return StepResult(
+                    name=self.name,
+                    status="error",
+                    summary=(
+                        f"prompt template missing at {PROMPT_PATH} and "
+                        f"main-branch read failed: {exc}"
+                    ),
+                )
+            ctx.run_log(
+                f"could not read prompt from main ({exc}); falling back to "
+                "working tree — review gate may be PR-controllable in this run."
             )
-        system_prompt = PROMPT_PATH.read_text()
+            system_prompt = PROMPT_PATH.read_text()
 
         diff_full = Path(ctx.diff_path).read_text()
         diff, omitted_files, truncated = _truncate_diff_at_file_boundary(
@@ -402,6 +422,53 @@ class CodexReviewStep(Step):
             ),
             artifacts=[str(review_path), str(usage_path)],
         )
+
+
+class _PromptFromMainError(RuntimeError):
+    """Raised when the reviewer prompt cannot be loaded from main.
+
+    Distinct exception type so the caller can decide whether to fall
+    back to the working tree (with a loud warning) or hard-fail. Codex
+    round-11 BLOCKER on PR #505 — see ``_load_prompt_from_main``.
+    """
+
+
+def _load_prompt_from_main() -> str:
+    """Return the reviewer prompt as committed to ``main``.
+
+    Reads via ``git show main:scripts/pr_validate/prompts/codex_review.md``
+    so an attacker PR that edits the prompt is reviewed by the OLD
+    (trusted) prompt, not by their modification.
+
+    Raises ``_PromptFromMainError`` if main is unreachable or the
+    file is absent there — caller decides how to handle (typically
+    falls back to working tree with a warning).
+    """
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [
+                "git",
+                "show",
+                "main:scripts/pr_validate/prompts/codex_review.md",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError as exc:
+        raise _PromptFromMainError("git binary not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise _PromptFromMainError("git show timed out") from exc
+    if proc.returncode != 0:
+        # main may not exist locally (shallow clone, detached HEAD,
+        # mirror with a different default branch). Surface the stderr
+        # for diagnosis.
+        raise _PromptFromMainError(
+            (proc.stderr or "git show returned non-zero").strip()
+        )
+    if not proc.stdout.strip():
+        raise _PromptFromMainError("empty prompt on main")
+    return proc.stdout
 
 
 def _parse_codex_jsonl(stdout: str) -> tuple[str, dict]:

@@ -1482,3 +1482,201 @@ class TestRound10TransientMarkersAreStructured:
         assert _is_transient_codex_failure(stderr) is expected, (
             f"stderr {stderr!r} expected transient={expected}"
         )
+
+
+class TestRound11PromptLoadedFromMain:
+    """Codex round-11 BLOCKER on PR #505: the reviewer prompt was loaded
+    from the PR-controlled working tree via ``PROMPT_PATH.read_text()``.
+    An attacker PR that edits ``prompts/codex_review.md`` to remove the
+    `[BLOCKING]`/`[NIT]` taxonomy or instruct the model to "approve
+    everything" could weaken the gate that is supposed to review it.
+
+    Fix: load the prompt from ``main`` via ``git show``. The OLD
+    (trusted) prompt always reviews the PR — including PRs that modify
+    the prompt itself.
+    """
+
+    def test_load_prompt_from_main_invokes_git_show(self, monkeypatch):
+        from scripts.pr_validate.steps.codex_review import _load_prompt_from_main
+
+        captured: dict = {}
+
+        class _Proc:
+            returncode = 0
+            stderr = ""
+            stdout = "TRUSTED PROMPT FROM MAIN"
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return _Proc()
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run", fake_run
+        )
+
+        assert _load_prompt_from_main() == "TRUSTED PROMPT FROM MAIN"
+        assert captured["cmd"][:2] == ["git", "show"]
+        assert captured["cmd"][2] == "main:scripts/pr_validate/prompts/codex_review.md"
+
+    def test_load_prompt_from_main_raises_on_nonzero_exit(self, monkeypatch):
+        from scripts.pr_validate.steps.codex_review import (
+            _load_prompt_from_main,
+            _PromptFromMainError,
+        )
+
+        class _Proc:
+            returncode = 128
+            stderr = "fatal: not a git repository"
+            stdout = ""
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run",
+            lambda cmd, **kw: _Proc(),
+        )
+
+        with pytest.raises(_PromptFromMainError, match="not a git repository"):
+            _load_prompt_from_main()
+
+    def test_load_prompt_from_main_raises_on_empty_main(self, monkeypatch):
+        """Empty stdout from a successful git show means the file exists
+        on main but is empty — distinct from "main can't be read". We
+        still refuse because reviewing with an empty prompt is worse
+        than skipping."""
+        from scripts.pr_validate.steps.codex_review import (
+            _load_prompt_from_main,
+            _PromptFromMainError,
+        )
+
+        class _Proc:
+            returncode = 0
+            stderr = ""
+            stdout = "   \n   \n"
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run",
+            lambda cmd, **kw: _Proc(),
+        )
+
+        with pytest.raises(_PromptFromMainError, match="empty prompt"):
+            _load_prompt_from_main()
+
+    def test_step_falls_back_to_working_tree_when_main_unreachable(
+        self, monkeypatch, tmp_path
+    ):
+        """Detached HEAD / shallow clone: main is unreachable. The step
+        must not hard-fail (would block PRs in pathological CI envs)
+        but should LOG that the gate is now PR-controllable for the run."""
+        captured_logs: list = []
+        captured_subproc: dict = {}
+
+        class _GitFailProc:
+            returncode = 128
+            stderr = "fatal: ambiguous argument 'main'"
+            stdout = ""
+
+        class _CodexProc:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "agent_message",
+                        "text": "No blocking issues found.",
+                    },
+                }
+            )
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "show"]:
+                return _GitFailProc()
+            captured_subproc["codex_input"] = kwargs.get("input", "")
+            return _CodexProc()
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.shutil.which",
+            lambda _: "/usr/bin/codex-stub",
+        )
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run", fake_run
+        )
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=505, verbose=True)
+        ctx.work_dir = tmp_path
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+        ctx.pr_body = "x"
+
+        original_log = ctx.run_log
+        ctx.run_log = lambda msg: (captured_logs.append(msg), original_log(msg))
+
+        result = CodexReviewStep().run(ctx)
+
+        assert result.status == "pass"
+        assert any("could not read prompt from main" in m for m in captured_logs), (
+            "must surface the fact that the gate is now PR-controllable"
+        )
+
+    def test_step_reads_prompt_from_main_when_available(self, monkeypatch, tmp_path):
+        """Happy path: ``git show main:...`` succeeds. The system prompt
+        in the assembled codex input must be the main-branch content,
+        not the working-tree file (which could be PR-modified)."""
+
+        class _GitProc:
+            returncode = 0
+            stderr = ""
+            stdout = "TRUSTED_PROMPT_SENTINEL_FROM_MAIN_BRANCH"
+
+        captured_input: dict = {}
+
+        class _CodexProc:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "agent_message",
+                        "text": "No blocking issues found.",
+                    },
+                }
+            )
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "show"]:
+                return _GitProc()
+            captured_input["data"] = kwargs.get("input", "")
+            return _CodexProc()
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.shutil.which",
+            lambda _: "/usr/bin/codex-stub",
+        )
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run", fake_run
+        )
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            "WORKING_TREE_PROMPT_THE_PR_TRIED_TO_INJECT"
+        )
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=505)
+        ctx.work_dir = tmp_path
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+        ctx.pr_body = "x"
+
+        CodexReviewStep().run(ctx)
+
+        assert "TRUSTED_PROMPT_SENTINEL_FROM_MAIN_BRANCH" in captured_input["data"], (
+            "the prompt sent to codex must be the main-branch version, "
+            "not the PR-controlled working tree"
+        )
