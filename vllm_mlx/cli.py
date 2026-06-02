@@ -4235,6 +4235,11 @@ Examples:
         help="Delete the consent + client-id files (next run re-prompts)",
     )
 
+    # Share subcommand — expose a local serve behind a public rapidmlx.com URL.
+    from vllm_mlx.share.cli import register as _register_share
+
+    _register_share(subparsers)
+
     args = parser.parse_args()
 
     # First-run consent prompt — fires at most once per machine, only on
@@ -4383,6 +4388,10 @@ Examples:
         doctor_command(args)
     elif args.command == "telemetry":
         telemetry_command(args)
+    elif args.command == "share":
+        from vllm_mlx.share.cli import share_command
+
+        share_command(args)
     else:
         parser.print_help()
         sys.exit(1)

@@ -126,6 +126,13 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # so the child's B2 download gate no-ops (parent already gated).
         # Pure UX flag — never read by the engine or scheduler.
         "RAPID_MLX_CHAT_SPAWN",
+        # ``rapid-mlx share`` control-plane endpoint override. Default points at
+        # https://api.rapidmlx.com; dev sets this to a local docker-compose.
+        # Read once at session-request time, never consulted by the engine.
+        "RAPID_MLX_RELAY_URL",
+        # ``rapid-mlx share`` local-port override for the spawned serve
+        # subprocess. UX knob; not consulted by the engine or scheduler.
+        "RAPID_MLX_SHARE_PORT",
     }
 )
 
