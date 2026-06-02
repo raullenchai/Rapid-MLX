@@ -26,6 +26,8 @@ import os
 import pytest
 
 from scripts.pr_validate.steps.codex_review import (
+    CODEX_MODEL,
+    CodexReviewStep,
     _is_safe_listing_path,
     _parse_codex_jsonl,
     _truncate_diff_at_file_boundary,
@@ -305,3 +307,144 @@ class TestParseCodexJsonl:
         )
         text, _ = _parse_codex_jsonl(stdout)
         assert text == "real"
+
+
+class TestModelPinning:
+    """The README + step description promise ``gpt-5.5``; the
+    invocation must pass ``--model`` explicitly so a change to the
+    caller's ``~/.codex/config.toml`` default can't silently swap the
+    reviewer underneath the gate (codex round-1 BLOCKER on PR #505).
+    """
+
+    def test_codex_model_constant_matches_documented(self):
+        assert CODEX_MODEL == "gpt-5.5"
+
+    def test_codex_command_includes_explicit_model_flag(self, monkeypatch, tmp_path):
+        """Drive the step with a fake ``codex`` binary that records the
+        argv it was called with, then assert ``--model gpt-5.5`` is
+        present. This pins the contract at the subprocess boundary."""
+        captured: dict = {}
+
+        class _FakeProc:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "agent_message",
+                        "text": "No blocking issues found.",
+                    },
+                }
+            )
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return _FakeProc()
+
+        # Stub the subprocess + binary resolution. shutil.which returns
+        # a non-None path so the step proceeds to the codex_exec call.
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.shutil.which",
+            lambda _: "/usr/bin/codex-stub",
+        )
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.codex_review.subprocess.run", fake_run
+        )
+
+        # Minimal context — a tmp diff is enough; we just want the
+        # command to be assembled and ``subprocess.run`` invoked.
+        from scripts.pr_validate.context import Context
+
+        # Context's __post_init__ requires the cwd to be a repo root.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+
+        ctx = Context(pr_number=505)
+        ctx.work_dir = tmp_path
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n+x\n")
+        ctx.diff_path = diff_path
+
+        CodexReviewStep().run(ctx)
+
+        cmd = captured["cmd"]
+        # Adjacent ``--model`` + value pair must appear together.
+        assert "--model" in cmd, f"missing --model in {cmd}"
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == CODEX_MODEL, (
+            f"expected --model {CODEX_MODEL}, got {cmd[idx + 1]}"
+        )
+
+
+class TestBackwardsCompatOptOut:
+    """The deepseek→codex swap renamed ``PR_VALIDATE_NO_DEEPSEEK`` to
+    ``PR_VALIDATE_NO_CODEX``. Honor the old name as a deprecation alias
+    for a migration window so existing CI/local workflows that disabled
+    the paid LLM review don't silently re-enable codex (codex round-1
+    BLOCKER on PR #505)."""
+
+    def test_old_env_var_still_disables(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+        monkeypatch.setenv("PR_VALIDATE_NO_DEEPSEEK", "1")
+        monkeypatch.delenv("PR_VALIDATE_NO_CODEX", raising=False)
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=1)
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+
+        assert CodexReviewStep().should_run(ctx) is False
+
+    def test_new_env_var_disables(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+        monkeypatch.setenv("PR_VALIDATE_NO_CODEX", "1")
+        monkeypatch.delenv("PR_VALIDATE_NO_DEEPSEEK", raising=False)
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=1)
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+
+        assert CodexReviewStep().should_run(ctx) is False
+
+    def test_neither_env_var_runs(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+        monkeypatch.delenv("PR_VALIDATE_NO_CODEX", raising=False)
+        monkeypatch.delenv("PR_VALIDATE_NO_DEEPSEEK", raising=False)
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=1)
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+
+        assert CodexReviewStep().should_run(ctx) is True
+
+    def test_old_env_var_emits_deprecation_warning(self, monkeypatch, tmp_path, capsys):
+        """The deprecation nudge must actually go to stderr so callers
+        notice — otherwise the alias becomes a hidden permanent API."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("")
+        monkeypatch.setenv("PR_VALIDATE_NO_DEEPSEEK", "1")
+        monkeypatch.delenv("PR_VALIDATE_NO_CODEX", raising=False)
+
+        from scripts.pr_validate.context import Context
+
+        ctx = Context(pr_number=1)
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text("diff --git a/x b/x\n")
+        ctx.diff_path = diff_path
+
+        CodexReviewStep().should_run(ctx)
+        captured = capsys.readouterr()
+        assert "deprecated" in captured.err.lower()
+        assert "PR_VALIDATE_NO_CODEX" in captured.err

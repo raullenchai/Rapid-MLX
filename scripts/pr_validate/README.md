@@ -148,6 +148,14 @@ Authentication: codex uses its own ChatGPT login at
 `~/.codex/auth.json`. No env var is read here; the repo is public and
 we explicitly do not want a fallback key in source.
 
+Model is pinned to `gpt-5.5` via the `--model` flag so a change to
+the caller's `~/.codex/config.toml` default cannot silently swap the
+reviewer underneath the gate.
+
+`PR_VALIDATE_NO_DEEPSEEK=1` is still honored (with a one-line stderr
+deprecation notice) so CI/local workflows that pre-date the codex
+swap don't unexpectedly re-enable the paid LLM review.
+
 Replaces the previous DeepSeek V4 Pro step. See the
 `codex_deepseek_convergence_asymmetry` knowledge note for why we
 switched — DeepSeek is asymptotic across rounds; codex converges in a

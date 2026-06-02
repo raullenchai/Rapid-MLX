@@ -30,6 +30,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from ..base import Step, StepResult
@@ -39,6 +40,13 @@ from ..context import Context, env_truthy
 # fallback path is the default Homebrew location and only used in
 # error messages.
 DEFAULT_CODEX_PATH = "/opt/homebrew/bin/codex"
+
+# Pinned model. ``codex exec`` without ``--model`` falls back to the
+# caller's ``~/.codex/config.toml`` default — which silently changes
+# the gate whenever the user (or a fresh CI machine) configures
+# something else. The README + step description promise gpt-5.5; pin
+# explicitly so the promise is mechanically enforced.
+CODEX_MODEL = "gpt-5.5"
 
 # Same byte budget as the previous DeepSeek step. Past ~120KB the
 # signal-to-noise of any LLM review drops sharply — the model starts
@@ -62,6 +70,20 @@ class CodexReviewStep(Step):
 
     def should_run(self, ctx: Context) -> bool:
         # Allow opt-out (offline dev, CI without codex auth, etc.).
+        # ``PR_VALIDATE_NO_DEEPSEEK`` is honored as a backwards-compat
+        # alias so CI/local workflows that pre-date the codex swap don't
+        # silently re-enable a paid LLM review. The deprecation warning
+        # nudges callers to the new name without breaking them.
+        if env_truthy("PR_VALIDATE_NO_DEEPSEEK") and not env_truthy(
+            "PR_VALIDATE_NO_CODEX"
+        ):
+            print(
+                "pr_validate: PR_VALIDATE_NO_DEEPSEEK is deprecated — "
+                "use PR_VALIDATE_NO_CODEX instead (honored this run for "
+                "backwards compatibility).",
+                file=sys.stderr,
+            )
+            return False
         if env_truthy("PR_VALIDATE_NO_CODEX"):
             return False
         return bool(ctx.diff_path) and Path(ctx.diff_path).stat().st_size > 0
@@ -105,6 +127,12 @@ class CodexReviewStep(Step):
                 [
                     codex_bin,
                     "exec",
+                    # Pin the model explicitly so a change to the
+                    # user's ``~/.codex/config.toml`` default can't
+                    # silently swap reviewers underneath us. The
+                    # README + step description promise gpt-5.5.
+                    "--model",
+                    CODEX_MODEL,
                     # Skip the "is this a git repo?" check — pr_validate
                     # runs from anywhere, including /tmp scratch dirs.
                     "--skip-git-repo-check",
