@@ -11,7 +11,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/tests-3200%2B-brightgreen.svg" alt="Tests"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/tests-3300%2B-brightgreen.svg" alt="Tests"></a>
   <a href="https://support.apple.com/en-us/HT211814"><img src="https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple" alt="Apple Silicon"></a>
   <a href="https://github.com/raullenchai/Rapid-MLX/stargazers"><img src="https://img.shields.io/github/stars/raullenchai/Rapid-MLX?style=social" alt="GitHub stars"></a>
 </p>
@@ -96,6 +96,14 @@ curl http://localhost:8000/v1/chat/completions \
 ```
 
 That's it — you now have an OpenAI-compatible AI server on `localhost:8000`. Point any app at `http://localhost:8000/v1` and it just works.
+
+**Step 4 — Share it publicly** (optional — get a `https://` URL anyone can hit):
+```bash
+rapid-mlx share qwen3.6-27b-8bit
+```
+This spawns the same local serve and tunnels it through `rapidserver.quicksilverpro.io` over a WebSocket. Your terminal prints a public OpenAI-compatible endpoint plus a bearer key — point any chat UI or OpenAI SDK at it. Bearer auth, a locked-down CORS allowlist, and a default 120 RPM rate-limit are wired on the spawned child; closing the terminal tears the tunnel down.
+
+> Pick a 27B-class model or larger for a usable share experience — 4B is fine for local dev but too small for live chat (`rapid-mlx models` lists all aliases).
 
 > **Want a Claude Code-like TUI?** Rapid-MLX is the *backend* — pair it with an open-source agent CLI like [OpenCode](https://github.com/sst/opencode) or [codex](https://github.com/openai/codex) for the full slash-commands / tool-use / multi-turn experience. Run `rapid-mlx agents opencode --setup` (or `codex --setup`) to wire it up automatically.
 
@@ -390,27 +398,27 @@ The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monit
 
 ### Full model lineup
 
-65 short aliases across 21 families ship today. Run `rapid-mlx models` for the live list with quant tier, MoE / hybrid flags, and DFlash eligibility.
+66 short aliases across 13 families ship today. Run `rapid-mlx models` for the live list with quant tier, MoE / hybrid flags, and DFlash eligibility.
 
 <details>
-<summary><strong>Show all 65 aliases by family</strong></summary>
+<summary><strong>Show all 66 aliases by family</strong></summary>
 
 | Family | Aliases | Notable |
 |---|---|---|
-| **Qwen3.5** | `qwen3.5-4b`, `-9b`, `-27b`, `-27b-8bit` ✨, `-35b`, `-35b-4bit`, `-122b`, `-122b-8bit` | DeltaNet hybrid; **27b-8bit = DFlash** |
-| **Qwen3.6** | `qwen3.6-27b`, `-27b-8bit` ✨, `-27b-ud`, `-35b`, `-35b-6bit`, `-35b-8bit`, `-35b-dwq`, `-35b-ud` | 262K ctx, 256 MoE experts; **27b-8bit = DFlash** |
-| **Qwen3** | `qwen3-coder`, `qwen3-coder-30b`, `qwen3-vl-4b`, `-8b`, `-30b` | Coding + vision |
+| **Qwen3.5** | `qwen3.5-4b`, `-4b-8bit`, `-9b`, `-9b-8bit`, `-27b`, `-27b-8bit` ✨, `-35b`, `-35b-4bit`, `-122b`, `-122b-8bit` | DeltaNet hybrid; **27b-8bit DFlash-eligible** |
+| **Qwen3.6** | `qwen3.6-27b`, `-27b-8bit` ✨, `-27b-ud`, `-35b`, `-35b-6bit`, `-35b-8bit`, `-35b-dwq`, `-35b-ud` | 262K ctx, 256 MoE experts; **27b-8bit DFlash-eligible** |
+| **Qwen3** | `qwen3-0.6b-8bit`, `-4b-8bit`, `-8b-8bit`, `qwen3-coder`, `qwen3-coder-30b`, `qwen3-vl-4b`, `-8b`, `-30b` | Coding + vision |
 | **Qwopus** | `qwopus-9b`, `qwopus-27b`, `qwopus-27b-8bit` | 92 MHI on tool calling |
 | **DeepSeek** | `deepseek-r1-8b`, `-32b`, `deepseek-v4-flash` (2/4/8-bit) | R1 reasoning + V4 Flash 158B-A13B day-0 |
-| **Gemma** | `gemma-3n-e4b`, `gemma-4-26b`, `-31b`, `gemma3-1b`, `-12b`, `-27b` | Vision-capable (gemma-4) |
-| **Llama / Hermes** | `llama3-1b`, `-3b`, `hermes3-8b`, `hermes4-70b` | |
+| **Gemma** | `gemma-3n-e4b`, `gemma-4-26b`, `-31b`, `-31b-8bit`, `gemma3-1b`, `-12b`, `-27b` | Vision-capable (gemma-4) |
+| **Llama / Hermes** | `llama3-1b`, `-3b`, `llama-3.1-8b-8bit`, `hermes3-8b`, `hermes4-70b` | |
 | **GLM** | `glm4.5-air`, `glm4.7-9b` | |
 | **GPT-OSS** | `gpt-oss-20b` | Harmony native |
-| **MiniMax / Kimi** | `minimax-m2.5`, `kimi-48b`, `kimi-k2.5` | |
+| **MiniMax / Kimi** | `minimax-m2.5`, `minimax-m2.7`, `kimi-48b`, `kimi-k2.5` | |
 | **Mistral / Devstral** | `mistral-24b`, `devstral-24b`, `devstral-v2-24b`, `ministral-3b` | |
 | **Other** | `phi4-14b`, `smollm3-3b`, `nemotron-30b` / `-nano`, `bonsai-1.7b/4b/8b`, `granite4-tiny` | |
 
-✨ = DFlash speculative decoding enabled by default. `rapid-mlx info <alias>` shows per-alias capabilities.
+✨ = DFlash speculative decoding supported (opt in with `--enable-dflash`). `rapid-mlx info <alias>` shows per-alias capabilities.
 
 </details>
 
@@ -623,7 +631,7 @@ Vision, audio (STT/TTS), video understanding, and text embeddings — all throug
 
 ### DFlash Speculative Decoding (single-user)
 
-z-lab's block-diffusion drafter (via mlx-vlm) accelerates single-stream generation on validated Qwen3.5/3.6 27B aliases. Currently enabled by default on:
+z-lab's block-diffusion drafter (via mlx-vlm) accelerates single-stream generation on validated Qwen3.5/3.6 27B aliases. Opt in with `--enable-dflash`:
 
 | Alias | Drafter | Avg speedup | Min / Max |
 |---|---|---|---|
@@ -640,7 +648,7 @@ rapid-mlx serve qwen3.5-27b-8bit --enable-dflash
 
 **v1 limitations**: DFlash mode runs a dedicated single-user server (mlx-vlm doesn't expose a batched DFlash kernel yet). Tool calling, MCP, and embeddings aren't available in DFlash mode — restart without `--enable-dflash` for those.
 
-Also: logprobs API, structured JSON output (`response_format`), continuous batching, KV cache quantization (`--kv-cache-quantization`), and [3200+ tests](tests/).
+Also: logprobs API, structured JSON output (`response_format`), continuous batching, KV cache quantization (`--kv-cache-quantization`), and [3300+ tests](tests/).
 
 ---
 
@@ -663,7 +671,7 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--tool-call-parser` | Parser: `hermes`, `minimax`, `qwen`, `llama`, `deepseek`, etc. | *(auto-detected)* |
-| `--reasoning-parser` | Parser: `qwen3`, `deepseek_r1`, `minimax`, `gpt_oss` | *(auto-detected)* |
+| `--reasoning-parser` | Parser: `qwen3`, `deepseek_r1`, `minimax`, `gpt_oss`, `harmony`, `glm4`, `gemma4` | *(auto-detected)* |
 | `--enable-tool-logits-bias` | Jump-forward decoding for faster tool calls | off |
 
 ### Performance
@@ -673,7 +681,7 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 | `--prefill-step-size` | Tokens per prefill chunk | `2048` |
 | `--kv-cache-turboquant` | TurboQuant V-cache compression (3-4 bit, 86% savings on dense models) | off |
 | `--kv-cache-quantization` | Quantize prefix cache entries for memory savings | off |
-| `--enable-prefix-cache` | Cache common prefixes across requests | off |
+| `--enable-prefix-cache` / `--disable-prefix-cache` | Cache common prefixes across requests | on |
 | `--enable-dflash` | DFlash speculative decoding (single-user; `qwen3.5-27b-8bit` / `qwen3.6-27b-8bit`) | off |
 | `--suffix-decoding` | Drafter-free n-gram speculative decoding (BatchedEngine path) | off |
 | `--enable-mtp` | MTP head speculative decoding (requires MTP-trained model) | off |
@@ -692,7 +700,7 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 |------|-------------|---------|
 | `--api-key` | API key for authentication | *(no auth)* |
 | `--rate-limit` | Requests per minute per client | *(unlimited)* |
-| `--timeout` | Request timeout in seconds | `300` |
+| `--timeout` | Request timeout in seconds | `1800` |
 | `--mllm` | Force multimodal (vision) mode | auto-detect |
 | `--mcp-config` | MCP configuration file for tool integration | *(none)* |
 | `--embedding-model` | Pre-load embedding model at startup | *(none)* |
@@ -821,7 +829,7 @@ Two layers: **user-facing doctor** (ships with pip) and **dev test suite** (sour
 | Command | What | Time | Needs server? |
 |---------|------|------|---------------|
 | `make lint` | ruff lint | ~10s | No |
-| `make test` | pytest unit suite (3200+ tests) | ~30s | No |
+| `make test` | pytest unit suite (3300+ tests) | ~30s | No |
 | `make smoke` | lint + unit | ~1 min | No |
 | `make stress` | 8-scenario stress test | ~5 min | Yes |
 | `make soak` | 10-min agent soak test | 10 min | Yes |
@@ -873,8 +881,8 @@ scripts/                 # Dev-only (NOT shipped with pip)
   dev_test.py            # Unified test entry point
   stress_test.py         # 8-scenario stress test
   agent_soak_test.py     # 10-min agent soak test
-  cross_model_stress.py  # Multi-model validation
-tests/                   # pytest unit tests (3200+)
+  mhi_eval.py            # Compute MHI scores against a running server
+tests/                   # pytest unit tests (3300+)
 harness/                 # Regression baselines + thresholds
 ```
 
