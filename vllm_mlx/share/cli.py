@@ -59,23 +59,24 @@ _PORT_ENV_VAR = "RAPID_MLX_SHARE_PORT"
 # ``ALLOWED_RAPID_MLX_ENV_VARS`` in ``tests/test_no_out_of_band_routing.py``.
 _CHAT_FRONTEND_ENV_VAR = "RAPID_MLX_CHAT_FRONTEND"
 # QuickSilver hosts the splash-protocol chat frontend at
-# ``rapid.quicksilverpro.io`` (CF Pages, BCG bundle + splash mirrored
-# from rapidmlx.com). Brand-wise: QuickSilver is the operator's other
-# project; surfacing its URL in the banner gives QuickSilver organic
-# reach from every rapid-mlx share session. There is NO marketing copy
-# anywhere in the banner — only the URL itself appears, so OSS users
-# who don't want to see it can swap with ``--chat-frontend``
-# (e.g. ``https://chat.rapidmlx.com`` for the rapidmlx-only mirror,
-# or any OpenAI-compatible frontend like OpenWebUI, in which case the
-# empty-string opt-out suppresses the line entirely).
-_DEFAULT_CHAT_FRONTEND = "https://rapid.quicksilverpro.io"
+# ``rapid-pro.pages.dev`` (CF Pages, Big-AGI static export + splash
+# injector that seeds the OpenAI vendor with our relay). Big-AGI ships
+# tool-calling, multi-turn personas, and a much richer UX than the
+# previous BCG fallback (still reachable via
+# ``--chat-frontend https://rapid.quicksilverpro.io``). There is NO
+# marketing copy in the banner — only the URL appears, so OSS users who
+# don't want it can swap with ``--chat-frontend`` (e.g.
+# ``https://chat.rapidmlx.com`` for the rapidmlx-only mirror, or any
+# OpenAI-compatible frontend like OpenWebUI, where the empty-string
+# opt-out suppresses the line entirely).
+_DEFAULT_CHAT_FRONTEND = "https://rapid-pro.pages.dev"
 
 
 def _resolve_chat_frontend(flag_value: str | None) -> str | None:
     """Resolve the chat-frontend URL from the CLI flag and env var.
 
     Precedence: ``--chat-frontend`` > ``$RAPID_MLX_CHAT_FRONTEND`` >
-    built-in default (``https://rapid.quicksilverpro.io``). An explicit
+    built-in default (``https://rapid-pro.pages.dev``). An explicit
     empty string at either layer disables the one-click chat link
     entirely — useful when the user is wiring up an OpenAI-compatible
     frontend like OpenWebUI that doesn't implement the splash
@@ -761,7 +762,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         metavar="URL",
         help=(
             "Override the one-click chat link printed in the share banner. "
-            "Default: https://rapid.quicksilverpro.io (or $RAPID_MLX_CHAT_FRONTEND "
+            "Default: https://rapid-pro.pages.dev (or $RAPID_MLX_CHAT_FRONTEND "
             "if set). The frontend must implement the rapidmlx splash "
             "share-key protocol — point this at your own fork if you host "
             "one. Pass an empty string ('') to suppress the chat link "

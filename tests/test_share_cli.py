@@ -865,13 +865,13 @@ def test_banner_omits_chat_line_when_frontend_is_none():
 # ─────────────────────────── --chat-frontend ────────────────────────────────
 
 
-def test_resolve_chat_frontend_defaults_to_quicksilver(monkeypatch):
+def test_resolve_chat_frontend_defaults_to_big_agi(monkeypatch):
     """No flag, no env var → built-in default
-    ``https://rapid.quicksilverpro.io``. Default surface-bound to the
-    QuickSilver-hosted BCG mirror since the rapidmlx.com origin moved
-    behind CF + the CF Worker tunnel."""
+    ``https://rapid-pro.pages.dev``. Default surface-bound to the
+    Big-AGI fork (tool-calling capable) hosted on CF Pages. BCG remains
+    reachable via ``--chat-frontend https://rapid.quicksilverpro.io``."""
     monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
-    assert share_cli._resolve_chat_frontend(None) == "https://rapid.quicksilverpro.io"
+    assert share_cli._resolve_chat_frontend(None) == "https://rapid-pro.pages.dev"
 
 
 def test_resolve_chat_frontend_flag_overrides_env(monkeypatch):
@@ -1034,7 +1034,7 @@ def test_share_command_forwards_chat_frontend_to_banner(capsys):
     out = capsys.readouterr().out
     assert "https://my-fork.example.com/#k=abc123_xy." in out
     # And the default frontend MUST NOT leak.
-    assert "https://rapid.quicksilverpro.io/#k=" not in out
+    assert "https://rapid-pro.pages.dev/#k=" not in out
 
 
 def test_share_command_omits_chat_line_when_frontend_disabled(capsys):
