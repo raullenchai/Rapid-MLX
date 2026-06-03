@@ -59,7 +59,7 @@ _PORT_ENV_VAR = "RAPID_MLX_SHARE_PORT"
 # ``ALLOWED_RAPID_MLX_ENV_VARS`` in ``tests/test_no_out_of_band_routing.py``.
 _CHAT_FRONTEND_ENV_VAR = "RAPID_MLX_CHAT_FRONTEND"
 # QuickSilver hosts the splash-protocol chat frontend at
-# ``rapid-pro.pages.dev`` (CF Pages, Big-AGI static export + splash
+# ``rapid-pro.quicksilverpro.io`` (CF Pages, Big-AGI static export + splash
 # injector that seeds the OpenAI vendor with our relay). Big-AGI ships
 # tool-calling, multi-turn personas, and a much richer UX than the
 # previous BCG fallback (still reachable via
@@ -69,14 +69,14 @@ _CHAT_FRONTEND_ENV_VAR = "RAPID_MLX_CHAT_FRONTEND"
 # ``https://chat.rapidmlx.com`` for the rapidmlx-only mirror, or any
 # OpenAI-compatible frontend like OpenWebUI, where the empty-string
 # opt-out suppresses the line entirely).
-_DEFAULT_CHAT_FRONTEND = "https://rapid-pro.pages.dev"
+_DEFAULT_CHAT_FRONTEND = "https://rapid-pro.quicksilverpro.io"
 
 
 def _resolve_chat_frontend(flag_value: str | None) -> str | None:
     """Resolve the chat-frontend URL from the CLI flag and env var.
 
     Precedence: ``--chat-frontend`` > ``$RAPID_MLX_CHAT_FRONTEND`` >
-    built-in default (``https://rapid-pro.pages.dev``). An explicit
+    built-in default (``https://rapid-pro.quicksilverpro.io``). An explicit
     empty string at either layer disables the one-click chat link
     entirely — useful when the user is wiring up an OpenAI-compatible
     frontend like OpenWebUI that doesn't implement the splash
@@ -762,7 +762,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         metavar="URL",
         help=(
             "Override the one-click chat link printed in the share banner. "
-            "Default: https://rapid-pro.pages.dev (or $RAPID_MLX_CHAT_FRONTEND "
+            "Default: https://rapid-pro.quicksilverpro.io (or $RAPID_MLX_CHAT_FRONTEND "
             "if set). The frontend must implement the rapidmlx splash "
             "share-key protocol — point this at your own fork if you host "
             "one. Pass an empty string ('') to suppress the chat link "
