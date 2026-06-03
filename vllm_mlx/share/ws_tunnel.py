@@ -76,11 +76,13 @@ DEFAULT_RAPIDSERVER_WSS = "wss://rapidserver.quicksilverpro.io/up"
 # observed in eval suites.
 LOCAL_FETCH_TIMEOUT_SECONDS = 1800
 
-# Body-chunk size for the local fetch → WS forwarding loop. Smaller →
-# lower latency per SSE event but more JSON+base64 overhead. 4 KiB is
-# the same default ``http.client.HTTPResponse.read`` uses internally,
-# matching real-world MLX serve flush boundaries (one SSE event ≈ a few
-# hundred bytes).
+# Body-chunk size for the local fetch → WS forwarding loop. We pair this
+# with ``resp.read1`` (not ``read``): on a chunked-transfer SSE stream,
+# the blocking ``read(n)`` waits until either ``n`` bytes have
+# accumulated or EOF, which silently batches every token of a short
+# response into a single WS frame at the END of generation. ``read1``
+# returns whatever has landed in the buffer right now — so each SSE
+# ``data: ...\n\n`` flush forwards immediately.
 CHUNK_SIZE = 4096
 
 
@@ -325,7 +327,11 @@ class TunnelClient:
                 }
             )
             while True:
-                chunk = resp.read(CHUNK_SIZE)
+                # ``read1`` (not ``read``) — return whatever's currently
+                # buffered without waiting to fill CHUNK_SIZE. See the
+                # CHUNK_SIZE comment above for why; perf impact is the
+                # entire SSE streaming UX through the tunnel.
+                chunk = resp.read1(CHUNK_SIZE)
                 if not chunk:
                     break
                 self._sync_send(
