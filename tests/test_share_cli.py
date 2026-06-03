@@ -14,6 +14,7 @@ tunnel. See ``vllm_mlx/share/ws_tunnel.py`` for the wire protocol.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import signal
 import threading
 from unittest.mock import MagicMock, patch
@@ -42,7 +43,8 @@ def _make_args(**overrides):
         model="qwen3.5-4b",
         port=18765,  # explicit so the env-var fallback path isn't exercised
         thinking=False,  # default: forward --no-thinking to serve
-        cors_origins=["*"],  # nargs='+' returns a list
+        cors_origins=None,  # None → CLI default allowlist
+        rate_limit=120,  # CLI default (rpm), forwarded to spawned serve
         chat_frontend=None,  # use built-in default
     )
     defaults.update(overrides)
@@ -662,6 +664,127 @@ def test_share_command_forwards_multiple_cors_origins_to_child(capsys):
     forwarded = spawn_argv[flag_idx + 1 : flag_idx + 3]
     assert "https://a.com" in forwarded
     assert "https://b.com" in forwarded
+
+
+# ────────────────────────── pre-release hardening ───────────────────────────
+
+
+def _drive_share_capture(args, *, extra_patches=()):
+    """Run ``share_command`` against a happy-path mock stack and return
+    the argv the child ``serve`` would have been spawned with.
+
+    Helper for the hardening tests below; we only care about what extra
+    flags get forwarded to the child, not the rest of the lifecycle.
+    """
+    serve_proc = MagicMock()
+    serve_proc.poll.return_value = None
+    tunnel = _fake_tunnel()
+    captured: list[str] = []
+
+    def fake_spawn(*, alias, port, api_key, log_path, extra_args):  # noqa: ARG001
+        captured.extend(extra_args)
+        return serve_proc
+
+    base_patches = [
+        patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli.ws_tunnel, "TunnelClient", return_value=tunnel),
+        patch.object(share_cli.ws_tunnel, "wait_for_public_url", return_value=True),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch.object(share_cli, "_maybe_confirm_download"),
+        patch.object(
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+        ),
+        patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
+    ]
+    base_patches.extend(extra_patches)
+    with contextlib.ExitStack() as stack:
+        for p in base_patches:
+            stack.enter_context(p)
+        share_cli.share_command(args)
+    return captured
+
+
+def test_default_cors_origins_is_rapidmlx_allowlist_not_wildcard():
+    """Finding N. Default ``--cors-origins`` must NOT be ``*`` — that
+    let any drive-by web page the publisher visited hit
+    ``http://127.0.0.1:<share-port>`` with the bearer key and use the
+    publisher's compute. Default now ships the rapidmlx chat-frontend
+    allowlist; users who really want wide-open opt in explicitly with
+    ``--cors-origins '*'``."""
+    spawn_argv = _drive_share_capture(_make_args())
+    assert "--cors-origins" in spawn_argv
+    flag_idx = spawn_argv.index("--cors-origins")
+    # Slice from flag_idx+1 up to the next CLI flag or end.
+    tail = spawn_argv[flag_idx + 1 :]
+    end = next((i for i, v in enumerate(tail) if v.startswith("--")), len(tail))
+    origins = tail[:end]
+    assert "*" not in origins, f"default CORS leaked '*': {origins!r}"
+    # All four canonical rapidmlx origins must be there.
+    for must_have in (
+        "https://rapid-pro.pages.dev",
+        "https://rapid-pro.quicksilverpro.io",
+        "https://rapidmlx.com",
+        "https://chat.rapidmlx.com",
+    ):
+        assert must_have in origins, (
+            f"missing {must_have} from default; got {origins!r}"
+        )
+
+
+def test_chat_frontend_origin_is_appended_to_default_cors_allowlist():
+    """A user pointing ``--chat-frontend https://my-fork.com`` should
+    automatically get that origin into the child's CORS allowlist —
+    otherwise they'd have to remember to repeat it under
+    ``--cors-origins`` and would silently hit ``Failed to fetch``."""
+    spawn_argv = _drive_share_capture(
+        _make_args(chat_frontend="https://my-fork.example")
+    )
+    flag_idx = spawn_argv.index("--cors-origins")
+    tail = spawn_argv[flag_idx + 1 :]
+    end = next((i for i, v in enumerate(tail) if v.startswith("--")), len(tail))
+    origins = tail[:end]
+    assert "https://my-fork.example" in origins, origins
+
+
+def test_explicit_cors_origins_wildcard_overrides_default():
+    """Power users running a chat UI we don't list (e.g. local
+    OpenWebUI) can still opt back into wide-open CORS with
+    ``--cors-origins '*'``. We forward exactly what they asked for."""
+    spawn_argv = _drive_share_capture(_make_args(cors_origins=["*"]))
+    flag_idx = spawn_argv.index("--cors-origins")
+    tail = spawn_argv[flag_idx + 1 :]
+    end = next((i for i, v in enumerate(tail) if v.startswith("--")), len(tail))
+    origins = tail[:end]
+    assert origins == ["*"], origins
+
+
+def test_default_rate_limit_120_forwarded_to_child():
+    """Finding F. Without a forwarded ``--rate-limit`` the child
+    ``rapid-mlx serve`` defaults to 0 (disabled) — a leaked share key
+    can then burst-DoS the publisher's M3. Share defaults to 120 rpm
+    (2 req/s); the value is forwarded verbatim."""
+    spawn_argv = _drive_share_capture(_make_args())
+    assert "--rate-limit" in spawn_argv
+    idx = spawn_argv.index("--rate-limit")
+    assert spawn_argv[idx + 1] == "120"
+
+
+def test_rate_limit_zero_disables_forwarding():
+    """``--rate-limit 0`` is the documented escape hatch for power
+    users: do NOT forward to the child at all, letting the child's own
+    default (disabled) take over."""
+    spawn_argv = _drive_share_capture(_make_args(rate_limit=0))
+    assert "--rate-limit" not in spawn_argv
+
+
+def test_rate_limit_custom_value_forwarded():
+    """User-supplied non-zero ``--rate-limit`` is forwarded as-is."""
+    spawn_argv = _drive_share_capture(_make_args(rate_limit=500))
+    assert "--rate-limit" in spawn_argv
+    idx = spawn_argv.index("--rate-limit")
+    assert spawn_argv[idx + 1] == "500"
 
 
 # ─────────────────────────── original-alias forwarding ──────────────────────

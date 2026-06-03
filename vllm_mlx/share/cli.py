@@ -177,6 +177,47 @@ def _resolve_chat_frontend(flag_value: str | None) -> str | None:
     return f"{parsed.scheme}://{authority}"
 
 
+# Default CORS allowlist when --cors-origins is not supplied. The
+# rapidmlx chat-frontend ecosystem only. Users running a custom front
+# can either pass the origin to ``--cors-origins`` or rely on
+# ``--chat-frontend`` propagating into the allowlist below.
+_DEFAULT_CORS_ALLOWLIST: tuple[str, ...] = (
+    "https://rapid-pro.pages.dev",
+    "https://rapid-pro.quicksilverpro.io",
+    "https://rapidmlx.com",
+    "https://chat.rapidmlx.com",
+)
+
+
+def _resolve_cors_origins(
+    flag_value: list[str] | None,
+    chat_frontend: str | None,
+) -> list[str]:
+    """Build the ``--cors-origins`` argv to forward to the child.
+
+    Priority:
+      * Explicit ``--cors-origins`` from CLI → use as-is (wildcards allowed,
+        loopback allowed, exact origins allowed).
+      * Otherwise → start with the rapidmlx default allowlist, then
+        append ``chat_frontend`` (already validated by
+        ``_resolve_chat_frontend``) if not already covered.
+
+    The default lockdown matters because a share URL hands out a 192-bit
+    bearer key that, on its own, only protects against unauthenticated
+    pulls. A wide-open ``--cors-origins '*'`` lets any drive-by web
+    page the publisher visits hit ``http://127.0.0.1:<share-port>``
+    bearing the key and use the publisher's compute — defense in depth
+    against a same-origin XSS or a malicious tab on the publisher's
+    browser.
+    """
+    if flag_value:
+        return list(flag_value)
+    origins = list(_DEFAULT_CORS_ALLOWLIST)
+    if chat_frontend and chat_frontend not in origins:
+        origins.append(chat_frontend)
+    return origins
+
+
 def _pick_port(preferred: int) -> int:
     """Return ``preferred`` if free, else an OS-assigned port. We bind+release
     rather than just checking — TOCTOU windows on busy systems are real.
@@ -433,6 +474,20 @@ def share_command(args: argparse.Namespace) -> None:
     # ``args.model`` (HF repo) because the cache lookup uses the
     # resolved id, not the typed alias.
     _maybe_confirm_download(args.model)
+
+    # Resolve --chat-frontend ahead of any subprocess work — a malformed
+    # URL is a user error that should exit 2 BEFORE we spawn serve / pay
+    # the model-load cost. (Same lazy-validation rationale as the
+    # ``--port`` block below: keeping it out of register() avoids a
+    # broken env var crashing every other rapid-mlx subcommand at
+    # parser-build time.) Resolved early because the CORS allowlist
+    # below auto-includes whatever this resolves to.
+    try:
+        chat_frontend = _resolve_chat_frontend(args.chat_frontend)
+    except ValueError as exc:
+        print(f"share: {exc}", file=sys.stderr)
+        sys.exit(2)
+
     extra_serve_args: list[str] = []
     # ``args.thinking`` comes from BooleanOptionalAction so ``--thinking``
     # turns it on and ``--no-thinking`` (or the default) turns it off. We
@@ -440,31 +495,25 @@ def share_command(args: argparse.Namespace) -> None:
     # serve's own default is on, so an explicit flag is needed.
     if not args.thinking:
         extra_serve_args.append("--no-thinking")
-    if args.cors_origins:
-        # ``--cors-origins`` accepts ``nargs='+'`` — pass each value as a
-        # separate argv element so the child's argparse sees the same
-        # shape as a direct ``rapid-mlx serve --cors-origins ...`` call.
-        # A single-string value (legacy default) is wrapped in a list so
-        # the same code path handles both.
-        origins = (
-            args.cors_origins
-            if isinstance(args.cors_origins, list)
-            else [args.cors_origins]
-        )
-        extra_serve_args.append("--cors-origins")
-        extra_serve_args.extend(origins)
 
-    # Resolve --chat-frontend ahead of any subprocess work — a malformed
-    # URL is a user error that should exit 2 BEFORE we spawn serve / pay
-    # the model-load cost. (Same lazy-validation rationale as the
-    # ``--port`` block below: keeping it out of register() avoids a
-    # broken env var crashing every other rapid-mlx subcommand at
-    # parser-build time.)
-    try:
-        chat_frontend = _resolve_chat_frontend(args.chat_frontend)
-    except ValueError as exc:
-        print(f"share: {exc}", file=sys.stderr)
-        sys.exit(2)
+    # Default CORS allowlist — the rapidmlx chat-frontend ecosystem.
+    # Anyone running with ``--chat-frontend`` pointing elsewhere gets
+    # that origin automatically appended. ``--cors-origins '*'`` opts
+    # back into the wide-open behaviour for users running OpenWebUI /
+    # other local chat UIs.
+    origins = _resolve_cors_origins(args.cors_origins, chat_frontend)
+    extra_serve_args.append("--cors-origins")
+    extra_serve_args.extend(origins)
+
+    # Forward the rate-limit cap to the child. The child's own default
+    # is 0 (disabled), which on a public share is a leaked-key DoS
+    # amplifier — a hostile client can saturate the M3 with as many
+    # concurrent ``/v1/chat/completions`` as it wants. We default share
+    # to 120 rpm (2/sec) at the argparse layer; 0 here is explicitly
+    # ``do not forward`` so power users can opt out.
+    if args.rate_limit > 0:
+        extra_serve_args.append("--rate-limit")
+        extra_serve_args.append(str(args.rate_limit))
 
     api_key = secrets.token_hex(24)
     # Port parsing is lazy on purpose: validating RAPID_MLX_SHARE_PORT at
@@ -746,13 +795,29 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--cors-origins",
         nargs="+",
-        default=["*"],
+        default=None,
         metavar="ORIGIN",
         help=(
             "Pass --cors-origins to serve. Accepts multiple values, same "
-            "shape as ``rapid-mlx serve --cors-origins``. Default: '*' so "
-            "browser chat UIs like Open WebUI work without extra config. "
-            "Example: --cors-origins http://localhost:3000 https://myapp.com"
+            "shape as ``rapid-mlx serve --cors-origins``. Default: the "
+            "rapidmlx chat-frontend allowlist (rapid-pro.pages.dev, "
+            "rapid-pro.quicksilverpro.io, rapidmlx.com, chat.rapidmlx.com) "
+            "plus whatever ``--chat-frontend`` resolves to. Pass '*' to "
+            "relax for browser chat UIs you host elsewhere (e.g. local "
+            "Open WebUI). Example: --cors-origins http://localhost:3000."
+        ),
+    )
+    p.add_argument(
+        "--rate-limit",
+        type=int,
+        default=120,
+        metavar="RPM",
+        help=(
+            "Per-client requests/minute cap forwarded to the spawned "
+            "``rapid-mlx serve``. Default: 120 (2/sec) — high enough for "
+            "tool-using power users and Beam-mode parallel completions, "
+            "low enough that a leaked share key can't burst-DoS the "
+            "publisher's M3. Set 0 to disable the cap entirely."
         ),
     )
     p.add_argument(
