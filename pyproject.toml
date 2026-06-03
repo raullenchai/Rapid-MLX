@@ -46,6 +46,10 @@ dependencies = [
     "uvicorn>=0.23.0",
     "mcp>=1.0.0",
     "jsonschema>=4.0.0",
+    # WebSocket client for ``rapid-mlx share`` — connects to the
+    # rapidserver Worker as the reverse-tunnel transport. Pure Python,
+    # ~200 KB. Replaces the prior frpc Go binary download.
+    "websockets>=12.0",
 ]
 
 [project.optional-dependencies]

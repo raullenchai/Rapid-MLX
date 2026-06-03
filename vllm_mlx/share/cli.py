@@ -6,20 +6,34 @@ Orchestration shape:
   1. Validate alias (cheap fail-fast before booting the engine).
   2. Pick a free local port + generate a fresh 24-byte bearer key.
   3. Spawn ``rapid-mlx serve`` in a child process pointing at that port.
-  4. Wait for /healthz to come back ready.
-  5. Ask the rapidmlx.com control plane for a session token + subdomain.
-  6. Start frpc with a single-proxy config bridging localhost → subdomain.
-  7. Print the security banner + URL + key, then block until Ctrl-C.
-  8. On exit, kill frpc and the serve process in that order.
+  4. Wait for /healthz to come back ready, then auth-gate /v1/models.
+  5. Open a WebSocket to the rapidserver Worker (defaults to
+     ``wss://rapidserver.quicksilverpro.io/up``). The Worker mints a
+     Durable Object keyed on our tunnel id; inbound HTTPS requests at
+     ``https://rapidserver.quicksilverpro.io/r/<id>/...`` are
+     reverse-multiplexed back to us over the same WS frame.
+  6. Probe ``<public_url>/v1/models`` to prove the tunnel ↔ serve
+     round-trip works, then print the security banner + URL + key.
+  7. Block until Ctrl-C, monitoring both the serve subprocess and the
+     WS tunnel thread.
+  8. On exit, close the WS first (cheap) then terminate serve.
 
-State lives in ``~/.cache/rapid-mlx/share/`` — pids, logs, and the frpc
-config. Key + URL are NOT persisted: each invocation issues a new key
+State lives in ``~/.cache/rapid-mlx/share/`` — pid + serve log only.
+Key + URL are NOT persisted: each invocation issues a new key
 (per user's "new key every share" preference) and a new session.
+
+Architecture pivot (2026-06-03): the prior PR #504 design used frpc +
+a control-plane HTTP endpoint + frps relay running on the operator's
+M3 Ultra. We replaced that whole stack with a Cloudflare Worker so
+prod no longer depends on the operator's personal machine. See
+``ws_tunnel.py`` for the wire protocol and ``rapidmlx.com/worker/``
+for the Worker code.
 """
 
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import secrets
@@ -27,14 +41,13 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import frpc_manager, session, warning
+from . import warning, ws_tunnel
 
 # Pulled out so the routing-shape audit (tests/test_no_out_of_band_routing.py)
 # sees one clean RAPID_MLX_* string literal that lives in the
@@ -45,17 +58,28 @@ _PORT_ENV_VAR = "RAPID_MLX_SHARE_PORT"
 # Same out-of-band-routing carve-out as ``RAPID_MLX_SHARE_PORT`` — see
 # ``ALLOWED_RAPID_MLX_ENV_VARS`` in ``tests/test_no_out_of_band_routing.py``.
 _CHAT_FRONTEND_ENV_VAR = "RAPID_MLX_CHAT_FRONTEND"
-_DEFAULT_CHAT_FRONTEND = "https://chat.rapidmlx.com"
+# QuickSilver hosts the splash-protocol chat frontend at
+# ``rapid.quicksilverpro.io`` (CF Pages, BCG bundle + splash mirrored
+# from rapidmlx.com). Brand-wise: QuickSilver is the operator's other
+# project; surfacing its URL in the banner gives QuickSilver organic
+# reach from every rapid-mlx share session. There is NO marketing copy
+# anywhere in the banner — only the URL itself appears, so OSS users
+# who don't want to see it can swap with ``--chat-frontend``
+# (e.g. ``https://chat.rapidmlx.com`` for the rapidmlx-only mirror,
+# or any OpenAI-compatible frontend like OpenWebUI, in which case the
+# empty-string opt-out suppresses the line entirely).
+_DEFAULT_CHAT_FRONTEND = "https://rapid.quicksilverpro.io"
 
 
 def _resolve_chat_frontend(flag_value: str | None) -> str | None:
     """Resolve the chat-frontend URL from the CLI flag and env var.
 
     Precedence: ``--chat-frontend`` > ``$RAPID_MLX_CHAT_FRONTEND`` >
-    built-in default (``https://chat.rapidmlx.com``). An explicit empty
-    string at either layer disables the one-click chat link entirely —
-    useful when the user is wiring up an OpenAI-compatible frontend
-    like OpenWebUI that doesn't implement the splash share-key protocol.
+    built-in default (``https://rapid.quicksilverpro.io``). An explicit
+    empty string at either layer disables the one-click chat link
+    entirely — useful when the user is wiring up an OpenAI-compatible
+    frontend like OpenWebUI that doesn't implement the splash
+    share-key protocol.
 
     Returns the validated origin (``scheme://host[:port]``) or ``None``
     when disabled. Raises ``ValueError`` on malformed input — the share
@@ -68,12 +92,22 @@ def _resolve_chat_frontend(flag_value: str | None) -> str | None:
       ``ftp:``, no ``file:``. We're going to embed the user's bearer
       key in the URL fragment so anything that could parse the URL as
       "do something other than open a chat tab" is a foot-gun.
+    * **No userinfo.** ``https://chat.rapidmlx.com@evil.com`` parses
+      to ``netloc='chat.rapidmlx.com@evil.com'`` — if we echo netloc
+      back verbatim the banner advertises a link that visually starts
+      with ``chat.rapidmlx.com`` but actually points the bearer key
+      at ``evil.com``. Codex round-7 BLOCKING. We reject any URL with
+      userinfo and rebuild the origin from ``hostname`` + ``port``
+      (never from ``netloc``).
     * Plain ``http://`` is only allowed for loopback hosts. Embedding
       a bearer key in a URL pointed at a non-loopback HTTP origin
       means an attacker on-path between the user and that origin can
       see the key (the fragment is parsed by JS but the *user* still
       types the URL, and some browsers and link-handlers log the
-      request URL including the fragment — better safe).
+      request URL including the fragment — better safe). Loopback is
+      determined via ``ipaddress.is_loopback`` so canonical IPv6
+      forms (``::0001``, ``0:0:0:0:0:0:0:1``) are recognised, not
+      just the bare ``::1`` literal.
     * No path, query, or fragment — we own the ``/#k=...`` shape and
       need a clean origin to append onto. ``foo.com/bar`` would yield
       a banner link that points at ``foo.com/bar/#k=...`` which the
@@ -91,11 +125,36 @@ def _resolve_chat_frontend(flag_value: str | None) -> str | None:
     parsed = urllib.parse.urlparse(raw)
     if parsed.scheme not in ("https", "http"):
         raise ValueError(f"--chat-frontend must use https:// or http:// (got {raw!r})")
-    if not parsed.netloc:
+    # Reject userinfo BEFORE consulting hostname/port — ``urlparse`` happily
+    # pulls ``user:pass`` into netloc and exposes the trailing host as
+    # ``hostname``, so checking only ``hostname`` would silently let a
+    # phishing-shaped URL through. The presence of ``@`` in netloc is the
+    # canonical CPython signal for userinfo.
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or "@" in (parsed.netloc or "")
+    ):
+        raise ValueError(f"--chat-frontend must not include userinfo (got {raw!r})")
+    host = parsed.hostname
+    if not host:
         raise ValueError(f"--chat-frontend must include a host (got {raw!r})")
+    # ``parsed.port`` raises ValueError on a bogus integer — surface it
+    # under the same flag name so the user sees one consistent error
+    # message family.
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"--chat-frontend has an invalid port (got {raw!r})") from exc
     if parsed.scheme == "http":
-        host = parsed.hostname or ""
-        if host not in ("localhost", "127.0.0.1", "::1"):
+        try:
+            host_is_loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            # Not an IP literal — only the textual ``localhost`` qualifies
+            # (DNS resolution is not allowed to influence security policy
+            # at validation time).
+            host_is_loopback = host == "localhost"
+        if not host_is_loopback:
             raise ValueError(
                 f"--chat-frontend over plain http:// only allowed for "
                 f"loopback hosts (got {raw!r})"
@@ -108,7 +167,13 @@ def _resolve_chat_frontend(flag_value: str | None) -> str | None:
         raise ValueError(
             f"--chat-frontend must not include a query or fragment (got {raw!r})"
         )
-    return f"{parsed.scheme}://{parsed.netloc}"
+    # Rebuild the origin from ``hostname`` + validated ``port`` — never
+    # ``netloc`` (it would carry userinfo / whitespace / mixed-case
+    # surface through). IPv6 needs bracketing so the rebuilt URL parses
+    # back to the same host.
+    host_part = f"[{host}]" if ":" in host else host
+    authority = f"{host_part}:{port}" if port is not None else host_part
+    return f"{parsed.scheme}://{authority}"
 
 
 def _pick_port(preferred: int) -> int:
@@ -243,39 +308,6 @@ def _verify_auth_gate(port: int, api_key: str) -> bool:
 
     # Step 2: the real key must return 200.
     return _probe(api_key) == 200
-
-
-def _wait_for_public_url(public_url: str, timeout: float = 15.0) -> bool:
-    """Confirm the tunnel is live by probing the public URL's /healthz.
-
-    Without this, frpc can stay up (process alive, TCP connected to frps)
-    while the proxy registration silently fails — the banner prints with
-    a URL that 502s. Bounded so we don't hang forever if Cloudflare /
-    frps are degraded.
-
-    A User-Agent header is required: Cloudflare's default WAF rules
-    return HTTP 403 for the bare ``Python-urllib/3.x`` user agent, so
-    without this the probe would always time out on a healthy tunnel.
-    """
-    url = f"{public_url.rstrip('/')}/healthz"
-    req = urllib.request.Request(url, headers={"User-Agent": "rapid-mlx-share"})
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(req, timeout=3) as r:  # noqa: S310
-                if r.status == 200:
-                    return True
-        except (urllib.error.URLError, ConnectionError, TimeoutError):
-            # ``TimeoutError`` (== ``socket.timeout`` in Python 3.10+)
-            # is what urlopen raises when the TCP connection is accepted
-            # but the tunnel stalls before sending headers — a real-world
-            # frps-degraded scenario codex empirically reproduced in
-            # round 5. Catching only URLError would let the probe escape
-            # as a raw traceback instead of polling until the 15s
-            # deadline and reporting the intended tunnel failure message.
-            pass
-        time.sleep(1)
-    return False
 
 
 def _spawn_serve(
@@ -470,14 +502,27 @@ def share_command(args: argparse.Namespace) -> None:
         sys.exit(1)
     state_dir = _state_dir()
     serve_log = state_dir / "serve.log"
-    tunnel_log = state_dir / "tunnel.log"
+
+    # Relay URL — defaults to the production rapidserver Worker, but
+    # operator-set ``RAPID_MLX_RELAY_URL`` overrides (self-host /
+    # smoke test against ``wrangler dev``).
+    relay_url = os.environ.get("RAPID_MLX_RELAY_URL", ws_tunnel.DEFAULT_RAPIDSERVER_WSS)
+    # Refuse non-wss schemes early so a misconfigured env doesn't
+    # silently fall through to a stalled handshake.
+    if not (relay_url.startswith("wss://") or relay_url.startswith("ws://")):
+        print(
+            f"share: RAPID_MLX_RELAY_URL must start with wss:// or ws:// "
+            f"(got {relay_url!r})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # Convert SIGTERM into a KeyboardInterrupt so the existing finally
     # block runs cleanup. Without this, a supervisor (systemd, docker,
     # ``kill <pid>``) terminates the share parent and orphans the serve
-    # + frpc children, leaking a public tunnel until the user notices.
-    # ``original_sigterm`` is the handler we replace; we restore it on
-    # function exit so future code in the same process (e.g.
+    # child + WS tunnel thread, leaking a public tunnel until the user
+    # notices. ``original_sigterm`` is the handler we replace; we restore
+    # it on function exit so future code in the same process (e.g.
     # command-chaining) sees the prior behavior instead of inheriting
     # our KeyboardInterrupt translator. (DeepSeek round-3 NIT #2.)
     def _term_handler(signum, frame):  # noqa: ARG001
@@ -486,8 +531,8 @@ def share_command(args: argparse.Namespace) -> None:
     original_sigterm = signal.signal(signal.SIGTERM, _term_handler)
 
     serve_proc: subprocess.Popen[bytes] | None = None
-    frpc_proc: subprocess.Popen[bytes] | None = None
-    config_path: Path | None = None
+    tunnel: ws_tunnel.TunnelClient | None = None
+    tunnel_thread = None
     # Codex round-1 BLOCKING: an OOM or crash in the serve child would
     # previously bubble out of ``serve_proc.wait()`` as a non-zero return
     # code that the parent silently discarded — so a failed share looked
@@ -514,9 +559,10 @@ def share_command(args: argparse.Namespace) -> None:
         # Auth-gated proof: even though /healthz returned 200, confirm the
         # process answering on this port is ours (it has our key). On a
         # busy host another local serve could win the race to bind the
-        # same port we asked for, and tunneling THAT process would leak
-        # someone else's model + their data. Bearer-gating /v1/models
-        # eliminates this class of bug — no other process has our key.
+        # same port we asked for, and forwarding THAT process over our
+        # tunnel would leak someone else's model + their data. Bearer-
+        # gating /v1/models eliminates this class of bug — no other
+        # process has our key.
         if not _verify_auth_gate(port, api_key):
             print(
                 f"serve on :{port} did not answer authenticated /v1/models — "
@@ -526,66 +572,33 @@ def share_command(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
 
-        print("Requesting share session from rapidmlx.com…", file=sys.stderr)
-        try:
-            sess = session.request(model=alias)
-        except RuntimeError as exc:
-            print(f"share: {exc}", file=sys.stderr)
-            sys.exit(1)
-
-        print(
-            f"Starting frpc → {sess.subdomain}.{sess.frps_host.split('.', 1)[-1]}",
-            file=sys.stderr,
-        )
-        # render_config validates the relay-provided strings against
-        # strict allow-lists (see frpc_manager._validate_session_fields)
-        # so a hostile/buggy control plane can't inject TOML keys here.
-        try:
-            rendered = frpc_manager.render_config(
-                server_addr=sess.frps_host,
-                server_port=sess.frps_port,
-                auth_token=sess.token,
-                subdomain=sess.subdomain,
-                local_port=port,
-            )
-        except RuntimeError as exc:
-            print(f"share: {exc}", file=sys.stderr)
-            sys.exit(1)
-        with tempfile.NamedTemporaryFile(
-            "w", dir=state_dir, suffix=".toml", delete=False
-        ) as f:
-            f.write(rendered)
-            config_path = Path(f.name)
-        config_path.chmod(0o600)
-        # ``spawn`` chains into ``ensure()``, which can raise on a fresh
-        # checkout (download failure, sha256 mismatch, unsupported
-        # platform/arch). Surface those as user-readable messages
-        # instead of bare tracebacks. (DeepSeek round-4 BLOCKER #2.)
-        try:
-            frpc_proc = frpc_manager.spawn(config_path, tunnel_log)
-        except (RuntimeError, urllib.error.URLError, OSError) as exc:
-            # OSError covers local-filesystem / exec failures: disk full
-            # while extracting the cached binary, PermissionError on the
-            # cache dir, ``FileNotFoundError`` if the binary disappeared
-            # between the cache check and ``Popen``. Codex round-3 P3.
-            print(f"share: failed to start frpc tunnel: {exc}", file=sys.stderr)
-            sys.exit(1)
-
-        # Liveness ladder: short settle, then poll the actual public URL.
-        # frpc can stay up (process alive, TCP connected to frps) while
-        # the proxy registration silently fails — printing a banner with
-        # a URL that 502s is worse than failing here.
-        time.sleep(1)
-        if frpc_proc.poll() is not None:
+        print(f"Connecting to relay {relay_url}…", file=sys.stderr)
+        tunnel = ws_tunnel.TunnelClient(local_port=port, relay_url=relay_url)
+        tunnel_thread = tunnel.run_in_thread()
+        # 30s ceiling is generous: a healthy WS handshake completes in
+        # well under a second; anything beyond that means the relay is
+        # down or the user's outbound network is blocking WSS.
+        if not tunnel.ready_event.wait(timeout=30):
+            err = tunnel.error
             print(
-                f"frpc exited before tunnel was ready — see {tunnel_log}",
+                f"share: WS tunnel did not connect to {relay_url} within 30s",
                 file=sys.stderr,
             )
+            if err is not None:
+                print(f"   reason: {err}", file=sys.stderr)
             sys.exit(1)
-        if not _wait_for_public_url(sess.public_url):
+        if tunnel.error is not None:
+            print(f"share: WS tunnel failed: {tunnel.error}", file=sys.stderr)
+            sys.exit(1)
+
+        # End-to-end probe: bearer-authed /v1/models through the public
+        # URL. Passes only if (a) the WS is up, (b) the worker DO is
+        # wired, (c) our local serve is answering through the tunnel.
+        # Without this we'd happily print a banner whose URL silently
+        # 503s on first request.
+        if not ws_tunnel.wait_for_public_url(tunnel.public_url, api_key, timeout=30):
             print(
-                f"tunnel did not respond at {sess.public_url} within 15s — "
-                f"see {tunnel_log}",
+                f"share: public URL {tunnel.public_url} did not respond within 30s",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -600,34 +613,28 @@ def share_command(args: argparse.Namespace) -> None:
         # banner doesn't reach the terminal until the process exits.
         print(
             warning.render(
-                sess.public_url,
+                tunnel.public_url,
                 api_key,
                 display_model,
-                sess.subdomain,
+                tunnel.tunnel_id,
                 chat_frontend,
             ),
             flush=True,
         )
 
-        # Monitor BOTH children: share is healthy only while serve AND
-        # frpc are running. Codex round-4 BLOCKING: blocking only on
-        # ``serve_proc.wait()`` meant share kept running with a dead
-        # public URL after an frpc crash / frps disconnect — the model
-        # stayed exposed locally but every public request 502'd. We
-        # poll once a second and exit as soon as either child dies.
-        # The slow tick is fine because both processes write to log
-        # files on their own; we only need to notice "exited", not
-        # forward output.
+        # Monitor BOTH the serve subprocess and the WS tunnel thread.
+        # Share is healthy only while both are alive. Polling at 1s is
+        # fine — both surfaces have their own logs; we only need to
+        # notice "exited", not forward output.
         #
-        # Codex round-6 BLOCKING: a child exiting with status 0 is
-        # ALSO a share failure — the public URL has disappeared even
-        # if the exit was "clean" (uvicorn graceful shutdown, a direct
-        # ``kill <pid>`` of the child, etc.). Only the parent's
-        # KeyboardInterrupt path is allowed to keep exit 0; every other
-        # exit-from-the-monitor-loop translates to a non-zero share
-        # exit code so supervisors restart us. We use the child's
-        # actual exit code when non-zero, and the sentinel 1 when the
-        # child happened to exit cleanly.
+        # Codex round-6 (preserved from frpc-era) BLOCKING: a child
+        # exiting with status 0 is ALSO a share failure — the public
+        # URL has disappeared even if the exit was "clean" (uvicorn
+        # graceful shutdown, a direct ``kill <pid>`` of the child,
+        # etc.). Only the parent's KeyboardInterrupt path is allowed
+        # to keep exit 0; every other exit-from-the-monitor-loop
+        # translates to a non-zero share exit code so supervisors
+        # restart us.
         while True:
             serve_rc = serve_proc.poll()
             if serve_rc is not None:
@@ -639,20 +646,17 @@ def share_command(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
                 break
-            frpc_rc = frpc_proc.poll()
-            if frpc_rc is not None:
-                # frpc died after the banner — the public URL is dead.
-                # Surface as a non-zero exit so supervisor wrappers
-                # restart us; keep the serve exit code 0 (it's still
-                # running, we'll terminate it in cleanup below).
+            if tunnel.closed_event.is_set():
+                # WS dropped after the banner — public URL is dead. Use
+                # a non-zero exit so supervisor wrappers restart us; the
+                # serve child is still alive, terminated in cleanup.
+                err = tunnel.error
+                suffix = f": {err}" if err is not None else ""
                 print(
-                    f"share: frpc tunnel exited with status {frpc_rc} — "
-                    f"see {tunnel_log}. Stopping serve.",
+                    f"share: WS tunnel disconnected{suffix}. Stopping serve.",
                     file=sys.stderr,
                 )
-                # Use a sentinel exit code distinct from serve crashes
-                # so log-readers can tell the two cases apart.
-                serve_exit_code = frpc_rc if frpc_rc != 0 else 1
+                serve_exit_code = 1
                 break
             time.sleep(1)
     except KeyboardInterrupt:
@@ -660,26 +664,27 @@ def share_command(args: argparse.Namespace) -> None:
     finally:
         # DeepSeek round-2 NIT: if a second SIGTERM arrives mid-cleanup,
         # the installed handler raises KeyboardInterrupt again and we
-        # leak the second child (serve). Ignore SIGTERM for the
-        # duration of cleanup — supervisor "kill -9" can still force
-        # us, that's fine.
+        # leak the serve child. Ignore SIGTERM for the duration of
+        # cleanup — supervisor "kill -9" can still force us, that's
+        # fine.
         try:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
         except (ValueError, OSError):
             pass
-        for _name, proc in (("frpc", frpc_proc), ("serve", serve_proc)):
-            if proc is None or proc.poll() is not None:
-                continue
+        # Close the WS first: cheap, and stops the worker from sending
+        # any more inbound requests at us during serve teardown.
+        if tunnel is not None:
+            tunnel.stop()
+        if tunnel_thread is not None and tunnel_thread.is_alive():
+            tunnel_thread.join(timeout=5)
+        if serve_proc is not None and serve_proc.poll() is None:
             try:
-                proc.terminate()
-                proc.wait(timeout=5)
+                serve_proc.terminate()
+                serve_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                serve_proc.kill()
             except OSError:
                 pass
-        # Wipe the frpc config — it contains the relay token.
-        if isinstance(config_path, Path):
-            config_path.unlink(missing_ok=True)
         # Restore whatever SIGTERM handler we replaced. Keeps share_command
         # idempotent within the same Python process.
         try:
@@ -756,7 +761,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         metavar="URL",
         help=(
             "Override the one-click chat link printed in the share banner. "
-            "Default: https://chat.rapidmlx.com (or $RAPID_MLX_CHAT_FRONTEND "
+            "Default: https://rapid.quicksilverpro.io (or $RAPID_MLX_CHAT_FRONTEND "
             "if set). The frontend must implement the rapidmlx splash "
             "share-key protocol — point this at your own fork if you host "
             "one. Pass an empty string ('') to suppress the chat link "

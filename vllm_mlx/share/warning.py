@@ -20,7 +20,7 @@ def render(
     url: str,
     api_key: str,
     model: str,
-    subdomain: str,
+    tunnel_id: str,
     chat_frontend: str | None,
 ) -> str:
     red = "\033[1;31m" if _supports_color() else ""
@@ -42,19 +42,18 @@ def render(
             }
         )
     )
-    # One-click chat link. ``#k=<sub>.<key>`` — the configured chat
-    # frontend's splash splits on the ``.`` delimiter, derives
-    # ``https://<sub>.rapidmlx.com``, and shows it for confirmation before
-    # sending the key. The combined token sits in the URL fragment so it
-    # never reaches the server log; the splash immediately clears it via
-    # history.replaceState.
+    # One-click chat link. ``#k=<id>.<key>`` — the configured chat
+    # frontend's splash splits on the ``.`` delimiter, derives the
+    # rapidserver Worker URL ``https://rapidserver.quicksilverpro.io/r/<id>``,
+    # and shows it for confirmation before sending the key. The combined
+    # token sits in the URL fragment so it never reaches the server log;
+    # the splash immediately clears it via history.replaceState.
     #
-    # Codex round 1 BLOCKING: an earlier ``<sub>-<key>`` format was
-    # ambiguous because the relay's subdomain charset permits ``-`` —
-    # ``foo-bar-<key>`` would parse to subdomain ``foo`` + key
-    # ``bar-<key>``. ``.`` is forbidden in both the subdomain charset
-    # (``[a-z0-9-]``) and the API key (hex from ``secrets.token_hex``),
-    # so it cleanly separates the two even for hyphenated subdomains.
+    # Codex round 1 BLOCKING (preserved): an earlier ``<id>-<key>`` format
+    # was ambiguous because the tunnel id charset (urlsafe-b64 from
+    # ``secrets.token_urlsafe``) permits ``-``. ``.`` is forbidden in
+    # both that charset and the API key (hex from ``secrets.token_hex``),
+    # so it cleanly separates the two.
     #
     # ``chat_frontend`` is None when the user opted out via
     # ``--chat-frontend ""`` (e.g. pointing at OpenWebUI which doesn't
@@ -62,7 +61,7 @@ def render(
     # line entirely — the URL + Key lines below are all the user needs
     # to wire up an arbitrary OpenAI-compatible frontend by hand.
     if chat_frontend:
-        chat_link = f"{chat_frontend}/#k={subdomain}.{api_key}"
+        chat_link = f"{chat_frontend}/#k={tunnel_id}.{api_key}"
         chat_line = f"  {bold}Chat:{reset}   {yellow}{chat_link}{reset}\n"
     else:
         chat_line = ""
