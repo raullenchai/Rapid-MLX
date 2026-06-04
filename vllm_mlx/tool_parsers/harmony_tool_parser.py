@@ -150,6 +150,48 @@ class HarmonyToolParser(ToolParser):
             content=content,
         )
 
+    # Harmony control-token sentinels. ``extract_tool_calls_streaming``
+    # must hold back partial-prefix suffixes (``<``, ``<|``, ``<|ch``…)
+    # before the full opener arrives, otherwise per-char streaming
+    # leaks them as content deltas (issue #444 / #480).
+    _STREAMING_SENTINELS: tuple[str, ...] = (
+        "<|channel|>",
+        "<|message|>",
+        "<|call|>",
+        "<|start|>",
+        "<|end|>",
+        "<|return|>",
+        "<|constrain|>",
+    )
+
+    @classmethod
+    def _safe_content_prefix(cls, text: str) -> str:
+        """Strip the longest harmony-sentinel prefix off ``text``'s tail.
+
+        Mirrors ``HermesToolParser._safe_content_prefix`` — see that
+        docstring for the algorithm. Distinct copy because the
+        sentinel set is harmony-specific.
+        """
+        max_hold = 0
+        for sentinel in cls._STREAMING_SENTINELS:
+            for length in range(min(len(text), len(sentinel) - 1), 0, -1):
+                if text.endswith(sentinel[:length]):
+                    if length > max_hold:
+                        max_hold = length
+                    break
+        return text if max_hold == 0 else text[: len(text) - max_hold]
+
+    @classmethod
+    def _emit_safe_content(
+        cls, previous_text: str, current_text: str
+    ) -> dict[str, Any] | None:
+        """Emit the new content delta with sentinel prefixes held back."""
+        safe_current = cls._safe_content_prefix(current_text)
+        safe_previous = cls._safe_content_prefix(previous_text)
+        if len(safe_current) <= len(safe_previous):
+            return None
+        return {"content": safe_current[len(safe_previous) :]}
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
@@ -164,10 +206,23 @@ class HarmonyToolParser(ToolParser):
         Extract tool calls from streaming Harmony model output.
 
         Waits for <|call|> to complete a tool call, and emits final
-        channel content as regular content deltas.
+        channel content as regular content deltas. Partial harmony
+        sentinels (``<|chan``, ``<|c``…) are held back via
+        ``_emit_safe_content`` so per-char streaming doesn't leak the
+        leading ``<`` chars as content deltas before the full opener
+        arrives (issues #444 / #480 — family-wide leak across every
+        harmony streaming entry point).
         """
-        # If we see a tool call completion marker in the delta
-        if "<|call|>" in delta_text:
+        # If a tool-call completion marker just FINISHED arriving — i.e.
+        # ``<|call|>`` is in ``current_text`` but was absent from
+        # ``previous_text`` — emit the structured tool call. Using
+        # ``in delta_text`` would only fire when a single delta carries
+        # the entire sentinel atomically (whole-token delivery); under
+        # char-level streaming the sentinel spans 8 deltas and the
+        # check would never fire.
+        prev_call_count = previous_text.count("<|call|>")
+        curr_call_count = current_text.count("<|call|>")
+        if curr_call_count > prev_call_count:
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
                 return {
@@ -208,9 +263,10 @@ class HarmonyToolParser(ToolParser):
             # In final channel but no new content yet (control token)
             return {"content": ""}
 
-        # If no tool markers at all, pass through as content
+        # If no full sentinel present yet, emit safe content (partial
+        # sentinel prefixes held back).
         if "<|channel|>" not in current_text:
-            return {"content": delta_text}
+            return self._emit_safe_content(previous_text, current_text)
 
         # Building tool call or in analysis channel, suppress output
         return None

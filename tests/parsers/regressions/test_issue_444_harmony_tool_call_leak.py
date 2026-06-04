@@ -167,18 +167,14 @@ def test_harmony_tool_extraction_non_stream(case: _Case, parser):
 
 @pytest.mark.parametrize("case", TEST_CASES, ids=lambda c: c.id)
 @pytest.mark.parametrize("stream_interval", [1, 2, 3, 5, 8])
-@pytest.mark.xfail(
-    reason=(
-        "Issue #444 — harmony streaming tool calls leak as raw content "
-        "deltas instead of emitting tool_calls events. Two compounding "
-        "bugs (router + postprocessor) at the upstream layer; the parser-"
-        "level streaming entry point is downstream of the router fix and "
-        "may surface different failures depending on stream_interval. "
-        "Flip to expected once the cluster fix lands."
-    ),
-    strict=True,
-)
 def test_harmony_tool_extraction_streaming(case: _Case, stream_interval: int, parser):
+    # Flipped from xfail strict → passing by the cluster fix's harmony
+    # parser changes: (a) prefix-hold via ``_safe_content_prefix`` for
+    # partial ``<|...|>`` openers, and (b) tool-call completion is now
+    # detected by comparing ``previous_text.count("<|call|>")`` vs
+    # ``current_text.count("<|call|>")`` instead of checking
+    # ``"<|call|>" in delta_text`` (which never matched under
+    # char-level streaming where the sentinel spans 8 deltas).
     deltas = _split_into_char_deltas(case.raw, stream_interval)
 
     content, tool_calls = run_tool_extraction(parser, deltas, streaming=True)
