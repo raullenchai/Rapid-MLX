@@ -82,20 +82,28 @@ GEMMA4_VOCAB: dict[str, int] = {
     "<tool|>": 47,
     "<|tool_response>": 50,
     "<tool_response|>": 51,
-    # Standard
+    # Standard. IDs deliberately match the long-standing values in
+    # ``tests/test_output_router.py`` and
+    # ``tests/test_batched_engine_output_router.py`` so the synthetic
+    # vocab here doesn't drift from the established Gemma 4 fakes.
     "<bos>": 2,
-    "<eos>": 3,
-    "<pad>": 4,
+    "<eos>": 1,
+    "<pad>": 0,
     # Content surface tokens — arbitrary but distinguishable so a
     # regression message reading ``"thoughtanalysisfinalmessage"`` is
     # obviously interpretable as "all the literal channel words leaked
     # plus the body". Use single-string tokens (no per-char split) to
     # keep the test setup ergonomic; the router doesn't care.
-    "\n": 200,
+    "\n": 107,
     "analysis_body": 1001,
     "message_body": 1002,
-    "Hello": 1003,
+    "Hello": 9259,
     " world": 1004,
+    # Tokenizer marker variants the channel-registry plan mentions
+    # (`▁thought`, `thought\n`, `▁content`, `▁final`) are intentionally
+    # NOT included here: this commit only pins the bare-token-form
+    # bug. Sibling regressions (#455, #468) that need marker variants
+    # should extend this map rather than fork a parallel vocab.
 }
 
 

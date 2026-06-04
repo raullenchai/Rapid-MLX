@@ -120,12 +120,12 @@ BUG_CASES: list[_Case] = [
         expected_content="message_body",
         expected_reasoning="analysis_body",
     ),
-    # #447 Case B (streaming pure content): model emits only a thought
-    # block, no final channel transition. Bug: router stays in
-    # THINKING (or never enters it cleanly) and content stays empty.
-    # Expected: the body should land in reasoning, content should be
-    # None — but the model SHOULD emit `final` before the body.
-    # Variant kept to pin the "stuck in thought" trap explicitly.
+    # Variant: bare ``thought`` opens a thought block with no closing
+    # ``<channel|>`` and no ``final`` transition. Post-fix: bare
+    # ``thought`` should transition to THINKING and the body lands in
+    # reasoning, content stays empty (matches the "stuck in thought"
+    # trap from issue #447 Case B, except verified at router level
+    # rather than via streaming-delta accumulation).
     _Case(
         id="issue_447_thought_word_only_no_final",
         token_ids=[
@@ -202,8 +202,10 @@ def test_gemma4_router_sanity(case: _Case, router):
         "tokens fall through to the default route at output_router.py:"
         "306-311 and leak as content. JSON mode works because "
         "constrained decoding bypasses the state machine. Cluster fix: "
-        "treat bare `thought`/`content`/`final` from INIT/CONTENT state "
-        "as channel-transition triggers, not literal tokens. Flip to "
+        "treat bare `thought`/`content`/`final` from any non-"
+        "AWAITING_CHANNEL_TYPE state (including INIT, CONTENT, and "
+        "THINKING — Case A's bare `final` arrives while THINKING) as "
+        "channel-transition triggers, not literal tokens. Flip to "
         "passing once the router patch lands."
     ),
     strict=True,
