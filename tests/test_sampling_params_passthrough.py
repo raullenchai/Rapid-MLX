@@ -451,21 +451,41 @@ def test_scheduler_overrides_openai_penalty_context_size():
     (#470 reported "zero observable effect" at ``frequency_penalty=2.0``).
 
     The scheduler must explicitly pass a much larger context size so the
-    penalty actually covers a realistic chat response. We pin 4096 as the
-    minimum; raising it is fine, lowering reverts #470.
+    penalty actually covers a realistic chat response. We pin a file-level
+    constant ``_OPENAI_PENALTY_CONTEXT_SIZE >= 4096`` and require both
+    OpenAI-spec context_size kwargs to be wired (any expression form is
+    accepted — bare constant, scaled with max_tokens, etc.).
     """
     from pathlib import Path
 
     src = Path("vllm_mlx/scheduler.py").read_text()
 
-    # Find the `make_logits_processors(` call in the penalty wiring block
-    # and capture its parenthesised arg list intact.
+    # The file-level constant is the single source of truth. Pinning the
+    # name (not just the literal call-site value) makes future refactors
+    # impossible to slip through without updating this test.
     import re
 
-    match = re.search(r"make_logits_processors\(", src)
-    assert match, "make_logits_processors() call not found in scheduler.py"
+    m = re.search(r"^_OPENAI_PENALTY_CONTEXT_SIZE\s*=\s*(\d+)", src, re.MULTILINE)
+    assert m, (
+        "vllm_mlx/scheduler.py is missing the module-level constant "
+        "_OPENAI_PENALTY_CONTEXT_SIZE. This constant is the single source "
+        "of truth for the OpenAI-spec penalty visibility window — without "
+        "it, the 4096 default would be a magic number sprinkled inline."
+    )
+    constant_value = int(m.group(1))
+    assert constant_value >= 4096, (
+        f"_OPENAI_PENALTY_CONTEXT_SIZE={constant_value} is below the 4096 "
+        f"floor needed to cover a typical chat response. OpenAI semantics "
+        f"apply frequency/presence penalties over the entire generated "
+        f"sequence; lowering this regresses #470."
+    )
 
-    start = match.end()
+    # Find the `make_logits_processors(` call in the penalty wiring block
+    # and capture its parenthesised arg list intact.
+    call_match = re.search(r"make_logits_processors\(", src)
+    assert call_match, "make_logits_processors() call not found in scheduler.py"
+
+    start = call_match.end()
     depth = 1
     i = start
     while i < len(src) and depth > 0:
@@ -476,21 +496,16 @@ def test_scheduler_overrides_openai_penalty_context_size():
         i += 1
     call_args = src[start : i - 1]
 
-    # Each OpenAI-spec penalty must override the upstream default of 20.
-    # We require an integer literal ≥ 4096 — the file-level constant
-    # makes review easy if someone tries to "just bump" it later.
+    # Both OpenAI-spec context_size kwargs must appear at the call site.
+    # The expression form (constant, max(...), variable) is intentionally
+    # not pinned — what we care about is that mlx-lm's 20-token default
+    # is overridden, and #690 may legitimately further refactor the
+    # expression (e.g. scale with model context length).
     for kw in ("presence_context_size", "frequency_context_size"):
-        m = re.search(rf"{kw}\s*=\s*(\d+)", call_args)
-        assert m, (
+        assert re.search(rf"\b{kw}\s*=", call_args), (
             f"scheduler.py make_logits_processors call is missing {kw}=. "
             f"Without it, mlx-lm uses its 20-token default and the penalty "
             f"feels like a no-op on chat-length output — regresses #470."
-        )
-        value = int(m.group(1))
-        assert value >= 4096, (
-            f"scheduler.py passes {kw}={value} to mlx-lm. That's too small "
-            f"to cover a typical chat response; OpenAI semantics apply the "
-            f"penalty over the entire generated sequence. Use ≥ 4096."
         )
 
     # Repetition penalty is a rapid-mlx extension (not OpenAI-spec) and

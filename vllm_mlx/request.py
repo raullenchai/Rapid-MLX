@@ -61,6 +61,15 @@ class SamplingParams:
     # `repetition_penalty` is the legacy multiplicative variant used by mlx-lm
     # (1.0 = disabled). `presence_penalty` and `frequency_penalty` are the
     # additive variants from the OpenAI API (0.0 = disabled).
+    #
+    # Visibility window: `presence_penalty` and `frequency_penalty` cover
+    # max(4096, max_tokens) generated tokens — i.e. the entire response for
+    # realistic chat lengths, matching the OpenAI spec (#470). In contrast,
+    # `repetition_penalty` uses mlx-lm's default 20-token rolling window
+    # (multiplicative semantics, distinct from OpenAI-spec penalties). Set
+    # `repetition_penalty` only when you specifically want rolling-window
+    # behavior; use `presence_penalty` / `frequency_penalty` for whole-
+    # response anti-repetition.
     repetition_penalty: float = 1.0
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
