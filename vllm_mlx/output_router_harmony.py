@@ -256,6 +256,10 @@ class HarmonyStreamingRouter:
         before emitting; if validation fails, drop the synthesized
         call rather than passing garbage to the downstream parser.
         """
+        # Snapshot pre-EOS state so we can detect deltas process_eos
+        # surfaces but the per-token streaming path didn't already
+        # emit (codex round-4 BLOCKING).
+        pre_eos_channel = self._parser.current_channel
         try:
             self._parser.process_eos()
         except Exception as e:  # noqa: BLE001
@@ -266,9 +270,10 @@ class HarmonyStreamingRouter:
         if new_msg_count > self._emitted_msg_count:
             closed = self._parser.messages[-1]
             self._emitted_msg_count = new_msg_count
-            if getattr(
-                closed, "channel", None
-            ) == _HARMONY_CHANNEL_COMMENTARY and getattr(closed, "recipient", None):
+            channel = getattr(closed, "channel", None)
+            if channel == _HARMONY_CHANNEL_COMMENTARY and getattr(
+                closed, "recipient", None
+            ):
                 if not self._tool_call_body_is_valid(closed):
                     logger.debug(
                         "HarmonyStreamingRouter.finalize: dropping truncated "
@@ -280,6 +285,30 @@ class HarmonyStreamingRouter:
                 # last processed token if available, else 0.
                 token_id = self._parser.tokens[-1] if self._parser.tokens else 0
                 return RouterEvent(Channel.TOOL_CALL, token_id, text)
+
+            # Codex round-4 BLOCKING: ``process_eos`` may surface a
+            # final / analysis delta that was buffered inside
+            # StreamableParser and not yet emitted via per-token
+            # ``last_content_delta``. Empirically the current
+            # openai-harmony build emits everything during ``feed()``
+            # and process_eos only appends the closed Message, but
+            # downstream library changes could change that — be
+            # defensive and drain any new delta as the appropriate
+            # channel event. Use ``pre_eos_channel`` rather than the
+            # post-EOS channel (which becomes ``None``) so we route
+            # based on the channel that was active at truncation.
+            delta = self._parser.last_content_delta
+            if delta:
+                target = (
+                    Channel.REASONING
+                    if pre_eos_channel == _HARMONY_CHANNEL_ANALYSIS
+                    else Channel.CONTENT
+                    if pre_eos_channel == _HARMONY_CHANNEL_FINAL
+                    else None
+                )
+                if target is not None:
+                    token_id = self._parser.tokens[-1] if self._parser.tokens else 0
+                    return RouterEvent(target, token_id, delta)
         return None
 
     @staticmethod
@@ -386,11 +415,12 @@ def is_openai_harmony_available() -> bool:
 # ``/v1/chat/completions`` and the marker / probe checks call into
 # ``enc.encode`` six times — measurable when serving high QPS.
 #
-# Keyed by the same case-insensitive ``name_or_path`` substring the
-# identity allowlist uses; entries whose identity doesn't match the
-# allowlist also get cached as False so subsequent rejected models
-# don't re-run the probe.
-_COMPAT_RESULT_CACHE: dict[str, bool] = {}
+# Codex round-4 NIT: the key must include the marker-ID tuple too —
+# two tokenizer instances with the same ``name_or_path`` but distinct
+# marker IDs (e.g. mock tokenizers in tests, or a model loaded with
+# a custom vocab override) would otherwise share a stale entry. The
+# marker IDs uniquely identify a (model, harmony-format) pair.
+_COMPAT_RESULT_CACHE: dict[tuple, bool] = {}
 _HARMONY_ENCODING_CACHE: dict[str, Any] = {}
 
 
@@ -452,12 +482,22 @@ def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
     if not is_openai_harmony_available():
         return False
 
-    # Cache lookup (codex round-3 NIT). The cache key is the same
-    # identity string the allowlist matches against, so the cache
-    # also short-circuits the marker + probe checks for repeated
-    # rejected identities.
+    # Cache lookup (codex round-3 NIT). Codex round-4 NIT: include the
+    # marker-ID tuple in the key — two tokenizer instances with the
+    # same ``name_or_path`` but different marker IDs (e.g. test mocks,
+    # or a model loaded with a vocab override) must NOT share a
+    # cached compatibility decision.
     name_or_path = getattr(tokenizer, "name_or_path", "") or ""
-    cache_key = str(name_or_path).lower()
+    marker_ids = (
+        token_map.harmony_channel,
+        token_map.harmony_message,
+        token_map.harmony_call,
+        token_map.harmony_end,
+        token_map.harmony_return,
+        token_map.harmony_start,
+        token_map.harmony_constrain,
+    )
+    cache_key = (str(name_or_path).lower(), marker_ids)
     cached = _COMPAT_RESULT_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -489,7 +529,15 @@ def _compute_compat(
     if not any(known in name_lc for known in _KNOWN_HARMONY_TOKENIZERS):
         return False
 
-    # (2) Marker-ID parity.
+    # (2) Marker-ID parity. Codex round-4 BLOCKING: ALL seven harmony
+    # markers must be present in the tokenizer's vocab AND match the
+    # harmony encoding's IDs — a tokenizer with only ``<|channel|>``
+    # and ``<|message|>`` (but missing ``<|call|>`` / ``<|end|>`` etc.)
+    # could otherwise be upgraded and then crash inside
+    # ``StreamableParser`` when the model emits a marker the parser
+    # expects but the gate didn't verify. Requiring all seven is the
+    # documented invariant of the harmony encoding; any production
+    # gpt-oss tokenizer has them all.
     pairs = (
         (token_map.harmony_channel, "<|channel|>"),
         (token_map.harmony_message, "<|message|>"),
@@ -501,7 +549,7 @@ def _compute_compat(
     )
     for model_id, marker in pairs:
         if model_id is None:
-            continue
+            return False
         try:
             harmony_ids = enc.encode(marker, allowed_special="all")
         except Exception:  # noqa: BLE001

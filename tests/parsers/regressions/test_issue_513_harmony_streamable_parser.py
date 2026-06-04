@@ -609,6 +609,181 @@ def test_finalize_drops_truncated_commentary_with_empty_body(router, encoding):
     )
 
 
+def test_finalize_does_not_double_emit_completed_final(router, encoding):
+    """Codex round-4 BLOCKING (PR #515): for a NORMALLY-completed
+    final channel (model emitted ``<|return|>``), the per-token feed
+    has already produced every body delta. ``finalize()`` must NOT
+    re-emit those bytes as a second routed event — that would
+    duplicate the final response.
+    """
+    text = "<|channel|>final<|message|>Hi there.<|return|>"
+    tokens = _encode(encoding, text)
+    router.reset()
+    streamed = []
+    for tid in tokens:
+        ev = router.feed(tid)
+        if ev is not None:
+            streamed.append(ev)
+    drained = router.finalize()
+
+    assert drained is None, (
+        f"completed final must not re-emit on finalize; got {drained!r}"
+    )
+    # The per-token stream already produced the full body.
+    assert (
+        "".join(e.text for e in streamed if e.channel == Channel.CONTENT) == "Hi there."
+    )
+
+
+def test_finalize_drains_truncated_final_buffered_delta(router, encoding):
+    """Codex round-4 BLOCKING (PR #515): when an EOS / process_eos
+    surfaces a ``last_content_delta`` from a truncated final or
+    analysis message, ``finalize()`` must route it to CONTENT /
+    REASONING respectively rather than dropping it. Empirically the
+    current openai-harmony build emits everything during ``feed()``,
+    but the contract pins the behavior in case a future build flushes
+    a buffered tail on EOS.
+    """
+    # Construct a router whose underlying StreamableParser is forced
+    # into a state where process_eos produces a synthetic delta.
+
+    class _StubMessage:
+        def __init__(self, channel):
+            self.channel = channel
+            self.recipient = None
+            self.content = []
+            self.content_type = None
+
+    class _StubParser:
+        def __init__(self, channel, delta):
+            self._channel = channel
+            self._delta = delta
+            self.tokens = [1]
+            self.messages: list[_StubMessage] = []
+
+        @property
+        def current_channel(self):
+            return self._channel
+
+        @property
+        def last_content_delta(self):
+            return self._delta
+
+        def process_eos(self):
+            # Simulate EOS appending a closed final-channel message
+            # AND flushing a buffered tail delta — the codex-flagged
+            # corner case my finalize must handle.
+            self.messages.append(_StubMessage(self._channel))
+            self._delta = " tail"
+
+    router.reset()
+    router._parser = _StubParser("final", "")
+    drained = router.finalize()
+    assert drained is not None
+    assert drained.channel == Channel.CONTENT, (
+        f"truncated final delta must drain to CONTENT; got {drained!r}"
+    )
+    assert drained.text == " tail"
+
+    # Symmetric: analysis channel routes to REASONING.
+    router.reset()
+    router._parser = _StubParser("analysis", "")
+    drained = router.finalize()
+    assert drained is not None
+    assert drained.channel == Channel.REASONING
+    assert drained.text == " tail"
+
+
+def test_compat_gate_rejects_missing_marker_ids():
+    """Codex round-4 BLOCKING (PR #515): the gate must require ALL
+    seven harmony markers to be present in the tokenizer's TokenMap.
+    Previously a tokenizer with only ``<|channel|>`` / ``<|message|>``
+    plus matching probe IDs could pass — StreamableParser would then
+    crash when the model emitted a ``<|call|>`` the gate never checked.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+
+    enc = openai_harmony.load_harmony_encoding(
+        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
+    )
+
+    def _id(s):
+        return enc.encode(s, allowed_special="all")[0]
+
+    # Missing ``harmony_call`` — gate must reject.
+    tm_missing_call = TokenMap(
+        format_tag="harmony",
+        harmony_channel=_id("<|channel|>"),
+        harmony_message=_id("<|message|>"),
+        # harmony_call=None (left out)
+        harmony_end=_id("<|end|>"),
+        harmony_return=_id("<|return|>"),
+        harmony_start=_id("<|start|>"),
+        harmony_constrain=_id("<|constrain|>"),
+    )
+
+    class _GptOssTokenizer:
+        name_or_path = "mlx-community/gpt-oss-MISSING-CALL-VARIANT"
+
+        def encode(self, text, add_special_tokens=False):
+            return enc.encode(text, allowed_special="none")
+
+        def decode(self, ids):
+            return enc.decode(ids)
+
+        def get_vocab(self):
+            return {}
+
+    assert is_openai_harmony_compatible(tm_missing_call, _GptOssTokenizer()) is False
+
+
+def test_compat_gate_cache_segregates_by_marker_ids():
+    """Codex round-4 NIT (PR #515): two tokenizer instances with the
+    same ``name_or_path`` but different marker IDs must NOT share a
+    cached compatibility result. The cache key includes the marker
+    tuple so a mock tokenizer changing its vocab between calls won't
+    leak a stale True/False.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import (
+        _COMPAT_RESULT_CACHE,
+        is_openai_harmony_compatible,
+    )
+
+    # Identity passes the allowlist; markers differ between the two
+    # TokenMap instances — gate must run twice and may return
+    # different results.
+    class _T:
+        name_or_path = "mlx-community/gpt-oss-CACHE-KEY-SEGREGATION"
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            return [0]  # always rejected by body-vocab probe
+
+    tm_a = TokenMap(format_tag="harmony", harmony_channel=200005)
+    tm_b = TokenMap(format_tag="harmony", harmony_channel=999999)
+
+    # Clear cache for hygiene.
+    for k in list(_COMPAT_RESULT_CACHE.keys()):
+        if "cache-key-segregation" in str(k):
+            _COMPAT_RESULT_CACHE.pop(k, None)
+
+    is_openai_harmony_compatible(tm_a, _T())
+    is_openai_harmony_compatible(tm_b, _T())
+
+    seg_keys = [k for k in _COMPAT_RESULT_CACHE if "cache-key-segregation" in str(k)]
+    assert len(seg_keys) == 2, (
+        f"cache must keep separate entries per marker-ID tuple; "
+        f"got {len(seg_keys)} entries: {seg_keys!r}"
+    )
+
+
 def test_compat_gate_caches_per_tokenizer_identity():
     """Codex round-3 NIT (PR #515): the compatibility probe is called
     on every request from the engine's streaming factory; the marker
