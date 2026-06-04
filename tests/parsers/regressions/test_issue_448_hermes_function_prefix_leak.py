@@ -159,21 +159,14 @@ def test_hermes_classic_tool_call_non_stream(case: _Case, parser):
 
 @pytest.mark.parametrize("case", CLASSIC_TOOL_CALL_CASES, ids=lambda c: c.id)
 @pytest.mark.parametrize("stream_interval", [1, 2, 3, 5, 8])
-@pytest.mark.xfail(
-    reason=(
-        "Family-wide hermes streaming prefix leak (codex round-2 finding "
-        "on the #448 regression file): classic `<tool_call>` is ALSO "
-        "vulnerable under char-level streaming. The parser emits the "
-        "partial `<tool_call` opener (no closing `>`) as content before "
-        "the substring match fires. In production this is masked because "
-        "tokenizers emit `<tool_call>` as a single chat-template special "
-        "token; the char-level streaming here is a boundary fuzzer. "
-        "Cluster fix: prefix-hold for `<tool_call` partials. Flip to "
-        "passing once the fix lands."
-    ),
-    strict=True,
-)
 def test_hermes_classic_tool_call_streaming(case: _Case, stream_interval: int, parser):
+    # Flipped from xfail strict → passing by the cluster fix's
+    # ``HermesToolParser._safe_content_prefix`` / ``_emit_safe_content``
+    # prefix-hold helpers. Partial sentinel prefixes
+    # (``<tool_call`` without ``>``, ``<function`` without ``=``) are
+    # now held back until either the full opener arrives (tool-call
+    # branch claims them) or a non-matching char releases them as
+    # ordinary content.
     deltas = _split_into_char_deltas(case.raw, stream_interval)
 
     content, tool_calls = run_tool_extraction(parser, deltas, streaming=True)
@@ -196,24 +189,12 @@ def test_hermes_classic_tool_call_streaming(case: _Case, stream_interval: int, p
 
 
 @pytest.mark.parametrize("case", BARE_FUNCTION_CASES, ids=lambda c: c.id)
-@pytest.mark.xfail(
-    reason=(
-        "Hermes non-stream path drops arguments on the bare "
-        "`<function=name>{json}</function>` wire format. Root cause: the "
-        "regex extracts `name` and `params_block` correctly, but the "
-        "body parser runs `PARAM_PATTERN` (designed for Nemotron "
-        "`<parameter=p>v</parameter>` XML) against the JSON body and "
-        "extracts zero params, silently emitting `arguments={}`. "
-        "Surfaced while writing the #448 streaming regression — the "
-        "issue reporter declared non-stream 'clean' because tool_calls "
-        "fired with the right name and content was null. Not in #448's "
-        "issue body but lives in the same parser-path family; the cluster "
-        "fix must repair the body parser to detect JSON bodies. Flip to "
-        "passing once the fix lands."
-    ),
-    strict=True,
-)
 def test_hermes_bare_function_non_stream(case: _Case, parser):
+    # Flipped from xfail strict → passing by the cluster fix's
+    # ``_parse_bare_function_body`` body-parser helper that
+    # discriminates Qwen3-Coder JSON bodies (``{...}``) from Nemotron
+    # XML bodies (``<parameter=p>v</parameter>``) on the first
+    # non-whitespace char.
     content, tool_calls = run_tool_extraction(parser, [case.raw], streaming=False)
 
     _assert_content_clean(content, context=f"case={case.id}")
@@ -231,21 +212,12 @@ def test_hermes_bare_function_non_stream(case: _Case, parser):
 
 @pytest.mark.parametrize("case", BARE_FUNCTION_CASES, ids=lambda c: c.id)
 @pytest.mark.parametrize("stream_interval", [1, 2, 3, 5, 8])
-@pytest.mark.xfail(
-    reason=(
-        "Issue #448 — hermes streaming leaks the partial `<function` "
-        "prefix (no closing `=`) as content deltas before the full "
-        "`<function=` pattern arrives. The non-stream regex catches the "
-        "bare-function format but the streaming branch only short-"
-        "circuits after the substring is complete. Compound failure: "
-        "this xfail covers BOTH the prefix leak (BUG-1, #448) AND the "
-        "args drop (BUG-2 from non-stream tests above — same parser-body "
-        "code is shared). Cluster fix lands prefix-hold + JSON-body "
-        "detection together. Flip to passing once both land."
-    ),
-    strict=True,
-)
 def test_hermes_bare_function_streaming(case: _Case, stream_interval: int, parser):
+    # Flipped from xfail strict → passing by the combined cluster fix:
+    # prefix-hold (BUG-1 `<function` partial leak) +
+    # ``_parse_bare_function_body`` (BUG-2 JSON args drop on the same
+    # wire format). Both fixes land together because the streaming
+    # path delegates body extraction back to ``extract_tool_calls``.
     deltas = _split_into_char_deltas(case.raw, stream_interval)
 
     content, tool_calls = run_tool_extraction(parser, deltas, streaming=True)

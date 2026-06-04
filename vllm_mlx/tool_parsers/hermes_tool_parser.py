@@ -24,6 +24,38 @@ def generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
+def _parse_bare_function_body(body: str) -> dict[str, Any]:
+    """Parse the body of a bare ``<function=name>...</function>`` block.
+
+    Two wire formats coexist (issue #448 BUG-2):
+
+    * **Nemotron XML** — body holds ``<parameter=p>v</parameter>`` tags.
+      Iterate via ``PARAM_PATTERN`` and decode each value through
+      ``_parse_param_value``.
+    * **Qwen3-Coder JSON** — body holds a JSON object
+      ``{"key": "value", ...}`` directly. Try ``json.loads`` first;
+      fall through to the XML path on failure.
+
+    Discriminate cheaply on the first non-whitespace char: ``{`` ⇒
+    likely JSON. Anything else ⇒ XML. We still attempt the other
+    path as a fallback so malformed bodies degrade gracefully to an
+    empty dict rather than crashing.
+    """
+    stripped = body.strip()
+    if stripped.startswith("{"):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    arguments: dict[str, Any] = {}
+    for p_name, p_value in HermesToolParser.PARAM_PATTERN.findall(body):
+        arguments[p_name.strip()] = _parse_param_value(p_value.strip())
+    return arguments
+
+
 def _parse_param_value(val: str) -> Any:
     """Parse a tool call parameter value, handling both JSON and Python literals.
 
@@ -142,14 +174,13 @@ class HermesToolParser(ToolParser):
         if matches:
             cleaned_text = self.TOOL_CALL_PATTERN.sub("", cleaned_text).strip()
 
-        # Try Nemotron XML format if no JSON tool calls found
+        # Try Nemotron XML / Qwen3-Coder format if no JSON tool calls found.
+        # Body shape is identical to the bare-function path (XML or JSON);
+        # share the body parser.
         if not tool_calls:
             nemotron_matches = self.NEMOTRON_PATTERN.findall(cleaned_text)
             for name, params_block in nemotron_matches:
-                params = self.PARAM_PATTERN.findall(params_block)
-                arguments = {}
-                for p_name, p_value in params:
-                    arguments[p_name.strip()] = _parse_param_value(p_value.strip())
+                arguments = _parse_bare_function_body(params_block)
                 tool_calls.append(
                     {
                         "id": generate_tool_id(),
@@ -160,16 +191,17 @@ class HermesToolParser(ToolParser):
             if nemotron_matches:
                 cleaned_text = self.NEMOTRON_PATTERN.sub("", cleaned_text).strip()
 
-        # Try bare Nemotron XML: <function=name>...</function> without <tool_call> wrapper
+        # Try bare Nemotron XML: <function=name>...</function> without <tool_call> wrapper.
         # This happens when the chat template provides <tool_call> as generation prompt
-        # and the model generates <function=...> directly.
+        # and the model generates <function=...> directly. Two body formats:
+        #   * Nemotron XML:  <parameter=p>v</parameter>...  → use PARAM_PATTERN
+        #   * Qwen3-Coder JSON: {"key": "val"}              → parse as JSON
+        # The original implementation only handled the XML form, silently emitting
+        # arguments={} on JSON bodies — issue #448 BUG-2.
         if not tool_calls:
             bare_matches = self.BARE_FUNCTION_PATTERN.findall(cleaned_text)
             for name, params_block in bare_matches:
-                params = self.PARAM_PATTERN.findall(params_block)
-                arguments = {}
-                for p_name, p_value in params:
-                    arguments[p_name.strip()] = _parse_param_value(p_value.strip())
+                arguments = _parse_bare_function_body(params_block)
                 tool_calls.append(
                     {
                         "id": generate_tool_id(),
@@ -276,6 +308,54 @@ class HermesToolParser(ToolParser):
             ]
         }
 
+    # Tool-call sentinels that the streaming branch must hold-back
+    # partial prefixes of (issue #448). When a char-level delivery
+    # emits ``<``, ``<f``, ``<fun``... ahead of the full ``<function=``
+    # opener, those partial bytes used to fall through to
+    # ``{"content": delta_text}`` and leak as content. The
+    # ``_safe_content_prefix`` helper trims the longest sentinel-
+    # prefix suffix off any candidate emission so partial sentinels
+    # are held back until either (a) the full sentinel arrives and
+    # the tool-call branch claims it or (b) a non-matching char
+    # arrives and the held bytes are released as ordinary content.
+    _STREAMING_SENTINELS = ("<tool_call>", "<function=")
+
+    @classmethod
+    def _safe_content_prefix(cls, text: str) -> str:
+        """Strip the longest tool-call-sentinel prefix off ``text``'s tail.
+
+        Returns the portion of ``text`` that is safe to emit as content
+        right now. The trimmed suffix is the longest non-empty proper
+        prefix of any ``_STREAMING_SENTINELS`` entry that also forms a
+        suffix of ``text``. Returns an empty string when the entire
+        ``text`` is a sentinel prefix (e.g. ``"<"`` ⇒ hold everything).
+        """
+        max_hold = 0
+        for sentinel in cls._STREAMING_SENTINELS:
+            for length in range(min(len(text), len(sentinel) - 1), 0, -1):
+                if text.endswith(sentinel[:length]):
+                    if length > max_hold:
+                        max_hold = length
+                    break
+        return text if max_hold == 0 else text[: len(text) - max_hold]
+
+    @classmethod
+    def _emit_safe_content(
+        cls, previous_text: str, current_text: str
+    ) -> dict[str, Any] | None:
+        """Emit the new content delta with sentinel prefixes held back.
+
+        Computes the safe-to-emit prefix of ``current_text`` and
+        ``previous_text`` and returns only the diff. When the diff is
+        empty (everything new is a held sentinel prefix), returns
+        ``None`` so no content event fires this round.
+        """
+        safe_current = cls._safe_content_prefix(current_text)
+        safe_previous = cls._safe_content_prefix(previous_text)
+        if len(safe_current) <= len(safe_previous):
+            return None
+        return {"content": safe_current[len(safe_previous) :]}
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
@@ -290,6 +370,10 @@ class HermesToolParser(ToolParser):
         Extract tool calls from streaming Hermes model output.
 
         Uses tag counting to correctly handle multiple sequential tool calls.
+        Partial tool-call sentinels (``<tool_``, ``<function``…) are
+        held back via ``_emit_safe_content`` so per-char streaming
+        doesn't leak them as content deltas before the full opener
+        arrives (issue #448 / BUG-3 family-wide leak).
         """
         # Count <tool_call> / </tool_call> tags for multi-tool support
         open_count = current_text.count("<tool_call>")
@@ -312,8 +396,10 @@ class HermesToolParser(ToolParser):
                             new_calls, start_index=prev_close_count
                         )
 
-            # All current tool calls already emitted, pass content through
-            return {"content": delta_text}
+            # All current tool calls already emitted; emit post-call
+            # content with prefix-hold applied so any partial sentinel
+            # at the new tail doesn't leak.
+            return self._emit_safe_content(previous_text, current_text)
 
         # Bare Nemotron XML: <function=name>...</function> without <tool_call> wrapper
         # This happens when the chat template provides <tool_call> as generation prompt.
@@ -335,7 +421,7 @@ class HermesToolParser(ToolParser):
                             new_calls, start_index=prev_func_close
                         )
 
-            return {"content": delta_text}
+            return self._emit_safe_content(previous_text, current_text)
 
         # Fallback: check for raw JSON tool calls (detect closing brace pattern)
         if '{"name":' in current_text and '"arguments":' in current_text:
@@ -345,4 +431,4 @@ class HermesToolParser(ToolParser):
                     return self._format_streaming_tool_calls(result.tool_calls)
             return None
 
-        return {"content": delta_text}
+        return self._emit_safe_content(previous_text, current_text)
