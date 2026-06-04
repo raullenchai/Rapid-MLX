@@ -230,13 +230,53 @@ def test_assert_no_marker_leak_catches_each_marker(marker):
 # ----- Reconstructor None-handling (codex K2) ---------------------------
 
 
-def test_tool_reconstructor_rejects_null_tool_calls():
+def test_tool_reconstructor_rejects_malformed_tool_calls():
+    """``tool_calls`` must be a list when present — string / dict / int /
+    bytes all rejected. Renamed from ``rejects_null_tool_calls`` (codex
+    re-review NIT): the prior name claimed null coverage, but the
+    reconstructor deliberately treats ``tool_calls=None`` as equivalent
+    to "key absent" (so JSON deltas that explicitly serialize the field
+    as ``None`` round-trip cleanly). Only non-list types are rejected.
+    """
+    for bad in ("not-a-list", {"index": 0}, 42, b"bytes"):
+        rec = StreamingToolReconstructor()
+        with pytest.raises(AssertionError, match="malformed 'tool_calls'"):
+            rec.append_delta({"content": "ok", "tool_calls": bad})
+
+
+def test_tool_reconstructor_accepts_explicit_null_tool_calls():
+    """``tool_calls=None`` is semantically equivalent to ``tool_calls``
+    being absent — both yield an empty ``tool_calls`` list. Pins this
+    contract so a future "reject None" tightening doesn't silently
+    break clients that serialize the field as ``None`` on
+    content-only deltas.
+    """
     rec = StreamingToolReconstructor()
-    with pytest.raises(AssertionError, match="malformed 'tool_calls'"):
-        rec.append_delta({"content": "ok", "tool_calls": "not-a-list"})
+    rec.append_delta({"content": "hello", "tool_calls": None})
+    assert rec.other_content == "hello"
+    assert rec.tool_calls == []
 
 
 def test_tool_reconstructor_rejects_null_function():
     rec = StreamingToolReconstructor()
     with pytest.raises(AssertionError, match="malformed 'function'"):
         rec.append_delta({"tool_calls": [{"index": 0, "id": "x", "function": None}]})
+
+
+def test_tool_reconstructor_rejects_non_string_arguments():
+    """Codex re-review BLOCKING: ``arguments`` was previously coerced via
+    ``function.get("arguments") or ""``, silently swallowing ``None`` /
+    ``0`` / ``False``. Strict typing now requires the field to be absent
+    or a string; any other type fails the reconstructor's assertion.
+    """
+    rec = StreamingToolReconstructor()
+    rec.append_delta(_tool_delta(id="call_1", name="get_weather"))
+    for bad in (0, False, ["arg"], {"a": 1}, b"bytes"):
+        with pytest.raises(AssertionError, match="malformed 'arguments'"):
+            rec.append_delta(
+                {
+                    "tool_calls": [
+                        {"index": 0, "function": {"arguments": bad}},
+                    ]
+                }
+            )

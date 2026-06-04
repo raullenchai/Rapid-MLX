@@ -172,7 +172,18 @@ class StreamingToolReconstructor:
         )
         function = function_raw
         delta_name = function.get("name")
-        delta_args = function.get("arguments") or ""
+        # Strict typing: ``arguments`` is optional but, when present,
+        # MUST be a string. Using ``or ""`` would silently coerce
+        # ``None`` / ``0`` / ``False`` to ``""``, swallowing a malformed
+        # delta that should have failed the assertion. (Codex re-review.)
+        delta_args_raw = function.get("arguments")
+        assert delta_args_raw is None or isinstance(delta_args_raw, str), (
+            f"Streaming tool delta has malformed 'arguments' field "
+            f"(expected str or absent; got "
+            f"{type(delta_args_raw).__name__}={delta_args_raw!r}): "
+            f"{call_delta!r}"
+        )
+        delta_args = delta_args_raw if delta_args_raw is not None else ""
 
         existing = self.tool_calls[index] if index < len(self.tool_calls) else None
 
