@@ -268,6 +268,10 @@ class TestStreamingPostProcessorToolCalls:
         parser = MagicMock()
         parser.extract_tool_calls_streaming.return_value = None  # default: suppressed
         parser.has_pending_tool_call.return_value = False
+        # Default to empty string so finalize()'s held-content release path
+        # (postprocessor.py — codex round-3 CRITICAL fix) is a no-op unless
+        # a test explicitly opts into a non-empty held suffix.
+        parser.flush_held_content.return_value = ""
         return parser
 
     def test_tool_markup_suppresses_content(self):
@@ -496,6 +500,77 @@ class TestStreamingPostProcessorToolCalls:
 
         assert events == []
         assert pp.tool_calls_detected is False
+
+    def test_finalize_releases_held_content_when_no_tool_calls(self):
+        """Codex round-3 CRITICAL: streaming parsers that prefix-hold
+        partial tool-call sentinels can end the stream still holding
+        bytes. If no tool call ever fires, those bytes are ordinary
+        content and finalize() must release them so the user doesn't
+        see a truncated reply (e.g. ``abc<`` shown as ``abc``)."""
+        tool_parser = self._make_tool_parser()
+        tool_parser.extract_tool_calls.return_value = MagicMock(
+            tools_called=False, tool_calls=[]
+        )
+        tool_parser.flush_held_content.return_value = "<"
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+        pp.tool_accumulated_text = "abc<"
+
+        events = pp.finalize()
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 1
+        assert content_events[0].content == "<"
+
+    def test_finalize_does_not_release_held_content_when_tool_call_fires(self):
+        """If a tool call DID fire mid-stream, the held bytes are part
+        of the tool-call body — not ordinary content. The release path
+        must stay silent so the held tail doesn't leak alongside the
+        structured tool_call event."""
+        tool_parser = self._make_tool_parser()
+        tool_parser.extract_tool_calls.return_value = MagicMock(
+            tools_called=False, tool_calls=[]
+        )
+        tool_parser.flush_held_content.return_value = "<"
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+        pp.tool_accumulated_text = "abc<"
+        pp.tool_calls_detected = True  # simulate a mid-stream tool call
+
+        events = pp.finalize()
+        content_events = [e for e in events if e.type == "content"]
+        assert content_events == []
+
+    def test_finalize_rejects_non_string_held_content(self):
+        """Defensive: a buggy ``flush_held_content`` override returning
+        non-string (or None) must not propagate as a malformed
+        StreamEvent. The strict-string gate in finalize() skips it
+        instead."""
+        tool_parser = self._make_tool_parser()
+        tool_parser.extract_tool_calls.return_value = MagicMock(
+            tools_called=False, tool_calls=[]
+        )
+        tool_parser.flush_held_content.return_value = None  # buggy override
+
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg)
+        pp.reset()
+        pp.tool_accumulated_text = "abc<"
+
+        events = pp.finalize()
+        assert [e for e in events if e.type == "content"] == []
 
 
 class TestStreamingPostProcessorNemotron:

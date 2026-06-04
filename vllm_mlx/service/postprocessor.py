@@ -592,6 +592,29 @@ class StreamingPostProcessor:
                     )
                     self.tool_calls_detected = True
 
+        # Release any prefix-held content trailing the stream. Hermes
+        # and harmony streaming parsers hold back partial sentinel
+        # suffixes (``<``, ``<|``, ``<func``...) so per-char streaming
+        # doesn't leak them before the full sentinel arrives. If the
+        # stream ends with bytes still held AND no tool call ever
+        # fired, those bytes are ordinary content and would otherwise
+        # be silently dropped (codex round-3 CRITICAL on the streaming-
+        # parser cluster PR). When a tool call DID fire, the held
+        # bytes are part of the tool-call body and stay suppressed.
+        if (
+            self.tool_parser
+            and self.tool_accumulated_text
+            and not self.tool_calls_detected
+        ):
+            held = self.tool_parser.flush_held_content(self.tool_accumulated_text)
+            # Strict-string check: ``flush_held_content`` is part of the
+            # parser interface and must return a real ``str``. Defending
+            # against accidental ``None`` / non-string returns avoids a
+            # buggy override surfacing as a malformed StreamEvent
+            # downstream.
+            if isinstance(held, str) and held:
+                events.append(StreamEvent(type="content", content=held))
+
         return events
 
     def _build_tool_call_event(self, items) -> StreamEvent:

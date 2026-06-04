@@ -358,6 +358,19 @@ class HermesToolParser(ToolParser):
             return None
         return {"content": safe_current[len(safe_previous) :]}
 
+    def flush_held_content(self, full_text: str) -> str:
+        """Release the prefix-held suffix at stream end.
+
+        The streaming branch holds back partial sentinel suffixes
+        (``<``, ``<f``, ``<fu``...) until either the full opener
+        arrives or a non-matching char arrives. When the stream ends
+        with bytes still held, those bytes are ordinary content and
+        must be released — otherwise a model response ending in
+        ``abc<`` would surface as ``abc`` to the user (codex round-3
+        CRITICAL).
+        """
+        return full_text[len(self._safe_content_prefix(full_text)) :]
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,

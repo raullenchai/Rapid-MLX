@@ -192,6 +192,15 @@ class HarmonyToolParser(ToolParser):
             return None
         return {"content": safe_current[len(safe_previous) :]}
 
+    def flush_held_content(self, full_text: str) -> str:
+        """Release the prefix-held suffix at stream end.
+
+        Mirror of ``HermesToolParser.flush_held_content`` — see that
+        docstring. Handles harmony sentinels (``<|...``); avoids
+        end-of-stream truncation under char-level streaming.
+        """
+        return full_text[len(self._safe_content_prefix(full_text)) :]
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
