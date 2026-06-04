@@ -103,6 +103,8 @@ rapid-mlx share qwen3.6-27b-8bit
 ```
 This spawns the same local serve and tunnels it through `rapidserver.quicksilverpro.io` over a WebSocket. Your terminal prints a public OpenAI-compatible endpoint plus a bearer key — point any chat UI or OpenAI SDK at it. Bearer auth, a locked-down CORS allowlist, and a default 120 RPM rate-limit are wired on the spawned child; closing the terminal tears the tunnel down.
 
+The default chat surface is our hosted Big-AGI fork (tool calling, personas, voice — no signup); any OpenAI-compatible client also works, e.g. `OPENAI_API_BASE_URL=<share-url>/v1 OPENAI_API_KEY=<bearer> open-webui serve`.
+
 > Pick a 27B-class model or larger for a usable share experience — 4B is fine for local dev but too small for live chat (`rapid-mlx models` lists all aliases).
 
 > **Want a Claude Code-like TUI?** Rapid-MLX is the *backend* — pair it with an open-source agent CLI like [OpenCode](https://github.com/sst/opencode) or [codex](https://github.com/openai/codex) for the full slash-commands / tool-use / multi-turn experience. Run `rapid-mlx agents opencode --setup` (or `codex --setup`) to wire it up automatically.
