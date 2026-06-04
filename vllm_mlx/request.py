@@ -63,13 +63,15 @@ class SamplingParams:
     # additive variants from the OpenAI API (0.0 = disabled).
     #
     # Visibility window: `presence_penalty` and `frequency_penalty` cover
-    # max(4096, max_tokens) generated tokens — i.e. the entire response for
-    # realistic chat lengths, matching the OpenAI spec (#470). In contrast,
+    # the last 4096 generated tokens — wide enough to behave like
+    # whole-response anti-repetition on realistic chat lengths and matches
+    # the OpenAI spec intent (#470). Generations longer than 4096 tokens
+    # see a sliding window over the most recent 4096. In contrast,
     # `repetition_penalty` uses mlx-lm's default 20-token rolling window
     # (multiplicative semantics, distinct from OpenAI-spec penalties). Set
-    # `repetition_penalty` only when you specifically want rolling-window
-    # behavior; use `presence_penalty` / `frequency_penalty` for whole-
-    # response anti-repetition.
+    # `repetition_penalty` only when you specifically want a tight
+    # rolling-window effect; use `presence_penalty` / `frequency_penalty`
+    # for chat-length anti-repetition.
     repetition_penalty: float = 1.0
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
