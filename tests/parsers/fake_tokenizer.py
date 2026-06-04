@@ -133,17 +133,33 @@ HARMONY_VOCAB: dict[str, int] = {
     # NOT currently recognize ``commentary`` as a channel-type word,
     # so the token (and the body that follows) leak as CONTENT text.
     "commentary": 1090,
-    # Tool-recipient prefix and a sample function name. Real harmony
-    # tokenizes ``to=functions.calculate`` as multiple tokens but the
-    # router only needs to suppress them as part of the metadata
-    # between the channel-type word and ``<|message|>``; modeling the
-    # whole recipient as a single token keeps the test ergonomic.
-    " to=functions.calculate": 173783,
-    " to=functions.get_weather": 173784,
+    # Tool-recipient prefix and sample function names. Real harmony
+    # tokenizes ``to=functions.X`` as multiple tokens but the router
+    # only needs to suppress them as part of the metadata between the
+    # channel-type word and ``<|message|>``; modeling each recipient as
+    # a single token keeps the test ergonomic without changing what
+    # the router does. ``get_weather`` ID matches the long-standing
+    # value in ``tests/test_output_router.py`` (173783); ``calculate``
+    # is assigned a new neighboring ID.
+    " to=functions.get_weather": 173783,
+    " to=functions.calculate": 173785,
     " json": 1,
-    # Sample tool-call body tokens (JSON arguments).
+    # Sample tool-call body tokens.
+    #
+    # The single-token bodies (1100/1101) are ergonomic for the simple
+    # cases; the per-fragment tokens (1110-1118) model how a real
+    # harmony tokenizer chops the same JSON char-by-char and let us
+    # assert that multi-token bodies still aggregate into ONE
+    # ``tool_calls`` entry rather than per-token fragments.
     '{"expression":"17*23"}': 1100,
     '{"city":"Tokyo"}': 1101,
+    "{": 1110,
+    '"expr': 1111,
+    'ession":"': 1112,
+    "17": 1113,
+    "*": 1114,
+    "23": 1115,
+    '"}': 1116,
     # Generic content surface tokens — useful for parallel sanity
     # sequences where a model emits final-channel text after a tool
     # call.

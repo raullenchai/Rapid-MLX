@@ -63,12 +63,34 @@ from ..fake_tokenizer import HARMONY_VOCAB, harmony_fake_tokenizer
 
 
 @dataclass
-class _Case:
+class _SanityCase:
+    """Sanity sequences pin the working content/reasoning channels."""
+
     id: str
     token_ids: list[int]
     expected_content: str | None
     expected_reasoning: str | None
     expected_tool_calls: list[str] | None
+
+
+@dataclass
+class _BugCase:
+    """Bug sequences assert what a TOOL_CALL fix MUST surface.
+
+    The exact post-fix contract is intentionally permissive: a fix may
+    emit either a single text blob (matching the Gemma 4 tool-call
+    pattern at output_router.py:281-294) or a structured dict. Either
+    way, the function NAME and ARGUMENTS payload must both reach the
+    consumer — args-only (the natural read of "JSON body after
+    <|message|>") drops ``tool_use.name`` and is insufficient for the
+    Anthropic ``tool_use`` block translation downstream (codex BLOCKING-
+    1 on the round-1 review).
+    """
+
+    id: str
+    token_ids: list[int]
+    expected_function_name: str
+    expected_args_marker: str
 
 
 _V = HARMONY_VOCAB
@@ -77,9 +99,9 @@ _V = HARMONY_VOCAB
 # ----- Sanity (works today): analysis + final channels ------------------
 
 
-SANITY_CASES: list[_Case] = [
+SANITY_CASES: list[_SanityCase] = [
     # Canonical analysis channel — reasoning extracted, content stays None.
-    _Case(
+    _SanityCase(
         id="canonical_analysis_only",
         token_ids=[
             _V["<|channel|>"],
@@ -94,7 +116,7 @@ SANITY_CASES: list[_Case] = [
         expected_tool_calls=None,
     ),
     # Canonical final channel — content extracted, reasoning stays None.
-    _Case(
+    _SanityCase(
         id="canonical_final_only",
         token_ids=[
             _V["<|channel|>"],
@@ -109,7 +131,7 @@ SANITY_CASES: list[_Case] = [
     ),
     # Mixed: analysis → final. Same flow used by gpt-oss for
     # think-then-answer conversations.
-    _Case(
+    _SanityCase(
         id="canonical_analysis_then_final",
         token_ids=[
             _V["<|channel|>"],
@@ -136,14 +158,13 @@ SANITY_CASES: list[_Case] = [
 # ----- #455 BUG: harmony commentary channel for tool calls --------------
 
 
-BUG_CASES: list[_Case] = [
-    # Issue #455 verbatim repro shape — `commentary to=functions.calculate
-    # json{...}<|call|>` should produce a TOOL_CALL channel event with
-    # just the JSON body. Today the router falls into the default
-    # AWAITING_CHANNEL_TYPE branch and emits "commentary" + the
-    # recipient + the body as CONTENT text.
-    _Case(
-        id="issue_455_calculate_tool_call",
+BUG_CASES: list[_BugCase] = [
+    # Issue #455 verbatim repro shape — `commentary  to=functions.calculate
+    # json<|message|>{...}<|call|>` should produce a TOOL_CALL channel
+    # event carrying BOTH the function name and the JSON args. Today the
+    # router emits ``commentary`` + recipient + body all as CONTENT text.
+    _BugCase(
+        id="issue_455_calculate_single_token_body",
         token_ids=[
             _V["<|channel|>"],
             _V["commentary"],
@@ -154,14 +175,41 @@ BUG_CASES: list[_Case] = [
             _V["<|call|>"],
             _V["<|endoftext|>"],
         ],
-        expected_content=None,
-        expected_reasoning=None,
-        expected_tool_calls=['{"expression":"17*23"}'],
+        expected_function_name="calculate",
+        expected_args_marker='"17*23"',
+    ),
+    # Multi-token JSON body — codex BLOCKING-2 on the round-1 review.
+    # Real harmony tokenizes the body char-by-char. A fix that only
+    # handles single-token bodies would pass the case above but
+    # fragment this sequence into multiple per-token tool_call entries
+    # (or worse, leak the body as content because the args buffer
+    # never finalizes). The router must aggregate the full sequence
+    # into ONE tool_calls entry.
+    _BugCase(
+        id="issue_455_calculate_multi_token_body",
+        token_ids=[
+            _V["<|channel|>"],
+            _V["commentary"],
+            _V[" to=functions.calculate"],
+            _V[" json"],
+            _V["<|message|>"],
+            _V["{"],
+            _V['"expr'],
+            _V['ession":"'],
+            _V["17"],
+            _V["*"],
+            _V["23"],
+            _V['"}'],
+            _V["<|call|>"],
+            _V["<|endoftext|>"],
+        ],
+        expected_function_name="calculate",
+        expected_args_marker='"17*23"',
     ),
     # Different prompt + tool name — pins the fix against any
     # accidental hardcoding of the calculate path.
-    _Case(
-        id="get_weather_tool_call",
+    _BugCase(
+        id="get_weather_single_token_body",
         token_ids=[
             _V["<|channel|>"],
             _V["commentary"],
@@ -172,9 +220,8 @@ BUG_CASES: list[_Case] = [
             _V["<|call|>"],
             _V["<|endoftext|>"],
         ],
-        expected_content=None,
-        expected_reasoning=None,
-        expected_tool_calls=['{"city":"Tokyo"}'],
+        expected_function_name="get_weather",
+        expected_args_marker='"Tokyo"',
     ),
 ]
 
@@ -207,7 +254,7 @@ def _normalize_str(value: str | None) -> str | None:
 
 
 @pytest.mark.parametrize("case", SANITY_CASES, ids=lambda c: c.id)
-def test_harmony_router_sanity(case: _Case, router):
+def test_harmony_router_sanity(case: _SanityCase, router):
     """Pin: harmony analysis + final channels route correctly today."""
     result = router.feed_sequence(case.token_ids)
 
@@ -238,28 +285,73 @@ def test_harmony_router_sanity(case: _Case, router):
         "an optional `` json`` constrain directive, then the body. The "
         "router falls into the default branch, transitions to CONTENT, "
         "and leaks ``commentary`` + recipient + body as content text. "
-        "Cluster fix: add ``harmony_commentary_word`` to TokenMap and "
-        "extend the AWAITING_CHANNEL_TYPE branch to transition to "
-        "TOOL_CALL on ``commentary``, swallowing the recipient + "
-        "constrain directive metadata until ``<|message|>``. "
-        "Anthropic-route content_block translation (the user-facing "
-        "tool_use vs text issue) is downstream and out of scope for "
-        "this router-level test."
+        "Cluster fix: extend the AWAITING_CHANNEL_TYPE branch to "
+        "transition to TOOL_CALL on ``commentary``, accumulate the "
+        "recipient + constrain directive + body, and emit a TOOL_CALL "
+        "event carrying BOTH the function name and the JSON args (the "
+        "Gemma 4 tool-call path at output_router.py:281-294 is the "
+        "structural template). Anthropic-route content_block "
+        "translation (the user-facing tool_use-vs-text symptom) is "
+        "downstream and out of scope for this router-level test."
     ),
     strict=True,
 )
-def test_harmony_router_commentary_tool_call(case: _Case, router):
+def test_harmony_router_commentary_tool_call(case: _BugCase, router):
     result = router.feed_sequence(case.token_ids)
 
-    assert result["content"] == _normalize_str(case.expected_content), (
-        f"content mismatch for case={case.id}: expected="
-        f"{_normalize_str(case.expected_content)!r}, got={result['content']!r}"
+    # Content must be empty — `commentary`, recipient, ` json`, and the
+    # body must not leak as content text.
+    assert _normalize_str(result["content"]) is None, (
+        f"content leaked for case={case.id}: got={result['content']!r}. "
+        "Recipient/body must not be emitted to CONTENT channel."
     )
-    assert result["reasoning"] == _normalize_str(case.expected_reasoning), (
-        f"reasoning mismatch for case={case.id}: expected="
-        f"{_normalize_str(case.expected_reasoning)!r}, got={result['reasoning']!r}"
+    assert _normalize_str(result["reasoning"]) is None, (
+        f"reasoning leaked for case={case.id}: got={result['reasoning']!r}"
     )
-    assert result["tool_calls"] == case.expected_tool_calls, (
-        f"tool_calls mismatch for case={case.id}: expected="
-        f"{case.expected_tool_calls!r}, got={result['tool_calls']!r}"
+
+    # Permissive shape contract (codex BLOCKING-1 on round-1): the fix
+    # may emit ``tool_calls`` as a list of text blobs (Gemma 4 pattern)
+    # or as structured dicts (`{name, arguments}`). Either way, both
+    # the function NAME and the args payload must reach the consumer.
+    tool_calls = result["tool_calls"]
+    assert tool_calls, (
+        f"tool_calls is empty/None for case={case.id}; got={tool_calls!r}. "
+        "Router must emit at least one TOOL_CALL event."
     )
+    assert len(tool_calls) == 1, (
+        f"Expected ONE aggregated tool_calls entry for case={case.id}; got "
+        f"{len(tool_calls)}: {tool_calls!r}. The fix must accumulate "
+        "multi-token bodies into a single entry rather than emitting per-"
+        "token fragments."
+    )
+    entry = tool_calls[0]
+    payload = entry if isinstance(entry, str) else _stringify_structured(entry)
+
+    assert case.expected_function_name in payload, (
+        f"Function name {case.expected_function_name!r} missing from "
+        f"tool_calls entry for case={case.id}; got={entry!r}. Args-only "
+        "emission drops tool_use.name and is insufficient downstream."
+    )
+    assert case.expected_args_marker in payload, (
+        f"Args marker {case.expected_args_marker!r} missing from "
+        f"tool_calls entry for case={case.id}; got={entry!r}."
+    )
+
+
+def _stringify_structured(entry: object) -> str:
+    """Flatten a structured tool-call dict to a searchable string.
+
+    The fix may emit ``{"name": "calculate", "arguments": "{...}"}`` or
+    a nested function object. Lift any string-valued fields into a
+    single haystack so the name + args presence checks work
+    independent of the exact dict shape.
+    """
+    if isinstance(entry, dict):
+        parts: list[str] = []
+        for value in entry.values():
+            if isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, dict):
+                parts.append(_stringify_structured(value))
+        return " ".join(parts)
+    return repr(entry)
