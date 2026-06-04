@@ -297,6 +297,23 @@ class HarmonyToolParser(ToolParser):
         return "to=functions." in text
 
 
+# Module-level constants exposed for cross-checking by regression-test
+# infrastructure (tests/parsers/_harmony_markers.py). Keep these in sync
+# with what ``_strip_control_tokens_inner`` actually removes — the smoke
+# test ``test_harmony_markers_match_source`` asserts set equality, so a
+# new control token added here without updating the regression allowlist
+# (or vice versa) fails loudly instead of silently masking a leak.
+HARMONY_STRIPPED_CONTROL_TOKENS: tuple[str, ...] = (
+    "<|start|>",
+    "<|end|>",
+    "<|message|>",
+    "<|channel|>",
+    "<|constrain|>",
+    "<|return|>",
+    "<|call|>",
+)
+
+
 def _strip_control_tokens_inner(text: str) -> str:
     """Remove Harmony control tokens from ``text`` WITHOUT trimming
     surrounding whitespace.
@@ -307,17 +324,8 @@ def _strip_control_tokens_inner(text: str) -> str:
     non-stream extract_tool_calls path that historically expected
     a trimmed return.
     """
-    tokens = [
-        "<|start|>",
-        "<|end|>",
-        "<|message|>",
-        "<|channel|>",
-        "<|constrain|>",
-        "<|return|>",
-        "<|call|>",
-    ]
     result = text
-    for token in tokens:
+    for token in HARMONY_STRIPPED_CONTROL_TOKENS:
         result = result.replace(token, "")
     # Clean up channel names and constrain values
     result = re.sub(r"(?:analysis|commentary|final)\s*", "", result)

@@ -120,6 +120,69 @@ BUG_CASES: list[_Case] = [
 ]
 
 
+# Codex re-review BLOCKING (2026-06-04): the bare-INIT gate now uses
+# 1-token lookahead. A response that legitimately STARTS with one of
+# the channel-word tokens (``thought`` / ``content`` / ``final``)
+# followed by NON-whitespace must surface the word as content rather
+# than be silently swallowed. The lookahead in ``_drain_pending_init_word``
+# rolls back to emit the buffered token and pushes the current token
+# onto the redo queue for the next ``feed()`` call. The rare case
+# matters because a user-instructed model ("Begin your reply with the
+# literal word 'final' followed by ...") or a quirky training quirk
+# would otherwise drop the first token without trace.
+LOOKAHEAD_ROLLBACK_CASES: list[_Case] = [
+    _Case(
+        id="legit_final_then_content_not_swallowed",
+        token_ids=[
+            _V["final"],
+            _V[" world"],
+            _V["<eos>"],
+        ],
+        # Both ``final`` and `` world`` must reach content — neither
+        # silently swallowed by the bare-INIT gate.
+        expected_content="final world",
+        expected_reasoning=None,
+    ),
+    _Case(
+        id="legit_content_then_body_not_swallowed",
+        token_ids=[
+            _V["content"],
+            _V["Hello"],
+            _V["<eos>"],
+        ],
+        expected_content="contentHello",
+        expected_reasoning=None,
+    ),
+    _Case(
+        id="legit_thought_then_body_not_swallowed",
+        token_ids=[
+            _V["thought"],
+            _V["Hello"],
+            _V["<eos>"],
+        ],
+        # Without ``\n`` after ``thought``, lookahead rolls back.
+        # The bare word emits as reasoning (channel intent expressed
+        # by the word) and the body follows in the THINKING state.
+        # Net: a buggy emit pattern that looked like Case B but
+        # without the confirming newline now degrades to a
+        # well-defined "reasoning" routing instead of swallowing.
+        expected_content=None,
+        expected_reasoning="thoughtHello",
+    ),
+    _Case(
+        id="bare_word_only_no_followup",
+        token_ids=[
+            _V["final"],
+            _V["<eos>"],
+        ],
+        # Stream ends with only the bare word — finalize() emits it
+        # as content rather than swallow.
+        expected_content="final",
+        expected_reasoning=None,
+    ),
+]
+
+
 # Compound bare-word sequence (#447 Case A in the issue body) — model
 # emits bare ``thought`` / ``final`` MID-stream after exiting the first
 # channel. The INIT-only gate (see output_router.py) deliberately does
@@ -204,6 +267,41 @@ def test_gemma4_router_no_channel_marker_leaks(case: _Case, router):
     # / final_word IDs ONLY in INIT state and treats them as channel
     # transitions. Gated to INIT to avoid eating body tokens that
     # happen to match the channel-type word IDs.
+    result = router.feed_sequence(case.token_ids)
+
+    assert result["content"] == _normalize(case.expected_content), (
+        f"content mismatch for case={case.id}: expected="
+        f"{_normalize(case.expected_content)!r}, got={result['content']!r}"
+    )
+    assert result["reasoning"] == _normalize(case.expected_reasoning), (
+        f"reasoning mismatch for case={case.id}: expected="
+        f"{_normalize(case.expected_reasoning)!r}, got={result['reasoning']!r}"
+    )
+
+
+# ----- Lookahead rollback (codex re-review BLOCKING) --------------------
+
+
+@pytest.mark.parametrize("case", LOOKAHEAD_ROLLBACK_CASES, ids=lambda c: c.id)
+def test_gemma4_router_lookahead_rollback_preserves_legit_first_token(
+    case: _Case, router
+):
+    """Pin: the INIT-state lookahead doesn't lose a literal first token.
+
+    When a model legitimately starts a reply with the lowercase token
+    ``thought`` / ``content`` / ``final`` followed by non-whitespace,
+    the lookahead rolls back to emit the buffered token as the channel
+    indicated by its semantic meaning, then continues processing the
+    body in that channel. Without this guard, the prior implementation
+    silently swallowed the first token (codex re-review BLOCKING).
+
+    The bare word ALSO sets channel state — that's intentional: if the
+    model speaks one of the channel words at INIT, treat it as
+    expressing channel intent for whatever follows, even if the
+    structural newline confirmation is missing. The alternative
+    (always route to CONTENT post-rollback) would let a buggy ``thought
+    body`` emit silently lose the reasoning marker.
+    """
     result = router.feed_sequence(case.token_ids)
 
     assert result["content"] == _normalize(case.expected_content), (

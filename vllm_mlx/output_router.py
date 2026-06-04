@@ -137,6 +137,18 @@ class OutputRouter:
         self._pending_channel_style: str | None = None
         self._pending_message_channel: Channel | None = None
         self._pending_control_tokens: list[int] = []
+        # Lookahead buffer for bare-INIT Gemma 4 channel words (#447).
+        # When a bare ``thought`` / ``final`` / ``content`` is seen as
+        # the very first emitted token, we buffer it here and confirm
+        # the channel transition only if the NEXT token is whitespace
+        # (matches the model's bare-channel layout ``thought\nbody``).
+        # Otherwise the token is literal content (e.g. an instruction
+        # to "Start with the word 'final'") — see _drain_pending_init_word.
+        self._pending_init_word: tuple[int, RouterState] | None = None
+        # FIFO of tokens whose feed() processing was deferred by 1 call
+        # because feed() returned a queued event from a prior rollback.
+        # Drained at the top of subsequent feed() calls and by finalize().
+        self._redo_queue: list[int] = []
 
     def reset(self):
         """Reset state for a new request."""
@@ -145,6 +157,46 @@ class OutputRouter:
         self._pending_channel_style = None
         self._pending_message_channel = None
         self._pending_control_tokens = []
+        self._pending_init_word = None
+        self._redo_queue = []
+
+    def _drain_pending_init_word(self, current_token_id: int) -> RouterEvent | None:
+        """If a bare-INIT channel word is buffered, decide based on the
+        current token. Whitespace-only current text confirms the
+        transition (swallow both, state -> target). Otherwise rollback:
+        the buffered word is literal content — emit it as the target
+        channel's event and push the current token onto ``_redo_queue``
+        for re-processing on the next ``feed()`` call.
+
+        Returns the buffered event on rollback (caller returns it), or
+        ``None`` on confirm (caller proceeds to process the current
+        token normally).
+        """
+        if self._pending_init_word is None:
+            return None
+        pending_token, pending_target = self._pending_init_word
+        self._pending_init_word = None
+        current_text = self.tokenizer.decode([current_token_id])
+        # Whitespace-only confirms the bare-channel-word + body layout
+        # the model uses when it skips ``<|channel>`` (#447 Case B is
+        # ``thought\nbody``). Anything else means the buffered word
+        # was plain content.
+        if current_text == "" or current_text.isspace():
+            self.state = pending_target
+            return None
+        # Rollback: buffered word is literal content. Emit it, defer
+        # current token's processing to the next feed() call.
+        buffered_channel = (
+            Channel.REASONING
+            if pending_target == RouterState.THINKING
+            else Channel.CONTENT
+        )
+        buffered_text = self.tokenizer.decode([pending_token])
+        # The bare word semantically expressed the channel intent —
+        # stay in target state so subsequent body tokens route correctly.
+        self.state = pending_target
+        self._redo_queue.append(current_token_id)
+        return RouterEvent(buffered_channel, pending_token, buffered_text)
 
     def feed(self, token_id: int) -> RouterEvent | None:
         """
@@ -153,6 +205,21 @@ class OutputRouter:
         Returns RouterEvent with the channel assignment, or None if the
         token should be suppressed entirely (control tokens).
         """
+        # If a bare-INIT channel word is buffered, resolve it first.
+        # On rollback this returns the buffered event AND defers the
+        # current token to ``_redo_queue`` — the caller's next feed()
+        # call will drain the queue and process it.
+        rollback_event = self._drain_pending_init_word(token_id)
+        if rollback_event is not None:
+            return rollback_event
+        # Drain the redo queue if non-empty: pop the deferred token,
+        # push the current one for the next call. Effectively the
+        # router runs 1 token behind after a rollback until ``finalize``.
+        if self._redo_queue:
+            deferred = self._redo_queue.pop(0)
+            self._redo_queue.append(token_id)
+            token_id = deferred
+
         m = self.map
 
         # === Control tokens: always suppress (no decode needed) ===
@@ -333,14 +400,24 @@ class OutputRouter:
         # bare ``final`` mid-stream) are a known limitation tracked in
         # the marker-preserving router followup.
         if self.state == RouterState.INIT:
+            # Buffer the bare channel-word for a 1-token lookahead instead
+            # of swallowing it immediately (codex re-review BLOCKING: a
+            # legitimate plain response that genuinely starts with the
+            # literal "final" / "content" / "thought" token would lose its
+            # first token under the old immediate-swallow). The decision
+            # is deferred to the next feed() call via
+            # ``_drain_pending_init_word``: confirm transition if the next
+            # token is whitespace (matches the bare-channel + body layout
+            # the buggy model uses for #447 Case B: ``thought\nbody``);
+            # otherwise rollback and emit the buffered word as content.
             if m.thought_word is not None and token_id == m.thought_word:
-                self.state = RouterState.THINKING
+                self._pending_init_word = (token_id, RouterState.THINKING)
                 return None
             if m.content_word is not None and token_id == m.content_word:
-                self.state = RouterState.CONTENT
+                self._pending_init_word = (token_id, RouterState.CONTENT)
                 return None
             if m.final_word is not None and token_id == m.final_word:
-                self.state = RouterState.CONTENT
+                self._pending_init_word = (token_id, RouterState.CONTENT)
                 return None
 
         # === Default: decode and route based on current state ===
@@ -350,6 +427,22 @@ class OutputRouter:
         else:
             return RouterEvent(Channel.CONTENT, token_id, text)
 
+    def _drain_pending_init_word_at_finalize(self) -> RouterEvent | None:
+        """Emit a buffered bare-INIT channel word as plain content.
+
+        Used at end-of-stream when no lookahead token arrived to confirm
+        or reject the channel transition. The conservative call is to
+        treat it as literal content rather than silently swallow it.
+        """
+        if self._pending_init_word is None:
+            return None
+        pending_token, _ = self._pending_init_word
+        self._pending_init_word = None
+        text = self.tokenizer.decode([pending_token])
+        if not text:
+            return None
+        return RouterEvent(Channel.CONTENT, pending_token, text)
+
     def finalize(self) -> RouterEvent | None:
         """Drain any buffered state at stream end.
 
@@ -357,6 +450,29 @@ class OutputRouter:
         feed(), while finalize() preserves buffered tool calls or pending
         Harmony pre-message text that would otherwise be dropped.
         """
+        # Drain the bare-INIT lookahead buffer (#447 codex re-review).
+        # If the stream ended after only the bare word, emit it as
+        # content rather than silently swallow.
+        init_event = self._drain_pending_init_word_at_finalize()
+        if init_event is not None:
+            return init_event
+
+        # Drain the redo queue: at most 1 token from the rollback path.
+        # Process it through feed() so the state machine handles it
+        # like any normal token. With both _pending_init_word and the
+        # queue cleared at the top of feed(), processing won't re-defer.
+        if self._redo_queue:
+            deferred = self._redo_queue.pop(0)
+            event = self.feed(deferred)
+            if event is not None:
+                return event
+            # The deferred token might itself set _pending_init_word
+            # (e.g. a bare ``final`` as the very last emitted token).
+            # Drain it inline so it doesn't vanish.
+            init_event = self._drain_pending_init_word_at_finalize()
+            if init_event is not None:
+                return init_event
+
         if self.state == RouterState.TOOL_CALL and self._tool_tokens:
             token_id = self._tool_tokens[-1]
             text = self.tokenizer.decode(self._tool_tokens)
@@ -396,10 +512,10 @@ class OutputRouter:
         reasoning = ""
         tool_calls = []
 
-        for tid in token_ids:
-            event = self.feed(tid)
+        def _accumulate(event: RouterEvent | None):
+            nonlocal content, reasoning
             if event is None:
-                continue
+                return
             if event.channel == Channel.CONTENT:
                 content += event.text
             elif event.channel == Channel.REASONING:
@@ -407,14 +523,21 @@ class OutputRouter:
             elif event.channel == Channel.TOOL_CALL:
                 tool_calls.append(event.text)
 
-        event = self.finalize()
-        if event is not None:
-            if event.channel == Channel.CONTENT:
-                content += event.text
-            elif event.channel == Channel.REASONING:
-                reasoning += event.text
-            elif event.channel == Channel.TOOL_CALL:
-                tool_calls.append(event.text)
+        for tid in token_ids:
+            _accumulate(self.feed(tid))
+
+        # Drain the bare-INIT lookahead buffer and the redo queue. The
+        # rollback path runs the router 1 token behind, so after the last
+        # token in ``token_ids`` there may be 1 deferred token left in
+        # ``_redo_queue`` that feed() never had a chance to emit. Call
+        # finalize() in a loop until it stops producing events so every
+        # buffered event is surfaced (each call may drain at most one of
+        # the buffers, leaving the rest for the next iteration).
+        while True:
+            event = self.finalize()
+            if event is None:
+                break
+            _accumulate(event)
 
         return {
             "content": content.strip() or None,

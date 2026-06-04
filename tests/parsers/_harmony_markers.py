@@ -27,10 +27,17 @@ HARMONY_CONTROL_TOKENS: tuple[str, ...] = (
     "<|call|>",
 )
 
-# Channel labels — also stripped by `_strip_control_tokens` (lines
-# 240-241) but worth pinning separately because some bugs leak the
-# channel label without the surrounding `<|channel|>...<|message|>`
-# brackets.
+# Channel labels — stripped by ``_strip_control_tokens_inner`` via the
+# ``(?:analysis|commentary|final)\s*`` regex (harmony_tool_parser.py),
+# but deliberately EXCLUDED from ``HARMONY_LEAK_MARKERS`` below: these
+# are common English words ("This is the final answer", "An analysis
+# of...", "Commentary on...") and treating them as leak markers in
+# every harmony regression would generate false positives whenever a
+# user-visible response contains them. Tests that need to catch a
+# bare channel-label leak (e.g. ``content="commentary..."``) can
+# import this tuple explicitly. Codex re-review NIT: comment now
+# explicitly documents the exclusion rationale rather than leaving it
+# implicit.
 HARMONY_CHANNEL_LABELS: tuple[str, ...] = ("analysis", "commentary", "final")
 
 # Tool-call recipient prefix — stripped at harmony_tool_parser.py:242.
