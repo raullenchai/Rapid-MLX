@@ -23,18 +23,28 @@ not the end-to-end route. The bug is parser-internal so the parser-only
 test is sufficient — unlike #444 / #447 where router or postprocessor
 fixes also contribute.
 
-**Additional bug surfaced while writing this test (NOT in the original
-issue body):** the hermes *non-stream* path also drops arguments on the
-``<function=name>{json}</function>`` wire format. The non-stream regex
-extracts ``name`` correctly but then runs ``PARAM_PATTERN`` (designed
-for Nemotron's ``<parameter=p>v</parameter>`` XML inner format) against
-the JSON body, producing zero param matches and silently emitting an
-empty arguments dict. The #448 reporter declared "non-stream is clean"
-because tool_calls fired with the right name and content was null — but
-the arguments were ``{}``. Captured here as additional xfails; the
-cluster fix should cover both non-stream and streaming for this wire
-format. Calls this a "drop", not a "leak", but it lives in the same
-parser-path family (``hermes_tool_parser.py:165-181``).
+**Two bugs surfaced while writing this test, both colocated here
+because they share the parser-path family:**
+
+1. **Non-stream argument drop on bare ``<function=...{json}...>``.** The
+   non-stream regex extracts ``name`` and ``params_block`` correctly,
+   but the body parser runs ``PARAM_PATTERN`` (designed for Nemotron's
+   ``<parameter=p>v</parameter>`` XML inner format) against the JSON
+   body, producing zero param matches and silently emitting an empty
+   arguments dict. The #448 reporter declared "non-stream is clean"
+   because tool_calls fired with the right name and content was null —
+   but the arguments were ``{}``. ``hermes_tool_parser.py:165-181``.
+
+2. **Streaming prefix leak applies to BOTH wire formats, not just
+   bare-function.** Round-2 codex strict review of this file's first
+   draft surfaced this: classic ``<tool_call>{...}</tool_call>`` is
+   ALSO vulnerable under char-level streaming — the parser emits the
+   partial ``<tool_call`` opener (no closing ``>``) as content before
+   the substring match fires. In production the bug is masked because
+   tokenizers typically emit ``<tool_call>`` as a single chat-template
+   special token; under char-level streaming (the test boundary fuzzer
+   here) both formats leak. Same root cause as the bare-function bug;
+   the cluster fix must add prefix-hold to BOTH wire formats.
 """
 
 from __future__ import annotations
@@ -58,8 +68,6 @@ class _Case:
     expected_args: dict
 
 
-# Bare-function (Qwen3-Coder) wire format — broken in BOTH non-stream
-# and streaming. The cluster fix must repair both branches.
 BARE_FUNCTION_CASES: list[_Case] = [
     # #448 verbatim — Qwen3-Coder format. Leading `<function` must
     # never appear as content before the tool call emits.
@@ -69,8 +77,10 @@ BARE_FUNCTION_CASES: list[_Case] = [
         expected_name="read_file",
         expected_args={"path": "/tmp/example.py"},
     ),
-    # Multi-arg bare-function shape — pins arg-order preservation
-    # alongside the prefix-hold + JSON-args fix.
+    # Multi-arg bare-function shape — guards the JSON-body arg parser
+    # alongside the prefix-hold fix. (Dict equality is unordered so
+    # this does NOT pin field order; the cluster fix should also add
+    # a separate order-preservation test if that's a requirement.)
     _Case(
         id="bare_function_multi_arg",
         raw=('<function=search>{"query": "rapid mlx", "limit": 10}</function>'),
@@ -79,10 +89,6 @@ BARE_FUNCTION_CASES: list[_Case] = [
     ),
 ]
 
-# Classic <tool_call>{json}</tool_call> wire format — works today on
-# both non-stream and streaming paths. Sanity-pinned so the cluster
-# fix doesn't accidentally break the working format while repairing
-# the bare-function one.
 CLASSIC_TOOL_CALL_CASES: list[_Case] = [
     _Case(
         id="classic_tool_call_tag",
@@ -96,16 +102,6 @@ CLASSIC_TOOL_CALL_CASES: list[_Case] = [
     ),
 ]
 
-# Leak markers specific to hermes wire formats. Subset rather than a
-# canonical-list helper because the hermes parser doesn't expose a
-# single source-of-truth control-token list the way harmony does (its
-# pattern matching is regex-based).
-HERMES_LEAK_MARKERS: tuple[str, ...] = (
-    "<function=",
-    "<tool_call>",
-    "</tool_call>",
-)
-
 
 @pytest.fixture
 def parser() -> HermesToolParser:
@@ -116,44 +112,45 @@ def _split_into_char_deltas(text: str, stream_interval: int) -> list[str]:
     """Char-level split + stream_interval batching.
 
     Same rationale as the #444 file — the parser doesn't need a
-    tokenizer through this code path and char-level subsumes any
-    reasonable tokenization for triggering boundary leaks. The
-    specific bug here surfaces *because* the leading ``<`` and
-    ``function`` arrive in early per-token deltas before the full
-    ``<function=`` pattern is visible.
+    tokenizer through this code path and char-level fuzzes byte-
+    boundary leaks (any reasonable tokenization split is a subset of
+    these splits). This is a boundary fuzzer, not an end-to-end
+    tokenizer-equivalence proof.
     """
     per_char = list(text)
     return batch_deltas_with_stream_interval(per_char, stream_interval)
 
 
-def _assert_no_hermes_marker_leak(content: str | None, *, context: str) -> None:
-    """Assert no hermes wire-format marker leaked into content.
+def _assert_content_clean(content: str | None, *, context: str) -> None:
+    """Assert no chat content leaked into the streaming output.
 
-    Inline rather than imported because hermes lacks a single
-    authoritative control-token list (it's regex-based); the three
-    markers here cover every wire format the parser handles.
+    Stricter than a marker-substring check: these test cases contain
+    *only* a tool call with no surrounding chat, so any non-empty
+    ``content`` is a parser leak — including partial control-token
+    prefixes like ``<func`` or ``<tool_cal`` that wouldn't match a
+    full-sentinel substring scan (codex round-2 finding).
     """
-    if content is None or content == "":
-        return
-    leaked = [m for m in HERMES_LEAK_MARKERS if m in content]
-    assert not leaked, (
-        f"Hermes wire-format marker(s) leaked into content delta: "
-        f"{leaked!r}. context={context!r} content={content!r}"
+    assert content in (None, ""), (
+        f"Expected no chat content (test input is tool-call-only); got "
+        f"content={content!r}. context={context!r}"
     )
 
 
-# ----- Classic <tool_call> format: pin working behavior -----------------
+# ----- Classic <tool_call> format ---------------------------------------
 
 
 @pytest.mark.parametrize("case", CLASSIC_TOOL_CALL_CASES, ids=lambda c: c.id)
 def test_hermes_classic_tool_call_non_stream(case: _Case, parser):
-    """Pin: classic <tool_call> non-stream extraction is correct today."""
+    """Pin: classic <tool_call> non-stream extraction is correct today.
+
+    Regression sentinel — the cluster fix's prefix-hold helper must
+    not regress the working non-stream path for the classic wire
+    format.
+    """
     content, tool_calls = run_tool_extraction(parser, [case.raw], streaming=False)
 
-    assert content in (None, ""), (
-        f"Expected non-stream extraction to consume all input as a tool "
-        f"call; got leftover content={content!r}"
-    )
+    _assert_content_clean(content, context=f"case={case.id}")
+
     assert len(tool_calls) == 1
     tc = tool_calls[0]
     assert tc.name == case.expected_name
@@ -162,19 +159,26 @@ def test_hermes_classic_tool_call_non_stream(case: _Case, parser):
 
 @pytest.mark.parametrize("case", CLASSIC_TOOL_CALL_CASES, ids=lambda c: c.id)
 @pytest.mark.parametrize("stream_interval", [1, 2, 3, 5, 8])
+@pytest.mark.xfail(
+    reason=(
+        "Family-wide hermes streaming prefix leak (codex round-2 finding "
+        "on the #448 regression file): classic `<tool_call>` is ALSO "
+        "vulnerable under char-level streaming. The parser emits the "
+        "partial `<tool_call` opener (no closing `>`) as content before "
+        "the substring match fires. In production this is masked because "
+        "tokenizers emit `<tool_call>` as a single chat-template special "
+        "token; the char-level streaming here is a boundary fuzzer. "
+        "Cluster fix: prefix-hold for `<tool_call` partials. Flip to "
+        "passing once the fix lands."
+    ),
+    strict=True,
+)
 def test_hermes_classic_tool_call_streaming(case: _Case, stream_interval: int, parser):
-    """Pin: classic <tool_call> streaming is correct today.
-
-    Regression sentinel — the cluster fix adds a ``<function=`` prefix
-    hold to the streaming branch. If that helper is overzealous it
-    could also defer ``<tool_call>`` prefixes; this test catches that
-    sibling regression.
-    """
     deltas = _split_into_char_deltas(case.raw, stream_interval)
 
     content, tool_calls = run_tool_extraction(parser, deltas, streaming=True)
 
-    _assert_no_hermes_marker_leak(
+    _assert_content_clean(
         content,
         context=f"case={case.id} stream_interval={stream_interval}",
     )
@@ -196,25 +200,24 @@ def test_hermes_classic_tool_call_streaming(case: _Case, stream_interval: int, p
     reason=(
         "Hermes non-stream path drops arguments on the bare "
         "`<function=name>{json}</function>` wire format. Root cause: the "
-        "regex extracts ``name`` and ``params_block`` correctly, but the "
-        "body parser runs ``PARAM_PATTERN`` (designed for Nemotron "
-        "``<parameter=p>v</parameter>`` XML) against the JSON body and "
-        "extracts zero params, silently emitting ``arguments={}``. "
+        "regex extracts `name` and `params_block` correctly, but the "
+        "body parser runs `PARAM_PATTERN` (designed for Nemotron "
+        "`<parameter=p>v</parameter>` XML) against the JSON body and "
+        "extracts zero params, silently emitting `arguments={}`. "
         "Surfaced while writing the #448 streaming regression — the "
         "issue reporter declared non-stream 'clean' because tool_calls "
         "fired with the right name and content was null. Not in #448's "
         "issue body but lives in the same parser-path family; the cluster "
-        "fix repairs both. Flip to passing once the fix lands."
+        "fix must repair the body parser to detect JSON bodies. Flip to "
+        "passing once the fix lands."
     ),
     strict=True,
 )
 def test_hermes_bare_function_non_stream(case: _Case, parser):
     content, tool_calls = run_tool_extraction(parser, [case.raw], streaming=False)
 
-    assert content in (None, ""), (
-        f"Expected non-stream extraction to consume all input as a tool "
-        f"call; got leftover content={content!r}"
-    )
+    _assert_content_clean(content, context=f"case={case.id}")
+
     assert len(tool_calls) == 1, (
         f"Expected exactly one tool call, got {len(tool_calls)}: {tool_calls!r}"
     )
@@ -230,12 +233,15 @@ def test_hermes_bare_function_non_stream(case: _Case, parser):
 @pytest.mark.parametrize("stream_interval", [1, 2, 3, 5, 8])
 @pytest.mark.xfail(
     reason=(
-        "Issue #448 — hermes streaming leaks `<` and `function` content "
-        "deltas before the `<function=` pattern fully arrives. The non-"
-        "stream regex catches the bare-function format but the streaming "
-        "branch only short-circuits after the substring is complete. Fix: "
-        "add SGLang-style prefix_hold for the partial `<function` prefix. "
-        "Flip to passing once the cluster fix lands."
+        "Issue #448 — hermes streaming leaks the partial `<function` "
+        "prefix (no closing `=`) as content deltas before the full "
+        "`<function=` pattern arrives. The non-stream regex catches the "
+        "bare-function format but the streaming branch only short-"
+        "circuits after the substring is complete. Compound failure: "
+        "this xfail covers BOTH the prefix leak (BUG-1, #448) AND the "
+        "args drop (BUG-2 from non-stream tests above — same parser-body "
+        "code is shared). Cluster fix lands prefix-hold + JSON-body "
+        "detection together. Flip to passing once both land."
     ),
     strict=True,
 )
@@ -244,7 +250,7 @@ def test_hermes_bare_function_streaming(case: _Case, stream_interval: int, parse
 
     content, tool_calls = run_tool_extraction(parser, deltas, streaming=True)
 
-    _assert_no_hermes_marker_leak(
+    _assert_content_clean(
         content,
         context=f"case={case.id} stream_interval={stream_interval}",
     )
