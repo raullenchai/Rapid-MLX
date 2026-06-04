@@ -1362,11 +1362,24 @@ class BatchedEngine(BaseEngine):
         # regex removes the header — the downstream parser then sees
         # no tool call at all. Append the reconstructed wire text from
         # ``routed["tool_calls"]`` so the parser can extract it.
-        # Suppressed when fallback_text already contains a commentary
-        # marker to avoid double-parsing the same call.
+        #
+        # PR #515 round-5 BLOCKING: the previous bulk guard
+        # ``"<|channel|>commentary" not in fallback_text`` was too
+        # broad — in a multi-tool turn (model emits tool call #1
+        # cleanly with ``<|call|>``, then is truncated mid-tool call
+        # #2), the fallback_text already carries call #1's commentary
+        # marker so the entire append was suppressed and call #2 was
+        # lost. Check each reconstructed wire text individually and
+        # only append the ones that aren't already present (verbatim
+        # substring match), so call #1 isn't doubled and call #2
+        # gets through.
         tool_calls = routed.get("tool_calls") or []
-        if tool_calls and "<|channel|>commentary" not in fallback_text:
-            fallback_text = fallback_text + "".join(tool_calls)
+        appended_parts: list[str] = []
+        for tc_text in tool_calls:
+            if tc_text and tc_text not in fallback_text:
+                appended_parts.append(tc_text)
+        if appended_parts:
+            fallback_text = fallback_text + "".join(appended_parts)
 
         return reasoning, fallback_text
 

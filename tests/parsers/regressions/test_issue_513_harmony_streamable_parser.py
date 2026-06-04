@@ -788,6 +788,14 @@ def test_compat_gate_caches_per_tokenizer_identity():
     """Codex round-3 NIT (PR #515): the compatibility probe is called
     on every request from the engine's streaming factory; the marker
     + body-vocab checks should only run once per tokenizer identity.
+
+    Codex round-5 BLOCKING redesign: the previous version used an
+    identity that failed the allowlist gate up-front, so ``encode``
+    was never invoked even without caching — the test would pass even
+    if the cache were removed. This version uses a legal gpt-oss
+    identity with real marker IDs so the gate reaches the body-vocab
+    probe step; only a mismatching probe response causes the False
+    result, and the second call MUST be short-circuited by the cache.
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import (
@@ -795,21 +803,32 @@ def test_compat_gate_caches_per_tokenizer_identity():
         is_openai_harmony_compatible,
     )
 
+    enc = openai_harmony.load_harmony_encoding(
+        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
+    )
+
+    def _id(s):
+        return enc.encode(s, allowed_special="all")[0]
+
+    # Real marker IDs so steps (1) identity allowlist and (2) marker
+    # parity both pass; the body-vocab probe at step (3) is what
+    # rejects this tokenizer (mismatching encode).
     tm = TokenMap(
         format_tag="harmony",
-        harmony_channel=200005,
-        harmony_message=200008,
-        harmony_call=200012,
-        harmony_end=200007,
-        harmony_return=200002,
-        harmony_start=200006,
-        harmony_constrain=200003,
+        harmony_channel=_id("<|channel|>"),
+        harmony_message=_id("<|message|>"),
+        harmony_call=_id("<|call|>"),
+        harmony_end=_id("<|end|>"),
+        harmony_return=_id("<|return|>"),
+        harmony_start=_id("<|start|>"),
+        harmony_constrain=_id("<|constrain|>"),
     )
 
     call_count = {"n": 0}
 
     class _CountingTokenizer:
-        name_or_path = "test-identity-cache-key"
+        # Allowlisted identity — substring match on "gpt-oss".
+        name_or_path = "mlx-community/gpt-oss-CACHE-PROBE-INVOCATION"
 
         def decode(self, ids):
             return ""
@@ -821,21 +840,31 @@ def test_compat_gate_caches_per_tokenizer_identity():
             call_count["n"] += 1
             return [0]  # nonsense — guaranteed mismatch → False
 
-    # Clear any stale cache entry from prior runs.
-    _COMPAT_RESULT_CACHE.pop("test-identity-cache-key", None)
+    # Clear any stale cache entry from prior runs (key now includes
+    # the marker tuple per round-4 NIT).
+    for k in list(_COMPAT_RESULT_CACHE.keys()):
+        if "cache-probe-invocation" in str(k):
+            _COMPAT_RESULT_CACHE.pop(k, None)
 
     t = _CountingTokenizer()
-    # First call runs the probe — `name_or_path` is not in the allowlist
-    # so it fails fast, BEFORE the encode probes — call_count stays 0
-    # for the first call. The cache should still record the False.
+    # First call reaches the body-vocab probe and increments
+    # call_count — that's the work the cache must save on subsequent
+    # calls.
     result1 = is_openai_harmony_compatible(tm, t)
     assert result1 is False
-    cached_calls = call_count["n"]
+    first_call_count = call_count["n"]
+    assert first_call_count > 0, (
+        "test setup error: first call must reach the encode probe — "
+        f"expected >0 encode invocations, got {first_call_count}"
+    )
 
-    # Second call returns the cached False; never re-runs probes.
+    # Second call must return the cached False without re-invoking
+    # encode. If the cache were removed, call_count would double on
+    # this call.
     result2 = is_openai_harmony_compatible(tm, t)
     assert result2 is False
-    assert call_count["n"] == cached_calls, (
+    assert call_count["n"] == first_call_count, (
         "compat gate must cache False results per identity; "
-        f"saw {call_count['n']} encode calls"
+        f"saw {call_count['n']} encode calls (expected {first_call_count} "
+        "— second call should have hit the cache and not re-probed)"
     )

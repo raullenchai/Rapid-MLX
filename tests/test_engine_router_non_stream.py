@@ -272,20 +272,80 @@ def test_finalize_drained_tool_call_supplements_fallback_text(engine, monkeypatc
     )
     assert '{"city":"NYC"}' in content
 
-    # Case B: fallback_text already has commentary markers — don't append
-    # (idempotent; avoids the downstream parser seeing the same call twice).
-    pre_existing = (
-        "<|channel|>commentary to=functions.add <|constrain|>json"
-        '<|message|>{"a":1,"b":2}<|call|>'
+    # PR #515 round-5 BLOCKING refinement: idempotency must be per
+    # wire-text, not "any commentary marker present" — the multi-tool
+    # case is covered in
+    # ``test_multi_tool_fallback_with_existing_marker_still_appends_new``.
+
+    # Case B: fallback_text already contains THIS exact tool call —
+    # don't double-append.
+    tc_wire = (
+        "<|channel|>commentary to=functions.get_weather "
+        '<|constrain|>json<|message|>{"city":"NYC"}<|call|>'
     )
     reasoning, content = engine._route_tokens_for_channels(
-        [200005, 12606, 815, 200008, 1], fallback_text=pre_existing
+        [200005, 12606, 815, 200008, 1], fallback_text=tc_wire
     )
     assert reasoning == "Calling the tool"
-    assert content == pre_existing, (
-        f"fallback_text with existing commentary must not be double-appended; "
+    assert content == tc_wire, (
+        f"fallback_text already carrying THIS tool call must not be doubled; "
         f"got {content!r}"
     )
+    assert content.count("functions.get_weather") == 1
+
+
+def test_multi_tool_fallback_with_existing_marker_still_appends_new(
+    engine, monkeypatch
+):
+    """PR #515 round-5 BLOCKING: in a multi-tool turn (model emits
+    tool call #1 cleanly with ``<|call|>``, then is truncated mid-tool
+    call #2), ``fallback_text`` already carries call #1's commentary
+    marker. The previous bulk guard ``"<|channel|>commentary" not in
+    fallback_text`` then suppressed appending ALL reconstructed tool
+    calls, dropping call #2. The fix checks each reconstructed wire
+    text individually so call #1 isn't doubled and call #2 still
+    reaches ``HarmonyToolParser``.
+    """
+    call1_text = (
+        "<|channel|>commentary to=functions.get_weather "
+        '<|constrain|>json<|message|>{"city":"NYC"}<|call|>'
+    )
+    call2_text = (
+        "<|channel|>commentary to=functions.get_news "
+        '<|constrain|>json<|message|>{"topic":"tech"}<|call|>'
+    )
+
+    class _MultiToolRouter:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            # Router surfaces BOTH tool calls.
+            return {
+                "content": None,
+                "reasoning": None,
+                "tool_calls": [call1_text, call2_text],
+            }
+
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _MultiToolRouter())
+
+    # fallback_text has call #1 already (from raw text bail-out) but
+    # NOT call #2 (finalize() synthesized it because raw was truncated
+    # before <|call|>).
+    fallback_in = call1_text
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005], fallback_text=fallback_in
+    )
+
+    # Call #1 must not be doubled.
+    assert content.count("functions.get_weather") == 1, (
+        f"call #1 must not be doubled; got {content!r}"
+    )
+    # Call #2 must be appended.
+    assert "functions.get_news" in content, (
+        f"finalize-synthesized call #2 must be appended; got {content!r}"
+    )
+    assert '{"topic":"tech"}' in content
 
 
 def test_router_exception_falls_back_cleanly(engine, monkeypatch):
