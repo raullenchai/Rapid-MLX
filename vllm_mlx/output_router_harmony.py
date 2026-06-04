@@ -34,6 +34,7 @@ directly to ``StreamableParser`` without re-encoding.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -107,16 +108,20 @@ class HarmonyStreamingRouter:
         # Import inside __init__ so module import is cheap even when
         # the optional dep is missing — discovery code can decide whether
         # to construct this class or fall back to a different router.
-        from openai_harmony import (
-            HarmonyEncodingName,
-            Role,
-            StreamableParser,
-            load_harmony_encoding,
-        )
+        from openai_harmony import Role, StreamableParser
 
         self.map = token_map
         self.tokenizer = tokenizer
-        self._enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+        # Codex round-3 NIT: reuse the module-level cached encoding so
+        # the relatively expensive ``load_harmony_encoding`` only runs
+        # once per process instead of once per request.
+        self._enc = _get_harmony_encoding()
+        if self._enc is None:
+            raise RuntimeError(
+                "HarmonyStreamingRouter: openai_harmony.load_harmony_encoding "
+                "is unavailable; the gate is_openai_harmony_compatible should "
+                "have rejected this tokenizer before construction."
+            )
         self._role = Role.ASSISTANT
         self._StreamableParser = StreamableParser
         self._parser = StreamableParser(self._enc, role=self._role)
@@ -240,7 +245,16 @@ class HarmonyStreamingRouter:
         ``StreamableParser`` may have an in-progress message that never
         reached ``<|end|>`` / ``<|return|>`` / ``<|call|>`` (truncated
         generation). Force-close via ``process_eos`` so any buffered
-        commentary message surfaces as a TOOL_CALL event.
+        commentary message surfaces as a TOOL_CALL event — BUT only
+        if the body validates as JSON when the content_type says so.
+
+        Codex round-3 BLOCKING: ``process_eos`` synthesizes a closed
+        Message for any partially-emitted commentary, so a
+        max_tokens/length truncation in the middle of the JSON body
+        (e.g. ``{"city":"NY``) would otherwise be surfaced as a
+        completed tool call with corrupt arguments. Validate the body
+        before emitting; if validation fails, drop the synthesized
+        call rather than passing garbage to the downstream parser.
         """
         try:
             self._parser.process_eos()
@@ -255,12 +269,55 @@ class HarmonyStreamingRouter:
             if getattr(
                 closed, "channel", None
             ) == _HARMONY_CHANNEL_COMMENTARY and getattr(closed, "recipient", None):
+                if not self._tool_call_body_is_valid(closed):
+                    logger.debug(
+                        "HarmonyStreamingRouter.finalize: dropping truncated "
+                        "commentary — body fails content_type validation"
+                    )
+                    return None
                 text = self._reconstruct_tool_call_text(closed)
                 # No "current" token id at finalize — pick the parser's
                 # last processed token if available, else 0.
                 token_id = self._parser.tokens[-1] if self._parser.tokens else 0
                 return RouterEvent(Channel.TOOL_CALL, token_id, text)
         return None
+
+    @staticmethod
+    def _tool_call_body_is_valid(message: Any) -> bool:
+        """Validate the synthesized tool-call body before emitting.
+
+        Codex round-3 BLOCKING: ``process_eos`` appends the message to
+        ``self._parser.messages`` even when the body was cut off
+        mid-stream (max_tokens truncation in the middle of JSON). The
+        ``content_type`` field on the closed Message tells us what
+        shape the body should have:
+
+        * ``<|constrain|>json`` — body must round-trip through
+          ``json.loads``. Catches mid-JSON truncation
+          (``{"city":"NY``).
+        * any other / missing content_type — accept any non-empty
+          body (matches the pre-bypass behavior where the regex parser
+          extracted whatever was emitted).
+        """
+        body_parts: list[str] = []
+        for c in message.content:
+            t = getattr(c, "text", None)
+            if t:
+                body_parts.append(t)
+        body = "".join(body_parts).strip()
+        if not body:
+            # Empty body — nothing to surface, definitely truncated.
+            return False
+        ctype = getattr(message, "content_type", None) or ""
+        # ``content_type`` is e.g. ``"<|constrain|>json"`` from
+        # StreamableParser. JSON is the only constraint gpt-oss emits
+        # in practice for tool calls; check it explicitly.
+        if "json" in ctype.lower():
+            try:
+                json.loads(body)
+            except (json.JSONDecodeError, ValueError):
+                return False
+        return True
 
     def feed_sequence(self, token_ids: list[int]) -> dict[str, Any]:
         """Batch path: route a complete token sequence and return
@@ -323,6 +380,41 @@ def is_openai_harmony_available() -> bool:
         return False
 
 
+# Codex round-3 NIT: cache by tokenizer identity so the compatibility
+# probe + harmony encoding load only happen once per model identity,
+# not once per request. The streaming factory runs per
+# ``/v1/chat/completions`` and the marker / probe checks call into
+# ``enc.encode`` six times — measurable when serving high QPS.
+#
+# Keyed by the same case-insensitive ``name_or_path`` substring the
+# identity allowlist uses; entries whose identity doesn't match the
+# allowlist also get cached as False so subsequent rejected models
+# don't re-run the probe.
+_COMPAT_RESULT_CACHE: dict[str, bool] = {}
+_HARMONY_ENCODING_CACHE: dict[str, Any] = {}
+
+
+def _get_harmony_encoding() -> Any | None:
+    """Load (and cache) the ``HARMONY_GPT_OSS`` encoding.
+
+    The harmony encoding load is relatively expensive on first call
+    (loads tiktoken-style merges); cache the instance so every
+    compatibility probe and ``HarmonyStreamingRouter.__init__`` reuses
+    the same object instead of re-loading.
+    """
+    cached = _HARMONY_ENCODING_CACHE.get("gpt_oss")
+    if cached is not None:
+        return cached
+    try:
+        from openai_harmony import HarmonyEncodingName, load_harmony_encoding
+
+        enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    except Exception:  # noqa: BLE001
+        return None
+    _HARMONY_ENCODING_CACHE["gpt_oss"] = enc
+    return enc
+
+
 def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
     """Return True iff the model's vocabulary matches the
     ``openai-harmony`` encoding's vocabulary AND the optional dep is
@@ -354,24 +446,45 @@ def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
        set of plain / JSON / multi-token strings must round-trip
        through both encoders to identical IDs.
 
-    All three must pass.
+    All three must pass. Result is cached per tokenizer identity
+    (codex round-3 NIT) so the probe runs at most once per model.
     """
     if not is_openai_harmony_available():
         return False
-    try:
-        from openai_harmony import HarmonyEncodingName, load_harmony_encoding
 
-        enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
-    except Exception:  # noqa: BLE001
+    # Cache lookup (codex round-3 NIT). The cache key is the same
+    # identity string the allowlist matches against, so the cache
+    # also short-circuits the marker + probe checks for repeated
+    # rejected identities.
+    name_or_path = getattr(tokenizer, "name_or_path", "") or ""
+    cache_key = str(name_or_path).lower()
+    cached = _COMPAT_RESULT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    enc = _get_harmony_encoding()
+    if enc is None:
+        _COMPAT_RESULT_CACHE[cache_key] = False
         return False
 
+    result = _compute_compat(token_map, tokenizer, enc, name_or_path)
+    _COMPAT_RESULT_CACHE[cache_key] = result
+    return result
+
+
+def _compute_compat(
+    token_map: TokenMap, tokenizer: Any, enc: Any, name_or_path: str
+) -> bool:
+    """Helper that runs the three-layer compatibility check. Split
+    out from ``is_openai_harmony_compatible`` so the cache-write logic
+    lives in one place around a single return value (codex round-3 NIT).
+    """
     # (1) Tokenizer-identity allowlist. ``name_or_path`` is set by HF /
     # mlx-lm tokenizers to the model id passed at load time. We do a
     # case-insensitive substring match so quant-suffix renames
     # (``-MXFP4-Q8``) and org prefixes (``mlx-community/`` vs
     # ``openai/``) all resolve to the same family. Missing or empty
     # name_or_path → can't prove identity → reject.
-    name_or_path = getattr(tokenizer, "name_or_path", "") or ""
     name_lc = str(name_or_path).lower()
     if not any(known in name_lc for known in _KNOWN_HARMONY_TOKENIZERS):
         return False

@@ -478,9 +478,11 @@ def test_compat_gate_rejects_tokenizer_without_encode():
         harmony_constrain=200003,
     )
 
+    # Use a unique identity so the result cache from earlier tests
+    # doesn't short-circuit this one (codex round-3 NIT: cache is keyed
+    # by lowercased ``name_or_path``).
     class _NoEncodeTokenizer:
-        # Pass the identity gate so we exercise the no-encode path.
-        name_or_path = "mlx-community/gpt-oss-20b-MXFP4-Q8"
+        name_or_path = "mlx-community/gpt-oss-NO-ENCODE-VARIANT"
 
         def decode(self, ids):
             return ""
@@ -514,10 +516,10 @@ def test_compat_gate_rejects_mismatched_body_vocab():
         harmony_constrain=200003,
     )
 
+    # Use a unique identity so the result cache doesn't return a
+    # stale True from the sibling accepted-variant test.
     class _MismatchedBodyVocabTokenizer:
-        # Pass the identity gate so the body-vocab probe step actually
-        # runs and is what rejects.
-        name_or_path = "mlx-community/gpt-oss-20b-MXFP4-Q8"
+        name_or_path = "mlx-community/gpt-oss-MISMATCHED-BODY-VARIANT"
 
         def decode(self, ids):
             return ""
@@ -560,3 +562,105 @@ def test_finalize_drains_truncated_commentary_message(router, encoding):
         f"got {drained!r} (stream events: {len(routed_during_stream)})"
     )
     assert "functions.get_weather" in drained.text
+
+
+def test_finalize_drops_mid_json_truncation(router, encoding):
+    """Codex round-3 BLOCKING (PR #515): when ``process_eos`` closes a
+    commentary message whose body was cut off mid-JSON
+    (e.g. ``{"city":"NY``), the synthesized TOOL_CALL must be DROPPED.
+    Surfacing it would feed corrupt JSON arguments to the downstream
+    parser and the model would be treated as having ``completed`` a
+    malformed tool call. Sibling regression to
+    ``test_finalize_drains_truncated_commentary_message`` — both pin
+    the contract that ``finalize()`` only emits when the closed
+    message body validates against its declared ``content_type``.
+    """
+    # Commentary header + truncated mid-string body.
+    text = (
+        "<|channel|>commentary "
+        "to=functions.get_weather <|constrain|>json<|message|>"
+        '{"city":"NY'  # cut off mid-JSON
+    )
+    tokens = _encode(encoding, text)
+    router.reset()
+    for tid in tokens:
+        router.feed(tid)
+    drained = router.finalize()
+
+    assert drained is None, (
+        f"mid-JSON truncation must NOT surface as a tool call; got {drained!r}"
+    )
+
+
+def test_finalize_drops_truncated_commentary_with_empty_body(router, encoding):
+    """Codex round-3 BLOCKING (PR #515): a commentary message with no
+    body whatsoever (truncated right after ``<|message|>``) must also
+    be dropped — empty arguments are never the intended output.
+    """
+    text = "<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>"
+    tokens = _encode(encoding, text)
+    router.reset()
+    for tid in tokens:
+        router.feed(tid)
+    drained = router.finalize()
+
+    assert drained is None, (
+        f"empty-body truncated commentary must be dropped; got {drained!r}"
+    )
+
+
+def test_compat_gate_caches_per_tokenizer_identity():
+    """Codex round-3 NIT (PR #515): the compatibility probe is called
+    on every request from the engine's streaming factory; the marker
+    + body-vocab checks should only run once per tokenizer identity.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import (
+        _COMPAT_RESULT_CACHE,
+        is_openai_harmony_compatible,
+    )
+
+    tm = TokenMap(
+        format_tag="harmony",
+        harmony_channel=200005,
+        harmony_message=200008,
+        harmony_call=200012,
+        harmony_end=200007,
+        harmony_return=200002,
+        harmony_start=200006,
+        harmony_constrain=200003,
+    )
+
+    call_count = {"n": 0}
+
+    class _CountingTokenizer:
+        name_or_path = "test-identity-cache-key"
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            call_count["n"] += 1
+            return [0]  # nonsense — guaranteed mismatch → False
+
+    # Clear any stale cache entry from prior runs.
+    _COMPAT_RESULT_CACHE.pop("test-identity-cache-key", None)
+
+    t = _CountingTokenizer()
+    # First call runs the probe — `name_or_path` is not in the allowlist
+    # so it fails fast, BEFORE the encode probes — call_count stays 0
+    # for the first call. The cache should still record the False.
+    result1 = is_openai_harmony_compatible(tm, t)
+    assert result1 is False
+    cached_calls = call_count["n"]
+
+    # Second call returns the cached False; never re-runs probes.
+    result2 = is_openai_harmony_compatible(tm, t)
+    assert result2 is False
+    assert call_count["n"] == cached_calls, (
+        "compat gate must cache False results per identity; "
+        f"saw {call_count['n']} encode calls"
+    )

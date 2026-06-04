@@ -229,6 +229,65 @@ def test_tool_call_routing_preserves_fallback_text(engine, monkeypatch):
     assert '{"city":"NYC"}' in content
 
 
+def test_finalize_drained_tool_call_supplements_fallback_text(engine, monkeypatch):
+    """PR #515 round-3 BLOCKING: when ``HarmonyStreamingRouter.finalize()``
+    synthesizes a tool-call event from a truncated commentary (no
+    ``<|call|>`` in the raw text), ``_clean_gpt_oss_output``'s
+    bail-out may not match — the strip regex then removes the
+    commentary header from ``fallback_text``, and the route's
+    ``HarmonyToolParser`` sees no tool call at all. The engine must
+    pipe ``routed["tool_calls"]`` through by appending the
+    reconstructed wire text so the downstream parser can extract it.
+    Idempotent: when the raw text already carries ``<|channel|>commentary``,
+    don't append (avoids double-parsing).
+    """
+
+    class _DrainedToolCallRouter:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            return {
+                "content": None,
+                "reasoning": "Calling the tool",
+                "tool_calls": [
+                    "<|channel|>commentary to=functions.get_weather "
+                    '<|constrain|>json<|message|>{"city":"NYC"}<|call|>'
+                ],
+            }
+
+    monkeypatch.setattr(
+        engine, "_create_output_router", lambda: _DrainedToolCallRouter()
+    )
+
+    # Case A: fallback_text was already stripped — must be supplemented.
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005, 12606, 815, 200008, 1],
+        fallback_text="",  # stripped because clean_output_text didn't bail
+    )
+    assert reasoning == "Calling the tool"
+    assert "functions.get_weather" in content, (
+        f"finalize-drained tool call must be appended to empty fallback_text; "
+        f"got {content!r}"
+    )
+    assert '{"city":"NYC"}' in content
+
+    # Case B: fallback_text already has commentary markers — don't append
+    # (idempotent; avoids the downstream parser seeing the same call twice).
+    pre_existing = (
+        "<|channel|>commentary to=functions.add <|constrain|>json"
+        '<|message|>{"a":1,"b":2}<|call|>'
+    )
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005, 12606, 815, 200008, 1], fallback_text=pre_existing
+    )
+    assert reasoning == "Calling the tool"
+    assert content == pre_existing, (
+        f"fallback_text with existing commentary must not be double-appended; "
+        f"got {content!r}"
+    )
+
+
 def test_router_exception_falls_back_cleanly(engine, monkeypatch):
     """If the router blows up mid-sequence (e.g. token id outside the
     vocab causes a decode failure), the engine must not propagate the

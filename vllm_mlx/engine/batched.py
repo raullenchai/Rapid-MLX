@@ -1351,6 +1351,23 @@ class BatchedEngine(BaseEngine):
         # routed.content non-None.
         if routed.get("content") is None and reasoning and not routed.get("tool_calls"):
             return reasoning, ""
+
+        # PR #515 round-3 BLOCKING: when the router synthesized a
+        # tool-call event via ``finalize()`` (truncated commentary
+        # without ``<|call|>``), the raw text-based ``fallback_text``
+        # may lack the wire markers ``HarmonyToolParser`` needs.
+        # Specifically, if the model emitted a commentary header but
+        # was cut off before the ``<|message|>`` token, the bail-out
+        # in ``_clean_gpt_oss_output`` doesn't trigger and the strip
+        # regex removes the header — the downstream parser then sees
+        # no tool call at all. Append the reconstructed wire text from
+        # ``routed["tool_calls"]`` so the parser can extract it.
+        # Suppressed when fallback_text already contains a commentary
+        # marker to avoid double-parsing the same call.
+        tool_calls = routed.get("tool_calls") or []
+        if tool_calls and "<|channel|>commentary" not in fallback_text:
+            fallback_text = fallback_text + "".join(tool_calls)
+
         return reasoning, fallback_text
 
     def _create_output_router(self) -> OutputRouter | None:
