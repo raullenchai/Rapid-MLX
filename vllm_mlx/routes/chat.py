@@ -1260,12 +1260,18 @@ async def stream_chat_completion(
             # finalize() produced either recovered tool calls or
             # released held content (shouldn't normally happen —
             # process_chunk emits finish on output.finished).
-            # Emit a synthetic terminal chunk so the client gets the
-            # recovered material instead of a dangling stream. Carry
-            # through any accumulated content/reasoning AND the held
-            # suffix so the synthetic chunk doesn't silently truncate.
-            accumulated_content = getattr(processor, "accumulated_text", None) or ""
-            synthetic_content = (accumulated_content + finalize_content) or None
+            #
+            # Only emit material that has NOT already been streamed:
+            # ``finalize_content`` (released prefix-held tail) and
+            # ``fallback_tool_calls`` (cross-format recovered calls).
+            # Do NOT include ``processor.accumulated_text`` /
+            # ``accumulated_reasoning`` — both were already written
+            # to the wire as per-delta chunks during the loop, so
+            # replaying them would duplicate the whole response
+            # (codex re-review BLOCKING). The original round-6 fix
+            # in the postprocessor makes this branch unreachable
+            # in the common case, but defense-in-depth: keep this
+            # synthetic chunk additive only.
             tool_chunk = ChatCompletionChunk(
                 id=response_id,
                 created=_sse_created,
@@ -1273,16 +1279,8 @@ async def stream_chat_completion(
                 choices=[
                     ChatCompletionChunkChoice(
                         delta=ChatCompletionChunkDelta(
-                            # getattr guard: a future processor (e.g.
-                            # non-reasoning parser) may not define these
-                            # attributes; falling back to None keeps the
-                            # synthetic chunk well-formed instead of
-                            # raising AttributeError mid-stream.
-                            content=synthetic_content,
-                            reasoning_content=getattr(
-                                processor, "accumulated_reasoning", None
-                            )
-                            or None,
+                            content=finalize_content or None,
+                            reasoning_content=None,
                             tool_calls=fallback_tool_calls or None,
                         ),
                         finish_reason=("tool_calls" if fallback_tool_calls else "stop"),

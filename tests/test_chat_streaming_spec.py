@@ -565,5 +565,105 @@ def test_streaming_terminal_chunk_does_not_duplicate_already_streamed_content():
     )
 
 
+def test_synthetic_terminal_chunk_does_not_replay_accumulated_text(monkeypatch):
+    """Defense-in-depth: the synthetic-chunk fallback (reached when
+    ``buffered_finish`` is None but ``finalize_content`` is present)
+    must NOT include ``processor.accumulated_text`` in its delta.content
+    — the deltas were already written to the wire during the loop, so
+    replaying them would duplicate the entire response.
+
+    The round-6 postprocessor fix makes this branch unreachable in the
+    common case (process_chunk always emits a finish event when the
+    output is finished). This test forces the branch via monkeypatch
+    to pin the defensive code's invariant: only emit material that has
+    NOT yet been streamed (``finalize_content`` + ``fallback_tool_calls``).
+
+    A regression here would mean a future code path that swallows the
+    finish event (exception in middleware, new processor variant, etc.)
+    would double-send the entire reply via the synthetic chunk.
+    """
+    from vllm_mlx.domain.events import StreamEvent
+    from vllm_mlx.service import postprocessor as pp_mod
+
+    # Force the defensive branch:
+    #   * process_chunk yields ONLY content events (no finish event) →
+    #     buffered_finish stays None
+    #   * finalize yields a "content" event with the held tail →
+    #     finalize_content is non-empty → branch fires
+    original_process_chunk = pp_mod.StreamingPostProcessor.process_chunk
+
+    def patched_process_chunk(self, output):
+        # Drop finish events so the route's buffered_finish stays None
+        for ev in original_process_chunk(self, output):
+            if ev.type != "finish":
+                yield ev
+
+    def patched_finalize(self):
+        # Emit a single content event with a sentinel "tail" string.
+        # The defensive branch should emit ONLY this, not also the
+        # accumulated_text from the loop.
+        return [StreamEvent(type="content", content="<")]
+
+    monkeypatch.setattr(
+        pp_mod.StreamingPostProcessor, "process_chunk", patched_process_chunk
+    )
+    monkeypatch.setattr(pp_mod.StreamingPostProcessor, "finalize", patched_finalize)
+
+    cfg = reset_config()
+    cfg.engine = _PlainStreamEngine(deltas=["Hel", "lo", " world"])
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.enable_auto_tool_choice = False
+
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events, _ = _parse_sse_events(resp.text)
+
+    content_parts: list[str] = []
+    for ev in events:
+        for choice in ev.get("choices", []):
+            delta = choice.get("delta", {}) or {}
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+    full_content = "".join(content_parts)
+
+    # The postprocessor bundles content+finish into a single ``finish``
+    # event on the finished chunk; the monkeypatch drops finish events,
+    # so the last delta (`` world``) is consumed alongside the finish
+    # event. That is harmless to the invariant under test — what matters
+    # is that ``accumulated_text`` (which DOES include all three deltas)
+    # is NOT replayed in the synthetic chunk.
+    #
+    # Post-fix behavior: client receives "Hel" + "lo" (loop content
+    # events) + "<" (defensive synthetic chunk emitting only the
+    # finalize tail) = "Hello<".
+    #
+    # Bug behavior (pre-fix): client would receive "Hel" + "lo"
+    # (loop content events) + "Hello world<" (synthetic chunk replaying
+    # accumulated_text + finalize tail) = "HelloHello world<".
+    assert full_content == "Hello<", (
+        f"defensive synthetic chunk must NOT replay accumulated_text; "
+        f"expected 'Hello<' (loop deltas the client received + held tail "
+        f"emitted once by the defensive branch), got {full_content!r}. "
+        f"A duplicated prefix like 'HelloHello world<' means the synthetic "
+        f"chunk re-emitted processor.accumulated_text on top of already-"
+        f"streamed deltas (codex re-review BLOCKING)."
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
