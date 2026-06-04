@@ -440,3 +440,67 @@ def test_make_logits_processors_signature_supports_three_penalties():
             f"mlx-lm make_logits_processors no longer accepts {name!r}; "
             f"scheduler wiring is broken — see #355."
         )
+
+
+def test_scheduler_overrides_openai_penalty_context_size():
+    """#470 regression guard. mlx-lm's ``make_logits_processors`` defaults
+    ``presence_context_size`` and ``frequency_context_size`` to 20 — only
+    the last 20 generated tokens count toward the penalty. OpenAI's spec
+    defines these penalties over the *entire* generated sequence, so the
+    default makes the penalty feel like a no-op on chat-length outputs
+    (#470 reported "zero observable effect" at ``frequency_penalty=2.0``).
+
+    The scheduler must explicitly pass a much larger context size so the
+    penalty actually covers a realistic chat response. We pin 4096 as the
+    minimum; raising it is fine, lowering reverts #470.
+    """
+    from pathlib import Path
+
+    src = Path("vllm_mlx/scheduler.py").read_text()
+
+    # Find the `make_logits_processors(` call in the penalty wiring block
+    # and capture its parenthesised arg list intact.
+    import re
+
+    match = re.search(r"make_logits_processors\(", src)
+    assert match, "make_logits_processors() call not found in scheduler.py"
+
+    start = match.end()
+    depth = 1
+    i = start
+    while i < len(src) and depth > 0:
+        if src[i] == "(":
+            depth += 1
+        elif src[i] == ")":
+            depth -= 1
+        i += 1
+    call_args = src[start : i - 1]
+
+    # Each OpenAI-spec penalty must override the upstream default of 20.
+    # We require an integer literal ≥ 4096 — the file-level constant
+    # makes review easy if someone tries to "just bump" it later.
+    for kw in ("presence_context_size", "frequency_context_size"):
+        m = re.search(rf"{kw}\s*=\s*(\d+)", call_args)
+        assert m, (
+            f"scheduler.py make_logits_processors call is missing {kw}=. "
+            f"Without it, mlx-lm uses its 20-token default and the penalty "
+            f"feels like a no-op on chat-length output — regresses #470."
+        )
+        value = int(m.group(1))
+        assert value >= 4096, (
+            f"scheduler.py passes {kw}={value} to mlx-lm. That's too small "
+            f"to cover a typical chat response; OpenAI semantics apply the "
+            f"penalty over the entire generated sequence. Use ≥ 4096."
+        )
+
+    # Repetition penalty is a rapid-mlx extension (not OpenAI-spec) and
+    # is documented as multiplicative over a rolling window — leaving it
+    # at mlx-lm's default 20 is intentional. Assert we don't accidentally
+    # bump it (which would silently change semantics for existing users).
+    assert "repetition_context_size" not in call_args, (
+        "repetition_context_size should NOT be overridden in the scheduler. "
+        "repetition_penalty is rapid-mlx's multiplicative rolling-window "
+        "extension; only the OpenAI-spec frequency/presence penalties need "
+        "the larger window. If you're intentionally changing this, update "
+        "the test and document the semantic change."
+    )

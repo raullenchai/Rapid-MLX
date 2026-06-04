@@ -2772,6 +2772,17 @@ class Scheduler:
             # returns an empty list when all knobs are at defaults, but
             # constructing it unconditionally would still allocate the
             # context-tracking arrays for every request.
+            #
+            # OpenAI-spec penalties (frequency/presence) are defined over
+            # the entire generated sequence, not a sliding window. mlx-lm's
+            # default context_size of 20 truncates the visibility window so
+            # aggressively that callers report the penalty "feels like a
+            # no-op" on chat-length outputs (#470). We bump the OpenAI-spec
+            # ones to 4096 — enough to cover the vast majority of chat
+            # responses without bloating per-request arrays. Repetition
+            # penalty stays at mlx-lm's default 20 since it's a rapid-mlx
+            # extension (not OpenAI-spec) and is documented as multiplicative
+            # over a rolling window.
             sp = request.sampling_params
             if (
                 sp.repetition_penalty != 1.0
@@ -2788,11 +2799,13 @@ class Scheduler:
                         presence_penalty=(
                             sp.presence_penalty if sp.presence_penalty != 0.0 else None
                         ),
+                        presence_context_size=4096,
                         frequency_penalty=(
                             sp.frequency_penalty
                             if sp.frequency_penalty != 0.0
                             else None
                         ),
+                        frequency_context_size=4096,
                     )
                 )
             request_logits_processors = (
