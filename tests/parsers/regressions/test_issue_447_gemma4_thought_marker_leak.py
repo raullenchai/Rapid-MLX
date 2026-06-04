@@ -193,24 +193,14 @@ def test_gemma4_router_sanity(case: _Case, router):
 
 
 @pytest.mark.parametrize("case", BUG_CASES, ids=lambda c: c.id)
-@pytest.mark.xfail(
-    reason=(
-        "Issue #447 — Gemma 4 OutputRouter only enters "
-        "AWAITING_CHANNEL_TYPE on the `<|channel>` special token. If "
-        "the model emits the channel-type word (`thought`/`content`/"
-        "`final`) without a preceding `<|channel>`, the literal word "
-        "tokens fall through to the default route at output_router.py:"
-        "306-311 and leak as content. JSON mode works because "
-        "constrained decoding bypasses the state machine. Cluster fix: "
-        "treat bare `thought`/`content`/`final` from any non-"
-        "AWAITING_CHANNEL_TYPE state (including INIT, CONTENT, and "
-        "THINKING — Case A's bare `final` arrives while THINKING) as "
-        "channel-transition triggers, not literal tokens. Flip to "
-        "passing once the router patch lands."
-    ),
-    strict=True,
-)
 def test_gemma4_router_no_channel_marker_leaks(case: _Case, router):
+    # Flipped from xfail strict → passing by the cluster fix's bare
+    # Gemma 4 channel-word handling in output_router.py. Before the
+    # default emit, the router now checks for thought_word /
+    # content_word / final_word IDs and treats them as channel
+    # transitions from any state. Safe because the words have
+    # dedicated special-token IDs — a real "the final answer" content
+    # tokenizes to a different ID (e.g. ``▁final``).
     result = router.feed_sequence(case.token_ids)
 
     assert result["content"] == _normalize(case.expected_content), (

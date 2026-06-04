@@ -340,6 +340,33 @@ class OutputRouter:
             self.state = RouterState.CONTENT
             return None
 
+        # === Bare Gemma 4 channel-type words (issue #447) ===
+        #
+        # The Gemma 4 channel-marker words (``thought``/``content``/
+        # ``final``) have dedicated single-token IDs in the vocab. The
+        # standard chat-template wraps each in ``<|channel>...<channel|>``,
+        # but some models on the unconstrained generation path emit
+        # the bare word without the ``<|channel>`` opener (see issue
+        # #447). The AWAITING_CHANNEL_TYPE branch above only triggers
+        # on ``<|channel>``, so bare words used to fall through to the
+        # default emit and leak as literal CONTENT text (e.g.
+        # ``content="thought\nanalysis_body\nfinal\nmessage_body"``).
+        #
+        # Treat bare channel-type words as transitions from any state
+        # except AWAITING_CHANNEL_TYPE (already handled above) and
+        # TOOL_CALL (handled above). Safe because these IDs are
+        # special tokens — a real "the final answer is 42" content
+        # tokenizes to a different ID (e.g. ``▁final``).
+        if m.thought_word is not None and token_id == m.thought_word:
+            self.state = RouterState.THINKING
+            return None
+        if m.content_word is not None and token_id == m.content_word:
+            self.state = RouterState.CONTENT
+            return None
+        if m.final_word is not None and token_id == m.final_word:
+            self.state = RouterState.CONTENT
+            return None
+
         # === Default: decode and route based on current state ===
         text = self.tokenizer.decode([token_id])
         if self.state == RouterState.THINKING:
