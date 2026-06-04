@@ -659,7 +659,7 @@ class OutputRouter:
         if legacy is None:
             return None
         if legacy.map.format_tag == "harmony" and is_openai_harmony_compatible(
-            legacy.map
+            legacy.map, tokenizer
         ):
             logger.info(
                 "[OutputRouter] Streaming factory upgraded harmony "

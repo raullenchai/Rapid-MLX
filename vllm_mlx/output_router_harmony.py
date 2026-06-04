@@ -35,6 +35,7 @@ directly to ``StreamableParser`` without re-encoding.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from .output_router import Channel, RouterEvent, TokenMap
@@ -45,6 +46,28 @@ logger = logging.getLogger(__name__)
 _HARMONY_CHANNEL_ANALYSIS = "analysis"
 _HARMONY_CHANNEL_FINAL = "final"
 _HARMONY_CHANNEL_COMMENTARY = "commentary"
+
+# Tool-call recipient shape: ``functions.<safe-name>``. The downstream
+# ``HarmonyToolParser`` does its own parsing of this field but reads
+# it verbatim from the reconstructed wire text — a recipient with
+# whitespace, marker-like characters, or newlines could break the
+# parser's regex or leak content. Codex round-1 BLOCKING (PR #515).
+_RECIPIENT_SHAPE = re.compile(r"^functions\.[A-Za-z_][A-Za-z0-9_\-.]*$")
+
+# Probe strings used by ``is_openai_harmony_compatible`` to verify
+# that the model's body-token vocabulary matches the openai-harmony
+# encoding's vocabulary. If any probe round-trips to a different ID
+# list, the gate falls back to the legacy router — feeding mismatched
+# IDs to ``StreamableParser`` decodes bodies through the wrong vocab
+# and corrupts content / tool-call arguments (codex round-1 BLOCKING).
+# Pick short strings that exercise common body-vocab regions: plain
+# English, JSON-shaped text, and the smoking-gun multi-token word
+# ``commentary`` from PR #514 (``comment``+``ary`` on gpt-oss-20b).
+_BODY_VOCAB_PROBES = (
+    "Hello world",
+    'functions.get_weather {"a":1}',
+    "commentary",
+)
 
 
 class HarmonyStreamingRouter:
@@ -110,7 +133,20 @@ class HarmonyStreamingRouter:
                 body += t
         parts: list[str] = ["<|channel|>commentary"]
         recipient = getattr(message, "recipient", None)
+        # Codex round-1 BLOCKING: validate recipient against the
+        # canonical ``functions.<name>`` shape before interpolating —
+        # whitespace, marker-like text, or a name containing
+        # ``<|...|>`` literals in the recipient would produce wire
+        # text the downstream HarmonyToolParser cannot parse.
         if recipient:
+            if not isinstance(recipient, str) or not _RECIPIENT_SHAPE.match(
+                recipient
+            ):
+                raise ValueError(
+                    f"HarmonyStreamingRouter: refusing to reconstruct "
+                    f"tool-call wire text for malformed recipient "
+                    f"{recipient!r}; expected 'functions.<name>'"
+                )
             parts.append(f" to={recipient}")
         ctype = getattr(message, "content_type", None)
         if ctype:
@@ -237,9 +273,15 @@ class HarmonyStreamingRouter:
         # Drain end-of-stream (truncated messages, etc.).
         _accumulate(self.finalize())
 
+        # Codex round-1 BLOCKING: do NOT ``.strip()`` accumulated
+        # content / reasoning — harmony bodies can legitimately begin
+        # or end with whitespace / newlines (e.g. markdown blocks,
+        # code fences) and stripping silently mutates them. Only
+        # convert the exact empty string to ``None`` so non-emitting
+        # channels still surface as missing.
         return {
-            "content": content.strip() or None,
-            "reasoning": reasoning.strip() or None,
+            "content": content if content != "" else None,
+            "reasoning": reasoning if reasoning != "" else None,
             "tool_calls": tool_calls or None,
         }
 
@@ -258,21 +300,27 @@ def is_openai_harmony_available() -> bool:
         return False
 
 
-def is_openai_harmony_compatible(token_map: TokenMap) -> bool:
-    """Return True iff the model's harmony special-token IDs match the
-    ``openai-harmony`` encoding's IDs AND the optional dep is present.
+def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
+    """Return True iff the model's vocabulary matches the
+    ``openai-harmony`` encoding's vocabulary AND the optional dep is
+    present.
 
     Why the gate exists: ``StreamableParser`` consumes integer token
     IDs from its own encoding's vocabulary. Production upstream
     ``mlx-community/gpt-oss-20b-MXFP4-Q8`` (and the gpt-oss family in
-    general) emit the SAME IDs the harmony encoding uses for
-    ``<|channel|>`` / ``<|message|>`` / ``<|call|>`` / ``<|end|>`` /
-    ``<|return|>`` / ``<|start|>`` / ``<|constrain|>``, so we can
-    forward model token IDs directly without re-encoding (verified
-    PR-time). Synthetic test vocabs that map ``<|channel|>`` to a
-    different ID would feed ``StreamableParser`` IDs it doesn't
-    recognize as control tokens, producing garbled output. This
-    gate short-circuits to the legacy state machine in that case.
+    general) share the harmony encoding's vocabulary for BOTH special
+    markers AND body tokens — so we can forward model token IDs
+    directly without re-encoding. A model whose markers happen to
+    match but whose body-token IDs differ would feed
+    ``StreamableParser`` IDs that decode through the wrong vocabulary,
+    corrupting streamed content and tool-call arguments (e.g.
+    synthetic test vocabs in ``tests/test_engine_router_non_stream.py``
+    where ``"Reason"=1`` and ``"ing"=2`` decode to garbage under
+    harmony's encoding).
+
+    Codex round-1 BLOCKING (PR #515): the original gate only verified
+    marker IDs. We now also probe representative body strings through
+    BOTH encoders and require ID equality on every probe.
     """
     if not is_openai_harmony_available():
         return False
@@ -301,5 +349,35 @@ def is_openai_harmony_compatible(token_map: TokenMap) -> bool:
         except Exception:  # noqa: BLE001
             return False
         if harmony_ids != [model_id]:
+            return False
+
+    # Codex round-1 BLOCKING: also verify body-token vocab parity. A
+    # tokenizer that lacks ``.encode`` (e.g. ``_FakeTokenizer`` used in
+    # the legacy harmony test suite — only exposes ``decode`` +
+    # ``get_vocab``) → not compatible; the legacy router runs instead.
+    encode = getattr(tokenizer, "encode", None)
+    if not callable(encode):
+        return False
+    for probe in _BODY_VOCAB_PROBES:
+        try:
+            harmony_ids = enc.encode(probe, allowed_special="none")
+        except Exception:  # noqa: BLE001
+            return False
+        try:
+            # ``add_special_tokens=False`` keeps the probe pure-body —
+            # HF tokenizers wrap with BOS/EOS otherwise. Pass it as a
+            # kwarg the tokenizer may or may not accept; some
+            # tokenizers raise TypeError on unknown kwargs, in which
+            # case we fall back to a positional call. Either way, a
+            # raise means we can't prove compatibility → return False.
+            try:
+                model_ids = encode(probe, add_special_tokens=False)
+            except TypeError:
+                model_ids = encode(probe)
+        except Exception:  # noqa: BLE001
+            return False
+        # ``encode`` returns ``list[int]`` for HF / mlx_lm tokenizers;
+        # convert to list for comparison robustness.
+        if list(model_ids) != list(harmony_ids):
             return False
     return True

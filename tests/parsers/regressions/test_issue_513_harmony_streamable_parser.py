@@ -255,6 +255,135 @@ def test_per_token_streaming_routes_one_event_per_body_token(router, encoding):
     )
 
 
+def test_feed_sequence_preserves_leading_and_trailing_whitespace(router, encoding):
+    """Codex round-1 BLOCKING (PR #515): ``feed_sequence`` must NOT
+    ``.strip()`` accumulated content / reasoning — harmony bodies can
+    legitimately begin or end with whitespace (markdown blocks, code
+    fences, formatted output) and stripping silently mutates the
+    response. Only the exact empty string maps to ``None``.
+    """
+    # Final-channel body starts with a newline and ends with two
+    # spaces — both must survive.
+    text = (
+        "<|channel|>final<|message|>"
+        "\n```py\nprint('hi')\n```  "
+        "<|return|>"
+    )
+    tokens = _encode(encoding, text)
+    router.reset()
+    result = router.feed_sequence(tokens)
+
+    assert result["content"] == "\n```py\nprint('hi')\n```  ", (
+        f"feed_sequence must preserve surrounding whitespace; "
+        f"got {result['content']!r}"
+    )
+
+
+def test_reconstruct_tool_call_rejects_malformed_recipient(router):
+    """Codex round-1 BLOCKING (PR #515): the recipient string is
+    interpolated into the reconstructed ``to=<recipient>`` wire text
+    consumed by ``HarmonyToolParser``. A recipient with whitespace,
+    marker-like characters, or unexpected shape would break the
+    downstream parser. The router must reject it loudly.
+    """
+
+    class _FakeMessage:
+        def __init__(self, recipient):
+            self.recipient = recipient
+            self.content = []
+            self.content_type = None
+
+    # ``feed()`` only calls ``_reconstruct_tool_call_text`` when
+    # ``closed.recipient`` is truthy, so empty / None recipients are
+    # filtered upstream — only test the cases where reconstruction
+    # actually runs (recipient is a non-empty string of unexpected
+    # shape).
+    bad_recipients = (
+        "functions.bad name",  # whitespace
+        "functions.<|call|>",  # marker
+        "not_functions.x",  # wrong namespace
+        "functions.",  # empty name
+    )
+    for bad in bad_recipients:
+        with pytest.raises(ValueError, match="malformed recipient"):
+            router._reconstruct_tool_call_text(_FakeMessage(bad))
+
+    # Sanity: a well-formed recipient must NOT raise.
+    good = _FakeMessage("functions.get_weather")
+    out = router._reconstruct_tool_call_text(good)
+    assert "to=functions.get_weather" in out
+
+
+def test_compat_gate_rejects_tokenizer_without_encode():
+    """Codex round-1 BLOCKING (PR #515): the compatibility gate must
+    require body-vocab parity, not just marker IDs. A tokenizer that
+    lacks ``.encode`` (e.g. ``_FakeTokenizer`` in
+    ``tests/test_engine_router_non_stream.py`` — only exposes
+    ``decode`` + ``get_vocab``) cannot prove vocab parity → gate must
+    return False so the legacy router runs.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+
+    # Realistic harmony marker IDs (same as production gpt-oss-20b).
+    tm = TokenMap(
+        format_tag="harmony",
+        harmony_channel=200005,
+        harmony_message=200008,
+        harmony_call=200012,
+        harmony_end=200007,
+        harmony_return=200002,
+        harmony_start=200006,
+        harmony_constrain=200003,
+    )
+
+    class _NoEncodeTokenizer:
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+    assert is_openai_harmony_compatible(tm, _NoEncodeTokenizer()) is False
+
+
+def test_compat_gate_rejects_mismatched_body_vocab():
+    """Codex round-1 BLOCKING (PR #515): when markers match but body
+    tokens do not, the gate must REJECT — otherwise body tokens are
+    decoded through harmony's vocabulary and corrupt content / tool
+    arguments. This is the 7-unit-regression smoking gun from
+    pr_validate round-1: synthetic test tokenizers had ``Reason=1``
+    / ``ing=2`` matching harmony's markers but had completely
+    different body IDs, decoded to ``"#`` under harmony encoding.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+
+    tm = TokenMap(
+        format_tag="harmony",
+        harmony_channel=200005,
+        harmony_message=200008,
+        harmony_call=200012,
+        harmony_end=200007,
+        harmony_return=200002,
+        harmony_start=200006,
+        harmony_constrain=200003,
+    )
+
+    class _MismatchedBodyVocabTokenizer:
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            # Wrong vocab — every body string is two arbitrary IDs.
+            return [99001, 99002]
+
+    assert is_openai_harmony_compatible(tm, _MismatchedBodyVocabTokenizer()) is False
+
+
 def test_finalize_drains_truncated_commentary_message(router, encoding):
     """End-of-stream drain: a commentary message that was cut off mid-
     body (no ``<|call|>``) must still surface as a TOOL_CALL event when
