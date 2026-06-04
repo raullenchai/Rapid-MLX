@@ -260,14 +260,14 @@ class HarmonyToolParser(ToolParser):
                 # so a partial trailing sentinel (``<``, ``<|``, ``<|e``
                 # …) doesn't leak before the full ``<|end|>`` arrives
                 # under char-level streaming (codex round-2 CRITICAL).
-                # Order matters: strip first (handles all complete
-                # sentinels), then hold the tail so any remaining
-                # incomplete suffix stays buffered until either the
-                # full sentinel arrives (strip claims it) or a
-                # non-matching char releases it.
-                clean = self._safe_content_prefix(
-                    _strip_control_tokens(raw)
-                ).strip()
+                # DO NOT ``.strip()`` here — a trailing space immediately
+                # before a held sentinel (``hello <``) would be silently
+                # dropped, surfacing as ``hello<`` (codex round-5
+                # CRITICAL). Leading whitespace can appear in legit
+                # model output (e.g. final-channel content starting with
+                # a space) so trimming it would also be lossy. Diff the
+                # raw stripped+held text as-is.
+                clean = self._safe_content_prefix(_strip_control_tokens(raw))
                 # Calculate what's new since previous extraction
                 prev_final = previous_text.rfind("<|channel|>final")
                 prev_clean = ""
@@ -277,7 +277,7 @@ class HarmonyToolParser(ToolParser):
                         prev_raw = previous_text[prev_msg + len("<|message|>") :]
                         prev_clean = self._safe_content_prefix(
                             _strip_control_tokens(prev_raw)
-                        ).strip()
+                        )
                 new_content = clean[len(prev_clean) :]
                 if new_content:
                     return {"content": new_content}

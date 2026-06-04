@@ -197,6 +197,16 @@ def test_harmony_tool_extraction_streaming(case: _Case, stream_interval: int, pa
         context=f"case={case.id} stream_interval={stream_interval}",
     )
 
+    # Stricter than marker-only: these test inputs are tool-call-only
+    # (no surrounding chat), so ANY non-empty content is a leak —
+    # including raw JSON body fragments (``{"city":``) that wouldn't
+    # match the harmony-marker check above (codex round-5 NIT).
+    assert content in (None, ""), (
+        f"Expected no chat content (tool-call-only input); got "
+        f"content={content!r}. stream_interval={stream_interval} "
+        f"case={case.id}"
+    )
+
     # Invariant: exactly one tool call, fully assembled.
     assert len(tool_calls) == 1, (
         f"Expected 1 tool call after stream reassembly, got {len(tool_calls)}: "
