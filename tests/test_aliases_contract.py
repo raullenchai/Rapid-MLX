@@ -621,8 +621,11 @@ _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     # Gemma 4 — official Google sampling guidance hasn't been
     # published yet at the time of writing; we extrapolate from the
     # Gemma 3 family card. Revisit when an official Gemma 4 doc lands.
+    "gemma-4-12b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-12b-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma-4-26b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma-4-31b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-31b-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # GLM-4.5-Air — THUDM publishes two recommendations: temperature=0.6
     # for *thinking* mode, ~1.0 for non-thinking. The alias has
     # reasoning_parser=glm4 → thinking IS the default response path,
