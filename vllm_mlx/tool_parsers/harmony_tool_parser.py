@@ -267,7 +267,7 @@ class HarmonyToolParser(ToolParser):
                 # model output (e.g. final-channel content starting with
                 # a space) so trimming it would also be lossy. Diff the
                 # raw stripped+held text as-is.
-                clean = self._safe_content_prefix(_strip_control_tokens(raw))
+                clean = self._safe_content_prefix(_strip_control_tokens_inner(raw))
                 # Calculate what's new since previous extraction
                 prev_final = previous_text.rfind("<|channel|>final")
                 prev_clean = ""
@@ -276,7 +276,7 @@ class HarmonyToolParser(ToolParser):
                     if prev_msg >= 0:
                         prev_raw = previous_text[prev_msg + len("<|message|>") :]
                         prev_clean = self._safe_content_prefix(
-                            _strip_control_tokens(prev_raw)
+                            _strip_control_tokens_inner(prev_raw)
                         )
                 new_content = clean[len(prev_clean) :]
                 if new_content:
@@ -297,8 +297,16 @@ class HarmonyToolParser(ToolParser):
         return "to=functions." in text
 
 
-def _strip_control_tokens(text: str) -> str:
-    """Remove Harmony control tokens from text."""
+def _strip_control_tokens_inner(text: str) -> str:
+    """Remove Harmony control tokens from ``text`` WITHOUT trimming
+    surrounding whitespace.
+
+    Streaming callers must preserve whitespace fidelity (a trailing
+    space in user-visible content must reach the client). The
+    public ``_strip_control_tokens`` wraps this and trims for the
+    non-stream extract_tool_calls path that historically expected
+    a trimmed return.
+    """
     tokens = [
         "<|start|>",
         "<|end|>",
@@ -315,7 +323,18 @@ def _strip_control_tokens(text: str) -> str:
     result = re.sub(r"(?:analysis|commentary|final)\s*", "", result)
     result = re.sub(r"to=functions\.\w+\s*", "", result)
     result = re.sub(r"json\s*", "", result)
-    return result.strip()
+    return result
+
+
+def _strip_control_tokens(text: str) -> str:
+    """Remove Harmony control tokens from text (non-stream / convenience).
+
+    Trims surrounding whitespace — used by the non-stream
+    ``extract_tool_calls`` path. Streaming code that must preserve
+    whitespace fidelity should call ``_strip_control_tokens_inner``
+    directly.
+    """
+    return _strip_control_tokens_inner(text).strip()
 
 
 def _is_control_token(text: str) -> bool:

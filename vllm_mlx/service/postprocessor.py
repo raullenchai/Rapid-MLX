@@ -245,7 +245,22 @@ class StreamingPostProcessor:
         if self.tool_parser and content:
             result = self._detect_tool_calls(content)
             if result is None:
-                return []  # suppressed (inside tool markup)
+                # Suppressed (inside tool markup OR prefix-held partial
+                # sentinel). If this was ALSO the finished chunk, we
+                # still must emit a finish event so the chat route's
+                # buffered_finish gate fires — otherwise the
+                # defensive-elif synthetic chunk path would re-emit
+                # ``accumulated_text + finalize_content``, double-counting
+                # already-streamed deltas (codex round-6 BLOCKING).
+                if output.finished:
+                    return [
+                        StreamEvent(
+                            type="finish",
+                            finish_reason=self._compute_finish_reason(output),
+                            tool_calls_detected=self.tool_calls_detected,
+                        )
+                    ]
+                return []
             if result.get("tool_calls"):
                 return [
                     StreamEvent(
@@ -352,6 +367,18 @@ class StreamingPostProcessor:
         if self.tool_parser and content:
             result = self._detect_tool_calls(content)
             if result is None:
+                # Suppressed (inside tool markup OR prefix-held). When
+                # also the finished chunk, emit finish so the chat
+                # route's buffered_finish gate fires (codex round-6
+                # BLOCKING — defensive-elif duplication path).
+                if output.finished:
+                    return [
+                        StreamEvent(
+                            type="finish",
+                            finish_reason=self._compute_finish_reason(output),
+                            tool_calls_detected=self.tool_calls_detected,
+                        )
+                    ]
                 return []
             if result.get("tool_calls"):
                 return [
@@ -440,6 +467,17 @@ class StreamingPostProcessor:
         if self.tool_parser and delta_text:
             result = self._detect_tool_calls(delta_text)
             if result is None:
+                # Suppressed. When also finished, emit finish so the
+                # chat route's buffered_finish gate fires (codex
+                # round-6 BLOCKING).
+                if output.finished:
+                    return [
+                        StreamEvent(
+                            type="finish",
+                            finish_reason=self._compute_finish_reason(output),
+                            tool_calls_detected=self.tool_calls_detected,
+                        )
+                    ]
                 return []
             if result.get("tool_calls"):
                 return [

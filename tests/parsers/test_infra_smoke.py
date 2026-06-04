@@ -193,22 +193,24 @@ def test_batch_deltas_rejects_zero_interval():
 
 
 def test_harmony_markers_match_source():
-    """Pin the marker list against ``_strip_control_tokens``.
+    """Pin the marker list against ``_strip_control_tokens_inner``.
 
     If the parser ever extends its control-token allowlist without
     updating ``_harmony_markers.HARMONY_CONTROL_TOKENS``, every
     harmony regression file would start missing the new marker as a
-    leak-check. This test makes that drift loud.
+    leak-check. This test makes that drift loud. Checks the inner
+    (whitespace-preserving) helper that contains the actual marker
+    list; the public ``_strip_control_tokens`` is a thin trim wrapper.
     """
     import inspect
 
     from vllm_mlx.tool_parsers import harmony_tool_parser as _htp
 
-    src = inspect.getsource(_htp._strip_control_tokens)
+    src = inspect.getsource(_htp._strip_control_tokens_inner)
     for tok in HARMONY_CONTROL_TOKENS:
         assert tok in src, (
             f"Marker {tok!r} is in HARMONY_CONTROL_TOKENS but missing "
-            f"from harmony_tool_parser._strip_control_tokens source. "
+            f"from harmony_tool_parser._strip_control_tokens_inner source. "
             f"Either the parser drifted or the marker list is stale."
         )
 

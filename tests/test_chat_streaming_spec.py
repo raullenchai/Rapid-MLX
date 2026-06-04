@@ -499,5 +499,71 @@ def test_streaming_terminal_chunk_merges_prefix_held_content():
     )
 
 
+def test_streaming_terminal_chunk_does_not_duplicate_already_streamed_content():
+    """Codex round-6 BLOCKING: when ``_detect_tool_calls`` prefix-holds
+    the FINAL finished delta and returns None, the path used to skip
+    the finish event entirely. Without ``buffered_finish``, the chat
+    route fell back to the synthetic-chunk branch which re-emits
+    ``accumulated_text + finalize_content`` — duplicating content the
+    client already received via per-delta chunks (``abc<`` ⇒
+    ``abc`` streamed + terminal ``abc<`` = ``abcabc<``).
+
+    Fix: emit a finish event from the postprocessor even when the
+    detected delta is suppressed, so the normal terminal-chunk path
+    fires with the correct (un-duplicated) content + released held
+    suffix.
+    """
+    cfg = reset_config()
+    cfg.engine = _HermesHoldingEngine()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.enable_auto_tool_choice = True
+    cfg.tool_call_parser = "hermes"
+
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "say abc<"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "dummy",
+                        "description": "unused",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events, _ = _parse_sse_events(resp.text)
+
+    content_parts: list[str] = []
+    for ev in events:
+        for choice in ev.get("choices", []):
+            delta = choice.get("delta", {}) or {}
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+
+    full_content = "".join(content_parts)
+    # The total wire content must match the input exactly — no doubling.
+    assert full_content == "abc<", (
+        f"client must receive content exactly once; got {full_content!r}. "
+        f"A duplicated reply (e.g. 'abcabc<') means the synthetic-chunk "
+        f"path was re-emitting accumulated_text on top of already-streamed "
+        f"deltas (codex round-6 BLOCKING)."
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
