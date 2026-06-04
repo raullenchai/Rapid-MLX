@@ -44,13 +44,6 @@ logger = logging.getLogger(__name__)
 # Enable MambaCache batching support for models like Nemotron
 ensure_mamba_support()
 
-# Default visibility window for OpenAI-spec frequency/presence penalties.
-# mlx-lm's default is 20, which truncates the penalty so aggressively that
-# callers report it "feels like a no-op" on chat-length outputs (#470).
-# 4096 covers the vast majority of chat responses; for longer generations
-# we scale to cover max_tokens so the penalty stays effective end-to-end.
-_OPENAI_PENALTY_CONTEXT_SIZE = 4096
-
 # Error patterns that indicate cache corruption.
 # Each pattern must be specific enough to avoid false positives.
 # The bare word "cache" was removed because it matched unrelated TypeErrors
@@ -2784,19 +2777,18 @@ class Scheduler:
             # the entire generated sequence, not a sliding window. mlx-lm's
             # default context_size of 20 truncates the visibility window so
             # aggressively that callers report the penalty "feels like a
-            # no-op" on chat-length outputs (#470). We size the window to
-            # cover max_tokens so the penalty stays effective end-to-end on
-            # long generations, with a floor of _OPENAI_PENALTY_CONTEXT_SIZE
-            # for short replies. Repetition penalty stays at mlx-lm's
-            # default 20 since it's a rapid-mlx extension (not OpenAI-spec)
-            # and is documented as multiplicative over a rolling window.
+            # no-op" on chat-length outputs (#470). We bump the OpenAI-spec
+            # ones to 4096 — enough to cover the vast majority of chat
+            # responses without bloating per-request arrays. Repetition
+            # penalty stays at mlx-lm's default 20 since it's a rapid-mlx
+            # extension (not OpenAI-spec) and is documented as multiplicative
+            # over a rolling window.
             sp = request.sampling_params
             if (
                 sp.repetition_penalty != 1.0
                 or sp.presence_penalty != 0.0
                 or sp.frequency_penalty != 0.0
             ):
-                openai_penalty_ctx = max(_OPENAI_PENALTY_CONTEXT_SIZE, sp.max_tokens)
                 request_processors.extend(
                     make_logits_processors(
                         repetition_penalty=(
@@ -2807,13 +2799,13 @@ class Scheduler:
                         presence_penalty=(
                             sp.presence_penalty if sp.presence_penalty != 0.0 else None
                         ),
-                        presence_context_size=openai_penalty_ctx,
+                        presence_context_size=4096,
                         frequency_penalty=(
                             sp.frequency_penalty
                             if sp.frequency_penalty != 0.0
                             else None
                         ),
-                        frequency_context_size=openai_penalty_ctx,
+                        frequency_context_size=4096,
                     )
                 )
             request_logits_processors = (
