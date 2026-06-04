@@ -110,3 +110,52 @@ GEMMA4_VOCAB: dict[str, int] = {
 def gemma4_fake_tokenizer() -> FakeTokenizer:
     """Build a synthetic Gemma 4 tokenizer for OutputRouter tests."""
     return FakeTokenizer(vocab=dict(GEMMA4_VOCAB))
+
+
+# Synthetic harmony (GPT-OSS) vocab. Token-ID conventions match the
+# established harmony fakes in ``tests/test_output_router.py`` and
+# ``tests/test_batched_engine_output_router.py`` to keep the regression
+# harness aligned with the existing OutputRouter test fixtures.
+HARMONY_VOCAB: dict[str, int] = {
+    # Special tokens
+    "<|return|>": 200002,
+    "<|constrain|>": 200003,
+    "<|channel|>": 200005,
+    "<|start|>": 200006,
+    "<|end|>": 200007,
+    "<|message|>": 200008,
+    "<|call|>": 200012,
+    "<|endoftext|>": 200013,  # serves as bos/eos/pad in harmony
+    # Channel-type words (literal subword tokens after ``<|channel|>``)
+    "analysis": 35644,
+    "final": 17196,
+    # Issue #455: harmony tool-call channel — the OutputRouter does
+    # NOT currently recognize ``commentary`` as a channel-type word,
+    # so the token (and the body that follows) leak as CONTENT text.
+    "commentary": 1090,
+    # Tool-recipient prefix and a sample function name. Real harmony
+    # tokenizes ``to=functions.calculate`` as multiple tokens but the
+    # router only needs to suppress them as part of the metadata
+    # between the channel-type word and ``<|message|>``; modeling the
+    # whole recipient as a single token keeps the test ergonomic.
+    " to=functions.calculate": 173783,
+    " to=functions.get_weather": 173784,
+    " json": 1,
+    # Sample tool-call body tokens (JSON arguments).
+    '{"expression":"17*23"}': 1100,
+    '{"city":"Tokyo"}': 1101,
+    # Generic content surface tokens — useful for parallel sanity
+    # sequences where a model emits final-channel text after a tool
+    # call.
+    "Reason": 2,
+    "ing": 3,
+    "Answer": 4,
+    "Plain": 5,
+    "assistant": 173781,
+    "user": 173782,
+}
+
+
+def harmony_fake_tokenizer() -> FakeTokenizer:
+    """Build a synthetic harmony (GPT-OSS) tokenizer for OutputRouter tests."""
+    return FakeTokenizer(vocab=dict(HARMONY_VOCAB))
