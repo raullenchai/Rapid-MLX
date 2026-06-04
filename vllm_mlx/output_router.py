@@ -95,7 +95,6 @@ class TokenMap:
     harmony_constrain: int | None = None  # <|constrain|>
     harmony_analysis_word: int | None = None  # "analysis"
     harmony_final_word: int | None = None  # "final"
-    harmony_commentary_word: int | None = None  # "commentary" (tool-call channel)
 
     # Standard control
     bos: int | None = None
@@ -191,13 +190,7 @@ class OutputRouter:
             self._pending_control_tokens = []
             return None
 
-        # ``<|constrain|>`` is always suppressed; ``<|call|>`` is the
-        # harmony tool-call terminator and is handled by the TOOL_CALL
-        # state block below if we're in a tool-call body. Falling
-        # through here only when not in TOOL_CALL.
-        if token_id == m.harmony_constrain:
-            return None
-        if token_id == m.harmony_call and self.state != RouterState.TOOL_CALL:
+        if token_id in (m.harmony_call, m.harmony_constrain):
             return None
 
         # In AFTER_START we swallow every non-special token until the
@@ -237,19 +230,6 @@ class OutputRouter:
                     self._pending_message_channel = Channel.CONTENT
                     self.state = RouterState.AWAITING_MESSAGE
                     return None
-                if token_id == m.harmony_commentary_word:
-                    # Harmony tool-call channel. Body shape:
-                    #   <|channel|>commentary  to=functions.X[ <|constrain|>json]
-                    #   <|message|>{...}<|call|>
-                    # AWAITING_MESSAGE buffers the recipient (and any
-                    # ``json`` directive); on ``<|message|>`` we
-                    # transition to TOOL_CALL with that recipient
-                    # already in the accumulator so the emitted
-                    # event carries both name (extractable from the
-                    # ``to=functions.X`` prefix) and the body JSON.
-                    self._pending_message_channel = Channel.TOOL_CALL
-                    self.state = RouterState.AWAITING_MESSAGE
-                    return None
 
                 self.state = RouterState.CONTENT
                 self._pending_channel_style = None
@@ -273,18 +253,11 @@ class OutputRouter:
         # === Harmony message boundary: suppress metadata before payload ===
         if self.state == RouterState.AWAITING_MESSAGE:
             if token_id == m.harmony_message:
-                if self._pending_message_channel == Channel.TOOL_CALL:
-                    # Tool-call commentary path. Carry the swallowed
-                    # recipient tokens into the TOOL_CALL accumulator
-                    # so downstream consumers can extract the
-                    # function name from the ``to=functions.X``
-                    # prefix in the emitted event text.
-                    self.state = RouterState.TOOL_CALL
-                    self._tool_tokens = list(self._pending_control_tokens)
-                elif self._pending_message_channel == Channel.REASONING:
-                    self.state = RouterState.THINKING
-                else:
-                    self.state = RouterState.CONTENT
+                self.state = (
+                    RouterState.THINKING
+                    if self._pending_message_channel == Channel.REASONING
+                    else RouterState.CONTENT
+                )
                 self._pending_channel_style = None
                 self._pending_message_channel = None
                 self._pending_control_tokens = []
@@ -313,16 +286,6 @@ class OutputRouter:
 
         # === Inside tool call: accumulate (no per-token decode) ===
         if self.state == RouterState.TOOL_CALL:
-            # ``<|call|>`` is harmony's tool-call terminator; emit
-            # WITHOUT appending it to the buffer so the decoded text
-            # is the clean recipient + body (Gemma 4 ``<tool_call|>``
-            # is symmetric — also excluded from the buffer in the
-            # corresponding branch below).
-            if token_id == m.harmony_call:
-                full_text = self.tokenizer.decode(self._tool_tokens)
-                self.state = RouterState.CONTENT
-                self._tool_tokens = []
-                return RouterEvent(Channel.TOOL_CALL, token_id, full_text)
             self._tool_tokens.append(token_id)
             if token_id == m.tool_call_end:
                 full_text = self.tokenizer.decode(self._tool_tokens)
@@ -500,7 +463,6 @@ class OutputRouter:
                 harmony_constrain=vocab.get("<|constrain|>"),
                 harmony_analysis_word=vocab.get("analysis"),
                 harmony_final_word=vocab.get("final"),
-                harmony_commentary_word=vocab.get("commentary"),
                 bos=vocab.get("<|endoftext|>"),
                 eos=vocab.get("<|endoftext|>"),
                 pad=vocab.get("<|endoftext|>"),
