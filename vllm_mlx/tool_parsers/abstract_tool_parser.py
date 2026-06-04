@@ -248,6 +248,29 @@ class ToolParser(ABC):
         """
         return "<tool_call>" in text or self.has_text_format_tool_call(text)
 
+    def flush_held_content(self, full_text: str) -> str:
+        """Return any prefix-held content suffix to release at stream end.
+
+        Streaming parsers that prefix-hold partial tool-call sentinels
+        (e.g. ``<``, ``<|``, ``<func``...) can end the stream still
+        holding bytes that turned out not to be sentinel openers. Those
+        bytes are ordinary content but were never emitted via
+        ``extract_tool_calls_streaming`` because the parser couldn't be
+        sure no further matching char would arrive.
+
+        Subclasses that prefix-hold MUST override this to return the
+        held suffix of ``full_text`` (typically computed as
+        ``full_text[len(_safe_content_prefix(full_text)):]``). The
+        postprocessor calls this in ``finalize()`` when no tool calls
+        fired and emits the result as a final content event so the
+        last few characters of plain content aren't dropped (codex
+        round-3 CRITICAL).
+
+        Default returns empty string — parsers that don't prefix-hold
+        have nothing held to release.
+        """
+        return ""
+
     # -----------------------------------------------------------------
     # General text-format tool call fallback
     # -----------------------------------------------------------------

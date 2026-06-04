@@ -150,6 +150,57 @@ class HarmonyToolParser(ToolParser):
             content=content,
         )
 
+    # Harmony control-token sentinels. ``extract_tool_calls_streaming``
+    # must hold back partial-prefix suffixes (``<``, ``<|``, ``<|ch``…)
+    # before the full opener arrives, otherwise per-char streaming
+    # leaks them as content deltas (issue #444 / #480).
+    _STREAMING_SENTINELS: tuple[str, ...] = (
+        "<|channel|>",
+        "<|message|>",
+        "<|call|>",
+        "<|start|>",
+        "<|end|>",
+        "<|return|>",
+        "<|constrain|>",
+    )
+
+    @classmethod
+    def _safe_content_prefix(cls, text: str) -> str:
+        """Strip the longest harmony-sentinel prefix off ``text``'s tail.
+
+        Mirrors ``HermesToolParser._safe_content_prefix`` — see that
+        docstring for the algorithm. Distinct copy because the
+        sentinel set is harmony-specific.
+        """
+        max_hold = 0
+        for sentinel in cls._STREAMING_SENTINELS:
+            for length in range(min(len(text), len(sentinel) - 1), 0, -1):
+                if text.endswith(sentinel[:length]):
+                    if length > max_hold:
+                        max_hold = length
+                    break
+        return text if max_hold == 0 else text[: len(text) - max_hold]
+
+    @classmethod
+    def _emit_safe_content(
+        cls, previous_text: str, current_text: str
+    ) -> dict[str, Any] | None:
+        """Emit the new content delta with sentinel prefixes held back."""
+        safe_current = cls._safe_content_prefix(current_text)
+        safe_previous = cls._safe_content_prefix(previous_text)
+        if len(safe_current) <= len(safe_previous):
+            return None
+        return {"content": safe_current[len(safe_previous) :]}
+
+    def flush_held_content(self, full_text: str) -> str:
+        """Release the prefix-held suffix at stream end.
+
+        Mirror of ``HermesToolParser.flush_held_content`` — see that
+        docstring. Handles harmony sentinels (``<|...``); avoids
+        end-of-stream truncation under char-level streaming.
+        """
+        return full_text[len(self._safe_content_prefix(full_text)) :]
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
@@ -164,10 +215,23 @@ class HarmonyToolParser(ToolParser):
         Extract tool calls from streaming Harmony model output.
 
         Waits for <|call|> to complete a tool call, and emits final
-        channel content as regular content deltas.
+        channel content as regular content deltas. Partial harmony
+        sentinels (``<|chan``, ``<|c``…) are held back via
+        ``_emit_safe_content`` so per-char streaming doesn't leak the
+        leading ``<`` chars as content deltas before the full opener
+        arrives (issues #444 / #480 — family-wide leak across every
+        harmony streaming entry point).
         """
-        # If we see a tool call completion marker in the delta
-        if "<|call|>" in delta_text:
+        # If a tool-call completion marker just FINISHED arriving — i.e.
+        # ``<|call|>`` is in ``current_text`` but was absent from
+        # ``previous_text`` — emit the structured tool call. Using
+        # ``in delta_text`` would only fire when a single delta carries
+        # the entire sentinel atomically (whole-token delivery); under
+        # char-level streaming the sentinel spans 8 deltas and the
+        # check would never fire.
+        prev_call_count = previous_text.count("<|call|>")
+        curr_call_count = current_text.count("<|call|>")
+        if curr_call_count > prev_call_count:
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
                 return {
@@ -192,8 +256,18 @@ class HarmonyToolParser(ToolParser):
             msg_start = current_text.find("<|message|>", final_start)
             if msg_start >= 0:
                 raw = current_text[msg_start + len("<|message|>") :]
-                # Strip control tokens from the extracted content
-                clean = _strip_control_tokens(raw).strip()
+                # Strip COMPLETE control tokens, then apply prefix-hold
+                # so a partial trailing sentinel (``<``, ``<|``, ``<|e``
+                # …) doesn't leak before the full ``<|end|>`` arrives
+                # under char-level streaming (codex round-2 CRITICAL).
+                # DO NOT ``.strip()`` here — a trailing space immediately
+                # before a held sentinel (``hello <``) would be silently
+                # dropped, surfacing as ``hello<`` (codex round-5
+                # CRITICAL). Leading whitespace can appear in legit
+                # model output (e.g. final-channel content starting with
+                # a space) so trimming it would also be lossy. Diff the
+                # raw stripped+held text as-is.
+                clean = self._safe_content_prefix(_strip_control_tokens_inner(raw))
                 # Calculate what's new since previous extraction
                 prev_final = previous_text.rfind("<|channel|>final")
                 prev_clean = ""
@@ -201,16 +275,19 @@ class HarmonyToolParser(ToolParser):
                     prev_msg = previous_text.find("<|message|>", prev_final)
                     if prev_msg >= 0:
                         prev_raw = previous_text[prev_msg + len("<|message|>") :]
-                        prev_clean = _strip_control_tokens(prev_raw).strip()
+                        prev_clean = self._safe_content_prefix(
+                            _strip_control_tokens_inner(prev_raw)
+                        )
                 new_content = clean[len(prev_clean) :]
                 if new_content:
                     return {"content": new_content}
             # In final channel but no new content yet (control token)
             return {"content": ""}
 
-        # If no tool markers at all, pass through as content
+        # If no full sentinel present yet, emit safe content (partial
+        # sentinel prefixes held back).
         if "<|channel|>" not in current_text:
-            return {"content": delta_text}
+            return self._emit_safe_content(previous_text, current_text)
 
         # Building tool call or in analysis channel, suppress output
         return None
@@ -220,25 +297,52 @@ class HarmonyToolParser(ToolParser):
         return "to=functions." in text
 
 
-def _strip_control_tokens(text: str) -> str:
-    """Remove Harmony control tokens from text."""
-    tokens = [
-        "<|start|>",
-        "<|end|>",
-        "<|message|>",
-        "<|channel|>",
-        "<|constrain|>",
-        "<|return|>",
-        "<|call|>",
-    ]
+# Module-level constants exposed for cross-checking by regression-test
+# infrastructure (tests/parsers/_harmony_markers.py). Keep these in sync
+# with what ``_strip_control_tokens_inner`` actually removes — the smoke
+# test ``test_harmony_markers_match_source`` asserts set equality, so a
+# new control token added here without updating the regression allowlist
+# (or vice versa) fails loudly instead of silently masking a leak.
+HARMONY_STRIPPED_CONTROL_TOKENS: tuple[str, ...] = (
+    "<|start|>",
+    "<|end|>",
+    "<|message|>",
+    "<|channel|>",
+    "<|constrain|>",
+    "<|return|>",
+    "<|call|>",
+)
+
+
+def _strip_control_tokens_inner(text: str) -> str:
+    """Remove Harmony control tokens from ``text`` WITHOUT trimming
+    surrounding whitespace.
+
+    Streaming callers must preserve whitespace fidelity (a trailing
+    space in user-visible content must reach the client). The
+    public ``_strip_control_tokens`` wraps this and trims for the
+    non-stream extract_tool_calls path that historically expected
+    a trimmed return.
+    """
     result = text
-    for token in tokens:
+    for token in HARMONY_STRIPPED_CONTROL_TOKENS:
         result = result.replace(token, "")
     # Clean up channel names and constrain values
     result = re.sub(r"(?:analysis|commentary|final)\s*", "", result)
     result = re.sub(r"to=functions\.\w+\s*", "", result)
     result = re.sub(r"json\s*", "", result)
-    return result.strip()
+    return result
+
+
+def _strip_control_tokens(text: str) -> str:
+    """Remove Harmony control tokens from text (non-stream / convenience).
+
+    Trims surrounding whitespace — used by the non-stream
+    ``extract_tool_calls`` path. Streaming code that must preserve
+    whitespace fidelity should call ``_strip_control_tokens_inner``
+    directly.
+    """
+    return _strip_control_tokens_inner(text).strip()
 
 
 def _is_control_token(text: str) -> bool:

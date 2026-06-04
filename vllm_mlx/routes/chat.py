@@ -1185,10 +1185,23 @@ async def stream_chat_completion(
         # tool_call events before emitting; they get merged into the
         # buffered finish chunk so the stream produces exactly one
         # terminal chunk with one finish_reason (OpenAI spec).
+        # ``content`` events from finalize() carry prefix-held bytes
+        # released by the parser (codex round-3 CRITICAL): the
+        # streaming parser holds back partial tool-call sentinels
+        # (``<``, ``<|``, ``<func``...) so per-char streaming doesn't
+        # leak them as content before the full opener arrives. When
+        # the stream ends with held bytes still buffered AND no tool
+        # call ever fired, the postprocessor releases them — accumulate
+        # here and merge into the terminal chunk's content so the user
+        # doesn't see a truncated reply (codex round-4 CRITICAL).
         fallback_tool_calls: list = []
+        finalize_content_parts: list[str] = []
         for event in processor.finalize():
             if event.type == "tool_call":
                 fallback_tool_calls.extend(event.tool_calls or [])
+            elif event.type == "content" and event.content:
+                finalize_content_parts.append(event.content)
+        finalize_content = "".join(finalize_content_parts)
 
         # Emit the terminal chunk. Three cases:
         #   (a) Streaming parser already emitted tool_calls during the
@@ -1206,6 +1219,13 @@ async def stream_chat_completion(
                     "into terminal chunk; overriding finish_reason -> tool_calls",
                     len(fallback_tool_calls),
                 )
+            # Merge any released prefix-held content into the terminal
+            # chunk's delta.content (codex round-4 CRITICAL). Concatenate
+            # to whatever the finish event already carries — the
+            # finish_event.content path is normally None for non-tool
+            # plain-text streams (deltas already drained content during
+            # the loop), so this typically just adds the held suffix.
+            terminal_content = (finish_event.content or "") + finalize_content
             final_chunk = ChatCompletionChunk(
                 id=response_id,
                 created=_sse_created,
@@ -1213,7 +1233,7 @@ async def stream_chat_completion(
                 choices=[
                     ChatCompletionChunkChoice(
                         delta=ChatCompletionChunkDelta(
-                            content=finish_event.content,
+                            content=terminal_content or None,
                             reasoning_content=finish_event.reasoning,
                             tool_calls=(
                                 fallback_tool_calls if fallback_tool_calls else None
@@ -1235,14 +1255,23 @@ async def stream_chat_completion(
                 ),
             )
             yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
-        elif fallback_tool_calls:
-            # Defensive: stream ended without a "finish" event but the
-            # fallback still recovered tool calls (shouldn't normally
-            # happen — process_chunk emits finish on output.finished).
-            # Emit a synthetic terminal chunk so the client gets the
-            # tool calls instead of a dangling stream. Carry through any
-            # accumulated content/reasoning so the synthetic chunk
-            # doesn't silently truncate text the model produced.
+        elif fallback_tool_calls or finalize_content:
+            # Defensive: stream ended without a "finish" event but
+            # finalize() produced either recovered tool calls or
+            # released held content (shouldn't normally happen —
+            # process_chunk emits finish on output.finished).
+            #
+            # Only emit material that has NOT already been streamed:
+            # ``finalize_content`` (released prefix-held tail) and
+            # ``fallback_tool_calls`` (cross-format recovered calls).
+            # Do NOT include ``processor.accumulated_text`` /
+            # ``accumulated_reasoning`` — both were already written
+            # to the wire as per-delta chunks during the loop, so
+            # replaying them would duplicate the whole response
+            # (codex re-review BLOCKING). The original round-6 fix
+            # in the postprocessor makes this branch unreachable
+            # in the common case, but defense-in-depth: keep this
+            # synthetic chunk additive only.
             tool_chunk = ChatCompletionChunk(
                 id=response_id,
                 created=_sse_created,
@@ -1250,20 +1279,11 @@ async def stream_chat_completion(
                 choices=[
                     ChatCompletionChunkChoice(
                         delta=ChatCompletionChunkDelta(
-                            # getattr guard: a future processor (e.g.
-                            # non-reasoning parser) may not define these
-                            # attributes; falling back to None keeps the
-                            # synthetic chunk well-formed instead of
-                            # raising AttributeError mid-stream.
-                            content=getattr(processor, "accumulated_text", None)
-                            or None,
-                            reasoning_content=getattr(
-                                processor, "accumulated_reasoning", None
-                            )
-                            or None,
-                            tool_calls=fallback_tool_calls,
+                            content=finalize_content or None,
+                            reasoning_content=None,
+                            tool_calls=fallback_tool_calls or None,
                         ),
-                        finish_reason="tool_calls",
+                        finish_reason=("tool_calls" if fallback_tool_calls else "stop"),
                     )
                 ],
             )
