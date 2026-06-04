@@ -1,11 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Regression guard for #444 — harmony streaming tool calls leak as content.
+"""Regression guard for #444 + #480 — harmony streaming tool-call leak.
 
-Reported 2026-05-22 on fresh-PyPI v0.6.65 fresh-onboarding sweep against
-``mlx-community/gpt-oss-20b-MXFP4-Q8``. Streaming + ``tool_choice="auto"``
-on a harmony model emits the raw harmony commentary body (channel marker
-+ recipient + JSON args + ``<|call|>``) as ``delta.content`` instead of
-a ``delta.tool_calls`` event. Non-streaming on the same prompt works.
+Two cluster issues with the same root cause (router + postprocessor
+streaming-pipeline gap on harmony commentary channel) and the same
+parser-level surface:
+
+  * #444 (2026-05-22, gpt-oss-20b-MXFP4-Q8, ``tool_choice="auto"``):
+    raw body ``...to=functions.get_weather...{"city": "Tokyo"}...``
+    leaks into ``delta.content``.
+
+  * #480 (2026-05-28, gpt-oss-20b, ``tool_choice="auto"``): raw body
+    ``commentary to=functions.get_weather json{"city":"Paris"}``
+    leaks into ``delta.content``. User-facing duplicate of #444 with
+    a different prompt — covered here to ensure the fix applies
+    uniformly across prompts, not just the #444 repro.
+
+Non-streaming on the same prompts works in both reports.
 
 Per the issue, two bugs compound (router + postprocessor). The parser-
 level streaming entry point is exercised here in isolation:
@@ -97,6 +107,18 @@ TEST_CASES: list[_Case] = [
         ),
         expected_name="list_models",
         expected_args={},
+    ),
+    # #480 verbatim — same shape as the simple-arg #444 case but
+    # different prompt and arg value, kept separately so a fix that
+    # accidentally hardcodes the #444 prompt path can't pass.
+    _Case(
+        id="issue_480_paris",
+        raw=(
+            "<|channel|>commentary to=functions.get_weather "
+            '<|constrain|>json<|message|>{"city": "Paris"}<|call|>'
+        ),
+        expected_name="get_weather",
+        expected_args={"city": "Paris"},
     ),
 ]
 
