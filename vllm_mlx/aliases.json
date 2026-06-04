@@ -261,6 +261,32 @@
       "code_edit": 0.584
     }
   },
+  "gemma-4-12b": {
+    "hf_path": "mlx-community/gemma-4-12B-it-4bit",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "gemma-4-12b-8bit": {
+    "hf_path": "mlx-community/gemma-4-12B-it-8bit",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
   "gemma-4-26b": {
     "hf_path": "mlx-community/gemma-4-26b-a4b-it-4bit",
     "tool_call_parser": "gemma4",
