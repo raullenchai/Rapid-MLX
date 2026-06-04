@@ -98,15 +98,38 @@ SANITY_CASES: list[_Case] = [
 
 
 BUG_CASES: list[_Case] = [
-    # #447 Case A (multi-turn): model emits the literal ``thought`` /
-    # ``content`` / ``final`` tokens directly without the
-    # ``<|channel>`` opener. Router never enters AWAITING_CHANNEL_TYPE,
-    # so the literal channel-type words fall through to default and
-    # leak as content. Expected (after fix): ``thought`` triggers
-    # transition to THINKING, ``final`` transitions to CONTENT, body
-    # routes correctly.
+    # #447 main bug (Case B from issue): bare ``thought`` opens a
+    # thought block at the start of generation, no closing
+    # ``<channel|>`` and no ``final`` transition. Post-fix: bare
+    # ``thought`` (in INIT state) triggers transition to THINKING; the
+    # body lands in reasoning and content stays empty. INIT-state
+    # gating keeps the fix narrow — see output_router.py:343 comment
+    # for the rationale (mid-content body tokens matching ``final`` /
+    # ``content`` / ``thought`` IDs must NOT be silently swallowed).
     _Case(
-        id="issue_447_no_channel_open_marker",
+        id="issue_447_thought_word_only_no_final",
+        token_ids=[
+            _V["thought"],
+            _V["\n"],
+            _V["message_body"],
+            _V["<eos>"],
+        ],
+        expected_content=None,
+        expected_reasoning="message_body",
+    ),
+]
+
+
+# Compound bare-word sequence (#447 Case A in the issue body) — model
+# emits bare ``thought`` / ``final`` MID-stream after exiting the first
+# channel. The INIT-only gate (see output_router.py) deliberately does
+# NOT fire bare-word transitions outside INIT state, because that would
+# regress canonical Gemma 4 content bodies that happen to start with the
+# literal ``final`` / ``content`` / ``thought`` token (codex round-2
+# BLOCKING). Tracked for the marker-preserving router followup.
+KNOWN_LIMITATION_CASES: list[_Case] = [
+    _Case(
+        id="issue_447_compound_bare_words_known_limitation",
         token_ids=[
             _V["thought"],
             _V["\n"],
@@ -119,25 +142,6 @@ BUG_CASES: list[_Case] = [
         ],
         expected_content="message_body",
         expected_reasoning="analysis_body",
-    ),
-    # Variant: bare ``thought`` opens a thought block with no closing
-    # ``<channel|>`` and no ``final`` transition. Post-fix: bare
-    # ``thought`` should transition to THINKING and the body lands in
-    # reasoning, content stays empty (matches the "stuck in thought"
-    # trap from issue #447 Case B, except verified at router level
-    # rather than via streaming-delta accumulation).
-    _Case(
-        id="issue_447_thought_word_only_no_final",
-        token_ids=[
-            _V["thought"],
-            _V["\n"],
-            _V["message_body"],
-            _V["<eos>"],
-        ],
-        # After fix: bare `thought` enters THINKING; without a `final`
-        # transition the body is reasoning and content is empty.
-        expected_content=None,
-        expected_reasoning="message_body",
     ),
 ]
 
@@ -196,11 +200,10 @@ def test_gemma4_router_sanity(case: _Case, router):
 def test_gemma4_router_no_channel_marker_leaks(case: _Case, router):
     # Flipped from xfail strict → passing by the cluster fix's bare
     # Gemma 4 channel-word handling in output_router.py. Before the
-    # default emit, the router now checks for thought_word /
-    # content_word / final_word IDs and treats them as channel
-    # transitions from any state. Safe because the words have
-    # dedicated special-token IDs — a real "the final answer" content
-    # tokenizes to a different ID (e.g. ``▁final``).
+    # default emit, the router checks for thought_word / content_word
+    # / final_word IDs ONLY in INIT state and treats them as channel
+    # transitions. Gated to INIT to avoid eating body tokens that
+    # happen to match the channel-type word IDs.
     result = router.feed_sequence(case.token_ids)
 
     assert result["content"] == _normalize(case.expected_content), (
@@ -211,3 +214,30 @@ def test_gemma4_router_no_channel_marker_leaks(case: _Case, router):
         f"reasoning mismatch for case={case.id}: expected="
         f"{_normalize(case.expected_reasoning)!r}, got={result['reasoning']!r}"
     )
+
+
+# ----- Known limitation: compound bare-word sequences (xfail) -----------
+
+
+@pytest.mark.parametrize(
+    "case", KNOWN_LIMITATION_CASES, ids=lambda c: c.id
+)
+@pytest.mark.xfail(
+    reason=(
+        "Compound bare-word sequence (#447 Case A): the model emits "
+        "bare ``thought`` followed later by bare ``final`` mid-stream "
+        "after exiting the first channel. The INIT-only bare-word gate "
+        "in output_router.py deliberately does NOT fire transitions "
+        "outside INIT state — broadening the gate regresses canonical "
+        "Gemma 4 bodies whose first content token happens to be "
+        "``final`` / ``content`` / ``thought`` (codex round-2 BLOCKING). "
+        "Marker-preserving router followup will resolve this without "
+        "the trade-off."
+    ),
+    strict=True,
+)
+def test_gemma4_router_compound_bare_words_known_limitation(case: _Case, router):
+    result = router.feed_sequence(case.token_ids)
+
+    assert result["content"] == _normalize(case.expected_content)
+    assert result["reasoning"] == _normalize(case.expected_reasoning)

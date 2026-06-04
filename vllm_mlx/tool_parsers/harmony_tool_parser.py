@@ -247,8 +247,18 @@ class HarmonyToolParser(ToolParser):
             msg_start = current_text.find("<|message|>", final_start)
             if msg_start >= 0:
                 raw = current_text[msg_start + len("<|message|>") :]
-                # Strip control tokens from the extracted content
-                clean = _strip_control_tokens(raw).strip()
+                # Strip COMPLETE control tokens, then apply prefix-hold
+                # so a partial trailing sentinel (``<``, ``<|``, ``<|e``
+                # …) doesn't leak before the full ``<|end|>`` arrives
+                # under char-level streaming (codex round-2 CRITICAL).
+                # Order matters: strip first (handles all complete
+                # sentinels), then hold the tail so any remaining
+                # incomplete suffix stays buffered until either the
+                # full sentinel arrives (strip claims it) or a
+                # non-matching char releases it.
+                clean = self._safe_content_prefix(
+                    _strip_control_tokens(raw)
+                ).strip()
                 # Calculate what's new since previous extraction
                 prev_final = previous_text.rfind("<|channel|>final")
                 prev_clean = ""
@@ -256,7 +266,9 @@ class HarmonyToolParser(ToolParser):
                     prev_msg = previous_text.find("<|message|>", prev_final)
                     if prev_msg >= 0:
                         prev_raw = previous_text[prev_msg + len("<|message|>") :]
-                        prev_clean = _strip_control_tokens(prev_raw).strip()
+                        prev_clean = self._safe_content_prefix(
+                            _strip_control_tokens(prev_raw)
+                        ).strip()
                 new_content = clean[len(prev_clean) :]
                 if new_content:
                     return {"content": new_content}

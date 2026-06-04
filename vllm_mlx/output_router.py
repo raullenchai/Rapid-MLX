@@ -315,25 +315,33 @@ class OutputRouter:
         # default emit and leak as literal CONTENT text (e.g.
         # ``content="thought\nanalysis_body\nfinal\nmessage_body"``).
         #
-        # Treat bare channel-type words as transitions from any state
-        # except AWAITING_CHANNEL_TYPE (already handled above) and
-        # TOOL_CALL (handled above). The IDs are ordinary vocab entries
-        # (verified against the real Gemma 4 tokenizer: thought=45518,
-        # content=3955, final=10218 — distinct from the structural
-        # markers like ``<|channel>`` which are added_tokens), but a
-        # natural-language ``final`` inside content tokenizes to a
-        # different vocab entry (e.g. ``▁final`` with a leading
-        # space-marker), so direct ID matching is unambiguous in
-        # practice.
-        if m.thought_word is not None and token_id == m.thought_word:
-            self.state = RouterState.THINKING
-            return None
-        if m.content_word is not None and token_id == m.content_word:
-            self.state = RouterState.CONTENT
-            return None
-        if m.final_word is not None and token_id == m.final_word:
-            self.state = RouterState.CONTENT
-            return None
+        # Treat bare channel-type words as transitions ONLY from INIT
+        # state. The IDs are ordinary vocab entries (verified against
+        # the real Gemma 4 tokenizer: thought=45518, content=3955,
+        # final=10218 — distinct from the structural markers like
+        # ``<|channel>`` which are added_tokens), so an exact match
+        # inside an already-routed channel body would silently swallow
+        # legitimate content. Example regression a broader gate would
+        # introduce: canonical ``<|channel>content<channel|>final ok``
+        # — here the body word ``final`` (id 10218) inside the content
+        # channel would be consumed as a state transition and ``ok``
+        # would be the only content emitted. Restricting the trigger
+        # to INIT preserves canonical bodies while still catching the
+        # production #447 bug (bare ``thought`` as the very first
+        # generated token before any ``<|channel>`` marker arrives).
+        # Compound bare-word sequences (bare ``thought`` followed by
+        # bare ``final`` mid-stream) are a known limitation tracked in
+        # the marker-preserving router followup.
+        if self.state == RouterState.INIT:
+            if m.thought_word is not None and token_id == m.thought_word:
+                self.state = RouterState.THINKING
+                return None
+            if m.content_word is not None and token_id == m.content_word:
+                self.state = RouterState.CONTENT
+                return None
+            if m.final_word is not None and token_id == m.final_word:
+                self.state = RouterState.CONTENT
+                return None
 
         # === Default: decode and route based on current state ===
         text = self.tokenizer.decode([token_id])

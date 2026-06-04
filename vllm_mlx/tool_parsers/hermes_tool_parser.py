@@ -24,10 +24,12 @@ def generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
-def _parse_bare_function_body(body: str) -> dict[str, Any]:
-    """Parse the body of a bare ``<function=name>...</function>`` block.
+def _parse_function_body(body: str) -> dict[str, Any]:
+    """Parse the body of any ``<function=name>...</function>`` block.
 
-    Two wire formats coexist (issue #448 BUG-2):
+    Called both for wrapped (``<tool_call><function=...>...``) and
+    bare (no ``<tool_call>`` wrapper) Nemotron-shape blocks. Two wire
+    formats coexist for the inner body (issue #448 BUG-2):
 
     * **Nemotron XML** — body holds ``<parameter=p>v</parameter>`` tags.
       Iterate via ``PARAM_PATTERN`` and decode each value through
@@ -180,7 +182,7 @@ class HermesToolParser(ToolParser):
         if not tool_calls:
             nemotron_matches = self.NEMOTRON_PATTERN.findall(cleaned_text)
             for name, params_block in nemotron_matches:
-                arguments = _parse_bare_function_body(params_block)
+                arguments = _parse_function_body(params_block)
                 tool_calls.append(
                     {
                         "id": generate_tool_id(),
@@ -201,7 +203,7 @@ class HermesToolParser(ToolParser):
         if not tool_calls:
             bare_matches = self.BARE_FUNCTION_PATTERN.findall(cleaned_text)
             for name, params_block in bare_matches:
-                arguments = _parse_bare_function_body(params_block)
+                arguments = _parse_function_body(params_block)
                 tool_calls.append(
                     {
                         "id": generate_tool_id(),
