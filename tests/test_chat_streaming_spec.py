@@ -408,5 +408,96 @@ def test_finalize_no_op_when_no_tool_calls_present():
     assert not processor.tool_calls_detected
 
 
+class _HermesHoldingEngine:
+    """Mock engine that streams ``"abc<"`` so the hermes parser holds the
+    trailing ``<`` (potential ``<tool_call>``/``<function=`` opener).
+    The chat route must merge the released held byte into the terminal
+    chunk's delta.content — without this fix the response would surface
+    as ``abc`` (codex round-3 + round-4 CRITICAL).
+    """
+
+    preserve_native_tool_format = False
+    is_mllm = False
+    supports_guided_generation = False
+    tokenizer = None
+
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        return "PROMPT"
+
+    async def stream_chat(self, messages, **kwargs):
+        for i, delta in enumerate("abc<"):
+            text_so_far = "abc<"[: i + 1]
+            yield GenerationOutput(
+                text=text_so_far,
+                new_text=delta,
+                prompt_tokens=4,
+                completion_tokens=i + 1,
+                finished=(i == 3),
+                finish_reason="stop" if i == 3 else None,
+                channel=None,
+            )
+
+
+def test_streaming_terminal_chunk_merges_prefix_held_content():
+    """Codex round-4 CRITICAL: prefix-held tail must reach the client.
+
+    Hermes/harmony streaming holds back partial tool-call sentinels
+    (``<``, ``<|``, ``<func``...). If the stream ends with held bytes
+    AND no tool call ever fires, those bytes are ordinary content and
+    finalize()'s newly released ``content`` event MUST be merged into
+    the terminal chunk's delta.content. Pre-fix the route only consumed
+    ``tool_call`` events from finalize() and silently dropped the
+    released suffix — user-facing result was ``abc`` instead of
+    ``abc<`` (last char missing).
+    """
+    cfg = reset_config()
+    cfg.engine = _HermesHoldingEngine()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.enable_auto_tool_choice = True
+    cfg.tool_call_parser = "hermes"
+
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "say abc<"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "dummy",
+                        "description": "unused",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events, saw_done = _parse_sse_events(resp.text)
+    assert saw_done
+
+    content_parts: list[str] = []
+    for ev in events:
+        for choice in ev.get("choices", []):
+            delta = choice.get("delta", {}) or {}
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+    full_content = "".join(content_parts)
+    assert full_content == "abc<", (
+        f"terminal chunk must carry the prefix-held tail; "
+        f"expected 'abc<' got {full_content!r}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
