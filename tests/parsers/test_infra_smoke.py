@@ -14,6 +14,11 @@ import pytest
 
 from vllm_mlx.reasoning.base import DeltaMessage
 
+from ._harmony_markers import (
+    HARMONY_CONTROL_TOKENS,
+    HARMONY_LEAK_MARKERS,
+    assert_no_harmony_marker_leak,
+)
 from .streaming_reconstructor import (
     ReconstructedToolCall,
     StreamingReasoningReconstructor,
@@ -182,3 +187,54 @@ def test_batch_deltas_handles_empty():
 def test_batch_deltas_rejects_zero_interval():
     with pytest.raises(AssertionError, match=">= 1"):
         batch_deltas_with_stream_interval(["x"], 0)
+
+
+# ----- Harmony marker allow-list -----------------------------------------
+
+
+def test_harmony_markers_match_source():
+    """Pin the marker list against ``_strip_control_tokens``.
+
+    If the parser ever extends its control-token allowlist without
+    updating ``_harmony_markers.HARMONY_CONTROL_TOKENS``, every
+    harmony regression file would start missing the new marker as a
+    leak-check. This test makes that drift loud.
+    """
+    import inspect
+
+    from vllm_mlx.tool_parsers import harmony_tool_parser as _htp
+
+    src = inspect.getsource(_htp._strip_control_tokens)
+    for tok in HARMONY_CONTROL_TOKENS:
+        assert tok in src, (
+            f"Marker {tok!r} is in HARMONY_CONTROL_TOKENS but missing "
+            f"from harmony_tool_parser._strip_control_tokens source. "
+            f"Either the parser drifted or the marker list is stale."
+        )
+
+
+def test_assert_no_marker_leak_accepts_clean_content():
+    assert_no_harmony_marker_leak(None)
+    assert_no_harmony_marker_leak("")
+    assert_no_harmony_marker_leak("The weather is sunny.")
+
+
+@pytest.mark.parametrize("marker", HARMONY_LEAK_MARKERS)
+def test_assert_no_marker_leak_catches_each_marker(marker):
+    with pytest.raises(AssertionError, match="leaked"):
+        assert_no_harmony_marker_leak(f"prefix {marker} suffix")
+
+
+# ----- Reconstructor None-handling (codex K2) ---------------------------
+
+
+def test_tool_reconstructor_rejects_null_tool_calls():
+    rec = StreamingToolReconstructor()
+    with pytest.raises(AssertionError, match="malformed 'tool_calls'"):
+        rec.append_delta({"content": "ok", "tool_calls": "not-a-list"})
+
+
+def test_tool_reconstructor_rejects_null_function():
+    rec = StreamingToolReconstructor()
+    with pytest.raises(AssertionError, match="malformed 'function'"):
+        rec.append_delta({"tool_calls": [{"index": 0, "id": "x", "function": None}]})

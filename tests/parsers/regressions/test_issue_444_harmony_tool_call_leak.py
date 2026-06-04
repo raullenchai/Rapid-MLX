@@ -21,6 +21,13 @@ level streaming entry point is exercised here in isolation:
 
 Test cases sourced verbatim from the issue body's repro section.
 
+Scope caveat (per round-1 codex strict review): this file exercises
+the ``HarmonyToolParser`` streaming entry point in isolation, *not*
+the end-to-end route → OutputRouter → postprocessor pipeline the issue
+describes. The router-layer bug (issue #444 bug 1) is covered by a
+separate routes-level e2e fixture under the same cluster fix; this
+file's xfail is parser-only and may flip independent of that fix.
+
 Convention: vLLM's ``test_*_failure_case_bug_NNNNN`` (e.g.
 ``tests/tool_parsers/test_hermes_tool_parser.py:78``). Each entry
 states the wire format up front so failures are obvious in the
@@ -36,6 +43,7 @@ import pytest
 
 from vllm_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
 
+from .._harmony_markers import assert_no_harmony_marker_leak
 from ..dispatch import run_tool_extraction
 from ..token_delta_splitter import batch_deltas_with_stream_interval
 
@@ -153,12 +161,13 @@ def test_harmony_tool_extraction_streaming(case: _Case, stream_interval: int, pa
 
     content, tool_calls = run_tool_extraction(parser, deltas, streaming=True)
 
-    # Invariant: the harmony commentary body must NEVER appear as content.
-    assert content is None or not any(
-        marker in content for marker in ("<|channel|>", "to=functions.", "<|call|>")
-    ), (
-        f"Channel markers leaked into content delta. "
-        f"content={content!r}, stream_interval={stream_interval}"
+    # Invariant: no harmony control marker leaks into the content delta.
+    # Uses the full canonical marker list (#444 issue body called out only
+    # 3 markers, but the parser strips 7; a fix that's strict on 3 but
+    # leaky on the other 4 would silently pass without this).
+    assert_no_harmony_marker_leak(
+        content,
+        context=f"case={case.id} stream_interval={stream_interval}",
     )
 
     # Invariant: exactly one tool call, fully assembled.

@@ -108,9 +108,13 @@ def run_tool_extraction(
         return reconstructor.other_content or None, reconstructor.tool_calls
 
     extracted = tool_parser.extract_tool_calls("".join(model_deltas))
+    # Codex K1: non-stream path must enforce the same id/name contract
+    # the streaming path asserts. ``tc["id"]`` (no default) lets KeyError
+    # surface — silently substituting "" would mask stream/non-stream
+    # parity bugs (id present on stream, missing on non-stream).
     tool_calls = [
         ReconstructedToolCall(
-            id=tc.get("id", ""),
+            id=tc["id"],
             name=tc["name"],
             arguments=tc.get("arguments", ""),
             type="function",

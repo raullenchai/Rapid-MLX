@@ -30,8 +30,11 @@ Invariants enforced per delta (any violation = parser regression):
 
   R2. For tools: each ``index`` slot emits ``id`` exactly once and
       ``function.name`` exactly once on first appearance; subsequent
-      deltas only append to ``function.arguments``. (vLLM
-      ``tool_parsers/utils.py:49-65``.)
+      deltas, if any, may only append to ``function.arguments`` —
+      Rapid-MLX parsers typically emit a single finalization delta at
+      ``<|call|>`` rather than incremental argument streaming, but the
+      invariant covers both shapes. (vLLM ``tool_parsers/utils.py:
+      49-65``.)
 
   R3. For tools: ``type`` is ``None`` or ``"function"`` — anything else
       is a wire-format leak. (vLLM ``tool_parsers/utils.py:39-42``.)
@@ -116,7 +119,16 @@ class StreamingToolReconstructor:
         # vLLM tool_parsers/utils.py:24-29 — empty deltas should have
         # been ``None`` rather than a populated dict.
         content = delta.get("content")
-        tool_calls = delta.get("tool_calls") or []
+        tool_calls_raw = delta.get("tool_calls")
+        # Codex K2: explicitly reject ``"tool_calls": None`` — the
+        # ``or []`` fallback would silently treat it as "no tool calls"
+        # and skip the per-call invariant pass entirely.
+        assert tool_calls_raw is None or isinstance(tool_calls_raw, list), (
+            f"Streaming tool delta has malformed 'tool_calls' field "
+            f"(expected list or omitted; got {type(tool_calls_raw).__name__}): "
+            f"{delta!r}"
+        )
+        tool_calls = tool_calls_raw or []
 
         assert content is not None or tool_calls, (
             "Streaming tool delta must include content or tool_calls "
@@ -151,7 +163,14 @@ class StreamingToolReconstructor:
             f"``index``; got {index!r}. (vLLM tool_parsers/utils.py:57-60.)"
         )
 
-        function = call_delta.get("function") or {}
+        # Codex K2: ``"function": None`` would otherwise be silently
+        # accepted as ``{}`` via ``or``, masking missing name validation.
+        function_raw = call_delta.get("function", {})
+        assert isinstance(function_raw, dict), (
+            f"Streaming tool delta has malformed 'function' field "
+            f"(expected dict; got {type(function_raw).__name__}): {call_delta!r}"
+        )
+        function = function_raw
         delta_name = function.get("name")
         delta_args = function.get("arguments") or ""
 
