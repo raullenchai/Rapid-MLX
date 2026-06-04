@@ -181,27 +181,17 @@ def _stringify_structured(entry: object) -> str:
 
 
 @pytest.mark.parametrize("case", BUG_CASES, ids=lambda c: c.id)
-@pytest.mark.xfail(
-    reason=(
-        "Issue #468 (router-level portion) — compound analysis + "
-        "commentary sequence leaks the commentary block as CONTENT "
-        "text. Root cause: OutputRouter does not recognize "
-        "``commentary`` as a tool-call channel-type word (same gap "
-        "as #455). The compound sequence here exercises AFTER_START "
-        "swallowing the ``assistant`` role token and the subsequent "
-        "``<|channel|>`` (matched at output_router.py:164 before the "
-        "AFTER_START handler at 201-205) re-entering "
-        "AWAITING_CHANNEL_TYPE for the commentary turn. Cluster fix: "
-        "the #455 commentary handling must work across this header "
-        "transition (state machine doesn't accidentally treat the "
-        "post-header ``<|channel|>`` differently from the first). "
-        'tool_choice="required" enforcement (the other #468 symptom) '
-        "is out of scope here — covered by FSM PR #132. Flip to "
-        "passing once the cluster fix lands."
-    ),
-    strict=True,
-)
 def test_harmony_router_compound_analysis_then_commentary(case: _Case, router):
+    # Flipped from xfail strict → passing by the cluster fix's harmony
+    # commentary handling in output_router.py. The compound sequence
+    # works because the state machine resets cleanly across the
+    # ``<|start|> assistant <|channel|>`` header transition — the
+    # top-level ``<|channel|>`` check at output_router.py:164 fires
+    # before the AFTER_START handler, so the post-header ``commentary``
+    # word lands in the same AWAITING_CHANNEL_TYPE branch that the
+    # initial ``analysis`` channel used.
+    # tool_choice="required" enforcement remains out of scope here —
+    # FSM PR #132 covers that.
     result = router.feed_sequence(case.token_ids)
 
     # Content must be empty — neither the analysis body nor the

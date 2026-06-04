@@ -276,27 +276,16 @@ def test_harmony_router_sanity(case: _SanityCase, router):
 
 
 @pytest.mark.parametrize("case", BUG_CASES, ids=lambda c: c.id)
-@pytest.mark.xfail(
-    reason=(
-        "Issue #455 — OutputRouter's harmony AWAITING_CHANNEL_TYPE "
-        "handling (output_router.py:222-238) only recognizes "
-        "``analysis``/``final`` as channel-type words. The tool-call "
-        "channel emits ``commentary`` followed by `` to=functions.X`` + "
-        "an optional `` json`` constrain directive, then the body. The "
-        "router falls into the default branch, transitions to CONTENT, "
-        "and leaks ``commentary`` + recipient + body as content text. "
-        "Cluster fix: extend the AWAITING_CHANNEL_TYPE branch to "
-        "transition to TOOL_CALL on ``commentary``, accumulate the "
-        "recipient + constrain directive + body, and emit a TOOL_CALL "
-        "event carrying BOTH the function name and the JSON args (the "
-        "Gemma 4 tool-call path at output_router.py:281-294 is the "
-        "structural template). Anthropic-route content_block "
-        "translation (the user-facing tool_use-vs-text symptom) is "
-        "downstream and out of scope for this router-level test."
-    ),
-    strict=True,
-)
 def test_harmony_router_commentary_tool_call(case: _BugCase, router):
+    # Flipped from xfail strict → passing by the cluster fix that adds
+    # ``harmony_commentary_word`` to TokenMap and extends the harmony
+    # AWAITING_CHANNEL_TYPE branch to transition to TOOL_CALL on
+    # ``commentary``. See output_router.py — the recipient + constrain
+    # directive accumulate in ``_pending_control_tokens`` during
+    # AWAITING_MESSAGE and are carried into ``_tool_tokens`` on
+    # ``<|message|>``, so the emitted TOOL_CALL event carries the
+    # function name (via the ``to=functions.X`` prefix) and the JSON
+    # args together.
     result = router.feed_sequence(case.token_ids)
 
     # Content must be empty — `commentary`, recipient, ` json`, and the
