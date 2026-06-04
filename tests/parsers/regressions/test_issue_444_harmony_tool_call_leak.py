@@ -31,12 +31,21 @@ level streaming entry point is exercised here in isolation:
 
 Test cases sourced verbatim from the issue body's repro section.
 
-Scope caveat (per round-1 codex strict review): this file exercises
-the ``HarmonyToolParser`` streaming entry point in isolation, *not*
-the end-to-end route → OutputRouter → postprocessor pipeline the issue
-describes. The router-layer bug (issue #444 bug 1) is covered by a
-separate routes-level e2e fixture under the same cluster fix; this
-file's xfail is parser-only and may flip independent of that fix.
+Scope caveat (post-live-verification on gpt-oss-20b 2026-06-04):
+this file exercises the ``HarmonyToolParser`` streaming entry point
+in isolation against the FULL markered text (`<|channel|>commentary
+to=functions.X<|message|>{body}<|call|>`). The parser-level fix
+(prefix-hold + count-based `<|call|>` detection) is necessary but
+not sufficient for the production user-visible bug: live test
+revealed the engine's ``OutputRouter`` consumes the `<|channel|>` /
+`<|message|>` / `<|call|>` markers BEFORE the parser sees them
+(commentary is also multi-token — `comment` + `ary` — defeating
+single-token channel-type matching). The end-to-end fix requires a
+router redesign (marker-preserving TOOL_CALL_TEXT state) tracked as
+a separate followup. This file pins the parser contract so the
+streaming-prefix-hold fix is verified independently and remains
+correct once the router fix lands and feeds the parser full
+markered text.
 
 Convention: vLLM's ``test_*_failure_case_bug_NNNNN`` (e.g.
 ``tests/tool_parsers/test_hermes_tool_parser.py:78``). Each entry

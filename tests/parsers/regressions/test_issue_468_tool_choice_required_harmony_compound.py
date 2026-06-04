@@ -185,19 +185,20 @@ def _stringify_structured(entry: object) -> str:
     reason=(
         "Issue #468 (router-level portion) — compound analysis + "
         "commentary sequence leaks the commentary block as CONTENT "
-        "text. Root cause: OutputRouter does not recognize "
-        "``commentary`` as a tool-call channel-type word (same gap "
-        "as #455). The compound sequence here exercises AFTER_START "
-        "swallowing the ``assistant`` role token and the subsequent "
-        "``<|channel|>`` (matched at output_router.py:164 before the "
-        "AFTER_START handler at 201-205) re-entering "
-        "AWAITING_CHANNEL_TYPE for the commentary turn. Cluster fix: "
-        "the #455 commentary handling must work across this header "
-        "transition (state machine doesn't accidentally treat the "
-        "post-header ``<|channel|>`` differently from the first). "
+        "text. Same family-wide gap as #455. Live verification on "
+        "gpt-oss-20b (2026-06-04) confirmed the symptom AND surfaced "
+        "the deeper constraint that breaks naive single-token fixes: "
+        "production ``commentary`` is two tokens (``comment``+``ary``). "
+        "Eventual fix must lookahead-decode the channel-type word or "
+        "preserve structural markers in CONTENT during tool-call paths "
+        "(see #455 reason for the marker-preserving TOOL_CALL_TEXT "
+        "design). The shape contract asserted below (empty content, "
+        "reasoning + structured tool_calls) is ONE valid post-fix "
+        "outcome; an alternative valid outcome is content containing "
+        "the full markered tool-call text (parser handles the call "
+        "downstream). Tracked as a followup PR. "
         'tool_choice="required" enforcement (the other #468 symptom) '
-        "is out of scope here — covered by FSM PR #132. Flip to "
-        "passing once the cluster fix lands."
+        "is out of scope here — covered by FSM PR #132."
     ),
     strict=True,
 )

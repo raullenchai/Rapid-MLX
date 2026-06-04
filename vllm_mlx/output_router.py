@@ -317,9 +317,14 @@ class OutputRouter:
         #
         # Treat bare channel-type words as transitions from any state
         # except AWAITING_CHANNEL_TYPE (already handled above) and
-        # TOOL_CALL (handled above). Safe because these IDs are
-        # special tokens — a real "the final answer is 42" content
-        # tokenizes to a different ID (e.g. ``▁final``).
+        # TOOL_CALL (handled above). The IDs are ordinary vocab entries
+        # (verified against the real Gemma 4 tokenizer: thought=45518,
+        # content=3955, final=10218 — distinct from the structural
+        # markers like ``<|channel>`` which are added_tokens), but a
+        # natural-language ``final`` inside content tokenizes to a
+        # different vocab entry (e.g. ``▁final`` with a leading
+        # space-marker), so direct ID matching is unambiguous in
+        # practice.
         if m.thought_word is not None and token_id == m.thought_word:
             self.state = RouterState.THINKING
             return None
