@@ -1339,12 +1339,19 @@ class BatchedEngine(BaseEngine):
         return reasoning, fallback_text
 
     def _create_output_router(self) -> OutputRouter | None:
-        """Create a per-request token router for supported tokenizer formats."""
+        """Create a per-request token router for supported tokenizer formats.
+
+        Uses ``from_tokenizer_for_streaming`` so harmony models (gpt-oss)
+        get routed through ``HarmonyStreamingRouter`` backed by
+        openai-harmony's ``StreamableParser`` (issue #513). Falls back to
+        the legacy custom state machine for non-harmony models and for
+        harmony tokenizers whose IDs don't match the official encoding.
+        """
         try:
             tokenizer = self.tokenizer
             if tokenizer is None:
                 return None
-            router = OutputRouter.from_tokenizer(tokenizer)
+            router = OutputRouter.from_tokenizer_for_streaming(tokenizer)
             if router is None:
                 return None
             if router.map.format_tag not in _OUTPUT_ROUTER_ALLOWLIST:

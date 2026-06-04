@@ -50,6 +50,13 @@ dependencies = [
     # rapidserver Worker as the reverse-tunnel transport. Pure Python,
     # ~200 KB. Replaces the prior frpc Go binary download.
     "websockets>=12.0",
+    # openai-harmony — official harmony-protocol streaming parser. Used
+    # by ``HarmonyStreamingRouter`` (output_router_harmony.py) to route
+    # gpt-oss tool calls correctly (issue #513 / cluster #444 #455
+    # #468 #480). Same library vLLM and SGLang delegate to for gpt-oss
+    # tool calling. Soft-imported at runtime; the legacy custom state
+    # machine remains the fallback if the dep is unavailable.
+    "openai-harmony>=0.0.6",
 ]
 
 [project.optional-dependencies]
