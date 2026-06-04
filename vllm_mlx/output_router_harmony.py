@@ -52,7 +52,26 @@ _HARMONY_CHANNEL_COMMENTARY = "commentary"
 # it verbatim from the reconstructed wire text — a recipient with
 # whitespace, marker-like characters, or newlines could break the
 # parser's regex or leak content. Codex round-1 BLOCKING (PR #515).
-_RECIPIENT_SHAPE = re.compile(r"^functions\.[A-Za-z_][A-Za-z0-9_\-.]*$")
+#
+# Codex round-2 BLOCKING: original ``^functions\.[A-Za-z_]...`` rejected
+# OpenAI-spec valid tool names that start with a digit
+# (e.g. ``functions.2fa_lookup``). OpenAI's documented function-name
+# regex is ``[a-zA-Z0-9_-]{1,64}`` — match that exactly so any tool the
+# upstream API accepts also round-trips through the router.
+_RECIPIENT_SHAPE = re.compile(r"^functions\.[A-Za-z0-9_\-]{1,64}$")
+
+# Tokenizer-identity allowlist — known-compatible HF / mlx-community
+# names whose vocab is the harmony encoding. Codex round-2 BLOCKING:
+# matching a 3-string probe set against the harmony encoding is not
+# enough to prove full-vocab parity — a tokenizer with the right
+# markers and the right probes but a remapped uncommon token could
+# silently corrupt later content. The cleanest defense is to ALSO
+# require the tokenizer's reported identity to be a known gpt-oss
+# family member. ``in`` substring match keeps the gate robust to MLX
+# quant-suffix renames (``-MXFP4-Q8`` etc.).
+_KNOWN_HARMONY_TOKENIZERS = (
+    "gpt-oss",  # openai/gpt-oss-* and any mlx-community/gpt-oss-*-MXFP4-Q8 variant
+)
 
 # Probe strings used by ``is_openai_harmony_compatible`` to verify
 # that the model's body-token vocabulary matches the openai-harmony
@@ -139,9 +158,7 @@ class HarmonyStreamingRouter:
         # ``<|...|>`` literals in the recipient would produce wire
         # text the downstream HarmonyToolParser cannot parse.
         if recipient:
-            if not isinstance(recipient, str) or not _RECIPIENT_SHAPE.match(
-                recipient
-            ):
+            if not isinstance(recipient, str) or not _RECIPIENT_SHAPE.match(recipient):
                 raise ValueError(
                     f"HarmonyStreamingRouter: refusing to reconstruct "
                     f"tool-call wire text for malformed recipient "
@@ -252,19 +269,23 @@ class HarmonyStreamingRouter:
         Returns:
             ``{"content": str|None, "reasoning": str|None,
                "tool_calls": list[str]|None}``
+
+        Codex round-2 NIT: accumulate per-token deltas in lists and
+        ``"".join`` once at return — Python string ``+=`` is O(n²) for
+        long non-stream generations and a 4k-token reply would spend
+        most of its time copying the accumulator.
         """
-        content = ""
-        reasoning = ""
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_calls: list[str] = []
 
         def _accumulate(event: RouterEvent | None) -> None:
-            nonlocal content, reasoning
             if event is None:
                 return
             if event.channel == Channel.CONTENT:
-                content += event.text
+                content_parts.append(event.text)
             elif event.channel == Channel.REASONING:
-                reasoning += event.text
+                reasoning_parts.append(event.text)
             elif event.channel == Channel.TOOL_CALL:
                 tool_calls.append(event.text)
 
@@ -273,6 +294,8 @@ class HarmonyStreamingRouter:
         # Drain end-of-stream (truncated messages, etc.).
         _accumulate(self.finalize())
 
+        content = "".join(content_parts)
+        reasoning = "".join(reasoning_parts)
         # Codex round-1 BLOCKING: do NOT ``.strip()`` accumulated
         # content / reasoning — harmony bodies can legitimately begin
         # or end with whitespace / newlines (e.g. markdown blocks,
@@ -318,9 +341,20 @@ def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
     where ``"Reason"=1`` and ``"ing"=2`` decode to garbage under
     harmony's encoding).
 
-    Codex round-1 BLOCKING (PR #515): the original gate only verified
-    marker IDs. We now also probe representative body strings through
-    BOTH encoders and require ID equality on every probe.
+    Three layers of defense:
+
+    1. Tokenizer-identity allowlist (codex round-2 BLOCKING). A
+       tokenizer whose ``name_or_path`` does not name a known gpt-oss
+       family member is rejected even if markers and probes pass —
+       this guards against the case where matching markers and three
+       probe strings coincide but uncommon body tokens are remapped.
+    2. Marker-ID parity. Each known harmony marker the ``TokenMap``
+       recorded must encode to the same ID under the harmony encoding.
+    3. Body-vocab probe set (codex round-1 BLOCKING). A representative
+       set of plain / JSON / multi-token strings must round-trip
+       through both encoders to identical IDs.
+
+    All three must pass.
     """
     if not is_openai_harmony_available():
         return False
@@ -330,8 +364,19 @@ def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
         enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
     except Exception:  # noqa: BLE001
         return False
-    # Verify each known harmony marker the TokenMap recorded matches
-    # what the harmony encoder produces. Any miss → not compatible.
+
+    # (1) Tokenizer-identity allowlist. ``name_or_path`` is set by HF /
+    # mlx-lm tokenizers to the model id passed at load time. We do a
+    # case-insensitive substring match so quant-suffix renames
+    # (``-MXFP4-Q8``) and org prefixes (``mlx-community/`` vs
+    # ``openai/``) all resolve to the same family. Missing or empty
+    # name_or_path → can't prove identity → reject.
+    name_or_path = getattr(tokenizer, "name_or_path", "") or ""
+    name_lc = str(name_or_path).lower()
+    if not any(known in name_lc for known in _KNOWN_HARMONY_TOKENIZERS):
+        return False
+
+    # (2) Marker-ID parity.
     pairs = (
         (token_map.harmony_channel, "<|channel|>"),
         (token_map.harmony_message, "<|message|>"),
@@ -351,10 +396,9 @@ def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
         if harmony_ids != [model_id]:
             return False
 
-    # Codex round-1 BLOCKING: also verify body-token vocab parity. A
-    # tokenizer that lacks ``.encode`` (e.g. ``_FakeTokenizer`` used in
-    # the legacy harmony test suite — only exposes ``decode`` +
-    # ``get_vocab``) → not compatible; the legacy router runs instead.
+    # (3) Body-vocab probe set. A tokenizer that lacks ``.encode`` is
+    # likewise rejected (e.g. ``_FakeTokenizer`` in the legacy harmony
+    # test suite — only exposes ``decode`` + ``get_vocab``).
     encode = getattr(tokenizer, "encode", None)
     if not callable(encode):
         return False

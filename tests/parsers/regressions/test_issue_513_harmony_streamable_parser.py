@@ -264,18 +264,13 @@ def test_feed_sequence_preserves_leading_and_trailing_whitespace(router, encodin
     """
     # Final-channel body starts with a newline and ends with two
     # spaces — both must survive.
-    text = (
-        "<|channel|>final<|message|>"
-        "\n```py\nprint('hi')\n```  "
-        "<|return|>"
-    )
+    text = "<|channel|>final<|message|>\n```py\nprint('hi')\n```  <|return|>"
     tokens = _encode(encoding, text)
     router.reset()
     result = router.feed_sequence(tokens)
 
     assert result["content"] == "\n```py\nprint('hi')\n```  ", (
-        f"feed_sequence must preserve surrounding whitespace; "
-        f"got {result['content']!r}"
+        f"feed_sequence must preserve surrounding whitespace; got {result['content']!r}"
     )
 
 
@@ -314,6 +309,152 @@ def test_reconstruct_tool_call_rejects_malformed_recipient(router):
     assert "to=functions.get_weather" in out
 
 
+def test_compat_gate_rejects_unknown_tokenizer_identity():
+    """Codex round-2 BLOCKING (PR #515): a 3-string probe set cannot
+    prove full-vocab parity. The gate must ALSO require the
+    tokenizer's reported identity to be a known gpt-oss family
+    member; a tokenizer named ``mistralai/Mistral-...`` that happened
+    to match the markers and probes would otherwise be wrongly
+    upgraded and might corrupt uncommon body tokens.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+
+    tm = TokenMap(
+        format_tag="harmony",
+        harmony_channel=200005,
+        harmony_message=200008,
+        harmony_call=200012,
+        harmony_end=200007,
+        harmony_return=200002,
+        harmony_start=200006,
+        harmony_constrain=200003,
+    )
+
+    class _NotGptOssTokenizer:
+        name_or_path = "mistralai/Mistral-7B-Instruct-v0.3"
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            # Even if the tokenizer SOMEHOW produced matching probe IDs,
+            # the identity gate must short-circuit.
+            return [99001, 99002]
+
+    assert is_openai_harmony_compatible(tm, _NotGptOssTokenizer()) is False
+
+
+def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
+    """Codex round-2 BLOCKING (PR #515): the identity allowlist must
+    tolerate the org-prefix + quant-suffix renames the mlx-community
+    publishes (``mlx-community/gpt-oss-20b-MXFP4-Q8``,
+    ``mlx-community/gpt-oss-120b-MXFP4-Q4`` etc.) — case-insensitive
+    substring match on ``gpt-oss`` covers all of them while still
+    rejecting random model names.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+
+    enc = openai_harmony.load_harmony_encoding(
+        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
+    )
+
+    # Real markers from harmony encoding.
+    def _id(s):
+        return enc.encode(s, allowed_special="all")[0]
+
+    tm = TokenMap(
+        format_tag="harmony",
+        harmony_channel=_id("<|channel|>"),
+        harmony_message=_id("<|message|>"),
+        harmony_call=_id("<|call|>"),
+        harmony_end=_id("<|end|>"),
+        harmony_return=_id("<|return|>"),
+        harmony_start=_id("<|start|>"),
+        harmony_constrain=_id("<|constrain|>"),
+    )
+
+    class _GptOssLike:
+        """A tokenizer whose ``encode`` actually delegates to the
+        harmony encoding — so the marker + probe checks pass; only the
+        identity check decides accept vs reject for these cases.
+        """
+
+        def __init__(self, name):
+            self.name_or_path = name
+            self._enc = enc
+
+        def encode(self, text, add_special_tokens=False):
+            return self._enc.encode(text, allowed_special="none")
+
+        def decode(self, ids):
+            return self._enc.decode(ids)
+
+        def get_vocab(self):
+            return {}
+
+    # Accepted identities.
+    for name in (
+        "mlx-community/gpt-oss-20b-MXFP4-Q8",
+        "openai/gpt-oss-120b",
+        "mlx-community/GPT-OSS-20b",  # case-insensitive
+    ):
+        assert is_openai_harmony_compatible(tm, _GptOssLike(name)) is True, (
+            f"identity {name!r} must be accepted"
+        )
+
+    # Rejected identities even with matching encoder.
+    for name in (
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        "Qwen/Qwen3-0.6B",
+        "",  # missing name
+    ):
+        assert is_openai_harmony_compatible(tm, _GptOssLike(name)) is False, (
+            f"identity {name!r} must be rejected"
+        )
+
+
+def test_recipient_shape_accepts_digit_start_names():
+    """Codex round-2 BLOCKING (PR #515): the original recipient
+    shape regex ``^functions\\.[A-Za-z_]...`` rejected valid OpenAI
+    tool names whose first character is a digit (e.g. ``2fa_lookup``).
+    Widen to match the OpenAI spec ``[A-Za-z0-9_-]{1,64}``.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import HarmonyStreamingRouter
+
+    class _Adapter:
+        name_or_path = "mlx-community/gpt-oss-20b-MXFP4-Q8"
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+    r = HarmonyStreamingRouter(TokenMap(format_tag="harmony"), _Adapter())
+
+    class _Msg:
+        def __init__(self, recipient):
+            self.recipient = recipient
+            self.content = []
+            self.content_type = None
+
+    # These were broken on round-1; must pass on round-2.
+    for good in (
+        "functions.2fa_lookup",
+        "functions.0_index",
+        "functions.123",
+        "functions.tool-with-dash",
+    ):
+        out = r._reconstruct_tool_call_text(_Msg(good))
+        assert f"to={good}" in out, f"good recipient {good!r} got: {out!r}"
+
+
 def test_compat_gate_rejects_tokenizer_without_encode():
     """Codex round-1 BLOCKING (PR #515): the compatibility gate must
     require body-vocab parity, not just marker IDs. A tokenizer that
@@ -338,6 +479,9 @@ def test_compat_gate_rejects_tokenizer_without_encode():
     )
 
     class _NoEncodeTokenizer:
+        # Pass the identity gate so we exercise the no-encode path.
+        name_or_path = "mlx-community/gpt-oss-20b-MXFP4-Q8"
+
         def decode(self, ids):
             return ""
 
@@ -371,6 +515,10 @@ def test_compat_gate_rejects_mismatched_body_vocab():
     )
 
     class _MismatchedBodyVocabTokenizer:
+        # Pass the identity gate so the body-vocab probe step actually
+        # runs and is what rejects.
+        name_or_path = "mlx-community/gpt-oss-20b-MXFP4-Q8"
+
         def decode(self, ids):
             return ""
 

@@ -1349,11 +1349,7 @@ class BatchedEngine(BaseEngine):
         # baseline preserved fallback_text because the legacy router
         # couldn't classify multi-token ``commentary``, leaving
         # routed.content non-None.
-        if (
-            routed.get("content") is None
-            and reasoning
-            and not routed.get("tool_calls")
-        ):
+        if routed.get("content") is None and reasoning and not routed.get("tool_calls"):
             return reasoning, ""
         return reasoning, fallback_text
 

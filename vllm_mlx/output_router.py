@@ -661,7 +661,13 @@ class OutputRouter:
         if legacy.map.format_tag == "harmony" and is_openai_harmony_compatible(
             legacy.map, tokenizer
         ):
-            logger.info(
+            # Codex round-2 NIT: emit at DEBUG level. The streaming
+            # factory is called per request in the engine path; an
+            # INFO-level log would spam production logs once per
+            # /v1/chat/completions call. Operators who want to confirm
+            # the upgrade is active should enable router DEBUG once
+            # at startup rather than read it from every request log.
+            logger.debug(
                 "[OutputRouter] Streaming factory upgraded harmony "
                 "router to openai-harmony StreamableParser"
             )
