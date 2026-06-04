@@ -184,17 +184,20 @@ def _stringify_structured(entry: object) -> str:
 @pytest.mark.xfail(
     reason=(
         "Issue #468 (router-level portion) — compound analysis + "
-        "commentary sequence leaks the entire output as CONTENT text. "
-        "Same root cause as #455 (OutputRouter does not recognize "
-        "``commentary`` as a tool-call channel-type word) compounded "
-        "with state reset across an assistant header turn. Cluster "
-        "fix: in addition to the #455 commentary handling, the "
-        "AFTER_START path (output_router.py:201-205) must restore the "
-        "right channel state when re-entering AWAITING_CHANNEL_TYPE "
-        'from the assistant header. tool_choice="required" '
-        "enforcement (the other #468 symptom) is out of scope here — "
-        "covered by FSM PR #132. Flip to passing once the cluster fix "
-        "lands."
+        "commentary sequence leaks the commentary block as CONTENT "
+        "text. Root cause: OutputRouter does not recognize "
+        "``commentary`` as a tool-call channel-type word (same gap "
+        "as #455). The compound sequence here exercises AFTER_START "
+        "swallowing the ``assistant`` role token and the subsequent "
+        "``<|channel|>`` (matched at output_router.py:164 before the "
+        "AFTER_START handler at 201-205) re-entering "
+        "AWAITING_CHANNEL_TYPE for the commentary turn. Cluster fix: "
+        "the #455 commentary handling must work across this header "
+        "transition (state machine doesn't accidentally treat the "
+        "post-header ``<|channel|>`` differently from the first). "
+        'tool_choice="required" enforcement (the other #468 symptom) '
+        "is out of scope here — covered by FSM PR #132. Flip to "
+        "passing once the cluster fix lands."
     ),
     strict=True,
 )
@@ -208,12 +211,30 @@ def test_harmony_router_compound_analysis_then_commentary(case: _Case, router):
         "Compound sequence emitted analysis or commentary text as content."
     )
 
-    # Reasoning carries the analysis-channel body.
+    # Reasoning carries the analysis-channel body — and ONLY the
+    # analysis body. Codex round-1 NIT: substring containment alone
+    # would miss commentary/tool metadata accidentally leaking INTO
+    # reasoning (a fix that mis-routes everything to reasoning would
+    # otherwise pass the "Reasoning is somewhere in here" check).
+    # Add negative assertions for the tool metadata to enforce the
+    # partition contract.
     reasoning = _normalize_str(result["reasoning"]) or ""
     assert case.expected_reasoning_marker in reasoning, (
         f"reasoning missing {case.expected_reasoning_marker!r} for "
         f"case={case.id}; got reasoning={result['reasoning']!r}"
     )
+    for tool_marker in (
+        case.expected_function_name,
+        case.expected_args_marker,
+        "commentary",
+        " to=functions.",
+    ):
+        assert tool_marker not in reasoning, (
+            f"Tool metadata marker {tool_marker!r} leaked into reasoning "
+            f"for case={case.id}; got reasoning={result['reasoning']!r}. "
+            "Channel partition contract violated — tool-call tokens "
+            "should not appear in the reasoning channel."
+        )
 
     # Tool call has both name and args (permissive shape — text-blob or
     # structured dict OK; same contract as #455 round-1 BLOCKING-1 fix).
