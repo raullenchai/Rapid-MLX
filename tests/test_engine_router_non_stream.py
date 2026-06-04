@@ -191,6 +191,44 @@ def test_empty_token_list_returns_fallback(engine):
     assert content == "whatever"
 
 
+def test_tool_call_routing_preserves_fallback_text(engine, monkeypatch):
+    """PR #515 round-1: when the router emits a TOOL_CALL channel
+    (commentary tool call) the override MUST NOT fire — fallback_text
+    has to survive intact so the route's ``_parse_tool_calls_with_parser``
+    can extract the call from the harmony wire format. Verified via a
+    live diff against the pre-PR baseline; this test pins the
+    invariant so a future override-condition change doesn't silently
+    regress non-stream tool calls.
+    """
+
+    class _ToolCallRouter:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            return {
+                "content": None,
+                "reasoning": "Need to call the function",
+                "tool_calls": [
+                    "<|channel|>commentary to=functions.get_weather "
+                    '<|constrain|>json<|message|>{"city":"NYC"}<|call|>'
+                ],
+            }
+
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _ToolCallRouter())
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005, 12606, 815, 200008, 1],
+        fallback_text='<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>{"city":"NYC"}<|call|>',
+    )
+    assert reasoning == "Need to call the function"
+    # The override must NOT clobber fallback_text — tool-call commentary
+    # MUST survive to the route's HarmonyToolParser.
+    assert "functions.get_weather" in content, (
+        f"tool-call fallback_text clobbered; got {content!r}"
+    )
+    assert '{"city":"NYC"}' in content
+
+
 def test_router_exception_falls_back_cleanly(engine, monkeypatch):
     """If the router blows up mid-sequence (e.g. token id outside the
     vocab causes a decode failure), the engine must not propagate the

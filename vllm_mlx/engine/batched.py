@@ -1329,12 +1329,31 @@ class BatchedEngine(BaseEngine):
 
         reasoning = routed.get("reasoning") or ""
         # Override content ONLY when the router authoritatively says
-        # there is no content channel AND there is reasoning. In every
-        # other case we keep ``fallback_text`` so tool-call commentary
-        # text reaches the route's tool parser unchanged, and so non-
-        # reasoning models (router emits CONTENT only) keep their
-        # text-cleaning result.
-        if routed.get("content") is None and reasoning:
+        # there is no content channel AND there is reasoning AND no
+        # tool-call channel was emitted. In every other case we keep
+        # ``fallback_text`` so tool-call commentary text reaches the
+        # route's tool parser unchanged, and so non-reasoning models
+        # (router emits CONTENT only) keep their text-cleaning result.
+        #
+        # PR #515 round-1: the harmony bypass router correctly
+        # classifies commentary tool calls as TOOL_CALL events
+        # (instead of leaking them into CONTENT), so a harmony tool
+        # call now produces ``content=None`` from ``feed_sequence``
+        # even though the model DID emit a structural sequence the
+        # downstream ``HarmonyToolParser`` needs to parse. Without the
+        # ``not tool_calls`` guard, the override clobbers
+        # ``fallback_text`` (which still carries the commentary wire
+        # text — ``_clean_gpt_oss_output`` bails on commentary), and
+        # ``_parse_tool_calls_with_parser`` in the route receives an
+        # empty string. Verified against the baseline pre-#515:
+        # baseline preserved fallback_text because the legacy router
+        # couldn't classify multi-token ``commentary``, leaving
+        # routed.content non-None.
+        if (
+            routed.get("content") is None
+            and reasoning
+            and not routed.get("tool_calls")
+        ):
             return reasoning, ""
         return reasoning, fallback_text
 
