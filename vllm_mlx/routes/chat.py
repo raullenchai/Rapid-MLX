@@ -1264,9 +1264,7 @@ async def stream_chat_completion(
             # recovered material instead of a dangling stream. Carry
             # through any accumulated content/reasoning AND the held
             # suffix so the synthetic chunk doesn't silently truncate.
-            accumulated_content = (
-                getattr(processor, "accumulated_text", None) or ""
-            )
+            accumulated_content = getattr(processor, "accumulated_text", None) or ""
             synthetic_content = (accumulated_content + finalize_content) or None
             tool_chunk = ChatCompletionChunk(
                 id=response_id,
@@ -1287,9 +1285,7 @@ async def stream_chat_completion(
                             or None,
                             tool_calls=fallback_tool_calls or None,
                         ),
-                        finish_reason=(
-                            "tool_calls" if fallback_tool_calls else "stop"
-                        ),
+                        finish_reason=("tool_calls" if fallback_tool_calls else "stop"),
                     )
                 ],
             )

@@ -219,9 +219,7 @@ def test_gemma4_router_no_channel_marker_leaks(case: _Case, router):
 # ----- Known limitation: compound bare-word sequences (xfail) -----------
 
 
-@pytest.mark.parametrize(
-    "case", KNOWN_LIMITATION_CASES, ids=lambda c: c.id
-)
+@pytest.mark.parametrize("case", KNOWN_LIMITATION_CASES, ids=lambda c: c.id)
 @pytest.mark.xfail(
     reason=(
         "Compound bare-word sequence (#447 Case A): the model emits "
