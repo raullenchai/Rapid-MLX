@@ -206,13 +206,19 @@ class StreamingToolReconstructor:
             existing.arguments += delta_args
         else:
             # R2: id and name must appear on first delta for this index.
-            assert call_delta.get("id") is not None, (
-                "Streaming tool calls must include id on first appearance. "
-                f"Got {call_delta!r}"
+            # Codex re-review BLOCKING: require non-empty strings — pre-fix
+            # the ``is not None`` check accepted ``id=""`` / ``name=""``
+            # as satisfying the invariant, letting a malformed first delta
+            # with blank identifiers slip through silently.
+            first_id = call_delta.get("id")
+            assert isinstance(first_id, str) and first_id, (
+                "Streaming tool calls must include a non-empty string id "
+                f"on first appearance. Got id={first_id!r} in {call_delta!r}"
             )
-            assert delta_name is not None, (
-                "Streaming tool calls must include function.name on first "
-                f"appearance. Got {call_delta!r}"
+            assert isinstance(delta_name, str) and delta_name, (
+                "Streaming tool calls must include a non-empty string "
+                f"function.name on first appearance. Got name={delta_name!r} "
+                f"in {call_delta!r}"
             )
             assert index == len(self.tool_calls), (
                 f"Incorrect index for first tool delta. Got {index}, "

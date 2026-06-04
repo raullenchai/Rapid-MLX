@@ -160,14 +160,13 @@ LOOKAHEAD_ROLLBACK_CASES: list[_Case] = [
             _V["Hello"],
             _V["<eos>"],
         ],
-        # Without ``\n`` after ``thought``, lookahead rolls back.
-        # The bare word emits as reasoning (channel intent expressed
-        # by the word) and the body follows in the THINKING state.
-        # Net: a buggy emit pattern that looked like Case B but
-        # without the confirming newline now degrades to a
-        # well-defined "reasoning" routing instead of swallowing.
-        expected_content=None,
-        expected_reasoning="thoughtHello",
+        # Without ``\n`` after ``thought``, lookahead rejects the
+        # channel intent — the buffered word is just literal content
+        # (codex re-review BLOCKING: routing rejected bare words to
+        # reasoning was hiding valid user-visible content). Emit as
+        # CONTENT and let the body follow in the CONTENT state.
+        expected_content="thoughtHello",
+        expected_reasoning=None,
     ),
     _Case(
         id="bare_word_only_no_followup",

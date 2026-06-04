@@ -129,12 +129,16 @@ def _run_tool_streaming(
     model_deltas: list[str],
     assert_one_tool_per_delta: bool = True,
 ) -> StreamingToolReconstructor:
-    """Walk the per-delta loop of vLLM ``tool_parsers/utils.py:129-167``.
+    """Walk the per-delta loop of vLLM ``tool_parsers/utils.py:129-167``,
+    matching the postprocessor's end-of-stream
+    ``flush_held_content`` release (added by this PR).
 
-    Same shape as the reasoning helper: reset, loop, accumulate, no
-    explicit finalize call (tool parsers don't expose one in our
-    abstract base — late-emitted tool calls come through the last
-    real delta containing a terminator like ``<|call|>``).
+    The flush hook surfaces prefix-held content that the per-delta
+    streaming path deferred (e.g. ``abc<`` where ``<`` was held as a
+    potential ``<tool_call>`` opener but no call ever fired). Without
+    this call the parser-level harness would silently drop the held
+    suffix and a regression like #448 would pass even if the held
+    bytes never reached the client (codex re-review BLOCKING).
     """
     reconstructor = StreamingToolReconstructor(
         assert_one_tool_per_delta=assert_one_tool_per_delta
@@ -155,4 +159,14 @@ def _run_tool_streaming(
         if delta_message is not None:
             reconstructor.append_delta(delta_message)
         previous_text = current_text
+
+    # End-of-stream flush: release any prefix-held content the parser
+    # held back as a partial tool-call sentinel that never resolved.
+    # The non-stream postprocessor calls this at finalize() — mirror it
+    # here so parser-level streaming tests cover the same code path.
+    if not reconstructor.tool_calls:
+        held = tool_parser.flush_held_content(previous_text)
+        if held:
+            reconstructor.append_delta({"content": held})
+
     return reconstructor

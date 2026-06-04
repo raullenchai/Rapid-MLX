@@ -184,19 +184,16 @@ class OutputRouter:
         if current_text == "" or current_text.isspace():
             self.state = pending_target
             return None
-        # Rollback: buffered word is literal content. Emit it, defer
-        # current token's processing to the next feed() call.
-        buffered_channel = (
-            Channel.REASONING
-            if pending_target == RouterState.THINKING
-            else Channel.CONTENT
-        )
+        # Rollback: lookahead REJECTED the channel intent — the
+        # buffered word is just literal user-visible content (codex
+        # re-review BLOCKING: routing rejected ``thought`` to reasoning
+        # was hiding valid plain content). Emit it as CONTENT and set
+        # the router state to CONTENT for subsequent processing of the
+        # current token via the redo queue.
         buffered_text = self.tokenizer.decode([pending_token])
-        # The bare word semantically expressed the channel intent —
-        # stay in target state so subsequent body tokens route correctly.
-        self.state = pending_target
+        self.state = RouterState.CONTENT
         self._redo_queue.append(current_token_id)
-        return RouterEvent(buffered_channel, pending_token, buffered_text)
+        return RouterEvent(Channel.CONTENT, pending_token, buffered_text)
 
     def feed(self, token_id: int) -> RouterEvent | None:
         """
