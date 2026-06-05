@@ -295,13 +295,28 @@ class HarmonyStreamingRouter:
                 text = self._reconstruct_tool_call_text(closed)
                 if text is not None:
                     return RouterEvent(Channel.TOOL_CALL, token_id, text)
-                # Codex round-9 BLOCKING: ``_reconstruct_tool_call_text``
-                # abstains (returns None) when the body / content_type
-                # carries a sentinel substring that would corrupt the
-                # downstream regex parse. Fall through — no router
-                # event is emitted, the engine's outer plumbing keeps
-                # the model's raw fallback_text intact, and the legacy
-                # text-based HarmonyToolParser handles the call.
+                # Codex round-9 BLOCKING + round-10 BLOCKING:
+                # ``_reconstruct_tool_call_text`` abstains (returns
+                # None) when the body / content_type carries a sentinel
+                # substring that would corrupt downstream regex parse.
+                # Emitting no event at all (round-9 behavior) regressed
+                # streaming relative to baseline — the per-token loop
+                # had already suppressed commentary body deltas (we
+                # buffer until close), so the streaming user saw
+                # nothing. Surface the accumulated body bytes as a
+                # single CONTENT event so the user still sees the tool
+                # call's intent — this matches baseline behavior, in
+                # which the legacy router leaked commentary body into
+                # CONTENT verbatim. The engine non-stream path is
+                # unaffected: it relies on ``fallback_text``, which
+                # still carries the model's raw emit.
+                body = "".join(
+                    c.text
+                    for c in closed.content
+                    if getattr(c, "text", None) is not None
+                )
+                if body:
+                    return RouterEvent(Channel.CONTENT, token_id, body)
 
         # Per-token body delta routing for analysis / final.
         ch = self._parser.current_channel

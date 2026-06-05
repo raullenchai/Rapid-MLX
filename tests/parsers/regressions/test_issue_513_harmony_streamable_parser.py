@@ -317,15 +317,17 @@ def test_reconstruct_tool_call_abstains_on_body_carrying_harmony_sentinel(router
     HarmonyToolParser regex parse, ``_reconstruct_tool_call_text``
     must ABSTAIN — return ``None`` — instead of raising.
 
-    The caller (``feed()``) then emits no router event for this
-    message; the engine's outer plumbing leaves the model's raw
-    ``fallback_text`` untouched, and the legacy text-based parser
-    handles the call (with the same parse limitation that the
-    text-based path imposes universally — no worse than baseline).
+    The caller (``feed()``) then emits a CONTENT event with the body
+    bytes (codex round-10 BLOCKING — streaming visibility) so the
+    user still sees the tool call's intent verbatim, matching baseline
+    behavior where the legacy router leaked commentary body into
+    CONTENT. The engine non-stream path is unaffected: it relies on
+    ``fallback_text``, which still carries the model's raw emit.
     Matches the recipient-validation pattern's intent (don't emit a
     bogus structured event) without the round-9 cost (dropping
     legitimate OpenAI tool calls whose JSON values happen to contain
-    those characters).
+    those characters) and without the round-10 cost (silent streaming
+    drop).
     """
 
     class _Content:
@@ -374,6 +376,50 @@ def test_reconstruct_tool_call_abstains_on_body_carrying_harmony_sentinel(router
     out = router._reconstruct_tool_call_text(ok)
     assert out is not None
     assert "<|constrain|>json<|message|>" in out
+
+
+def test_sentinel_body_emits_content_event_for_streaming_visibility(
+    router, encoding, monkeypatch
+):
+    """Codex round-10 BLOCKING (PR #515): when ``_reconstruct_tool_call_text``
+    abstains for a sentinel-laden body, ``feed()`` must NOT silently
+    swallow the streaming output. The body was buffered during the
+    commentary deltas (we suppress per-token emission until close), so
+    a silent drop would make the entire tool call invisible to the
+    streaming consumer. Surface the body bytes as a CONTENT event so
+    the user still sees what the model emitted — matches baseline
+    behavior where the legacy router leaked commentary body into
+    CONTENT verbatim.
+
+    Force the abstain path by monkeypatching the static reconstructor
+    to return None (which is what would happen on a sentinel-laden
+    body for a real call); replay a normal commentary tool call and
+    assert ``feed_sequence`` surfaces the body bytes via CONTENT.
+    """
+    text = (
+        "<|channel|>commentary "
+        "to=functions.get_weather <|constrain|>json<|message|>"
+        '{"city":"NYC"}<|call|>'
+    )
+    tokens = _encode(encoding, text)
+
+    monkeypatch.setattr(
+        HarmonyStreamingRouter,
+        "_reconstruct_tool_call_text",
+        staticmethod(lambda _msg: None),
+    )
+
+    router.reset()
+    result = router.feed_sequence(tokens)
+
+    # No TOOL_CALL surfaces (abstained).
+    assert result["tool_calls"] is None, (
+        f"abstain path must not emit TOOL_CALL; got {result['tool_calls']!r}"
+    )
+    # But the body IS visible to streaming consumers via CONTENT.
+    assert result["content"] is not None and '{"city":"NYC"}' in result["content"], (
+        f"abstain path must surface body bytes via CONTENT; got {result['content']!r}"
+    )
 
 
 def test_compat_gate_rejects_unknown_tokenizer_identity():
