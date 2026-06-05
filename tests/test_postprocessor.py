@@ -1368,6 +1368,64 @@ class TestTextParserParallelCap:
             "_no_index_last_dropped should have routed it to drop."
         )
 
+    def test_dropped_indexed_anchor_blocks_no_index_arg_leak(self):
+        """PR #518 round-6 codex BLOCKING: when an INDEXED anchor is
+        dropped past the cap, subsequent no-index argument-only
+        fragments must NOT leak into the admitted call's payload.
+
+        Sequence:
+          1. call_a anchor (index=0, name=a, args='{}')      → admit
+          2. call_b anchor (index=1, name=b, args='{"x":1') → cap full → DROP
+          3. call_b frag (no index, args='}')                → must DROP
+
+        Prior to round-6 fix, step 2's drop did not set
+        ``_no_index_last_dropped`` (only no-index drops did), so
+        step 3 was routed to the unified continuation branch and
+        appended call_b's args to call_a's payload.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": '{"x":1'},
+                    }
+                ]
+            },
+            {"tool_calls": [{"function": {"arguments": "}"}}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>b</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>f</tool_call>"))
+
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["function"]["name"] == "a"
+        assert e2 == []
+        # The continuation fragment must NOT leak — last anchor was
+        # dropped and the flag should suppress it.
+        assert e3 == [], f"no-index fragment leaked after dropped indexed anchor: {e3}"
+
     def test_indexed_anchor_then_no_index_arg_fragment_continues(self):
         """PR #518 round-5 codex BLOCKING #2: when the FIRST delta
         admits an indexed call (e.g. ``index=0`` with name + arg

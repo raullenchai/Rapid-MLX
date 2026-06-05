@@ -152,18 +152,22 @@ class StreamingPostProcessor:
         # continuations were re-classified as new calls and dropped
         # once the cap was full, silently truncating arguments.
         self._no_index_call_admitted: bool = False
-        # Tracks whether the MOST RECENT no-index "anchor" delta (one
-        # carrying a fresh ``id`` or function ``name``) was DROPPED
+        # Tracks whether the MOST RECENT anchor delta (one carrying a
+        # fresh ``id`` / function ``name`` / new ``index``) was DROPPED
         # because the cap was full. Subsequent argument-only no-index
         # fragments belong to whichever anchor came last — so if the
         # last anchor was dropped, the fragments must be dropped too,
         # not silently appended to the admitted call's arguments.
-        # PR #518 round-3 codex BLOCKING fix surfaced this leak; this
-        # closes it. Assumes sequential parser emission (one call
-        # completes before the next starts) — interleaved no-index
-        # calls without ``id`` are indistinguishable from delta shape
-        # alone; well-behaved parsers either disambiguate via
-        # ``index``/``id`` or emit sequentially.
+        # Reset on every admit (indexed or no-index). Set on every
+        # cap-full drop (indexed or no-index). PR #518 round-3 first
+        # surfaced the leak; round-6 codex widened the set to also
+        # cover indexed dropped anchors (name kept ``no_index`` for
+        # backwards refs, but semantically tracks "last anchor was
+        # dropped"). Assumes sequential parser emission — interleaved
+        # no-index continuations of distinct admitted indexed calls
+        # are indistinguishable from delta shape alone; well-behaved
+        # parsers either disambiguate via ``index``/``id`` or emit
+        # sequentially.
         self._no_index_last_dropped: bool = False
 
         # Nemotron thinking prefix
@@ -358,11 +362,15 @@ class StreamingPostProcessor:
             if already_admitted >= 1:
                 # Cap full — drop this new call AND any further
                 # continuations of its index, since we never admit it.
-                if idx is None:
-                    # Mark so subsequent no-index argument fragments
-                    # are routed to "dropped" rather than silently
-                    # appended to the admitted call.
-                    self._no_index_last_dropped = True
+                # Mark so subsequent no-index argument-only fragments
+                # are routed to "dropped" rather than silently
+                # appended to the admitted call. Round-6 codex
+                # BLOCKING: previously this flag was only set when
+                # the dropped anchor was no-index, so an INDEXED
+                # dropped anchor would leave the flag clear and the
+                # next no-index argument fragment would leak into
+                # the admitted call's payload.
+                self._no_index_last_dropped = True
                 continue
             if isinstance(idx, int):
                 self._admitted_tool_call_indices.add(idx)
