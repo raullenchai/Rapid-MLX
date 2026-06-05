@@ -34,7 +34,6 @@ directly to ``StreamableParser`` without re-encoding.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any
@@ -240,113 +239,21 @@ class HarmonyStreamingRouter:
         return None
 
     def finalize(self) -> RouterEvent | None:
-        """End-of-stream drain.
+        """End-of-stream flush.
 
-        ``StreamableParser`` may have an in-progress message that never
-        reached ``<|end|>`` / ``<|return|>`` / ``<|call|>`` (truncated
-        generation). Force-close via ``process_eos`` so any buffered
-        commentary message surfaces as a TOOL_CALL event — BUT only
-        if the body validates as JSON when the content_type says so.
-
-        Codex round-3 BLOCKING: ``process_eos`` synthesizes a closed
-        Message for any partially-emitted commentary, so a
-        max_tokens/length truncation in the middle of the JSON body
-        (e.g. ``{"city":"NY``) would otherwise be surfaced as a
-        completed tool call with corrupt arguments. Validate the body
-        before emitting; if validation fails, drop the synthesized
-        call rather than passing garbage to the downstream parser.
+        Matches vLLM / SGLang safer-default: only flush the parser
+        state via ``process_eos`` so its internal buffers are released.
+        Do NOT synthesize a tool call from a truncated commentary
+        message — a ``max_tokens`` cutoff mid-body must not be executed
+        as if the model had emitted ``<|call|>`` — and do NOT re-emit
+        any post-EOS ``last_content_delta``; per-token ``feed()`` has
+        already streamed every body byte the model produced.
         """
-        # Snapshot pre-EOS state so we can detect deltas process_eos
-        # surfaces but the per-token streaming path didn't already
-        # emit (codex round-4 BLOCKING).
-        pre_eos_channel = self._parser.current_channel
         try:
             self._parser.process_eos()
         except Exception as e:  # noqa: BLE001
             logger.debug("StreamableParser.process_eos failed: %s", e)
-            return None
-
-        new_msg_count = len(self._parser.messages)
-        if new_msg_count > self._emitted_msg_count:
-            closed = self._parser.messages[-1]
-            self._emitted_msg_count = new_msg_count
-            channel = getattr(closed, "channel", None)
-            if channel == _HARMONY_CHANNEL_COMMENTARY and getattr(
-                closed, "recipient", None
-            ):
-                if not self._tool_call_body_is_valid(closed):
-                    logger.debug(
-                        "HarmonyStreamingRouter.finalize: dropping truncated "
-                        "commentary — body fails content_type validation"
-                    )
-                    return None
-                text = self._reconstruct_tool_call_text(closed)
-                # No "current" token id at finalize — pick the parser's
-                # last processed token if available, else 0.
-                token_id = self._parser.tokens[-1] if self._parser.tokens else 0
-                return RouterEvent(Channel.TOOL_CALL, token_id, text)
-
-            # Codex round-4 BLOCKING: ``process_eos`` may surface a
-            # final / analysis delta that was buffered inside
-            # StreamableParser and not yet emitted via per-token
-            # ``last_content_delta``. Empirically the current
-            # openai-harmony build emits everything during ``feed()``
-            # and process_eos only appends the closed Message, but
-            # downstream library changes could change that — be
-            # defensive and drain any new delta as the appropriate
-            # channel event. Use ``pre_eos_channel`` rather than the
-            # post-EOS channel (which becomes ``None``) so we route
-            # based on the channel that was active at truncation.
-            delta = self._parser.last_content_delta
-            if delta:
-                target = (
-                    Channel.REASONING
-                    if pre_eos_channel == _HARMONY_CHANNEL_ANALYSIS
-                    else Channel.CONTENT
-                    if pre_eos_channel == _HARMONY_CHANNEL_FINAL
-                    else None
-                )
-                if target is not None:
-                    token_id = self._parser.tokens[-1] if self._parser.tokens else 0
-                    return RouterEvent(target, token_id, delta)
         return None
-
-    @staticmethod
-    def _tool_call_body_is_valid(message: Any) -> bool:
-        """Validate the synthesized tool-call body before emitting.
-
-        Codex round-3 BLOCKING: ``process_eos`` appends the message to
-        ``self._parser.messages`` even when the body was cut off
-        mid-stream (max_tokens truncation in the middle of JSON). The
-        ``content_type`` field on the closed Message tells us what
-        shape the body should have:
-
-        * ``<|constrain|>json`` — body must round-trip through
-          ``json.loads``. Catches mid-JSON truncation
-          (``{"city":"NY``).
-        * any other / missing content_type — accept any non-empty
-          body (matches the pre-bypass behavior where the regex parser
-          extracted whatever was emitted).
-        """
-        body_parts: list[str] = []
-        for c in message.content:
-            t = getattr(c, "text", None)
-            if t:
-                body_parts.append(t)
-        body = "".join(body_parts).strip()
-        if not body:
-            # Empty body — nothing to surface, definitely truncated.
-            return False
-        ctype = getattr(message, "content_type", None) or ""
-        # ``content_type`` is e.g. ``"<|constrain|>json"`` from
-        # StreamableParser. JSON is the only constraint gpt-oss emits
-        # in practice for tool calls; check it explicitly.
-        if "json" in ctype.lower():
-            try:
-                json.loads(body)
-            except (json.JSONDecodeError, ValueError):
-                return False
-        return True
 
     def feed_sequence(self, token_ids: list[int]) -> dict[str, Any]:
         """Batch path: route a complete token sequence and return

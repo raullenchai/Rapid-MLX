@@ -534,17 +534,21 @@ def test_compat_gate_rejects_mismatched_body_vocab():
     assert is_openai_harmony_compatible(tm, _MismatchedBodyVocabTokenizer()) is False
 
 
-def test_finalize_drains_truncated_commentary_message(router, encoding):
-    """End-of-stream drain: a commentary message that was cut off mid-
-    body (no ``<|call|>``) must still surface as a TOOL_CALL event when
-    finalize() runs ``process_eos`` — otherwise truncated generations
-    silently drop tool calls.
+def test_finalize_never_synthesizes_truncated_commentary(router, encoding):
+    """Codex round-6 BLOCKING resolution (PR #515): finalize() adopts
+    the vLLM / SGLang safer-default — a commentary message cut off
+    before ``<|call|>`` must NEVER be surfaced as a tool call, even
+    when the body is syntactically valid JSON. A ``max_tokens`` /
+    ``stop`` truncation must not be executed as if the model had
+    emitted ``<|call|>``; the upside of rescuing a rare recoverable
+    case is dwarfed by the cost of one wrongly-invoked tool. Per-token
+    ``feed()`` already produced every body byte (as buffered
+    commentary, never routed) — finalize only flushes parser state.
     """
-    # Truncate right before <|call|>.
     text = (
         "<|channel|>commentary "
         "to=functions.get_weather <|constrain|>json<|message|>"
-        '{"city":"NYC"}'  # NO <|call|>
+        '{"city":"NYC"}'  # NO <|call|> — truncated right before it
     )
     tokens = _encode(encoding, text)
     router.reset()
@@ -555,25 +559,20 @@ def test_finalize_drains_truncated_commentary_message(router, encoding):
             routed_during_stream.append(ev)
     drained = router.finalize()
 
-    # No tool call during the truncated stream — final drain surfaces it.
     assert all(ev.channel != Channel.TOOL_CALL for ev in routed_during_stream)
-    assert drained is not None and drained.channel == Channel.TOOL_CALL, (
-        f"truncated commentary must drain on finalize; "
-        f"got {drained!r} (stream events: {len(routed_during_stream)})"
+    assert drained is None, (
+        f"truncated commentary must NEVER surface as a tool call; got {drained!r} "
+        f"(stream events: {len(routed_during_stream)})"
     )
-    assert "functions.get_weather" in drained.text
 
 
 def test_finalize_drops_mid_json_truncation(router, encoding):
-    """Codex round-3 BLOCKING (PR #515): when ``process_eos`` closes a
-    commentary message whose body was cut off mid-JSON
-    (e.g. ``{"city":"NY``), the synthesized TOOL_CALL must be DROPPED.
-    Surfacing it would feed corrupt JSON arguments to the downstream
-    parser and the model would be treated as having ``completed`` a
-    malformed tool call. Sibling regression to
-    ``test_finalize_drains_truncated_commentary_message`` — both pin
-    the contract that ``finalize()`` only emits when the closed
-    message body validates against its declared ``content_type``.
+    """Sibling pin to ``test_finalize_never_synthesizes_truncated_commentary``:
+    a commentary message whose body was cut off mid-JSON (e.g.
+    ``{"city":"NY``) must also be dropped. Covered by the same
+    safer-default rule (codex round-6 resolution, PR #515) — finalize()
+    never synthesizes a tool call from a truncated commentary message,
+    so any partial-JSON body is dropped by construction.
     """
     # Commentary header + truncated mid-string body.
     text = (
@@ -593,9 +592,11 @@ def test_finalize_drops_mid_json_truncation(router, encoding):
 
 
 def test_finalize_drops_truncated_commentary_with_empty_body(router, encoding):
-    """Codex round-3 BLOCKING (PR #515): a commentary message with no
-    body whatsoever (truncated right after ``<|message|>``) must also
-    be dropped — empty arguments are never the intended output.
+    """Sibling pin: a commentary message with no body whatsoever
+    (truncated right after ``<|message|>``) must also be dropped.
+    Covered by the same safer-default rule (codex round-6 resolution,
+    PR #515) — finalize() never synthesizes a tool call regardless of
+    body shape.
     """
     text = "<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>"
     tokens = _encode(encoding, text)
@@ -635,14 +636,16 @@ def test_finalize_does_not_double_emit_completed_final(router, encoding):
     )
 
 
-def test_finalize_drains_truncated_final_buffered_delta(router, encoding):
-    """Codex round-4 BLOCKING (PR #515): when an EOS / process_eos
-    surfaces a ``last_content_delta`` from a truncated final or
-    analysis message, ``finalize()`` must route it to CONTENT /
-    REASONING respectively rather than dropping it. Empirically the
-    current openai-harmony build emits everything during ``feed()``,
-    but the contract pins the behavior in case a future build flushes
-    a buffered tail on EOS.
+def test_finalize_does_not_drain_post_eos_buffered_delta(router, encoding):
+    """Codex round-6 BLOCKING resolution (PR #515): even if a future
+    openai-harmony build flushes a buffered tail via
+    ``last_content_delta`` during ``process_eos()``, ``finalize()``
+    must NOT route it as a CONTENT / REASONING event. Per-token
+    ``feed()`` already produced every body byte the model emitted;
+    emitting a post-EOS delta risks duplicating the last token (if the
+    build does not clear ``last_content_delta`` between the per-token
+    flush and the EOS flush). The safer default matches vLLM / SGLang:
+    finalize is a parser-state flush only.
     """
     # Construct a router whose underlying StreamableParser is forced
     # into a state where process_eos produces a synthetic delta.
@@ -670,28 +673,18 @@ def test_finalize_drains_truncated_final_buffered_delta(router, encoding):
             return self._delta
 
         def process_eos(self):
-            # Simulate EOS appending a closed final-channel message
-            # AND flushing a buffered tail delta — the codex-flagged
-            # corner case my finalize must handle.
             self.messages.append(_StubMessage(self._channel))
             self._delta = " tail"
 
     router.reset()
     router._parser = _StubParser("final", "")
     drained = router.finalize()
-    assert drained is not None
-    assert drained.channel == Channel.CONTENT, (
-        f"truncated final delta must drain to CONTENT; got {drained!r}"
-    )
-    assert drained.text == " tail"
+    assert drained is None, f"post-EOS final delta must NOT drain; got {drained!r}"
 
-    # Symmetric: analysis channel routes to REASONING.
     router.reset()
     router._parser = _StubParser("analysis", "")
     drained = router.finalize()
-    assert drained is not None
-    assert drained.channel == Channel.REASONING
-    assert drained.text == " tail"
+    assert drained is None, f"post-EOS analysis delta must NOT drain; got {drained!r}"
 
 
 def test_compat_gate_rejects_missing_marker_ids():
