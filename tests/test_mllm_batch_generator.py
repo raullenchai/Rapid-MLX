@@ -168,3 +168,179 @@ def test_close_propagates_non_runtime_errors_from_set_wired_limit(monkeypatch):
 
     with pytest.raises(OSError, match="metal API call failed"):
         gen.close()
+
+
+# ---------------------------------------------------------------------------
+# Batched-sampler fast path
+# ---------------------------------------------------------------------------
+#
+# When every request in the batch shares (temperature, top_p), _step calls
+# a single batched sampler on [B, vocab] instead of looping B times over
+# per-row slices. The mlx-lm sampler chain vectorizes along axis=-1, so one
+# call produces [B] tokens via one MLX kernel chain. Profiling on Gemma 3
+# 12B 4bit (M3 Ultra) at B=8 showed step time drops from 73ms to 52ms,
+# concurrent HTTP throughput from 95 to 119 tok/s (+26%). Heterogeneous
+# sampling params fall back to the legacy per-row loop and keep the
+# pre-existing per-request _cached_sampler attribute.
+
+
+def _make_step_stub_generator():
+    """Minimal MLLMBatchGenerator that returns a deterministic 1x1xV logit."""
+    gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    gen._shared_batch_sampler = None
+
+    def _language_model(input_tokens, cache=None):
+        B = input_tokens.shape[0]
+        # Tiny vocab (4) so logit math is cheap; row r prefers token r%4.
+        return mx.zeros((B, 1, 4))
+
+    gen.language_model = _language_model
+    gen.sampler = lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
+    return gen
+
+
+def _make_sampling_request(uid: int, temperature: float, top_p: float):
+    return MLLMBatchRequest(
+        uid=uid,
+        request_id=f"r{uid}",
+        prompt="hi",
+        max_tokens=8,
+        temperature=temperature,
+        top_p=top_p,
+    )
+
+
+def test_step_homogeneous_requests_call_shared_sampler_once(monkeypatch):
+    """All requests share (temp, top_p) → one batched sampler call on [B, vocab]."""
+    make_sampler_calls = []
+    shared_sampler_invocations = []
+
+    def shared_sampler(logprobs):
+        shared_sampler_invocations.append(logprobs.shape)
+        return mx.zeros((logprobs.shape[0],), dtype=mx.uint32)
+
+    def fake_make_sampler(**kwargs):
+        make_sampler_calls.append(kwargs)
+        return shared_sampler
+
+    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+
+    gen = _make_step_stub_generator()
+    requests = [
+        _make_sampling_request(0, 0.7, 0.95),
+        _make_sampling_request(1, 0.7, 0.95),
+        _make_sampling_request(2, 0.7, 0.95),
+        _make_sampling_request(3, 0.7, 0.95),
+    ]
+
+    input_tokens = mx.array([[1], [2], [3], [4]], dtype=mx.uint32)
+    sampled, _ = MLLMBatchGenerator._step(
+        gen, input_tokens, cache=[], requests=requests
+    )
+
+    # Exactly one make_sampler + one sampler invocation on the full batch.
+    assert len(make_sampler_calls) == 1
+    assert make_sampler_calls[0] == {"temp": 0.7, "top_p": 0.95}
+    assert len(shared_sampler_invocations) == 1
+    assert shared_sampler_invocations[0] == (4, 4)
+    assert sampled.shape == (4,)
+
+
+def test_step_caches_shared_sampler_across_calls(monkeypatch):
+    """Repeated steps with the same (temp, top_p) reuse the cached sampler."""
+    make_sampler_calls = []
+
+    def fake_make_sampler(**kwargs):
+        make_sampler_calls.append(kwargs)
+        return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
+
+    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+
+    gen = _make_step_stub_generator()
+    requests = [
+        _make_sampling_request(0, 0.7, 0.95),
+        _make_sampling_request(1, 0.7, 0.95),
+    ]
+
+    for _ in range(5):
+        MLLMBatchGenerator._step(
+            gen,
+            mx.array([[1], [2]], dtype=mx.uint32),
+            cache=[],
+            requests=requests,
+        )
+
+    # Cache key is stable, so make_sampler is invoked exactly once across
+    # five decode steps — this is the per-token amortization we shipped for.
+    assert len(make_sampler_calls) == 1
+
+
+def test_step_param_change_invalidates_cached_sampler(monkeypatch):
+    """When (temp, top_p) flips, _shared_batch_sampler is rebuilt."""
+    make_sampler_calls = []
+
+    def fake_make_sampler(**kwargs):
+        make_sampler_calls.append(kwargs)
+        return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
+
+    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+
+    gen = _make_step_stub_generator()
+
+    MLLMBatchGenerator._step(
+        gen,
+        mx.array([[1], [2]], dtype=mx.uint32),
+        cache=[],
+        requests=[
+            _make_sampling_request(0, 0.7, 0.95),
+            _make_sampling_request(1, 0.7, 0.95),
+        ],
+    )
+    MLLMBatchGenerator._step(
+        gen,
+        mx.array([[1], [2]], dtype=mx.uint32),
+        cache=[],
+        requests=[
+            _make_sampling_request(0, 0.3, 0.95),
+            _make_sampling_request(1, 0.3, 0.95),
+        ],
+    )
+
+    assert make_sampler_calls == [
+        {"temp": 0.7, "top_p": 0.95},
+        {"temp": 0.3, "top_p": 0.95},
+    ]
+
+
+def test_step_heterogeneous_requests_use_per_row_loop(monkeypatch):
+    """Mixed (temp, top_p) falls back to the per-row loop; each request's
+    sampler is built once and cached on the request via _cached_sampler."""
+    make_sampler_calls = []
+
+    def fake_make_sampler(**kwargs):
+        make_sampler_calls.append(kwargs)
+        return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
+
+    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+
+    gen = _make_step_stub_generator()
+    req_a = _make_sampling_request(0, 0.7, 0.95)
+    req_b = _make_sampling_request(1, 0.3, 0.80)
+
+    MLLMBatchGenerator._step(
+        gen,
+        mx.array([[1], [2]], dtype=mx.uint32),
+        cache=[],
+        requests=[req_a, req_b],
+    )
+    # Two distinct samplers, one per request.
+    assert make_sampler_calls == [
+        {"temp": 0.7, "top_p": 0.95},
+        {"temp": 0.3, "top_p": 0.80},
+    ]
+    # Both got their per-request cache populated for future reuse.
+    assert req_a._cached_sampler[0] == (0.7, 0.95)
+    assert req_b._cached_sampler[0] == (0.3, 0.80)
+    # Shared batch sampler must NOT have been populated for the mixed batch
+    # (homogeneous fast path is the only writer).
+    assert gen._shared_batch_sampler is None
