@@ -776,3 +776,147 @@ class TestStateReset:
         router.reset()
         e2 = router.feed(9259)  # "Hello"
         assert e2.channel == Channel.CONTENT
+
+
+# ============================================================================
+# #516 — HarmonyStreamingRouter auto-upgrade escape hatches (release-SOP G11)
+# ============================================================================
+
+
+class TestStreamingFactoryEscapeHatches:
+    """The streaming-factory auto-upgrade from the legacy custom harmony
+    state machine to ``HarmonyStreamingRouter`` (PR #515) is a binary
+    auto-routing decision. The SOP requires both a force-on and a
+    force-off CLI flag plumbed to the factory; these tests pin the
+    branches at the factory level.
+
+    We monkey-patch the two dependencies (``is_openai_harmony_compatible``
+    and ``HarmonyStreamingRouter``) so we don't need a real harmony
+    tokenizer — only the dispatch tree is under test here.
+    """
+
+    def _patch_factory(self, monkeypatch, *, gate_returns: bool):
+        """Substitute the harmony compat probe + constructor with stubs
+        so the test exercises the factory branches without needing a
+        real tokenizer.
+        """
+        import vllm_mlx.output_router_harmony as orh
+
+        def fake_is_compat(_token_map, _tokenizer):
+            return gate_returns
+
+        class FakeHarmonyRouter:
+            map = None  # populated in __init__
+
+            def __init__(self, token_map, _tokenizer):
+                self.map = token_map
+                self.format_tag = "harmony"
+
+        monkeypatch.setattr(orh, "is_openai_harmony_compatible", fake_is_compat)
+        monkeypatch.setattr(orh, "HarmonyStreamingRouter", FakeHarmonyRouter)
+        return FakeHarmonyRouter
+
+    def _harmony_legacy(self, monkeypatch):
+        """Stub ``from_tokenizer`` to return a legacy router whose
+        ``format_tag`` is 'harmony'. Returns the stub instance.
+        """
+
+        class _LegacyStub:
+            class _Map:
+                format_tag = "harmony"
+
+            map = _Map()
+
+        monkeypatch.setattr(
+            OutputRouter, "from_tokenizer", classmethod(lambda cls, tok: _LegacyStub())
+        )
+        return _LegacyStub
+
+    def _non_harmony_legacy(self, monkeypatch):
+        class _LegacyStub:
+            class _Map:
+                format_tag = "gemma4"
+
+            map = _Map()
+
+        monkeypatch.setattr(
+            OutputRouter, "from_tokenizer", classmethod(lambda cls, tok: _LegacyStub())
+        )
+        return _LegacyStub
+
+    def test_default_returns_harmony_when_gate_accepts(self, monkeypatch):
+        FakeHarmony = self._patch_factory(monkeypatch, gate_returns=True)
+        self._harmony_legacy(monkeypatch)
+
+        router = OutputRouter.from_tokenizer_for_streaming(object())
+        assert isinstance(router, FakeHarmony)
+
+    def test_default_returns_legacy_when_gate_rejects(self, monkeypatch):
+        FakeHarmony = self._patch_factory(monkeypatch, gate_returns=False)
+        legacy_cls = self._harmony_legacy(monkeypatch)
+
+        router = OutputRouter.from_tokenizer_for_streaming(object())
+        assert not isinstance(router, FakeHarmony)
+        assert isinstance(router, legacy_cls)
+
+    def test_no_harmony_streaming_forces_legacy_even_when_gate_accepts(
+        self, monkeypatch
+    ):
+        FakeHarmony = self._patch_factory(monkeypatch, gate_returns=True)
+        legacy_cls = self._harmony_legacy(monkeypatch)
+
+        router = OutputRouter.from_tokenizer_for_streaming(
+            object(), no_harmony_streaming=True
+        )
+        assert not isinstance(router, FakeHarmony)
+        assert isinstance(router, legacy_cls)
+
+    def test_force_harmony_streaming_bypasses_gate(self, monkeypatch):
+        """Force-on must construct HarmonyStreamingRouter even when the
+        compat probe returns False — debug-only path. The constructor
+        will surface real failures on its own.
+        """
+        FakeHarmony = self._patch_factory(monkeypatch, gate_returns=False)
+        self._harmony_legacy(monkeypatch)
+
+        router = OutputRouter.from_tokenizer_for_streaming(
+            object(), force_harmony_streaming=True
+        )
+        assert isinstance(router, FakeHarmony)
+
+    def test_force_harmony_streaming_rejects_non_harmony_format(self, monkeypatch):
+        """If the tokenizer isn't even harmony-shaped, --force-on must
+        raise pointing at the right escape hatch — silently constructing
+        a harmony router on a non-harmony tokenizer would crash later
+        with an opaque error.
+        """
+        self._patch_factory(monkeypatch, gate_returns=True)
+        self._non_harmony_legacy(monkeypatch)
+
+        with pytest.raises(ValueError, match="not 'harmony'"):
+            OutputRouter.from_tokenizer_for_streaming(
+                object(), force_harmony_streaming=True
+            )
+
+    def test_returns_none_when_legacy_returns_none(self, monkeypatch):
+        """If the legacy factory returns None (unsupported tokenizer),
+        the override flags must NOT manufacture a router — that would
+        crash downstream.
+        """
+        monkeypatch.setattr(
+            OutputRouter, "from_tokenizer", classmethod(lambda cls, tok: None)
+        )
+
+        assert OutputRouter.from_tokenizer_for_streaming(object()) is None
+        assert (
+            OutputRouter.from_tokenizer_for_streaming(
+                object(), no_harmony_streaming=True
+            )
+            is None
+        )
+        assert (
+            OutputRouter.from_tokenizer_for_streaming(
+                object(), force_harmony_streaming=True
+            )
+            is None
+        )

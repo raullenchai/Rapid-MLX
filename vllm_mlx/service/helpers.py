@@ -256,6 +256,31 @@ _TOOL_USE_SYSTEM_SUFFIX = (
     "Give direct answers only — no preamble like 'The user asks...' or 'Let me think...'."
 )
 
+# Tool-use system prompt for ``tool_choice="required"`` (#468). Strict
+# variant of the default suffix — the OpenAI spec guarantees a tool_call
+# will be present in the response when ``required`` is set, but local
+# inference has no decoder-level enforcement (no FSM constraint yet,
+# tracked under PR #132). Prompt injection is the strongest tool we
+# have until then; the route also applies a post-parse 422 on the
+# non-stream path to surface failures clearly.
+_TOOL_USE_REQUIRED_SUFFIX = (
+    "\n\nCRITICAL: You MUST call one of the provided tools to answer this request. "
+    "Do NOT respond with text content. Do NOT explain. Do NOT ask for clarification. "
+    "Pick the most appropriate tool and call it immediately. If no tool fits the "
+    "user's request exactly, pick the closest match and call it with your best guess "
+    "of the arguments. A text-only response is INVALID for this request."
+)
+
+
+def _tool_use_required_named_suffix(name: str) -> str:
+    """Variant used when ``tool_choice={'type':'function','function':{'name':X}}``."""
+    return (
+        f"\n\nCRITICAL: You MUST call the tool named {name!r} to answer this "
+        "request. Do NOT respond with text content. Do NOT explain. Do NOT call "
+        "any other tool. Call this exact tool immediately with your best guess "
+        "of the arguments. A text-only response is INVALID for this request."
+    )
+
 
 # ── Resolution helpers ─────────────────────────────────────────────
 

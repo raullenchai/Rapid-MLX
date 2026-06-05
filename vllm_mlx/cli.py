@@ -1025,6 +1025,16 @@ def serve_command(args):
             file=sys.stderr,
         )
         sys.exit(2)
+    if getattr(args, "force_openai_harmony_streaming", False) and getattr(
+        args, "no_openai_harmony_streaming", False
+    ):
+        print(
+            "error: --force-openai-harmony-streaming and "
+            "--no-openai-harmony-streaming are mutually exclusive — pick one "
+            "to override the HarmonyStreamingRouter auto-upgrade gate (#516).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     try:
         load_model(
             args.model,
@@ -1044,6 +1054,12 @@ def serve_command(args):
             no_hybrid=getattr(args, "no_hybrid", False),
             force_spec_decode=getattr(args, "force_spec_decode", False),
             no_spec_decode=getattr(args, "no_spec_decode", False),
+            force_openai_harmony_streaming=getattr(
+                args, "force_openai_harmony_streaming", False
+            ),
+            no_openai_harmony_streaming=getattr(
+                args, "no_openai_harmony_streaming", False
+            ),
         )
     except Exception as e:
         # Show clean error instead of raw traceback. Catch the typed
@@ -3788,6 +3804,37 @@ Examples:
             "Force-disable speculative-decode eligibility (suffix / MTP / "
             "DFlash) even when AliasProfile says the model supports it. "
             "Mutually exclusive with --force-spec-decode."
+        ),
+    )
+    # #516 — HarmonyStreamingRouter auto-upgrade escape hatches (G11).
+    # PR #515 introduced an auto-upgrade from the legacy harmony state
+    # machine to openai-harmony's StreamableParser for matched-vocab
+    # gpt-oss tokenizers. The auto-detection is conservative (three-layer
+    # compat check) but the SOP requires every binary auto-routing
+    # decision expose both force-on and force-off CLI flags.
+    serve_parser.add_argument(
+        "--force-openai-harmony-streaming",
+        dest="force_openai_harmony_streaming",
+        action="store_true",
+        default=False,
+        help=(
+            "Force-on: construct HarmonyStreamingRouter even when the "
+            "compat gate would reject. Use to debug a regression in the "
+            "gate itself; production should leave this off. Mutually "
+            "exclusive with --no-openai-harmony-streaming."
+        ),
+    )
+    serve_parser.add_argument(
+        "--no-openai-harmony-streaming",
+        dest="no_openai_harmony_streaming",
+        action="store_true",
+        default=False,
+        help=(
+            "Force-off: skip the HarmonyStreamingRouter upgrade and use "
+            "the legacy custom harmony state machine even on matched-vocab "
+            "gpt-oss tokenizers. Escape hatch for a hypothetical false "
+            "positive in the compat gate. Mutually exclusive with "
+            "--force-openai-harmony-streaming."
         ),
     )
     # GC control (Tier 0 optimization)

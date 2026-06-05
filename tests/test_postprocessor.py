@@ -946,6 +946,173 @@ class TestStructuredToolCallStreaming:
         assert events[0].tool_calls[0]["index"] == 0
 
 
+class TestTextParserParallelCap:
+    """Tests for issue #517 — text-parser streaming paths
+    (``_process_standard``, ``_process_reasoning``) must honor
+    ``parallel_tool_calls=false`` symmetrically to the channel-routed
+    path PR #515 already covered.
+    """
+
+    def _make_pp_with_parser(self, returns: list[dict], **req_kwargs):
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.return_value = {"tool_calls": returns}
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        request = req_kwargs or None
+        pp = StreamingPostProcessor(cfg, request=request)
+        pp.reset()
+        return pp
+
+    def test_standard_path_caps_two_calls_in_single_delta(self):
+        """When the parser emits two calls in one delta and the request
+        has ``parallel_tool_calls=false``, only the first is forwarded.
+        """
+        pp = self._make_pp_with_parser(
+            [
+                {
+                    "index": 0,
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {"name": "a", "arguments": "{}"},
+                },
+                {
+                    "index": 1,
+                    "id": "call_b",
+                    "type": "function",
+                    "function": {"name": "b", "arguments": "{}"},
+                },
+            ],
+            parallel_tool_calls=False,
+        )
+
+        events = pp.process_chunk(_make_output("<tool_call>x</tool_call>"))
+        assert len(events) == 1
+        assert len(events[0].tool_calls) == 1
+        assert events[0].tool_calls[0]["function"]["name"] == "a"
+
+    def test_standard_path_caps_calls_across_deltas(self):
+        """When the parser emits one call per delta and the request has
+        ``parallel_tool_calls=false``, the second delta's call is
+        suppressed entirely (parser may still see the tokens but
+        nothing reaches the client).
+        """
+        # First delta: parser returns call_a
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    }
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        second = pp.process_chunk(_make_output("<tool_call>b</tool_call>"))
+
+        assert len(first) == 1
+        assert first[0].type == "tool_call"
+        assert first[0].tool_calls[0]["function"]["name"] == "a"
+        # Second delta suppressed — tool_calls_detected branch fires.
+        assert second == []
+        assert pp.tool_calls_detected is True
+
+    def test_standard_path_passes_through_when_parallel_allowed(self):
+        """``parallel_tool_calls=true`` (or unset) must NOT cap."""
+        pp = self._make_pp_with_parser(
+            [
+                {
+                    "index": 0,
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {"name": "a", "arguments": "{}"},
+                },
+                {
+                    "index": 1,
+                    "id": "call_b",
+                    "type": "function",
+                    "function": {"name": "b", "arguments": "{}"},
+                },
+            ],
+            parallel_tool_calls=True,
+        )
+
+        events = pp.process_chunk(_make_output("<tool_call>both</tool_call>"))
+        assert len(events) == 1
+        assert len(events[0].tool_calls) == 2
+
+    def test_standard_path_cap_preserves_finish_semantics(self):
+        """Suppressed second delta that is ALSO finished must still emit
+        a finish event so the route's buffered_finish gate fires.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    }
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        events = pp.process_chunk(
+            _make_output(
+                "<tool_call>b</tool_call>",
+                finished=True,
+                finish_reason="stop",
+            )
+        )
+        assert len(events) == 1
+        assert events[0].type == "finish"
+        assert events[0].finish_reason == "tool_calls"
+
+
 # ======================================================================
 # Coverage gap tests — model-specific edge cases + error paths
 # ======================================================================

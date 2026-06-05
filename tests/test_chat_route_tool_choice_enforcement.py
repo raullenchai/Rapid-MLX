@@ -75,12 +75,19 @@ class _RecordingEngine:
         )
 
 
-def _make_client(engine: _RecordingEngine) -> TestClient:
+def _make_client(
+    engine: _RecordingEngine, tool_call_parser: str | None = "hermes"
+) -> TestClient:
     cfg = reset_config()
     cfg.engine = engine
     cfg.model_name = "test-model"
     cfg.model_registry = None
     cfg.no_thinking = True
+    # Suffix injection at chat.py is gated on ``cfg.tool_call_parser`` being
+    # set; default to ``"hermes"`` so the ``tool_choice`` enforcement tests
+    # exercise the injection branch. Pass ``None`` explicitly to assert the
+    # alternate path.
+    cfg.tool_call_parser = tool_call_parser
     app = FastAPI()
     app.include_router(chat_router)
     return TestClient(app)
@@ -143,8 +150,14 @@ def test_tool_choice_specific_function_filters_to_named_only():
     filter ``tools`` to a single entry — the named function. Without
     this the model sees both candidates and picks the one it prefers,
     silently ignoring the user's force choice.
+
+    Uses ``_ToolCallingEngine`` (returns matching tool_call) so the
+    post-parse #468 enforcement gate (added in the same change) does
+    not fire — the engine HAS to return the right call for this test
+    to isolate the tools-filter behavior; a separate test covers the
+    enforcement gate failure mode.
     """
-    engine = _RecordingEngine()
+    engine = _ToolCallingEngine(fn_name="get_time")
     client = _make_client(engine)
     resp = client.post(
         "/v1/chat/completions",
@@ -217,15 +230,12 @@ def test_tool_choice_function_missing_name_returns_400():
     assert resp.status_code == 400
 
 
-@pytest.mark.parametrize("choice", ["auto", "required", None])
-def test_tool_choice_auto_required_none_field_leave_tools_untouched(choice):
-    """``"auto"``, ``"required"``, and unset ``tool_choice`` must NOT
-    mutate ``request.tools``. ``"required"`` enforcement is tracked
-    separately (#442 needs FSM constraints); for now it falls through
-    to model behavior — same as ``"auto"``. This test pins that the
-    normalization layer is precisely scoped to ``"none"`` and the
-    specific-function form and doesn't accidentally rewrite the other
-    paths.
+@pytest.mark.parametrize("choice", ["auto", None])
+def test_tool_choice_auto_and_unset_leave_tools_untouched(choice):
+    """``"auto"`` and unset ``tool_choice`` must NOT mutate
+    ``request.tools``. ``"required"`` has its own enforcement path
+    (post-parse 422 / suffix injection — see #468 tests below) and is
+    excluded from this parametrize.
     """
     engine = _RecordingEngine()
     client = _make_client(engine)
@@ -320,3 +330,207 @@ def test_tool_choice_function_missing_name_with_no_tools_returns_400():
         },
     )
     assert resp.status_code == 400
+
+
+# ──────────────────────────────────────────────────────────────────
+# ``tool_choice="required"`` enforcement (#468)
+# ──────────────────────────────────────────────────────────────────
+
+
+class _ToolCallingEngine(_RecordingEngine):
+    """Mock engine that injects an engine-surfaced structured tool_call
+    so the route's parse path emits a real ``tool_calls`` field.
+
+    The route consumes ``GenerationOutput.tool_calls`` via the PR #515
+    structured passthrough (``_parse_tool_calls_with_parser`` honors
+    ``structured_tool_calls=...``), so we can simulate a model that
+    actually called a tool without standing up a full parser fixture.
+    """
+
+    def __init__(
+        self, fn_name: str = "get_weather", arguments: str = '{"city":"Tokyo"}'
+    ):
+        super().__init__()
+        self._fn_name = fn_name
+        self._arguments = arguments
+
+    async def chat(self, messages, **kwargs):
+        self.last_messages = messages
+        self.last_chat_kwargs = kwargs
+        return GenerationOutput(
+            text="",
+            raw_text="",
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="tool_calls",
+            tool_calls=[{"name": self._fn_name, "arguments": self._arguments}],
+        )
+
+
+def test_tool_choice_required_empty_response_returns_422():
+    """``tool_choice="required"`` with a model that returned text-only
+    output (zero tool_calls) must surface as 422, not a silent
+    content-bearing 200 (#468). The OpenAI spec guarantees a tool_call
+    is present in the response when ``required`` is set.
+    """
+    engine = _RecordingEngine()  # default: text="ok", tool_calls=None
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Tell me a joke."}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "required" in resp.text.lower()
+
+
+def test_tool_choice_required_with_tool_call_returns_200():
+    """When the model DID emit a tool_call, ``tool_choice="required"``
+    must succeed cleanly and forward the call to the client. Pins the
+    happy path so the 422 gate doesn't accidentally fire on success.
+    """
+    engine = _ToolCallingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    tcs = body["choices"][0]["message"].get("tool_calls") or []
+    assert len(tcs) == 1
+    assert tcs[0]["function"]["name"] == "get_weather"
+
+
+def test_tool_choice_required_injects_strict_system_suffix():
+    """The ``required`` mode must inject the strict suffix
+    (``_TOOL_USE_REQUIRED_SUFFIX``) into the system prompt — this is
+    the strongest enforcement lever in the absence of FSM-constrained
+    decoding (#132). Verify the suffix lands by inspecting what the
+    engine receives in ``last_messages``.
+    """
+    engine = _ToolCallingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    sys_msgs = [
+        m
+        for m in engine.last_messages
+        if (m.get("role") if isinstance(m, dict) else m.role) == "system"
+    ]
+    assert sys_msgs, "expected an auto-injected system message"
+    content = (
+        sys_msgs[0]["content"] if isinstance(sys_msgs[0], dict) else sys_msgs[0].content
+    )
+    assert "MUST call one of the provided tools" in content
+
+
+def test_tool_choice_named_function_wrong_call_returns_422():
+    """``tool_choice={"type":"function","function":{"name":X}}`` with a
+    model that called a DIFFERENT tool must 422. The non-stream path
+    filters ``request.tools`` to the named function pre-flight (so the
+    model only sees that one), but a malicious / drifted parser could
+    still surface a different call from the engine — the route must
+    refuse to forward a contract-violating response.
+    """
+    # Engine returns get_time even though tool_choice pins get_weather.
+    engine = _ToolCallingEngine(fn_name="get_time", arguments='{"city":"Tokyo"}')
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Pick a function"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "get_weather" in resp.text
+
+
+def test_tool_choice_named_function_injects_named_suffix():
+    """The named-function form must inject a suffix that names the
+    target tool explicitly — without this, the model may still pick
+    a different tool from the (now-filtered) singleton list.
+    """
+    engine = _ToolCallingEngine()  # returns get_weather
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    sys_msgs = [
+        m
+        for m in engine.last_messages
+        if (m.get("role") if isinstance(m, dict) else m.role) == "system"
+    ]
+    assert sys_msgs
+    content = (
+        sys_msgs[0]["content"] if isinstance(sys_msgs[0], dict) else sys_msgs[0].content
+    )
+    assert "'get_weather'" in content
+    assert "MUST call the tool named" in content
+
+
+def test_tool_choice_auto_keeps_loose_suffix():
+    """``tool_choice="auto"`` (and unset) must keep the original
+    ``_TOOL_USE_SYSTEM_SUFFIX`` (loose) — NOT the strict required
+    variant. This pins the gate so the strict suffix doesn't bleed
+    into auto-mode requests where the model is allowed to opt out.
+    """
+    engine = _ToolCallingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "auto",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    sys_msgs = [
+        m
+        for m in engine.last_messages
+        if (m.get("role") if isinstance(m, dict) else m.role) == "system"
+    ]
+    assert sys_msgs
+    content = (
+        sys_msgs[0]["content"] if isinstance(sys_msgs[0], dict) else sys_msgs[0].content
+    )
+    # The loose suffix says "When the user's request can be answered ..."
+    assert "When the user's request can be answered" in content
+    # The strict suffix would say "MUST call one of the provided tools" — verify absent.
+    assert "MUST call one of the provided tools" not in content

@@ -42,6 +42,7 @@ from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
+    _TOOL_USE_REQUIRED_SUFFIX,
     _TOOL_USE_SYSTEM_SUFFIX,
     _build_usage,
     _check_admission_or_503,
@@ -57,6 +58,7 @@ from ..service.helpers import (
     _resolve_model_name,
     _resolve_temperature,
     _resolve_top_p,
+    _tool_use_required_named_suffix,
     _validate_model_name,
     _validate_tool_call_params,
     _wait_with_disconnect,
@@ -504,10 +506,26 @@ async def _create_chat_completion_impl(
             else:
                 m.role = "system"
 
-    # Auto-inject system prompt suffix for tool use and/or reasoning control
+    # Auto-inject system prompt suffix for tool use and/or reasoning control.
+    # ``tool_choice="required"`` (and the specific-function form) gets a
+    # stricter suffix than the default tool-use one — the OpenAI spec
+    # guarantees a tool_call when ``required`` is set, but local inference
+    # has no decoder-level enforcement (FSM constraint tracked in #132).
+    # Prompt injection + post-parse 422 are the strongest levers we have
+    # (#468). Strictness shape: explicit ``required`` > named function >
+    # the default ``auto``/unset suffix.
     _inject_suffix = None
     if request.tools and cfg.tool_call_parser:
-        _inject_suffix = _TOOL_USE_SYSTEM_SUFFIX
+        if tc == "required":
+            _inject_suffix = _TOOL_USE_REQUIRED_SUFFIX
+        elif isinstance(tc, dict) and tc.get("type") == "function":
+            _named = (tc.get("function") or {}).get("name")
+            if _named:
+                _inject_suffix = _tool_use_required_named_suffix(_named)
+            else:
+                _inject_suffix = _TOOL_USE_SYSTEM_SUFFIX
+        else:
+            _inject_suffix = _TOOL_USE_SYSTEM_SUFFIX
     elif cfg.reasoning_parser_name == "minimax":
         _inject_suffix = (
             "\n\nDo NOT think out loud or show your reasoning process. "
@@ -933,6 +951,52 @@ async def _create_chat_completion_impl(
     # single tool call (see PR #132 for the longer-term FSM-constrained path).
     if tool_calls and len(tool_calls) > 1 and request.parallel_tool_calls is False:
         tool_calls = tool_calls[:1]
+
+    # ``tool_choice="required"`` post-parse enforcement (#468). The system
+    # suffix injected above (``_TOOL_USE_REQUIRED_SUFFIX``) makes the model
+    # overwhelmingly likely to comply, but local inference has no
+    # decoder-level guarantee. When the parser comes back empty we 422
+    # rather than ship a contract-violating response (OpenAI spec: a
+    # tool_call is GUARANTEED present in the response when ``required``
+    # is set). For the named-function form we also verify the right tool
+    # fired. Streaming path is best-effort prompt-injection only; once
+    # SSE chunks are out we can't 422 mid-flight.
+    if request.tool_choice is not None and request.tools:
+        if request.tool_choice == "required" and not tool_calls:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    'tool_choice="required" but the model returned a text response '
+                    "with no tool_calls. Local inference has no decoder-level "
+                    "constraint; the system-prompt enforcement was insufficient "
+                    "for this prompt. Retry with a more concrete user message or "
+                    'use tool_choice={"type":"function","function":{"name":...}} '
+                    "to pin a specific tool."
+                ),
+            )
+        if (
+            isinstance(request.tool_choice, dict)
+            and request.tool_choice.get("type") == "function"
+        ):
+            _target = (request.tool_choice.get("function") or {}).get("name")
+
+            # ``tool_calls`` carries pydantic ``ToolCall`` objects, not raw
+            # dicts (built by ``_parse_tool_calls_with_parser`` from either
+            # the engine's structured passthrough or the text-parser layer).
+            # Attribute access via ``getattr`` survives both shapes.
+            def _tc_name(tc):
+                fn = getattr(tc, "function", None)
+                return getattr(fn, "name", None) if fn else None
+
+            if _target and not any(_tc_name(tc) == _target for tc in tool_calls or []):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"tool_choice pinned function {_target!r} but the model did not "
+                        "call it. Local inference cannot decoder-enforce a specific "
+                        "function; retry with a more direct user message."
+                    ),
+                )
 
     # Validate tool call parameter values against schemas
     if tool_calls and request.tools:

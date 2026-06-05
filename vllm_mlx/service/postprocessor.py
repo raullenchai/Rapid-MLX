@@ -215,6 +215,22 @@ class StreamingPostProcessor:
             val = getattr(req, "parallel_tool_calls", None)
         return val is not False
 
+    def _cap_remaining(self) -> int | None:
+        """Slots remaining under ``parallel_tool_calls=false`` cap. None
+        means uncapped (default / explicit ``parallel_tool_calls=true``).
+
+        Issue #517: PR #515 added the cap to ``_process_channel_routed``
+        only; the text-parser streaming paths (``_process_standard``,
+        ``_process_reasoning``) emitted ``result['tool_calls']`` raw,
+        letting hermes/qwen3 streaming responses exceed the cap the
+        non-stream path enforces at ``routes/chat.py:934``. Shared
+        helper so all three streaming branches honor the same external
+        contract; the counter is per-request via __init__/reset().
+        """
+        if self._parallel_tool_calls_allowed():
+            return None
+        return max(0, 1 - self._structured_tool_call_count)
+
     def reset(self):
         """Reset all parser states for a new stream.
 
@@ -359,10 +375,27 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                # Issue #517 — apply ``parallel_tool_calls=false`` cap
+                # uniformly across all streaming paths.
+                raw_tcs = result["tool_calls"]
+                cap = self._cap_remaining()
+                allowed_tcs = raw_tcs if cap is None else raw_tcs[:cap]
+                self._structured_tool_call_count += len(allowed_tcs)
+                if not allowed_tcs:
+                    self.tool_calls_detected = True
+                    if output.finished:
+                        return [
+                            StreamEvent(
+                                type="finish",
+                                finish_reason="tool_calls",
+                                tool_calls_detected=True,
+                            )
+                        ]
+                    return []
                 return [
                     StreamEvent(
                         type="tool_call",
-                        tool_calls=result["tool_calls"],
+                        tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
@@ -478,10 +511,27 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                # Issue #517 — apply ``parallel_tool_calls=false`` cap
+                # uniformly across all streaming paths.
+                raw_tcs = result["tool_calls"]
+                cap = self._cap_remaining()
+                allowed_tcs = raw_tcs if cap is None else raw_tcs[:cap]
+                self._structured_tool_call_count += len(allowed_tcs)
+                if not allowed_tcs:
+                    self.tool_calls_detected = True
+                    if output.finished:
+                        return [
+                            StreamEvent(
+                                type="finish",
+                                finish_reason="tool_calls",
+                                tool_calls_detected=True,
+                            )
+                        ]
+                    return []
                 return [
                     StreamEvent(
                         type="tool_call",
-                        tool_calls=result["tool_calls"],
+                        tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
@@ -577,10 +627,29 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                # Apply ``parallel_tool_calls=false`` cap before emission
+                # (issue #517) — the parser may produce N calls in one
+                # delta or trickle them across deltas; the counter tracks
+                # cross-delta cumulative emissions.
+                raw_tcs = result["tool_calls"]
+                cap = self._cap_remaining()
+                allowed_tcs = raw_tcs if cap is None else raw_tcs[:cap]
+                self._structured_tool_call_count += len(allowed_tcs)
+                if not allowed_tcs:
+                    self.tool_calls_detected = True
+                    if output.finished:
+                        return [
+                            StreamEvent(
+                                type="finish",
+                                finish_reason="tool_calls",
+                                tool_calls_detected=True,
+                            )
+                        ]
+                    return []
                 return [
                     StreamEvent(
                         type="tool_call",
-                        tool_calls=result["tool_calls"],
+                        tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )

@@ -267,6 +267,8 @@ class BatchedEngine(BaseEngine):
         no_hybrid: bool = False,
         force_spec_decode: bool = False,
         no_spec_decode: bool = False,
+        force_openai_harmony_streaming: bool = False,
+        no_openai_harmony_streaming: bool = False,
     ):
         """
         Initialize the batched engine.
@@ -301,6 +303,11 @@ class BatchedEngine(BaseEngine):
         self._no_hybrid = no_hybrid
         self._force_spec_decode = force_spec_decode
         self._no_spec_decode = no_spec_decode
+        # #516 — auto-routing escape hatches for the HarmonyStreamingRouter
+        # auto-upgrade introduced in PR #515. Mutually exclusive (CLI
+        # enforces; engine accepts and asserts defensively at use time).
+        self._force_openai_harmony_streaming = force_openai_harmony_streaming
+        self._no_openai_harmony_streaming = no_openai_harmony_streaming
         if force_text:
             # User explicitly opted out of MLLM routing. Skip the probe
             # entirely so a False from auto-detection can't be overridden
@@ -1388,7 +1395,11 @@ class BatchedEngine(BaseEngine):
             tokenizer = self.tokenizer
             if tokenizer is None:
                 return None
-            router = OutputRouter.from_tokenizer_for_streaming(tokenizer)
+            router = OutputRouter.from_tokenizer_for_streaming(
+                tokenizer,
+                force_harmony_streaming=self._force_openai_harmony_streaming,
+                no_harmony_streaming=self._no_openai_harmony_streaming,
+            )
             if router is None:
                 return None
             if router.map.format_tag not in _OUTPUT_ROUTER_ALLOWLIST:

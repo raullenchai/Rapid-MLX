@@ -646,7 +646,13 @@ class OutputRouter:
         return None  # unsupported model format
 
     @classmethod
-    def from_tokenizer_for_streaming(cls, tokenizer: Any):
+    def from_tokenizer_for_streaming(
+        cls,
+        tokenizer: Any,
+        *,
+        force_harmony_streaming: bool = False,
+        no_harmony_streaming: bool = False,
+    ):
         """Production streaming factory — prefers ``HarmonyStreamingRouter``
         for harmony-format models whose vocab IDs match the openai-harmony
         encoding (verified at PR-time for upstream gpt-oss). Falls back to
@@ -658,6 +664,22 @@ class OutputRouter:
         exercise the custom state machine without the openai-harmony shim
         being forced on it. Engine code
         (``BatchedEngine._create_output_router``) uses THIS factory.
+
+        Auto-routing escape hatches (#516, release-SOP G11):
+
+        - ``no_harmony_streaming=True`` — force-off. Always return the
+          legacy router even if the compat gate would accept. Use when an
+          environment exposes a false positive in the gate (impossible by
+          construction with the current three-layer check, but the SOP
+          requires the escape hatch exist regardless).
+        - ``force_harmony_streaming=True`` — force-on. Bypass the compat
+          gate and construct ``HarmonyStreamingRouter`` unconditionally,
+          raising if the underlying ``HarmonyStreamingRouter`` constructor
+          rejects the tokenizer/marker map. Use to debug a regression in
+          the gate itself, NOT for general production override.
+
+          Mutually exclusive with ``no_harmony_streaming``; the caller is
+          responsible for not setting both (CLI layer enforces this).
         """
         from .output_router_harmony import (
             HarmonyStreamingRouter,
@@ -667,9 +689,36 @@ class OutputRouter:
         legacy = cls.from_tokenizer(tokenizer)
         if legacy is None:
             return None
-        if legacy.map.format_tag == "harmony" and is_openai_harmony_compatible(
-            legacy.map, tokenizer
-        ):
+
+        # Honor force-off before any compat check fires — the explicit
+        # opt-out short-circuits regardless of harmony-shape detection.
+        if no_harmony_streaming:
+            logger.debug(
+                "[OutputRouter] Streaming factory honoring "
+                "--no-openai-harmony-streaming; using legacy router"
+            )
+            return legacy
+
+        is_harmony = legacy.map.format_tag == "harmony"
+        if force_harmony_streaming:
+            if not is_harmony:
+                raise ValueError(
+                    "--force-openai-harmony-streaming requested but the "
+                    "tokenizer's detected format is "
+                    f"{legacy.map.format_tag!r}, not 'harmony'. The "
+                    "harmony streaming router only works with harmony-shape "
+                    "tokenizers (gpt-oss family). Drop the flag to let the "
+                    "auto-router pick the right path."
+                )
+            # Bypass compat probe; HarmonyStreamingRouter will surface a
+            # real failure (e.g. missing marker IDs) at construction time.
+            logger.debug(
+                "[OutputRouter] Streaming factory force-on via "
+                "--force-openai-harmony-streaming (compat probe bypassed)"
+            )
+            return HarmonyStreamingRouter(legacy.map, tokenizer)
+
+        if is_harmony and is_openai_harmony_compatible(legacy.map, tokenizer):
             # Codex round-2 NIT: emit at DEBUG level. The streaming
             # factory is called per request in the engine path; an
             # INFO-level log would spam production logs once per

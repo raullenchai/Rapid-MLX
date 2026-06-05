@@ -126,6 +126,25 @@ AUTO_ROUTING_FLAG_PAIRS: tuple[RoutingFlagPair, ...] = (
         forwarded_kwargs=("force_spec_decode", "no_spec_decode"),
         model_config_field="supports_spec_decode",
     ),
+    RoutingFlagPair(
+        force_on="--force-openai-harmony-streaming",
+        force_off="--no-openai-harmony-streaming",
+        desc=(
+            "HarmonyStreamingRouter auto-upgrade gate (#516, PR #515 "
+            "follow-up). Auto-detection upgrades the legacy custom "
+            "harmony state machine to openai-harmony's StreamableParser "
+            "for matched-vocab gpt-oss tokenizers; the pair lets users "
+            "override either way without code changes."
+        ),
+        required_files=("cli.py", "server.py"),
+        forwarded_kwargs=(
+            "force_openai_harmony_streaming",
+            "no_openai_harmony_streaming",
+        ),
+        # Override acts on the streaming OutputRouter factory, NOT on
+        # ModelConfig — same shape as --mllm / --no-mllm.
+        model_config_field=None,
+    ),
 )
 
 
@@ -1010,6 +1029,14 @@ def test_registry_invariants():
             # not ModelConfig. Verified by test_force_text_overrides_auto_detection.
             "force_mllm",
             "force_text",
+            # --force-openai-harmony-streaming / --no-openai-harmony-streaming
+            # act on the streaming OutputRouter factory at request time
+            # (BatchedEngine._create_output_router →
+            # OutputRouter.from_tokenizer_for_streaming), NOT on ModelConfig.
+            # The override has no static field to mutate; it gates a runtime
+            # constructor branch. #516 / PR #515 follow-up.
+            "force_openai_harmony_streaming",
+            "no_openai_harmony_streaming",
         }
     )
     for pair in AUTO_ROUTING_FLAG_PAIRS:
