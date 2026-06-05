@@ -472,6 +472,55 @@ def test_tool_choice_named_function_wrong_call_returns_422():
     assert "get_weather" in resp.text
 
 
+class _MultiCallEngine(_RecordingEngine):
+    """Mock engine that emits TWO tool_calls: the target plus an
+    extra. Used to verify the round-4 BLOCKING #2 ``all(...)`` gate.
+    """
+
+    def __init__(self, *, target_name: str, extra_name: str):
+        super().__init__()
+        self._target = target_name
+        self._extra = extra_name
+
+    async def chat(self, messages, **kwargs):
+        self.last_messages = messages
+        self.last_chat_kwargs = kwargs
+        return GenerationOutput(
+            text="",
+            raw_text="",
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="tool_calls",
+            tool_calls=[
+                {"name": self._target, "arguments": "{}"},
+                {"name": self._extra, "arguments": "{}"},
+            ],
+        )
+
+
+def test_tool_choice_named_function_extra_call_returns_422():
+    """PR #518 round-4 codex BLOCKING #2: ``tool_choice`` with
+    ``function.name = X`` allows ONLY X. A response carrying X PLUS
+    an extra call (e.g. ``[X, Y]``) is a contract violation — the
+    prior ``any(...)`` gate accepted it silently.
+    """
+    engine = _MultiCallEngine(target_name="get_weather", extra_name="get_time")
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "get_time" in resp.text
+
+
 def test_tool_choice_named_function_injects_named_suffix():
     """The named-function form must inject a suffix that names the
     target tool explicitly — without this, the model may still pick

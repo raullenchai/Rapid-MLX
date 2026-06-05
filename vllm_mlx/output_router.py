@@ -697,6 +697,19 @@ class OutputRouter:
 
         legacy = cls.from_tokenizer(tokenizer)
         if legacy is None:
+            if force_harmony_streaming:
+                # Round-4 codex BLOCKING #3: silently returning ``None``
+                # under force-on lets the public escape hatch no-op —
+                # the operator who set the flag never learns the
+                # tokenizer is unsupported. Surface it.
+                raise ValueError(
+                    "--force-openai-harmony-streaming requested but the "
+                    "tokenizer is not recognized by OutputRouter "
+                    "(no format detected). The harmony streaming router "
+                    "only works with harmony-shape tokenizers (gpt-oss "
+                    "family). Drop the flag to let the auto-router pick "
+                    "the right path."
+                )
             return None
 
         # Honor force-off before any compat check fires — the explicit

@@ -1014,17 +1014,26 @@ async def _create_chat_completion_impl(
         ):
             _target = (request.tool_choice.get("function") or {}).get("name")
 
-            if _target and not any(
-                _tool_call_name(tc) == _target for tc in tool_calls or []
-            ):
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"tool_choice pinned function {_target!r} but the model did not "
-                        "call it. Local inference cannot decoder-enforce a specific "
-                        "function; retry with a more direct user message."
-                    ),
-                )
+            # OpenAI spec: a named ``tool_choice`` allows ONLY the named
+            # function. A response that includes the target plus any
+            # other call violates the contract — refuse to forward.
+            # Round-4 codex BLOCKING #2: prior ``any(...)`` accepted
+            # ``[target, wrong]`` and shipped the extra call to the
+            # client. Now require: at least one match AND every emitted
+            # call matches.
+            if _target:
+                _names = [_tool_call_name(tc) for tc in tool_calls or []]
+                _mismatched = [n for n in _names if n != _target]
+                if not _names or _mismatched:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"tool_choice pinned function {_target!r} but the model "
+                            f"emitted calls to {_mismatched or 'no tool'}. Local "
+                            "inference cannot decoder-enforce a specific function; "
+                            "retry with a more direct user message."
+                        ),
+                    )
 
     # Validate tool call parameter values against schemas
     if tool_calls and request.tools:

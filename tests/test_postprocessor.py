@@ -1303,6 +1303,71 @@ class TestTextParserParallelCap:
         assert first[0].tool_calls[0]["function"]["name"] == "a"
         assert second == []
 
+    def test_dropped_no_index_call_args_do_not_leak_to_admitted(self):
+        """PR #518 round-4 codex BLOCKING #1: after a second no-index
+        call gets dropped past the cap, its later argument-only
+        fragments would still satisfy the continuation branch and
+        leak into the admitted call's payload, corrupting its JSON.
+
+        Sequence (one delta per chunk):
+          1. call_a anchor (id=a, name=a, args='{')      → admit
+          2. call_a frag (args='}'  )                    → continuation, forward
+          3. call_b anchor (id=b, name=b, args='{"x":1') → cap full → DROP
+          4. call_b frag (args='}'  )                    → must DROP (was sliding into call_a)
+
+        The fix routes (4) to the dropped path via
+        ``_no_index_last_dropped`` so call_a's arguments stay '{}'.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{"},
+                    }
+                ]
+            },
+            {"tool_calls": [{"function": {"arguments": "}"}}]},
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": '{"x":1'},
+                    }
+                ]
+            },
+            {"tool_calls": [{"function": {"arguments": "}"}}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>a_anchor</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>a_frag</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>b_anchor</tool_call>"))
+        e4 = pp.process_chunk(_make_output("<tool_call>b_frag</tool_call>"))
+
+        # call_a's two deltas both pass.
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["function"]["arguments"] == "{"
+        assert len(e2) == 1
+        assert e2[0].tool_calls[0]["function"]["arguments"] == "}"
+        # call_b's anchor dropped (cap full).
+        assert e3 == []
+        # call_b's continuation MUST be dropped — not forwarded as a
+        # continuation of call_a.
+        assert e4 == [], (
+            f"dropped no-index call's args leaked: {e4}. "
+            "_no_index_last_dropped should have routed it to drop."
+        )
+
     def test_uncapped_path_does_not_set_no_index_admitted(self):
         """PR #518 round-3 codex NIT: the uncapped path used to set
         ``_no_index_call_admitted=True`` for every no-index delta.

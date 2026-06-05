@@ -152,6 +152,19 @@ class StreamingPostProcessor:
         # continuations were re-classified as new calls and dropped
         # once the cap was full, silently truncating arguments.
         self._no_index_call_admitted: bool = False
+        # Tracks whether the MOST RECENT no-index "anchor" delta (one
+        # carrying a fresh ``id`` or function ``name``) was DROPPED
+        # because the cap was full. Subsequent argument-only no-index
+        # fragments belong to whichever anchor came last — so if the
+        # last anchor was dropped, the fragments must be dropped too,
+        # not silently appended to the admitted call's arguments.
+        # PR #518 round-3 codex BLOCKING fix surfaced this leak; this
+        # closes it. Assumes sequential parser emission (one call
+        # completes before the next starts) — interleaved no-index
+        # calls without ``id`` are indistinguishable from delta shape
+        # alone; well-behaved parsers either disambiguate via
+        # ``index``/``id`` or emit sequentially.
+        self._no_index_last_dropped: bool = False
 
         # Nemotron thinking prefix
         self._is_thinking_model = False
@@ -314,6 +327,15 @@ class StreamingPostProcessor:
                     and tc.get("id")
                 )
                 if not (has_name or has_id):
+                    # Continuation fragment — route to whichever
+                    # anchor was last seen. If the last anchor was a
+                    # dropped new call (cap-full new-call branch
+                    # below set ``_no_index_last_dropped``), suppress
+                    # so the dropped call's arguments don't leak
+                    # into the admitted call's payload (round-4 codex
+                    # BLOCKING #1).
+                    if self._no_index_last_dropped:
+                        continue
                     allowed.append(tc)
                     continue
             # New call (unseen index, fresh no-index call with id/name,
@@ -324,13 +346,22 @@ class StreamingPostProcessor:
             if already_admitted >= 1:
                 # Cap full — drop this new call AND any further
                 # continuations of its index, since we never admit it.
+                if idx is None:
+                    # Mark so subsequent no-index argument fragments
+                    # are routed to "dropped" rather than silently
+                    # appended to the admitted call.
+                    self._no_index_last_dropped = True
                 continue
             if isinstance(idx, int):
                 self._admitted_tool_call_indices.add(idx)
             else:
                 # Mark the no-index slot as taken; subsequent no-index
-                # deltas hit the continuation branch above.
+                # deltas hit the continuation branch above. Reset the
+                # dropped-anchor flag — this delta is the most recent
+                # anchor and it was admitted, so its fragments belong
+                # here.
                 self._no_index_call_admitted = True
+                self._no_index_last_dropped = False
             self._structured_tool_call_count = max(
                 self._structured_tool_call_count,
                 len(self._admitted_tool_call_indices)
@@ -356,6 +387,7 @@ class StreamingPostProcessor:
         self._structured_tool_call_count = 0
         self._admitted_tool_call_indices = set()
         self._no_index_call_admitted = False
+        self._no_index_last_dropped = False
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()

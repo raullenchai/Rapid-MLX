@@ -729,7 +729,9 @@ Also: logprobs API, structured JSON output (`response_format`), continuous batch
 | `--api-key` | API key for authentication | *(no auth)* |
 | `--rate-limit` | Requests per minute per client | *(unlimited)* |
 | `--timeout` | Request timeout in seconds | `1800` |
-| `--mllm` | Force multimodal (vision) mode | auto-detect |
+| `--mllm` / `--no-mllm` | Force / disable multimodal (vision) mode | auto-detect |
+| `--force-openai-harmony-streaming` | Force the openai-harmony streaming router on (escape hatch — debug-only, raises on non-harmony tokenizers) | auto-detect |
+| `--no-openai-harmony-streaming` | Disable the openai-harmony streaming router; fall back to the legacy state machine | auto-detect |
 | `--mcp-config` | MCP configuration file for tool integration | *(none)* |
 | `--embedding-model` | Pre-load embedding model at startup | *(none)* |
 

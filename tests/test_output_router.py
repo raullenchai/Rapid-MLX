@@ -900,8 +900,9 @@ class TestStreamingFactoryEscapeHatches:
 
     def test_returns_none_when_legacy_returns_none(self, monkeypatch):
         """If the legacy factory returns None (unsupported tokenizer),
-        the override flags must NOT manufacture a router — that would
-        crash downstream.
+        the default + force-off paths return None (no override flags
+        manufacture a router). Force-on raises instead — see
+        ``test_force_on_with_unsupported_tokenizer_raises``.
         """
         monkeypatch.setattr(
             OutputRouter, "from_tokenizer", classmethod(lambda cls, tok: None)
@@ -914,9 +915,29 @@ class TestStreamingFactoryEscapeHatches:
             )
             is None
         )
-        assert (
+
+    def test_force_on_with_unsupported_tokenizer_raises(self, monkeypatch):
+        """PR #518 round-4 codex BLOCKING #3: when ``from_tokenizer``
+        returns None (unsupported tokenizer) and force-on is set,
+        silently returning None lets the public escape hatch no-op —
+        the operator never learns their tokenizer is unsupported.
+        Must raise so the misuse is visible.
+        """
+        monkeypatch.setattr(
+            OutputRouter, "from_tokenizer", classmethod(lambda cls, tok: None)
+        )
+
+        with pytest.raises(ValueError, match="not recognized"):
             OutputRouter.from_tokenizer_for_streaming(
                 object(), force_harmony_streaming=True
+            )
+
+        # Default and no-streaming paths must STILL return None — only
+        # force-on raises, since only it is making a positive claim.
+        assert OutputRouter.from_tokenizer_for_streaming(object()) is None
+        assert (
+            OutputRouter.from_tokenizer_for_streaming(
+                object(), no_harmony_streaming=True
             )
             is None
         )
