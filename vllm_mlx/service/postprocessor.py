@@ -308,15 +308,27 @@ class StreamingPostProcessor:
         for tc in tool_calls:
             idx = tc.get("index") if isinstance(tc, dict) else None
             fn = tc.get("function") if isinstance(tc, dict) else None
-            has_name = (
+            has_wrapped_name = (
                 isinstance(fn, dict)
                 and isinstance(fn.get("name"), str)
                 and fn.get("name")
             )
+            # Round-8 codex BLOCKING #2: parsers can emit FLAT-shape
+            # tool calls (``{"name": "X", "arguments": ...}`` — no
+            # ``function`` wrapper, mirrored from raw engine output
+            # via ``_tool_call_name`` shape #3 in chat.py). Without
+            # the top-level ``name`` check, a flat-shape second call
+            # was misclassified as a continuation and leaked past
+            # the ``parallel_tool_calls=false`` cap.
+            has_flat_name = (
+                isinstance(tc, dict)
+                and isinstance(tc.get("name"), str)
+                and tc.get("name")
+            )
             has_id = (
                 isinstance(tc, dict) and isinstance(tc.get("id"), str) and tc.get("id")
             )
-            is_anchor = bool(has_name or has_id)
+            is_anchor = bool(has_wrapped_name or has_flat_name or has_id)
 
             if isinstance(idx, int) and idx in self._admitted_tool_call_indices:
                 # Continuation of an already-admitted indexed call —

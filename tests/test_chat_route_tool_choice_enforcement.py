@@ -472,6 +472,63 @@ def test_tool_choice_named_function_wrong_call_returns_422():
     assert "get_weather" in resp.text
 
 
+def test_tool_choice_required_with_stream_passes_through_cloud_routing():
+    """PR #518 round-8 codex BLOCKING #1: the streaming-required 422
+    guard must NOT fire when the cloud router is configured to handle
+    the request — cloud backends (e.g. GPT-4o) DO support
+    ``required`` with streaming via decoder-side constraints. The
+    guard now lives below the cloud routing block.
+
+    Verifies the guard's PRE-cloud placement was wrong by simulating
+    a cloud-routed request and asserting we don't 422 before cloud
+    routing decides.
+    """
+
+    # Minimal cloud router stub that always claims it would route.
+    class _FakeCloudRouter:
+        threshold = 0
+        cloud_model = "gpt-4o"
+
+        def should_route_to_cloud(self, _new_tokens):
+            return True
+
+        async def stream_completion(self, *args, **kwargs):
+            # Emit one SSE chunk then close — proves we reached cloud,
+            # not the local-side 422.
+            yield b'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        async def completion(self, *args, **kwargs):
+            return {"choices": [{"message": {"content": "x"}}]}
+
+    engine = _RecordingEngine()
+    engine.estimate_new_tokens = lambda prompt: (10, 5)  # noqa: E731
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    cfg.cloud_router = _FakeCloudRouter()
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "stream": True,
+            "max_tokens": 32,
+        },
+    )
+    # Must NOT 422 — cloud-routed requests are forwarded; cloud
+    # handles ``required`` correctly.
+    assert resp.status_code != 422, resp.text
+
+
 def test_tool_choice_required_with_stream_returns_422():
     """PR #518 round-7 codex BLOCKING: ``tool_choice="required"`` with
     ``stream=true`` cannot be enforced — non-stream 422s on text-only

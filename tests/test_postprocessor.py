@@ -1368,6 +1368,35 @@ class TestTextParserParallelCap:
             "_no_index_last_dropped should have routed it to drop."
         )
 
+    def test_flat_shape_second_call_dropped_under_cap(self):
+        """PR #518 round-8 codex BLOCKING #2: parsers can emit FLAT
+        no-index calls (``{"name": "X", "arguments": "..."}`` — no
+        ``function`` wrapper). Anchor detection used to look only at
+        ``function.name`` or ``id``, so a second flat call leaked
+        past the cap as a "continuation" of the first.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            # First flat call — admitted.
+            {"tool_calls": [{"name": "a", "arguments": "{}"}]},
+            # Second flat call — distinct ``name``, should be dropped.
+            {"tool_calls": [{"name": "b", "arguments": "{}"}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>b</tool_call>"))
+
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["name"] == "a"
+        assert e2 == [], f"flat-shape second call leaked past cap as continuation: {e2}"
+
     def test_dropped_indexed_anchor_blocks_no_index_arg_leak(self):
         """PR #518 round-6 codex BLOCKING: when an INDEXED anchor is
         dropped past the cap, subsequent no-index argument-only
