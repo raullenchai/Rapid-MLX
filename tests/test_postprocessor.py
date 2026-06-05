@@ -1368,6 +1368,66 @@ class TestTextParserParallelCap:
             "_no_index_last_dropped should have routed it to drop."
         )
 
+    def test_indexed_continuation_resets_dropped_flag(self):
+        """PR #518 round-9 codex BLOCKING #2: after a second indexed
+        anchor is dropped (cap full), an admitted call's MIXED
+        continuation (indexed first, then no-index argument fragment)
+        was being suppressed because the dropped flag was still set.
+
+        Sequence:
+          1. call_a anchor (index=0, name=a, args='{"q":"')   → admit
+          2. call_b anchor (index=1, name=b, args='{}')        → DROP, set flag
+          3. call_a continuation (index=0, args='weather')     → forward + RESET flag
+          4. call_a continuation (no-index, args='"}')         → forward (flag reset)
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": '{"q":"'},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    }
+                ]
+            },
+            {"tool_calls": [{"index": 0, "function": {"arguments": "weather"}}]},
+            {"tool_calls": [{"function": {"arguments": '"}'}}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>2</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>3</tool_call>"))
+        e4 = pp.process_chunk(_make_output("<tool_call>4</tool_call>"))
+
+        assert len(e1) == 1 and e1[0].tool_calls[0]["function"]["name"] == "a"
+        assert e2 == []
+        assert len(e3) == 1, "indexed continuation of admitted call must forward"
+        assert e3[0].tool_calls[0]["function"]["arguments"] == "weather"
+        assert len(e4) == 1, (
+            "no-index arg following indexed continuation must forward "
+            "(dropped flag reset by the indexed continuation)"
+        )
+        assert e4[0].tool_calls[0]["function"]["arguments"] == '"}'
+
     def test_flat_shape_second_call_dropped_under_cap(self):
         """PR #518 round-8 codex BLOCKING #2: parsers can emit FLAT
         no-index calls (``{"name": "X", "arguments": "..."}`` — no

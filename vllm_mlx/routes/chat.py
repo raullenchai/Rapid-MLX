@@ -730,32 +730,38 @@ async def _create_chat_completion_impl(
                 f"<= threshold {cfg.cloud_router.threshold}, using local inference"
             )
 
-    # ``tool_choice="required"`` + ``stream=true`` is unenforceable on
-    # local inference: the non-stream path 422s if the model returns
-    # text-only output, but in streaming mode we'd have already sent
-    # ``200 OK`` and emitted content chunks before discovering the
-    # contract violation. Mid-stream SSE-error events aren't a
-    # standard OpenAI client capability, so reject upfront with a
-    # clear error pointing at the workarounds. PR #518 round-7 codex
-    # BLOCKING: streaming ``required`` silently returned text-only
-    # ``finish_reason=stop``, violating the OpenAI guarantee.
+    # ``tool_choice="required"`` + ``stream=true`` is enforceable IF
+    # a streaming tool-call parser is configured: the model usually
+    # complies with the strict-suffix prompt injection (#468), the
+    # parser emits a structured tool_call SSE chunk, and the rare
+    # text-only outcome is a known limitation of local inference
+    # without decoder-side constraints (FSM, #132). When no parser
+    # is configured we have NO path to produce a streaming tool_call
+    # at all — the request can never satisfy the contract, so reject
+    # upfront with a clear error.
     #
-    # Round-8 codex BLOCKING #1: placed AFTER the cloud-routing block
-    # so cloud-routable requests aren't spuriously rejected — the
-    # cloud backend (e.g. GPT-4o) DOES support ``required`` with
-    # streaming via decoder-side constraints. Only requests that
-    # reach this point are committed to local inference.
-    if request.stream and tc == "required" and request.tools:
+    # Round-7 codex BLOCKING surfaced the silent text-only finish_reason
+    # case; round-8 moved the guard below cloud routing; round-9 codex
+    # BLOCKING narrowed the guard to the truly-unenforceable case
+    # (no parser) so configurations that CAN emit streaming tool calls
+    # aren't blocked.
+    if (
+        request.stream
+        and tc == "required"
+        and request.tools
+        and not cfg.tool_call_parser
+    ):
         raise HTTPException(
             status_code=422,
             detail=(
-                'tool_choice="required" cannot be enforced when stream=true on '
-                "local inference (no decoder-level constraint, and SSE has no "
-                "standard mid-stream error event). Either retry with stream=false, "
+                'tool_choice="required" with stream=true requires a streaming '
+                "tool-call parser to be configured (--tool-call-parser); without "
+                "one this server has no path to emit tool_calls in the response "
+                "and the OpenAI 'tool_call guaranteed' contract cannot be met. "
+                "Either set --tool-call-parser=hermes (or your model's parser), "
+                "retry with stream=false (non-stream path 422s text-only output), "
                 "or pin a specific function via tool_choice="
-                '{"type":"function","function":{"name":...}} '
-                "— named choice still relies on prompt injection but the "
-                "filtered tools list makes the wrong-tool case much rarer."
+                '{"type":"function","function":{"name":...}}.'
             ),
         )
 

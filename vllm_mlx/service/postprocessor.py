@@ -333,7 +333,15 @@ class StreamingPostProcessor:
             if isinstance(idx, int) and idx in self._admitted_tool_call_indices:
                 # Continuation of an already-admitted indexed call —
                 # always forward so the client's arguments JSON is
-                # complete.
+                # complete. Round-9 codex BLOCKING #2: seeing a fresh
+                # continuation of an admitted indexed call signals
+                # that the in-flight call is still alive, so reset
+                # the dropped-anchor flag — otherwise a NO-INDEX
+                # argument fragment immediately following this
+                # indexed continuation would be wrongly dropped as
+                # "belongs to a dropped call" when it really belongs
+                # to THIS admitted call.
+                self._no_index_last_dropped = False
                 allowed.append(tc)
                 continue
 

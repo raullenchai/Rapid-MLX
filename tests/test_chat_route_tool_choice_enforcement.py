@@ -485,6 +485,13 @@ def test_tool_choice_required_with_stream_passes_through_cloud_routing():
     """
 
     # Minimal cloud router stub that always claims it would route.
+    # Sets ``stream_completion_called`` on first invocation so the
+    # test can prove the cloud path actually executed (not just that
+    # the local 422 didn't fire — round-9 codex NIT).
+    cloud_called = {"stream": False}
+
+    _CLOUD_SENTINEL_CONTENT = "CLOUD_SENTINEL_X"
+
     class _FakeCloudRouter:
         threshold = 0
         cloud_model = "gpt-4o"
@@ -493,9 +500,12 @@ def test_tool_choice_required_with_stream_passes_through_cloud_routing():
             return True
 
         async def stream_completion(self, *args, **kwargs):
-            # Emit one SSE chunk then close — proves we reached cloud,
-            # not the local-side 422.
-            yield b'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+            cloud_called["stream"] = True
+            yield (
+                'data: {"choices":[{"delta":{"content":"'
+                + _CLOUD_SENTINEL_CONTENT
+                + '"}}]}\n\n'
+            ).encode()
             yield b"data: [DONE]\n\n"
 
         async def completion(self, *args, **kwargs):
@@ -524,19 +534,27 @@ def test_tool_choice_required_with_stream_passes_through_cloud_routing():
             "max_tokens": 32,
         },
     )
-    # Must NOT 422 — cloud-routed requests are forwarded; cloud
-    # handles ``required`` correctly.
-    assert resp.status_code != 422, resp.text
+    # Must reach the cloud path: 200 OK + cloud's sentinel content in
+    # the body + the cloud router's stream_completion was invoked.
+    assert resp.status_code == 200, resp.text
+    assert _CLOUD_SENTINEL_CONTENT in resp.text, (
+        f"cloud sentinel missing — local path was hit instead: {resp.text[:300]}"
+    )
+    assert cloud_called["stream"], (
+        "cloud router's stream_completion was never called — local 422 fired "
+        "or the request silently fell back to local inference"
+    )
 
 
-def test_tool_choice_required_with_stream_returns_422():
-    """PR #518 round-7 codex BLOCKING: ``tool_choice="required"`` with
-    ``stream=true`` cannot be enforced — non-stream 422s on text-only
-    output, but in streaming we'd commit to ``200 OK`` before knowing.
-    Reject upfront with a clear message pointing at the workarounds.
+def test_tool_choice_required_with_stream_no_parser_returns_422():
+    """PR #518 round-9 codex BLOCKING: the streaming-required 422 now
+    fires ONLY when no streaming tool-call parser is configured.
+    Without a parser the server has no path to emit tool_calls in SSE,
+    so the OpenAI ``tool_call guaranteed`` contract can never be met.
     """
     engine = _RecordingEngine()
-    client = _make_client(engine)
+    # tool_call_parser=None explicitly — no streaming tool-call path.
+    client = _make_client(engine, tool_call_parser=None)
     resp = client.post(
         "/v1/chat/completions",
         json={
@@ -549,10 +567,37 @@ def test_tool_choice_required_with_stream_returns_422():
         },
     )
     assert resp.status_code == 422, resp.text
-    assert "stream=false" in resp.text
+    assert "tool-call parser" in resp.text
     # Verify the engine was never invoked — we rejected before the
     # streaming handler opened.
     assert engine.last_chat_kwargs is None
+
+
+def test_tool_choice_required_with_stream_and_parser_passes():
+    """PR #518 round-9 codex BLOCKING: when a streaming tool-call
+    parser IS configured (e.g. hermes), the streaming path CAN emit
+    tool_calls and the 422 must NOT fire. Local inference still
+    can't decoder-enforce, but prompt injection + parser is the
+    best lever we have and was the documented behavior pre-PR.
+    """
+    engine = _RecordingEngine()
+    # ``_make_client`` defaults tool_call_parser="hermes".
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "stream": True,
+            "max_tokens": 32,
+        },
+    )
+    # The stream may emit text-only output (model didn't comply with
+    # prompt injection) — but the server must NOT block the request
+    # upfront; the parser path is the agreed enforcement mechanism.
+    assert resp.status_code == 200, resp.text
 
 
 def test_tool_choice_required_without_stream_still_works():
