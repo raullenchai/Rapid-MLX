@@ -1112,6 +1112,122 @@ class TestTextParserParallelCap:
         assert events[0].type == "finish"
         assert events[0].finish_reason == "tool_calls"
 
+    def test_continuation_deltas_pass_through_admit_by_index(self):
+        """PR #518 round-1 codex BLOCKING regression: qwen3_coder-style
+        parsers emit one incremental ``arguments`` fragment per delta,
+        each sharing the same ``index``. Under
+        ``parallel_tool_calls=false`` the cap must admit the call by
+        ``index`` ONCE and let every continuation through, otherwise
+        the JSON arguments are silently truncated mid-string.
+        """
+        tool_parser = MagicMock()
+        # Header delta: name + first argument fragment, index 0.
+        # Two follow-up deltas: same index 0, only argument fragments.
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"q": "'},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "function": {"arguments": "weather"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "function": {"arguments": '"}'},
+                    }
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        second = pp.process_chunk(_make_output("frag1"))
+        third = pp.process_chunk(_make_output("frag2"))
+
+        # All three deltas must forward — admit-by-index lets the
+        # continuation fragments through after the first admit.
+        assert len(first) == 1 and first[0].type == "tool_call"
+        assert first[0].tool_calls[0]["function"]["arguments"] == '{"q": "'
+        assert len(second) == 1 and second[0].type == "tool_call"
+        assert second[0].tool_calls[0]["function"]["arguments"] == "weather"
+        assert len(third) == 1 and third[0].type == "tool_call"
+        assert third[0].tool_calls[0]["function"]["arguments"] == '"}'
+        # Only ONE distinct call admitted across the three deltas.
+        assert pp._admitted_tool_call_indices == {0}
+
+    def test_continuation_after_new_call_past_cap_is_dropped(self):
+        """A new call (unseen ``index``) past the cap is dropped, AND
+        any subsequent continuations of that dropped index are dropped
+        too — otherwise a half-admitted call would leak arguments.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": '{"x": '},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "function": {"arguments": "1}"},
+                    }
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        second = pp.process_chunk(_make_output("<tool_call>b</tool_call>"))
+        third = pp.process_chunk(_make_output("frag"))
+
+        assert len(first) == 1 and first[0].tool_calls[0]["function"]["name"] == "a"
+        # Index 1 never admitted — second AND third are suppressed.
+        assert second == []
+        assert third == []
+        assert pp._admitted_tool_call_indices == {0}
+
 
 # ======================================================================
 # Coverage gap tests — model-specific edge cases + error paths

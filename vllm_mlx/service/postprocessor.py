@@ -135,6 +135,15 @@ class StreamingPostProcessor:
         # (OpenAI spec: tool_calls deltas merge on ``index``). Codex
         # round-15 BLOCKING #1.
         self._structured_tool_call_count = 0
+        # Set of tool_call indices we've already admitted under the
+        # ``parallel_tool_calls`` cap. Text-parser streaming paths
+        # (hermes, qwen3_coder, etc.) emit MANY deltas per logical call:
+        # name first, then argument fragments, all with the same
+        # ``index``. The cap consumes a slot only on the FIRST sighting
+        # of a new index; subsequent deltas for an already-admitted
+        # index are continuations and must pass through so the client
+        # can reassemble the JSON. PR #518 codex round-1 BLOCKING.
+        self._admitted_tool_call_indices: set[int] = set()
 
         # Nemotron thinking prefix
         self._is_thinking_model = False
@@ -215,21 +224,77 @@ class StreamingPostProcessor:
             val = getattr(req, "parallel_tool_calls", None)
         return val is not False
 
-    def _cap_remaining(self) -> int | None:
-        """Slots remaining under ``parallel_tool_calls=false`` cap. None
-        means uncapped (default / explicit ``parallel_tool_calls=true``).
+    def _apply_parallel_cap(self, tool_calls: list[dict]) -> list[dict]:
+        """Filter a streaming tool_calls delta list under the
+        ``parallel_tool_calls=false`` cap, distinguishing NEW tool
+        calls (unseen ``index``) from CONTINUATION deltas (seen
+        ``index`` — name + incremental argument fragments for an
+        already-admitted call).
 
-        Issue #517: PR #515 added the cap to ``_process_channel_routed``
-        only; the text-parser streaming paths (``_process_standard``,
-        ``_process_reasoning``) emitted ``result['tool_calls']`` raw,
-        letting hermes/qwen3 streaming responses exceed the cap the
-        non-stream path enforces at ``routes/chat.py:934``. Shared
-        helper so all three streaming branches honor the same external
-        contract; the counter is per-request via __init__/reset().
+        Text-parser streaming paths (hermes, qwen3_coder, etc.) emit
+        many deltas per logical call: a header carrying ``{index, id,
+        function: {name}}``, then a sequence of deltas carrying only
+        ``{index, function: {arguments: "<fragment>"}}``. PR #518 round-1
+        codex BLOCKING: the prior implementation consumed a cap slot
+        per delta, so the first argument fragment for index 0 took the
+        only slot and every subsequent fragment of THE SAME CALL was
+        dropped — silently truncating the JSON arguments mid-string.
+
+        New rule:
+          - Uncapped (parallel=true / unset): pass everything; mark
+            every seen index as admitted so callers can disambiguate
+            new vs continuation when they need to.
+          - Capped (parallel=false): for each delta, if its ``index``
+            is already admitted, pass through (continuation). If it's
+            new, only admit if we haven't filled the slot yet.
+          - A delta with no ``index`` field falls through unchanged —
+            we can't disambiguate, so don't apply the cap to it.
+
+        Returns the filtered list (possibly empty if every delta in
+        the batch is a new call past the cap).
         """
         if self._parallel_tool_calls_allowed():
-            return None
-        return max(0, 1 - self._structured_tool_call_count)
+            # Still track admitted indices so the channel-routed branch
+            # can use the same set when assigning its own monotonic
+            # ``index`` values from the count.
+            for tc in tool_calls:
+                idx = tc.get("index") if isinstance(tc, dict) else None
+                if isinstance(idx, int):
+                    self._admitted_tool_call_indices.add(idx)
+            self._structured_tool_call_count = max(
+                self._structured_tool_call_count,
+                len(self._admitted_tool_call_indices),
+            )
+            return list(tool_calls)
+
+        allowed: list[dict] = []
+        for tc in tool_calls:
+            idx = tc.get("index") if isinstance(tc, dict) else None
+            if isinstance(idx, int) and idx in self._admitted_tool_call_indices:
+                # Continuation of an already-admitted call — always
+                # forward so the client's arguments JSON is complete.
+                allowed.append(tc)
+                continue
+            # New call (unseen index, or index field absent — treat as
+            # new since we can't prove otherwise).
+            if len(self._admitted_tool_call_indices) >= 1:
+                # Cap full — drop this new call AND any further
+                # continuations of its index, since we never admit it.
+                continue
+            if isinstance(idx, int):
+                self._admitted_tool_call_indices.add(idx)
+            else:
+                # Synthesize a placeholder index so subsequent
+                # continuations of THIS no-index call would have been
+                # admitted too. Use ``_structured_tool_call_count`` as
+                # the synthetic marker.
+                self._admitted_tool_call_indices.add(self._structured_tool_call_count)
+            self._structured_tool_call_count = max(
+                self._structured_tool_call_count,
+                len(self._admitted_tool_call_indices),
+            )
+            allowed.append(tc)
+        return allowed
 
     def reset(self):
         """Reset all parser states for a new stream.
@@ -246,6 +311,7 @@ class StreamingPostProcessor:
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
         self._structured_tool_call_count = 0
+        self._admitted_tool_call_indices = set()
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
@@ -297,13 +363,24 @@ class StreamingPostProcessor:
             # opted out of. Drop everything past the cap on this chunk
             # AND mark ``tool_calls_detected`` so subsequent chunks
             # short-circuit before emission. Codex round-15 BLOCKING #2.
+            #
+            # Engine surfaces ONE complete structured call per
+            # ``<|call|>`` boundary (openai-harmony StreamableParser),
+            # so each entry here is a distinct logical call — no
+            # continuation-delta concern (that's the text-parser path,
+            # see ``_apply_parallel_cap``). PR #518 round-1: keep this
+            # branch's per-entry counting but share the admitted-set
+            # with the text-parser path so the response-wide counter
+            # stays consistent.
             parallel_allowed = self._parallel_tool_calls_allowed()
             allowed_calls: list[dict] = []
             for tc in engine_tool_calls:
-                if not parallel_allowed and self._structured_tool_call_count >= 1:
+                if not parallel_allowed and len(self._admitted_tool_call_indices) >= 1:
                     break
+                new_idx = self._structured_tool_call_count
+                self._admitted_tool_call_indices.add(new_idx)
+                self._structured_tool_call_count = new_idx + 1
                 allowed_calls.append(tc)
-                self._structured_tool_call_count += 1
             if not allowed_calls:
                 # Cap exhausted — preserve finish semantics but skip
                 # emission. The buffered_finish gate fires through the
@@ -376,11 +453,11 @@ class StreamingPostProcessor:
                 return []
             if result.get("tool_calls"):
                 # Issue #517 — apply ``parallel_tool_calls=false`` cap
-                # uniformly across all streaming paths.
-                raw_tcs = result["tool_calls"]
-                cap = self._cap_remaining()
-                allowed_tcs = raw_tcs if cap is None else raw_tcs[:cap]
-                self._structured_tool_call_count += len(allowed_tcs)
+                # uniformly across all streaming paths. Round-1 codex
+                # BLOCKING: admit by ``index`` so continuation deltas
+                # (incremental argument fragments for the same call)
+                # don't each consume a slot.
+                allowed_tcs = self._apply_parallel_cap(result["tool_calls"])
                 if not allowed_tcs:
                     self.tool_calls_detected = True
                     if output.finished:
@@ -392,6 +469,7 @@ class StreamingPostProcessor:
                             )
                         ]
                     return []
+                self.tool_calls_detected = True
                 return [
                     StreamEvent(
                         type="tool_call",
@@ -512,11 +590,11 @@ class StreamingPostProcessor:
                 return []
             if result.get("tool_calls"):
                 # Issue #517 — apply ``parallel_tool_calls=false`` cap
-                # uniformly across all streaming paths.
-                raw_tcs = result["tool_calls"]
-                cap = self._cap_remaining()
-                allowed_tcs = raw_tcs if cap is None else raw_tcs[:cap]
-                self._structured_tool_call_count += len(allowed_tcs)
+                # uniformly across all streaming paths. Round-1 codex
+                # BLOCKING: admit by ``index`` so continuation deltas
+                # (incremental argument fragments for the same call)
+                # don't each consume a slot.
+                allowed_tcs = self._apply_parallel_cap(result["tool_calls"])
                 if not allowed_tcs:
                     self.tool_calls_detected = True
                     if output.finished:
@@ -528,6 +606,7 @@ class StreamingPostProcessor:
                             )
                         ]
                     return []
+                self.tool_calls_detected = True
                 return [
                     StreamEvent(
                         type="tool_call",
@@ -627,14 +706,12 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
-                # Apply ``parallel_tool_calls=false`` cap before emission
-                # (issue #517) — the parser may produce N calls in one
-                # delta or trickle them across deltas; the counter tracks
-                # cross-delta cumulative emissions.
-                raw_tcs = result["tool_calls"]
-                cap = self._cap_remaining()
-                allowed_tcs = raw_tcs if cap is None else raw_tcs[:cap]
-                self._structured_tool_call_count += len(allowed_tcs)
+                # Apply ``parallel_tool_calls=false`` cap (issue #517).
+                # Round-1 codex BLOCKING: admit by ``index`` so
+                # incremental argument fragments don't each consume a
+                # cap slot (qwen3_coder pattern — header delta + N
+                # argument-fragment deltas all share the same index).
+                allowed_tcs = self._apply_parallel_cap(result["tool_calls"])
                 if not allowed_tcs:
                     self.tool_calls_detected = True
                     if output.finished:
@@ -646,6 +723,7 @@ class StreamingPostProcessor:
                             )
                         ]
                     return []
+                self.tool_calls_detected = True
                 return [
                     StreamEvent(
                         type="tool_call",
