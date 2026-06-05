@@ -586,9 +586,28 @@ def test_tool_call_name_handles_mixed_shape():
     assert _tool_call_name(outer_dict) == "get_date"
 
 
-def test_tool_call_name_returns_none_when_function_missing():
-    """Defensive guard: a tool_call lacking ``function`` returns None
-    instead of raising AttributeError mid-422-check.
+def test_tool_call_name_handles_flat_dict_shape():
+    """PR #518 round-3 codex BLOCKING: raw engine
+    ``GenerationOutput.tool_calls`` is ``[{"name": ..., "arguments":
+    ...}]`` — no ``function`` wrapper. ``_ToolCallingEngine`` in this
+    file emits exactly that shape, so the helper must extract the
+    name directly from the top-level dict.
+    """
+    tc = {"name": "get_weather", "arguments": '{"city":"Tokyo"}'}
+    assert _tool_call_name(tc) == "get_weather"
+
+
+def test_tool_call_name_handles_flat_attr_shape():
+    """Symmetric attr-shape: outer object exposes ``.name`` directly
+    (no ``.function``). Future passthrough surfaces may use this.
+    """
+    obj = _AttrFunction("get_weather")
+    assert _tool_call_name(obj) == "get_weather"
+
+
+def test_tool_call_name_returns_none_when_no_name_anywhere():
+    """Defensive guard: a tool_call lacking ``function`` AND
+    ``name`` returns None instead of raising mid-422-check.
     """
     assert _tool_call_name({}) is None
-    assert _tool_call_name(_AttrFunction("ignored")) is None  # no .function
+    assert _tool_call_name(object()) is None

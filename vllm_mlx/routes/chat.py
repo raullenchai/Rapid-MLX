@@ -85,21 +85,37 @@ router = APIRouter()
 # stdlib timeout/connection set are always available, so we fall back
 # to those when litellm isn't importable.
 def _tool_call_name(tc) -> str | None:
-    """Extract ``function.name`` from a tool_call entry regardless of
-    shape — pydantic ``ToolCall`` (the text-parser path's output) or
-    raw dict (engine structured passthrough). PR #518 round-2 codex
-    BLOCKING: pure-attr access mis-treated dict-shaped entries as
-    nameless, spuriously 422'ing matching named-function calls.
+    """Extract the function name from a tool_call entry regardless of
+    shape. Three real shapes seen in production:
+
+    1. Pydantic ``ToolCall`` — ``tc.function.name``. Text-parser path.
+    2. Wrapped dict — ``{"function": {"name": ...}}``. Anthropic
+       passthrough and engine structured passthrough through
+       ``_parse_tool_calls_with_parser``.
+    3. Flat dict — ``{"name": ..., "arguments": ...}``. Raw engine
+       ``GenerationOutput.tool_calls`` shape (Harmony StreamableParser
+       output before wrapping). Surfaces in tests/fixtures and any
+       downstream that forwards engine output directly.
+
+    PR #518 round-2 codex BLOCKING added shapes 1+2; round-3 BLOCKING
+    added shape 3 (the round-2 widening missed it, even though the
+    same PR's test fixture emits exactly that shape).
     """
     if isinstance(tc, dict):
         fn = tc.get("function")
         if isinstance(fn, dict):
             return fn.get("name")
-        return getattr(fn, "name", None) if fn else None
+        if fn is not None:
+            return getattr(fn, "name", None)
+        # Flat shape — no ``function`` wrapper.
+        return tc.get("name")
     fn = getattr(tc, "function", None)
     if isinstance(fn, dict):
         return fn.get("name")
-    return getattr(fn, "name", None) if fn else None
+    if fn is not None:
+        return getattr(fn, "name", None)
+    # Flat attr-shape — no ``function`` attribute.
+    return getattr(tc, "name", None)
 
 
 def _cloud_call_recoverable_exceptions() -> tuple[type[BaseException], ...]:

@@ -1223,18 +1223,10 @@ class TestTextParserParallelCap:
         assert third[0].tool_calls[0]["function"]["arguments"] == '"}'
         assert pp._no_index_call_admitted is True
 
-    def test_no_index_deltas_treated_as_single_in_flight_call(self):
-        """When the parser emits deltas without ``index``, the cap
-        admits the FIRST delta and treats every subsequent no-index
-        delta as a continuation of that call (the only safe choice —
-        without ``index`` the cap can't distinguish "new call" from
-        "next fragment of the admitted call"). Documented design
-        tradeoff in ``_apply_parallel_cap`` docstring.
-
-        Two-distinct-no-index-calls is unobservable from delta shape
-        alone; well-behaved parsers either emit ``index`` everywhere
-        or share the no-index slot across all their continuation
-        fragments. Anything else is a parser bug.
+    def test_no_index_arg_fragment_passes_through_as_continuation(self):
+        """No-index argument-only fragments are continuations of the
+        in-flight no-index call — forward so the JSON arguments are
+        complete.
         """
         tool_parser = MagicMock()
         tool_parser.extract_tool_calls_streaming.side_effect = [
@@ -1266,6 +1258,79 @@ class TestTextParserParallelCap:
         assert len(first) == 1
         assert len(second) == 1
         assert second[0].tool_calls[0]["function"]["arguments"] == "rest"
+
+    def test_no_index_second_full_call_dropped_under_cap(self):
+        """PR #518 round-3 codex BLOCKING: a second no-index delta
+        carrying a fresh ``id`` or function ``name`` is a NEW call,
+        not a continuation. Under ``parallel_tool_calls=false`` the
+        first slot is taken by call_a; the second full call leaks
+        past the cap if every no-index delta is treated as a
+        continuation. Verify the cap holds.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            },
+            {
+                # Fresh id + name — distinct call. Must be dropped.
+                "tool_calls": [
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    }
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        second = pp.process_chunk(_make_output("<tool_call>b</tool_call>"))
+        assert len(first) == 1
+        assert first[0].tool_calls[0]["function"]["name"] == "a"
+        assert second == []
+
+    def test_uncapped_path_does_not_set_no_index_admitted(self):
+        """PR #518 round-3 codex NIT: the uncapped path used to set
+        ``_no_index_call_admitted=True`` for every no-index delta.
+        That state is cap-only — leaking it into the uncapped path
+        would corrupt cap accounting if a request's flag changed
+        mid-stream (or the same processor were reused). Verify the
+        uncapped path leaves the flag alone.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.return_value = {
+            "tool_calls": [
+                {
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {"name": "a", "arguments": "{}"},
+                }
+            ]
+        }
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": True})
+        pp.reset()
+
+        pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        assert pp._no_index_call_admitted is False
 
     def test_continuation_after_new_call_past_cap_is_dropped(self):
         """A new call (unseen ``index``) past the cap is dropped, AND

@@ -249,19 +249,26 @@ class StreamingPostProcessor:
         dropped — silently truncating the JSON arguments mid-string.
 
         New rule:
-          - Uncapped (parallel=true / unset): pass everything; mark
-            every seen index as admitted so callers can disambiguate
-            new vs continuation when they need to.
+          - Uncapped (parallel=true / unset): pass everything; ONLY
+            track ``index`` admits (for the channel-routed branch's
+            monotonic-counter math). Do NOT touch
+            ``_no_index_call_admitted`` here — that field is cap-only
+            state, and mutating it in the uncapped path could
+            pollute cap accounting if request flags change mid-stream
+            (PR #518 round-3 codex NIT).
           - Capped (parallel=false): for each delta, if its ``index``
-            is already admitted, pass through (continuation). If it's
-            new, only admit if we haven't filled the slot yet.
-          - A delta with no ``index`` field is treated as belonging to
-            the single in-flight "no-index" call: first such delta is
-            the admit, every subsequent no-index delta is a
-            continuation. PR #518 round-2 codex BLOCKING: previously
-            each no-index delta after the first was re-classified as
-            "new" and dropped, silently truncating arguments for
-            parsers that omit ``index`` from continuation fragments.
+            is already admitted, pass through (continuation). If
+            ``index`` is absent AND the delta carries ONLY argument
+            fragments (no new ``id`` / ``name``), treat it as a
+            continuation of the in-flight no-index call. A no-index
+            delta carrying a fresh ``id`` or function ``name`` is a
+            NEW call — admit only if the cap allows. PR #518 round-3
+            codex BLOCKING: previously, every subsequent no-index
+            delta was treated as a continuation, leaking a second
+            full call past the cap.
+          - Cap-full new calls are dropped, AND their later
+            continuations are dropped too (no admit ever fired, so
+            the index/no-index slot was never taken).
 
         Returns the filtered list (possibly empty if every delta in
         the batch is a new call past the cap).
@@ -274,8 +281,6 @@ class StreamingPostProcessor:
                 idx = tc.get("index") if isinstance(tc, dict) else None
                 if isinstance(idx, int):
                     self._admitted_tool_call_indices.add(idx)
-                else:
-                    self._no_index_call_admitted = True
             self._structured_tool_call_count = max(
                 self._structured_tool_call_count,
                 len(self._admitted_tool_call_indices),
@@ -292,10 +297,27 @@ class StreamingPostProcessor:
                 allowed.append(tc)
                 continue
             if idx is None and self._no_index_call_admitted:
-                # Continuation of the in-flight no-index call.
-                allowed.append(tc)
-                continue
-            # New call (unseen index, or first no-index delta).
+                # Only argument-fragment deltas (no fresh ``id`` /
+                # ``name``) count as continuations of the in-flight
+                # no-index call. A delta carrying a new ``id`` or
+                # function ``name`` is a distinct new call and must
+                # run the cap check (round-3 codex BLOCKING #2).
+                fn = tc.get("function") if isinstance(tc, dict) else None
+                has_name = (
+                    isinstance(fn, dict)
+                    and isinstance(fn.get("name"), str)
+                    and fn.get("name")
+                )
+                has_id = (
+                    isinstance(tc, dict)
+                    and isinstance(tc.get("id"), str)
+                    and tc.get("id")
+                )
+                if not (has_name or has_id):
+                    allowed.append(tc)
+                    continue
+            # New call (unseen index, fresh no-index call with id/name,
+            # or first no-index delta).
             already_admitted = len(self._admitted_tool_call_indices) + (
                 1 if self._no_index_call_admitted else 0
             )
