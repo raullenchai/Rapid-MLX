@@ -597,6 +597,72 @@ def test_compat_gate_rejects_mismatched_body_vocab():
     assert is_openai_harmony_compatible(tm, _MismatchedBodyVocabTokenizer()) is False
 
 
+def test_compat_gate_rejects_non_int_encode_result():
+    """Codex round-8 BLOCKING (PR #515): some HF tokenizer
+    configurations (``return_tensors`` defaults, wrapped Fast
+    tokenizers) make ``encode()`` return a ``BatchEncoding`` / tensor
+    rather than a flat ``list[int]``. ``list(...)`` on those either
+    raises or yields opaque objects whose equality check against the
+    harmony reference list returns False but in a way that would crash
+    later consumers (``StreamableParser.process``). The gate must
+    return False on anything that isn't a flat int sequence so the
+    engine falls back cleanly to the legacy router.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+
+    tm = TokenMap(
+        format_tag="harmony",
+        harmony_channel=200005,
+        harmony_message=200008,
+        harmony_call=200012,
+        harmony_end=200007,
+        harmony_return=200002,
+        harmony_start=200006,
+        harmony_constrain=200003,
+    )
+
+    class _BatchEncodingShape:
+        """Pretends to be a BatchEncoding — ``list(self)`` returns
+        dict-style keys (``"input_ids"``, ``"attention_mask"``), not
+        the integer token IDs the gate expects.
+        """
+
+        def __iter__(self):
+            return iter(("input_ids", "attention_mask"))
+
+    class _BatchEncodingTokenizer:
+        name_or_path = "mlx-community/gpt-oss-BATCH-ENCODING-VARIANT"
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            return _BatchEncodingShape()
+
+    assert is_openai_harmony_compatible(tm, _BatchEncodingTokenizer()) is False
+
+    # And a flat tuple of non-int items (an even more degenerate
+    # tokenizer config) must also fall back to False rather than
+    # surface a TypeError.
+    class _StringTokenIdsTokenizer:
+        name_or_path = "mlx-community/gpt-oss-STRING-IDS-VARIANT"
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            return ("Hello", "world")
+
+    assert is_openai_harmony_compatible(tm, _StringTokenIdsTokenizer()) is False
+
+
 def test_finalize_never_synthesizes_truncated_commentary(router, encoding):
     """Codex round-6 BLOCKING resolution (PR #515): finalize() adopts
     the vLLM / SGLang safer-default — a commentary message cut off

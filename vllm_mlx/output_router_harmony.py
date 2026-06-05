@@ -434,8 +434,10 @@ def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
     All three must pass. Result is cached per tokenizer identity
     (codex round-3 NIT) so the probe runs at most once per model.
     """
-    if not is_openai_harmony_available():
-        return False
+    # Codex round-8 NIT: skip the redundant ``is_openai_harmony_available``
+    # call — ``_get_harmony_encoding`` is the single dependency probe
+    # and returns ``None`` if the import fails. The pre-cache return
+    # path below collapses cleanly to ``False`` in that case.
 
     # Cache lookup (codex round-3 NIT). Codex round-4 NIT: include the
     # marker-ID tuple in the key — two tokenizer instances with the
@@ -536,8 +538,19 @@ def _compute_compat(
                 model_ids = encode(probe)
         except Exception:  # noqa: BLE001
             return False
-        # ``encode`` returns ``list[int]`` for HF / mlx_lm tokenizers;
-        # convert to list for comparison robustness.
-        if list(model_ids) != list(harmony_ids):
+        # Codex round-8 BLOCKING: ``encode`` is expected to return a
+        # flat list[int] for HF / mlx_lm tokenizers, but some HF
+        # tokenizer configurations (e.g. ``return_tensors`` defaults
+        # or wrapped Fast tokenizers) yield ``BatchEncoding`` /
+        # tensor-like objects whose ``list(...)`` is either a column
+        # vector or raises. Defensively coerce to a flat int sequence
+        # and fall back to False on anything we cannot interpret.
+        try:
+            model_ids_list = list(model_ids)
+        except TypeError:
+            return False
+        if not all(isinstance(x, int) for x in model_ids_list):
+            return False
+        if model_ids_list != list(harmony_ids):
             return False
     return True

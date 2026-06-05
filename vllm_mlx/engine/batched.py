@@ -1296,8 +1296,15 @@ class BatchedEngine(BaseEngine):
     # may emit ``to=functions.foo  <|constrain|>`` (double space) while
     # the router reconstructs with a single space. The previous check
     # then mis-classifies the call as "new" and double-appends. Match
-    # by the structural pair ``(recipient, body)`` instead, with
-    # whitespace-runs in the body collapsed for comparison.
+    # by the structural pair ``(recipient, body)`` instead.
+    #
+    # Codex round-8 BLOCKING: do NOT collapse whitespace runs inside
+    # the body — two legitimate calls ``{"q":"a b"}`` and ``{"q":"a  b"}``
+    # have semantically distinct arguments and must dedup to DIFFERENT
+    # signatures. Use the exact body bytes captured between
+    # ``<|message|>`` and ``<|call|>``. Spacing variance only meaningfully
+    # appears in the structural wrapper (between ``to=`` and
+    # ``<|constrain|>``), which the regex's ``\s*`` already absorbs.
     _HARMONY_TC_SIGNATURE_RE: re.Pattern[str] = re.compile(
         r"to=(functions\.[A-Za-z0-9_\-]{1,64})\s*"
         r"(?:<\|constrain\|>[A-Za-z0-9_\-]{1,32})?"
@@ -1307,15 +1314,22 @@ class BatchedEngine(BaseEngine):
 
     @classmethod
     def _harmony_tool_call_signature(cls, wire_text: str) -> tuple[str, str] | None:
-        """Extract ``(recipient, normalized_body)`` from a tool-call
-        wire text for spacing-invariant dedup. ``None`` if the text
-        doesn't match the canonical commentary-tool-call shape.
+        """Extract ``(recipient, exact_body)`` from a tool-call wire
+        text for structural dedup. ``None`` if the text doesn't match
+        the canonical commentary-tool-call shape.
+
+        Body bytes are returned VERBATIM — any whitespace inside the
+        body is part of the tool argument and must NOT be normalized
+        away. The structural wrapper already tolerates spacing variance
+        via the ``\\s*`` in the regex; that is the only place spacing
+        can legitimately differ between a model emit and the router's
+        canonical reconstruction.
         """
         m = cls._HARMONY_TC_SIGNATURE_RE.search(wire_text)
         if not m:
             return None
         recipient, body = m.group(1), m.group(2)
-        return (recipient, " ".join(body.split()))
+        return (recipient, body)
 
     def _route_tokens_for_channels(
         self, token_ids: list[int] | None, *, fallback_text: str
@@ -1408,9 +1422,8 @@ class BatchedEngine(BaseEngine):
         # different arguments for the same recipient.
         tool_calls = routed.get("tool_calls") or []
         existing_sigs: set[tuple[str, str]] = {
-            sig
+            (m.group(1), m.group(2))
             for m in self._HARMONY_TC_SIGNATURE_RE.finditer(fallback_text)
-            if (sig := (m.group(1), " ".join(m.group(2).split())))
         }
         appended_parts: list[str] = []
         for tc_text in tool_calls:
@@ -1418,13 +1431,20 @@ class BatchedEngine(BaseEngine):
                 continue
             sig = self._harmony_tool_call_signature(tc_text)
             if sig is None:
-                # Non-canonical reconstruction (e.g. router emitted a
-                # malformed wire text). Fall back to verbatim match so
-                # we still dedup against a literally identical
-                # fallback_text snippet, but otherwise append — better
-                # to risk a duplicate than to silently drop.
-                if tc_text not in fallback_text:
-                    appended_parts.append(tc_text)
+                # Codex round-8 BLOCKING: non-canonical reconstruction
+                # means the wire text doesn't match the
+                # ``to=functions.<name>...<|message|>...<|call|>`` shape
+                # — feeding it to HarmonyToolParser would either fail
+                # to parse (best case) or anchor on the wrong markers
+                # and produce a corrupt tool call (worst case). Drop
+                # with a debug log; the router has already lost the
+                # tool-call signal and there is nothing safe to recover.
+                logger.debug(
+                    "BatchedEngine._route_tokens_for_channels: skipping "
+                    "non-canonical reconstructed tool-call text "
+                    "(length=%d)",
+                    len(tc_text),
+                )
                 continue
             if sig in existing_sigs:
                 continue

@@ -382,7 +382,9 @@ def test_fallback_dedup_normalizes_whitespace_variance(engine, monkeypatch):
                 "tool_calls": [router_reconstructs],
             }
 
-    monkeypatch.setattr(engine, "_create_output_router", lambda: _SpacingVariantRouter())
+    monkeypatch.setattr(
+        engine, "_create_output_router", lambda: _SpacingVariantRouter()
+    )
 
     reasoning, content = engine._route_tokens_for_channels(
         [200005], fallback_text=model_emit
@@ -418,6 +420,86 @@ def test_fallback_dedup_normalizes_whitespace_variance(engine, monkeypatch):
         f"same recipient with different body must append; got {content!r}"
     )
     assert '{"city":"Paris"}' in content
+
+
+def test_fallback_dedup_preserves_internal_body_whitespace(engine, monkeypatch):
+    """Codex round-8 BLOCKING (PR #515): two legitimate calls
+    ``{"q":"a b"}`` and ``{"q":"a  b"}`` carry semantically distinct
+    arguments and must dedup to DIFFERENT signatures. The round-7
+    body-whitespace-collapse path made them collide and could drop the
+    later call. Signature now uses the exact body bytes — distinct
+    internal whitespace ⇒ distinct signature ⇒ both calls survive.
+    """
+    call_a_one_space = (
+        "<|channel|>commentary to=functions.search <|constrain|>json"
+        '<|message|>{"q":"a b"}<|call|>'
+    )
+    call_a_two_space = (
+        "<|channel|>commentary to=functions.search <|constrain|>json"
+        '<|message|>{"q":"a  b"}<|call|>'
+    )
+
+    class _DistinctBodyRouter:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            return {
+                "content": None,
+                "reasoning": None,
+                "tool_calls": [call_a_two_space],
+            }
+
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _DistinctBodyRouter())
+
+    # fallback_text already has the single-space-body variant from the
+    # model's clean emit. The router separately reconstructed the
+    # double-space-body call (different tool turn). Dedup must NOT
+    # collapse them.
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005], fallback_text=call_a_one_space
+    )
+    assert content.count("functions.search") == 2, (
+        f"distinct internal-whitespace bodies must NOT dedup; got {content!r}"
+    )
+    assert '{"q":"a b"}' in content
+    assert '{"q":"a  b"}' in content
+
+
+def test_non_canonical_router_wire_text_is_dropped(engine, monkeypatch):
+    """Codex round-8 BLOCKING (PR #515): when the router emits a wire
+    text that doesn't match the canonical
+    ``to=functions.<name>...<|message|>...<|call|>`` shape (e.g.
+    truncated header, missing ``<|call|>`` terminator, or a malformed
+    recipient that nonetheless survived router-side validation), the
+    engine must NOT append it to fallback_text — feeding malformed wire
+    text to HarmonyToolParser either fails to parse or anchors on the
+    wrong markers and surfaces a corrupt tool call. Drop instead.
+    """
+    malformed = "<|channel|>commentary to=functions.broken<|message|>{}"
+    # NOTE: no <|call|> terminator → signature regex won't match.
+
+    class _MalformedRouter:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            return {
+                "content": None,
+                "reasoning": None,
+                "tool_calls": [malformed],
+            }
+
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _MalformedRouter())
+
+    fallback = "raw fallback text without any tool call"
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005], fallback_text=fallback
+    )
+    # Non-canonical wire text must not be appended — fallback stays.
+    assert content == fallback, (
+        f"non-canonical wire text must be dropped, not appended; got {content!r}"
+    )
 
 
 def test_router_exception_falls_back_cleanly(engine, monkeypatch):
