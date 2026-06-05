@@ -154,7 +154,7 @@ class HarmonyStreamingRouter:
         self._emitted_msg_count = 0
 
     @staticmethod
-    def _reconstruct_tool_call_text(message: Any) -> str:
+    def _reconstruct_tool_call_text(message: Any) -> str | None:
         """Render a commentary ``Message`` back into the text form the
         downstream ``HarmonyToolParser`` expects.
 
@@ -166,8 +166,24 @@ class HarmonyStreamingRouter:
         the canonical wire format:
         ``<|channel|>commentary to=functions.<name>
         [<|constrain|>json]<|message|>{body}<|call|>``
-        and hand it through as a single TOOL_CALL channel event. The
-        text parser then extracts the structured call.
+        and hand it through as a single TOOL_CALL channel event.
+
+        Returns:
+            The reconstructed wire text on success, or ``None`` if the
+            body or content_type carries a harmony structural sentinel
+            substring (which would corrupt the downstream regex
+            extraction in HarmonyToolParser — codex round-7 BLOCKING).
+            Codex round-9 BLOCKING flipped the contract from ``raise``
+            to ``return None`` so the caller can ABSTAIN cleanly from
+            emitting a structured tool-call event: the engine's
+            ``_route_tokens_for_channels`` then leaves the model's raw
+            ``fallback_text`` untouched, and the legacy text-based
+            HarmonyToolParser path handles the same call (with the
+            same baseline limitation OpenAI tool-call JSON values
+            containing literal ``<|...|>`` substrings impose on every
+            text-based harmony consumer — not specific to this router).
+            Malformed-recipient still ``raise``s; recipient corruption
+            is structural, not body-content-dependent.
         """
         body = ""
         for c in message.content:
@@ -201,27 +217,34 @@ class HarmonyStreamingRouter:
             )
             for bad in _HARMONY_BODY_FORBIDDEN_SENTINELS:
                 if bad in ctype_body:
-                    raise ValueError(
-                        f"HarmonyStreamingRouter: refusing to reconstruct "
-                        f"tool-call wire text for content_type carrying "
-                        f"sentinel {bad!r}; got {ctype!r}"
+                    logger.debug(
+                        "HarmonyStreamingRouter: abstaining from tool-call "
+                        "reconstruction — content_type carries sentinel %r",
+                        bad,
                     )
+                    return None
             parts.append(f" {ctype}")
-        # Codex round-7 BLOCKING: a body literal containing any harmony
-        # structural sentinel (``<|call|>``, ``<|message|>``, etc.)
-        # would corrupt the downstream HarmonyToolParser's regex parse
-        # of the reconstructed wire text — the parser would anchor on
-        # the embedded sentinel and truncate the JSON arguments. Reject
-        # rather than escape so the failure surfaces as a router error
-        # and the engine falls back to the legacy text-based parser
-        # (consistent with the recipient validation above).
+        # Codex round-7 BLOCKING / round-9 BLOCKING: a body containing
+        # any harmony structural sentinel substring would corrupt the
+        # downstream HarmonyToolParser's regex parse (the parser would
+        # anchor on the embedded sentinel and truncate the JSON
+        # arguments). Round-9 noted that legitimate OpenAI JSON CAN
+        # contain those characters, so a hard raise drops legitimate
+        # calls. Abstain (return None) instead — the engine's
+        # ``_route_tokens_for_channels`` then leaves the model's raw
+        # ``fallback_text`` untouched and the legacy text-based path
+        # handles the call (with the same parse limitation; no worse
+        # than baseline).
         for bad in _HARMONY_BODY_FORBIDDEN_SENTINELS:
             if bad in body:
-                raise ValueError(
-                    f"HarmonyStreamingRouter: refusing to reconstruct "
-                    f"tool-call wire text for body carrying harmony "
-                    f"sentinel {bad!r}; body length={len(body)}"
+                logger.debug(
+                    "HarmonyStreamingRouter: abstaining from tool-call "
+                    "reconstruction — body carries sentinel %r "
+                    "(body length=%d)",
+                    bad,
+                    len(body),
                 )
+                return None
         parts.append("<|message|>")
         parts.append(body)
         parts.append("<|call|>")
@@ -270,7 +293,15 @@ class HarmonyStreamingRouter:
                 closed, "channel", None
             ) == _HARMONY_CHANNEL_COMMENTARY and getattr(closed, "recipient", None):
                 text = self._reconstruct_tool_call_text(closed)
-                return RouterEvent(Channel.TOOL_CALL, token_id, text)
+                if text is not None:
+                    return RouterEvent(Channel.TOOL_CALL, token_id, text)
+                # Codex round-9 BLOCKING: ``_reconstruct_tool_call_text``
+                # abstains (returns None) when the body / content_type
+                # carries a sentinel substring that would corrupt the
+                # downstream regex parse. Fall through — no router
+                # event is emitted, the engine's outer plumbing keeps
+                # the model's raw fallback_text intact, and the legacy
+                # text-based HarmonyToolParser handles the call.
 
         # Per-token body delta routing for analysis / final.
         ch = self._parser.current_channel

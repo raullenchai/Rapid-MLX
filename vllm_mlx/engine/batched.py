@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import threading
+from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
@@ -1291,22 +1292,20 @@ class BatchedEngine(BaseEngine):
         except Exception:
             return 0
 
-    # Codex round-7 NIT: verbatim substring dedup of reconstructed
-    # tool-call wire text is brittle to spacing variance — the model
-    # may emit ``to=functions.foo  <|constrain|>`` (double space) while
-    # the router reconstructs with a single space. The previous check
-    # then mis-classifies the call as "new" and double-appends. Match
-    # by the structural pair ``(recipient, body)`` instead.
-    #
-    # Codex round-8 BLOCKING: do NOT collapse whitespace runs inside
-    # the body — two legitimate calls ``{"q":"a b"}`` and ``{"q":"a  b"}``
-    # have semantically distinct arguments and must dedup to DIFFERENT
-    # signatures. Use the exact body bytes captured between
-    # ``<|message|>`` and ``<|call|>``. Spacing variance only meaningfully
-    # appears in the structural wrapper (between ``to=`` and
-    # ``<|constrain|>``), which the regex's ``\s*`` already absorbs.
+    # Codex round-7 NIT / round-8 BLOCKING / round-9 BLOCKING:
+    # verbatim substring dedup is brittle to spacing variance, but
+    # collapsing whitespace inside the body merges semantically
+    # distinct calls; and a regex matching the bare
+    # ``to=functions.X<|message|>...<|call|>`` shape false-suppresses
+    # the real call when ``clean_output_text`` strips the
+    # ``<|channel|>commentary`` header but leaves the tail. The
+    # signature must anchor on the FULL commentary frame so a
+    # stripped fallback_text doesn't look like an existing tool call,
+    # and the body must be matched VERBATIM. Spacing variance is
+    # confined to the wrapper (``\s+`` / ``\s*``); the body capture
+    # uses exact bytes.
     _HARMONY_TC_SIGNATURE_RE: re.Pattern[str] = re.compile(
-        r"to=(functions\.[A-Za-z0-9_\-]{1,64})\s*"
+        r"<\|channel\|>commentary\s+to=(functions\.[A-Za-z0-9_\-]{1,64})\s*"
         r"(?:<\|constrain\|>[A-Za-z0-9_\-]{1,32})?"
         r"<\|message\|>(.*?)<\|call\|>",
         re.DOTALL,
@@ -1420,11 +1419,20 @@ class BatchedEngine(BaseEngine):
         # ``(recipient, normalized_body)`` tuple instead — robust to
         # any spacing the model picks while still distinguishing
         # different arguments for the same recipient.
+        # Codex round-9 BLOCKING: dedup by SIGNATURE COUNT, not set
+        # membership. If the model legitimately emits the same tool
+        # call twice in one turn (e.g. user asked the same question
+        # twice, both produce ``get_weather("NYC")``), the model's
+        # raw fallback_text carries both wire-text instances AND the
+        # router structures both. Set dedup collapsed them to one and
+        # silently dropped the second; multiplicity counting consumes
+        # ONE existing match per routed call so identical-twice
+        # survives.
         tool_calls = routed.get("tool_calls") or []
-        existing_sigs: set[tuple[str, str]] = {
+        existing_counts: Counter[tuple[str, str]] = Counter(
             (m.group(1), m.group(2))
             for m in self._HARMONY_TC_SIGNATURE_RE.finditer(fallback_text)
-        }
+        )
         appended_parts: list[str] = []
         for tc_text in tool_calls:
             if not tc_text:
@@ -1432,13 +1440,13 @@ class BatchedEngine(BaseEngine):
             sig = self._harmony_tool_call_signature(tc_text)
             if sig is None:
                 # Codex round-8 BLOCKING: non-canonical reconstruction
-                # means the wire text doesn't match the
-                # ``to=functions.<name>...<|message|>...<|call|>`` shape
-                # — feeding it to HarmonyToolParser would either fail
-                # to parse (best case) or anchor on the wrong markers
-                # and produce a corrupt tool call (worst case). Drop
-                # with a debug log; the router has already lost the
-                # tool-call signal and there is nothing safe to recover.
+                # means the wire text doesn't match the canonical
+                # ``<|channel|>commentary to=...<|message|>...<|call|>``
+                # shape — feeding it to HarmonyToolParser would either
+                # fail to parse or anchor on the wrong markers and
+                # produce a corrupt tool call. Drop with a debug log;
+                # the router has lost the tool-call signal and there
+                # is nothing safe to recover.
                 logger.debug(
                     "BatchedEngine._route_tokens_for_channels: skipping "
                     "non-canonical reconstructed tool-call text "
@@ -1446,10 +1454,10 @@ class BatchedEngine(BaseEngine):
                     len(tc_text),
                 )
                 continue
-            if sig in existing_sigs:
+            if existing_counts[sig] > 0:
+                existing_counts[sig] -= 1
                 continue
             appended_parts.append(tc_text)
-            existing_sigs.add(sig)
         if appended_parts:
             fallback_text = fallback_text + "".join(appended_parts)
 

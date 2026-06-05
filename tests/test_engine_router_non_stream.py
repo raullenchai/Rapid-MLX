@@ -502,6 +502,113 @@ def test_non_canonical_router_wire_text_is_dropped(engine, monkeypatch):
     )
 
 
+def test_identical_calls_twice_in_turn_both_survive_dedup(engine, monkeypatch):
+    """Codex round-9 BLOCKING (PR #515): when the model legitimately
+    emits the SAME tool call twice in one turn (user asked for the
+    weather twice in one prompt), the model's raw fallback_text
+    carries two wire-text instances AND the router structures both.
+    The round-7/8 ``set`` dedup collapsed identical signatures to one
+    and silently dropped the second; the fix uses ``Counter``
+    multiplicity so each existing match consumes ONE routed call and
+    the duplicates both survive.
+    """
+    same_call = (
+        "<|channel|>commentary to=functions.get_weather <|constrain|>json"
+        '<|message|>{"city":"NYC"}<|call|>'
+    )
+    fallback_two_calls = same_call + same_call
+
+    class _TwoIdenticalRouter:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            return {
+                "content": None,
+                "reasoning": None,
+                "tool_calls": [same_call, same_call],
+            }
+
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _TwoIdenticalRouter())
+
+    # Two in fallback, two in routed → two existing matches consume
+    # both routed calls → nothing appended → final count stays at 2.
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005], fallback_text=fallback_two_calls
+    )
+    assert content.count("functions.get_weather") == 2, (
+        f"identical-twice (model+router both saw both) must dedup to 2; got {content!r}"
+    )
+
+    # And if the model emitted ONE but the router structured TWO
+    # (truncation rescued one), the second must be appended.
+    fallback_one_call = same_call
+
+    class _OneInFallbackTwoRouted:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            return {
+                "content": None,
+                "reasoning": None,
+                "tool_calls": [same_call, same_call],
+            }
+
+    monkeypatch.setattr(
+        engine, "_create_output_router", lambda: _OneInFallbackTwoRouted()
+    )
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005], fallback_text=fallback_one_call
+    )
+    assert content.count("functions.get_weather") == 2, (
+        f"one-in-fallback + two-routed must merge to 2; got {content!r}"
+    )
+
+
+def test_signature_regex_requires_commentary_frame(engine, monkeypatch):
+    """Codex round-9 BLOCKING (PR #515): the previous signature regex
+    matched a BARE ``to=functions.X<|message|>...<|call|>`` shape
+    without requiring the ``<|channel|>commentary`` prefix. A
+    fallback_text where ``clean_output_text`` stripped the commentary
+    header but left the tail (or ordinary content happening to contain
+    those substrings) then false-matched as an existing tool call,
+    suppressing the router's real reconstructed wire text. The fix
+    anchors the regex on the full commentary frame.
+    """
+    tc_wire = (
+        "<|channel|>commentary to=functions.get_weather <|constrain|>json"
+        '<|message|>{"city":"NYC"}<|call|>'
+    )
+    # Stripped fallback_text — the commentary header is gone, only the
+    # tail survives. This must NOT register as an existing signature.
+    stripped_fallback = (
+        'to=functions.get_weather <|constrain|>json<|message|>{"city":"NYC"}<|call|>'
+    )
+
+    class _OneCallRouter:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            return {
+                "content": None,
+                "reasoning": None,
+                "tool_calls": [tc_wire],
+            }
+
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _OneCallRouter())
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005], fallback_text=stripped_fallback
+    )
+    # Router's canonical wire text must be appended — the stripped
+    # fallback's bare tail does NOT count as an existing signature.
+    assert content.count("<|channel|>commentary") == 1, (
+        f"stripped fallback must not false-suppress; got {content!r}"
+    )
+    assert "<|channel|>commentary to=functions.get_weather" in content
+
+
 def test_router_exception_falls_back_cleanly(engine, monkeypatch):
     """If the router blows up mid-sequence (e.g. token id outside the
     vocab causes a decode failure), the engine must not propagate the
