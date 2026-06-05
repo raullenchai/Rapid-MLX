@@ -144,6 +144,14 @@ class StreamingPostProcessor:
         # index are continuations and must pass through so the client
         # can reassemble the JSON. PR #518 codex round-1 BLOCKING.
         self._admitted_tool_call_indices: set[int] = set()
+        # Parallel to the indexed-set above, but for parsers that emit
+        # continuation deltas without an ``index`` field. Treated as a
+        # single in-flight call: first no-index delta admits, every
+        # subsequent no-index delta is forwarded as a continuation.
+        # PR #518 round-2 codex BLOCKING: without this, no-index
+        # continuations were re-classified as new calls and dropped
+        # once the cap was full, silently truncating arguments.
+        self._no_index_call_admitted: bool = False
 
         # Nemotron thinking prefix
         self._is_thinking_model = False
@@ -247,8 +255,13 @@ class StreamingPostProcessor:
           - Capped (parallel=false): for each delta, if its ``index``
             is already admitted, pass through (continuation). If it's
             new, only admit if we haven't filled the slot yet.
-          - A delta with no ``index`` field falls through unchanged —
-            we can't disambiguate, so don't apply the cap to it.
+          - A delta with no ``index`` field is treated as belonging to
+            the single in-flight "no-index" call: first such delta is
+            the admit, every subsequent no-index delta is a
+            continuation. PR #518 round-2 codex BLOCKING: previously
+            each no-index delta after the first was re-classified as
+            "new" and dropped, silently truncating arguments for
+            parsers that omit ``index`` from continuation fragments.
 
         Returns the filtered list (possibly empty if every delta in
         the batch is a new call past the cap).
@@ -261,6 +274,8 @@ class StreamingPostProcessor:
                 idx = tc.get("index") if isinstance(tc, dict) else None
                 if isinstance(idx, int):
                     self._admitted_tool_call_indices.add(idx)
+                else:
+                    self._no_index_call_admitted = True
             self._structured_tool_call_count = max(
                 self._structured_tool_call_count,
                 len(self._admitted_tool_call_indices),
@@ -271,27 +286,33 @@ class StreamingPostProcessor:
         for tc in tool_calls:
             idx = tc.get("index") if isinstance(tc, dict) else None
             if isinstance(idx, int) and idx in self._admitted_tool_call_indices:
-                # Continuation of an already-admitted call — always
-                # forward so the client's arguments JSON is complete.
+                # Continuation of an already-admitted indexed call —
+                # always forward so the client's arguments JSON is
+                # complete.
                 allowed.append(tc)
                 continue
-            # New call (unseen index, or index field absent — treat as
-            # new since we can't prove otherwise).
-            if len(self._admitted_tool_call_indices) >= 1:
+            if idx is None and self._no_index_call_admitted:
+                # Continuation of the in-flight no-index call.
+                allowed.append(tc)
+                continue
+            # New call (unseen index, or first no-index delta).
+            already_admitted = len(self._admitted_tool_call_indices) + (
+                1 if self._no_index_call_admitted else 0
+            )
+            if already_admitted >= 1:
                 # Cap full — drop this new call AND any further
                 # continuations of its index, since we never admit it.
                 continue
             if isinstance(idx, int):
                 self._admitted_tool_call_indices.add(idx)
             else:
-                # Synthesize a placeholder index so subsequent
-                # continuations of THIS no-index call would have been
-                # admitted too. Use ``_structured_tool_call_count`` as
-                # the synthetic marker.
-                self._admitted_tool_call_indices.add(self._structured_tool_call_count)
+                # Mark the no-index slot as taken; subsequent no-index
+                # deltas hit the continuation branch above.
+                self._no_index_call_admitted = True
             self._structured_tool_call_count = max(
                 self._structured_tool_call_count,
-                len(self._admitted_tool_call_indices),
+                len(self._admitted_tool_call_indices)
+                + (1 if self._no_index_call_admitted else 0),
             )
             allowed.append(tc)
         return allowed
@@ -312,6 +333,7 @@ class StreamingPostProcessor:
         self._json_preamble_buffer = ""
         self._structured_tool_call_count = 0
         self._admitted_tool_call_indices = set()
+        self._no_index_call_admitted = False
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()

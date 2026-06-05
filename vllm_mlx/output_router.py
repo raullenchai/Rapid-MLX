@@ -678,13 +678,22 @@ class OutputRouter:
           rejects the tokenizer/marker map. Use to debug a regression in
           the gate itself, NOT for general production override.
 
-          Mutually exclusive with ``no_harmony_streaming``; the caller is
-          responsible for not setting both (CLI layer enforces this).
+          Mutually exclusive with ``no_harmony_streaming``; the factory
+          raises ``ValueError`` if both are set so direct API callers
+          (tests, third-party engines) get the same enforcement the CLI
+          layer applies. PR #518 round-2 codex NIT.
         """
         from .output_router_harmony import (
             HarmonyStreamingRouter,
             is_openai_harmony_compatible,
         )
+
+        if force_harmony_streaming and no_harmony_streaming:
+            raise ValueError(
+                "force_harmony_streaming and no_harmony_streaming are "
+                "mutually exclusive — they describe opposite escape "
+                "hatches over the auto-router. Pass at most one."
+            )
 
         legacy = cls.from_tokenizer(tokenizer)
         if legacy is None:

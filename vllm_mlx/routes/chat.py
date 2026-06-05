@@ -84,6 +84,24 @@ router = APIRouter()
 # whether cloud routing was configured at startup. ``httpx`` and the
 # stdlib timeout/connection set are always available, so we fall back
 # to those when litellm isn't importable.
+def _tool_call_name(tc) -> str | None:
+    """Extract ``function.name`` from a tool_call entry regardless of
+    shape — pydantic ``ToolCall`` (the text-parser path's output) or
+    raw dict (engine structured passthrough). PR #518 round-2 codex
+    BLOCKING: pure-attr access mis-treated dict-shaped entries as
+    nameless, spuriously 422'ing matching named-function calls.
+    """
+    if isinstance(tc, dict):
+        fn = tc.get("function")
+        if isinstance(fn, dict):
+            return fn.get("name")
+        return getattr(fn, "name", None) if fn else None
+    fn = getattr(tc, "function", None)
+    if isinstance(fn, dict):
+        return fn.get("name")
+    return getattr(fn, "name", None) if fn else None
+
+
 def _cloud_call_recoverable_exceptions() -> tuple[type[BaseException], ...]:
     """Build the allowlist of exception types we treat as recoverable from
     the cloud call. Lazy so cloud routing being disabled doesn't pay the
@@ -980,15 +998,9 @@ async def _create_chat_completion_impl(
         ):
             _target = (request.tool_choice.get("function") or {}).get("name")
 
-            # ``tool_calls`` carries pydantic ``ToolCall`` objects, not raw
-            # dicts (built by ``_parse_tool_calls_with_parser`` from either
-            # the engine's structured passthrough or the text-parser layer).
-            # Attribute access via ``getattr`` survives both shapes.
-            def _tc_name(tc):
-                fn = getattr(tc, "function", None)
-                return getattr(fn, "name", None) if fn else None
-
-            if _target and not any(_tc_name(tc) == _target for tc in tool_calls or []):
+            if _target and not any(
+                _tool_call_name(tc) == _target for tc in tool_calls or []
+            ):
                 raise HTTPException(
                     status_code=422,
                     detail=(

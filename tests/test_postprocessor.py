@@ -1174,6 +1174,99 @@ class TestTextParserParallelCap:
         # Only ONE distinct call admitted across the three deltas.
         assert pp._admitted_tool_call_indices == {0}
 
+    def test_no_index_continuation_deltas_pass_through(self):
+        """PR #518 round-2 codex BLOCKING: parsers that omit ``index``
+        from continuation deltas were treated as a stream of NEW calls;
+        the first admitted the synthetic marker, every subsequent
+        no-index delta was re-classified "new", saw the cap as full
+        and dropped. Now an in-flight no-index call has explicit state.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"q":"'},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"function": {"arguments": "weather"}},
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"function": {"arguments": '"}'}},
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        second = pp.process_chunk(_make_output("frag1"))
+        third = pp.process_chunk(_make_output("frag2"))
+
+        assert len(first) == 1 and first[0].type == "tool_call"
+        assert first[0].tool_calls[0]["function"]["arguments"] == '{"q":"'
+        assert len(second) == 1 and second[0].type == "tool_call"
+        assert second[0].tool_calls[0]["function"]["arguments"] == "weather"
+        assert len(third) == 1 and third[0].type == "tool_call"
+        assert third[0].tool_calls[0]["function"]["arguments"] == '"}'
+        assert pp._no_index_call_admitted is True
+
+    def test_no_index_deltas_treated_as_single_in_flight_call(self):
+        """When the parser emits deltas without ``index``, the cap
+        admits the FIRST delta and treats every subsequent no-index
+        delta as a continuation of that call (the only safe choice —
+        without ``index`` the cap can't distinguish "new call" from
+        "next fragment of the admitted call"). Documented design
+        tradeoff in ``_apply_parallel_cap`` docstring.
+
+        Two-distinct-no-index-calls is unobservable from delta shape
+        alone; well-behaved parsers either emit ``index`` everywhere
+        or share the no-index slot across all their continuation
+        fragments. Anything else is a parser bug.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": '{"q":"'},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"function": {"arguments": "rest"}},
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        second = pp.process_chunk(_make_output("frag"))
+        assert len(first) == 1
+        assert len(second) == 1
+        assert second[0].tool_calls[0]["function"]["arguments"] == "rest"
+
     def test_continuation_after_new_call_past_cap_is_dropped(self):
         """A new call (unseen ``index``) past the cap is dropped, AND
         any subsequent continuations of that dropped index are dropped

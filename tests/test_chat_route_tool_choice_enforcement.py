@@ -39,6 +39,7 @@ from fastapi.testclient import TestClient
 
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
+from vllm_mlx.routes.chat import _tool_call_name
 from vllm_mlx.routes.chat import router as chat_router
 
 
@@ -534,3 +535,60 @@ def test_tool_choice_auto_keeps_loose_suffix():
     assert "When the user's request can be answered" in content
     # The strict suffix would say "MUST call one of the provided tools" — verify absent.
     assert "MUST call one of the provided tools" not in content
+
+
+# ======================================================================
+# _tool_call_name shape-agnostic extraction (PR #518 round-2 BLOCKING)
+# ======================================================================
+
+
+class _AttrFunction:
+    def __init__(self, name):
+        self.name = name
+
+
+class _AttrToolCall:
+    def __init__(self, name):
+        self.function = _AttrFunction(name)
+
+
+def test_tool_call_name_handles_attr_shape():
+    """Pydantic ``ToolCall`` instances expose ``function.name`` as
+    attribute access — text-parser path output.
+    """
+    assert _tool_call_name(_AttrToolCall("get_weather")) == "get_weather"
+
+
+def test_tool_call_name_handles_dict_shape():
+    """Raw dict from engine structured passthrough — both outer and
+    inner are dicts. Pure-attr access used to return None here and
+    silently 422 matching named-function calls.
+    """
+    tc = {
+        "id": "call_a",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": "{}"},
+    }
+    assert _tool_call_name(tc) == "get_weather"
+
+
+def test_tool_call_name_handles_mixed_shape():
+    """Outer attr-object whose ``function`` is a dict (or vice versa)
+    — the helper must walk both layers independently.
+    """
+
+    class _OuterAttr:
+        function = {"name": "get_time"}
+
+    assert _tool_call_name(_OuterAttr()) == "get_time"
+
+    outer_dict = {"function": _AttrFunction("get_date")}
+    assert _tool_call_name(outer_dict) == "get_date"
+
+
+def test_tool_call_name_returns_none_when_function_missing():
+    """Defensive guard: a tool_call lacking ``function`` returns None
+    instead of raising AttributeError mid-422-check.
+    """
+    assert _tool_call_name({}) is None
+    assert _tool_call_name(_AttrFunction("ignored")) is None  # no .function

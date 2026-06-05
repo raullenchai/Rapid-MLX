@@ -920,3 +920,20 @@ class TestStreamingFactoryEscapeHatches:
             )
             is None
         )
+
+    def test_both_flags_true_raises(self, monkeypatch):
+        """PR #518 round-2 codex NIT: setting BOTH force-on and force-off
+        is incoherent — the CLI layer enforces mutual exclusion, but
+        direct API callers (third-party engines, tests) deserve the
+        same guardrail. Factory must raise instead of silently honoring
+        one over the other.
+        """
+        self._patch_factory(monkeypatch, gate_returns=True)
+        self._harmony_legacy(monkeypatch)
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            OutputRouter.from_tokenizer_for_streaming(
+                object(),
+                force_harmony_streaming=True,
+                no_harmony_streaming=True,
+            )
