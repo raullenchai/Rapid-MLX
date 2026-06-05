@@ -573,6 +573,103 @@ def test_tool_choice_required_with_stream_no_parser_returns_422():
     assert engine.last_chat_kwargs is None
 
 
+def test_tool_choice_required_with_stream_channel_routed_bypasses_422(monkeypatch):
+    """PR #518 round-10 codex BLOCKING #1: when no text parser is set
+    but the engine has channel-routed tool-call capability (harmony /
+    Gemma 4), the streaming-required 422 must NOT fire — the
+    OutputRouter's tool channel is the production path that emits
+    structured tool_calls for those models. Monkeypatch the capability
+    probe to True so we exercise the bypass deterministically without
+    needing a real harmony tokenizer in the test fixture.
+    """
+    from vllm_mlx.routes import chat as chat_module
+
+    engine = _RecordingEngine()
+    monkeypatch.setattr(
+        chat_module,
+        "_engine_supports_channel_routed_tool_calls",
+        lambda _e: True,
+    )
+    # No text parser — pre-round-10 this combination always 422'd.
+    client = _make_client(engine, tool_call_parser=None)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "stream": True,
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_engine_supports_channel_routed_helper_returns_false_on_no_tokenizer():
+    """The capability probe must return ``False`` (not raise) when the
+    engine has no tokenizer attribute or it is ``None`` — the gate
+    must fall back to the parser-only path safely.
+    """
+    from vllm_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
+
+    class _NoTokenizerEngine:
+        tokenizer = None
+
+    assert _engine_supports_channel_routed_tool_calls(_NoTokenizerEngine()) is False
+
+
+def test_engine_supports_channel_routed_helper_returns_true_for_harmony_router(
+    monkeypatch,
+):
+    """When ``OutputRouter.from_tokenizer_for_streaming`` returns a
+    router whose ``format_tag`` is in the engine allowlist (harmony /
+    gemma4), the helper returns True so the streaming-required gate
+    lets the request through.
+    """
+    from types import SimpleNamespace
+
+    from vllm_mlx.output_router import OutputRouter
+    from vllm_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
+
+    fake_router = SimpleNamespace(map=SimpleNamespace(format_tag="harmony"))
+    monkeypatch.setattr(
+        OutputRouter,
+        "from_tokenizer_for_streaming",
+        classmethod(lambda cls, tokenizer, **kw: fake_router),
+    )
+
+    class _HarmonyEngine:
+        tokenizer = object()
+
+    assert _engine_supports_channel_routed_tool_calls(_HarmonyEngine()) is True
+
+
+def test_engine_supports_channel_routed_helper_returns_false_for_unsupported_format(
+    monkeypatch,
+):
+    """Format tags outside the engine allowlist (e.g. ``think_tag``)
+    must NOT trip the bypass — those routers don't emit structured
+    tool calls, so the streaming-required 422 still needs to fire.
+    """
+    from types import SimpleNamespace
+
+    from vllm_mlx.output_router import OutputRouter
+    from vllm_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
+
+    fake_router = SimpleNamespace(map=SimpleNamespace(format_tag="think_tag"))
+    monkeypatch.setattr(
+        OutputRouter,
+        "from_tokenizer_for_streaming",
+        classmethod(lambda cls, tokenizer, **kw: fake_router),
+    )
+
+    class _ThinkTagEngine:
+        tokenizer = object()
+
+    assert _engine_supports_channel_routed_tool_calls(_ThinkTagEngine()) is False
+
+
 def test_tool_choice_required_with_stream_and_parser_passes():
     """PR #518 round-9 codex BLOCKING: when a streaming tool-call
     parser IS configured (e.g. hermes), the streaming path CAN emit

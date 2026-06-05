@@ -118,6 +118,40 @@ def _tool_call_name(tc) -> str | None:
     return getattr(tc, "name", None)
 
 
+def _engine_supports_channel_routed_tool_calls(engine) -> bool:
+    """Probe whether the engine's tokenizer yields a channel-routed
+    streaming path that can emit structured tool calls without a text
+    parser. Harmony (gpt-oss) and Gemma 4 publish tool calls via the
+    OutputRouter's tool-call channel, so a stream=true tool_choice=
+    required request CAN satisfy the contract for those models even
+    when ``cfg.tool_call_parser`` is unset.
+
+    PR #518 round-10 codex BLOCKING #1: the prior gate rejected every
+    parser-less streaming-required request and blocked legitimate
+    harmony/gemma4 traffic. The capability probe relies on the same
+    detection the engine itself uses
+    (``OutputRouter.from_tokenizer_for_streaming`` + the engine's
+    format allowlist), so a positive answer here means the actual
+    engine path WILL produce structured tool_call deltas.
+    """
+    try:
+        from ..engine.batched import _OUTPUT_ROUTER_ALLOWLIST
+        from ..output_router import OutputRouter
+
+        tokenizer = getattr(engine, "tokenizer", None)
+        if tokenizer is None:
+            return False
+        router = OutputRouter.from_tokenizer_for_streaming(tokenizer)
+        if router is None:
+            return False
+        return router.map.format_tag in _OUTPUT_ROUTER_ALLOWLIST
+    except Exception:
+        # Capability probe is best-effort — any failure means we
+        # cannot prove channel-routed support, so the gate falls
+        # back to the parser-only path (which 422s without one).
+        return False
+
+
 def _cloud_call_recoverable_exceptions() -> tuple[type[BaseException], ...]:
     """Build the allowlist of exception types we treat as recoverable from
     the cloud call. Lazy so cloud routing being disabled doesn't pay the
@@ -730,38 +764,41 @@ async def _create_chat_completion_impl(
                 f"<= threshold {cfg.cloud_router.threshold}, using local inference"
             )
 
-    # ``tool_choice="required"`` + ``stream=true`` is enforceable IF
-    # a streaming tool-call parser is configured: the model usually
-    # complies with the strict-suffix prompt injection (#468), the
-    # parser emits a structured tool_call SSE chunk, and the rare
-    # text-only outcome is a known limitation of local inference
-    # without decoder-side constraints (FSM, #132). When no parser
-    # is configured we have NO path to produce a streaming tool_call
-    # at all — the request can never satisfy the contract, so reject
+    # ``tool_choice="required"`` + ``stream=true`` is enforceable IF the
+    # engine has SOME path to produce a streaming tool_call:
+    #   (a) a text-parser path — ``cfg.tool_call_parser`` set; or
+    #   (b) a channel-routed path — harmony (gpt-oss) / Gemma 4 emit
+    #       structured tool_calls via the OutputRouter's tool channel
+    #       without needing a text parser.
+    # The request can satisfy the contract iff EITHER path is available.
+    # When neither is available we have NO mechanism at all, so reject
     # upfront with a clear error.
     #
     # Round-7 codex BLOCKING surfaced the silent text-only finish_reason
-    # case; round-8 moved the guard below cloud routing; round-9 codex
-    # BLOCKING narrowed the guard to the truly-unenforceable case
-    # (no parser) so configurations that CAN emit streaming tool calls
-    # aren't blocked.
+    # case; round-8 moved the guard below cloud routing; round-9 narrowed
+    # to the truly-unenforceable case (no parser); round-10 codex BLOCKING
+    # #1 widened "enforceable" to include channel-routed capability so
+    # harmony/gemma4 streaming requests aren't blocked by the gate.
     if (
         request.stream
         and tc == "required"
         and request.tools
         and not cfg.tool_call_parser
+        and not _engine_supports_channel_routed_tool_calls(engine)
     ):
         raise HTTPException(
             status_code=422,
             detail=(
-                'tool_choice="required" with stream=true requires a streaming '
-                "tool-call parser to be configured (--tool-call-parser); without "
-                "one this server has no path to emit tool_calls in the response "
-                "and the OpenAI 'tool_call guaranteed' contract cannot be met. "
-                "Either set --tool-call-parser=hermes (or your model's parser), "
-                "retry with stream=false (non-stream path 422s text-only output), "
-                "or pin a specific function via tool_choice="
-                '{"type":"function","function":{"name":...}}.'
+                'tool_choice="required" with stream=true requires either a '
+                "streaming tool-call parser (--tool-call-parser) or a "
+                "channel-routed model (harmony / Gemma 4) so the server has "
+                "a path to emit structured tool_calls. Neither is available "
+                "for this request — the OpenAI 'tool_call guaranteed' "
+                "contract cannot be met. Either set --tool-call-parser=hermes "
+                "(or your model's parser), retry with stream=false "
+                "(non-stream path 422s text-only output), or pin a specific "
+                'function via tool_choice={"type":"function",'
+                '"function":{"name":...}}.'
             ),
         )
 

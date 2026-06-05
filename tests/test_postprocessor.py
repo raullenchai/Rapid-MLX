@@ -1645,6 +1645,117 @@ class TestTextParserParallelCap:
         assert third == []
         assert pp._admitted_tool_call_indices == {0}
 
+    def test_no_index_cumulative_anchor_passes_as_continuation(self):
+        """PR #518 round-10 codex BLOCKING #2: cumulative-update parsers
+        re-emit the SAME ``id``/``name`` on every delta (carrying the
+        full arguments string grown so far) rather than emitting one
+        anchor and bare-argument continuations. Without identity
+        tracking the second+ anchor was misclassified as a NEW call
+        and dropped under ``parallel_tool_calls=false``, truncating
+        the arguments JSON to whatever shipped on the first delta.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {"id": "call_a", "function": {"name": "f", "arguments": "{"}}
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_a", "function": {"name": "f", "arguments": '{"x":'}}
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_a", "function": {"name": "f", "arguments": '{"x":1}'}}
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>2</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>3</tool_call>"))
+
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["function"]["name"] == "f"
+        assert len(e2) == 1, (
+            "same-identity no-index re-emit must pass through as continuation"
+        )
+        assert e2[0].tool_calls[0]["function"]["arguments"] == '{"x":'
+        assert len(e3) == 1
+        assert e3[0].tool_calls[0]["function"]["arguments"] == '{"x":1}'
+
+    def test_no_index_different_identity_dropped_under_cap(self):
+        """Identity tracking must NOT silently accept a DIFFERENT
+        no-index anchor as continuation — a second logical call still
+        gets dropped under ``parallel_tool_calls=false``. Companion to
+        ``test_no_index_cumulative_anchor_passes_as_continuation`` —
+        proves the match is identity-strict, not anchor-shape-only.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {"id": "call_a", "function": {"name": "f", "arguments": "{}"}}
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_b", "function": {"name": "g", "arguments": "{}"}}
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>2</tool_call>"))
+
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["function"]["name"] == "f"
+        assert e2 == [], f"different-identity no-index call leaked past cap: {e2}"
+
+    def test_no_index_name_only_cumulative_anchor_passes_as_continuation(self):
+        """Cumulative parsers that omit ``id`` and only re-emit
+        ``function.name`` still benefit from identity tracking — same
+        name = continuation, different name = new call (dropped).
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {"tool_calls": [{"function": {"name": "f", "arguments": "{"}}]},
+            {"tool_calls": [{"function": {"name": "f", "arguments": '{"x":1}'}}]},
+            {"tool_calls": [{"function": {"name": "g", "arguments": "{}"}}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>2</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>3</tool_call>"))
+
+        assert len(e1) == 1
+        assert len(e2) == 1, "same-name no-index anchor must continue"
+        assert e2[0].tool_calls[0]["function"]["arguments"] == '{"x":1}'
+        assert e3 == [], f"different-name new call leaked past cap: {e3}"
+
 
 # ======================================================================
 # Coverage gap tests — model-specific edge cases + error paths

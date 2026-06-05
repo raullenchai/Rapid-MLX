@@ -152,6 +152,17 @@ class StreamingPostProcessor:
         # continuations were re-classified as new calls and dropped
         # once the cap was full, silently truncating arguments.
         self._no_index_call_admitted: bool = False
+        # Identity of the admitted no-index call. Some parsers re-emit
+        # the same ``id`` / function ``name`` on every cumulative
+        # argument-update delta (rather than emitting an anchor once
+        # and bare-argument continuations after). Round-10 codex
+        # BLOCKING: without remembering the admitted identity, the
+        # repeated anchor was misclassified as a NEW call and dropped
+        # under ``parallel_tool_calls=false``, truncating the JSON.
+        # Set together with ``_no_index_call_admitted`` on admit;
+        # cleared on ``reset()``.
+        self._no_index_admitted_id: str | None = None
+        self._no_index_admitted_name: str | None = None
         # Tracks whether the MOST RECENT anchor delta (one carrying a
         # fresh ``id`` / function ``name`` / new ``index``) was DROPPED
         # because the cap was full. Subsequent argument-only no-index
@@ -345,6 +356,41 @@ class StreamingPostProcessor:
                 allowed.append(tc)
                 continue
 
+            # No-index anchor matching the admitted no-index call's
+            # identity: cumulative argument-update parsers re-emit
+            # ``{"id": "<same>", "function": {"name": "<same>",
+            # "arguments": "<grew>"}}`` on every delta rather than
+            # emitting a single anchor and bare-argument continuations.
+            # Without this branch, every such re-emission would be
+            # mis-classified as a new call and dropped under
+            # ``parallel_tool_calls=false`` (round-10 codex BLOCKING #2).
+            # Match if BOTH the delta and the admitted call carry id
+            # AND ids match, OR if id is absent on the delta and the
+            # function names match — never silently accept a different
+            # call identity as continuation.
+            if idx is None and is_anchor and self._no_index_call_admitted:
+                delta_id = tc.get("id") if has_id else None
+                delta_name = (
+                    fn.get("name")
+                    if has_wrapped_name
+                    else (tc.get("name") if has_flat_name else None)
+                )
+                id_matches = (
+                    delta_id is not None
+                    and self._no_index_admitted_id is not None
+                    and delta_id == self._no_index_admitted_id
+                )
+                name_matches_no_id_conflict = (
+                    delta_id is None
+                    and delta_name is not None
+                    and self._no_index_admitted_name is not None
+                    and delta_name == self._no_index_admitted_name
+                )
+                if id_matches or name_matches_no_id_conflict:
+                    self._no_index_last_dropped = False
+                    allowed.append(tc)
+                    continue
+
             # Argument-only no-index fragment: routes to whichever
             # anchor was most recently seen. Any admitted call (indexed
             # OR no-index slot) keeps the fragment unless the most
@@ -404,9 +450,19 @@ class StreamingPostProcessor:
                 # deltas hit the continuation branch above. Reset the
                 # dropped-anchor flag — this delta is the most recent
                 # anchor and it was admitted, so its fragments belong
-                # here.
+                # here. Capture the admitted identity (id + name) so a
+                # later anchor delta carrying the SAME id/name (parsers
+                # that re-emit the anchor with cumulative arguments) is
+                # matched as a continuation rather than misclassified
+                # as a new call. PR #518 round-10 codex BLOCKING #2.
                 self._no_index_call_admitted = True
                 self._no_index_last_dropped = False
+                if has_id:
+                    self._no_index_admitted_id = tc.get("id")
+                if has_wrapped_name:
+                    self._no_index_admitted_name = fn.get("name")
+                elif has_flat_name:
+                    self._no_index_admitted_name = tc.get("name")
             self._structured_tool_call_count = max(
                 self._structured_tool_call_count,
                 len(self._admitted_tool_call_indices)
@@ -432,6 +488,8 @@ class StreamingPostProcessor:
         self._structured_tool_call_count = 0
         self._admitted_tool_call_indices = set()
         self._no_index_call_admitted = False
+        self._no_index_admitted_id = None
+        self._no_index_admitted_name = None
         self._no_index_last_dropped = False
 
         if self.reasoning_parser:

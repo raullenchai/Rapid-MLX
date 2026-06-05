@@ -942,6 +942,39 @@ class TestStreamingFactoryEscapeHatches:
             is None
         )
 
+    def test_no_harmony_streaming_does_not_import_harmony_shim(self, monkeypatch):
+        """PR #518 round-10 codex NIT: force-off must short-circuit
+        BEFORE importing ``output_router_harmony``. Operators who
+        explicitly opt out shouldn't pay the import cost, and the
+        legacy path must work on environments that don't ship
+        openai-harmony at all.
+
+        Simulate the latter by making the harmony module raise on
+        import — force-off must still return the legacy router; only
+        the default + force-on paths should hit the import.
+        """
+        import sys
+
+        # Make sure the no-import branch is exercised cleanly even if
+        # the module is already cached from another test.
+        monkeypatch.setitem(sys.modules, "vllm_mlx.output_router_harmony", None)
+        # Stage a legacy router so the function has something non-None
+        # to return on the force-off branch.
+        self._harmony_legacy(monkeypatch)
+
+        # Default path would hit the (broken) import → blows up with
+        # ImportError as expected.
+        with pytest.raises(Exception):
+            OutputRouter.from_tokenizer_for_streaming(object())
+
+        # Force-off path must NOT import the shim — must return legacy
+        # without raising.
+        router = OutputRouter.from_tokenizer_for_streaming(
+            object(), no_harmony_streaming=True
+        )
+        assert router is not None
+        assert getattr(router, "map", None) is not None
+
     def test_both_flags_true_raises(self, monkeypatch):
         """PR #518 round-2 codex NIT: setting BOTH force-on and force-off
         is incoherent — the CLI layer enforces mutual exclusion, but

@@ -683,11 +683,6 @@ class OutputRouter:
           (tests, third-party engines) get the same enforcement the CLI
           layer applies. PR #518 round-2 codex NIT.
         """
-        from .output_router_harmony import (
-            HarmonyStreamingRouter,
-            is_openai_harmony_compatible,
-        )
-
         if force_harmony_streaming and no_harmony_streaming:
             raise ValueError(
                 "force_harmony_streaming and no_harmony_streaming are "
@@ -696,6 +691,24 @@ class OutputRouter:
             )
 
         legacy = cls.from_tokenizer(tokenizer)
+        # Honor force-off BEFORE importing the harmony shim — operators
+        # who explicitly opt out shouldn't pay the import cost (or hit
+        # an unrelated harmony-module import failure on environments
+        # that don't ship openai-harmony). PR #518 round-10 codex NIT.
+        if no_harmony_streaming:
+            if legacy is None:
+                return None
+            logger.debug(
+                "[OutputRouter] Streaming factory honoring "
+                "--no-openai-harmony-streaming; using legacy router"
+            )
+            return legacy
+
+        from .output_router_harmony import (
+            HarmonyStreamingRouter,
+            is_openai_harmony_compatible,
+        )
+
         if legacy is None:
             if force_harmony_streaming:
                 # Round-4 codex BLOCKING #3: silently returning ``None``
@@ -711,15 +724,6 @@ class OutputRouter:
                     "the right path."
                 )
             return None
-
-        # Honor force-off before any compat check fires — the explicit
-        # opt-out short-circuits regardless of harmony-shape detection.
-        if no_harmony_streaming:
-            logger.debug(
-                "[OutputRouter] Streaming factory honoring "
-                "--no-openai-harmony-streaming; using legacy router"
-            )
-            return legacy
 
         is_harmony = legacy.map.format_tag == "harmony"
         if force_harmony_streaming:
