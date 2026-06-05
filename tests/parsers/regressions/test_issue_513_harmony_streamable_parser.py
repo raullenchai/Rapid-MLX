@@ -697,12 +697,17 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
         def encode(self, text, add_special_tokens=False):
             return enc.encode(text, allowed_special="none")
 
-    # Tail-substring fakes (must be rejected).
+    # Tail-substring fakes AND non-allowlisted owner prefixes (codex
+    # round-12 BLOCKING — even an anchored basename allowlist let
+    # arbitrary owners pass; restrict to known owner prefixes).
     rejected_names = (
         "my-not-gpt-oss/whatever",
         "foo/bar-gpt-oss-malicious",
         "my-not-gpt-oss-20b",  # no slash, tail substring
         "notgpt-oss-fake",
+        "some-user/gpt-oss-remapped",  # unknown owner with valid basename
+        "evil-org/gpt-oss-20b",
+        "anonymous/gpt-oss",
     )
     for name in rejected_names:
 
@@ -715,10 +720,13 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
             f"anchored allowlist failed"
         )
 
-    # Canonical names (must still pass — sanity).
+    # Canonical names — known owner prefixes (openai, mlx-community,
+    # unsloth) plus bare basename. Sanity check that the allowlist
+    # tightening didn't accidentally over-reject.
     accepted_names = (
         "openai/gpt-oss-20b",
         "mlx-community/gpt-oss-20b-MXFP4-Q8",
+        "unsloth/gpt-oss-20b-MLX-8bit",
         "gpt-oss-20b",  # bare, anchored at ^
         "gpt-oss",  # bare exact
     )
@@ -1065,11 +1073,11 @@ def test_compat_gate_rejects_missing_marker_ids():
 
 
 def test_compat_gate_cache_segregates_by_marker_ids():
-    """Codex round-4 NIT (PR #515): two tokenizer instances with the
-    same ``name_or_path`` but different marker IDs must NOT share a
-    cached compatibility result. The cache key includes the marker
-    tuple so a mock tokenizer changing its vocab between calls won't
-    leak a stale True/False.
+    """Codex round-4 NIT (PR #515): a SINGLE tokenizer instance probed
+    with two different ``TokenMap`` marker-ID tuples must NOT share a
+    cached compatibility result — the inner per-tokenizer cache keys
+    on the ``(name_lc, marker_ids)`` tuple, so distinct marker tuples
+    segregate into distinct entries even on the same tokenizer.
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import (
@@ -1077,9 +1085,6 @@ def test_compat_gate_cache_segregates_by_marker_ids():
         is_openai_harmony_compatible,
     )
 
-    # Identity passes the allowlist; markers differ between the two
-    # TokenMap instances — gate must run twice and may return
-    # different results.
     class _T:
         name_or_path = "mlx-community/gpt-oss-CACHE-KEY-SEGREGATION"
 
@@ -1095,18 +1100,15 @@ def test_compat_gate_cache_segregates_by_marker_ids():
     tm_a = TokenMap(format_tag="harmony", harmony_channel=200005)
     tm_b = TokenMap(format_tag="harmony", harmony_channel=999999)
 
-    # Clear cache for hygiene.
-    for k in list(_COMPAT_RESULT_CACHE.keys()):
-        if "cache-key-segregation" in str(k):
-            _COMPAT_RESULT_CACHE.pop(k, None)
+    t = _T()  # one instance — keep alive for the WeakKeyDictionary
+    is_openai_harmony_compatible(tm_a, t)
+    is_openai_harmony_compatible(tm_b, t)
 
-    is_openai_harmony_compatible(tm_a, _T())
-    is_openai_harmony_compatible(tm_b, _T())
-
-    seg_keys = [k for k in _COMPAT_RESULT_CACHE if "cache-key-segregation" in str(k)]
-    assert len(seg_keys) == 2, (
-        f"cache must keep separate entries per marker-ID tuple; "
-        f"got {len(seg_keys)} entries: {seg_keys!r}"
+    inner = _COMPAT_RESULT_CACHE.get(t)
+    assert inner is not None, "tokenizer must have a cache slot after probes"
+    assert len(inner) == 2, (
+        f"cache must keep separate inner entries per marker-ID tuple; "
+        f"got {len(inner)} entries: {list(inner.keys())!r}"
     )
 
 
@@ -1124,10 +1126,7 @@ def test_compat_gate_caches_per_tokenizer_identity():
     result, and the second call MUST be short-circuited by the cache.
     """
     from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import (
-        _COMPAT_RESULT_CACHE,
-        is_openai_harmony_compatible,
-    )
+    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
 
     enc = openai_harmony.load_harmony_encoding(
         openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
@@ -1166,12 +1165,9 @@ def test_compat_gate_caches_per_tokenizer_identity():
             call_count["n"] += 1
             return [0]  # nonsense — guaranteed mismatch → False
 
-    # Clear any stale cache entry from prior runs (key now includes
-    # the marker tuple per round-4 NIT).
-    for k in list(_COMPAT_RESULT_CACHE.keys()):
-        if "cache-probe-invocation" in str(k):
-            _COMPAT_RESULT_CACHE.pop(k, None)
-
+    # Fresh tokenizer instance — the WeakKeyDictionary cache is keyed
+    # on the instance object, so a new instance is guaranteed to start
+    # with no stale entry regardless of prior test state.
     t = _CountingTokenizer()
     # First call reaches the body-vocab probe and increments
     # call_count — that's the work the cache must save on subsequent

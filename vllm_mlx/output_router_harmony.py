@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import re
+import weakref
 from typing import Any
 
 from .output_router import Channel, RouterEvent, TokenMap
@@ -99,12 +100,21 @@ _CONTENT_TYPE_SHAPE = re.compile(r"^<\|constrain\|>[A-Za-z0-9_\-]{1,32}$")
 # family member.
 #
 # Codex round-11 BLOCKING: ``known in name_lc`` substring matching let
-# an arbitrary ``not-gpt-oss`` identity pass. Switch to anchored
-# patterns that require either a path-segment boundary (``/gpt-oss-``,
-# ``/gpt-oss$``) or the bare basename at start (``gpt-oss-...``).
-# This still admits ``openai/gpt-oss-*`` and ``mlx-community/gpt-oss-*-MXFP4-Q8``
-# while rejecting ``not-gpt-oss`` and similar tail-substring fakes.
-_KNOWN_HARMONY_TOKENIZER_PATTERNS = (re.compile(r"(?:^|/)gpt-oss(?:-|$)"),)
+# an arbitrary ``not-gpt-oss`` identity pass. Codex round-12 BLOCKING:
+# even an anchored ``(?:^|/)gpt-oss(?:-|$)`` accepted arbitrary owners
+# (``some-user/gpt-oss-remapped``). Restrict to known-good owner
+# prefixes only — the upstream ``openai`` org, the canonical MLX
+# repackagers (``mlx-community``, ``unsloth``), and the bare basename
+# form. Anything else (`some-user/gpt-oss-…`) is rejected even though
+# its basename starts with ``gpt-oss-``; an artifact under a non-
+# allowlisted owner cannot prove the vocab is the harmony encoding's
+# vocab regardless of how its body-probe responses align.
+_KNOWN_HARMONY_TOKENIZER_PATTERNS = (
+    re.compile(r"^openai/gpt-oss(?:-|$)"),
+    re.compile(r"^mlx-community/gpt-oss(?:-|$)"),
+    re.compile(r"^unsloth/gpt-oss(?:-|$)"),
+    re.compile(r"^gpt-oss(?:-|$)"),
+)
 
 # Probe strings used by ``is_openai_harmony_compatible`` to verify
 # that the model's body-token vocabulary matches the openai-harmony
@@ -436,7 +446,26 @@ def is_openai_harmony_available() -> bool:
 # marker IDs (e.g. mock tokenizers in tests, or a model loaded with
 # a custom vocab override) would otherwise share a stale entry. The
 # marker IDs uniquely identify a (model, harmony-format) pair.
-_COMPAT_RESULT_CACHE: dict[tuple, bool] = {}
+#
+# Codex round-12 BLOCKING / NIT: the previous key
+# ``(name_or_path_lc, marker_ids, id(tokenizer))`` was vulnerable to
+# Python's ``id()`` reuse after garbage collection — a tokenizer freed
+# between requests could have its memory address reused by a brand-new
+# (potentially incompatible) tokenizer, which then hit the stale True
+# entry and was upgraded incorrectly. Switch to a
+# ``WeakKeyDictionary`` keyed on the tokenizer object itself; when the
+# tokenizer is garbage-collected the entry is automatically reaped,
+# eliminating the id-reuse hazard and bounding cache growth across
+# model reloads. The inner per-tokenizer dict is keyed on
+# ``(name_or_path_lc, marker_ids)`` so distinct ``TokenMap`` overrides
+# on a single tokenizer still segregate.
+#
+# Fallback: a few tokenizer mocks (and any tokenizer whose class
+# disables ``__weakref__``) are not weak-referenceable. For those we
+# fall back to recomputing on every call — cheap, no correctness risk.
+_COMPAT_RESULT_CACHE: weakref.WeakKeyDictionary[Any, dict[tuple, bool]] = (
+    weakref.WeakKeyDictionary()
+)
 _HARMONY_ENCODING_CACHE: dict[str, Any] = {}
 
 
@@ -500,17 +529,12 @@ def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
     # and returns ``None`` if the import fails. The pre-cache return
     # path below collapses cleanly to ``False`` in that case.
 
-    # Cache lookup (codex round-3 NIT). Codex round-4 NIT: include the
-    # marker-ID tuple in the key. Codex round-11 BLOCKING: also include
-    # the tokenizer instance identity (``id(tokenizer)``) so two
-    # distinct tokenizer objects with the same ``name_or_path`` +
-    # marker IDs but a remapped body vocabulary cannot reuse a stale
-    # ``True`` decision and feed incompatible IDs to
-    # ``StreamableParser``. ``id()`` segregates by Python object
-    # identity — same instance reuses (the engine reuses one tokenizer
-    # per model across requests), distinct instances re-probe
-    # authoritatively. Zero per-lookup encode cost (vs a fingerprint
-    # probe), which keeps the cache hot path free.
+    # Cache lookup (codex round-3 NIT / round-4 NIT / round-11 BLOCKING
+    # / round-12 BLOCKING+NIT). The cache is now a
+    # ``WeakKeyDictionary[tokenizer] -> dict[(name_lc, marker_ids), bool]``
+    # — distinct tokenizer instances naturally segregate, and entries
+    # auto-clear when the tokenizer is garbage-collected (no ``id()``
+    # reuse hazard, bounded growth across model reloads).
     name_or_path = getattr(tokenizer, "name_or_path", "") or ""
     marker_ids = (
         token_map.harmony_channel,
@@ -521,18 +545,35 @@ def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
         token_map.harmony_start,
         token_map.harmony_constrain,
     )
-    cache_key = (str(name_or_path).lower(), marker_ids, id(tokenizer))
-    cached = _COMPAT_RESULT_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
+    inner_key = (str(name_or_path).lower(), marker_ids)
+    try:
+        tk_cache = _COMPAT_RESULT_CACHE.get(tokenizer)
+    except TypeError:
+        # Tokenizer class is not weak-referenceable (e.g. some test
+        # mocks). Skip caching for this call; correctness is preserved
+        # at the cost of a recompute per request.
+        tk_cache = None
+        cacheable = False
+    else:
+        cacheable = True
+    if tk_cache is not None:
+        cached = tk_cache.get(inner_key)
+        if cached is not None:
+            return cached
 
     enc = _get_harmony_encoding()
     if enc is None:
-        _COMPAT_RESULT_CACHE[cache_key] = False
-        return False
+        result = False
+    else:
+        result = _compute_compat(token_map, tokenizer, enc, name_or_path)
 
-    result = _compute_compat(token_map, tokenizer, enc, name_or_path)
-    _COMPAT_RESULT_CACHE[cache_key] = result
+    if cacheable:
+        try:
+            slot = _COMPAT_RESULT_CACHE.setdefault(tokenizer, {})
+        except TypeError:
+            pass
+        else:
+            slot[inner_key] = result
     return result
 
 
