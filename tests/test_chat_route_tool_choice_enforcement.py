@@ -472,6 +472,79 @@ def test_tool_choice_named_function_wrong_call_returns_422():
     assert "get_weather" in resp.text
 
 
+def test_tool_choice_required_with_stream_returns_422():
+    """PR #518 round-7 codex BLOCKING: ``tool_choice="required"`` with
+    ``stream=true`` cannot be enforced — non-stream 422s on text-only
+    output, but in streaming we'd commit to ``200 OK`` before knowing.
+    Reject upfront with a clear message pointing at the workarounds.
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "stream": True,
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "stream=false" in resp.text
+    # Verify the engine was never invoked — we rejected before the
+    # streaming handler opened.
+    assert engine.last_chat_kwargs is None
+
+
+def test_tool_choice_required_without_stream_still_works():
+    """Symmetric pin: ``required`` + ``stream=false`` must still
+    succeed (covered by the existing happy-path test, restated here
+    so the 422 above doesn't accidentally regress the non-stream
+    path during future refactors).
+    """
+    engine = _ToolCallingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "stream": False,
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_tool_choice_named_with_stream_passes_through():
+    """The named-function form is still allowed under streaming —
+    the filtered tools list makes the wrong-tool case much rarer
+    (the model only sees one tool), even though we can't 422
+    mid-stream if it still produces text. Documented limitation
+    in the 422 message for ``required``.
+    """
+    engine = _ToolCallingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "stream": True,
+            "max_tokens": 32,
+        },
+    )
+    # Streaming response: 200 OK + SSE body. Test passes if we got
+    # past the upfront-reject gate.
+    assert resp.status_code == 200, resp.text
+
+
 class _MultiCallEngine(_RecordingEngine):
     """Mock engine that emits TWO tool_calls: the target plus an
     extra. Used to verify the round-4 BLOCKING #2 ``all(...)`` gate.

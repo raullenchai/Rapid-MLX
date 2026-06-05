@@ -441,6 +441,29 @@ async def _create_chat_completion_impl(
         elif tc == "none" and request.tools:
             request.tools = None
 
+    # ``tool_choice="required"`` + ``stream=true`` is unenforceable on
+    # local inference: the non-stream path 422s if the model returns
+    # text-only output, but in streaming mode we'd have already sent
+    # ``200 OK`` and emitted content chunks before discovering the
+    # contract violation. Mid-stream SSE-error events aren't a
+    # standard OpenAI client capability, so reject upfront with a
+    # clear error pointing at the workarounds. PR #518 round-7 codex
+    # BLOCKING: streaming ``required`` silently returned text-only
+    # ``finish_reason=stop``, violating the OpenAI guarantee.
+    if request.stream and tc == "required" and request.tools:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                'tool_choice="required" cannot be enforced when stream=true on '
+                "local inference (no decoder-level constraint, and SSE has no "
+                "standard mid-stream error event). Either retry with stream=false, "
+                "or pin a specific function via tool_choice="
+                '{"type":"function","function":{"name":...}} '
+                "— named choice still relies on prompt injection but the "
+                "filtered tools list makes the wrong-tool case much rarer."
+            ),
+        )
+
     # Save original messages (clean dicts) for cloud routing BEFORE
     # local mutations (extract_multimodal_content, developer→system, suffix injection).
     if cfg.cloud_router:
