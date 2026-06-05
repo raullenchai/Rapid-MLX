@@ -99,22 +99,60 @@ _CONTENT_TYPE_SHAPE = re.compile(r"^<\|constrain\|>[A-Za-z0-9_\-]{1,32}$")
 # require the tokenizer's reported identity to be a known gpt-oss
 # family member.
 #
-# Codex round-11 BLOCKING: ``known in name_lc`` substring matching let
-# an arbitrary ``not-gpt-oss`` identity pass. Codex round-12 BLOCKING:
-# even an anchored ``(?:^|/)gpt-oss(?:-|$)`` accepted arbitrary owners
-# (``some-user/gpt-oss-remapped``). Restrict to known-good owner
-# prefixes only — the upstream ``openai`` org, the canonical MLX
-# repackagers (``mlx-community``, ``unsloth``), and the bare basename
-# form. Anything else (`some-user/gpt-oss-…`) is rejected even though
-# its basename starts with ``gpt-oss-``; an artifact under a non-
-# allowlisted owner cannot prove the vocab is the harmony encoding's
-# vocab regardless of how its body-probe responses align.
-_KNOWN_HARMONY_TOKENIZER_PATTERNS = (
-    re.compile(r"^openai/gpt-oss(?:-|$)"),
-    re.compile(r"^mlx-community/gpt-oss(?:-|$)"),
-    re.compile(r"^unsloth/gpt-oss(?:-|$)"),
-    re.compile(r"^gpt-oss(?:-|$)"),
+# Codex round-11 BLOCKING / round-12 BLOCKING / round-13 BLOCKING —
+# the tokenizer-identity gate has had three rounds of tightening:
+#   * round-11: naive ``known in name_lc`` substring → anchored basename
+#     regex (rejected tail-substring fakes).
+#   * round-12: anchored basename still let arbitrary owners through
+#     (``some-user/gpt-oss-remapped``) → restrict to known owners.
+#   * round-13: pure remote-id-prefix matching rejected legitimate
+#     LOCAL paths (``/models/gpt-oss-20b``, ``~/.cache/.../gpt-oss-20b``)
+#     and made production fall back to the leaking legacy router.
+# Final shape (two-tier):
+#   * Local filesystem paths (``/``, ``~``, ``./``, ``../`` prefixes)
+#     trust the basename — the user explicitly loaded that artifact,
+#     and the body-probe set is the authoritative vocab check.
+#   * Remote HF IDs (``owner/name`` shape with no leading separator)
+#     require an allowlisted owner; this defense-in-depth catches the
+#     ``some-user/gpt-oss-remapped`` shape codex flagged.
+# The basename regex itself is the same anchored
+# ``^gpt-oss(?:-|$)`` shape from round-11.
+_BASENAME_GPT_OSS_RE = re.compile(r"^gpt-oss(?:-|$)")
+_KNOWN_HARMONY_REMOTE_OWNERS = frozenset(
+    {
+        "openai",
+        "mlx-community",
+        "unsloth",
+    }
 )
+
+
+def _is_known_harmony_identity(name_or_path: str) -> bool:
+    """Two-tier allowlist: local paths trust the basename, remote
+    HF IDs require an allowlisted owner. Returns True iff the
+    identity names a known gpt-oss family member.
+    """
+    name_lc = name_or_path.lower().rstrip("/")
+    if not name_lc:
+        return False
+    basename = name_lc.rsplit("/", 1)[-1]
+    if not _BASENAME_GPT_OSS_RE.match(basename):
+        return False
+    # Bare basename (no path separator at all) — accept.
+    if "/" not in name_lc:
+        return True
+    # Local filesystem path — accept (user-controlled artifact).
+    if (
+        name_lc.startswith("/")
+        or name_lc.startswith("~")
+        or name_lc.startswith("./")
+        or name_lc.startswith("../")
+    ):
+        return True
+    # Remote HF ID (``owner/name`` shape) — owner must be allowlisted.
+    owner = name_lc.split("/", 1)[0]
+    return owner in _KNOWN_HARMONY_REMOTE_OWNERS
+
 
 # Probe strings used by ``is_openai_harmony_compatible`` to verify
 # that the model's body-token vocabulary matches the openai-harmony
@@ -208,11 +246,16 @@ class HarmonyStreamingRouter:
             Malformed-recipient still ``raise``s; recipient corruption
             is structural, not body-content-dependent.
         """
-        body = ""
+        # Codex round-13 NIT: avoid O(n^2) ``+=`` string accumulation
+        # for large JSON tool arguments — collect text chunks in a
+        # list and ``"".join`` once. Same pattern as the round-2 NIT
+        # fix in ``feed_sequence``.
+        body_parts: list[str] = []
         for c in message.content:
             t = getattr(c, "text", None)
             if t:
-                body += t
+                body_parts.append(t)
+        body = "".join(body_parts)
         parts: list[str] = ["<|channel|>commentary"]
         recipient = getattr(message, "recipient", None)
         # Codex round-1 BLOCKING: validate recipient against the
@@ -584,16 +627,11 @@ def _compute_compat(
     out from ``is_openai_harmony_compatible`` so the cache-write logic
     lives in one place around a single return value (codex round-3 NIT).
     """
-    # (1) Tokenizer-identity allowlist. ``name_or_path`` is set by HF /
-    # mlx-lm tokenizers to the model id passed at load time. We do a
-    # case-insensitive ANCHORED match (codex round-11 BLOCKING — naive
-    # substring let ``not-gpt-oss`` pass) so quant-suffix renames
-    # (``-MXFP4-Q8``) and org prefixes (``mlx-community/`` vs
-    # ``openai/``) all resolve to the same family while tail-substring
-    # fakes (``my-not-gpt-oss``) are rejected. Missing or empty
-    # name_or_path → can't prove identity → reject.
-    name_lc = str(name_or_path).lower()
-    if not any(p.search(name_lc) for p in _KNOWN_HARMONY_TOKENIZER_PATTERNS):
+    # (1) Tokenizer-identity allowlist (codex round-11 / round-12 /
+    # round-13). Two-tier: local filesystem paths trust the basename
+    # gpt-oss match; remote HF IDs require an allowlisted owner. See
+    # ``_is_known_harmony_identity`` docstring for the full algorithm.
+    if not _is_known_harmony_identity(str(name_or_path)):
         return False
 
     # (2) Marker-ID parity. Codex round-4 BLOCKING: ALL seven harmony

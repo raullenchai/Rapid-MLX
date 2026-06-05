@@ -229,9 +229,26 @@ def test_per_token_streaming_routes_one_event_per_body_token(router, encoding):
     contract). Commentary body tokens are suppressed during streaming
     (the tool call is emitted as a single aggregated event on
     ``<|call|>``), matching the existing Channel.TOOL_CALL contract.
+
+    Codex round-13 NIT: assert the EXACT event count equals the body-
+    token count (not merely ``>= 2``) — coalesced / dropped per-token
+    deltas would otherwise pass silently and degrade streaming
+    behavior on the engine side.
     """
     text = "<|channel|>final<|message|>Hi there.<|return|>"
     tokens = _encode(encoding, text)
+    # Identify which token IDs belong to the body (between
+    # ``<|message|>`` and ``<|return|>``) — those are the ones we
+    # expect to produce a CONTENT event each. Markers are
+    # ``<|channel|>``, ``final``, ``<|message|>``, ``<|return|>``;
+    # everything between the ``<|message|>`` and ``<|return|>`` markers
+    # is body.
+    message_id = encoding.encode("<|message|>", allowed_special="all")[0]
+    return_id = encoding.encode("<|return|>", allowed_special="all")[0]
+    body_start = tokens.index(message_id) + 1
+    body_end = tokens.index(return_id)
+    body_token_count = body_end - body_start
+
     # Reset router for explicit per-token feed.
     router.reset()
     events_per_channel: dict[Channel, list[str]] = {
@@ -247,11 +264,14 @@ def test_per_token_streaming_routes_one_event_per_body_token(router, encoding):
 
     assert events_per_channel[Channel.TOOL_CALL] == []
     assert events_per_channel[Channel.REASONING] == []
-    # Joined content matches the body, and at least one event per body
-    # token surfaced.
+    # Joined content matches the body, and emit count EQUALS body
+    # token count — coalescing / dropped deltas would now fail.
     assert "".join(events_per_channel[Channel.CONTENT]) == "Hi there."
-    assert len(events_per_channel[Channel.CONTENT]) >= 2, (
-        f"per-token body deltas expected; got {events_per_channel[Channel.CONTENT]!r}"
+    assert len(events_per_channel[Channel.CONTENT]) == body_token_count, (
+        f"per-token body deltas must be 1-to-1 with body tokens; "
+        f"got {len(events_per_channel[Channel.CONTENT])} events for "
+        f"{body_token_count} body tokens: "
+        f"{events_per_channel[Channel.CONTENT]!r}"
     )
 
 
@@ -721,14 +741,20 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
         )
 
     # Canonical names — known owner prefixes (openai, mlx-community,
-    # unsloth) plus bare basename. Sanity check that the allowlist
-    # tightening didn't accidentally over-reject.
+    # unsloth), bare basename, AND local filesystem paths (codex
+    # round-13 BLOCKING — production loads models by absolute path
+    # from local caches; rejecting them broke real deployments).
     accepted_names = (
         "openai/gpt-oss-20b",
         "mlx-community/gpt-oss-20b-MXFP4-Q8",
         "unsloth/gpt-oss-20b-MLX-8bit",
         "gpt-oss-20b",  # bare, anchored at ^
         "gpt-oss",  # bare exact
+        "/models/gpt-oss-20b",  # absolute local path
+        "/Users/me/.cache/huggingface/hub/models--openai--gpt-oss-20b/gpt-oss-20b",
+        "~/lmstudio-models/gpt-oss-20b",  # tilde-prefixed local path
+        "./gpt-oss-20b-quantized",  # relative local path
+        "../models/gpt-oss-20b",  # parent-relative local path
     )
     for name in accepted_names:
 
