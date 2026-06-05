@@ -229,17 +229,21 @@ def test_tool_call_routing_preserves_fallback_text(engine, monkeypatch):
     assert '{"city":"NYC"}' in content
 
 
-def test_finalize_drained_tool_call_supplements_fallback_text(engine, monkeypatch):
-    """PR #515 round-3 BLOCKING: when ``HarmonyStreamingRouter.finalize()``
-    synthesizes a tool-call event from a truncated commentary (no
-    ``<|call|>`` in the raw text), ``_clean_gpt_oss_output``'s
-    bail-out may not match — the strip regex then removes the
-    commentary header from ``fallback_text``, and the route's
-    ``HarmonyToolParser`` sees no tool call at all. The engine must
-    pipe ``routed["tool_calls"]`` through by appending the
-    reconstructed wire text so the downstream parser can extract it.
-    Idempotent: when the raw text already carries ``<|channel|>commentary``,
-    don't append (avoids double-parsing).
+def test_routed_tool_call_supplements_fallback_text(engine, monkeypatch):
+    """PR #515 (codex round-3 BLOCKING origin / round-11 NIT retarget):
+    when ``OutputRouter.feed_sequence`` surfaces a structured tool call
+    in ``routed["tool_calls"]`` but ``_clean_gpt_oss_output`` has
+    stripped the commentary wire text from ``fallback_text``, the
+    engine must pipe each routed call through by appending its
+    reconstructed wire text so the route's ``HarmonyToolParser`` can
+    extract it. Idempotent: when ``fallback_text`` already carries
+    the SAME canonical signature, don't double-append.
+
+    (Round-6 flipped ``HarmonyStreamingRouter.finalize()`` to the
+    vLLM / SGLang safer-default — finalize now always returns None;
+    tool calls only surface via ``feed()`` on a fully closed
+    ``<|call|>``-terminated commentary message. The fake-router stub
+    below stands in for that ``feed_sequence`` path, not finalize.)
     """
 
     class _DrainedToolCallRouter:

@@ -377,6 +377,19 @@ def test_reconstruct_tool_call_abstains_on_body_carrying_harmony_sentinel(router
     assert out is not None
     assert "<|constrain|>json<|message|>" in out
 
+    # Codex round-11 NIT: a bare enum like ``"json"`` (missing the
+    # ``<|constrain|>`` prefix) would reconstruct non-canonical wire
+    # text the downstream parser can't recognise — must abstain.
+    bare_ctype = _FakeMessage('{"city":"NYC"}', ctype="json")
+    assert router._reconstruct_tool_call_text(bare_ctype) is None, (
+        "bare content_type missing <|constrain|> prefix must abstain"
+    )
+    # And a content_type with disallowed characters must also abstain.
+    bad_chars_ctype = _FakeMessage('{"city":"NYC"}', ctype="<|constrain|>has space")
+    assert router._reconstruct_tool_call_text(bad_chars_ctype) is None, (
+        "content_type with non-safe characters must abstain"
+    )
+
 
 def test_sentinel_body_emits_content_event_for_streaming_visibility(
     router, encoding, monkeypatch
@@ -645,6 +658,147 @@ def test_compat_gate_rejects_mismatched_body_vocab():
             return [99001, 99002]
 
     assert is_openai_harmony_compatible(tm, _MismatchedBodyVocabTokenizer()) is False
+
+
+def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
+    """Codex round-11 BLOCKING (PR #515): the tokenizer-identity
+    allowlist used naive ``in`` substring matching, so an identity
+    like ``my-not-gpt-oss/whatever`` (or ``foo-gpt-oss-bar`` with no
+    ``/`` separator) would pass while clearly not being a real
+    gpt-oss family member. Anchored match
+    (``(?:^|/)gpt-oss(?:-|$)``) accepts canonical names and rejects
+    tail-substring fakes.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+
+    tm = TokenMap(
+        format_tag="harmony",
+        harmony_channel=200005,
+        harmony_message=200008,
+        harmony_call=200012,
+        harmony_end=200007,
+        harmony_return=200002,
+        harmony_start=200006,
+        harmony_constrain=200003,
+    )
+
+    enc = openai_harmony.load_harmony_encoding(
+        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
+    )
+
+    class _CompatTokenizerBase:
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            return enc.encode(text, allowed_special="none")
+
+    # Tail-substring fakes (must be rejected).
+    rejected_names = (
+        "my-not-gpt-oss/whatever",
+        "foo/bar-gpt-oss-malicious",
+        "my-not-gpt-oss-20b",  # no slash, tail substring
+        "notgpt-oss-fake",
+    )
+    for name in rejected_names:
+
+        class _Fake(_CompatTokenizerBase):
+            pass
+
+        _Fake.name_or_path = name
+        assert is_openai_harmony_compatible(tm, _Fake()) is False, (
+            f"tail-substring identity {name!r} must be rejected; "
+            f"anchored allowlist failed"
+        )
+
+    # Canonical names (must still pass — sanity).
+    accepted_names = (
+        "openai/gpt-oss-20b",
+        "mlx-community/gpt-oss-20b-MXFP4-Q8",
+        "gpt-oss-20b",  # bare, anchored at ^
+        "gpt-oss",  # bare exact
+    )
+    for name in accepted_names:
+
+        class _Real(_CompatTokenizerBase):
+            pass
+
+        _Real.name_or_path = name
+        assert is_openai_harmony_compatible(tm, _Real()) is True, (
+            f"canonical identity {name!r} must pass; anchored regex over-rejected"
+        )
+
+
+def test_compat_cache_key_segregates_by_tokenizer_instance():
+    """Codex round-11 BLOCKING (PR #515): the per-identity cache used
+    ``(name_or_path, marker_ids)`` only, so two distinct tokenizer
+    instances with the same name + marker IDs but a remapped body
+    vocab shared a single cached decision. A previous ``True`` would
+    then upgrade an incompatible tokenizer and corrupt
+    ``StreamableParser`` body decoding.
+
+    Fix folded ``id(tokenizer)`` into the cache key — distinct
+    instances now segregate naturally, each instance gets an
+    authoritative ``_compute_compat`` pass; same-instance reuses
+    cleanly (zero-encode cache hit).
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+
+    tm = TokenMap(
+        format_tag="harmony",
+        harmony_channel=200005,
+        harmony_message=200008,
+        harmony_call=200012,
+        harmony_end=200007,
+        harmony_return=200002,
+        harmony_start=200006,
+        harmony_constrain=200003,
+    )
+
+    enc = openai_harmony.load_harmony_encoding(
+        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
+    )
+
+    # Instance #1: real harmony body vocab → True.
+    class _RealHarmony:
+        name_or_path = "mlx-community/gpt-oss-CACHE-INSTANCE-VARIANT"
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            return enc.encode(text, allowed_special="none")
+
+    assert is_openai_harmony_compatible(tm, _RealHarmony()) is True
+
+    # Instance #2: SAME name_or_path + SAME marker IDs but a
+    # MISMATCHED body vocab. Must NOT reuse instance #1's True (the
+    # cache key now includes ``id(tokenizer)`` so #2 gets a fresh
+    # authoritative probe).
+    class _RemappedBody:
+        name_or_path = "mlx-community/gpt-oss-CACHE-INSTANCE-VARIANT"
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            return [99001, 99002]
+
+    assert is_openai_harmony_compatible(tm, _RemappedBody()) is False, (
+        "round-11: cache must segregate by tokenizer instance; "
+        "remapped tokenizer shared instance #1's stale True decision"
+    )
 
 
 def test_compat_gate_rejects_non_int_encode_result():

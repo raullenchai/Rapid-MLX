@@ -80,6 +80,15 @@ _HARMONY_BODY_FORBIDDEN_SENTINELS = (
     "<|constrain|>",
 )
 
+# Allowed shape for the StreamableParser-surfaced ``content_type``
+# field on a commentary tool call. The only canonical form harmony
+# uses is ``<|constrain|><safe-type>``; codex round-11 NIT — a bare
+# enum value like ``"json"`` would otherwise reconstruct non-canonical
+# wire text (``to=functions.x json<|message|>...``) that downstream
+# HarmonyToolParser does not recognise. Anything outside this shape
+# triggers abstain (return None) from ``_reconstruct_tool_call_text``.
+_CONTENT_TYPE_SHAPE = re.compile(r"^<\|constrain\|>[A-Za-z0-9_\-]{1,32}$")
+
 # Tokenizer-identity allowlist — known-compatible HF / mlx-community
 # names whose vocab is the harmony encoding. Codex round-2 BLOCKING:
 # matching a 3-string probe set against the harmony encoding is not
@@ -87,11 +96,15 @@ _HARMONY_BODY_FORBIDDEN_SENTINELS = (
 # markers and the right probes but a remapped uncommon token could
 # silently corrupt later content. The cleanest defense is to ALSO
 # require the tokenizer's reported identity to be a known gpt-oss
-# family member. ``in`` substring match keeps the gate robust to MLX
-# quant-suffix renames (``-MXFP4-Q8`` etc.).
-_KNOWN_HARMONY_TOKENIZERS = (
-    "gpt-oss",  # openai/gpt-oss-* and any mlx-community/gpt-oss-*-MXFP4-Q8 variant
-)
+# family member.
+#
+# Codex round-11 BLOCKING: ``known in name_lc`` substring matching let
+# an arbitrary ``not-gpt-oss`` identity pass. Switch to anchored
+# patterns that require either a path-segment boundary (``/gpt-oss-``,
+# ``/gpt-oss$``) or the bare basename at start (``gpt-oss-...``).
+# This still admits ``openai/gpt-oss-*`` and ``mlx-community/gpt-oss-*-MXFP4-Q8``
+# while rejecting ``not-gpt-oss`` and similar tail-substring fakes.
+_KNOWN_HARMONY_TOKENIZER_PATTERNS = (re.compile(r"(?:^|/)gpt-oss(?:-|$)"),)
 
 # Probe strings used by ``is_openai_harmony_compatible`` to verify
 # that the model's body-token vocabulary matches the openai-harmony
@@ -207,22 +220,24 @@ class HarmonyStreamingRouter:
             parts.append(f" to={recipient}")
         ctype = getattr(message, "content_type", None)
         if ctype:
-            # ``content_type`` from StreamableParser is e.g.
-            # ``"<|constrain|>json"``; emit verbatim. Strip the
-            # leading ``<|constrain|>`` sentinel literal before
-            # forbidden-substring scanning (it's the legitimate
-            # framing carrier, not body content).
-            ctype_body = (
-                ctype.removeprefix("<|constrain|>") if isinstance(ctype, str) else ""
-            )
-            for bad in _HARMONY_BODY_FORBIDDEN_SENTINELS:
-                if bad in ctype_body:
-                    logger.debug(
-                        "HarmonyStreamingRouter: abstaining from tool-call "
-                        "reconstruction — content_type carries sentinel %r",
-                        bad,
-                    )
-                    return None
+            # Codex round-11 NIT: validate ``content_type`` against the
+            # canonical ``<|constrain|><safe-type>`` shape before
+            # interpolating. A bare enum value like ``"json"`` would
+            # reconstruct non-canonical wire text the downstream
+            # HarmonyToolParser does not recognise. The shape regex
+            # also implicitly rejects any embedded sentinel substring
+            # (matches only safe alphanumerics + underscore / dash
+            # after the legit ``<|constrain|>`` prefix), so the
+            # round-7-era smuggled-sentinel scan is subsumed — abstain
+            # on any mismatch.
+            if not isinstance(ctype, str) or not _CONTENT_TYPE_SHAPE.match(ctype):
+                logger.debug(
+                    "HarmonyStreamingRouter: abstaining from tool-call "
+                    "reconstruction — content_type %r does not match the "
+                    "canonical <|constrain|><safe-type> shape",
+                    ctype,
+                )
+                return None
             parts.append(f" {ctype}")
         # Codex round-7 BLOCKING / round-9 BLOCKING: a body containing
         # any harmony structural sentinel substring would corrupt the
@@ -486,10 +501,16 @@ def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
     # path below collapses cleanly to ``False`` in that case.
 
     # Cache lookup (codex round-3 NIT). Codex round-4 NIT: include the
-    # marker-ID tuple in the key — two tokenizer instances with the
-    # same ``name_or_path`` but different marker IDs (e.g. test mocks,
-    # or a model loaded with a vocab override) must NOT share a
-    # cached compatibility decision.
+    # marker-ID tuple in the key. Codex round-11 BLOCKING: also include
+    # the tokenizer instance identity (``id(tokenizer)``) so two
+    # distinct tokenizer objects with the same ``name_or_path`` +
+    # marker IDs but a remapped body vocabulary cannot reuse a stale
+    # ``True`` decision and feed incompatible IDs to
+    # ``StreamableParser``. ``id()`` segregates by Python object
+    # identity — same instance reuses (the engine reuses one tokenizer
+    # per model across requests), distinct instances re-probe
+    # authoritatively. Zero per-lookup encode cost (vs a fingerprint
+    # probe), which keeps the cache hot path free.
     name_or_path = getattr(tokenizer, "name_or_path", "") or ""
     marker_ids = (
         token_map.harmony_channel,
@@ -500,7 +521,7 @@ def is_openai_harmony_compatible(token_map: TokenMap, tokenizer: Any) -> bool:
         token_map.harmony_start,
         token_map.harmony_constrain,
     )
-    cache_key = (str(name_or_path).lower(), marker_ids)
+    cache_key = (str(name_or_path).lower(), marker_ids, id(tokenizer))
     cached = _COMPAT_RESULT_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -524,12 +545,14 @@ def _compute_compat(
     """
     # (1) Tokenizer-identity allowlist. ``name_or_path`` is set by HF /
     # mlx-lm tokenizers to the model id passed at load time. We do a
-    # case-insensitive substring match so quant-suffix renames
+    # case-insensitive ANCHORED match (codex round-11 BLOCKING — naive
+    # substring let ``not-gpt-oss`` pass) so quant-suffix renames
     # (``-MXFP4-Q8``) and org prefixes (``mlx-community/`` vs
-    # ``openai/``) all resolve to the same family. Missing or empty
+    # ``openai/``) all resolve to the same family while tail-substring
+    # fakes (``my-not-gpt-oss``) are rejected. Missing or empty
     # name_or_path → can't prove identity → reject.
     name_lc = str(name_or_path).lower()
-    if not any(known in name_lc for known in _KNOWN_HARMONY_TOKENIZERS):
+    if not any(p.search(name_lc) for p in _KNOWN_HARMONY_TOKENIZER_PATTERNS):
         return False
 
     # (2) Marker-ID parity. Codex round-4 BLOCKING: ALL seven harmony
