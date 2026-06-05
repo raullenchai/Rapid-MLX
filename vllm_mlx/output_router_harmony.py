@@ -22,6 +22,20 @@ without changes. The underlying state, channel transitions, recipient
 parsing, and constraint-type detection all come from
 ``StreamableParser`` — we do not maintain a parallel state machine.
 
+Codex round-12/14 BLOCKING (PR #515): earlier revisions reconstructed
+the parsed ``Message`` back into harmony wire text
+(``<|channel|>commentary to=functions.X<|message|>{body}<|call|>``)
+so the downstream text-based ``HarmonyToolParser`` could re-parse it.
+That round-trip was lossy — any tool-call body containing a literal
+harmony sentinel substring (e.g. ``{"text":"<|call|>"}``) corrupted
+the downstream regex parse and silently dropped the call. The current
+design eliminates the round-trip: TOOL_CALL events surface a
+structured ``{"name", "arguments"}`` payload on
+``RouterEvent.tool_call``, the engine plumbs it through
+``GenerationOutput.tool_calls``, and the route layer bypasses the
+text-based parser entirely when the structured field is populated.
+This matches vLLM and SGLang exactly.
+
 Token ID compatibility: ``mlx-community/gpt-oss-20b-MXFP4-Q8`` (and the
 upstream gpt-oss family) use exactly the harmony encoding's IDs for
 the structural markers and for body tokens — verified at PR-time by
@@ -48,47 +62,25 @@ _HARMONY_CHANNEL_ANALYSIS = "analysis"
 _HARMONY_CHANNEL_FINAL = "final"
 _HARMONY_CHANNEL_COMMENTARY = "commentary"
 
-# Tool-call recipient shape: ``functions.<safe-name>``. The downstream
-# ``HarmonyToolParser`` does its own parsing of this field but reads
-# it verbatim from the reconstructed wire text — a recipient with
-# whitespace, marker-like characters, or newlines could break the
-# parser's regex or leak content. Codex round-1 BLOCKING (PR #515).
-#
-# Codex round-2 BLOCKING: original ``^functions\.[A-Za-z_]...`` rejected
-# OpenAI-spec valid tool names that start with a digit
-# (e.g. ``functions.2fa_lookup``). OpenAI's documented function-name
-# regex is ``[a-zA-Z0-9_-]{1,64}`` — match that exactly so any tool the
-# upstream API accepts also round-trips through the router.
+# Tool-call recipient shape: ``functions.<safe-name>``. OpenAI's
+# documented function-name regex is ``[a-zA-Z0-9_-]{1,64}`` — match
+# that exactly so any tool the upstream API accepts also round-trips
+# through the router. A recipient that doesn't match (whitespace,
+# marker-like characters, newlines, leading digit beyond the allowed
+# set) is treated as structural corruption: the router abstains rather
+# than surfacing a half-parsed call.
 _RECIPIENT_SHAPE = re.compile(r"^functions\.[A-Za-z0-9_\-]{1,64}$")
 
-# Harmony structural sentinels. The reconstructed tool-call wire text is
-# a delimited format that downstream ``HarmonyToolParser`` parses via
-# regex on the literal sentinel strings; a body containing any of these
-# substrings would corrupt that parse (e.g. ``body == '{"x":"<|call|>"}'``
-# would let the parser anchor on the embedded sentinel and truncate the
-# JSON). On gpt-oss these sentinels are single special tokens never
-# emitted as body text, but a defensive substring check is still
-# required because (a) future tokenizers may differ and (b) an
-# adversarial prompt could echo the literal characters through normal
-# body vocabulary. Codex round-7 BLOCKING (PR #515).
-_HARMONY_BODY_FORBIDDEN_SENTINELS = (
-    "<|channel|>",
-    "<|message|>",
-    "<|call|>",
-    "<|end|>",
-    "<|return|>",
-    "<|start|>",
-    "<|constrain|>",
-)
-
-# Allowed shape for the StreamableParser-surfaced ``content_type``
-# field on a commentary tool call. The only canonical form harmony
-# uses is ``<|constrain|><safe-type>``; codex round-11 NIT — a bare
-# enum value like ``"json"`` would otherwise reconstruct non-canonical
-# wire text (``to=functions.x json<|message|>...``) that downstream
-# HarmonyToolParser does not recognise. Anything outside this shape
-# triggers abstain (return None) from ``_reconstruct_tool_call_text``.
-_CONTENT_TYPE_SHAPE = re.compile(r"^<\|constrain\|>[A-Za-z0-9_\-]{1,32}$")
+# HuggingFace hub cache snapshot dir pattern. Path components have the
+# form ``models--<owner>--<name>`` so ``/.../models--openai--gpt-oss-20b
+# /snapshots/<sha>/`` resolves to the identity ``openai/gpt-oss-20b``
+# (the basename is the snapshot SHA, which on its own gives no hint
+# that this is a gpt-oss tokenizer). Codex round-14 BLOCKING — the
+# previous basename-only check rejected this path shape and the gate
+# fell back to the leaking legacy router for any model loaded straight
+# from the HF cache. Pattern is tolerant of either dir separator since
+# the path may be normalised before reaching us.
+_HF_CACHE_MODEL_DIR_RE = re.compile(r"models--([^-/\\]+(?:-[^-/\\]+)*)--([^/\\]+)")
 
 # Tokenizer-identity allowlist — known-compatible HF / mlx-community
 # names whose vocab is the harmony encoding. Codex round-2 BLOCKING:
@@ -99,8 +91,9 @@ _CONTENT_TYPE_SHAPE = re.compile(r"^<\|constrain\|>[A-Za-z0-9_\-]{1,32}$")
 # require the tokenizer's reported identity to be a known gpt-oss
 # family member.
 #
-# Codex round-11 BLOCKING / round-12 BLOCKING / round-13 BLOCKING —
-# the tokenizer-identity gate has had three rounds of tightening:
+# Codex round-11 BLOCKING / round-12 BLOCKING / round-13 BLOCKING /
+# round-14 BLOCKING — the tokenizer-identity gate has had four rounds
+# of tightening:
 #   * round-11: naive ``known in name_lc`` substring → anchored basename
 #     regex (rejected tail-substring fakes).
 #   * round-12: anchored basename still let arbitrary owners through
@@ -108,10 +101,18 @@ _CONTENT_TYPE_SHAPE = re.compile(r"^<\|constrain\|>[A-Za-z0-9_\-]{1,32}$")
 #   * round-13: pure remote-id-prefix matching rejected legitimate
 #     LOCAL paths (``/models/gpt-oss-20b``, ``~/.cache/.../gpt-oss-20b``)
 #     and made production fall back to the leaking legacy router.
-# Final shape (two-tier):
+#   * round-14: HF cache snapshot dir ``models--openai--gpt-oss-20b
+#     /snapshots/<sha>`` has SHA basename → recognise the ``models--
+#     owner--name`` segment anywhere in the path and treat it as a
+#     remote id for the owner check.
+# Final shape (three-tier):
 #   * Local filesystem paths (``/``, ``~``, ``./``, ``../`` prefixes)
-#     trust the basename — the user explicitly loaded that artifact,
-#     and the body-probe set is the authoritative vocab check.
+#     that DO NOT carry an HF cache marker trust the basename — the
+#     user explicitly loaded that artifact, and the body-probe set is
+#     the authoritative vocab check.
+#   * Paths that contain ``models--<owner>--<name>`` (HF hub cache
+#     layout) are treated as the remote id ``<owner>/<name>`` and run
+#     through the remote-owner allowlist below.
 #   * Remote HF IDs (``owner/name`` shape with no leading separator)
 #     require an allowlisted owner; this defense-in-depth catches the
 #     ``some-user/gpt-oss-remapped`` shape codex flagged.
@@ -128,13 +129,27 @@ _KNOWN_HARMONY_REMOTE_OWNERS = frozenset(
 
 
 def _is_known_harmony_identity(name_or_path: str) -> bool:
-    """Two-tier allowlist: local paths trust the basename, remote
-    HF IDs require an allowlisted owner. Returns True iff the
+    """Three-tier allowlist: HF cache snapshot paths resolve to their
+    ``owner/name`` segment, plain local paths trust the basename, and
+    remote HF IDs require an allowlisted owner. Returns True iff the
     identity names a known gpt-oss family member.
     """
     name_lc = name_or_path.lower().rstrip("/")
     if not name_lc:
         return False
+
+    # HF cache snapshot layout. ``~/.cache/huggingface/hub/models--<owner>
+    # --<name>/snapshots/<sha>/`` — the basename is opaque, so search the
+    # full path for the canonical ``models--<owner>--<name>`` directory
+    # segment and use the embedded owner/name pair. Tolerant of either
+    # ``/`` or ``\`` separators so HF hub paths on either OS work.
+    cache_match = _HF_CACHE_MODEL_DIR_RE.search(name_lc)
+    if cache_match is not None:
+        owner, name = cache_match.group(1), cache_match.group(2)
+        if not _BASENAME_GPT_OSS_RE.match(name):
+            return False
+        return owner in _KNOWN_HARMONY_REMOTE_OWNERS
+
     basename = name_lc.rsplit("/", 1)[-1]
     if not _BASENAME_GPT_OSS_RE.match(basename):
         return False
@@ -182,6 +197,14 @@ class HarmonyStreamingRouter:
     containing a ``TokenMap`` so callers that read
     ``router.map.format_tag`` (e.g. allowlist filtering in
     ``BatchedEngine._create_output_router``) work unchanged.
+
+    TOOL_CALL events carry the parsed ``{"name", "arguments"}``
+    payload on ``RouterEvent.tool_call`` (set on closed commentary
+    messages with a valid ``functions.<name>`` recipient). The engine
+    plumbs this through ``GenerationOutput.tool_calls`` and routes
+    consume it directly — bypassing the legacy wire-text → regex
+    round-trip that lost calls whose JSON arguments contained literal
+    harmony sentinel substrings (PR #515 codex round-12/14 BLOCKING).
     """
 
     def __init__(self, token_map: TokenMap, tokenizer: Any):
@@ -215,108 +238,48 @@ class HarmonyStreamingRouter:
         self._emitted_msg_count = 0
 
     @staticmethod
-    def _reconstruct_tool_call_text(message: Any) -> str | None:
-        """Render a commentary ``Message`` back into the text form the
-        downstream ``HarmonyToolParser`` expects.
+    def _extract_structured_tool_call(message: Any) -> dict | None:
+        """Pull a structured ``{"name", "arguments"}`` payload out of a
+        closed harmony commentary ``Message``.
 
-        ``StreamableParser.messages[i]`` gives us a structured
-        ``Message`` with channel / recipient / content_type / content,
-        but the rest of the route pipeline (postprocessor + chat route
-        + ``HarmonyToolParser.extract_tool_calls``) is text-based. To
-        avoid changing that contract for one router, we reconstruct
-        the canonical wire format:
-        ``<|channel|>commentary to=functions.<name>
-        [<|constrain|>json]<|message|>{body}<|call|>``
-        and hand it through as a single TOOL_CALL channel event.
+        Returns ``None`` if the recipient shape is malformed — the
+        upstream pipeline treats that as "no tool call surfaced here"
+        and the corrupt frame is dropped. This is a strictly stronger
+        gate than the legacy wire-text path which would have produced
+        a garbled call.
 
-        Returns:
-            The reconstructed wire text on success, or ``None`` if the
-            body or content_type carries a harmony structural sentinel
-            substring (which would corrupt the downstream regex
-            extraction in HarmonyToolParser — codex round-7 BLOCKING).
-            Codex round-9 BLOCKING flipped the contract from ``raise``
-            to ``return None`` so the caller can ABSTAIN cleanly from
-            emitting a structured tool-call event: the engine's
-            ``_route_tokens_for_channels`` then leaves the model's raw
-            ``fallback_text`` untouched, and the legacy text-based
-            HarmonyToolParser path handles the same call (with the
-            same baseline limitation OpenAI tool-call JSON values
-            containing literal ``<|...|>`` substrings impose on every
-            text-based harmony consumer — not specific to this router).
-            Malformed-recipient still ``raise``s; recipient corruption
-            is structural, not body-content-dependent.
+        ``arguments`` is the verbatim concatenated body bytes — no
+        normalisation, no sentinel scrubbing, no JSON re-encoding.
+        That bytes-faithful surface is the entire point of the
+        round-trip elimination: a tool call whose JSON arguments
+        contain a literal ``<|call|>`` substring (the documented PR
+        #515 codex round-12/14 BLOCKING scenario) is now preserved
+        intact instead of being corrupted by sentinel-anchored regex
+        parsing.
         """
-        # Codex round-13 NIT: avoid O(n^2) ``+=`` string accumulation
-        # for large JSON tool arguments — collect text chunks in a
-        # list and ``"".join`` once. Same pattern as the round-2 NIT
-        # fix in ``feed_sequence``.
+        recipient = getattr(message, "recipient", None)
+        if not recipient:
+            return None
+        if not isinstance(recipient, str) or not _RECIPIENT_SHAPE.match(recipient):
+            logger.debug(
+                "HarmonyStreamingRouter: dropping tool call with "
+                "malformed recipient %r (expected functions.<name>)",
+                recipient,
+            )
+            return None
+        # ``functions.get_weather`` → ``get_weather``. The OpenAI
+        # tool-call schema's ``function.name`` field carries the bare
+        # name; the ``functions.`` namespace prefix is harmony-specific
+        # transport metadata.
+        name = recipient.split(".", 1)[1]
+        # Codex round-13 NIT: list-build + join (avoid quadratic ``+=``).
         body_parts: list[str] = []
         for c in message.content:
             t = getattr(c, "text", None)
             if t:
                 body_parts.append(t)
-        body = "".join(body_parts)
-        parts: list[str] = ["<|channel|>commentary"]
-        recipient = getattr(message, "recipient", None)
-        # Codex round-1 BLOCKING: validate recipient against the
-        # canonical ``functions.<name>`` shape before interpolating —
-        # whitespace, marker-like text, or a name containing
-        # ``<|...|>`` literals in the recipient would produce wire
-        # text the downstream HarmonyToolParser cannot parse.
-        if recipient:
-            if not isinstance(recipient, str) or not _RECIPIENT_SHAPE.match(recipient):
-                raise ValueError(
-                    f"HarmonyStreamingRouter: refusing to reconstruct "
-                    f"tool-call wire text for malformed recipient "
-                    f"{recipient!r}; expected 'functions.<name>'"
-                )
-            parts.append(f" to={recipient}")
-        ctype = getattr(message, "content_type", None)
-        if ctype:
-            # Codex round-11 NIT: validate ``content_type`` against the
-            # canonical ``<|constrain|><safe-type>`` shape before
-            # interpolating. A bare enum value like ``"json"`` would
-            # reconstruct non-canonical wire text the downstream
-            # HarmonyToolParser does not recognise. The shape regex
-            # also implicitly rejects any embedded sentinel substring
-            # (matches only safe alphanumerics + underscore / dash
-            # after the legit ``<|constrain|>`` prefix), so the
-            # round-7-era smuggled-sentinel scan is subsumed — abstain
-            # on any mismatch.
-            if not isinstance(ctype, str) or not _CONTENT_TYPE_SHAPE.match(ctype):
-                logger.debug(
-                    "HarmonyStreamingRouter: abstaining from tool-call "
-                    "reconstruction — content_type %r does not match the "
-                    "canonical <|constrain|><safe-type> shape",
-                    ctype,
-                )
-                return None
-            parts.append(f" {ctype}")
-        # Codex round-7 BLOCKING / round-9 BLOCKING: a body containing
-        # any harmony structural sentinel substring would corrupt the
-        # downstream HarmonyToolParser's regex parse (the parser would
-        # anchor on the embedded sentinel and truncate the JSON
-        # arguments). Round-9 noted that legitimate OpenAI JSON CAN
-        # contain those characters, so a hard raise drops legitimate
-        # calls. Abstain (return None) instead — the engine's
-        # ``_route_tokens_for_channels`` then leaves the model's raw
-        # ``fallback_text`` untouched and the legacy text-based path
-        # handles the call (with the same parse limitation; no worse
-        # than baseline).
-        for bad in _HARMONY_BODY_FORBIDDEN_SENTINELS:
-            if bad in body:
-                logger.debug(
-                    "HarmonyStreamingRouter: abstaining from tool-call "
-                    "reconstruction — body carries sentinel %r "
-                    "(body length=%d)",
-                    bad,
-                    len(body),
-                )
-                return None
-        parts.append("<|message|>")
-        parts.append(body)
-        parts.append("<|call|>")
-        return "".join(parts)
+        arguments = "".join(body_parts)
+        return {"name": name, "arguments": arguments}
 
     def feed(self, token_id: int) -> RouterEvent | None:
         """Feed one token and emit the routed event, if any.
@@ -330,9 +293,8 @@ class HarmonyStreamingRouter:
             deltas during the body. When the message closes (parser
             transitions out of CONTENT to EXPECT_START and adds an
             entry to ``messages``), emit a single Channel.TOOL_CALL
-            event carrying the reconstructed wire-format text so the
-            downstream HarmonyToolParser can extract the structured
-            call.
+            event with the structured ``{"name", "arguments"}``
+            payload on ``RouterEvent.tool_call``.
           * Anything else (control tokens, headers, transitions) →
             None.
         """
@@ -360,31 +322,19 @@ class HarmonyStreamingRouter:
             if getattr(
                 closed, "channel", None
             ) == _HARMONY_CHANNEL_COMMENTARY and getattr(closed, "recipient", None):
-                text = self._reconstruct_tool_call_text(closed)
-                if text is not None:
-                    return RouterEvent(Channel.TOOL_CALL, token_id, text)
-                # Codex round-9 BLOCKING + round-10 BLOCKING:
-                # ``_reconstruct_tool_call_text`` abstains (returns
-                # None) when the body / content_type carries a sentinel
-                # substring that would corrupt downstream regex parse.
-                # Emitting no event at all (round-9 behavior) regressed
-                # streaming relative to baseline — the per-token loop
-                # had already suppressed commentary body deltas (we
-                # buffer until close), so the streaming user saw
-                # nothing. Surface the accumulated body bytes as a
-                # single CONTENT event so the user still sees the tool
-                # call's intent — this matches baseline behavior, in
-                # which the legacy router leaked commentary body into
-                # CONTENT verbatim. The engine non-stream path is
-                # unaffected: it relies on ``fallback_text``, which
-                # still carries the model's raw emit.
-                body = "".join(
-                    c.text
-                    for c in closed.content
-                    if getattr(c, "text", None) is not None
-                )
-                if body:
-                    return RouterEvent(Channel.CONTENT, token_id, body)
+                structured = self._extract_structured_tool_call(closed)
+                if structured is not None:
+                    return RouterEvent(
+                        channel=Channel.TOOL_CALL,
+                        token_id=token_id,
+                        # ``text`` carries the JSON args as a human-
+                        # readable summary for legacy consumers that
+                        # may peek at the field. The structured payload
+                        # below is the authoritative source for
+                        # downstream processing.
+                        text=structured["arguments"],
+                        tool_call=structured,
+                    )
 
         # Per-token body delta routing for analysis / final.
         ch = self._parser.current_channel
@@ -419,11 +369,18 @@ class HarmonyStreamingRouter:
 
     def feed_sequence(self, token_ids: list[int]) -> dict[str, Any]:
         """Batch path: route a complete token sequence and return
-        the same separated-channels dict as ``OutputRouter.feed_sequence``.
+        the separated-channels dict.
 
         Returns:
             ``{"content": str|None, "reasoning": str|None,
-               "tool_calls": list[str]|None}``
+               "tool_calls": list[dict]|None}``
+
+        ``tool_calls`` entries are structured ``{"name", "arguments"}``
+        dicts — the engine plumbs them through
+        ``GenerationOutput.tool_calls`` and routes bypass text-based
+        extraction when this field is populated. The shape matches
+        ``HarmonyToolParser.extract_tool_calls`` so downstream
+        consumers can treat both sources uniformly.
 
         Codex round-2 NIT: accumulate per-token deltas in lists and
         ``"".join`` once at return — Python string ``+=`` is O(n²) for
@@ -432,7 +389,7 @@ class HarmonyStreamingRouter:
         """
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
-        tool_calls: list[str] = []
+        tool_calls: list[dict] = []
 
         def _accumulate(event: RouterEvent | None) -> None:
             if event is None:
@@ -441,8 +398,8 @@ class HarmonyStreamingRouter:
                 content_parts.append(event.text)
             elif event.channel == Channel.REASONING:
                 reasoning_parts.append(event.text)
-            elif event.channel == Channel.TOOL_CALL:
-                tool_calls.append(event.text)
+            elif event.channel == Channel.TOOL_CALL and event.tool_call is not None:
+                tool_calls.append(event.tool_call)
 
         for tid in token_ids:
             _accumulate(self.feed(tid))
@@ -628,8 +585,9 @@ def _compute_compat(
     lives in one place around a single return value (codex round-3 NIT).
     """
     # (1) Tokenizer-identity allowlist (codex round-11 / round-12 /
-    # round-13). Two-tier: local filesystem paths trust the basename
-    # gpt-oss match; remote HF IDs require an allowlisted owner. See
+    # round-13 / round-14). Three-tier: HF cache snapshot dirs resolve
+    # via ``models--<owner>--<name>`` segment, plain local paths trust
+    # the basename, remote HF IDs require an allowlisted owner. See
     # ``_is_known_harmony_identity`` docstring for the full algorithm.
     if not _is_known_harmony_identity(str(name_or_path)):
         return False

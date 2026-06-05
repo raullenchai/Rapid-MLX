@@ -53,6 +53,15 @@ class RouterEvent:
     channel: Channel
     token_id: int
     text: str  # decoded text for this token
+    # Optional structured payload for ``Channel.TOOL_CALL`` events.
+    # Populated by routers that natively parse the model's tool-call
+    # protocol (``HarmonyStreamingRouter`` via openai-harmony's
+    # ``StreamableParser``) so the downstream pipeline can consume
+    # ``{"name", "arguments"}`` directly instead of round-tripping
+    # through sentinel-delimited wire text. ``None`` means the consumer
+    # should fall back to text-based extraction on ``text`` (legacy
+    # ``OutputRouter`` path for Gemma 4 / Qwen3 / DeepSeek R1).
+    tool_call: dict | None = None
 
 
 @dataclass

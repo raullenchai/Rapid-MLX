@@ -659,13 +659,40 @@ def _validate_model_name(request_model: str) -> None:
 
 
 def _parse_tool_calls_with_parser(
-    output_text: str, request=None
+    output_text: str,
+    request=None,
+    *,
+    structured_tool_calls: list[dict] | None = None,
 ) -> tuple[str, list | None]:
     """Parse tool calls from model output using the configured parser.
 
     Creates a per-call parser instance to avoid state corruption under
     concurrent BatchedEngine requests.
+
+    ``structured_tool_calls`` is the engine-surfaced ``[{"name",
+    "arguments"}]`` list (populated by ``HarmonyStreamingRouter`` via
+    openai-harmony's ``StreamableParser``). When present, the text-
+    based parser is bypassed entirely — the router has already done
+    the structural parse and returning to a regex pass would re-
+    introduce the wire-text round-trip that lost tool calls whose
+    JSON arguments contained literal harmony sentinel substrings (PR
+    #515 codex round-12 / round-14 BLOCKING). ``output_text`` becomes
+    the user-facing content directly in that case.
     """
+    if structured_tool_calls:
+        tool_calls = [
+            ToolCall(
+                id=tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                type="function",
+                function=FunctionCall(
+                    name=tc["name"],
+                    arguments=tc["arguments"],
+                ),
+            )
+            for tc in structured_tool_calls
+        ]
+        return output_text or "", tool_calls
+
     cfg = get_config()
     request_dict = request.model_dump() if request else None
 

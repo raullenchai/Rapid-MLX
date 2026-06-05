@@ -227,9 +227,15 @@ async def create_anthropic_message(
             f"Anthropic messages: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
         )
 
-        # Parse tool calls
+        # Parse tool calls — prefer the engine's structured payload
+        # (HarmonyStreamingRouter via openai-harmony's StreamableParser)
+        # over text-based extraction when present. See routes/chat.py
+        # for the rationale (PR #515 codex round-12 / round-14 BLOCKING
+        # — wire-text round-trip lost calls whose JSON args contained
+        # harmony sentinels).
+        engine_tool_calls = getattr(output, "tool_calls", None)
         cleaned_text, tool_calls = _parse_tool_calls_with_parser(
-            output.text, openai_request
+            output.text, openai_request, structured_tool_calls=engine_tool_calls
         )
 
         # Extract reasoning content via the same orchestration the OpenAI route
@@ -438,6 +444,14 @@ async def _stream_anthropic_messages(
 
     accumulated_text = ""
     accumulated_raw = ""
+    # Structured tool calls surfaced by the engine's OutputRouter
+    # (currently HarmonyStreamingRouter via openai-harmony's
+    # StreamableParser). When non-empty at end-of-stream the final
+    # ``_parse_tool_calls_with_parser`` call uses these directly,
+    # bypassing the regex round-trip — same bytes-faithful path the
+    # non-streaming branch uses (PR #515 codex round-12/14 BLOCKING
+    # closure).
+    accumulated_structured_tool_calls: list[dict] = []
     tool_filter = StreamingToolCallFilter()
     # ``tokenizer`` is on the BaseEngine contract; the old ``hasattr``
     # guard predated the abstract declaration and is the same silent-skip
@@ -488,6 +502,17 @@ async def _stream_anthropic_messages(
             prompt_tokens = output.prompt_tokens
         if hasattr(output, "completion_tokens") and output.completion_tokens:
             completion_tokens = output.completion_tokens
+
+        # Capture engine-surfaced structured tool calls (HarmonyStreamingRouter
+        # via openai-harmony's StreamableParser). The delta_text on these
+        # events is the JSON args summary; we DO NOT want to feed it into
+        # the text-based tool_filter / accumulator because that would re-
+        # introduce the round-trip lossy path the refactor exists to
+        # eliminate (PR #515 codex round-12/14 BLOCKING).
+        engine_tool_calls = getattr(output, "tool_calls", None) or []
+        if engine_tool_calls:
+            accumulated_structured_tool_calls.extend(engine_tool_calls)
+            continue
 
         if delta_text:
             accumulated_text += delta_text
@@ -665,8 +690,15 @@ async def _stream_anthropic_messages(
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                 block_index += 1
 
-    # Check for tool calls in accumulated text
-    _, tool_calls = _parse_tool_calls_with_parser(accumulated_text, openai_request)
+    # Check for tool calls — prefer engine-surfaced structured payload
+    # (HarmonyStreamingRouter via openai-harmony's StreamableParser)
+    # over text-based extraction. Same fall-through contract the
+    # non-streaming branch uses.
+    _, tool_calls = _parse_tool_calls_with_parser(
+        accumulated_text,
+        openai_request,
+        structured_tool_calls=accumulated_structured_tool_calls or None,
+    )
 
     if tool_calls:
         for i, tc in enumerate(tool_calls):

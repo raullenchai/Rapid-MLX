@@ -13,15 +13,19 @@ never identify.
 
 PR #515 lands the SOTA fix: delegate harmony state tracking to
 ``openai-harmony.StreamableParser`` (same library vLLM and SGLang
-delegate to). The new ``HarmonyStreamingRouter`` shim exposes the
-existing ``OutputRouter`` surface so the engine streaming path is
-unchanged; only the harmony format gets the new backend.
+delegate to). The ``HarmonyStreamingRouter`` shim exposes the existing
+``OutputRouter`` surface so the engine streaming path is unchanged;
+only the harmony format gets the new backend.
 
-This file pins the closure of #444 / #455 / #468 / #480 by replaying
-production-shape token sequences (encoded via the real harmony
-encoding, NOT the synthetic test vocab used by the partial-closure
-regressions in the sibling files) and asserting NO marker leak +
-correct channel routing.
+Round-15 architectural refactor (codex round-12 / round-14 BLOCKING
+closure): tool-call events surface a STRUCTURED ``{"name", "arguments"}``
+payload on ``RouterEvent.tool_call`` and flow through the engine via
+``GenerationOutput.tool_calls``. The previous design reconstructed
+sentinel-delimited wire text and let downstream text-based
+``HarmonyToolParser`` regex-parse it again, which lost tool calls
+whose JSON arguments contained literal harmony marker substrings
+(e.g. ``{"text":"<|call|>"}``). Bytes-faithful structured passthrough
+matches vLLM and SGLang and eliminates that loss path entirely.
 """
 
 from __future__ import annotations
@@ -94,8 +98,8 @@ def _encode(encoding, text: str) -> list[int]:
 def test_issue_444_480_commentary_tool_call_no_marker_leak(router, encoding):
     """#444 / #480: streaming a harmony tool call MUST NOT leak
     structural markers or channel labels into ``content`` / ``reasoning``,
-    and the tool call MUST surface in ``tool_calls`` with the recipient
-    + body intact.
+    and the tool call MUST surface in ``tool_calls`` as a structured
+    ``{"name", "arguments"}`` dict.
 
     Pre-PR #515: the custom router state machine recognized ``analysis``
     / ``final`` channel-type words by single-token ID match. Production
@@ -122,16 +126,19 @@ def test_issue_444_480_commentary_tool_call_no_marker_leak(router, encoding):
     assert result["tool_calls"] is not None and len(result["tool_calls"]) == 1, (
         f"#444/#480: tool call must surface; got tool_calls={result['tool_calls']!r}"
     )
-    tc_text = result["tool_calls"][0]
-    # Tool call event carries the reconstructed wire text the
-    # downstream HarmonyToolParser consumes — must include recipient
-    # and body.
-    assert "functions.get_weather" in tc_text, (
-        f"#444/#480: tool call must carry recipient; got {tc_text!r}"
+    tc = result["tool_calls"][0]
+    # Round-15 refactor: structured ``{"name", "arguments"}`` shape.
+    assert isinstance(tc, dict), f"#444/#480: tool_call must be dict; got {type(tc)}"
+    assert tc["name"] == "get_weather", (
+        f"#444/#480: tool call must carry recipient name; got {tc!r}"
     )
-    assert '{"city":"NYC"}' in tc_text, (
-        f"#444/#480: tool call must carry body; got {tc_text!r}"
+    assert tc["arguments"] == '{"city":"NYC"}', (
+        f"#444/#480: tool call arguments must be verbatim body bytes; got {tc!r}"
     )
+    # And the structured payload MUST NOT carry harmony wire markers.
+    assert "<|channel|>" not in tc["arguments"]
+    assert "<|message|>" not in tc["arguments"]
+    assert "<|call|>" not in tc["arguments"]
 
 
 # ----- #455 — Harmony commentary channel routing -----------------------
@@ -164,6 +171,10 @@ def test_issue_455_analysis_then_commentary_separates_channels(router, encoding)
     )
     assert result["tool_calls"] is not None and len(result["tool_calls"]) == 1, (
         f"#455: tool call must surface; got tool_calls={result['tool_calls']!r}"
+    )
+    tc = result["tool_calls"][0]
+    assert tc == {"name": "get_weather", "arguments": '{"city":"Paris"}'}, (
+        f"#455: structured payload mismatch; got {tc!r}"
     )
 
     # Universal leak check — no harmony marker may appear in user-
@@ -206,10 +217,10 @@ def test_issue_468_compound_analysis_commentary_final_separates(router, encoding
         f"#468: one tool call must surface; got {result['tool_calls']!r}"
     )
 
-    # Reconstructed tool call must include name + args.
-    tc_text = result["tool_calls"][0]
-    assert "functions.add" in tc_text
-    assert '{"a":1,"b":2}' in tc_text
+    tc = result["tool_calls"][0]
+    assert tc == {"name": "add", "arguments": '{"a":1,"b":2}'}, (
+        f"#468: structured payload mismatch; got {tc!r}"
+    )
 
     # Universal leak check.
     for ch_name in ("content", "reasoning"):
@@ -218,6 +229,149 @@ def test_issue_468_compound_analysis_commentary_final_separates(router, encoding
             assert marker not in val, (
                 f"#468: marker {marker!r} leaked into {ch_name}; got {val!r}"
             )
+
+
+# ----- Round-15 architectural refactor — sentinel-in-body passthrough --
+
+
+def test_structured_payload_preserves_body_with_harmony_sentinels(router, encoding):
+    """Round-15 refactor closure for codex round-12 / round-14
+    BLOCKING (PR #515): a tool call whose JSON arguments contain a
+    literal harmony sentinel substring (``{"text":"<|call|>"}``,
+    ``{"x":"<|message|>"}`` etc.) MUST be surfaced intact via the
+    structured ``{"name", "arguments"}`` payload. The previous
+    wire-text round-trip lost these calls — the downstream regex
+    parser anchored on the embedded sentinel and truncated the JSON,
+    silently dropping a legitimate tool invocation.
+
+    Bytes-faithful structured passthrough eliminates the failure mode
+    by construction: arguments are the verbatim concatenated body
+    text the parser surfaced, no marker handling required.
+    """
+    sentinel_bearing_bodies = (
+        '{"text":"use <|call|>"}',
+        '{"text":"<|message|>injected"}',
+        '{"x":"<|channel|>commentary"}',
+        '{"y":"<|end|>"}',
+        '{"z":"<|return|>"}',
+        '{"a":"<|start|>"}',
+        '{"b":"<|constrain|>json"}',
+    )
+    # Encode the structural prefix / suffix with allowed_special="all"
+    # so harmony markers round-trip as single token IDs, but encode the
+    # body with allowed_special="none" so literal harmony-marker text
+    # INSIDE the JSON body remains plain body bytes — matches how a
+    # real gpt-oss model would tokenize a tool call whose JSON value
+    # happens to contain a marker substring (the model's tokenizer
+    # would not promote inside-JSON text to special-token IDs).
+    prefix_ids = encoding.encode(
+        "<|channel|>commentary to=functions.echo <|constrain|>json<|message|>",
+        allowed_special="all",
+    )
+    suffix_ids = encoding.encode("<|call|>", allowed_special="all")
+    for body in sentinel_bearing_bodies:
+        # ``disallowed_special=()`` tells the harmony encoder to treat
+        # marker-shaped substrings inside the body as plain text bytes
+        # (default behavior raises to prevent accidental special-token
+        # injection). That's exactly the production model behavior we
+        # want to simulate: the model's tokenizer would surface these
+        # bytes via normal body vocab IDs, not as the special marker.
+        body_ids = encoding.encode(body, allowed_special="none", disallowed_special=())
+        tokens = prefix_ids + body_ids + suffix_ids
+        router.reset()
+        result = router.feed_sequence(tokens)
+
+        assert result["tool_calls"] is not None, (
+            f"body {body!r}: tool call MUST surface (round-15 "
+            f"bytes-faithful refactor); got tool_calls=None"
+        )
+        assert len(result["tool_calls"]) == 1, (
+            f"body {body!r}: exactly one tool call expected; "
+            f"got {result['tool_calls']!r}"
+        )
+        tc = result["tool_calls"][0]
+        assert tc == {"name": "echo", "arguments": body}, (
+            f"body {body!r}: structured payload must preserve bytes; got {tc!r}"
+        )
+        # And the body must NOT leak into content (the abstain path
+        # in earlier revisions surfaced sentinel bodies via CONTENT
+        # to keep streaming visible; bytes-faithful passthrough makes
+        # that workaround obsolete).
+        assert result["content"] is None, (
+            f"body {body!r}: must NOT leak into content under "
+            f"bytes-faithful refactor; got {result['content']!r}"
+        )
+
+
+def test_structured_payload_carries_truncated_recipient_namespace(router):
+    """The router strips the harmony ``functions.`` namespace prefix
+    from the recipient before surfacing it. OpenAI's spec carries the
+    bare tool name in ``function.name``; the namespace is transport
+    metadata only.
+    """
+
+    class _C:
+        def __init__(self, t):
+            self.text = t
+
+    class _Msg:
+        recipient = "functions.my-tool-with-dash_and_under"
+        content = [_C('{"k":"v"}')]
+        content_type = None
+
+    out = router._extract_structured_tool_call(_Msg())
+    assert out is not None
+    assert out["name"] == "my-tool-with-dash_and_under"
+    assert out["arguments"] == '{"k":"v"}'
+
+
+def test_structured_payload_drops_malformed_recipient(router):
+    """A recipient that doesn't match ``functions.<safe-name>`` is
+    treated as structural corruption — the router drops the frame
+    rather than surfacing a half-parsed call. Strictly stronger than
+    the legacy wire-text path which would have produced a garbled
+    call.
+    """
+
+    class _C:
+        def __init__(self, t):
+            self.text = t
+
+    class _Msg:
+        def __init__(self, recipient):
+            self.recipient = recipient
+            self.content = [_C('{"x":1}')]
+            self.content_type = None
+
+    bad_recipients = (
+        "functions.bad name",  # whitespace
+        "functions.<|call|>",  # marker
+        "not_functions.x",  # wrong namespace
+        "functions.",  # empty name
+    )
+    for bad in bad_recipients:
+        out = router._extract_structured_tool_call(_Msg(bad))
+        assert out is None, (
+            f"malformed recipient {bad!r} must drop (return None); got {out!r}"
+        )
+
+
+def test_structured_payload_drops_empty_recipient(router):
+    """A commentary message with no recipient at all is not a tool
+    call — the router skips structured emission so the caller knows
+    to fall through.
+    """
+
+    class _C:
+        def __init__(self, t):
+            self.text = t
+
+    class _Msg:
+        recipient = None
+        content = [_C("x")]
+        content_type = None
+
+    assert router._extract_structured_tool_call(_Msg()) is None
 
 
 # ----- General invariants ----------------------------------------------
@@ -237,19 +391,12 @@ def test_per_token_streaming_routes_one_event_per_body_token(router, encoding):
     """
     text = "<|channel|>final<|message|>Hi there.<|return|>"
     tokens = _encode(encoding, text)
-    # Identify which token IDs belong to the body (between
-    # ``<|message|>`` and ``<|return|>``) — those are the ones we
-    # expect to produce a CONTENT event each. Markers are
-    # ``<|channel|>``, ``final``, ``<|message|>``, ``<|return|>``;
-    # everything between the ``<|message|>`` and ``<|return|>`` markers
-    # is body.
     message_id = encoding.encode("<|message|>", allowed_special="all")[0]
     return_id = encoding.encode("<|return|>", allowed_special="all")[0]
     body_start = tokens.index(message_id) + 1
     body_end = tokens.index(return_id)
     body_token_count = body_end - body_start
 
-    # Reset router for explicit per-token feed.
     router.reset()
     events_per_channel: dict[Channel, list[str]] = {
         Channel.CONTENT: [],
@@ -264,8 +411,6 @@ def test_per_token_streaming_routes_one_event_per_body_token(router, encoding):
 
     assert events_per_channel[Channel.TOOL_CALL] == []
     assert events_per_channel[Channel.REASONING] == []
-    # Joined content matches the body, and emit count EQUALS body
-    # token count — coalescing / dropped deltas would now fail.
     assert "".join(events_per_channel[Channel.CONTENT]) == "Hi there."
     assert len(events_per_channel[Channel.CONTENT]) == body_token_count, (
         f"per-token body deltas must be 1-to-1 with body tokens; "
@@ -275,6 +420,31 @@ def test_per_token_streaming_routes_one_event_per_body_token(router, encoding):
     )
 
 
+def test_tool_call_event_carries_structured_payload(router, encoding):
+    """Per-token feed produces a SINGLE TOOL_CALL event on ``<|call|>``
+    whose ``RouterEvent.tool_call`` field carries the structured
+    payload. Engine plumbs this through ``GenerationOutput.tool_calls``
+    so routes bypass the text-based parser entirely.
+    """
+    text = (
+        "<|channel|>commentary "
+        "to=functions.get_weather <|constrain|>json<|message|>"
+        '{"city":"NYC"}<|call|>'
+    )
+    tokens = _encode(encoding, text)
+    router.reset()
+    tool_call_events = []
+    for tid in tokens:
+        ev = router.feed(tid)
+        if ev is not None and ev.channel == Channel.TOOL_CALL:
+            tool_call_events.append(ev)
+    assert len(tool_call_events) == 1
+    ev = tool_call_events[0]
+    assert ev.tool_call is not None
+    assert ev.tool_call["name"] == "get_weather"
+    assert ev.tool_call["arguments"] == '{"city":"NYC"}'
+
+
 def test_feed_sequence_preserves_leading_and_trailing_whitespace(router, encoding):
     """Codex round-1 BLOCKING (PR #515): ``feed_sequence`` must NOT
     ``.strip()`` accumulated content / reasoning — harmony bodies can
@@ -282,8 +452,6 @@ def test_feed_sequence_preserves_leading_and_trailing_whitespace(router, encodin
     fences, formatted output) and stripping silently mutates the
     response. Only the exact empty string maps to ``None``.
     """
-    # Final-channel body starts with a newline and ends with two
-    # spaces — both must survive.
     text = "<|channel|>final<|message|>\n```py\nprint('hi')\n```  <|return|>"
     tokens = _encode(encoding, text)
     router.reset()
@@ -294,165 +462,35 @@ def test_feed_sequence_preserves_leading_and_trailing_whitespace(router, encodin
     )
 
 
-def test_reconstruct_tool_call_rejects_malformed_recipient(router):
-    """Codex round-1 BLOCKING (PR #515): the recipient string is
-    interpolated into the reconstructed ``to=<recipient>`` wire text
-    consumed by ``HarmonyToolParser``. A recipient with whitespace,
-    marker-like characters, or unexpected shape would break the
-    downstream parser. The router must reject it loudly.
+def test_recipient_shape_accepts_digit_start_names(router):
+    """Codex round-2 BLOCKING (PR #515): the original recipient
+    shape regex ``^functions\\.[A-Za-z_]...`` rejected valid OpenAI
+    tool names whose first character is a digit (e.g. ``2fa_lookup``).
+    Widen to match the OpenAI spec ``[A-Za-z0-9_-]{1,64}``.
     """
 
-    class _FakeMessage:
+    class _C:
+        def __init__(self, t):
+            self.text = t
+
+    class _Msg:
         def __init__(self, recipient):
             self.recipient = recipient
-            self.content = []
+            self.content = [_C('{"x":1}')]
             self.content_type = None
 
-    # ``feed()`` only calls ``_reconstruct_tool_call_text`` when
-    # ``closed.recipient`` is truthy, so empty / None recipients are
-    # filtered upstream — only test the cases where reconstruction
-    # actually runs (recipient is a non-empty string of unexpected
-    # shape).
-    bad_recipients = (
-        "functions.bad name",  # whitespace
-        "functions.<|call|>",  # marker
-        "not_functions.x",  # wrong namespace
-        "functions.",  # empty name
-    )
-    for bad in bad_recipients:
-        with pytest.raises(ValueError, match="malformed recipient"):
-            router._reconstruct_tool_call_text(_FakeMessage(bad))
-
-    # Sanity: a well-formed recipient must NOT raise.
-    good = _FakeMessage("functions.get_weather")
-    out = router._reconstruct_tool_call_text(good)
-    assert "to=functions.get_weather" in out
+    for good in (
+        "functions.2fa_lookup",
+        "functions.0_index",
+        "functions.123",
+        "functions.tool-with-dash",
+    ):
+        out = router._extract_structured_tool_call(_Msg(good))
+        assert out is not None, f"good recipient {good!r} dropped; got None"
+        assert out["name"] == good.split(".", 1)[1]
 
 
-def test_reconstruct_tool_call_abstains_on_body_carrying_harmony_sentinel(router):
-    """Codex round-7 BLOCKING (don't emit corrupt structured event) +
-    round-9 BLOCKING (don't raise on legitimate JSON containing
-    ``<|...|>`` substrings): when the body or content_type carries a
-    harmony structural sentinel that would corrupt the downstream
-    HarmonyToolParser regex parse, ``_reconstruct_tool_call_text``
-    must ABSTAIN — return ``None`` — instead of raising.
-
-    The caller (``feed()``) then emits a CONTENT event with the body
-    bytes (codex round-10 BLOCKING — streaming visibility) so the
-    user still sees the tool call's intent verbatim, matching baseline
-    behavior where the legacy router leaked commentary body into
-    CONTENT. The engine non-stream path is unaffected: it relies on
-    ``fallback_text``, which still carries the model's raw emit.
-    Matches the recipient-validation pattern's intent (don't emit a
-    bogus structured event) without the round-9 cost (dropping
-    legitimate OpenAI tool calls whose JSON values happen to contain
-    those characters) and without the round-10 cost (silent streaming
-    drop).
-    """
-
-    class _Content:
-        def __init__(self, text):
-            self.text = text
-
-    class _FakeMessage:
-        def __init__(self, body, recipient="functions.get_weather", ctype=None):
-            self.recipient = recipient
-            self.content = [_Content(body)]
-            self.content_type = ctype
-
-    abstain_bodies = (
-        '{"text":"use <|call|>"}',
-        '{"text":"<|message|>injected"}',
-        '{"x":"<|channel|>commentary"}',
-        '{"y":"<|end|>"}',
-        '{"z":"<|return|>"}',
-        '{"a":"<|start|>"}',
-        '{"b":"<|constrain|>json"}',
-    )
-    for bad in abstain_bodies:
-        out = router._reconstruct_tool_call_text(_FakeMessage(bad))
-        assert out is None, f"body carrying sentinel must abstain (None); got {out!r}"
-
-    # Sanity: clean JSON must reconstruct normally.
-    clean = _FakeMessage('{"city":"NYC"}')
-    out = router._reconstruct_tool_call_text(clean)
-    assert out is not None
-    assert '{"city":"NYC"}' in out
-    assert "<|message|>" in out  # legitimate framing must remain
-    assert out.endswith("<|call|>")  # legitimate trailing sentinel
-
-    # A content_type that smuggles a sentinel past the
-    # ``<|constrain|>`` prefix must also abstain.
-    out = router._reconstruct_tool_call_text(
-        _FakeMessage(
-            '{"city":"NYC"}',
-            ctype="<|constrain|>json<|call|>injected",
-        )
-    )
-    assert out is None, f"content_type smuggling a sentinel must abstain; got {out!r}"
-
-    # A normal ``<|constrain|>json`` content_type must NOT abstain.
-    ok = _FakeMessage('{"city":"NYC"}', ctype="<|constrain|>json")
-    out = router._reconstruct_tool_call_text(ok)
-    assert out is not None
-    assert "<|constrain|>json<|message|>" in out
-
-    # Codex round-11 NIT: a bare enum like ``"json"`` (missing the
-    # ``<|constrain|>`` prefix) would reconstruct non-canonical wire
-    # text the downstream parser can't recognise — must abstain.
-    bare_ctype = _FakeMessage('{"city":"NYC"}', ctype="json")
-    assert router._reconstruct_tool_call_text(bare_ctype) is None, (
-        "bare content_type missing <|constrain|> prefix must abstain"
-    )
-    # And a content_type with disallowed characters must also abstain.
-    bad_chars_ctype = _FakeMessage('{"city":"NYC"}', ctype="<|constrain|>has space")
-    assert router._reconstruct_tool_call_text(bad_chars_ctype) is None, (
-        "content_type with non-safe characters must abstain"
-    )
-
-
-def test_sentinel_body_emits_content_event_for_streaming_visibility(
-    router, encoding, monkeypatch
-):
-    """Codex round-10 BLOCKING (PR #515): when ``_reconstruct_tool_call_text``
-    abstains for a sentinel-laden body, ``feed()`` must NOT silently
-    swallow the streaming output. The body was buffered during the
-    commentary deltas (we suppress per-token emission until close), so
-    a silent drop would make the entire tool call invisible to the
-    streaming consumer. Surface the body bytes as a CONTENT event so
-    the user still sees what the model emitted — matches baseline
-    behavior where the legacy router leaked commentary body into
-    CONTENT verbatim.
-
-    Force the abstain path by monkeypatching the static reconstructor
-    to return None (which is what would happen on a sentinel-laden
-    body for a real call); replay a normal commentary tool call and
-    assert ``feed_sequence`` surfaces the body bytes via CONTENT.
-    """
-    text = (
-        "<|channel|>commentary "
-        "to=functions.get_weather <|constrain|>json<|message|>"
-        '{"city":"NYC"}<|call|>'
-    )
-    tokens = _encode(encoding, text)
-
-    monkeypatch.setattr(
-        HarmonyStreamingRouter,
-        "_reconstruct_tool_call_text",
-        staticmethod(lambda _msg: None),
-    )
-
-    router.reset()
-    result = router.feed_sequence(tokens)
-
-    # No TOOL_CALL surfaces (abstained).
-    assert result["tool_calls"] is None, (
-        f"abstain path must not emit TOOL_CALL; got {result['tool_calls']!r}"
-    )
-    # But the body IS visible to streaming consumers via CONTENT.
-    assert result["content"] is not None and '{"city":"NYC"}' in result["content"], (
-        f"abstain path must surface body bytes via CONTENT; got {result['content']!r}"
-    )
+# ----- Identity allowlist ---------------------------------------------
 
 
 def test_compat_gate_rejects_unknown_tokenizer_identity():
@@ -487,8 +525,6 @@ def test_compat_gate_rejects_unknown_tokenizer_identity():
             return {}
 
         def encode(self, text, add_special_tokens=False):
-            # Even if the tokenizer SOMEHOW produced matching probe IDs,
-            # the identity gate must short-circuit.
             return [99001, 99002]
 
     assert is_openai_harmony_compatible(tm, _NotGptOssTokenizer()) is False
@@ -498,9 +534,7 @@ def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
     """Codex round-2 BLOCKING (PR #515): the identity allowlist must
     tolerate the org-prefix + quant-suffix renames the mlx-community
     publishes (``mlx-community/gpt-oss-20b-MXFP4-Q8``,
-    ``mlx-community/gpt-oss-120b-MXFP4-Q4`` etc.) — case-insensitive
-    substring match on ``gpt-oss`` covers all of them while still
-    rejecting random model names.
+    ``mlx-community/gpt-oss-120b-MXFP4-Q4`` etc.).
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
@@ -509,7 +543,6 @@ def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
         openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
     )
 
-    # Real markers from harmony encoding.
     def _id(s):
         return enc.encode(s, allowed_special="all")[0]
 
@@ -525,11 +558,6 @@ def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
     )
 
     class _GptOssLike:
-        """A tokenizer whose ``encode`` actually delegates to the
-        harmony encoding — so the marker + probe checks pass; only the
-        identity check decides accept vs reject for these cases.
-        """
-
         def __init__(self, name):
             self.name_or_path = name
             self._enc = enc
@@ -543,7 +571,6 @@ def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
         def get_vocab(self):
             return {}
 
-    # Accepted identities.
     for name in (
         "mlx-community/gpt-oss-20b-MXFP4-Q8",
         "openai/gpt-oss-120b",
@@ -553,7 +580,6 @@ def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
             f"identity {name!r} must be accepted"
         )
 
-    # Rejected identities even with matching encoder.
     for name in (
         "mistralai/Mistral-7B-Instruct-v0.3",
         "Qwen/Qwen3-0.6B",
@@ -564,55 +590,14 @@ def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
         )
 
 
-def test_recipient_shape_accepts_digit_start_names():
-    """Codex round-2 BLOCKING (PR #515): the original recipient
-    shape regex ``^functions\\.[A-Za-z_]...`` rejected valid OpenAI
-    tool names whose first character is a digit (e.g. ``2fa_lookup``).
-    Widen to match the OpenAI spec ``[A-Za-z0-9_-]{1,64}``.
-    """
-    from vllm_mlx.output_router import TokenMap
-    from vllm_mlx.output_router_harmony import HarmonyStreamingRouter
-
-    class _Adapter:
-        name_or_path = "mlx-community/gpt-oss-20b-MXFP4-Q8"
-
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
-    r = HarmonyStreamingRouter(TokenMap(format_tag="harmony"), _Adapter())
-
-    class _Msg:
-        def __init__(self, recipient):
-            self.recipient = recipient
-            self.content = []
-            self.content_type = None
-
-    # These were broken on round-1; must pass on round-2.
-    for good in (
-        "functions.2fa_lookup",
-        "functions.0_index",
-        "functions.123",
-        "functions.tool-with-dash",
-    ):
-        out = r._reconstruct_tool_call_text(_Msg(good))
-        assert f"to={good}" in out, f"good recipient {good!r} got: {out!r}"
-
-
 def test_compat_gate_rejects_tokenizer_without_encode():
-    """Codex round-1 BLOCKING (PR #515): the compatibility gate must
-    require body-vocab parity, not just marker IDs. A tokenizer that
-    lacks ``.encode`` (e.g. ``_FakeTokenizer`` in
-    ``tests/test_engine_router_non_stream.py`` — only exposes
-    ``decode`` + ``get_vocab``) cannot prove vocab parity → gate must
-    return False so the legacy router runs.
+    """Codex round-1 BLOCKING (PR #515): a tokenizer that lacks
+    ``.encode`` cannot prove vocab parity → gate must return False so
+    the legacy router runs.
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
 
-    # Realistic harmony marker IDs (same as production gpt-oss-20b).
     tm = TokenMap(
         format_tag="harmony",
         harmony_channel=200005,
@@ -624,9 +609,6 @@ def test_compat_gate_rejects_tokenizer_without_encode():
         harmony_constrain=200003,
     )
 
-    # Use a unique identity so the result cache from earlier tests
-    # doesn't short-circuit this one (codex round-3 NIT: cache is keyed
-    # by lowercased ``name_or_path``).
     class _NoEncodeTokenizer:
         name_or_path = "mlx-community/gpt-oss-NO-ENCODE-VARIANT"
 
@@ -643,10 +625,7 @@ def test_compat_gate_rejects_mismatched_body_vocab():
     """Codex round-1 BLOCKING (PR #515): when markers match but body
     tokens do not, the gate must REJECT — otherwise body tokens are
     decoded through harmony's vocabulary and corrupt content / tool
-    arguments. This is the 7-unit-regression smoking gun from
-    pr_validate round-1: synthetic test tokenizers had ``Reason=1``
-    / ``ing=2`` matching harmony's markers but had completely
-    different body IDs, decoded to ``"#`` under harmony encoding.
+    arguments.
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
@@ -662,8 +641,6 @@ def test_compat_gate_rejects_mismatched_body_vocab():
         harmony_constrain=200003,
     )
 
-    # Use a unique identity so the result cache doesn't return a
-    # stale True from the sibling accepted-variant test.
     class _MismatchedBodyVocabTokenizer:
         name_or_path = "mlx-community/gpt-oss-MISMATCHED-BODY-VARIANT"
 
@@ -674,20 +651,19 @@ def test_compat_gate_rejects_mismatched_body_vocab():
             return {}
 
         def encode(self, text, add_special_tokens=False):
-            # Wrong vocab — every body string is two arbitrary IDs.
             return [99001, 99002]
 
     assert is_openai_harmony_compatible(tm, _MismatchedBodyVocabTokenizer()) is False
 
 
 def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
-    """Codex round-11 BLOCKING (PR #515): the tokenizer-identity
-    allowlist used naive ``in`` substring matching, so an identity
-    like ``my-not-gpt-oss/whatever`` (or ``foo-gpt-oss-bar`` with no
-    ``/`` separator) would pass while clearly not being a real
-    gpt-oss family member. Anchored match
-    (``(?:^|/)gpt-oss(?:-|$)``) accepts canonical names and rejects
-    tail-substring fakes.
+    """Codex round-11 / round-12 / round-13 BLOCKING (PR #515): the
+    tokenizer-identity allowlist used naive ``in`` substring matching,
+    so an identity like ``my-not-gpt-oss/whatever`` (or
+    ``foo-gpt-oss-bar`` with no ``/`` separator) would pass. Anchored
+    match accepts canonical names and rejects tail-substring fakes;
+    remote IDs require an allowlisted owner; local paths trust the
+    basename.
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
@@ -717,15 +693,12 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
         def encode(self, text, add_special_tokens=False):
             return enc.encode(text, allowed_special="none")
 
-    # Tail-substring fakes AND non-allowlisted owner prefixes (codex
-    # round-12 BLOCKING — even an anchored basename allowlist let
-    # arbitrary owners pass; restrict to known owner prefixes).
     rejected_names = (
         "my-not-gpt-oss/whatever",
         "foo/bar-gpt-oss-malicious",
-        "my-not-gpt-oss-20b",  # no slash, tail substring
+        "my-not-gpt-oss-20b",
         "notgpt-oss-fake",
-        "some-user/gpt-oss-remapped",  # unknown owner with valid basename
+        "some-user/gpt-oss-remapped",
         "evil-org/gpt-oss-20b",
         "anonymous/gpt-oss",
     )
@@ -736,25 +709,19 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
 
         _Fake.name_or_path = name
         assert is_openai_harmony_compatible(tm, _Fake()) is False, (
-            f"tail-substring identity {name!r} must be rejected; "
-            f"anchored allowlist failed"
+            f"tail-substring identity {name!r} must be rejected"
         )
 
-    # Canonical names — known owner prefixes (openai, mlx-community,
-    # unsloth), bare basename, AND local filesystem paths (codex
-    # round-13 BLOCKING — production loads models by absolute path
-    # from local caches; rejecting them broke real deployments).
     accepted_names = (
         "openai/gpt-oss-20b",
         "mlx-community/gpt-oss-20b-MXFP4-Q8",
         "unsloth/gpt-oss-20b-MLX-8bit",
-        "gpt-oss-20b",  # bare, anchored at ^
-        "gpt-oss",  # bare exact
-        "/models/gpt-oss-20b",  # absolute local path
-        "/Users/me/.cache/huggingface/hub/models--openai--gpt-oss-20b/gpt-oss-20b",
-        "~/lmstudio-models/gpt-oss-20b",  # tilde-prefixed local path
-        "./gpt-oss-20b-quantized",  # relative local path
-        "../models/gpt-oss-20b",  # parent-relative local path
+        "gpt-oss-20b",
+        "gpt-oss",
+        "/models/gpt-oss-20b",
+        "~/lmstudio-models/gpt-oss-20b",
+        "./gpt-oss-20b-quantized",
+        "../models/gpt-oss-20b",
     )
     for name in accepted_names:
 
@@ -763,22 +730,99 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
 
         _Real.name_or_path = name
         assert is_openai_harmony_compatible(tm, _Real()) is True, (
-            f"canonical identity {name!r} must pass; anchored regex over-rejected"
+            f"canonical identity {name!r} must pass"
         )
 
 
-def test_compat_cache_key_segregates_by_tokenizer_instance():
-    """Codex round-11 BLOCKING (PR #515): the per-identity cache used
-    ``(name_or_path, marker_ids)`` only, so two distinct tokenizer
-    instances with the same name + marker IDs but a remapped body
-    vocab shared a single cached decision. A previous ``True`` would
-    then upgrade an incompatible tokenizer and corrupt
-    ``StreamableParser`` body decoding.
+def test_compat_gate_accepts_hf_cache_snapshot_path():
+    """Round-15 fix for codex round-14 BLOCKING #1 (PR #515): the HF
+    hub cache snapshot layout is
+    ``~/.cache/huggingface/hub/models--<owner>--<name>/snapshots/<sha>/``.
+    The snapshot basename is an opaque SHA, not the model name, so the
+    basename-only allowlist (round-13) rejected this path and made
+    every HF-cache-loaded gpt-oss model fall back to the leaking
+    legacy router.
 
-    Fix folded ``id(tokenizer)`` into the cache key — distinct
-    instances now segregate naturally, each instance gets an
-    authoritative ``_compute_compat`` pass; same-instance reuses
-    cleanly (zero-encode cache hit).
+    Fix: search the full path for ``models--<owner>--<name>`` and
+    treat it as the remote id ``<owner>/<name>`` (subject to the
+    remote-owner allowlist), so cache-loaded models route through the
+    openai-harmony bypass like their HF-id-loaded siblings.
+    """
+    from vllm_mlx.output_router import TokenMap
+    from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
+
+    enc = openai_harmony.load_harmony_encoding(
+        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
+    )
+
+    def _id(s):
+        return enc.encode(s, allowed_special="all")[0]
+
+    tm = TokenMap(
+        format_tag="harmony",
+        harmony_channel=_id("<|channel|>"),
+        harmony_message=_id("<|message|>"),
+        harmony_call=_id("<|call|>"),
+        harmony_end=_id("<|end|>"),
+        harmony_return=_id("<|return|>"),
+        harmony_start=_id("<|start|>"),
+        harmony_constrain=_id("<|constrain|>"),
+    )
+
+    class _CompatTokenizerBase:
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            return enc.encode(text, allowed_special="none")
+
+    accepted_cache_paths = (
+        "/Users/me/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/abc123def/",
+        "/home/user/.cache/huggingface/hub/models--mlx-community--gpt-oss-20b-MXFP4-Q8/snapshots/0f1e2d3c/",
+        "/var/lib/hf-cache/models--unsloth--gpt-oss-20b-MLX-8bit/snapshots/fedcba9876/",
+    )
+    for path in accepted_cache_paths:
+
+        class _CachePath(_CompatTokenizerBase):
+            pass
+
+        _CachePath.name_or_path = path
+        assert is_openai_harmony_compatible(tm, _CachePath()) is True, (
+            f"HF cache snapshot {path!r} must pass (round-14 BLOCKING fix)"
+        )
+
+    # An HF cache path with an UNALLOWLISTED owner must still be rejected.
+    class _BadCachePath(_CompatTokenizerBase):
+        pass
+
+    _BadCachePath.name_or_path = (
+        "/home/x/.cache/huggingface/hub/models--evil-org--gpt-oss-20b/snapshots/xyz/"
+    )
+    assert is_openai_harmony_compatible(tm, _BadCachePath()) is False, (
+        "HF cache path with non-allowlisted owner must NOT pass"
+    )
+
+    # An HF cache path for a non-gpt-oss model must also be rejected.
+    class _NonGptOssCachePath(_CompatTokenizerBase):
+        pass
+
+    _NonGptOssCachePath.name_or_path = (
+        "/home/x/.cache/huggingface/hub/models--openai--whisper-large/snapshots/xyz/"
+    )
+    assert is_openai_harmony_compatible(tm, _NonGptOssCachePath()) is False, (
+        "HF cache path for non-gpt-oss model must NOT pass"
+    )
+
+
+def test_compat_cache_key_segregates_by_tokenizer_instance():
+    """Codex round-11/12 BLOCKING (PR #515): two distinct tokenizer
+    instances with the same name + marker IDs but a remapped body
+    vocab must NOT share a cached decision (id-reuse hazard). The
+    ``WeakKeyDictionary`` keyed on the tokenizer instance segregates
+    naturally.
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
@@ -798,7 +842,6 @@ def test_compat_cache_key_segregates_by_tokenizer_instance():
         openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
     )
 
-    # Instance #1: real harmony body vocab → True.
     class _RealHarmony:
         name_or_path = "mlx-community/gpt-oss-CACHE-INSTANCE-VARIANT"
 
@@ -813,10 +856,6 @@ def test_compat_cache_key_segregates_by_tokenizer_instance():
 
     assert is_openai_harmony_compatible(tm, _RealHarmony()) is True
 
-    # Instance #2: SAME name_or_path + SAME marker IDs but a
-    # MISMATCHED body vocab. Must NOT reuse instance #1's True (the
-    # cache key now includes ``id(tokenizer)`` so #2 gets a fresh
-    # authoritative probe).
     class _RemappedBody:
         name_or_path = "mlx-community/gpt-oss-CACHE-INSTANCE-VARIANT"
 
@@ -830,7 +869,7 @@ def test_compat_cache_key_segregates_by_tokenizer_instance():
             return [99001, 99002]
 
     assert is_openai_harmony_compatible(tm, _RemappedBody()) is False, (
-        "round-11: cache must segregate by tokenizer instance; "
+        "cache must segregate by tokenizer instance; "
         "remapped tokenizer shared instance #1's stale True decision"
     )
 
@@ -839,12 +878,8 @@ def test_compat_gate_rejects_non_int_encode_result():
     """Codex round-8 BLOCKING (PR #515): some HF tokenizer
     configurations (``return_tensors`` defaults, wrapped Fast
     tokenizers) make ``encode()`` return a ``BatchEncoding`` / tensor
-    rather than a flat ``list[int]``. ``list(...)`` on those either
-    raises or yields opaque objects whose equality check against the
-    harmony reference list returns False but in a way that would crash
-    later consumers (``StreamableParser.process``). The gate must
-    return False on anything that isn't a flat int sequence so the
-    engine falls back cleanly to the legacy router.
+    rather than a flat ``list[int]``. The gate must return False on
+    anything that isn't a flat int sequence.
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
@@ -861,11 +896,6 @@ def test_compat_gate_rejects_non_int_encode_result():
     )
 
     class _BatchEncodingShape:
-        """Pretends to be a BatchEncoding — ``list(self)`` returns
-        dict-style keys (``"input_ids"``, ``"attention_mask"``), not
-        the integer token IDs the gate expects.
-        """
-
         def __iter__(self):
             return iter(("input_ids", "attention_mask"))
 
@@ -883,9 +913,6 @@ def test_compat_gate_rejects_non_int_encode_result():
 
     assert is_openai_harmony_compatible(tm, _BatchEncodingTokenizer()) is False
 
-    # And a flat tuple of non-int items (an even more degenerate
-    # tokenizer config) must also fall back to False rather than
-    # surface a TypeError.
     class _StringTokenIdsTokenizer:
         name_or_path = "mlx-community/gpt-oss-STRING-IDS-VARIANT"
 
@@ -901,165 +928,9 @@ def test_compat_gate_rejects_non_int_encode_result():
     assert is_openai_harmony_compatible(tm, _StringTokenIdsTokenizer()) is False
 
 
-def test_finalize_never_synthesizes_truncated_commentary(router, encoding):
-    """Codex round-6 BLOCKING resolution (PR #515): finalize() adopts
-    the vLLM / SGLang safer-default — a commentary message cut off
-    before ``<|call|>`` must NEVER be surfaced as a tool call, even
-    when the body is syntactically valid JSON. A ``max_tokens`` /
-    ``stop`` truncation must not be executed as if the model had
-    emitted ``<|call|>``; the upside of rescuing a rare recoverable
-    case is dwarfed by the cost of one wrongly-invoked tool. Per-token
-    ``feed()`` already produced every body byte (as buffered
-    commentary, never routed) — finalize only flushes parser state.
-    """
-    text = (
-        "<|channel|>commentary "
-        "to=functions.get_weather <|constrain|>json<|message|>"
-        '{"city":"NYC"}'  # NO <|call|> — truncated right before it
-    )
-    tokens = _encode(encoding, text)
-    router.reset()
-    routed_during_stream = []
-    for tid in tokens:
-        ev = router.feed(tid)
-        if ev is not None:
-            routed_during_stream.append(ev)
-    drained = router.finalize()
-
-    assert all(ev.channel != Channel.TOOL_CALL for ev in routed_during_stream)
-    assert drained is None, (
-        f"truncated commentary must NEVER surface as a tool call; got {drained!r} "
-        f"(stream events: {len(routed_during_stream)})"
-    )
-
-
-def test_finalize_drops_mid_json_truncation(router, encoding):
-    """Sibling pin to ``test_finalize_never_synthesizes_truncated_commentary``:
-    a commentary message whose body was cut off mid-JSON (e.g.
-    ``{"city":"NY``) must also be dropped. Covered by the same
-    safer-default rule (codex round-6 resolution, PR #515) — finalize()
-    never synthesizes a tool call from a truncated commentary message,
-    so any partial-JSON body is dropped by construction.
-    """
-    # Commentary header + truncated mid-string body.
-    text = (
-        "<|channel|>commentary "
-        "to=functions.get_weather <|constrain|>json<|message|>"
-        '{"city":"NY'  # cut off mid-JSON
-    )
-    tokens = _encode(encoding, text)
-    router.reset()
-    for tid in tokens:
-        router.feed(tid)
-    drained = router.finalize()
-
-    assert drained is None, (
-        f"mid-JSON truncation must NOT surface as a tool call; got {drained!r}"
-    )
-
-
-def test_finalize_drops_truncated_commentary_with_empty_body(router, encoding):
-    """Sibling pin: a commentary message with no body whatsoever
-    (truncated right after ``<|message|>``) must also be dropped.
-    Covered by the same safer-default rule (codex round-6 resolution,
-    PR #515) — finalize() never synthesizes a tool call regardless of
-    body shape.
-    """
-    text = "<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>"
-    tokens = _encode(encoding, text)
-    router.reset()
-    for tid in tokens:
-        router.feed(tid)
-    drained = router.finalize()
-
-    assert drained is None, (
-        f"empty-body truncated commentary must be dropped; got {drained!r}"
-    )
-
-
-def test_finalize_does_not_double_emit_completed_final(router, encoding):
-    """Codex round-4 BLOCKING (PR #515): for a NORMALLY-completed
-    final channel (model emitted ``<|return|>``), the per-token feed
-    has already produced every body delta. ``finalize()`` must NOT
-    re-emit those bytes as a second routed event — that would
-    duplicate the final response.
-    """
-    text = "<|channel|>final<|message|>Hi there.<|return|>"
-    tokens = _encode(encoding, text)
-    router.reset()
-    streamed = []
-    for tid in tokens:
-        ev = router.feed(tid)
-        if ev is not None:
-            streamed.append(ev)
-    drained = router.finalize()
-
-    assert drained is None, (
-        f"completed final must not re-emit on finalize; got {drained!r}"
-    )
-    # The per-token stream already produced the full body.
-    assert (
-        "".join(e.text for e in streamed if e.channel == Channel.CONTENT) == "Hi there."
-    )
-
-
-def test_finalize_does_not_drain_post_eos_buffered_delta(router, encoding):
-    """Codex round-6 BLOCKING resolution (PR #515): even if a future
-    openai-harmony build flushes a buffered tail via
-    ``last_content_delta`` during ``process_eos()``, ``finalize()``
-    must NOT route it as a CONTENT / REASONING event. Per-token
-    ``feed()`` already produced every body byte the model emitted;
-    emitting a post-EOS delta risks duplicating the last token (if the
-    build does not clear ``last_content_delta`` between the per-token
-    flush and the EOS flush). The safer default matches vLLM / SGLang:
-    finalize is a parser-state flush only.
-    """
-    # Construct a router whose underlying StreamableParser is forced
-    # into a state where process_eos produces a synthetic delta.
-
-    class _StubMessage:
-        def __init__(self, channel):
-            self.channel = channel
-            self.recipient = None
-            self.content = []
-            self.content_type = None
-
-    class _StubParser:
-        def __init__(self, channel, delta):
-            self._channel = channel
-            self._delta = delta
-            self.tokens = [1]
-            self.messages: list[_StubMessage] = []
-
-        @property
-        def current_channel(self):
-            return self._channel
-
-        @property
-        def last_content_delta(self):
-            return self._delta
-
-        def process_eos(self):
-            self.messages.append(_StubMessage(self._channel))
-            self._delta = " tail"
-
-    router.reset()
-    router._parser = _StubParser("final", "")
-    drained = router.finalize()
-    assert drained is None, f"post-EOS final delta must NOT drain; got {drained!r}"
-
-    router.reset()
-    router._parser = _StubParser("analysis", "")
-    drained = router.finalize()
-    assert drained is None, f"post-EOS analysis delta must NOT drain; got {drained!r}"
-
-
 def test_compat_gate_rejects_missing_marker_ids():
     """Codex round-4 BLOCKING (PR #515): the gate must require ALL
     seven harmony markers to be present in the tokenizer's TokenMap.
-    Previously a tokenizer with only ``<|channel|>`` / ``<|message|>``
-    plus matching probe IDs could pass — StreamableParser would then
-    crash when the model emitted a ``<|call|>`` the gate never checked.
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
@@ -1071,7 +942,6 @@ def test_compat_gate_rejects_missing_marker_ids():
     def _id(s):
         return enc.encode(s, allowed_special="all")[0]
 
-    # Missing ``harmony_call`` — gate must reject.
     tm_missing_call = TokenMap(
         format_tag="harmony",
         harmony_channel=_id("<|channel|>"),
@@ -1101,9 +971,7 @@ def test_compat_gate_rejects_missing_marker_ids():
 def test_compat_gate_cache_segregates_by_marker_ids():
     """Codex round-4 NIT (PR #515): a SINGLE tokenizer instance probed
     with two different ``TokenMap`` marker-ID tuples must NOT share a
-    cached compatibility result — the inner per-tokenizer cache keys
-    on the ``(name_lc, marker_ids)`` tuple, so distinct marker tuples
-    segregate into distinct entries even on the same tokenizer.
+    cached compatibility result.
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import (
@@ -1121,12 +989,12 @@ def test_compat_gate_cache_segregates_by_marker_ids():
             return {}
 
         def encode(self, text, add_special_tokens=False):
-            return [0]  # always rejected by body-vocab probe
+            return [0]
 
     tm_a = TokenMap(format_tag="harmony", harmony_channel=200005)
     tm_b = TokenMap(format_tag="harmony", harmony_channel=999999)
 
-    t = _T()  # one instance — keep alive for the WeakKeyDictionary
+    t = _T()
     is_openai_harmony_compatible(tm_a, t)
     is_openai_harmony_compatible(tm_b, t)
 
@@ -1142,14 +1010,6 @@ def test_compat_gate_caches_per_tokenizer_identity():
     """Codex round-3 NIT (PR #515): the compatibility probe is called
     on every request from the engine's streaming factory; the marker
     + body-vocab checks should only run once per tokenizer identity.
-
-    Codex round-5 BLOCKING redesign: the previous version used an
-    identity that failed the allowlist gate up-front, so ``encode``
-    was never invoked even without caching — the test would pass even
-    if the cache were removed. This version uses a legal gpt-oss
-    identity with real marker IDs so the gate reaches the body-vocab
-    probe step; only a mismatching probe response causes the False
-    result, and the second call MUST be short-circuited by the cache.
     """
     from vllm_mlx.output_router import TokenMap
     from vllm_mlx.output_router_harmony import is_openai_harmony_compatible
@@ -1161,9 +1021,6 @@ def test_compat_gate_caches_per_tokenizer_identity():
     def _id(s):
         return enc.encode(s, allowed_special="all")[0]
 
-    # Real marker IDs so steps (1) identity allowlist and (2) marker
-    # parity both pass; the body-vocab probe at step (3) is what
-    # rejects this tokenizer (mismatching encode).
     tm = TokenMap(
         format_tag="harmony",
         harmony_channel=_id("<|channel|>"),
@@ -1178,7 +1035,6 @@ def test_compat_gate_caches_per_tokenizer_identity():
     call_count = {"n": 0}
 
     class _CountingTokenizer:
-        # Allowlisted identity — substring match on "gpt-oss".
         name_or_path = "mlx-community/gpt-oss-CACHE-PROBE-INVOCATION"
 
         def decode(self, ids):
@@ -1189,30 +1045,137 @@ def test_compat_gate_caches_per_tokenizer_identity():
 
         def encode(self, text, add_special_tokens=False):
             call_count["n"] += 1
-            return [0]  # nonsense — guaranteed mismatch → False
+            return [0]
 
-    # Fresh tokenizer instance — the WeakKeyDictionary cache is keyed
-    # on the instance object, so a new instance is guaranteed to start
-    # with no stale entry regardless of prior test state.
     t = _CountingTokenizer()
-    # First call reaches the body-vocab probe and increments
-    # call_count — that's the work the cache must save on subsequent
-    # calls.
     result1 = is_openai_harmony_compatible(tm, t)
     assert result1 is False
     first_call_count = call_count["n"]
-    assert first_call_count > 0, (
-        "test setup error: first call must reach the encode probe — "
-        f"expected >0 encode invocations, got {first_call_count}"
-    )
+    assert first_call_count > 0
 
-    # Second call must return the cached False without re-invoking
-    # encode. If the cache were removed, call_count would double on
-    # this call.
     result2 = is_openai_harmony_compatible(tm, t)
     assert result2 is False
     assert call_count["n"] == first_call_count, (
-        "compat gate must cache False results per identity; "
-        f"saw {call_count['n']} encode calls (expected {first_call_count} "
-        "— second call should have hit the cache and not re-probed)"
+        "compat gate must cache False results per identity"
     )
+
+
+# ----- finalize() safer-default pins ----------------------------------
+
+
+def test_finalize_never_synthesizes_truncated_commentary(router, encoding):
+    """Codex round-6 BLOCKING resolution (PR #515): finalize() adopts
+    the vLLM / SGLang safer-default — a commentary message cut off
+    before ``<|call|>`` must NEVER be surfaced as a tool call.
+    """
+    text = (
+        "<|channel|>commentary "
+        "to=functions.get_weather <|constrain|>json<|message|>"
+        '{"city":"NYC"}'  # NO <|call|>
+    )
+    tokens = _encode(encoding, text)
+    router.reset()
+    routed_during_stream = []
+    for tid in tokens:
+        ev = router.feed(tid)
+        if ev is not None:
+            routed_during_stream.append(ev)
+    drained = router.finalize()
+
+    assert all(ev.channel != Channel.TOOL_CALL for ev in routed_during_stream)
+    assert drained is None, (
+        f"truncated commentary must NEVER surface as a tool call; got {drained!r} "
+        f"(stream events: {len(routed_during_stream)})"
+    )
+
+
+def test_finalize_drops_mid_json_truncation(router, encoding):
+    """A commentary message whose body was cut off mid-JSON must also
+    be dropped — same safer-default rule as the canonical truncation
+    test.
+    """
+    text = (
+        "<|channel|>commentary "
+        "to=functions.get_weather <|constrain|>json<|message|>"
+        '{"city":"NY'
+    )
+    tokens = _encode(encoding, text)
+    router.reset()
+    for tid in tokens:
+        router.feed(tid)
+    drained = router.finalize()
+
+    assert drained is None
+
+
+def test_finalize_drops_truncated_commentary_with_empty_body(router, encoding):
+    """A commentary message with no body whatsoever must be dropped."""
+    text = "<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>"
+    tokens = _encode(encoding, text)
+    router.reset()
+    for tid in tokens:
+        router.feed(tid)
+    drained = router.finalize()
+
+    assert drained is None
+
+
+def test_finalize_does_not_double_emit_completed_final(router, encoding):
+    """Codex round-4 BLOCKING (PR #515): for a NORMALLY-completed
+    final channel (model emitted ``<|return|>``), ``finalize()`` must
+    NOT re-emit body bytes as a second routed event.
+    """
+    text = "<|channel|>final<|message|>Hi there.<|return|>"
+    tokens = _encode(encoding, text)
+    router.reset()
+    streamed = []
+    for tid in tokens:
+        ev = router.feed(tid)
+        if ev is not None:
+            streamed.append(ev)
+    drained = router.finalize()
+
+    assert drained is None
+    assert (
+        "".join(e.text for e in streamed if e.channel == Channel.CONTENT) == "Hi there."
+    )
+
+
+def test_finalize_does_not_drain_post_eos_buffered_delta(router, encoding):
+    """Codex round-6 BLOCKING resolution (PR #515): finalize must NOT
+    route post-EOS deltas.
+    """
+
+    class _StubMessage:
+        def __init__(self, channel):
+            self.channel = channel
+            self.recipient = None
+            self.content = []
+            self.content_type = None
+
+    class _StubParser:
+        def __init__(self, channel, delta):
+            self._channel = channel
+            self._delta = delta
+            self.tokens = [1]
+            self.messages: list[_StubMessage] = []
+
+        @property
+        def current_channel(self):
+            return self._channel
+
+        @property
+        def last_content_delta(self):
+            return self._delta
+
+        def process_eos(self):
+            self.messages.append(_StubMessage(self._channel))
+            self._delta = " tail"
+
+    router.reset()
+    router._parser = _StubParser("final", "")
+    assert router.finalize() is None
+
+    router.reset()
+    router._parser = _StubParser("analysis", "")
+    assert router.finalize() is None

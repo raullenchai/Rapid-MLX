@@ -1201,16 +1201,25 @@ class TestGenerationOutputFieldOrder:
         assert out.reasoning_text == ""
 
     def test_field_order_appends_new_fields_at_end(self):
-        """Make the rule machine-checkable: ``raw_text`` and
-        ``reasoning_text`` must be the LAST two fields. If a refactor
-        ever reorders them back into the middle, this test fails loud
-        instead of producing silent positional-bind regressions.
+        """Make the rule machine-checkable: new fields added after
+        v0.6.65 (``raw_text``, ``reasoning_text``, ``tool_calls``) must
+        be APPENDED in chronological order at the end of the dataclass.
+        If a refactor ever reorders them back into the middle, this
+        test fails loud instead of producing silent positional-bind
+        regressions for downstream callers that still construct
+        GenerationOutput positionally.
         """
         from dataclasses import fields
 
         names = [f.name for f in fields(GenerationOutput)]
-        assert names[-2:] == ["raw_text", "reasoning_text"], (
-            f"raw_text and reasoning_text must remain the LAST two fields "
-            f"of GenerationOutput to preserve positional-arg compatibility "
-            f"for the v0.6.65 surface. Current order: {names}"
+        # The original v0.6.65-and-earlier surface ends at ``channel``.
+        # ``raw_text``, ``reasoning_text``, and ``tool_calls`` were
+        # appended in order and must stay in their append positions.
+        legacy_tail_idx = names.index("channel")
+        appended = names[legacy_tail_idx + 1 :]
+        assert appended == ["raw_text", "reasoning_text", "tool_calls"], (
+            f"new GenerationOutput fields must be APPENDED in order "
+            f"(raw_text → reasoning_text → tool_calls) to preserve "
+            f"positional-arg compatibility for the pre-v0.6.65 surface. "
+            f"Current trailing fields after ``channel``: {appended}"
         )

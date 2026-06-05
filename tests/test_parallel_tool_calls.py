@@ -136,7 +136,7 @@ class TestRouteIntegration:
         from vllm_mlx.engine.base import GenerationOutput
         from vllm_mlx.routes.chat import router as chat_router
 
-        def _fake_parse(text, request):
+        def _fake_parse(text, request, *, structured_tool_calls=None):
             return (
                 "",
                 [

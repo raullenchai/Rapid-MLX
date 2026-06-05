@@ -18,17 +18,19 @@ terminators the model didn't emit":
      ``_stream_with_output_router`` — non-streaming silently diverged.
 
 The fix routes the completed token sequence through the same
-``OutputRouter`` state machine the streaming path trusts. The router
-tracks channel state at the token level (it doesn't care about ``<|end|>``
-markers — it knows it's in analysis the moment the analysis word token
-fires), so truncated output is handled identically to terminated.
+``OutputRouter`` state machine the streaming path trusts.
 
-The engine's ``_route_tokens_for_channels`` returns
-``(reasoning_text, content_text)``; the content override only fires
-when the router authoritatively says "no content, only reasoning" so
-tool-call paths (where harmony commentary needs to survive intact for
-the route's tool parser) keep their existing behavior. These tests pin
-each branch of that override decision.
+Round-15 refactor (PR #515 codex round-12 / round-14 BLOCKING
+closure): ``_route_tokens_for_channels`` returns
+``(reasoning_text, content_text, structured_tool_calls)``. The third
+value is the engine's structured tool-call passthrough — when the
+router natively parses tool calls (currently
+``HarmonyStreamingRouter`` via openai-harmony's ``StreamableParser``),
+the bytes-faithful ``[{"name", "arguments"}]`` payload flows through
+``GenerationOutput.tool_calls`` so the route layer bypasses text-based
+regex extraction entirely. This eliminates the wire-text round-trip
+that previously corrupted tool calls whose JSON arguments contained
+literal harmony sentinel substrings.
 """
 
 from __future__ import annotations
@@ -96,13 +98,14 @@ def test_truncated_analysis_drops_content_and_recovers_reasoning(engine):
     """
     # <|channel|> analysis <|message|> Reason ing  (no <|end|>)
     token_ids = [200005, 35644, 200008, 1, 2]
-    reasoning, content = engine._route_tokens_for_channels(
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
         token_ids, fallback_text="Reasoning"
     )
     assert reasoning == "Reasoning", (
         f"#442: router did not recover reasoning from truncated analysis: {reasoning!r}"
     )
     assert content == "", f"#442: analysis body leaked into content: {content!r}"
+    assert tool_calls is None
 
 
 def test_terminated_analysis_only_also_drops_content(engine):
@@ -112,11 +115,12 @@ def test_terminated_analysis_only_also_drops_content(engine):
     reproduces both with and without ``<|end|>``).
     """
     token_ids = [200005, 35644, 200008, 1, 2, 200007]
-    reasoning, content = engine._route_tokens_for_channels(
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
         token_ids, fallback_text="anything"
     )
     assert reasoning == "Reasoning"
     assert content == ""
+    assert tool_calls is None
 
 
 def test_analysis_then_final_keeps_fallback_content(engine):
@@ -124,8 +128,7 @@ def test_analysis_then_final_keeps_fallback_content(engine):
     BOTH a CONTENT event (final-channel "Answer") and a REASONING event
     (analysis-channel "Reasoning"). Override condition (content is None
     AND reasoning exists) is FALSE → keep the fallback text from
-    ``clean_output_text``. This pins the existing PR #436 / #440
-    behavior so the new override doesn't regress the common case.
+    ``clean_output_text``.
     """
     token_ids = [
         200005,
@@ -135,73 +138,76 @@ def test_analysis_then_final_keeps_fallback_content(engine):
         2,  # Reasoning
         200007,  # <|end|>
         200006,
-        173781,  # <|start|>assistant  (PR #441 swallows the role)
+        173781,  # <|start|>assistant
         200005,
         17196,
         200008,  # <|channel|>final<|message|>
         3,  # Answer
         200002,  # <|return|>
     ]
-    reasoning, content = engine._route_tokens_for_channels(
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
         token_ids, fallback_text="Answer"
     )
     assert reasoning == "Reasoning"
     assert content == "Answer", "happy path must not clobber the text-cleaning result"
+    assert tool_calls is None
 
 
 def test_pure_content_no_thinking_keeps_fallback(engine):
     """``<|channel|>final<|message|>Plain<|return|>`` — content-only,
     no analysis. Router emits CONTENT and no REASONING. Override
     condition is FALSE (reasoning empty) → fallback content preserved.
-    Without this guard the engine would clobber pure-content responses
-    with ``text=""`` on every non-reasoning model.
     """
     token_ids = [200005, 17196, 200008, 4, 200002]
-    reasoning, content = engine._route_tokens_for_channels(
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
         token_ids, fallback_text="Plain"
     )
     assert reasoning == ""
     assert content == "Plain"
+    assert tool_calls is None
 
 
 def test_no_router_returns_fallback_untouched(engine):
     """If ``_create_output_router`` returns ``None`` (tokenizer doesn't
     have channel tokens — e.g. plain Llama), the engine must NOT try
-    to do anything channel-aware. Returns empty reasoning + the
-    original ``fallback_text`` so routes' ReasoningParser path keeps
-    handling extraction for older formats.
+    to do anything channel-aware.
     """
     plain_engine = BatchedEngine("test-model")
     plain_engine._loaded = True
     plain_engine._is_mllm = False
     plain_engine._tokenizer = _FakeTokenizer({"plain": 100})
-    reasoning, content = plain_engine._route_tokens_for_channels(
+    reasoning, content, tool_calls = plain_engine._route_tokens_for_channels(
         [100, 100], fallback_text="plain text"
     )
     assert reasoning == ""
     assert content == "plain text"
+    assert tool_calls is None
 
 
 def test_empty_token_list_returns_fallback(engine):
     """Defensive: empty token IDs (race during error paths) must not
-    crash. Returns empty reasoning + the fallback text.
+    crash.
     """
-    reasoning, content = engine._route_tokens_for_channels([], fallback_text="whatever")
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
+        [], fallback_text="whatever"
+    )
     assert reasoning == ""
     assert content == "whatever"
+    assert tool_calls is None
 
 
-def test_tool_call_routing_preserves_fallback_text(engine, monkeypatch):
-    """PR #515 round-1: when the router emits a TOOL_CALL channel
-    (commentary tool call) the override MUST NOT fire — fallback_text
-    has to survive intact so the route's ``_parse_tool_calls_with_parser``
-    can extract the call from the harmony wire format. Verified via a
-    live diff against the pre-PR baseline; this test pins the
-    invariant so a future override-condition change doesn't silently
-    regress non-stream tool calls.
+def test_structured_tool_call_passthrough_drops_fallback_text(engine, monkeypatch):
+    """Round-15 refactor: when the router natively surfaces structured
+    tool calls (HarmonyStreamingRouter), the engine MUST surface them
+    via ``structured_tool_calls`` and force ``content`` to the
+    router's CONTENT-channel result. The ``fallback_text`` from
+    ``clean_output_text`` may still carry un-cleaned commentary
+    headers that would otherwise bleed into the user-facing
+    ``content`` field. The route layer then bypasses text-based
+    extraction entirely.
     """
 
-    class _ToolCallRouter:
+    class _StructuredToolCallRouter:
         def reset(self):
             pass
 
@@ -210,172 +216,76 @@ def test_tool_call_routing_preserves_fallback_text(engine, monkeypatch):
                 "content": None,
                 "reasoning": "Need to call the function",
                 "tool_calls": [
-                    "<|channel|>commentary to=functions.get_weather "
-                    '<|constrain|>json<|message|>{"city":"NYC"}<|call|>'
+                    {"name": "get_weather", "arguments": '{"city":"NYC"}'},
                 ],
             }
 
-    monkeypatch.setattr(engine, "_create_output_router", lambda: _ToolCallRouter())
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005, 12606, 815, 200008, 1],
-        fallback_text='<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>{"city":"NYC"}<|call|>',
+    monkeypatch.setattr(
+        engine, "_create_output_router", lambda: _StructuredToolCallRouter()
+    )
+    fallback = (
+        "<|channel|>commentary to=functions.get_weather <|constrain|>json"
+        '<|message|>{"city":"NYC"}<|call|>'
+    )
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
+        [200005, 12606, 815, 200008, 1], fallback_text=fallback
     )
     assert reasoning == "Need to call the function"
-    # The override must NOT clobber fallback_text — tool-call commentary
-    # MUST survive to the route's HarmonyToolParser.
-    assert "functions.get_weather" in content, (
-        f"tool-call fallback_text clobbered; got {content!r}"
+    # Structured passthrough — fallback_text's commentary residue MUST
+    # NOT leak into content. The route layer reads tool_calls instead.
+    assert content == "", (
+        f"structured passthrough must clear content of commentary residue; "
+        f"got {content!r}"
     )
-    assert '{"city":"NYC"}' in content
+    assert tool_calls == [{"name": "get_weather", "arguments": '{"city":"NYC"}'}]
 
 
-def test_routed_tool_call_supplements_fallback_text(engine, monkeypatch):
-    """PR #515 (codex round-3 BLOCKING origin / round-11 NIT retarget):
-    when ``OutputRouter.feed_sequence`` surfaces a structured tool call
-    in ``routed["tool_calls"]`` but ``_clean_gpt_oss_output`` has
-    stripped the commentary wire text from ``fallback_text``, the
-    engine must pipe each routed call through by appending its
-    reconstructed wire text so the route's ``HarmonyToolParser`` can
-    extract it. Idempotent: when ``fallback_text`` already carries
-    the SAME canonical signature, don't double-append.
-
-    (Round-6 flipped ``HarmonyStreamingRouter.finalize()`` to the
-    vLLM / SGLang safer-default — finalize now always returns None;
-    tool calls only surface via ``feed()`` on a fully closed
-    ``<|call|>``-terminated commentary message. The fake-router stub
-    below stands in for that ``feed_sequence`` path, not finalize.)
+def test_structured_tool_call_passthrough_preserves_final_content(engine, monkeypatch):
+    """When the model emits BOTH a tool call AND a final-channel
+    response (compound assistant turn), structured passthrough must
+    preserve the final-channel CONTENT alongside the tool_calls. The
+    router's CONTENT result is the user-facing text; the tool_calls
+    are surfaced separately for the route layer.
     """
 
-    class _DrainedToolCallRouter:
+    class _CompoundRouter:
         def reset(self):
             pass
 
         def feed_sequence(self, _ids):
             return {
-                "content": None,
-                "reasoning": "Calling the tool",
+                "content": "The answer is 42.",
+                "reasoning": None,
                 "tool_calls": [
-                    "<|channel|>commentary to=functions.get_weather "
-                    '<|constrain|>json<|message|>{"city":"NYC"}<|call|>'
+                    {"name": "lookup", "arguments": '{"q":"meaning"}'},
                 ],
             }
 
-    monkeypatch.setattr(
-        engine, "_create_output_router", lambda: _DrainedToolCallRouter()
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _CompoundRouter())
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
+        [200005], fallback_text="any fallback"
     )
-
-    # Case A: fallback_text was already stripped — must be supplemented.
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005, 12606, 815, 200008, 1],
-        fallback_text="",  # stripped because clean_output_text didn't bail
-    )
-    assert reasoning == "Calling the tool"
-    assert "functions.get_weather" in content, (
-        f"finalize-drained tool call must be appended to empty fallback_text; "
+    assert reasoning == ""
+    assert content == "The answer is 42.", (
+        f"final-channel content must survive alongside structured tool calls; "
         f"got {content!r}"
     )
-    assert '{"city":"NYC"}' in content
-
-    # PR #515 round-5 BLOCKING refinement: idempotency must be per
-    # wire-text, not "any commentary marker present" — the multi-tool
-    # case is covered in
-    # ``test_multi_tool_fallback_with_existing_marker_still_appends_new``.
-
-    # Case B: fallback_text already contains THIS exact tool call —
-    # don't double-append.
-    tc_wire = (
-        "<|channel|>commentary to=functions.get_weather "
-        '<|constrain|>json<|message|>{"city":"NYC"}<|call|>'
-    )
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005, 12606, 815, 200008, 1], fallback_text=tc_wire
-    )
-    assert reasoning == "Calling the tool"
-    assert content == tc_wire, (
-        f"fallback_text already carrying THIS tool call must not be doubled; "
-        f"got {content!r}"
-    )
-    assert content.count("functions.get_weather") == 1
+    assert tool_calls == [{"name": "lookup", "arguments": '{"q":"meaning"}'}]
 
 
-def test_multi_tool_fallback_with_existing_marker_still_appends_new(
+def test_structured_tool_call_passthrough_preserves_sentinel_bearing_arguments(
     engine, monkeypatch
 ):
-    """PR #515 round-5 BLOCKING: in a multi-tool turn (model emits
-    tool call #1 cleanly with ``<|call|>``, then is truncated mid-tool
-    call #2), ``fallback_text`` already carries call #1's commentary
-    marker. The previous bulk guard ``"<|channel|>commentary" not in
-    fallback_text`` then suppressed appending ALL reconstructed tool
-    calls, dropping call #2. The fix checks each reconstructed wire
-    text individually so call #1 isn't doubled and call #2 still
-    reaches ``HarmonyToolParser``.
+    """Round-15 closure for codex round-12 / round-14 BLOCKING: a tool
+    call whose JSON arguments contain a literal harmony sentinel
+    substring (``{"text":"<|call|>"}``) MUST flow through bytes-
+    faithfully via the structured payload. The previous wire-text
+    round-trip lost these calls — the downstream regex parser
+    anchored on the embedded sentinel and truncated the JSON.
     """
-    call1_text = (
-        "<|channel|>commentary to=functions.get_weather "
-        '<|constrain|>json<|message|>{"city":"NYC"}<|call|>'
-    )
-    call2_text = (
-        "<|channel|>commentary to=functions.get_news "
-        '<|constrain|>json<|message|>{"topic":"tech"}<|call|>'
-    )
+    sentinel_bearing_args = '{"text":"use <|call|>"}'
 
-    class _MultiToolRouter:
-        def reset(self):
-            pass
-
-        def feed_sequence(self, _ids):
-            # Router surfaces BOTH tool calls.
-            return {
-                "content": None,
-                "reasoning": None,
-                "tool_calls": [call1_text, call2_text],
-            }
-
-    monkeypatch.setattr(engine, "_create_output_router", lambda: _MultiToolRouter())
-
-    # fallback_text has call #1 already (from raw text bail-out) but
-    # NOT call #2 (finalize() synthesized it because raw was truncated
-    # before <|call|>).
-    fallback_in = call1_text
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005], fallback_text=fallback_in
-    )
-
-    # Call #1 must not be doubled.
-    assert content.count("functions.get_weather") == 1, (
-        f"call #1 must not be doubled; got {content!r}"
-    )
-    # Call #2 must be appended.
-    assert "functions.get_news" in content, (
-        f"finalize-synthesized call #2 must be appended; got {content!r}"
-    )
-    assert '{"topic":"tech"}' in content
-
-
-def test_fallback_dedup_normalizes_whitespace_variance(engine, monkeypatch):
-    """Codex round-7 NIT (PR #515): the previous verbatim substring
-    check ``tc_text not in fallback_text`` doubled tool calls when the
-    model's emit and the router's canonical reconstruction differ only
-    by whitespace runs (e.g. one space vs two between ``to=...`` and
-    ``<|constrain|>``). The dedup must compare by the structural
-    ``(recipient, normalized_body)`` tuple instead so the same call
-    matches across spacing variants.
-    """
-    # Model emitted the call with double-space between recipient and
-    # constrain (a plausible variance — gpt-oss tokenizer roundtrips
-    # may decode trailing whitespace before the special token). Router
-    # reconstructs the canonical single-space form. Body bytes are
-    # identical (both come from the same body-token decode).
-    model_emit = (
-        "<|channel|>commentary to=functions.get_weather  <|constrain|>json"
-        '<|message|>{"city":"NYC"}<|call|>'
-    )
-    router_reconstructs = (
-        "<|channel|>commentary to=functions.get_weather <|constrain|>json"
-        '<|message|>{"city":"NYC"}<|call|>'
-    )
-
-    class _SpacingVariantRouter:
+    class _SentinelBodyRouter:
         def reset(self):
             pass
 
@@ -383,144 +293,55 @@ def test_fallback_dedup_normalizes_whitespace_variance(engine, monkeypatch):
             return {
                 "content": None,
                 "reasoning": None,
-                "tool_calls": [router_reconstructs],
+                "tool_calls": [
+                    {"name": "echo", "arguments": sentinel_bearing_args},
+                ],
             }
 
-    monkeypatch.setattr(
-        engine, "_create_output_router", lambda: _SpacingVariantRouter()
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _SentinelBodyRouter())
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
+        [200005], fallback_text=""
     )
+    assert tool_calls is not None and len(tool_calls) == 1
+    # Bytes-faithful: the sentinel substring inside the JSON body is
+    # preserved exactly. Pre-refactor this was lost because the wire-
+    # text reconstruction abstained (rounds 7/9) or because regex
+    # extraction anchored on the embedded sentinel (rounds 12/14).
+    assert tool_calls[0] == {"name": "echo", "arguments": sentinel_bearing_args}
 
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005], fallback_text=model_emit
-    )
-    # Spacing-variant of the same call must NOT double-append.
-    assert content.count("functions.get_weather") == 1, (
-        f"spacing-variant duplicate of same call must not double-append; "
-        f"got {content!r}"
-    )
-    # And a DIFFERENT call (different body, even if same recipient)
-    # still gets appended.
-    different_body_call = (
-        "<|channel|>commentary to=functions.get_weather <|constrain|>json"
-        '<|message|>{"city":"Paris"}<|call|>'
-    )
 
-    class _DifferentBodyRouter:
+def test_multiple_structured_tool_calls_pass_through_in_order(engine, monkeypatch):
+    """A multi-tool turn must surface all tool calls in emission
+    order. Distinct calls (same recipient with different args, or
+    different recipients) MUST NOT be deduped — multiplicity is part
+    of the model's intent.
+    """
+    calls = [
+        {"name": "get_weather", "arguments": '{"city":"NYC"}'},
+        {"name": "get_news", "arguments": '{"topic":"tech"}'},
+        {"name": "get_weather", "arguments": '{"city":"Paris"}'},
+    ]
+
+    class _MultiRouter:
         def reset(self):
             pass
 
         def feed_sequence(self, _ids):
-            return {
-                "content": None,
-                "reasoning": None,
-                "tool_calls": [different_body_call],
-            }
+            return {"content": None, "reasoning": None, "tool_calls": list(calls)}
 
-    monkeypatch.setattr(engine, "_create_output_router", lambda: _DifferentBodyRouter())
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005], fallback_text=model_emit
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _MultiRouter())
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
+        [200005], fallback_text=""
     )
-    assert content.count("functions.get_weather") == 2, (
-        f"same recipient with different body must append; got {content!r}"
-    )
-    assert '{"city":"Paris"}' in content
+    assert tool_calls == calls, "multi-tool turn must preserve order and multiplicity"
 
 
-def test_fallback_dedup_preserves_internal_body_whitespace(engine, monkeypatch):
-    """Codex round-8 BLOCKING (PR #515): two legitimate calls
-    ``{"q":"a b"}`` and ``{"q":"a  b"}`` carry semantically distinct
-    arguments and must dedup to DIFFERENT signatures. The round-7
-    body-whitespace-collapse path made them collide and could drop the
-    later call. Signature now uses the exact body bytes — distinct
-    internal whitespace ⇒ distinct signature ⇒ both calls survive.
+def test_identical_structured_calls_twice_both_survive(engine, monkeypatch):
+    """When the model legitimately emits the SAME tool call twice in
+    one turn, BOTH must surface — multiplicity carries semantic intent
+    (user asked the same question twice, model called the tool twice).
     """
-    call_a_one_space = (
-        "<|channel|>commentary to=functions.search <|constrain|>json"
-        '<|message|>{"q":"a b"}<|call|>'
-    )
-    call_a_two_space = (
-        "<|channel|>commentary to=functions.search <|constrain|>json"
-        '<|message|>{"q":"a  b"}<|call|>'
-    )
-
-    class _DistinctBodyRouter:
-        def reset(self):
-            pass
-
-        def feed_sequence(self, _ids):
-            return {
-                "content": None,
-                "reasoning": None,
-                "tool_calls": [call_a_two_space],
-            }
-
-    monkeypatch.setattr(engine, "_create_output_router", lambda: _DistinctBodyRouter())
-
-    # fallback_text already has the single-space-body variant from the
-    # model's clean emit. The router separately reconstructed the
-    # double-space-body call (different tool turn). Dedup must NOT
-    # collapse them.
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005], fallback_text=call_a_one_space
-    )
-    assert content.count("functions.search") == 2, (
-        f"distinct internal-whitespace bodies must NOT dedup; got {content!r}"
-    )
-    assert '{"q":"a b"}' in content
-    assert '{"q":"a  b"}' in content
-
-
-def test_non_canonical_router_wire_text_is_dropped(engine, monkeypatch):
-    """Codex round-8 BLOCKING (PR #515): when the router emits a wire
-    text that doesn't match the canonical
-    ``to=functions.<name>...<|message|>...<|call|>`` shape (e.g.
-    truncated header, missing ``<|call|>`` terminator, or a malformed
-    recipient that nonetheless survived router-side validation), the
-    engine must NOT append it to fallback_text — feeding malformed wire
-    text to HarmonyToolParser either fails to parse or anchors on the
-    wrong markers and surfaces a corrupt tool call. Drop instead.
-    """
-    malformed = "<|channel|>commentary to=functions.broken<|message|>{}"
-    # NOTE: no <|call|> terminator → signature regex won't match.
-
-    class _MalformedRouter:
-        def reset(self):
-            pass
-
-        def feed_sequence(self, _ids):
-            return {
-                "content": None,
-                "reasoning": None,
-                "tool_calls": [malformed],
-            }
-
-    monkeypatch.setattr(engine, "_create_output_router", lambda: _MalformedRouter())
-
-    fallback = "raw fallback text without any tool call"
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005], fallback_text=fallback
-    )
-    # Non-canonical wire text must not be appended — fallback stays.
-    assert content == fallback, (
-        f"non-canonical wire text must be dropped, not appended; got {content!r}"
-    )
-
-
-def test_identical_calls_twice_in_turn_both_survive_dedup(engine, monkeypatch):
-    """Codex round-9 BLOCKING (PR #515): when the model legitimately
-    emits the SAME tool call twice in one turn (user asked for the
-    weather twice in one prompt), the model's raw fallback_text
-    carries two wire-text instances AND the router structures both.
-    The round-7/8 ``set`` dedup collapsed identical signatures to one
-    and silently dropped the second; the fix uses ``Counter``
-    multiplicity so each existing match consumes ONE routed call and
-    the duplicates both survive.
-    """
-    same_call = (
-        "<|channel|>commentary to=functions.get_weather <|constrain|>json"
-        '<|message|>{"city":"NYC"}<|call|>'
-    )
-    fallback_two_calls = same_call + same_call
+    same_call = {"name": "get_weather", "arguments": '{"city":"NYC"}'}
 
     class _TwoIdenticalRouter:
         def reset(self):
@@ -530,94 +351,22 @@ def test_identical_calls_twice_in_turn_both_survive_dedup(engine, monkeypatch):
             return {
                 "content": None,
                 "reasoning": None,
-                "tool_calls": [same_call, same_call],
+                "tool_calls": [dict(same_call), dict(same_call)],
             }
 
     monkeypatch.setattr(engine, "_create_output_router", lambda: _TwoIdenticalRouter())
-
-    # Two in fallback, two in routed → two existing matches consume
-    # both routed calls → nothing appended → final count stays at 2.
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005], fallback_text=fallback_two_calls
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
+        [200005], fallback_text=""
     )
-    assert content.count("functions.get_weather") == 2, (
-        f"identical-twice (model+router both saw both) must dedup to 2; got {content!r}"
+    assert tool_calls == [same_call, same_call], (
+        f"identical-twice calls must both survive; got {tool_calls!r}"
     )
-
-    # And if the model emitted ONE but the router structured TWO
-    # (truncation rescued one), the second must be appended.
-    fallback_one_call = same_call
-
-    class _OneInFallbackTwoRouted:
-        def reset(self):
-            pass
-
-        def feed_sequence(self, _ids):
-            return {
-                "content": None,
-                "reasoning": None,
-                "tool_calls": [same_call, same_call],
-            }
-
-    monkeypatch.setattr(
-        engine, "_create_output_router", lambda: _OneInFallbackTwoRouted()
-    )
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005], fallback_text=fallback_one_call
-    )
-    assert content.count("functions.get_weather") == 2, (
-        f"one-in-fallback + two-routed must merge to 2; got {content!r}"
-    )
-
-
-def test_signature_regex_requires_commentary_frame(engine, monkeypatch):
-    """Codex round-9 BLOCKING (PR #515): the previous signature regex
-    matched a BARE ``to=functions.X<|message|>...<|call|>`` shape
-    without requiring the ``<|channel|>commentary`` prefix. A
-    fallback_text where ``clean_output_text`` stripped the commentary
-    header but left the tail (or ordinary content happening to contain
-    those substrings) then false-matched as an existing tool call,
-    suppressing the router's real reconstructed wire text. The fix
-    anchors the regex on the full commentary frame.
-    """
-    tc_wire = (
-        "<|channel|>commentary to=functions.get_weather <|constrain|>json"
-        '<|message|>{"city":"NYC"}<|call|>'
-    )
-    # Stripped fallback_text — the commentary header is gone, only the
-    # tail survives. This must NOT register as an existing signature.
-    stripped_fallback = (
-        'to=functions.get_weather <|constrain|>json<|message|>{"city":"NYC"}<|call|>'
-    )
-
-    class _OneCallRouter:
-        def reset(self):
-            pass
-
-        def feed_sequence(self, _ids):
-            return {
-                "content": None,
-                "reasoning": None,
-                "tool_calls": [tc_wire],
-            }
-
-    monkeypatch.setattr(engine, "_create_output_router", lambda: _OneCallRouter())
-    reasoning, content = engine._route_tokens_for_channels(
-        [200005], fallback_text=stripped_fallback
-    )
-    # Router's canonical wire text must be appended — the stripped
-    # fallback's bare tail does NOT count as an existing signature.
-    assert content.count("<|channel|>commentary") == 1, (
-        f"stripped fallback must not false-suppress; got {content!r}"
-    )
-    assert "<|channel|>commentary to=functions.get_weather" in content
 
 
 def test_router_exception_falls_back_cleanly(engine, monkeypatch):
     """If the router blows up mid-sequence (e.g. token id outside the
     vocab causes a decode failure), the engine must not propagate the
-    exception — fall back to text-based cleaning. The streaming router
-    handles this the same way; symmetry matters.
+    exception — fall back to text-based cleaning.
     """
 
     def _exploding_router():
@@ -631,8 +380,43 @@ def test_router_exception_falls_back_cleanly(engine, monkeypatch):
         return _BoomRouter()
 
     monkeypatch.setattr(engine, "_create_output_router", _exploding_router)
-    reasoning, content = engine._route_tokens_for_channels(
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
         [1, 2, 3], fallback_text="fallback"
     )
     assert reasoning == ""
     assert content == "fallback"
+    assert tool_calls is None
+
+
+def test_legacy_router_emitting_wire_text_strings_routes_through_fallback(
+    engine, monkeypatch
+):
+    """Backwards compatibility: the legacy ``OutputRouter`` (gemma4 /
+    think-tag) emits TOOL_CALL events whose ``text`` is wire-format
+    string (single tool_call sentinel block decoded into one string).
+    The engine MUST treat those as non-structured — leave
+    ``fallback_text`` intact for the legacy text-based parser path.
+    Only HarmonyStreamingRouter currently emits dicts.
+    """
+
+    class _LegacyRouter:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            return {
+                "content": "Some content",
+                "reasoning": None,
+                "tool_calls": ["<some_legacy_wire_text>"],
+            }
+
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _LegacyRouter())
+    reasoning, content, tool_calls = engine._route_tokens_for_channels(
+        [200005], fallback_text="raw fallback"
+    )
+    assert tool_calls is None, (
+        f"legacy wire-text tool calls must not surface as structured; "
+        f"got {tool_calls!r}"
+    )
+    # And fallback_text is preserved since the structured path didn't fire.
+    assert content == "raw fallback"

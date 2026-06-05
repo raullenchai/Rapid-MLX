@@ -9,6 +9,7 @@ one cohesive orchestrator, because reasoning/tool/sanitize are tightly coupled.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import TYPE_CHECKING
 
 from ..api.tool_calling import parse_tool_calls
@@ -234,6 +235,39 @@ class StreamingPostProcessor:
         self, delta_text: str, output: GenerationOutput
     ) -> list[StreamEvent]:
         """Handle OutputRouter models (Gemma 4 etc.) with token-level routing."""
+        # Engine-surfaced structured tool calls (HarmonyStreamingRouter
+        # via openai-harmony's StreamableParser). Emit a structured
+        # StreamEvent directly — the router has already done the
+        # parse and re-running text-based extraction over the wire
+        # representation would re-introduce the round-trip lossy path
+        # this refactor exists to eliminate (PR #515 codex round-12 /
+        # round-14 BLOCKING — tool calls whose JSON args contain
+        # literal harmony sentinels were corrupted by sentinel-
+        # anchored regex parsing).
+        engine_tool_calls = getattr(output, "tool_calls", None) or []
+        if output.channel == "tool_call" and engine_tool_calls:
+            structured = [
+                {
+                    "index": i,
+                    "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                    },
+                }
+                for i, tc in enumerate(engine_tool_calls)
+            ]
+            self.tool_calls_detected = True
+            return [
+                StreamEvent(
+                    type="tool_call",
+                    tool_calls=structured,
+                    finish_reason="tool_calls" if output.finished else None,
+                    tool_calls_detected=True,
+                )
+            ]
+
         if output.channel == "reasoning":
             content, reasoning = None, delta_text
         elif output.channel == "tool_call":

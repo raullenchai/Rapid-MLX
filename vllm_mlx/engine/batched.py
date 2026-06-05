@@ -14,9 +14,7 @@ LLM engine), so text-only requests must also be routed through it.
 import functools
 import json
 import logging
-import re
 import threading
-from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
@@ -1016,7 +1014,7 @@ class BatchedEngine(BaseEngine):
         # (issue #442). The router doesn't care about ``<|end|>``
         # terminators so it also recovers reasoning from truncated
         # output (``finish_reason=length`` mid-thinking).
-        reasoning_text, text = self._route_tokens_for_channels(
+        reasoning_text, text, structured_tool_calls = self._route_tokens_for_channels(
             output.output_token_ids, fallback_text=text
         )
 
@@ -1027,6 +1025,7 @@ class BatchedEngine(BaseEngine):
             prompt_tokens=output.prompt_tokens,
             completion_tokens=output.completion_tokens,
             finish_reason=output.finish_reason,
+            tool_calls=structured_tool_calls,
         )
 
     async def stream_generate(
@@ -1292,176 +1291,89 @@ class BatchedEngine(BaseEngine):
         except Exception:
             return 0
 
-    # Codex round-7 NIT / round-8 BLOCKING / round-9 BLOCKING:
-    # verbatim substring dedup is brittle to spacing variance, but
-    # collapsing whitespace inside the body merges semantically
-    # distinct calls; and a regex matching the bare
-    # ``to=functions.X<|message|>...<|call|>`` shape false-suppresses
-    # the real call when ``clean_output_text`` strips the
-    # ``<|channel|>commentary`` header but leaves the tail. The
-    # signature must anchor on the FULL commentary frame so a
-    # stripped fallback_text doesn't look like an existing tool call,
-    # and the body must be matched VERBATIM. Spacing variance is
-    # confined to the wrapper (``\s+`` / ``\s*``); the body capture
-    # uses exact bytes.
-    _HARMONY_TC_SIGNATURE_RE: re.Pattern[str] = re.compile(
-        r"<\|channel\|>commentary\s+to=(functions\.[A-Za-z0-9_\-]{1,64})\s*"
-        r"(?:<\|constrain\|>[A-Za-z0-9_\-]{1,32})?"
-        r"<\|message\|>(.*?)<\|call\|>",
-        re.DOTALL,
-    )
-
-    @classmethod
-    def _harmony_tool_call_signature(cls, wire_text: str) -> tuple[str, str] | None:
-        """Extract ``(recipient, exact_body)`` from a tool-call wire
-        text for structural dedup. ``None`` if the text doesn't match
-        the canonical commentary-tool-call shape.
-
-        Body bytes are returned VERBATIM — any whitespace inside the
-        body is part of the tool argument and must NOT be normalized
-        away. The structural wrapper already tolerates spacing variance
-        via the ``\\s*`` in the regex; that is the only place spacing
-        can legitimately differ between a model emit and the router's
-        canonical reconstruction.
-        """
-        m = cls._HARMONY_TC_SIGNATURE_RE.search(wire_text)
-        if not m:
-            return None
-        recipient, body = m.group(1), m.group(2)
-        return (recipient, body)
-
     def _route_tokens_for_channels(
         self, token_ids: list[int] | None, *, fallback_text: str
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, list[dict] | None]:
         """Run ``OutputRouter.feed_sequence`` on a completed token list.
 
-        Returns ``(reasoning_text, content_text)`` for the non-streaming
-        path. The router is the token-level state machine that the
-        streaming path already trusts (``_stream_with_output_router``);
-        using it here closes a long-standing gap where non-streaming
-        relied on text-based ``clean_output_text`` regex parsing and
-        leaked analysis-channel content into ``content`` when the
-        model finished mid-thinking (``finish_reason=length`` — issue
-        #442) or otherwise emitted no ``final`` channel.
+        Returns ``(reasoning_text, content_text, structured_tool_calls)``
+        for the non-streaming path. The router is the token-level state
+        machine that the streaming path already trusts
+        (``_stream_with_output_router``); using it here closes a long-
+        standing gap where non-streaming relied on text-based
+        ``clean_output_text`` regex parsing and leaked analysis-channel
+        content into ``content`` when the model finished mid-thinking
+        (``finish_reason=length`` — issue #442) or otherwise emitted no
+        ``final`` channel.
 
-        ``fallback_text`` is the result of ``clean_output_text`` —
-        we keep it as ``content`` for cases the router doesn't override
-        (e.g. tool-call paths where harmony commentary text needs to
-        survive intact for the route's tool parser; the router only
-        knows about ``analysis`` and ``final`` for harmony, so we don't
-        clobber its decisions). The override fires only when the router
-        is authoritative AND text-based cleaning is known wrong —
-        specifically when the router sees REASONING tokens but no
-        CONTENT tokens, which means there was no ``final`` channel and
-        ``message.content`` should be empty.
+        ``fallback_text`` is the result of ``clean_output_text`` — we
+        keep it as ``content`` for cases the router doesn't override.
+        The override fires when the router is authoritative AND
+        text-based cleaning is known wrong — specifically when the
+        router sees REASONING tokens but no CONTENT tokens (no
+        ``final`` channel emitted), or when the router surfaced
+        structured tool calls (their bodies must NOT bleed into
+        content text via the un-cleaned commentary header).
+
+        ``structured_tool_calls`` carries ``[{"name", "arguments"}]``
+        entries from routers that natively parse the model's tool-call
+        protocol (currently ``HarmonyStreamingRouter`` via
+        openai-harmony's ``StreamableParser``). When non-None, the
+        route layer bypasses text-based extraction entirely (see
+        ``GenerationOutput.tool_calls`` plumbing). This eliminates the
+        sentinel-delimited wire-text round-trip that previously lost
+        tool calls whose JSON arguments contained literal harmony
+        marker substrings — PR #515 codex round-12 / round-14 BLOCKING.
         """
         if not token_ids:
-            return "", fallback_text
+            return "", fallback_text, None
         router = self._create_output_router()
         if router is None:
-            return "", fallback_text
+            return "", fallback_text, None
         try:
             router.reset()
             routed = router.feed_sequence(token_ids)
         except Exception as e:
             logger.debug("OutputRouter sequence routing failed: %s", e)
-            return "", fallback_text
+            return "", fallback_text, None
 
         reasoning = routed.get("reasoning") or ""
+        raw_tool_calls = routed.get("tool_calls") or []
+        # Normalise to the structured ``{"name", "arguments"}`` shape
+        # the route layer expects. The HarmonyStreamingRouter already
+        # produces dicts; the legacy ``OutputRouter`` emits wire-text
+        # strings (gemma4 / qwen / deepseek) which we leave to the
+        # legacy text-based parser path — those models don't surface
+        # structured payloads yet, so structured_tool_calls is None
+        # for them and the existing fallback_text + regex extraction
+        # flow continues unchanged.
+        structured_tool_calls: list[dict] | None
+        if raw_tool_calls and all(isinstance(tc, dict) for tc in raw_tool_calls):
+            structured_tool_calls = list(raw_tool_calls)
+        else:
+            structured_tool_calls = None
+
+        # When the router surfaces structured tool calls, the text-
+        # based fallback path is dead weight — and worse, the
+        # un-cleaned harmony commentary header still embedded in
+        # ``fallback_text`` would bleed into the route's user-facing
+        # ``content`` field. Force content to the router's CONTENT
+        # channel result (final-channel text only) and drop the
+        # commentary residue. Reasoning is also taken from the router
+        # because the harmony reasoning parser cannot find an
+        # ``<|end|>`` terminator on the analysis channel after the
+        # tool call has consumed the commentary block.
+        if structured_tool_calls is not None:
+            return reasoning, routed.get("content") or "", structured_tool_calls
+
         # Override content ONLY when the router authoritatively says
-        # there is no content channel AND there is reasoning AND no
-        # tool-call channel was emitted. In every other case we keep
-        # ``fallback_text`` so tool-call commentary text reaches the
-        # route's tool parser unchanged, and so non-reasoning models
+        # there is no content channel AND there is reasoning. In every
+        # other case we keep ``fallback_text`` so non-reasoning models
         # (router emits CONTENT only) keep their text-cleaning result.
-        #
-        # PR #515 round-1: the harmony bypass router correctly
-        # classifies commentary tool calls as TOOL_CALL events
-        # (instead of leaking them into CONTENT), so a harmony tool
-        # call now produces ``content=None`` from ``feed_sequence``
-        # even though the model DID emit a structural sequence the
-        # downstream ``HarmonyToolParser`` needs to parse. Without the
-        # ``not tool_calls`` guard, the override clobbers
-        # ``fallback_text`` (which still carries the commentary wire
-        # text — ``_clean_gpt_oss_output`` bails on commentary), and
-        # ``_parse_tool_calls_with_parser`` in the route receives an
-        # empty string. Verified against the baseline pre-#515:
-        # baseline preserved fallback_text because the legacy router
-        # couldn't classify multi-token ``commentary``, leaving
-        # routed.content non-None.
-        if routed.get("content") is None and reasoning and not routed.get("tool_calls"):
-            return reasoning, ""
+        if routed.get("content") is None and reasoning:
+            return reasoning, "", None
 
-        # PR #515 round-3 BLOCKING: when the router synthesized a
-        # tool-call event via ``finalize()`` (truncated commentary
-        # without ``<|call|>``), the raw text-based ``fallback_text``
-        # may lack the wire markers ``HarmonyToolParser`` needs.
-        # Specifically, if the model emitted a commentary header but
-        # was cut off before the ``<|message|>`` token, the bail-out
-        # in ``_clean_gpt_oss_output`` doesn't trigger and the strip
-        # regex removes the header — the downstream parser then sees
-        # no tool call at all. Append the reconstructed wire text from
-        # ``routed["tool_calls"]`` so the parser can extract it.
-        #
-        # PR #515 round-5 BLOCKING: the previous bulk guard
-        # ``"<|channel|>commentary" not in fallback_text`` was too
-        # broad — in a multi-tool turn (model emits tool call #1
-        # cleanly with ``<|call|>``, then is truncated mid-tool call
-        # #2), the fallback_text already carries call #1's commentary
-        # marker so the entire append was suppressed and call #2 was
-        # lost. Check each reconstructed wire text individually so
-        # call #1 isn't doubled and call #2 gets through.
-        #
-        # PR #515 round-7 NIT: verbatim substring match is brittle to
-        # whitespace variance between the model's emit and the router's
-        # canonical reconstruction (e.g. ``to=functions.foo  <|...``
-        # vs ``to=functions.foo <|...``). Compare by the structural
-        # ``(recipient, normalized_body)`` tuple instead — robust to
-        # any spacing the model picks while still distinguishing
-        # different arguments for the same recipient.
-        # Codex round-9 BLOCKING: dedup by SIGNATURE COUNT, not set
-        # membership. If the model legitimately emits the same tool
-        # call twice in one turn (e.g. user asked the same question
-        # twice, both produce ``get_weather("NYC")``), the model's
-        # raw fallback_text carries both wire-text instances AND the
-        # router structures both. Set dedup collapsed them to one and
-        # silently dropped the second; multiplicity counting consumes
-        # ONE existing match per routed call so identical-twice
-        # survives.
-        tool_calls = routed.get("tool_calls") or []
-        existing_counts: Counter[tuple[str, str]] = Counter(
-            (m.group(1), m.group(2))
-            for m in self._HARMONY_TC_SIGNATURE_RE.finditer(fallback_text)
-        )
-        appended_parts: list[str] = []
-        for tc_text in tool_calls:
-            if not tc_text:
-                continue
-            sig = self._harmony_tool_call_signature(tc_text)
-            if sig is None:
-                # Codex round-8 BLOCKING: non-canonical reconstruction
-                # means the wire text doesn't match the canonical
-                # ``<|channel|>commentary to=...<|message|>...<|call|>``
-                # shape — feeding it to HarmonyToolParser would either
-                # fail to parse or anchor on the wrong markers and
-                # produce a corrupt tool call. Drop with a debug log;
-                # the router has lost the tool-call signal and there
-                # is nothing safe to recover.
-                logger.debug(
-                    "BatchedEngine._route_tokens_for_channels: skipping "
-                    "non-canonical reconstructed tool-call text "
-                    "(length=%d)",
-                    len(tc_text),
-                )
-                continue
-            if existing_counts[sig] > 0:
-                existing_counts[sig] -= 1
-                continue
-            appended_parts.append(tc_text)
-        if appended_parts:
-            fallback_text = fallback_text + "".join(appended_parts)
-
-        return reasoning, fallback_text
+        return reasoning, fallback_text, None
 
     def _create_output_router(self) -> OutputRouter | None:
         """Create a per-request token router for supported tokenizer formats.
@@ -1498,6 +1410,17 @@ class BatchedEngine(BaseEngine):
         finish_reason: str | None = None,
         logprobs=None,
     ) -> GenerationOutput:
+        # Propagate structured tool-call payload from the router event
+        # when present (HarmonyStreamingRouter on TOOL_CALL channel
+        # close). Carrying it on the per-token streaming output lets
+        # the postprocessor emit a structured ``tool_call`` StreamEvent
+        # directly instead of round-tripping through text-based
+        # extraction — the same bypass the non-streaming path uses via
+        # ``GenerationOutput.tool_calls``.
+        tool_calls = None
+        event_tc = getattr(event, "tool_call", None)
+        if event_tc is not None:
+            tool_calls = [event_tc]
         return GenerationOutput(
             text=source.text,
             new_text=event.text if new_text is None else new_text,
@@ -1508,6 +1431,7 @@ class BatchedEngine(BaseEngine):
             finish_reason=finish_reason,
             logprobs=logprobs,
             channel=_channel_name(event.channel),
+            tool_calls=tool_calls,
         )
 
     def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:

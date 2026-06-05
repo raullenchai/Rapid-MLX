@@ -913,8 +913,19 @@ async def _create_chat_completion_impl(
         f"Chat completion: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
     )
 
-    # Parse tool calls from output using configured parser
-    cleaned_text, tool_calls = _parse_tool_calls_with_parser(output.text, request)
+    # Parse tool calls from output using configured parser.
+    # ``output.tool_calls`` is non-None when the engine's
+    # ``OutputRouter`` already produced structured ``[{"name",
+    # "arguments"}]`` entries (currently HarmonyStreamingRouter via
+    # openai-harmony's StreamableParser). In that case the text-based
+    # parser is bypassed — the structured pass is bytes-faithful
+    # whereas the regex round-trip lost calls whose JSON arguments
+    # contained literal harmony sentinel substrings (PR #515 codex
+    # round-12 / round-14 BLOCKING).
+    engine_tool_calls = getattr(output, "tool_calls", None)
+    cleaned_text, tool_calls = _parse_tool_calls_with_parser(
+        output.text, request, structured_tool_calls=engine_tool_calls
+    )
 
     # Honor ``parallel_tool_calls=false`` by capping the parsed list at one.
     # No decoder-level enforcement exists, so this is a post-parse trim — the

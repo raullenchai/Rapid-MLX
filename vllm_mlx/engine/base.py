@@ -54,6 +54,22 @@ class GenerationOutput:
     # (no router, or router failed) — routes fall back to the
     # text-based ``ReasoningParser`` in that case. Issue #442.
     reasoning_text: str = ""
+    # Pre-parsed structured tool calls surfaced by routers that already
+    # speak the model's native tool-call protocol natively (currently
+    # ``HarmonyStreamingRouter`` via ``openai-harmony.StreamableParser``).
+    # Each entry is ``{"name": str, "arguments": str}`` where
+    # ``arguments`` is the JSON string the model produced (verbatim body
+    # bytes — no escaping, no normalisation).
+    #
+    # When present, the route layer SKIPS text-based tool-call
+    # extraction (``_parse_tool_calls_with_parser``) and uses these
+    # entries directly. This bypasses the wire-text round-trip that
+    # previously corrupted tool calls whose JSON arguments happened to
+    # contain harmony sentinel substrings (e.g. ``{"text":"<|call|>"}``)
+    # — see PR #515 codex round-12/14 BLOCKING. ``None`` means the
+    # router did not surface structured calls; the route falls back to
+    # the legacy regex-based parser path.
+    tool_calls: list[dict] | None = None
 
 
 class BaseEngine(ABC):
