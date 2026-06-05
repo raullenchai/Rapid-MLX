@@ -348,6 +348,78 @@ def test_multi_tool_fallback_with_existing_marker_still_appends_new(
     assert '{"topic":"tech"}' in content
 
 
+def test_fallback_dedup_normalizes_whitespace_variance(engine, monkeypatch):
+    """Codex round-7 NIT (PR #515): the previous verbatim substring
+    check ``tc_text not in fallback_text`` doubled tool calls when the
+    model's emit and the router's canonical reconstruction differ only
+    by whitespace runs (e.g. one space vs two between ``to=...`` and
+    ``<|constrain|>``). The dedup must compare by the structural
+    ``(recipient, normalized_body)`` tuple instead so the same call
+    matches across spacing variants.
+    """
+    # Model emitted the call with double-space between recipient and
+    # constrain (a plausible variance — gpt-oss tokenizer roundtrips
+    # may decode trailing whitespace before the special token). Router
+    # reconstructs the canonical single-space form. Body bytes are
+    # identical (both come from the same body-token decode).
+    model_emit = (
+        "<|channel|>commentary to=functions.get_weather  <|constrain|>json"
+        '<|message|>{"city":"NYC"}<|call|>'
+    )
+    router_reconstructs = (
+        "<|channel|>commentary to=functions.get_weather <|constrain|>json"
+        '<|message|>{"city":"NYC"}<|call|>'
+    )
+
+    class _SpacingVariantRouter:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            return {
+                "content": None,
+                "reasoning": None,
+                "tool_calls": [router_reconstructs],
+            }
+
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _SpacingVariantRouter())
+
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005], fallback_text=model_emit
+    )
+    # Spacing-variant of the same call must NOT double-append.
+    assert content.count("functions.get_weather") == 1, (
+        f"spacing-variant duplicate of same call must not double-append; "
+        f"got {content!r}"
+    )
+    # And a DIFFERENT call (different body, even if same recipient)
+    # still gets appended.
+    different_body_call = (
+        "<|channel|>commentary to=functions.get_weather <|constrain|>json"
+        '<|message|>{"city":"Paris"}<|call|>'
+    )
+
+    class _DifferentBodyRouter:
+        def reset(self):
+            pass
+
+        def feed_sequence(self, _ids):
+            return {
+                "content": None,
+                "reasoning": None,
+                "tool_calls": [different_body_call],
+            }
+
+    monkeypatch.setattr(engine, "_create_output_router", lambda: _DifferentBodyRouter())
+    reasoning, content = engine._route_tokens_for_channels(
+        [200005], fallback_text=model_emit
+    )
+    assert content.count("functions.get_weather") == 2, (
+        f"same recipient with different body must append; got {content!r}"
+    )
+    assert '{"city":"Paris"}' in content
+
+
 def test_router_exception_falls_back_cleanly(engine, monkeypatch):
     """If the router blows up mid-sequence (e.g. token id outside the
     vocab causes a decode failure), the engine must not propagate the

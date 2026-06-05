@@ -60,6 +60,26 @@ _HARMONY_CHANNEL_COMMENTARY = "commentary"
 # upstream API accepts also round-trips through the router.
 _RECIPIENT_SHAPE = re.compile(r"^functions\.[A-Za-z0-9_\-]{1,64}$")
 
+# Harmony structural sentinels. The reconstructed tool-call wire text is
+# a delimited format that downstream ``HarmonyToolParser`` parses via
+# regex on the literal sentinel strings; a body containing any of these
+# substrings would corrupt that parse (e.g. ``body == '{"x":"<|call|>"}'``
+# would let the parser anchor on the embedded sentinel and truncate the
+# JSON). On gpt-oss these sentinels are single special tokens never
+# emitted as body text, but a defensive substring check is still
+# required because (a) future tokenizers may differ and (b) an
+# adversarial prompt could echo the literal characters through normal
+# body vocabulary. Codex round-7 BLOCKING (PR #515).
+_HARMONY_BODY_FORBIDDEN_SENTINELS = (
+    "<|channel|>",
+    "<|message|>",
+    "<|call|>",
+    "<|end|>",
+    "<|return|>",
+    "<|start|>",
+    "<|constrain|>",
+)
+
 # Tokenizer-identity allowlist — known-compatible HF / mlx-community
 # names whose vocab is the harmony encoding. Codex round-2 BLOCKING:
 # matching a 3-string probe set against the harmony encoding is not
@@ -172,8 +192,36 @@ class HarmonyStreamingRouter:
         ctype = getattr(message, "content_type", None)
         if ctype:
             # ``content_type`` from StreamableParser is e.g.
-            # ``"<|constrain|>json"``; emit verbatim.
+            # ``"<|constrain|>json"``; emit verbatim. Strip the
+            # leading ``<|constrain|>`` sentinel literal before
+            # forbidden-substring scanning (it's the legitimate
+            # framing carrier, not body content).
+            ctype_body = (
+                ctype.removeprefix("<|constrain|>") if isinstance(ctype, str) else ""
+            )
+            for bad in _HARMONY_BODY_FORBIDDEN_SENTINELS:
+                if bad in ctype_body:
+                    raise ValueError(
+                        f"HarmonyStreamingRouter: refusing to reconstruct "
+                        f"tool-call wire text for content_type carrying "
+                        f"sentinel {bad!r}; got {ctype!r}"
+                    )
             parts.append(f" {ctype}")
+        # Codex round-7 BLOCKING: a body literal containing any harmony
+        # structural sentinel (``<|call|>``, ``<|message|>``, etc.)
+        # would corrupt the downstream HarmonyToolParser's regex parse
+        # of the reconstructed wire text — the parser would anchor on
+        # the embedded sentinel and truncate the JSON arguments. Reject
+        # rather than escape so the failure surfaces as a router error
+        # and the engine falls back to the legacy text-based parser
+        # (consistent with the recipient validation above).
+        for bad in _HARMONY_BODY_FORBIDDEN_SENTINELS:
+            if bad in body:
+                raise ValueError(
+                    f"HarmonyStreamingRouter: refusing to reconstruct "
+                    f"tool-call wire text for body carrying harmony "
+                    f"sentinel {bad!r}; body length={len(body)}"
+                )
         parts.append("<|message|>")
         parts.append(body)
         parts.append("<|call|>")

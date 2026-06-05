@@ -14,6 +14,7 @@ LLM engine), so text-only requests must also be routed through it.
 import functools
 import json
 import logging
+import re
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -1290,6 +1291,32 @@ class BatchedEngine(BaseEngine):
         except Exception:
             return 0
 
+    # Codex round-7 NIT: verbatim substring dedup of reconstructed
+    # tool-call wire text is brittle to spacing variance — the model
+    # may emit ``to=functions.foo  <|constrain|>`` (double space) while
+    # the router reconstructs with a single space. The previous check
+    # then mis-classifies the call as "new" and double-appends. Match
+    # by the structural pair ``(recipient, body)`` instead, with
+    # whitespace-runs in the body collapsed for comparison.
+    _HARMONY_TC_SIGNATURE_RE: re.Pattern[str] = re.compile(
+        r"to=(functions\.[A-Za-z0-9_\-]{1,64})\s*"
+        r"(?:<\|constrain\|>[A-Za-z0-9_\-]{1,32})?"
+        r"<\|message\|>(.*?)<\|call\|>",
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _harmony_tool_call_signature(cls, wire_text: str) -> tuple[str, str] | None:
+        """Extract ``(recipient, normalized_body)`` from a tool-call
+        wire text for spacing-invariant dedup. ``None`` if the text
+        doesn't match the canonical commentary-tool-call shape.
+        """
+        m = cls._HARMONY_TC_SIGNATURE_RE.search(wire_text)
+        if not m:
+            return None
+        recipient, body = m.group(1), m.group(2)
+        return (recipient, " ".join(body.split()))
+
     def _route_tokens_for_channels(
         self, token_ids: list[int] | None, *, fallback_text: str
     ) -> tuple[str, str]:
@@ -1369,15 +1396,40 @@ class BatchedEngine(BaseEngine):
         # cleanly with ``<|call|>``, then is truncated mid-tool call
         # #2), the fallback_text already carries call #1's commentary
         # marker so the entire append was suppressed and call #2 was
-        # lost. Check each reconstructed wire text individually and
-        # only append the ones that aren't already present (verbatim
-        # substring match), so call #1 isn't doubled and call #2
-        # gets through.
+        # lost. Check each reconstructed wire text individually so
+        # call #1 isn't doubled and call #2 gets through.
+        #
+        # PR #515 round-7 NIT: verbatim substring match is brittle to
+        # whitespace variance between the model's emit and the router's
+        # canonical reconstruction (e.g. ``to=functions.foo  <|...``
+        # vs ``to=functions.foo <|...``). Compare by the structural
+        # ``(recipient, normalized_body)`` tuple instead — robust to
+        # any spacing the model picks while still distinguishing
+        # different arguments for the same recipient.
         tool_calls = routed.get("tool_calls") or []
+        existing_sigs: set[tuple[str, str]] = {
+            sig
+            for m in self._HARMONY_TC_SIGNATURE_RE.finditer(fallback_text)
+            if (sig := (m.group(1), " ".join(m.group(2).split())))
+        }
         appended_parts: list[str] = []
         for tc_text in tool_calls:
-            if tc_text and tc_text not in fallback_text:
-                appended_parts.append(tc_text)
+            if not tc_text:
+                continue
+            sig = self._harmony_tool_call_signature(tc_text)
+            if sig is None:
+                # Non-canonical reconstruction (e.g. router emitted a
+                # malformed wire text). Fall back to verbatim match so
+                # we still dedup against a literally identical
+                # fallback_text snippet, but otherwise append — better
+                # to risk a duplicate than to silently drop.
+                if tc_text not in fallback_text:
+                    appended_parts.append(tc_text)
+                continue
+            if sig in existing_sigs:
+                continue
+            appended_parts.append(tc_text)
+            existing_sigs.add(sig)
         if appended_parts:
             fallback_text = fallback_text + "".join(appended_parts)
 
