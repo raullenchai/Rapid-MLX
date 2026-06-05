@@ -823,9 +823,19 @@ class MLLMBatchGenerator:
         # Sample per-request with correct temperature/top_p.
         # Fast path: when all requests in the batch share (temp, top_p),
         # invoke a single batched sampler on [B, vocab] instead of B
-        # per-row calls + mx.concatenate. mlx-lm sampler ops vectorize
-        # along axis=-1, so a single call yields [B] tokens via one MLX
-        # kernel chain. At B=8 on Gemma 3 12B this cuts step time ~30%.
+        # per-row calls + mx.concatenate. mlx-lm's ``make_sampler`` chain
+        # (``apply_top_p`` + ``categorical_sampling``) is row-wise along
+        # ``axis=-1``, so one call on [B, vocab] yields [B] tokens via one
+        # MLX kernel chain — distributionally identical to the per-row
+        # loop. At B=8 on Gemma 3 12B this cuts step time ~30%.
+        #
+        # WARNING: ``_shared_batch_sampler`` is keyed only on
+        # ``(temperature, top_p)``. If we ever add per-request sampling
+        # knobs (top_k, min_p, repetition_penalty) to ``MLLMBatchRequest``,
+        # the key MUST grow accordingly — otherwise homogeneous-looking
+        # batches would silently share an incorrect sampler. The single
+        # ``MLLMScheduler`` worker thread (see mlx-lm 0.31.3+ stream
+        # ownership rule in #404) is the only writer, so no lock needed.
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
         if requests and len(requests) == logprobs.shape[0]:
             first_key = (requests[0].temperature, requests[0].top_p)

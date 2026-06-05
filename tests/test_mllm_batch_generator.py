@@ -344,3 +344,100 @@ def test_step_heterogeneous_requests_use_per_row_loop(monkeypatch):
     # Shared batch sampler must NOT have been populated for the mixed batch
     # (homogeneous fast path is the only writer).
     assert gen._shared_batch_sampler is None
+
+
+def test_step_b1_homogeneous_still_uses_shared_sampler(monkeypatch):
+    """B=1 still routes through the homogeneous fast path. Trivially equal
+    to the legacy loop semantically, but proves the perf claim's B=1
+    "unchanged" baseline isn't actually a sneaky regression."""
+    make_sampler_calls = []
+
+    def fake_make_sampler(**kwargs):
+        make_sampler_calls.append(kwargs)
+        return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
+
+    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+
+    gen = _make_step_stub_generator()
+    MLLMBatchGenerator._step(
+        gen,
+        mx.array([[1]], dtype=mx.uint32),
+        cache=[],
+        requests=[_make_sampling_request(0, 0.7, 0.95)],
+    )
+
+    assert len(make_sampler_calls) == 1
+    assert gen._shared_batch_sampler is not None
+    assert gen._shared_batch_sampler[0] == (0.7, 0.95)
+
+
+def test_step_batch_uses_dataclass_defaults(monkeypatch):
+    """A batch of requests using only the MLLMBatchRequest dataclass
+    defaults (temperature=0.7, top_p=0.9) — the canonical concurrent
+    benchmark shape — must hit the fast path."""
+    make_sampler_calls = []
+
+    def fake_make_sampler(**kwargs):
+        make_sampler_calls.append(kwargs)
+        return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
+
+    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+
+    gen = _make_step_stub_generator()
+    # Build via positional defaults only — never overriding temp/top_p.
+    requests = [
+        MLLMBatchRequest(uid=i, request_id=f"d{i}", prompt="hi") for i in range(4)
+    ]
+
+    MLLMBatchGenerator._step(
+        gen,
+        mx.array([[1], [2], [3], [4]], dtype=mx.uint32),
+        cache=[],
+        requests=requests,
+    )
+
+    assert len(make_sampler_calls) == 1
+    assert make_sampler_calls[0] == {"temp": 0.7, "top_p": 0.9}
+
+
+def test_step_heterogeneous_then_homogeneous_populates_shared(monkeypatch):
+    """A mixed batch leaves ``_shared_batch_sampler`` at None; the next
+    homogeneous batch must then populate it. Guards against a regression
+    where the het path could leak state that suppressed the fast path."""
+    make_sampler_calls = []
+
+    def fake_make_sampler(**kwargs):
+        make_sampler_calls.append(kwargs)
+        return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
+
+    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+
+    gen = _make_step_stub_generator()
+
+    # First batch: mixed params → legacy loop, shared cache untouched.
+    MLLMBatchGenerator._step(
+        gen,
+        mx.array([[1], [2]], dtype=mx.uint32),
+        cache=[],
+        requests=[
+            _make_sampling_request(0, 0.7, 0.95),
+            _make_sampling_request(1, 0.3, 0.80),
+        ],
+    )
+    assert gen._shared_batch_sampler is None
+    assert len(make_sampler_calls) == 2
+
+    # Second batch: homogeneous → fast path fires + populates cache.
+    MLLMBatchGenerator._step(
+        gen,
+        mx.array([[3], [4]], dtype=mx.uint32),
+        cache=[],
+        requests=[
+            _make_sampling_request(2, 0.5, 0.85),
+            _make_sampling_request(3, 0.5, 0.85),
+        ],
+    )
+    assert gen._shared_batch_sampler is not None
+    assert gen._shared_batch_sampler[0] == (0.5, 0.85)
+    # 3 total: 2 from the het batch + 1 fresh for the new homogeneous key.
+    assert len(make_sampler_calls) == 3
