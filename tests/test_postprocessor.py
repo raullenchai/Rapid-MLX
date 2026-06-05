@@ -1368,6 +1368,53 @@ class TestTextParserParallelCap:
             "_no_index_last_dropped should have routed it to drop."
         )
 
+    def test_indexed_anchor_then_no_index_arg_fragment_continues(self):
+        """PR #518 round-5 codex BLOCKING #2: when the FIRST delta
+        admits an indexed call (e.g. ``index=0`` with name + arg
+        prefix), subsequent argument-only no-index fragments would
+        previously fall through the indexed-continuation branch and
+        the no-index-continuation branch (since
+        ``_no_index_call_admitted=False``), then hit the new-call
+        cap check and be dropped — truncating the JSON.
+
+        Now the no-index argument-only fragment matches the unified
+        "any-admitted-call" continuation branch.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"q":"'},
+                    }
+                ]
+            },
+            {"tool_calls": [{"function": {"arguments": "weather"}}]},
+            {"tool_calls": [{"function": {"arguments": '"}'}}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>anchor</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>f1</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>f2</tool_call>"))
+
+        # All three pass — the indexed admit covers the no-index args.
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["function"]["arguments"] == '{"q":"'
+        assert len(e2) == 1
+        assert e2[0].tool_calls[0]["function"]["arguments"] == "weather"
+        assert len(e3) == 1
+        assert e3[0].tool_calls[0]["function"]["arguments"] == '"}'
+
     def test_uncapped_path_does_not_set_no_index_admitted(self):
         """PR #518 round-3 codex NIT: the uncapped path used to set
         ``_no_index_call_admitted=True`` for every no-index delta.

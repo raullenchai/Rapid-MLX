@@ -303,43 +303,55 @@ class StreamingPostProcessor:
         allowed: list[dict] = []
         for tc in tool_calls:
             idx = tc.get("index") if isinstance(tc, dict) else None
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            has_name = (
+                isinstance(fn, dict)
+                and isinstance(fn.get("name"), str)
+                and fn.get("name")
+            )
+            has_id = (
+                isinstance(tc, dict) and isinstance(tc.get("id"), str) and tc.get("id")
+            )
+            is_anchor = bool(has_name or has_id)
+
             if isinstance(idx, int) and idx in self._admitted_tool_call_indices:
                 # Continuation of an already-admitted indexed call —
                 # always forward so the client's arguments JSON is
                 # complete.
                 allowed.append(tc)
                 continue
-            if idx is None and self._no_index_call_admitted:
-                # Only argument-fragment deltas (no fresh ``id`` /
-                # ``name``) count as continuations of the in-flight
-                # no-index call. A delta carrying a new ``id`` or
-                # function ``name`` is a distinct new call and must
-                # run the cap check (round-3 codex BLOCKING #2).
-                fn = tc.get("function") if isinstance(tc, dict) else None
-                has_name = (
-                    isinstance(fn, dict)
-                    and isinstance(fn.get("name"), str)
-                    and fn.get("name")
+
+            # Argument-only no-index fragment: routes to whichever
+            # anchor was most recently seen. Any admitted call (indexed
+            # OR no-index slot) keeps the fragment unless the most
+            # recent anchor was dropped.
+            #
+            # Round-5 codex BLOCKING #2: previously this branch only
+            # fired when ``_no_index_call_admitted`` was True. An
+            # indexed FIRST delta (e.g. ``{"index": 0, "id": "a",
+            # "function": {"name": "a", "arguments": "{"}}``) followed
+            # by argument-only no-index deltas (``{"function":
+            # {"arguments": "}"}}``) routed the fragments to the
+            # new-call cap-check and dropped them as cap-full —
+            # truncating the JSON. Now any admitted call (indexed
+            # or no-index) absorbs no-index argument fragments.
+            if idx is None and not is_anchor:
+                has_admitted_call = bool(self._admitted_tool_call_indices) or (
+                    self._no_index_call_admitted
                 )
-                has_id = (
-                    isinstance(tc, dict)
-                    and isinstance(tc.get("id"), str)
-                    and tc.get("id")
-                )
-                if not (has_name or has_id):
-                    # Continuation fragment — route to whichever
-                    # anchor was last seen. If the last anchor was a
-                    # dropped new call (cap-full new-call branch
-                    # below set ``_no_index_last_dropped``), suppress
-                    # so the dropped call's arguments don't leak
-                    # into the admitted call's payload (round-4 codex
-                    # BLOCKING #1).
+                if has_admitted_call:
                     if self._no_index_last_dropped:
+                        # Most recent anchor was dropped; suppress so
+                        # the dropped call's args don't leak into the
+                        # admitted call's payload.
                         continue
                     allowed.append(tc)
                     continue
-            # New call (unseen index, fresh no-index call with id/name,
-            # or first no-index delta).
+                # Falls through to new-call branch (first delta of the
+                # stream has no index AND no anchor — treat as new).
+
+            # New call: unseen index, fresh no-index call with id/name,
+            # or first no-index delta with no admitted call yet.
             already_admitted = len(self._admitted_tool_call_indices) + (
                 1 if self._no_index_call_admitted else 0
             )
@@ -354,6 +366,11 @@ class StreamingPostProcessor:
                 continue
             if isinstance(idx, int):
                 self._admitted_tool_call_indices.add(idx)
+                # Indexed admit: subsequent no-index argument fragments
+                # belong to the in-flight admitted call. Reset the
+                # dropped-anchor flag (the cap-full branch above is
+                # the only writer).
+                self._no_index_last_dropped = False
             else:
                 # Mark the no-index slot as taken; subsequent no-index
                 # deltas hit the continuation branch above. Reset the
@@ -451,7 +468,17 @@ class StreamingPostProcessor:
             parallel_allowed = self._parallel_tool_calls_allowed()
             allowed_calls: list[dict] = []
             for tc in engine_tool_calls:
-                if not parallel_allowed and len(self._admitted_tool_call_indices) >= 1:
+                # Defense in depth: include the no-index slot in the
+                # cap total even though a single stream rarely hits
+                # both the channel-routed AND text-parser paths
+                # (channel-routed is gated on ``output.channel`` being
+                # set, which only happens for OutputRouter models).
+                # Round-5 codex BLOCKING #1: if any future flow lets
+                # cross-pollination happen, the cap would leak.
+                already_admitted = len(self._admitted_tool_call_indices) + (
+                    1 if self._no_index_call_admitted else 0
+                )
+                if not parallel_allowed and already_admitted >= 1:
                     break
                 new_idx = self._structured_tool_call_count
                 self._admitted_tool_call_indices.add(new_idx)
