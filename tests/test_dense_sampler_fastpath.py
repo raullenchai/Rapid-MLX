@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import types
 
+import pytest
+
 from vllm_mlx.scheduler import _install_dense_sampler_fastpath
 
 
@@ -63,7 +65,9 @@ def test_homogeneous_batch_swaps_to_fast_path():
     inside the wrapped step and ``self.fallback_sampler`` is the shared one."""
     shared = lambda x: x  # noqa: E731 — stand-in for make_sampler closure
     original_fallback = lambda x: x  # noqa: E731
-    gb = _FakeGenBatch(samplers=[shared, shared, shared, shared], fallback=original_fallback)
+    gb = _FakeGenBatch(
+        samplers=[shared, shared, shared, shared], fallback=original_fallback
+    )
     _install(gb)
 
     gb._step()
@@ -123,7 +127,10 @@ def test_homogeneous_with_first_none_does_not_engage():
 def test_swap_is_reversed_on_exception():
     """If ``_step`` raises, the per-request samplers MUST still be
     restored. Otherwise the next step would silently see the wrong
-    sampling distribution for those requests."""
+    sampling distribution for those requests.
+
+    Uses ``pytest.raises`` so a regression that stops raising is caught —
+    a bare ``try/except`` would let the test silently pass."""
     shared = lambda x: x  # noqa: E731
     original_fallback = lambda x: x  # noqa: E731
     gb = _FakeGenBatch(samplers=[shared, shared], fallback=original_fallback)
@@ -131,10 +138,9 @@ def test_swap_is_reversed_on_exception():
     gb.raise_in_step = boom
     _install(gb)
 
-    try:
+    with pytest.raises(RuntimeError) as excinfo:
         gb._step()
-    except RuntimeError as exc:
-        assert exc is boom
+    assert excinfo.value is boom
 
     # After the exception, swap must be reverted.
     assert gb.samplers == [shared, shared]
@@ -186,13 +192,16 @@ def test_sampler_cache_interns_by_param_tuple():
     """``Scheduler._get_request_sampler`` must return the SAME callable
     for identical params — that's what lets the fast-path detector
     short-circuit via ``is`` comparison."""
+    from collections import OrderedDict
+
     from vllm_mlx.scheduler import Scheduler
 
     # We need a Scheduler instance to exercise _get_request_sampler, but
     # we don't want the heavy __init__ (loads model). Construct via
     # __new__ + manual init of just the attributes the method reads.
     sched = Scheduler.__new__(Scheduler)
-    sched._sampler_cache = {}
+    sched._sampler_cache = OrderedDict()
+    sched._sampler_cache_max = 32
 
     class _SP:
         temperature = 0.7
@@ -219,6 +228,42 @@ def test_sampler_cache_interns_by_param_tuple():
     assert a is b, "identical params must reuse cached sampler — required for fast path"
     assert a is not c, "different temperature must produce a distinct sampler"
     assert len(sched._sampler_cache) == 2
+
+
+def test_sampler_cache_is_bounded_lru():
+    """The cache key is request-controlled (clients pick temp/top_p), so
+    the cache MUST be bounded. Without a cap, an adversarial client
+    streaming unique floats grows ``_sampler_cache`` without bound for
+    the process lifetime."""
+    from collections import OrderedDict
+
+    from vllm_mlx.scheduler import Scheduler
+
+    sched = Scheduler.__new__(Scheduler)
+    sched._sampler_cache = OrderedDict()
+    sched._sampler_cache_max = 4  # small cap for test legibility
+
+    class _SP:
+        def __init__(self, temp):
+            self.temperature = temp
+            self.top_p = 0.95
+            self.min_p = 0.0
+            self.top_k = 20
+
+    # Fill past the cap.
+    samplers = [sched._get_request_sampler(_SP(0.1 * i)) for i in range(6)]
+    assert len(sched._sampler_cache) == 4, "cap must hold even under churn"
+
+    # Oldest entries (temp=0.0, 0.1) are evicted.
+    keys = list(sched._sampler_cache.keys())
+    assert (0.0, 0.95, 0.0, 20) not in keys
+    assert (0.1, 0.95, 0.0, 20) not in keys
+    # Newest entry is at the LRU tail.
+    assert keys[-1] == (0.5, 0.95, 0.0, 20)
+
+    # Hot-key LRU bookkeeping: hitting an existing key bumps it to MRU.
+    sched._get_request_sampler(_SP(0.2))  # was middle of the LRU
+    assert list(sched._sampler_cache.keys())[-1] == (0.2, 0.95, 0.0, 20)
 
 
 def test_method_type_wrapper_sees_correct_self():

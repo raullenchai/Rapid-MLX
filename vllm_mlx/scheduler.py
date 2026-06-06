@@ -12,7 +12,7 @@ The scheduler follows vLLM's design with:
 """
 
 import logging
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -677,7 +677,7 @@ def _install_dense_sampler_fastpath(batch_gen: "BatchGenerator") -> None:
     """
     import types
 
-    gen_batch = batch_gen._generation_batch
+    gen_batch = getattr(batch_gen, "_generation_batch", None)
     if gen_batch is None or not hasattr(gen_batch, "_step"):
         return
 
@@ -1732,10 +1732,17 @@ class Scheduler:
         # ``(temp, top_p, min_p, top_k)``. Homogeneous concurrent
         # batches end up sharing one callable, which lets
         # ``_install_dense_sampler_fastpath`` detect them by identity and
-        # swap to mlx-lm's batched fast path. Stores up to ~32 distinct
-        # sampling-param tuples — production traffic almost always
-        # collapses to a single key.
-        self._sampler_cache: dict[tuple, Any] = {}
+        # swap to mlx-lm's batched fast path.
+        #
+        # Bounded LRU (``OrderedDict``) because the cache key is
+        # request-controlled: an adversarial client could otherwise
+        # stream many unique float values for ``(temp, top_p, min_p,
+        # top_k)`` and grow the cache without bound. Production traffic
+        # almost always converges to one or two distinct keys, so a
+        # small cap is more than enough; evicting an entry just costs
+        # one ``make_sampler`` call the next time that key reappears.
+        self._sampler_cache: OrderedDict[tuple, Any] = OrderedDict()
+        self._sampler_cache_max = 32
 
         # Prefix cache for KV state reuse
         self.prefix_cache: PrefixCacheManager | None = None
@@ -1896,6 +1903,8 @@ class Scheduler:
         )
         cached = self._sampler_cache.get(key)
         if cached is not None:
+            # LRU bookkeeping — keep the hot key warm.
+            self._sampler_cache.move_to_end(key)
             return cached
         sampler = make_sampler(
             temp=sampling_params.temperature,
@@ -1904,6 +1913,12 @@ class Scheduler:
             top_k=sampling_params.top_k,
         )
         self._sampler_cache[key] = sampler
+        # Evict the least-recently-used entry once we exceed the cap.
+        # Identity-sharing only matters for live in-flight batches; a
+        # freshly evicted sampler that reappears just costs one
+        # ``make_sampler`` call.
+        if len(self._sampler_cache) > self._sampler_cache_max:
+            self._sampler_cache.popitem(last=False)
         return sampler
 
     def _create_batch_generator(
