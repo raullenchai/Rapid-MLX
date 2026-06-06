@@ -85,7 +85,11 @@ def _load_alias_names() -> list[str]:
         return []
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+        # ``json.loads`` recurses on nested objects/arrays. A small but
+        # deeply-nested file (e.g. ``[[[[...]]]]``) raises
+        # ``RecursionError``, which is technically not a ``JSONDecodeError``
+        # and would otherwise leak as a traceback into the user's shell.
         return []
     if not isinstance(data, dict):
         return []
