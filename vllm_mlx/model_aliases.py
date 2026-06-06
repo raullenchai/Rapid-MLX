@@ -438,7 +438,7 @@ POPULAR_ALIASES: tuple[str, ...] = (
     "qwen3.5-9b",  # mid-size general
     "qwen3.6-27b",  # latest hybrid family
     "qwen3-coder-30b",  # coding
-    "gemma3-12b",  # gemma family rep
+    "gemma4",  # gemma family rep (12B QAT 4-bit)
     "llama3-3b",  # tiny llama
     "mistral-24b",  # mistral
     "deepseek-r1-32b",  # reasoning
