@@ -36,6 +36,22 @@ Aggregate tok/s = sum across 4 concurrent streams ÷ wall-clock seconds
 (`output_tokens / (e2e − ttft)`) — that is typically higher than
 `aggregate / concurrency` because it excludes the prefill phase.
 
+### Audit trail of result files
+
+This directory keeps every JSON the bench harness emitted during the
+refresh — including the two exploratory rows that errored:
+
+- `results-20260606-152047.json` and `results-20260606-152654.json`
+  carry the failed `qwen3.5-27b` Ollama warmup against the Unsloth
+  Qwen3.6-27B GGUF (HTTP 500 "unable to load model"; Ollama paths
+  redacted to `<redacted-home>`). These are superseded by
+  `results-20260606-153334.json`, which is the working `qwen3:32b`
+  re-run cited above.
+
+Failed rows are retained so a reader can reconstruct the methodology
+trail without having to rerun the same dead ends. They are NOT counted
+in the README table.
+
 ### Notes
 
 1. The qwen3.5-27b Ollama row is benched against `qwen3:32b`

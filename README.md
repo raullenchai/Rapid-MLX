@@ -37,7 +37,7 @@
 | **96+ GB** Mac Studio / Pro | Qwen3.5-122B | 57 tok/s¹ | Frontier-level intelligence |
 | **128+ GB** Mac Studio Ultra | DeepSeek V4 Flash 158B-A13B | 31-56 tok/s¹ | Day-0 frontier MoE, 1M context |
 
-<sub>Single-user end-to-end throughput (B=1: one request at a time, 256 max output tokens, total tokens / wall-clock incl. first-token latency), median of 3 rounds. `chat_template_kwargs.enable_thinking=False` passed where the engine honours it. Tested on M3 Ultra 256 GB / rapid-mlx v0.6.80. ¹ carried over from 2026-04 bench — disk-constrained on this refresh.</sub>
+<sub>Single-user end-to-end throughput (B=1: one request at a time, 256 max output tokens, `output_tokens / wall-clock` incl. first-token latency), median of 3 rounds. `chat_template_kwargs.enable_thinking=False` passed where the engine honours it. Tested on M3 Ultra 256 GB / rapid-mlx v0.6.80. ¹ carried over from 2026-04 bench — disk-constrained on this refresh.</sub>
 
 <details>
 <summary><b>New to local AI? Quick glossary</b></summary>

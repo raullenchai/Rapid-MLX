@@ -61,6 +61,12 @@ ROUNDS = 3
 SERVER_READY_TIMEOUT = 600
 KILL_TIMEOUT = 30
 COOLDOWN_S = 8
+# Wall-clock cap per streaming request — independent of the per-socket
+# `timeout=` arg, which only fires when the socket goes idle. A server
+# that dribbles one chunk every 280 s would otherwise pin a round
+# indefinitely. 300 s is generous for 256 tokens even on the slowest
+# 122B-class flagship while leaving an obvious "something's wrong" cliff.
+PER_REQUEST_WALL_S = 300
 
 
 # ============================================================
@@ -457,6 +463,15 @@ def run_one_stream(chat_url: str, model_id: str) -> tuple[float, int, float]:
         if resp.status_code != 200:
             raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
         for line in resp.iter_lines():
+            # Codex round 6 NIT #2 — requests' ``timeout=`` is a per-socket-
+            # read deadline, not a wall-clock cap. Enforce an absolute cap
+            # so a server that keeps the stream warm with sub-timeout
+            # dribbles can't pin a round forever.
+            if time.perf_counter() - t0 > PER_REQUEST_WALL_S:
+                raise RuntimeError(
+                    f"stream exceeded {PER_REQUEST_WALL_S}s wall-clock cap "
+                    f"(usage={output_tokens} tok, chunks={chunks_seen})"
+                )
             if not line:
                 continue
             if not line.startswith(b"data: "):
@@ -609,6 +624,12 @@ def main():
     if unknown:
         sys.exit(
             f"unknown alias(es): {sorted(unknown)!r}. Known: {sorted(known_aliases)!r}"
+        )
+    unknown_engines = set(selected_engines) - set(ENGINE_FACTORIES)
+    if unknown_engines:
+        sys.exit(
+            f"unknown engine(s): {sorted(unknown_engines)!r}. "
+            f"Supported: {sorted(ENGINE_FACTORIES)!r}"
         )
     selected_models = [m for m in MODELS if m.alias in selected_aliases]
     if not selected_models:
