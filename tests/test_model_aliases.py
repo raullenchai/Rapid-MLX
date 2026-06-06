@@ -111,6 +111,23 @@ def test_suggest_similar_letter_fallback_handles_separator_mismatch():
         assert s.startswith("gemma"), s
 
 
+def test_suggest_similar_short_alias_does_not_shadow_sized_variants():
+    """When a short alias (e.g. ``gemma4``) exists AND the user types
+    a size-qualified name (``gemma4-26b``), the strict-family pass must
+    NOT short-circuit to just ``[gemma4]``. Otherwise users hunting
+    for the 26B variant get bait-and-switched onto the 12B default.
+    Fall through to the letter-only pass so size-specific aliases
+    surface."""
+    suggestions = suggest_similar("gemma4-26b")
+    assert suggestions, "size-qualified typo must produce suggestions"
+    # The 26B variant must be among the suggestions — that's what the
+    # user actually wanted.
+    assert "gemma-4-26b" in suggestions, suggestions
+    # Sanity: the bare ``gemma4`` short alias should NOT be the only
+    # suggestion (the whole point of this regression test).
+    assert suggestions != ["gemma4"], suggestions
+
+
 def test_suggest_similar_letter_fallback_collapsed_separator():
     """User collapses our hyphen — ``mistral24b`` should still suggest
     ``mistral-24b``, not return []."""

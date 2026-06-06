@@ -399,6 +399,19 @@
       "top_k": 64
     }
   },
+  "gemma4": {
+    "hf_path": "mlx-community/gemma-4-12B-it-qat-4bit",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
   "gemma3-12b": {
     "hf_path": "mlx-community/gemma-3-12b-it-qat-4bit",
     "tool_call_parser": "hermes",
