@@ -19,9 +19,15 @@ import argparse
 import os
 import sys
 
-import argcomplete
-
 from vllm_mlx._completion import alias_completer, alias_csv_completer
+
+# NOTE: ``argcomplete`` is imported lazily inside ``main()`` instead of
+# at module top. Module-level imports of ``vllm_mlx.cli`` (e.g.
+# ``tests/test_harmony_parsers.py::TestServeLogLevelFlags``) run in the
+# minimal-deps CI lane that doesn't pre-install argcomplete; pulling it
+# at top would surface as ``ModuleNotFoundError`` during test collection.
+# argcomplete is still a required runtime dep in ``pyproject.toml`` so
+# real installs get tab completion out of the box.
 
 
 def _log_level_choice(value: str) -> str:
@@ -4289,7 +4295,15 @@ Examples:
                         _preinit_argcomplete_state(sub)
 
     _preinit_argcomplete_state(parser)
-    argcomplete.autocomplete(parser)
+    try:
+        import argcomplete
+    except ModuleNotFoundError:
+        # Best-effort: tab completion silently no-ops if argcomplete is
+        # missing. Listed as a required dep in ``pyproject.toml`` so
+        # this path only fires in minimal test envs or stripped images.
+        pass
+    else:
+        argcomplete.autocomplete(parser)
 
     args = parser.parse_args()
 
