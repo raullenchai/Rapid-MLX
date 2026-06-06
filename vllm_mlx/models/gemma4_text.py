@@ -133,9 +133,26 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
     config = json.loads((p / "config.json").read_text())
     text_config = config.get("text_config", config)
 
-    # Build the language model from mlx-vlm
-    from mlx_vlm.models.gemma4.config import TextConfig
-    from mlx_vlm.models.gemma4.language import LanguageModel
+    # Build the language model from mlx-vlm. The Gemma 4 model class
+    # definitions only live in mlx-vlm; mlx-lm's native gemma4 path
+    # exists but misses the ``gemma4_unified`` model_type used by the
+    # QAT 8-bit and several upstream checkpoints. On a bare
+    # ``pip install rapid-mlx`` (no extras) or a default brew install
+    # mlx-vlm is absent — give the user an actionable, size-conscious
+    # error instead of a raw ModuleNotFoundError.
+    try:
+        from mlx_vlm.models.gemma4.config import TextConfig
+        from mlx_vlm.models.gemma4.language import LanguageModel
+    except ImportError as e:
+        raise ImportError(
+            "Gemma 4 models require the optional `mlx-vlm` dependency "
+            "for the model architecture classes.\n"
+            "Install just the Python classes (16 MB, recommended for "
+            "text-only use):\n"
+            "    pip install --no-deps 'mlx-vlm>=0.6.1'\n"
+            "Or the full vision/audio stack (~+450 MB):\n"
+            "    pip install 'rapid-mlx[vision]'"
+        ) from e
 
     tc = TextConfig.from_dict(text_config)
     language_model = LanguageModel(tc)
