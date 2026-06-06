@@ -63,6 +63,20 @@ def test_alias_completer_filters_by_prefix() -> None:
         f"completer leaked non-matching aliases: "
         f"{[n for n in result if not n.startswith('gemma-4-')]}"
     )
+    # Lock in the five QAT aliases shipped in v0.6.78 (PR #523) — a
+    # ``len >= 5`` floor alone would have passed even before they were
+    # added (pre-#523 there were already 5 gemma-4-* aliases). Explicit
+    # membership catches a silent regression where the QAT entries get
+    # dropped from aliases.json without the test failing.
+    qat_aliases = {
+        "gemma-4-12b-qat",
+        "gemma-4-12b-qat-8bit",
+        "gemma-4-26b-qat",
+        "gemma-4-31b-qat",
+        "gemma-4-31b-qat-8bit",
+    }
+    missing = qat_aliases - set(result)
+    assert not missing, f"QAT aliases missing from completer output: {missing}"
 
 
 def test_alias_completer_unknown_prefix_returns_empty() -> None:
