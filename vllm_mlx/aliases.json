@@ -334,6 +334,71 @@
       "top_k": 64
     }
   },
+  "gemma-4-12b-qat": {
+    "hf_path": "mlx-community/gemma-4-12B-it-qat-4bit",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "gemma-4-12b-qat-8bit": {
+    "hf_path": "mlx-community/gemma-4-12B-it-qat-8bit",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "gemma-4-26b-qat": {
+    "hf_path": "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "gemma-4-31b-qat": {
+    "hf_path": "mlx-community/gemma-4-31B-it-qat-4bit",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "gemma-4-31b-qat-8bit": {
+    "hf_path": "mlx-community/gemma-4-31B-it-qat-8bit",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": "gemma4",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
   "gemma3-12b": {
     "hf_path": "mlx-community/gemma-3-12b-it-qat-4bit",
     "tool_call_parser": "hermes",

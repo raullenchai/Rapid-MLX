@@ -626,6 +626,15 @@ _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     "gemma-4-26b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma-4-31b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma-4-31b-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    # Gemma 4 QAT variants — same sampling as PTQ siblings. QAT changes
+    # weight distribution (training with simulated quantization) not the
+    # decoding distribution, so Google's chat sampling guidance applies
+    # unchanged.
+    "gemma-4-12b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-12b-qat-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-26b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-31b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-31b-qat-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # GLM-4.5-Air — THUDM publishes two recommendations: temperature=0.6
     # for *thinking* mode, ~1.0 for non-thinking. The alias has
     # reasoning_parser=glm4 → thinking IS the default response path,
