@@ -592,7 +592,7 @@ def main():
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
-    selected_aliases = set(args.models.split(","))
+    selected_aliases = {m.strip() for m in args.models.split(",") if m.strip()}
     selected_engines = [e.strip() for e in args.engines.split(",") if e.strip()]
     selected_models = [m for m in MODELS if m.alias in selected_aliases]
     if not selected_models:

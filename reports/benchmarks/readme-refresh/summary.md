@@ -30,8 +30,11 @@ contention never crossed engine boundaries.
 | qwen3.6-35b (A3B 4-bit)            |     176.4 |     128.6 | qwen3:30b-a3b                     |   87.1 |     1.37x |     2.02x |
 | qwen3.5-35b (A3B 8-bit)            |     151.4 |     112.0 | qwen3:30b-a3b                     |   87.1 |     1.35x |     1.74x |
 
-Aggregate tok/s = sum across 4 concurrent streams. Per-stream throughput
-≈ aggregate / 4.
+Aggregate tok/s = sum across 4 concurrent streams ÷ wall-clock seconds
+(includes first-token latency). The JSON artifacts also carry
+`median_per_stream_tps`, which is each request's **decode-only** rate
+(`output_tokens / (e2e − ttft)`) — that is typically higher than
+`aggregate / concurrency` because it excludes the prefill phase.
 
 ### Notes
 
