@@ -37,7 +37,7 @@
 | **96+ GB** Mac Studio / Pro | Qwen3.5-122B | 57 tok/s¹ | Frontier-level intelligence |
 | **128+ GB** Mac Studio Ultra | DeepSeek V4 Flash 158B-A13B | 31-56 tok/s¹ | Day-0 frontier MoE, 1M context |
 
-<sub>Single-user decode (B=1), median of 3 rounds, 256 max-token responses, thinking off where supported. Tested on M3 Ultra 256 GB / rapid-mlx v0.6.80. ¹ carried over from 2026-04 bench — disk-constrained on this refresh.</sub>
+<sub>Single-user end-to-end throughput (B=1: one request at a time, 256 max output tokens, total tokens / wall-clock incl. first-token latency), median of 3 rounds. `chat_template_kwargs.enable_thinking=False` passed where the engine honours it. Tested on M3 Ultra 256 GB / rapid-mlx v0.6.80. ¹ carried over from 2026-04 bench — disk-constrained on this refresh.</sub>
 
 <details>
 <summary><b>New to local AI? Quick glossary</b></summary>
@@ -47,7 +47,7 @@
 - **TTFT** (Time To First Token) — how long before the AI starts responding.
 - **Tool calling** — the AI can call functions in your code. Used by Cursor, Claude Code, and coding assistants.
 - **OpenAI API compatible** — Rapid-MLX speaks the same language as ChatGPT's API, so any app that works with ChatGPT can work with Rapid-MLX by just changing the server address.
-- **Ollama / llama.cpp** — other popular tools for running local AI. On Apple Silicon under sustained concurrent load (B=4), Rapid-MLX is **1.7–2.4x faster than Ollama** on the Qwen3 + GPT-OSS rows where the comparison is direct, and **1.2–1.5x faster than `mlx-lm serve`**. The Gemma 4 row is roughly tied with Ollama's Gemma 3 (different architectures) — see [Benchmarks](#benchmarks) for the full table and caveats.
+- **Ollama / llama.cpp** — other popular tools for running local AI. The only **apples-to-apples** row in our table is GPT-OSS 20B (identical weights both sides) — Rapid-MLX runs it **2.3x faster than Ollama** under B=4 concurrent load. The Qwen3/3.5/3.6 and Gemma 4 rows are **closest-tag cross-architecture comparisons** (those archs aren't in llama.cpp yet) where Rapid-MLX still leads 1.7–2.4x. Against `mlx-lm serve` (same MLX weights), Rapid-MLX is **1.2–1.5x faster**. Full caveats in [Benchmarks](#benchmarks).
 
 </details>
 
@@ -401,7 +401,7 @@ The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monit
 | **192 GB** Mac Studio / Pro | [Qwen3.5-122B 8bit](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 130 GB | 44 tok/s¹ | Maximum quality |
 | **256 GB** Mac Studio Ultra | 🆕 [DeepSeek V4 Flash 8-bit](https://huggingface.co/mlx-community/DeepSeek-V4-Flash-8bit) | 136 GB | 31 tok/s¹ | 158B-A13B frontier MoE, 1M context (chat only) |
 
-<sub>Speed = single-user decode (B=1), median of 3 rounds, 256 max-token responses, rapid-mlx v0.6.80 on M3 Ultra 256 GB, 2026-06-06. ¹ Carried over from prior bench (disk-constrained on this refresh).</sub>
+<sub>Speed = single-user end-to-end throughput (B=1: one request, 256 max output tokens, output_tokens / wall-clock including first-token latency), median of 3 rounds. rapid-mlx v0.6.80 on M3 Ultra 256 GB, 2026-06-06. ¹ Carried over from prior bench (disk-constrained on this refresh).</sub>
 
 > **4bit vs 8bit:** 4bit models are compressed to use less memory (recommended for most users). 8bit models are higher quality but need more RAM. "mxfp4" is a high-quality 4bit format.
 
@@ -526,6 +526,16 @@ Aggregate throughput = sum of output tokens across all four streams ÷ wall-cloc
 
 *Full benchmark data with all models, TTFT tables, DeltaNet snapshots, and engine comparison below.*
 
+Reproduce the throughput table:
+
+```bash
+python3.12 scripts/bench_readme_refresh.py \
+  --models qwen3.5-4b,qwen3.5-9b,qwen3.5-27b,gemma-4-12b,gpt-oss-20b,qwen3.6-35b,qwen3.5-35b \
+  --engines rapid-mlx,mlx-lm,ollama
+```
+
+Raw JSON per round + per-stream tok/s land in `reports/benchmarks/readme-refresh/`.
+
 <details>
 <summary><strong>TTFT — Prompt Cache Advantage</strong></summary>
 
@@ -617,7 +627,7 @@ Tool calling (30 scenarios), coding (HumanEval+), reasoning (MATH-500), general 
 | Qwen3.5-27B 4bit | 39 t/s | 83% | 90% | 50% | 80% | **76%** |
 | Qwen3.5-9B 4bit | 108 t/s | 83% | 70% | 60% | 70% | **71%** |
 
-Run your own: `python3.12 scripts/bench_readme_refresh.py --models qwen3.5-4b,gpt-oss-20b --engines rapid-mlx,mlx-lm,ollama` (raw JSON + per-round numbers land in `reports/benchmarks/readme-refresh/`).
+Run your own: `bash evals/run_all_models.sh` runs the full quality suite (tool calling, coding, reasoning, general) across every alias and emits a fresh `evals/SCORECARD.md`. The `Decode` column above is the throughput rapid-mlx achieves on each row — see the [Benchmarks](#benchmarks) section for the cross-engine throughput reproduction command.
 
 </details>
 
