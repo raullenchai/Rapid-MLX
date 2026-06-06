@@ -56,7 +56,11 @@ def test_missing_mlx_vlm_raises_actionable_error(tmp_path, monkeypatch):
         if mod_name == "mlx_vlm" or mod_name.startswith("mlx_vlm."):
             monkeypatch.delitem(sys.modules, mod_name, raising=False)
 
-    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+    real_import = (
+        __builtins__["__import__"]
+        if isinstance(__builtins__, dict)
+        else __builtins__.__import__
+    )
 
     def blocking_import(name, globals=None, locals=None, fromlist=(), level=0):
         if name == "mlx_vlm" or name.startswith("mlx_vlm."):
