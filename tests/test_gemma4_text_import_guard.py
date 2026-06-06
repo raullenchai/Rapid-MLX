@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Regression test for the Gemma 4 loader import guard.
+
+User report: ``rapid-mlx chat gemma-4-12b-qat-8bit`` on a default brew
+install (no ``[vision]`` extra) crashed with a raw
+``ModuleNotFoundError: No module named 'mlx_vlm'`` because
+``load_gemma4_text`` did ``from mlx_vlm.models.gemma4...`` without
+guarding. The fix wraps the import in ``try/except ImportError`` and
+re-raises with an actionable message pointing at the cheapest install
+path (``pip install --no-deps mlx-vlm``, +16 MB).
+
+The brew tap formula now installs mlx-vlm with ``--no-deps``
+automatically, so brew users no longer hit this path. PyPI users on the
+bare install still do — this test pins the actionable error so the
+guard isn't accidentally removed by a future refactor.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+from vllm_mlx.models.gemma4_text import load_gemma4_text
+
+
+def _write_minimal_gemma4_config(tmp_path: Path) -> Path:
+    """Write a config.json the loader will accept up to the mlx-vlm import."""
+    cfg = {
+        "model_type": "gemma4",
+        "text_config": {
+            "hidden_size": 256,
+            "num_hidden_layers": 1,
+            "intermediate_size": 512,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "vocab_size": 32,
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(cfg))
+    return tmp_path
+
+
+def test_missing_mlx_vlm_raises_actionable_error(tmp_path, monkeypatch):
+    """Importing ``mlx_vlm`` is the only mlx-vlm contact point during
+    load. If the package is absent, the user must see a message that
+    names the fix command — NOT a raw ``ModuleNotFoundError`` traceback
+    from deep inside the loader."""
+    model_dir = _write_minimal_gemma4_config(tmp_path)
+
+    # Force ``import mlx_vlm`` (and any submodule) to fail even if the
+    # package is actually installed in the test environment.
+    for mod_name in list(sys.modules):
+        if mod_name == "mlx_vlm" or mod_name.startswith("mlx_vlm."):
+            monkeypatch.delitem(sys.modules, mod_name, raising=False)
+
+    real_import = (
+        __builtins__["__import__"]
+        if isinstance(__builtins__, dict)
+        else __builtins__.__import__
+    )
+
+    def blocking_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "mlx_vlm" or name.startswith("mlx_vlm."):
+            raise ImportError(f"No module named {name!r}")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", blocking_import)
+
+    with pytest.raises(ImportError) as excinfo:
+        load_gemma4_text(model_dir, None)
+
+    msg = str(excinfo.value)
+    # Must name BOTH install options so users on a slim brew install
+    # can pick the cheap one (--no-deps) and PyPI users can pick the
+    # extras one.
+    assert "mlx-vlm" in msg
+    assert "--no-deps" in msg
+    assert "rapid-mlx[vision]" in msg
+    # Original ModuleNotFoundError must be chained via ``from e`` so the
+    # underlying cause stays visible in the traceback.
+    assert excinfo.value.__cause__ is not None
+    assert isinstance(excinfo.value.__cause__, ImportError)
