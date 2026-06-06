@@ -46,7 +46,7 @@ Aggregate tok/s = sum across 4 concurrent streams. Per-stream throughput
 3. Architecture caveats — Ollama can't load Qwen3.5/3.6 DeltaNet or
    Gemma 4 natively; the comparison tag is the closest available arch:
    - qwen3.5-4b/9b → qwen3:4b/8b (Qwen3 base, not 3.5; same model family)
-   - qwen3.5-27b → Unsloth Qwen3.6-27B GGUF (closest dense 27B)
+   - qwen3.5-27b → qwen3:32b (closest dense Qwen3 that Ollama 0.24 will load; see note 1)
    - qwen3.6-35b / qwen3.5-35b → qwen3:30b-a3b (closest MoE A3B)
    - gemma-4-12b → gemma3:12b (Gemma 3, prior generation)
 4. gpt-oss-20b is the only direct apples-to-apples row: same model

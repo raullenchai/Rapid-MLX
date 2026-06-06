@@ -16,8 +16,9 @@ Engines:
   ollama              — closest GGUF arch; arch_note flagged when mismatched
 
 Each engine is the ONLY one running at a time (Metal contention destroys
-otherwise-clean numbers on the same Mac). A 5s cooldown is inserted
-between engine swaps to let MTL free unified-memory buffers.
+otherwise-clean numbers on the same Mac). An 8 s cooldown is inserted
+between engine swaps (see ``COOLDOWN_S``) to let MTL free unified-memory
+buffers.
 
 Usage:
     python3.12 scripts/bench_readme_refresh.py                     # full sweep
@@ -292,14 +293,24 @@ class OllamaEngine(Engine):
     def start(self, model: ModelSpec) -> None:
         if model.ollama_tag is None:
             raise RuntimeError(f"{model.alias} has no Ollama mapping")
-        # Verify tag is present.
+        # Codex round 2 BLOCKING #1 — substring match on the family name
+        # (``qwen3``) would happily green-light any ``qwen3:*`` tag,
+        # silently swapping in the wrong comparator. Parse rows from
+        # ``ollama list`` (first whitespace-delimited column) and require
+        # the exact ``name:tag`` literal.
         r = subprocess.run(
             ["ollama", "list"], check=True, capture_output=True, text=True
         )
-        if model.ollama_tag.split(":")[0] not in r.stdout:
+        installed = set()
+        for line in r.stdout.splitlines()[1:]:  # skip header row
+            head = line.split()
+            if head:
+                installed.add(head[0])
+        if model.ollama_tag not in installed:
             raise RuntimeError(
-                f"ollama tag {model.ollama_tag} not pulled. "
-                f"Run: ollama pull {model.ollama_tag}"
+                f"ollama tag {model.ollama_tag!r} not in `ollama list` "
+                f"(found {sorted(installed)!r}). Run: "
+                f"ollama pull {model.ollama_tag}"
             )
         # No process to spawn — Ollama runs as a launchd service.
         self.process = None
@@ -513,6 +524,17 @@ def run_concurrent_round(chat_url: str, model_id: str, concurrency: int) -> Roun
     )
 
 
+_HOME_PREFIX = str(Path.home())
+
+
+def _sanitize_error(msg: str) -> str:
+    """Redact the operator's home path from error strings before we
+    write them into a committed JSON artifact (codex round 2 NIT #4).
+    Diagnostic content (HTTP status, error type, blob suffix) is kept;
+    just the personally-identifying prefix is stripped."""
+    return msg.replace(_HOME_PREFIX, "<redacted-home>")
+
+
 def bench_model_engine(
     model: ModelSpec, engine_name: str, concurrency: int
 ) -> ModelEngineResult:
@@ -535,7 +557,7 @@ def bench_model_engine(
             print("    warmup ok", flush=True)
         except Exception as e:
             print(f"    warmup FAIL: {e}", flush=True)
-            res.error = f"warmup: {e}"
+            res.error = _sanitize_error(f"warmup: {e}")
             return res
 
         for i in range(ROUNDS):
@@ -550,11 +572,11 @@ def bench_model_engine(
                 )
             except Exception as e:
                 print(f"FAIL: {e}", flush=True)
-                res.error = f"round {i + 1}: {e}"
+                res.error = _sanitize_error(f"round {i + 1}: {e}")
                 break
             time.sleep(2)
     except Exception as e:
-        res.error = f"setup: {e}"
+        res.error = _sanitize_error(f"setup: {e}")
         print(f"    SETUP FAIL: {e}", flush=True)
     finally:
         engine.stop()
