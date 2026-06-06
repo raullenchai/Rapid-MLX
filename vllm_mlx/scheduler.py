@@ -648,6 +648,67 @@ def _install_chunked_prefill(
     logger.info(f"[chunked_prefill] installed with budget={budget} tokens per step")
 
 
+def _install_dense_sampler_fastpath(batch_gen: "BatchGenerator") -> None:
+    """Swap to mlx-lm's batched sampler fast path when the running batch
+    is homogeneous in sampling params.
+
+    mlx-lm's ``GenerationBatch._step`` (``mlx_lm/generate.py:1320``) takes
+    a per-row Python loop + ``mx.concatenate`` whenever
+    ``any(self.samplers)`` is True. The Scheduler attaches a per-request
+    sampler on every ``insert(...)``, so that branch is taken for every
+    multi-request batch — bypassing the fast ``fallback_sampler(logprobs)``
+    path that runs sampling once on ``[B, vocab]``.
+
+    When every entry in ``self.samplers`` is the same callable instance,
+    sampling is mathematically identical to invoking that one callable on
+    the full ``[B, vocab]`` matrix (mlx-lm's ``apply_top_p`` /
+    ``apply_min_p`` / ``apply_top_k`` / ``categorical_sampling`` all
+    operate row-wise along ``axis=-1``). The Scheduler interns samplers
+    via ``_get_request_sampler``, so identity-equality of the entries in
+    ``self.samplers`` already implies value-equality of the sampling
+    params — no separate key check needed.
+
+    Heterogeneous batches (mixed temp/top_p across requests) fall back to
+    mlx-lm's original per-row loop — correctness preserved.
+
+    Companion to ``MLLMBatchGenerator._step`` fast path in
+    ``mllm_batch_generator.py`` (PR #519). This installs the same shape
+    on the dense LLM path that lives inside mlx-lm.
+    """
+    import types
+
+    gen_batch = batch_gen._generation_batch
+    if gen_batch is None or not hasattr(gen_batch, "_step"):
+        return
+
+    # ``gen_batch._step`` may already be a bound method (vanilla mlx-lm)
+    # OR a plain closure replaced by ``_install_suffix_decoding`` (which
+    # writes ``gb._step = _suffix_step`` — see the assignment in that
+    # function). Both shapes accept zero args (the closure closes over
+    # ``gb``; the bound method already carries ``self``), so calling
+    # ``orig_step()`` without args works for either.
+    orig_step = gen_batch._step
+
+    def patched_step(self):
+        samplers = self.samplers
+        if samplers and len(samplers) >= 2:
+            first = samplers[0]
+            if first is not None and all(s is first for s in samplers[1:]):
+                saved_samplers = self.samplers
+                saved_fallback = self.fallback_sampler
+                self.samplers = [None] * len(samplers)
+                self.fallback_sampler = first
+                try:
+                    return orig_step()
+                finally:
+                    self.samplers = saved_samplers
+                    self.fallback_sampler = saved_fallback
+        return orig_step()
+
+    gen_batch._step = types.MethodType(patched_step, gen_batch)
+    logger.info("[dense_sampler_fastpath] installed on BatchGenerator")
+
+
 def _install_mtp(
     batch_gen: "BatchGenerator",
     model: Any,
@@ -1667,6 +1728,15 @@ class Scheduler:
         self.batch_generator: BatchGenerator | None = None
         self._current_sampler_params: tuple | None = None
 
+        # Sampler cache: interns ``make_sampler`` results keyed on
+        # ``(temp, top_p, min_p, top_k)``. Homogeneous concurrent
+        # batches end up sharing one callable, which lets
+        # ``_install_dense_sampler_fastpath`` detect them by identity and
+        # swap to mlx-lm's batched fast path. Stores up to ~32 distinct
+        # sampling-param tuples — production traffic almost always
+        # collapses to a single key.
+        self._sampler_cache: dict[tuple, Any] = {}
+
         # Prefix cache for KV state reuse
         self.prefix_cache: PrefixCacheManager | None = None
         self.memory_aware_cache: MemoryAwarePrefixCache | None = None
@@ -1800,6 +1870,41 @@ class Scheduler:
                     # Handle case where eos_token_ids is a single int
                     stop_tokens.add(tok.eos_token_ids)
         return stop_tokens
+
+    def _get_request_sampler(self, sampling_params: SamplingParams) -> Any:
+        """Return a cached sampler for these sampling params.
+
+        Interning samplers by ``(temp, top_p, min_p, top_k)`` is what
+        lets ``_install_dense_sampler_fastpath`` detect homogeneous
+        batches via identity comparison on ``GenerationBatch.samplers``.
+        Without this, every request would carry its own
+        ``make_sampler`` closure even when the params are identical,
+        forcing the slow per-row loop in mlx-lm.
+
+        WARNING: the cache key intentionally covers only the four
+        knobs threaded through to ``make_sampler``. If we ever start
+        forwarding xtc_probability / xtc_threshold / xtc_special_tokens
+        per request, the key MUST grow accordingly — otherwise
+        homogeneous-looking batches would silently share an incorrect
+        sampler.
+        """
+        key = (
+            sampling_params.temperature,
+            sampling_params.top_p,
+            sampling_params.min_p,
+            sampling_params.top_k,
+        )
+        cached = self._sampler_cache.get(key)
+        if cached is not None:
+            return cached
+        sampler = make_sampler(
+            temp=sampling_params.temperature,
+            top_p=sampling_params.top_p,
+            min_p=sampling_params.min_p,
+            top_k=sampling_params.top_k,
+        )
+        self._sampler_cache[key] = sampler
+        return sampler
 
     def _create_batch_generator(
         self, sampling_params: SamplingParams
@@ -1938,6 +2043,15 @@ class Scheduler:
                 requests=self.requests,
                 uid_to_request_id=self.uid_to_request_id,
             )
+
+        # Install batched-sampler fast path. Must run AFTER MTP /
+        # SuffixDecoding since they may replace _step on the
+        # GenerationBatch — our wrapper has to sit at the outermost
+        # layer so it can short-circuit the per-row loop wherever the
+        # final _step ends up. SuffixDecoding/MTP wrappers themselves
+        # call into the original ``_step`` and ignore ``self.samplers``,
+        # so this layering is safe.
+        _install_dense_sampler_fastpath(bg)
 
         return bg
 
@@ -2815,12 +2929,10 @@ class Scheduler:
             # Per-request sampler (temperature/top_p/top_k/min_p may differ
             # per request). Without this, all requests use the BatchGenerator's
             # default sampler (argmax), ignoring the requested temperature.
-            request_sampler = make_sampler(
-                temp=request.sampling_params.temperature,
-                top_p=request.sampling_params.top_p,
-                min_p=request.sampling_params.min_p,
-                top_k=request.sampling_params.top_k,
-            )
+            # ``_get_request_sampler`` interns by sampling-param tuple so that
+            # homogeneous batches share one callable — required for
+            # ``_install_dense_sampler_fastpath`` to detect them by identity.
+            request_sampler = self._get_request_sampler(request.sampling_params)
 
             # Issue #427: split the insert at prefix_boundary so the
             # per-message cache snapshot can fire after the prefix
