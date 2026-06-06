@@ -406,7 +406,17 @@ class ModelEngineResult:
         vals = [r.aggregate_tps for r in self.rounds]
         return statistics.median(vals) if vals else None
 
-    def median_per_stream_tps(self) -> float | None:
+    def median_decode_tps_per_stream(self) -> float | None:
+        """Decode-only (excludes prefill / TTFT) per-stream throughput.
+
+        Each request's `output_tokens / (e2e - ttft)` is collected at
+        `RoundResult.per_request_tps`, then median'd across all rounds.
+        This is HIGHER than the aggregate-÷-concurrency approximation
+        because it strips the first-token latency — useful when you
+        want the steady-state model decode rate per user, but it does
+        NOT equal `aggregate_tps / concurrency`. See summary.md for the
+        contrast.
+        """
         flat = [tps for r in self.rounds for tps in r.per_request_tps]
         return statistics.median(flat) if flat else None
 
@@ -594,6 +604,12 @@ def main():
 
     selected_aliases = {m.strip() for m in args.models.split(",") if m.strip()}
     selected_engines = [e.strip() for e in args.engines.split(",") if e.strip()]
+    known_aliases = {m.alias for m in MODELS}
+    unknown = selected_aliases - known_aliases
+    if unknown:
+        sys.exit(
+            f"unknown alias(es): {sorted(unknown)!r}. Known: {sorted(known_aliases)!r}"
+        )
     selected_models = [m for m in MODELS if m.alias in selected_aliases]
     if not selected_models:
         sys.exit(f"no models matched: {args.models}")
@@ -633,7 +649,7 @@ def main():
                         "engine": r.engine,
                         "arch_note": r.arch_note,
                         "median_aggregate_tps": r.median_aggregate_tps(),
-                        "median_per_stream_tps": r.median_per_stream_tps(),
+                        "median_decode_tps_per_stream": r.median_decode_tps_per_stream(),
                         "error": r.error,
                         "rounds": [asdict(rnd) for rnd in r.rounds],
                     }

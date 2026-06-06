@@ -47,7 +47,7 @@
 - **TTFT** (Time To First Token) — how long before the AI starts responding.
 - **Tool calling** — the AI can call functions in your code. Used by Cursor, Claude Code, and coding assistants.
 - **OpenAI API compatible** — Rapid-MLX speaks the same language as ChatGPT's API, so any app that works with ChatGPT can work with Rapid-MLX by just changing the server address.
-- **Ollama / llama.cpp** — other popular tools for running local AI. The only **apples-to-apples** row in our table is GPT-OSS 20B (identical weights both sides) — Rapid-MLX runs it **2.3x faster than Ollama** under B=4 concurrent load. The Qwen3/3.5/3.6 and Gemma 4 rows are **closest-tag cross-architecture comparisons** (those archs aren't in llama.cpp yet) where Rapid-MLX still leads 1.7–2.4x. Against `mlx-lm serve` (same MLX weights), Rapid-MLX is **1.2–1.5x faster**. Full caveats in [Benchmarks](#benchmarks).
+- **Ollama / llama.cpp** — other popular tools for running local AI. The only **apples-to-apples** row in our table is GPT-OSS 20B (identical weights both sides) — Rapid-MLX runs it **2.3x faster than Ollama** under B=4 concurrent load. On the **Qwen3 closest-tag** rows (Qwen3.5/3.6 DeltaNet isn't on llama.cpp yet, so we compare against `qwen3:Nb`) Rapid-MLX leads 1.7–2.4x. The **Gemma 4 row** is roughly tied with Ollama's Gemma 3 (different architectures, 0.99x). Against `mlx-lm serve` (same MLX weights) Rapid-MLX is **1.2–1.5x faster**. Full caveats in [Benchmarks](#benchmarks).
 
 </details>
 
@@ -619,13 +619,15 @@ Qwen3.5 uses Gated DeltaNet (75% RNN) + full attention (25% KV). Other engines r
 
 Tool calling (30 scenarios), coding (HumanEval+), reasoning (MATH-500), general knowledge (MMLU-Pro). Top models:
 
-| Model | Decode | Tools | Code | Reason | General | Avg |
+| Model | Decode (B=1) | Tools | Code | Reason | General | Avg |
 |-------|--------|-------|------|--------|---------|-----|
-| Qwen3.5-122B 8bit | 44 t/s | 87% | 90% | 90% | 90% | **89%** |
-| Qwen3.5-35B 8bit | 83 t/s | 90% | 90% | 80% | 80% | **85%** |
-| Qwen3-Coder-Next 4bit | 74 t/s | 90% | 90% | 70% | 70% | **80%** |
-| Qwen3.5-27B 4bit | 39 t/s | 83% | 90% | 50% | 80% | **76%** |
-| Qwen3.5-9B 4bit | 108 t/s | 83% | 70% | 60% | 70% | **71%** |
+| Qwen3.5-122B 8bit | 44 t/s¹ | 87% | 90% | 90% | 90% | **89%** |
+| Qwen3.5-35B 8bit | 59 t/s | 90% | 90% | 80% | 80% | **85%** |
+| Qwen3-Coder-Next 4bit | 74 t/s¹ | 90% | 90% | 70% | 70% | **80%** |
+| Qwen3.5-27B 4bit | 33 t/s | 83% | 90% | 50% | 80% | **76%** |
+| Qwen3.5-9B 4bit | 100 t/s | 83% | 70% | 60% | 70% | **71%** |
+
+<sub>Decode = single-user end-to-end throughput refreshed 2026-06-06 against rapid-mlx v0.6.80. ¹ Carried over from the 2026-04 bench (not re-measured this round).</sub>
 
 Run your own: `bash evals/run_all_models.sh` runs the full quality suite (tool calling, coding, reasoning, general) across every alias and emits a fresh `evals/SCORECARD.md`. The `Decode` column above is the throughput rapid-mlx achieves on each row — see the [Benchmarks](#benchmarks) section for the cross-engine throughput reproduction command.
 
