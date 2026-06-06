@@ -47,6 +47,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .._completion import alias_completer
 from . import warning, ws_tunnel
 
 # Pulled out so the routing-shape audit (tests/test_no_out_of_band_routing.py)
@@ -767,7 +768,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "model",
         help="Alias to serve (same names as `rapid-mlx serve`, e.g. qwen3.5-4b)",
-    )
+    ).completer = alias_completer
     p.add_argument(
         "--port",
         type=int,

@@ -46,6 +46,22 @@ dependencies = [
     "uvicorn>=0.23.0",
     "mcp>=1.0.0",
     "jsonschema>=4.0.0",
+    # argcomplete — shell tab completion for the `rapid-mlx` CLI. Tiny
+    # pure-Python package (~50 KB) wired into argparse via the magic
+    # `# PYTHON_ARGCOMPLETE_OK` marker in cli.py and a per-arg
+    # `.completer = alias_completer` for model positionals. Required
+    # (not optional) so `rapid-mlx chat gemma-4-<TAB>` works on every
+    # install without an extras step. Activation in the user's shell is
+    # one-time: `eval "$(register-python-argcomplete rapid-mlx)"` in
+    # ~/.zshrc, or `activate-global-python-argcomplete` system-wide.
+    # The Homebrew formula handles activation automatically.
+    #
+    # >=3.6 is required: Python 3.12.6+ added a 4th positional arg
+    # (`intermixed`) to argparse._parse_known_args. argcomplete <3.6
+    # subclasses with only 3 positional args → TypeError mid-handshake
+    # and tab completion silently returns nothing. 3.6 ships the
+    # variadic signature fix.
+    "argcomplete>=3.6",
     # WebSocket client for ``rapid-mlx share`` — connects to the
     # rapidserver Worker as the reverse-tunnel transport. Pure Python,
     # ~200 KB. Replaces the prior frpc Go binary download.
