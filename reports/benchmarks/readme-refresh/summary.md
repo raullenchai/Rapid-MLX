@@ -52,6 +52,19 @@ Failed rows are retained so a reader can reconstruct the methodology
 trail without having to rerun the same dead ends. They are NOT counted
 in the README table.
 
+### Engine isolation caveat
+
+`OllamaEngine.stop()` only unloads its own row's tag — the Ollama 0.24
+daemon keeps previously loaded blobs warm in memory between rows. The
+8-second engine-swap cooldown drops Metal pressure but does **not**
+evict residency. In practice this means an Ollama row's measurement may
+benefit (warm metadata) or suffer (Metal cache contention) from prior
+rows. To control for this, run `ollama ps` between rows or restart
+`ollama serve` between models when chasing ±2 % deltas. The numbers in
+this table did not exhibit drift round-to-round (CoV < 1 %), so we
+left the run untouched, but the limitation is recorded for any
+follow-up A/B work.
+
 ### Notes
 
 1. The qwen3.5-27b Ollama row is benched against `qwen3:32b`

@@ -508,7 +508,7 @@ Tested on **Mac Studio M3 Ultra (256 GB)**, 2026-06-06. Workload is **B=4 sustai
 
 Versions: rapid-mlx **v0.6.80**, mlx-lm **0.31.3**, Ollama **0.24.0** (latest stable).
 
-Aggregate throughput = sum of output tokens across all four streams ÷ wall-clock seconds — the metric that matters for a server fronting multiple users or a TUI firing parallel sub-agents. Per-user decode is roughly aggregate ÷ 4.
+Aggregate throughput = sum of output tokens across all four streams ÷ wall-clock seconds — the metric that matters for a server fronting multiple users or a TUI firing parallel sub-agents. Per-user decode is roughly aggregate ÷ 4 on a true batching engine; on Ollama 0.24 (no in-flight batching) the four streams effectively serialize, so the per-stream decode-only rate (`output_tokens / (e2e − ttft)`, recorded as `median_per_stream_tps` in the raw JSON) sits at or slightly above the aggregate. That is expected and not a metric mismatch — decode-only excludes prefill while aggregate spans the entire wall-clock window. The Ollama daemon also caches the previously loaded model in memory across rows; `OllamaEngine.stop()` only unloads the row's own tag, so cross-row Metal residency effects are possible — `ollama ps` between rows shows what's actually resident.
 
 | Model (rapid-mlx alias) | rapid-mlx (B=4) | mlx-lm serve | Ollama tag (closest) | Ollama (B=4) | vs mlx-lm | vs Ollama |
 |---|---:|---:|---|---:|:-:|:-:|
