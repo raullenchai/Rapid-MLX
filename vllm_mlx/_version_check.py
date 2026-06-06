@@ -329,7 +329,7 @@ def detect_install_method() -> InstallInfo:
     Detection order:
       1. brew — ``rapid-mlx`` realpath under ``/Cellar/rapid-mlx``,
          ``/opt/homebrew/`` (macOS) or ``/home/linuxbrew/`` (Linux brew)
-         triggers ``brew upgrade raullenchai/tap/rapid-mlx``.
+         triggers ``brew upgrade raullenchai/rapid-mlx/rapid-mlx``.
       2. install.sh — binary under ``~/.local/bin`` (or realpath under
          the install.sh venv at ``~/.rapid-mlx/``) triggers a re-run of
          the install.sh script.
@@ -346,8 +346,8 @@ def detect_install_method() -> InstallInfo:
         if any(m in normalized for m in brew_markers):
             return InstallInfo(
                 method="brew",
-                upgrade_command="brew upgrade raullenchai/tap/rapid-mlx",
-                upgrade_argv=["brew", "upgrade", "raullenchai/tap/rapid-mlx"],
+                upgrade_command="brew upgrade raullenchai/rapid-mlx/rapid-mlx",
+                upgrade_argv=["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"],
                 binary_path=binary,
             )
         # install.sh creates ``~/.rapid-mlx`` (venv) and symlinks the

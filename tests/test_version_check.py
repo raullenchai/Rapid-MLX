@@ -183,7 +183,7 @@ def test_warning_message_recommends_upgrade_subcommand(isolated_cache, monkeypat
     """The banner must point users at our own upgrade subcommand.
 
     Pre-0.6.31 we suggested raw ``brew upgrade rapid-mlx`` — wrong formula
-    path (the tap is ``raullenchai/tap/rapid-mlx``) AND it stranded pip /
+    path (the tap is ``raullenchai/rapid-mlx/rapid-mlx``) AND it stranded pip /
     install.sh users. The new flow centralises the install-method detection
     in ``rapid-mlx upgrade``, so the warning just needs to point there.
     """
@@ -215,8 +215,8 @@ def test_detect_install_method_brew(monkeypatch):
 
     info = vc.detect_install_method()
     assert info.method == "brew"
-    assert info.upgrade_command == "brew upgrade raullenchai/tap/rapid-mlx"
-    assert info.upgrade_argv == ["brew", "upgrade", "raullenchai/tap/rapid-mlx"]
+    assert info.upgrade_command == "brew upgrade raullenchai/rapid-mlx/rapid-mlx"
+    assert info.upgrade_argv == ["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"]
     assert info.binary_path == fake_binary
 
 
@@ -409,8 +409,8 @@ def test_prompt_returns_false_when_upgrade_subprocess_fails(monkeypatch, interac
         "detect_install_method",
         lambda: vc.InstallInfo(
             method="brew",
-            upgrade_command="brew upgrade raullenchai/tap/rapid-mlx",
-            upgrade_argv=["brew", "upgrade", "raullenchai/tap/rapid-mlx"],
+            upgrade_command="brew upgrade raullenchai/rapid-mlx/rapid-mlx",
+            upgrade_argv=["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"],
         ),
     )
     fake_result = MagicMock(returncode=1)
@@ -460,8 +460,8 @@ def test_prompt_returns_true_and_runs_upgrade_on_accept(monkeypatch, interactive
         "detect_install_method",
         lambda: vc.InstallInfo(
             method="brew",
-            upgrade_command="brew upgrade raullenchai/tap/rapid-mlx",
-            upgrade_argv=["brew", "upgrade", "raullenchai/tap/rapid-mlx"],
+            upgrade_command="brew upgrade raullenchai/rapid-mlx/rapid-mlx",
+            upgrade_argv=["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"],
         ),
     )
     fake_result = MagicMock(returncode=0)
@@ -472,7 +472,7 @@ def test_prompt_returns_true_and_runs_upgrade_on_accept(monkeypatch, interactive
     ):
         assert vc.prompt_upgrade_if_available() is True
         run.assert_called_once_with(
-            ["brew", "upgrade", "raullenchai/tap/rapid-mlx"], check=False
+            ["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"], check=False
         )
 
 
