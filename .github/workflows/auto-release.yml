@@ -93,7 +93,7 @@ jobs:
               echo "_(no changes recorded)_"
             fi
             echo
-            echo "Install: \`brew upgrade rapid-mlx\` or \`pip install -U rapid-mlx==$VERSION\`"
+            echo "Install: \`brew upgrade raullenchai/rapid-mlx/rapid-mlx\` or \`pip install -U rapid-mlx==$VERSION\` (or just \`rapid-mlx upgrade\`)."
             echo '__EOF__'
           } >> "$GITHUB_OUTPUT"
 

@@ -14,7 +14,7 @@ non-interactive context (``CI=1``, missing TTY).
 Behaviour matrix:
 
   installed = 0.6.14, latest = 0.6.16 (2 patch behind)
-    → warns, suggests ``brew upgrade``
+    → warns, suggests ``rapid-mlx upgrade``
 
   installed = 0.6.16, latest = 0.6.16 (current)
     → silent
