@@ -394,13 +394,18 @@ def suggest_similar(name: str, n: int = 3, cutoff: float = 0.5) -> list[str]:
             same_fam = [a for a in aliases if a.startswith(fam + "-") or a == fam]
         elif len(fam) >= 3:
             same_fam = [a for a in aliases if a.startswith(fam)]
-        if same_fam:
+        if same_fam and same_fam != [fam]:
             # If we found candidates in the same strict family, trust the
             # cutoff — even if it filters everything out. The cutoff
             # rejecting ``gpt2`` against ``gpt-oss-20b`` is the
             # legitimate-HF-ID guarantee at work; the letter-only
             # fallback below would override that and is wrong here.
             return difflib.get_close_matches(name, same_fam, n=n, cutoff=cutoff)
+        # If the strict pass found ONLY the bare-prefix alias itself
+        # (e.g. user typed ``gemma4-26b``, fam stripped to ``gemma4``
+        # which is the new short alias), fall through to the letter-only
+        # pass below so the size-qualified variants surface instead of
+        # bait-and-switching the user onto the bare default.
 
     # Pass 2: letter-only prefix fallback. Gated to inputs where the
     # strict family parser *had to strip something* (signal that the user
