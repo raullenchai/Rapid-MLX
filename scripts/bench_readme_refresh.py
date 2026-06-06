@@ -159,15 +159,55 @@ class Engine:
     def chat_url(self) -> str:
         return f"http://127.0.0.1:{self.port}/v1/chat/completions"
 
+    def expected_model_id(self) -> str | None:
+        """The model id this engine claims to be serving, for cross-check.
+
+        Overridden per subclass once `start(model)` has set internal state.
+        Returning None disables the cross-check (Ollama daemon serves many
+        tags from one process, so we verify presence via `ollama list`
+        rather than `/v1/models`).
+        """
+        return None
+
     def wait_ready(self) -> None:
         deadline = time.time() + SERVER_READY_TIMEOUT
         last_err = "no response"
         while time.time() < deadline:
+            # Codex round 1 BLOCKING #2 — process can crash mid-boot while
+            # the port stays occupied by a stale server. Honour the actual
+            # subprocess state before trusting any HTTP probe.
+            if self.process is not None and self.process.poll() is not None:
+                raise RuntimeError(
+                    f"{self.name} process exited during startup "
+                    f"(returncode={self.process.returncode})"
+                )
             try:
                 r = requests.get(self.ready_url(), timeout=2)
                 if r.status_code == 200:
-                    return
-                last_err = f"HTTP {r.status_code}"
+                    expected = self.expected_model_id()
+                    if expected is None:
+                        return
+                    # Validate the right model is loaded — a stale server
+                    # left on the same port from a prior alias would
+                    # silently pollute the new alias's numbers otherwise.
+                    try:
+                        body = r.json()
+                    except ValueError:
+                        last_err = "non-JSON /v1/models body"
+                    else:
+                        served = {
+                            item.get("id")
+                            for item in (body.get("data") or [])
+                            if isinstance(item, dict)
+                        }
+                        if expected in served:
+                            return
+                        last_err = (
+                            f"/v1/models reports {sorted(served)!r}, "
+                            f"expected {expected!r}"
+                        )
+                else:
+                    last_err = f"HTTP {r.status_code}"
             except Exception as e:
                 last_err = repr(e)
             time.sleep(1.0)
@@ -177,6 +217,8 @@ class Engine:
 
 
 class RapidMLXEngine(Engine):
+    _expected: str | None = None
+
     def start(self, model: ModelSpec) -> None:
         env = os.environ.copy()
         env["RAPID_MLX_TELEMETRY"] = "0"
@@ -196,12 +238,18 @@ class RapidMLXEngine(Engine):
             stderr=subprocess.DEVNULL,
             env=env,
         )
+        self._expected = model.mlx_path
+
+    def expected_model_id(self) -> str | None:
+        return self._expected
 
     def model_id(self, model: ModelSpec) -> str:
         return model.mlx_path
 
 
 class MlxLmEngine(Engine):
+    _expected: str | None = None
+
     def start(self, model: ModelSpec) -> None:
         self.process = subprocess.Popen(
             [
@@ -218,6 +266,10 @@ class MlxLmEngine(Engine):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        self._expected = model.mlx_path
+
+    def expected_model_id(self) -> str | None:
+        return self._expected
 
     def model_id(self, model: ModelSpec) -> str:
         return model.mlx_path
@@ -231,6 +283,8 @@ class OllamaEngine(Engine):
     Start = noop (system service is already running); we just verify
     the tag exists in `ollama list`.
     """
+
+    _benched_tag: str | None = None
 
     def __init__(self, name: str, port: int):
         super().__init__(name, port=11434)  # ignore caller port
@@ -249,19 +303,44 @@ class OllamaEngine(Engine):
             )
         # No process to spawn — Ollama runs as a launchd service.
         self.process = None
+        self._benched_tag = model.ollama_tag
 
     def stop(self) -> None:
-        # Unload the model from memory to free Metal buffers.
-        # `ollama stop <model>` since 0.5.x.
+        # Codex round 1 BLOCKING #4 — only unload the specific tag we
+        # benched, never `ollama stop all` (would evict the user's own
+        # in-flight LM Studio / chat work). Surface failures instead of
+        # swallowing them, since a stuck model holds Metal buffers that
+        # poison the next engine's numbers.
+        tag = self._benched_tag
+        if tag is None:
+            return
         try:
-            subprocess.run(
-                ["ollama", "stop", "all"], check=False, timeout=10, capture_output=True
+            r = subprocess.run(
+                ["ollama", "stop", tag],
+                check=False,
+                timeout=10,
+                capture_output=True,
+                text=True,
             )
-        except Exception:
-            pass
+            if r.returncode != 0:
+                print(
+                    f"    [ollama stop {tag}] non-zero exit "
+                    f"({r.returncode}): {(r.stderr or r.stdout).strip()}",
+                    flush=True,
+                )
+        except subprocess.TimeoutExpired:
+            print(f"    [ollama stop {tag}] timed out after 10s", flush=True)
+        finally:
+            self._benched_tag = None
 
     def model_id(self, model: ModelSpec) -> str:
         return model.ollama_tag or ""
+
+    def expected_model_id(self) -> str | None:
+        # Daemon serves many tags from one process; we already verified
+        # the tag via `ollama list` in start(). /v1/models cross-check
+        # is a noop here.
+        return None
 
     def wait_ready(self) -> None:
         deadline = time.time() + 20
@@ -322,7 +401,14 @@ class ModelEngineResult:
 
 
 def make_payload(model_id: str, stream: bool) -> dict:
-    return {
+    # `chat_template_kwargs.enable_thinking=False` is the standard hook
+    # for Qwen3.x on rapid-mlx / mlx-lm / mlx-vlm. Ollama 0.24 ignores
+    # this OpenAI-compat extension and keeps emitting `delta.reasoning`
+    # chunks (= the chain-of-thought stream), but those chunks come out
+    # at the same model decode rate as content tokens, so counting them
+    # is the honest throughput measurement. We don't claim "thinking off"
+    # in headlines — see README + run_one_stream() comment.
+    payload: dict = {
         "model": model_id,
         "messages": [{"role": "user", "content": PROMPT}],
         "max_tokens": MAX_TOKENS,
@@ -331,6 +417,12 @@ def make_payload(model_id: str, stream: bool) -> dict:
         "stream": stream,
         "chat_template_kwargs": {"enable_thinking": False},
     }
+    if stream:
+        # Force Ollama (and any other server that defaults usage off) to
+        # emit a streaming `usage` chunk so we measure real tokens, not
+        # transport frames.
+        payload["stream_options"] = {"include_usage": True}
+    return payload
 
 
 def run_one_stream(chat_url: str, model_id: str) -> tuple[float, int, float]:
@@ -363,10 +455,13 @@ def run_one_stream(chat_url: str, model_id: str) -> tuple[float, int, float]:
                         output_tokens = usage["completion_tokens"]
                 continue
             delta = choices[0].get("delta") or {}
-            # Ollama 0.24 puts Qwen3 thinking in delta.reasoning;
-            # OpenAI standard uses delta.reasoning_content; rapid-mlx
-            # gpt-oss can use reasoning_content too. Count any of them
-            # as output tokens since they exit the model at the same rate.
+            # Reasoning routing varies across engines: rapid-mlx and the
+            # OpenAI spec use `delta.reasoning_content`; Ollama 0.24
+            # emits `delta.reasoning`; some servers stuff thinking back
+            # into `delta.content`. They all exit the model at the same
+            # decode rate, so for a throughput benchmark we count any of
+            # them as a generated chunk — and ALSO trust the streaming
+            # `usage` chunk for the authoritative token count.
             content = (
                 (delta.get("content") or "")
                 + (delta.get("reasoning_content") or "")
@@ -380,8 +475,18 @@ def run_one_stream(chat_url: str, model_id: str) -> tuple[float, int, float]:
                 usage = obj["usage"]
                 if isinstance(usage, dict) and usage.get("completion_tokens"):
                     output_tokens = usage["completion_tokens"]
+        # Codex round 1 BLOCKING #1 — SSE chunks are transport frames,
+        # not tokens. Servers can collapse multiple tokens into one
+        # chunk or split one token across two, so silently substituting
+        # chunks_seen for the authoritative completion_tokens count
+        # publishes a wrong tok/s while the run still "succeeds".
         if output_tokens == 0:
-            output_tokens = chunks_seen
+            raise RuntimeError(
+                "stream finished without a usage chunk; rerun with "
+                "`stream_options.include_usage=true` support enabled "
+                "on the server, or capture completion_tokens out-of-band. "
+                f"(saw {chunks_seen} content/reasoning chunk(s))"
+            )
     e2e = time.perf_counter() - t0
     if ttft is None:
         raise RuntimeError("no content chunk")

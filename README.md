@@ -47,7 +47,7 @@
 - **TTFT** (Time To First Token) — how long before the AI starts responding.
 - **Tool calling** — the AI can call functions in your code. Used by Cursor, Claude Code, and coding assistants.
 - **OpenAI API compatible** — Rapid-MLX speaks the same language as ChatGPT's API, so any app that works with ChatGPT can work with Rapid-MLX by just changing the server address.
-- **Ollama / llama.cpp** — other popular tools for running local AI. Rapid-MLX is roughly **2x faster than Ollama** and **1.2–1.5x faster than `mlx-lm serve`** on Apple Silicon under sustained concurrent load (see [Benchmarks](#benchmarks)).
+- **Ollama / llama.cpp** — other popular tools for running local AI. On Apple Silicon under sustained concurrent load (B=4), Rapid-MLX is **1.7–2.4x faster than Ollama** on the Qwen3 + GPT-OSS rows where the comparison is direct, and **1.2–1.5x faster than `mlx-lm serve`**. The Gemma 4 row is roughly tied with Ollama's Gemma 3 (different architectures) — see [Benchmarks](#benchmarks) for the full table and caveats.
 
 </details>
 
@@ -502,7 +502,9 @@ All 17 parsers include automatic recovery — if a quantized model outputs broke
 
 ## Benchmarks
 
-Tested on **Mac Studio M3 Ultra (256 GB)**, 2026-06-06. Workload is **B=4 sustained concurrent streaming** (four parallel chat requests, 256 max output tokens each, thinking disabled where supported), median of 3 measured rounds after one warmup discard. Engines were swapped sequentially with an 8 s Metal cooldown so contention never crossed engine boundaries.
+Tested on **Mac Studio M3 Ultra (256 GB)**, 2026-06-06. Workload is **B=4 sustained concurrent streaming** (four parallel chat requests, 256 max output tokens each), median of 3 measured rounds after one warmup discard. Engines were swapped sequentially with an 8 s Metal cooldown so contention never crossed engine boundaries.
+
+`chat_template_kwargs.enable_thinking=False` is passed to all engines that honour it (rapid-mlx, mlx-lm, mlx-vlm). Ollama 0.24 ignores that hook for Qwen3 and keeps streaming reasoning chunks — those decode at the same model rate as content tokens, so we count them, and the Qwen3 Ollama numbers reflect chain-of-thought-on throughput in practice. Token counts come from the streaming `usage` chunk (authoritative), not from counting SSE frames.
 
 Versions: rapid-mlx **v0.6.80**, mlx-lm **0.31.3**, Ollama **0.24.0** (latest stable).
 

@@ -5,8 +5,15 @@ M3 Ultra 256 GB · macOS 25.3.0
 Engines: rapid-mlx v0.6.80 · mlx-lm 0.31.3 · Ollama 0.24.0
 
 Workload: 4 concurrent streaming requests, ~32 input tokens, 256 max output
-tokens each, temperature 0.7, top_p 0.95, thinking disabled where supported.
-Metric: aggregate tok/s = sum(output_tokens across 4 streams) / wall_clock.
+tokens each, temperature 0.7, top_p 0.95.
+Thinking-off requested via `chat_template_kwargs.enable_thinking=False`,
+which rapid-mlx / mlx-lm / mlx-vlm honour; Ollama 0.24 ignores it for
+Qwen3 and keeps streaming `delta.reasoning` chunks — those chunks decode
+at the same model rate as content tokens so we count them, which means
+the Qwen3 Ollama numbers reflect CoT-on throughput in practice.
+Metric: aggregate tok/s = sum(output_tokens across 4 streams) / wall_clock
+(authoritative token count comes from the streaming `usage` chunk, not
+from counting SSE frames).
 Each engine reported as the median of 3 measured rounds after 1 discarded
 warmup. Engines were swapped sequentially (8 s cooldown between) so Metal
 contention never crossed engine boundaries.
@@ -28,10 +35,13 @@ Aggregate tok/s = sum across 4 concurrent streams. Per-stream throughput
 
 ### Notes
 
-1. qwen3.5-27b Ollama row uses qwen3:32b dense (closest available). The
-   originally-mapped Unsloth Qwen3.6-27B-GGUF Q4_K_M fails to load on
-   Ollama 0.24 ("unable to load model" / HTTP 500), likely because the
-   Qwen3.6 dense arch hasn't landed in llama.cpp yet.
+1. The qwen3.5-27b Ollama row is benched against `qwen3:32b`
+   (dense Qwen3 32B, the closest tag Ollama 0.24 can actually load).
+   The first attempt mapped to `hf.co/unsloth/Qwen3.6-27B-GGUF:Q4_K_M`
+   but every load raised HTTP 500 "unable to load model" — Qwen3.6
+   dense hasn't landed in llama.cpp yet — so we switched and recorded
+   the working comparator. The row above and the README cite
+   `qwen3:32b`.
 2. mlx-lm 0.31.3 can't run Gemma 4 (its Gemma 4 loader lives in mlx-vlm).
 3. Architecture caveats — Ollama can't load Qwen3.5/3.6 DeltaNet or
    Gemma 4 natively; the comparison tag is the closest available arch:
