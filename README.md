@@ -26,14 +26,18 @@
   <em>pip install → serve Gemma 4 26B → chat + tool calling → works with PydanticAI, LangChain, Aider, and more.</em>
 </p>
 
-| | Your Mac | Model | Speed (tok/s = words/sec) | What works |
+| | Your Mac | Model | Speed (tok/s) | What works |
 |:---|:---:|:---:|:---:|:---:|
-| **16 GB** MacBook Air | Qwen3.5-4B | 160 tok/s | Chat, coding, tools |
-| **32+ GB** Mac Mini / Studio | Nemotron-Nano 30B | 141 tok/s | 🆕 Fastest 30B, 100% tools |
-| **32+ GB** Mac Mini / Studio | Qwen3.6-35B | 95 tok/s | 256 experts, 262K context |
-| **64 GB** Mac Mini / Studio | Qwen3.5-35B | 83 tok/s | Best balance of smart + fast |
-| **96+ GB** Mac Studio / Pro | Qwen3.5-122B | 57 tok/s | Frontier-level intelligence |
-| **128+ GB** Mac Studio Ultra | 🆕 DeepSeek V4 Flash 158B-A13B | 31-56 tok/s | Day-0 frontier MoE, 1M context |
+| **16 GB** MacBook Air | Qwen3.5-4B | 130 tok/s | Chat, coding, tools |
+| **24 GB** MacBook Pro | Qwen3.5-9B | 100 tok/s | Great all-rounder |
+| **32+ GB** Mac Mini / Studio | 🆕 Gemma 4 12B | 42 tok/s | Vision-capable + tools |
+| **32+ GB** Mac Mini / Studio | GPT-OSS 20B | 106 tok/s | Harmony-native, 100% tools |
+| **32+ GB** Mac Mini / Studio | Qwen3.6-35B-A3B | 67 tok/s | 256 MoE experts, 262K context |
+| **48+ GB** Mac Mini / Studio | Qwen3.5-35B-A3B 8bit | 59 tok/s | Best balance of smart + fast |
+| **96+ GB** Mac Studio / Pro | Qwen3.5-122B | 57 tok/s¹ | Frontier-level intelligence |
+| **128+ GB** Mac Studio Ultra | DeepSeek V4 Flash 158B-A13B | 31-56 tok/s¹ | Day-0 frontier MoE, 1M context |
+
+<sub>Single-user decode (B=1), median of 3 rounds, 256 max-token responses, thinking off where supported. Tested on M3 Ultra 256 GB / rapid-mlx v0.6.80. ¹ carried over from 2026-04 bench — disk-constrained on this refresh.</sub>
 
 <details>
 <summary><b>New to local AI? Quick glossary</b></summary>
@@ -43,7 +47,7 @@
 - **TTFT** (Time To First Token) — how long before the AI starts responding.
 - **Tool calling** — the AI can call functions in your code. Used by Cursor, Claude Code, and coding assistants.
 - **OpenAI API compatible** — Rapid-MLX speaks the same language as ChatGPT's API, so any app that works with ChatGPT can work with Rapid-MLX by just changing the server address.
-- **Ollama / llama.cpp** — other popular tools for running local AI. Rapid-MLX is 2-4x faster on Apple Silicon.
+- **Ollama / llama.cpp** — other popular tools for running local AI. Rapid-MLX is roughly **2x faster than Ollama** and **1.2–1.5x faster than `mlx-lm serve`** on Apple Silicon under sustained concurrent load (see [Benchmarks](#benchmarks)).
 
 </details>
 
@@ -381,20 +385,23 @@ print(message.content[0].text)
 
 The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monitor shows red memory pressure, pick a smaller model from the table below.
 
-| Your Mac | Best Model | RAM Used | Speed | Quality |
+| Your Mac | Best Model | RAM Used | Speed (B=1) | Quality |
 |----------|-----------|---------|-------|---------|
-| **16 GB** MacBook Air/Pro | [Qwen3.5-4B 4bit](https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit) | 2.4 GB | 160 tok/s | Good for chat and simple tasks |
-| **24 GB** MacBook Pro | [Qwen3.5-9B 4bit](https://huggingface.co/mlx-community/Qwen3.5-9B-4bit) | 5.1 GB | 108 tok/s | Great all-rounder |
-| **32 GB** Mac Mini / Studio | [Qwen3.5-27B 4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | 15.3 GB | 39 tok/s | Solid coding model |
-| **32 GB** Mac Mini / Studio | 🆕 [Nemotron-Nano 30B 4bit](https://huggingface.co/lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit) | 18 GB | 141 tok/s | Fastest 30B, 100% tool calling |
-| **32 GB** Mac Mini / Studio | [Qwen3.6-35B-A3B 4bit](https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-4bit) | 20 GB | 95 tok/s | 256 MoE experts, 262K context |
-| **36 GB** MacBook Pro M3/M4 Pro | [Qwen3.5-27B 4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | 15.3 GB | 39 tok/s | Same as 32 GB — extra headroom for long contexts |
-| **48 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 83 tok/s | **Sweet spot** — smart + fast |
-| **64 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 83 tok/s | Same model, more room for KV cache |
-| **96 GB** Mac Studio / Pro | [Qwen3.5-122B mxfp4](https://huggingface.co/nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx) | 65 GB | 57 tok/s | Best model, fits comfortably |
-| **128 GB** Mac Studio / Pro | 🆕 [DeepSeek V4 Flash 2-bit DQ](https://huggingface.co/mlx-community/DeepSeek-V4-Flash-2bit-DQ) | 91 GB | 56 tok/s | 158B-A13B frontier MoE, day-0 (chat only) |
-| **192 GB** Mac Studio / Pro | [Qwen3.5-122B 8bit](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 130 GB | 44 tok/s | Maximum quality |
-| **256 GB** Mac Studio Ultra | 🆕 [DeepSeek V4 Flash 8-bit](https://huggingface.co/mlx-community/DeepSeek-V4-Flash-8bit) | 136 GB | 31 tok/s | 158B-A13B frontier MoE, 1M context (chat only) |
+| **16 GB** MacBook Air/Pro | [Qwen3.5-4B 4bit](https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit) | 2.4 GB | 130 tok/s | Good for chat and simple tasks |
+| **24 GB** MacBook Pro | [Qwen3.5-9B 4bit](https://huggingface.co/mlx-community/Qwen3.5-9B-4bit) | 5.1 GB | 100 tok/s | Great all-rounder |
+| **32 GB** Mac Mini / Studio | [Qwen3.5-27B 4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | 15.3 GB | 33 tok/s | Solid coding model |
+| **32 GB** Mac Mini / Studio | 🆕 [Gemma 4 12B 4bit](https://huggingface.co/mlx-community/gemma-4-12B-it-4bit) | 7 GB | 42 tok/s | Vision-capable + tool calling |
+| **32 GB** Mac Mini / Studio | [GPT-OSS 20B MXFP4](https://huggingface.co/mlx-community/gpt-oss-20b-MXFP4-Q8) | 11 GB | 106 tok/s | Harmony-native, 100% tools |
+| **32 GB** Mac Mini / Studio | [Qwen3.6-35B-A3B 4bit](https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-4bit) | 20 GB | 67 tok/s | 256 MoE experts, 262K context |
+| **36 GB** MacBook Pro M3/M4 Pro | [Qwen3.5-27B 4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | 15.3 GB | 33 tok/s | Same as 32 GB — extra headroom for long contexts |
+| **48 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 59 tok/s | **Sweet spot** — smart + fast |
+| **64 GB** Mac Mini / Studio | [Qwen3.5-35B-A3B 8bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-8bit) | 37 GB | 59 tok/s | Same model, more room for KV cache |
+| **96 GB** Mac Studio / Pro | [Qwen3.5-122B mxfp4](https://huggingface.co/nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx) | 65 GB | 57 tok/s¹ | Best model, fits comfortably |
+| **128 GB** Mac Studio / Pro | 🆕 [DeepSeek V4 Flash 2-bit DQ](https://huggingface.co/mlx-community/DeepSeek-V4-Flash-2bit-DQ) | 91 GB | 56 tok/s¹ | 158B-A13B frontier MoE, day-0 (chat only) |
+| **192 GB** Mac Studio / Pro | [Qwen3.5-122B 8bit](https://huggingface.co/mlx-community/Qwen3.5-122B-A10B-8bit) | 130 GB | 44 tok/s¹ | Maximum quality |
+| **256 GB** Mac Studio Ultra | 🆕 [DeepSeek V4 Flash 8-bit](https://huggingface.co/mlx-community/DeepSeek-V4-Flash-8bit) | 136 GB | 31 tok/s¹ | 158B-A13B frontier MoE, 1M context (chat only) |
+
+<sub>Speed = single-user decode (B=1), median of 3 rounds, 256 max-token responses, rapid-mlx v0.6.80 on M3 Ultra 256 GB, 2026-06-06. ¹ Carried over from prior bench (disk-constrained on this refresh).</sub>
 
 > **4bit vs 8bit:** 4bit models are compressed to use less memory (recommended for most users). 8bit models are higher quality but need more RAM. "mxfp4" is a high-quality 4bit format.
 
@@ -438,16 +445,19 @@ rapid-mlx serve qwen3.5-9b --port 8000
 # 32 GB — solid coding model
 rapid-mlx serve qwen3.5-27b --port 8000
 
-# 32 GB — Nemotron Nano (fastest 30B, 141 tok/s, NVIDIA MoE)
-rapid-mlx serve nemotron-30b --port 8000
+# 32 GB — Gemma 4 12B (vision-capable, 42 tok/s)
+rapid-mlx serve gemma-4-12b --port 8000
 
-# 32+ GB — Qwen 3.6 (256 experts, 262K context)
+# 32 GB — GPT-OSS 20B (harmony-native, 100% tool calling, 106 tok/s)
+rapid-mlx serve gpt-oss-20b --port 8000
+
+# 32+ GB — Qwen 3.6 35B-A3B (256 experts, 262K context, 67 tok/s)
 rapid-mlx serve qwen3.6-35b --port 8000
 
-# 64 GB — sweet spot
+# 48+ GB — sweet spot (Qwen3.5-35B-A3B 8bit, 59 tok/s)
 rapid-mlx serve qwen3.5-35b --prefill-step-size 8192 --port 8000  # faster first response
 
-# 96+ GB — best model
+# 96+ GB — frontier (Qwen3.5-122B mxfp4)
 rapid-mlx serve qwen3.5-122b --prefill-step-size 8192 --port 8000
 
 # Coding agent — fast MoE, great for Claude Code / Cursor
@@ -492,25 +502,25 @@ All 17 parsers include automatic recovery — if a quantized model outputs broke
 
 ## Benchmarks
 
-Tested on **Mac Studio M3 Ultra (256GB)**. Rapid-MLX uses Apple's [MLX framework](https://github.com/ml-explore/mlx) — purpose-built for unified memory with native Metal compute kernels — which is why it beats C++-based engines (Ollama, llama.cpp) on most models. Ollama numbers tested with **v0.20.4** (latest, with MLX backend).
+Tested on **Mac Studio M3 Ultra (256 GB)**, 2026-06-06. Workload is **B=4 sustained concurrent streaming** (four parallel chat requests, 256 max output tokens each, thinking disabled where supported), median of 3 measured rounds after one warmup discard. Engines were swapped sequentially with an 8 s Metal cooldown so contention never crossed engine boundaries.
 
-| Model | Rapid-MLX | Best Alternative | Speedup |
-|-------|----------|-----------------|---------|
-| **Phi-4 Mini 14B** | **180** tok/s | 77 (mlx-lm) / 56 (Ollama) | **2.3x** / **3.2x** |
-| **Qwen3.5-4B** | **160** tok/s | 155 (mlx-lm serve) | **1.0x** |
-| **Nemotron-Nano 30B** | **141** tok/s · 100% tools | — | — |
-| 🆕 **DeepSeek V4 Flash 158B-A13B** (2-bit DQ) | **56** tok/s | — (only MLX engine, day-0) | — |
-| 🆕 **DeepSeek V4 Flash 158B-A13B** (8-bit) | **31** tok/s | — (only MLX engine, day-0) | — |
-| **GPT-OSS 20B** | **127** tok/s · 100% tools | 79 (mlx-lm serve) | **1.6x** |
-| **Qwen3.5-9B** | **108** tok/s | 41 (Ollama) | **2.6x** |
-| **Qwen3.6-35B-A3B** | **95** tok/s · 100% tools | — | — |
-| **Kimi-Linear-48B** | **94** tok/s · 100% tools | — (only engine) | — |
-| **Gemma 4 26B-A4B** | **85** tok/s | 68 (Ollama) | **1.3x** |
-| **Gemma 4 E4B** | **83** tok/s | — | — |
-| **Qwen3.5-35B-A3B** | **83** tok/s · 100% tools | 75 (oMLX) | **1.1x** |
-| **Qwen3-Coder 80B** | **74** tok/s · 100% tools | 69 (mlx-lm serve) | **1.1x** |
-| **Qwen3.5-122B** | **44** tok/s · 100% tools | 43 (mlx-lm serve) | ~1.0x |
-| **Gemma 4 31B** | **31** tok/s | — | — |
+Versions: rapid-mlx **v0.6.80**, mlx-lm **0.31.3**, Ollama **0.24.0** (latest stable).
+
+Aggregate throughput = sum of output tokens across all four streams ÷ wall-clock seconds — the metric that matters for a server fronting multiple users or a TUI firing parallel sub-agents. Per-user decode is roughly aggregate ÷ 4.
+
+| Model (rapid-mlx alias) | rapid-mlx (B=4) | mlx-lm serve | Ollama tag (closest) | Ollama (B=4) | vs mlx-lm | vs Ollama |
+|---|---:|---:|---|---:|:-:|:-:|
+| **Qwen3.5-4B** | **261** tok/s | 173 | `qwen3:4b`¹ | 120 | **1.51x** | **2.18x** |
+| **Qwen3.5-9B** | **180** tok/s | 136 | `qwen3:8b`¹ | 84 | **1.32x** | **2.14x** |
+| **Qwen3.5-27B** | **66** tok/s | 55 | `qwen3:32b`² | 27 | **1.20x** | **2.43x** |
+| **Gemma 4 12B** | **55** tok/s | crash³ | `gemma3:12b`⁴ | 56 | — | 0.99x |
+| **GPT-OSS 20B** | **221** tok/s | 162 | `gpt-oss:20b` ✅ | 97 | **1.36x** | **2.29x** |
+| **Qwen3.6-35B-A3B** (4-bit) | **176** tok/s | 129 | `qwen3:30b-a3b`⁵ | 87 | **1.37x** | **2.02x** |
+| **Qwen3.5-35B-A3B** (8-bit) | **151** tok/s | 112 | `qwen3:30b-a3b`⁵ | 87 | **1.35x** | **1.74x** |
+
+✅ Direct apples-to-apples: identical weights both sides.
+
+<sub>¹ Ollama Qwen3 base, not Qwen3.5 — DeltaNet hybrid arch isn't on llama.cpp yet. ² Closest dense Qwen3; Unsloth Qwen3.6-27B GGUF fails to load on Ollama 0.24. ³ mlx-lm 0.31.3 has no Gemma 4 loader (it lives in mlx-vlm). ⁴ Gemma 4 not yet on llama.cpp — Gemma 3 is the closest. ⁵ Closest MoE A3B available; Qwen3.5/3.6-35B-A3B don't have a llama.cpp build yet.</sub>
 
 *Full benchmark data with all models, TTFT tables, DeltaNet snapshots, and engine comparison below.*
 
@@ -518,6 +528,8 @@ Tested on **Mac Studio M3 Ultra (256GB)**. Rapid-MLX uses Apple's [MLX framework
 <summary><strong>TTFT — Prompt Cache Advantage</strong></summary>
 
 Prompt cache keeps multi-turn conversations fast. For standard transformers, KV cache trimming gives sub-100ms TTFT. For hybrid RNN models (Qwen3.5 DeltaNet), we use state snapshots — the first technique to bring prompt cache to non-trimmable architectures on MLX.
+
+<sub>Numbers below were last verified 2026-04 — the prefix-cache code path has not changed since. The 2026-06 throughput refresh focused on decode tok/s under concurrent load; a TTFT refresh is tracked separately.</sub>
 
 **Pure KV cache (transformers):**
 
@@ -603,7 +615,7 @@ Tool calling (30 scenarios), coding (HumanEval+), reasoning (MATH-500), general 
 | Qwen3.5-27B 4bit | 39 t/s | 83% | 90% | 50% | 80% | **76%** |
 | Qwen3.5-9B 4bit | 108 t/s | 83% | 70% | 60% | 70% | **71%** |
 
-Run your own: `python scripts/benchmark_engines.py --engine rapid-mlx ollama --runs 3`
+Run your own: `python3.12 scripts/bench_readme_refresh.py --models qwen3.5-4b,gpt-oss-20b --engines rapid-mlx,mlx-lm,ollama` (raw JSON + per-round numbers land in `reports/benchmarks/readme-refresh/`).
 
 </details>
 

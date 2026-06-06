@@ -1,0 +1,17 @@
+{
+  "stamp": "20260606-152654",
+  "concurrency": 4,
+  "rounds": 3,
+  "max_tokens": 256,
+  "results": [
+    {
+      "model": "qwen3.5-27b",
+      "engine": "ollama",
+      "arch_note": "Ollama Qwen3.6-27B Q4_K_M (closest dense 27B; Qwen3.5 DeltaNet not on llama.cpp)",
+      "median_aggregate_tps": null,
+      "median_per_stream_tps": null,
+      "error": "warmup: HTTP 500: {\"error\":{\"message\":\"unable to load model: /Users/raullenstudio/.ollama/models/blobs/sha256-5ed60d0af4650a854b1755bd392f9aef4872643dc25a254bc68043fa638392a0\",\"type\":\"api_error\",\"param\":null,\"code\":nul",
+      "rounds": []
+    }
+  ]
+}

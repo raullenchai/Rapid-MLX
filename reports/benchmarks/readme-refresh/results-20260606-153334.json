@@ -1,0 +1,51 @@
+{
+  "stamp": "20260606-153334",
+  "concurrency": 4,
+  "rounds": 3,
+  "max_tokens": 256,
+  "results": [
+    {
+      "model": "qwen3.5-27b",
+      "engine": "ollama",
+      "arch_note": "Ollama Qwen3 32B Q4_K_M (closest dense 27-32B; Qwen3.5 DeltaNet not on llama.cpp; Unsloth Qwen3.6-27B GGUF fails to load in Ollama 0.24)",
+      "median_aggregate_tps": 27.088564481867724,
+      "median_per_stream_tps": 27.558361611529822,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 37.33464362495579,
+          "total_output_tokens": 1016,
+          "aggregate_tps": 27.213330605380946,
+          "per_request_tps": [
+            27.684979431382533,
+            27.704707269919563,
+            27.625731395821852,
+            27.649153327005905
+          ]
+        },
+        {
+          "wall_s": 37.50660174997756,
+          "total_output_tokens": 1016,
+          "aggregate_tps": 27.088564481867724,
+          "per_request_tps": [
+            27.551754112438957,
+            27.626471058290793,
+            27.562194186182907,
+            27.549793621463422
+          ]
+        },
+        {
+          "wall_s": 37.60556620801799,
+          "total_output_tokens": 1016,
+          "aggregate_tps": 27.017277027020956,
+          "per_request_tps": [
+            27.50722836343739,
+            27.554529036876737,
+            27.49005862008018,
+            27.448841828912343
+          ]
+        }
+      ]
+    }
+  ]
+}

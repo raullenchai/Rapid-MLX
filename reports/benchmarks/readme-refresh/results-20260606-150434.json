@@ -1,0 +1,354 @@
+{
+  "stamp": "20260606-150434",
+  "concurrency": 4,
+  "rounds": 3,
+  "max_tokens": 256,
+  "results": [
+    {
+      "model": "qwen3.5-4b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 261.0544769371528,
+      "median_per_stream_tps": 79.44253325525838,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 4.016813791007735,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 254.92842169890574,
+          "per_request_tps": [
+            80.59342155261405,
+            78.52388992963958,
+            78.73986281198668,
+            80.5789746125716
+          ]
+        },
+        {
+          "wall_s": 3.915148708038032,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 261.5481751427902,
+          "per_request_tps": [
+            80.62921230775859,
+            78.40201882394602,
+            78.61567922943155,
+            80.45948126685883
+          ]
+        },
+        {
+          "wall_s": 3.92255291697802,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 261.0544769371528,
+          "per_request_tps": [
+            80.38415671302646,
+            78.15287511379735,
+            78.38438956003355,
+            80.1452036985301
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-4b",
+      "engine": "mlx-lm",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 173.23627130647512,
+      "median_per_stream_tps": 48.01356432220179,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 5.943268583039753,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 171.62273347544212,
+          "per_request_tps": [
+            47.548250600374594,
+            47.49924691644224,
+            47.442981443270014,
+            47.4665629475345
+          ]
+        },
+        {
+          "wall_s": 5.861583291029092,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 174.01441715603826,
+          "per_request_tps": [
+            48.15875657184454,
+            48.10542066828351,
+            48.0571461661609,
+            48.07564278166309
+          ]
+        },
+        {
+          "wall_s": 5.887912457983475,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 173.23627130647512,
+          "per_request_tps": [
+            48.08936815025447,
+            48.03236741394065,
+            47.97411655314172,
+            47.994761230462935
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-4b",
+      "engine": "ollama",
+      "arch_note": "Ollama Qwen3 (not Qwen3.5; DeltaNet arch unavailable on llama.cpp)",
+      "median_aggregate_tps": null,
+      "median_per_stream_tps": null,
+      "error": "warmup: no content chunk",
+      "rounds": []
+    },
+    {
+      "model": "qwen3.5-9b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 180.044318760162,
+      "median_per_stream_tps": 51.51151174326411,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 5.735867791983765,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 178.5257326591635,
+          "per_request_tps": [
+            51.995867381473566,
+            51.11293974916725,
+            51.279588484809295,
+            52.19891675361873
+          ]
+        },
+        {
+          "wall_s": 5.673698875005357,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 180.48190828580644,
+          "per_request_tps": [
+            51.74343500171893,
+            50.82372906339189,
+            50.98209952924782,
+            51.96981193348234
+          ]
+        },
+        {
+          "wall_s": 5.687488541996572,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 180.044318760162,
+          "per_request_tps": [
+            51.758981032940454,
+            50.82054585352243,
+            50.967296494204184,
+            51.919544757221864
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-9b",
+      "engine": "mlx-lm",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 136.26639094633668,
+      "median_per_stream_tps": 36.85194389160972,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 7.504370042006485,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 135.9208027176758,
+          "per_request_tps": [
+            36.40441623003767,
+            36.37391226198149,
+            36.34194499317116,
+            36.35399791177257
+          ]
+        },
+        {
+          "wall_s": 7.465822374972049,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 136.62259142668375,
+          "per_request_tps": [
+            36.915361555124925,
+            36.8840970510226,
+            36.85178855543533,
+            36.861427046195566
+          ]
+        },
+        {
+          "wall_s": 7.485338042024523,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 136.26639094633668,
+          "per_request_tps": [
+            36.90902076532869,
+            36.8776243333103,
+            36.842644595262996,
+            36.85209922778411
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-9b",
+      "engine": "ollama",
+      "arch_note": "Ollama Qwen3 8B (not Qwen3.5 9B; closest available)",
+      "median_aggregate_tps": null,
+      "median_per_stream_tps": null,
+      "error": "warmup: no content chunk",
+      "rounds": []
+    },
+    {
+      "model": "gemma-4-12b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 55.380259724308644,
+      "median_per_stream_tps": 14.558191325993018,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 17.98705737502314,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 56.929823408576446,
+          "per_request_tps": [
+            14.660931455361714,
+            14.660820031822393,
+            14.660733447760823,
+            14.660708295101667
+          ]
+        },
+        {
+          "wall_s": 18.490343040961307,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 55.380259724308644,
+          "per_request_tps": [
+            14.558300798351022,
+            14.558229702220864,
+            14.558152949765175,
+            14.558117971523254
+          ]
+        },
+        {
+          "wall_s": 18.963572459004354,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 53.998264420572326,
+          "per_request_tps": [
+            14.170723418477568,
+            14.170596606117636,
+            14.17050509419615,
+            14.170481922573439
+          ]
+        }
+      ]
+    },
+    {
+      "model": "gemma-4-12b",
+      "engine": "mlx-lm",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": null,
+      "median_per_stream_tps": null,
+      "error": "warmup: HTTPConnectionPool(host='127.0.0.1', port=8102): Read timed out. (read timeout=300)",
+      "rounds": []
+    },
+    {
+      "model": "gemma-4-12b",
+      "engine": "ollama",
+      "arch_note": "Ollama Gemma 3 12B (Gemma 4 not yet on llama.cpp)",
+      "median_aggregate_tps": 56.14161539628064,
+      "median_per_stream_tps": 57.1328108344653,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 18.15404795896029,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 56.40615262859788,
+          "per_request_tps": [
+            57.1569991501035,
+            57.22749017548614,
+            57.42682135289841,
+            57.1523160807052
+          ]
+        },
+        {
+          "wall_s": 18.239589167002123,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 56.14161539628064,
+          "per_request_tps": [
+            57.08871630734401,
+            57.08518157573631,
+            57.180078438196475,
+            57.14069788826207
+          ]
+        },
+        {
+          "wall_s": 18.249233458016533,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 56.111945871906016,
+          "per_request_tps": [
+            57.12492378066854,
+            57.113588022924766,
+            57.04281099170019,
+            57.102515209939575
+          ]
+        }
+      ]
+    },
+    {
+      "model": "gpt-oss-20b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": null,
+      "median_per_stream_tps": null,
+      "error": "warmup: no content chunk",
+      "rounds": []
+    },
+    {
+      "model": "gpt-oss-20b",
+      "engine": "mlx-lm",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 162.02749775098945,
+      "median_per_stream_tps": 43.992728952762505,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 6.249487791967113,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 163.8534283267528,
+          "per_request_tps": [
+            43.69268561803128,
+            43.65889509875496,
+            43.626018258909625,
+            43.63644204560079
+          ]
+        },
+        {
+          "wall_s": 6.319914916995913,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 162.02749775098945,
+          "per_request_tps": [
+            44.0477754906636,
+            44.01347566232285,
+            43.97707225308966,
+            43.99291306900658
+          ]
+        },
+        {
+          "wall_s": 6.321526332991198,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 161.9861954312966,
+          "per_request_tps": [
+            44.06474209635099,
+            44.02839490869165,
+            43.99254483651842,
+            44.00399450586395
+          ]
+        }
+      ]
+    },
+    {
+      "model": "gpt-oss-20b",
+      "engine": "ollama",
+      "arch_note": "Same arch",
+      "median_aggregate_tps": null,
+      "median_per_stream_tps": null,
+      "error": "setup: ollama tag gpt-oss:20b not pulled. Run: ollama pull gpt-oss:20b",
+      "rounds": []
+    }
+  ]
+}

@@ -1,0 +1,318 @@
+{
+  "stamp": "20260606-152047",
+  "concurrency": 4,
+  "rounds": 3,
+  "max_tokens": 256,
+  "results": [
+    {
+      "model": "qwen3.5-27b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 65.92890692209045,
+      "median_per_stream_tps": 17.37524603537676,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 15.526807791029569,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 65.95045251939062,
+          "per_request_tps": [
+            17.417352528615684,
+            17.35577359867738,
+            17.411392307610473,
+            17.561751717513502
+          ]
+        },
+        {
+          "wall_s": 15.53188195900293,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 65.92890692209045,
+          "per_request_tps": [
+            17.38770764975133,
+            17.295511895620923,
+            17.34788464672144,
+            17.494294728670575
+          ]
+        },
+        {
+          "wall_s": 15.536553790967446,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 65.90908214119706,
+          "per_request_tps": [
+            17.362784421002196,
+            17.323098862669532,
+            17.3257510867726,
+            17.478858596091765
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-27b",
+      "engine": "ollama",
+      "arch_note": "Ollama Qwen3.6-27B Q4_K_M (closest dense 27B; Qwen3.5 DeltaNet not on llama.cpp)",
+      "median_aggregate_tps": null,
+      "median_per_stream_tps": null,
+      "error": "warmup: HTTP 500: {\"error\":{\"message\":\"unable to load model: /Users/raullenstudio/.ollama/models/blobs/sha256-5ed60d0af4650a854b1755bd392f9aef4872643dc25a254bc68043fa638392a0\",\"type\":\"api_error\",\"param\":null,\"code\":nul",
+      "rounds": []
+    },
+    {
+      "model": "gpt-oss-20b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 220.5257638946013,
+      "median_per_stream_tps": 59.55554118630667,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 4.6434483749908395,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 220.5257638946013,
+          "per_request_tps": [
+            59.58690274120642,
+            59.58602203899487,
+            59.58524191107274,
+            59.584617823765655
+          ]
+        },
+        {
+          "wall_s": 4.59721645899117,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 222.74348165557345,
+          "per_request_tps": [
+            59.548637032284624,
+            59.54748448117019,
+            59.54729517787013,
+            59.54643930287723
+          ]
+        },
+        {
+          "wall_s": 4.703445874969475,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 217.71272110293938,
+          "per_request_tps": [
+            59.556726968032116,
+            59.55595047482807,
+            59.55513189778526,
+            59.55412685046091
+          ]
+        }
+      ]
+    },
+    {
+      "model": "gpt-oss-20b",
+      "engine": "ollama",
+      "arch_note": "Same arch",
+      "median_aggregate_tps": 96.50999504980005,
+      "median_per_stream_tps": 99.98024225894747,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 10.443301291961689,
+          "total_output_tokens": 1012,
+          "aggregate_tps": 96.9042232630927,
+          "per_request_tps": [
+            100.22292172535175,
+            99.67495819016169,
+            100.02426477920642,
+            99.97399719799279
+          ]
+        },
+        {
+          "wall_s": 10.490167083975393,
+          "total_output_tokens": 1012,
+          "aggregate_tps": 96.47129467994029,
+          "per_request_tps": [
+            99.55391257303137,
+            99.87069441203808,
+            99.93816079355447,
+            100.3450501373586
+          ]
+        },
+        {
+          "wall_s": 10.485960541991517,
+          "total_output_tokens": 1012,
+          "aggregate_tps": 96.50999504980005,
+          "per_request_tps": [
+            99.58685233228275,
+            100.27941324643244,
+            100.01889518925084,
+            99.98648731990215
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.6-35b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 176.40058989140454,
+      "median_per_stream_tps": 52.01132894462508,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 5.842093874991406,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 175.27962095636582,
+          "per_request_tps": [
+            52.502666851969884,
+            51.594837667809614,
+            51.79336726282778,
+            52.385814913835105
+          ]
+        },
+        {
+          "wall_s": 5.7786032920121215,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 177.2054505654499,
+          "per_request_tps": [
+            52.60579473167989,
+            51.91218368388193,
+            51.882726531308904,
+            52.48489182163121
+          ]
+        },
+        {
+          "wall_s": 5.8049692499917,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 176.40058989140454,
+          "per_request_tps": [
+            52.32345745497355,
+            51.62679744365432,
+            51.581820239410135,
+            52.11047420536822
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.6-35b",
+      "engine": "ollama",
+      "arch_note": "Ollama Qwen3 30B-A3B (not Qwen3.6; closest MoE A3B)",
+      "median_aggregate_tps": 87.13945743637598,
+      "median_per_stream_tps": 88.5017009023612,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 11.712285291985609,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 87.42956429696045,
+          "per_request_tps": [
+            88.51202001348906,
+            88.36363028035663,
+            88.87604738010492,
+            88.22208967008363
+          ]
+        },
+        {
+          "wall_s": 11.777512207976542,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 86.94535670330077,
+          "per_request_tps": [
+            87.85500755986493,
+            88.77783438517807,
+            88.5444315890718,
+            88.23592137991182
+          ]
+        },
+        {
+          "wall_s": 11.751278125040699,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 87.13945743637598,
+          "per_request_tps": [
+            87.96977777896133,
+            88.75722718874043,
+            88.49138179123331,
+            89.13211433561767
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-35b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 151.43519134090798,
+      "median_per_stream_tps": 42.64720726412855,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 6.761968542006798,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 151.43519134090798,
+          "per_request_tps": [
+            43.03588678098714,
+            42.57141578470405,
+            42.71760503980186,
+            43.18284258432624
+          ]
+        },
+        {
+          "wall_s": 6.7459265000070445,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 151.79530936172083,
+          "per_request_tps": [
+            43.10433490806337,
+            42.52391741961873,
+            42.52361898407424,
+            42.87399727867757
+          ]
+        },
+        {
+          "wall_s": 6.837579542014282,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 149.76059784137297,
+          "per_request_tps": [
+            43.115936521571996,
+            42.57680948845523,
+            42.576476681648245,
+            42.57606597615891
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-35b",
+      "engine": "ollama",
+      "arch_note": "Ollama Qwen3 30B-A3B 4bit (not Qwen3.5-35B 8bit; closest MoE)",
+      "median_aggregate_tps": 87.05487645824837,
+      "median_per_stream_tps": 88.60987222497485,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 11.677997165999841,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 87.6862689247217,
+          "per_request_tps": [
+            89.02739913856685,
+            88.68621293041666,
+            88.55512624774985,
+            88.66461820219983
+          ]
+        },
+        {
+          "wall_s": 11.762695459008683,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 87.05487645824837,
+          "per_request_tps": [
+            87.97940433271606,
+            88.49565552500583,
+            88.50536052852016,
+            88.89893761724684
+          ]
+        },
+        {
+          "wall_s": 11.769799125031568,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 87.0023344597441,
+          "per_request_tps": [
+            87.91995046764877,
+            88.6788091609882,
+            88.42065851948698,
+            88.71071664826378
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,266 @@
+{
+  "stamp": "20260606-151417",
+  "concurrency": 4,
+  "rounds": 3,
+  "max_tokens": 256,
+  "results": [
+    {
+      "model": "qwen3.5-27b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 66.39788312088642,
+      "median_per_stream_tps": 17.52265549673332,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 15.422178416978568,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 66.39788312088642,
+          "per_request_tps": [
+            17.595477178761506,
+            17.501813426689637,
+            17.559612447003964,
+            17.70837866150111
+          ]
+        },
+        {
+          "wall_s": 15.439422583032865,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 66.32372386291982,
+          "per_request_tps": [
+            17.47403560624756,
+            17.434140823021608,
+            17.438030350999313,
+            17.57975999238879
+          ]
+        },
+        {
+          "wall_s": 15.381923583045136,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 66.57164784830378,
+          "per_request_tps": [
+            17.543497566777003,
+            17.44942033217526,
+            17.501752803103653,
+            17.646829063581123
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-27b",
+      "engine": "mlx-lm",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 54.916835519091855,
+      "median_per_stream_tps": 14.395270591014828,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 18.47105220897356,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 55.22154279356463,
+          "per_request_tps": [
+            14.307512836333188,
+            14.301821963073303,
+            14.296561918568173,
+            14.300334642623591
+          ]
+        },
+        {
+          "wall_s": 18.64608458301518,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 54.70317349783576,
+          "per_request_tps": [
+            14.39951471941793,
+            14.395704186936436,
+            14.3909736432409,
+            14.394836995093218
+          ]
+        },
+        {
+          "wall_s": 18.573539250006434,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 54.916835519091855,
+          "per_request_tps": [
+            14.489008913926446,
+            14.484661483653385,
+            14.479457367471877,
+            14.484017148847396
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.6-35b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 174.40256458192619,
+      "median_per_stream_tps": 51.4953290980671,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 5.871473292005248,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 174.40256458192619,
+          "per_request_tps": [
+            52.29325009103554,
+            51.37363775809411,
+            51.56864923613139,
+            52.1942766050616
+          ]
+        },
+        {
+          "wall_s": 5.849228166043758,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 175.06583277851558,
+          "per_request_tps": [
+            52.2745286339218,
+            51.34933714087931,
+            51.34874833745749,
+            51.69716517516675
+          ]
+        },
+        {
+          "wall_s": 5.89290533302119,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 173.76827594055598,
+          "per_request_tps": [
+            52.058233336655576,
+            51.0811923797776,
+            51.08067002811082,
+            51.422008960002806
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.6-35b",
+      "engine": "mlx-lm",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 128.60116759149025,
+      "median_per_stream_tps": 35.08666641361618,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 7.917806042009033,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 128.82356483453202,
+          "per_request_tps": [
+            34.5080635632235,
+            34.48148664305631,
+            34.45406960905341,
+            34.473213610011086
+          ]
+        },
+        {
+          "wall_s": 7.9314987499965355,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 128.60116759149025,
+          "per_request_tps": [
+            35.252490433020775,
+            35.22457673191005,
+            35.19820537748256,
+            35.21854421809091
+          ]
+        },
+        {
+          "wall_s": 7.956786249997094,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 128.19245961274535,
+          "per_request_tps": [
+            35.118644522766594,
+            35.08990753738879,
+            35.06418797372691,
+            35.08342528984357
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-35b",
+      "engine": "rapid-mlx",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 151.53766146397604,
+      "median_per_stream_tps": 42.78240339954312,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 6.763423541968223,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 151.40261343177778,
+          "per_request_tps": [
+            43.07951833334771,
+            42.62277852452973,
+            42.772768975822196,
+            43.269181911829726
+          ]
+        },
+        {
+          "wall_s": 6.740070250001736,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 151.9271998685379,
+          "per_request_tps": [
+            43.07720861890568,
+            42.49646802179168,
+            42.496135574642985,
+            42.912835554398846
+          ]
+        },
+        {
+          "wall_s": 6.757396082975902,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 151.53766146397604,
+          "per_request_tps": [
+            43.03068112767693,
+            42.44977602366374,
+            42.44951704673587,
+            42.792037823264046
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-35b",
+      "engine": "mlx-lm",
+      "arch_note": "Same MLX weights",
+      "median_aggregate_tps": 111.95170878460628,
+      "median_per_stream_tps": 30.75503700735915,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 8.949091791000683,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 113.97804646788008,
+          "per_request_tps": [
+            30.333655489695328,
+            30.311896790548385,
+            30.290500150796976,
+            30.30742800278569
+          ]
+        },
+        {
+          "wall_s": 9.111071292019915,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 111.95170878460628,
+          "per_request_tps": [
+            30.801374768199285,
+            30.779352673188406,
+            30.759187099524198,
+            30.775373002702572
+          ]
+        },
+        {
+          "wall_s": 9.113863041973673,
+          "total_output_tokens": 1020,
+          "aggregate_tps": 111.9174158424825,
+          "per_request_tps": [
+            30.77848628612018,
+            30.758216421643777,
+            30.736267089755152,
+            30.751857593074522
+          ]
+        }
+      ]
+    }
+  ]
+}

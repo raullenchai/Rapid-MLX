@@ -1,0 +1,94 @@
+{
+  "stamp": "20260606-150736",
+  "concurrency": 4,
+  "rounds": 3,
+  "max_tokens": 256,
+  "results": [
+    {
+      "model": "qwen3.5-4b",
+      "engine": "ollama",
+      "arch_note": "Ollama Qwen3 (not Qwen3.5; DeltaNet arch unavailable on llama.cpp)",
+      "median_aggregate_tps": 119.5328803236423,
+      "median_per_stream_tps": 121.14553893601568,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 8.457358916988596,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 121.07798782703368,
+          "per_request_tps": [
+            124.18749560913217,
+            124.79290045113964,
+            122.18590095573447,
+            120.3312634861508
+          ]
+        },
+        {
+          "wall_s": 8.646512417006306,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 118.42925223653826,
+          "per_request_tps": [
+            121.46542095786967,
+            119.7806096472783,
+            119.62954792422373,
+            120.21298832085256
+          ]
+        },
+        {
+          "wall_s": 8.56668054201873,
+          "total_output_tokens": 1024,
+          "aggregate_tps": 119.5328803236423,
+          "per_request_tps": [
+            120.8256569141617,
+            122.39291778000214,
+            121.71398971503409,
+            120.76073604886416
+          ]
+        }
+      ]
+    },
+    {
+      "model": "qwen3.5-9b",
+      "engine": "ollama",
+      "arch_note": "Ollama Qwen3 8B (not Qwen3.5 9B; closest available)",
+      "median_aggregate_tps": 84.11047012521203,
+      "median_per_stream_tps": 85.68673105679608,
+      "error": null,
+      "rounds": [
+        {
+          "wall_s": 12.080068916024175,
+          "total_output_tokens": 1016,
+          "aggregate_tps": 84.10548044575135,
+          "per_request_tps": [
+            86.85513622240272,
+            85.79946026747345,
+            85.36284933136193,
+            85.30963947528173
+          ]
+        },
+        {
+          "wall_s": 12.079352290951647,
+          "total_output_tokens": 1016,
+          "aggregate_tps": 84.11047012521203,
+          "per_request_tps": [
+            86.41035810263548,
+            85.44379099003113,
+            85.57400184611872,
+            85.91004512657949
+          ]
+        },
+        {
+          "wall_s": 12.07630141597474,
+          "total_output_tokens": 1016,
+          "aggregate_tps": 84.1317192245647,
+          "per_request_tps": [
+            86.77124167050312,
+            85.85932060164136,
+            85.38970757440141,
+            85.42111664761494
+          ]
+        }
+      ]
+    }
+  ]
+}
