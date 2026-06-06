@@ -56,11 +56,11 @@ dependencies = [
     # ~/.zshrc, or `activate-global-python-argcomplete` system-wide.
     # The Homebrew formula handles activation automatically.
     #
-    # >=3.6 is required: Python 3.12.6+ added a 4th positional arg
-    # (`intermixed`) to argparse._parse_known_args. argcomplete <3.6
-    # subclasses with only 3 positional args → TypeError mid-handshake
-    # and tab completion silently returns nothing. 3.6 ships the
-    # variadic signature fix.
+    # >=3.6 is required: a recent Python 3.12 micro release added a 4th
+    # positional `intermixed` argument to argparse._parse_known_args.
+    # argcomplete <3.6 subclasses that hook with only 3 positional args,
+    # so the very first Tab raises TypeError mid-handshake and the shell
+    # silently shows nothing. 3.6.0 ships the variadic signature fix.
     "argcomplete>=3.6",
     # WebSocket client for ``rapid-mlx share`` — connects to the
     # rapidserver Worker as the reverse-tunnel transport. Pure Python,

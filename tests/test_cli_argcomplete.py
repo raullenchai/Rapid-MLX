@@ -134,3 +134,157 @@ def test_aliases_path_resolves_to_real_file() -> None:
         f"aliases.json missing at {_ALIASES_PATH}; if the file moved, "
         "_completion.py needs the new location"
     )
+
+
+def test_alias_csv_completer_handles_whitespace_after_comma() -> None:
+    """``--models a, gem<TAB>`` — the runtime alias parser already
+    accepts whitespace around commas (``split + strip``). The completer
+    must match that contract so users who naturally type the
+    human-friendly ``a, b, c`` shape get suggestions instead of an
+    empty list."""
+    spaced = alias_csv_completer("qwen3.5-4b, gemma-4-")
+    tight = alias_csv_completer("qwen3.5-4b,gemma-4-")
+    assert len(spaced) == len(tight), (
+        "csv completer must produce the same number of matches whether "
+        "the user typed `a,b` or `a, b`"
+    )
+
+
+def test_load_alias_names_rejects_oversized_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A hostile multi-megabyte ``aliases.json`` (supply-chain swap, or
+    a dev-machine fat-finger) must not stall every keystroke on a
+    multi-second JSON decode. Cap is hard and fail-closed."""
+    from vllm_mlx import _completion
+
+    huge = tmp_path / "huge.json"
+    payload = "{" + ",".join(f'"{i}":1' for i in range(200_000)) + "}"
+    huge.write_text(payload)
+    assert huge.stat().st_size > _completion._MAX_ALIASES_BYTES
+
+    monkeypatch.setattr(_completion, "_ALIASES_PATH", huge)
+    monkeypatch.setattr(_completion, "_CACHE", None)
+    assert _completion._load_alias_names() == []
+
+
+def test_load_alias_names_strips_unsafe_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A key containing newline / vertical-tab / NUL bytes would split
+    argcomplete's line-oriented stdout IPC into multiple bogus
+    completions or corrupt the user's terminal. The loader filters
+    them out before returning. Legitimate aliases pass through."""
+    from vllm_mlx import _completion
+
+    spiked = tmp_path / "spiked.json"
+    spiked.write_text(
+        '{"good-alias":{}, "evil\\nname":{}, "evil\\u000bname":{}, '
+        '"with space":{}, "":{}}'
+    )
+    monkeypatch.setattr(_completion, "_ALIASES_PATH", spiked)
+    monkeypatch.setattr(_completion, "_CACHE", None)
+
+    assert _completion._load_alias_names() == ["good-alias"]
+
+
+def test_load_alias_names_caches_by_mtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A hot Tab burst must hit the in-memory cache, not re-decode
+    JSON each keystroke. The cache key is ``(mtime, size)`` so a
+    fresh write invalidates automatically."""
+    import os
+
+    from vllm_mlx import _completion
+
+    f = tmp_path / "cached.json"
+    f.write_text('{"alpha":{}}')
+    monkeypatch.setattr(_completion, "_ALIASES_PATH", f)
+    monkeypatch.setattr(_completion, "_CACHE", None)
+
+    first = _completion._load_alias_names()
+    assert first == ["alpha"]
+    cached_id = id(_completion._CACHE)
+
+    second = _completion._load_alias_names()
+    assert second == ["alpha"]
+    assert id(_completion._CACHE) == cached_id, "second call should reuse cache"
+
+    # Edit the file; the mtime+size change must invalidate.
+    f.write_text('{"alpha":{}, "beta":{}}')
+    # Force a measurable mtime delta in case the FS has 1-second
+    # resolution and the writes landed in the same second.
+    future = f.stat().st_mtime + 5
+    os.utime(f, (future, future))
+
+    refreshed = _completion._load_alias_names()
+    assert refreshed == ["alpha", "beta"]
+
+
+def test_cli_lazy_imports_argcomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``vllm_mlx.cli`` must NOT import ``argcomplete`` at module load
+    — the minimal-deps CI lane runs without it. Regression guard for
+    the lazy-import fix in the round-2 of this PR."""
+    import importlib
+    import sys
+
+    # Force-reload cli with argcomplete blocked at import time.
+    monkeypatch.setitem(sys.modules, "argcomplete", None)
+    sys.modules.pop("vllm_mlx.cli", None)
+    cli = importlib.import_module("vllm_mlx.cli")
+
+    # The module imported successfully (no ModuleNotFoundError) and
+    # exports the expected entry point.
+    assert hasattr(cli, "main"), "cli module missing main() entry point"
+
+
+def test_autocomplete_handshake_returns_aliases_on_subprocess() -> None:
+    """End-to-end shell-completion handshake. Spawn ``python -m
+    vllm_mlx.cli`` with the argcomplete env vars and verify fd 8
+    receives the expected alias list — proves the magic marker,
+    the lazy import, and ``argcomplete.autocomplete(parser)`` all
+    line up at runtime, not just in unit tests.
+
+    Skipped when ``argcomplete`` is not importable in the current
+    interpreter (minimal-deps CI lane) — the lazy-import path is
+    covered by ``test_cli_lazy_imports_argcomplete`` instead."""
+    import os
+    import subprocess
+    import sys
+
+    pytest.importorskip("argcomplete")
+
+    env = {
+        **os.environ,
+        "_ARGCOMPLETE": "1",
+        "COMP_LINE": "rapid-mlx serve gemma-4-",
+        "COMP_POINT": "24",
+        "_ARGCOMPLETE_IFS": "\n",
+    }
+    # ``sys.executable`` so the child uses THIS interpreter — relying
+    # on the bare ``python3`` alias would silently route to a Python
+    # without our editable install or without argcomplete.
+    # fd 8 is where argcomplete writes; route it to stdout via the
+    # child shell so subprocess.run can capture it.
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{sys.executable} -m vllm_mlx.cli 8>&1 1>/dev/null 2>/dev/null",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"argcomplete handshake exit={result.returncode}; "
+        f"stderr={result.stderr!r}; stdout={result.stdout!r}"
+    )
+    completions = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    assert any(c.startswith("gemma-4-") for c in completions), (
+        f"expected gemma-4-* matches, got: {completions[:5]}"
+    )

@@ -4297,11 +4297,15 @@ Examples:
     _preinit_argcomplete_state(parser)
     try:
         import argcomplete
-    except ModuleNotFoundError:
+    except ModuleNotFoundError as exc:
         # Best-effort: tab completion silently no-ops if argcomplete is
         # missing. Listed as a required dep in ``pyproject.toml`` so
         # this path only fires in minimal test envs or stripped images.
-        pass
+        # Narrow the swallow to the top-level argcomplete package — if a
+        # transitive import inside argcomplete is missing we want that
+        # to surface, not get mistaken for "argcomplete not installed".
+        if exc.name != "argcomplete":
+            raise
     else:
         argcomplete.autocomplete(parser)
 
