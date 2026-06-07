@@ -52,8 +52,8 @@ With your help, we can do three concrete things better:
 
   • Fix the crashes you actually hit, with anonymous error fingerprints
     instead of waiting for someone to file an issue.
-  • Tune performance on the chips people actually use — Apple Silicon,
-    RTX 4090, M3 Ultra — instead of whatever we happen to own.
+  • Tune performance on the Apple Silicon variants people actually run,
+    instead of whatever happens to sit on our desks.
   • Surface the models the community runs most, so onboarding effort
     goes where it matters.
 
