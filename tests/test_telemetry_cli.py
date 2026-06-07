@@ -141,6 +141,123 @@ def test_global_no_telemetry_flag(fake_home):
     assert "disabled" in r.stdout.lower()
 
 
+def test_session_end_synchronously_drained_before_exit(fake_home):
+    """Round 5 codex review caught the atexit-ordering risk; round 6
+    sharpened the regression test. We now stand up a local HTTPServer
+    that captures the actual POST body, then assert the batch carries
+    BOTH ``session_start`` AND ``session_end`` envelopes. The previous
+    retry-count assertion (round 5) would have passed even if
+    ``session_end`` were deleted and shutdown flushed a 1-event
+    batch."""
+    import http.server
+    import json as _json
+    import threading as _threading
+
+    captured: list[dict] = []
+
+    class _CaptureHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 — name dictated by stdlib
+            length = int(self.headers.get("content-length", "0"))
+            raw = self.rfile.read(length)
+            try:
+                captured.append(_json.loads(raw.decode("utf-8")))
+            except Exception:
+                captured.append({"_raw": raw[:200].decode("utf-8", "replace")})
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
+        def log_message(self, *_a, **_k):  # silence
+            return
+
+    # Round 10 codex review caught a probe-then-bind race in the
+    # earlier version (separate ``socket.bind`` → close → re-bind).
+    # Let the server bind port 0 itself and read ``server_port``.
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    port = server.server_port
+    t = _threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        _run_cli("telemetry", "enable", home=fake_home)
+        r = _run_cli(
+            "models",
+            home=fake_home,
+            env_overrides={
+                "RAPID_MLX_TELEMETRY_DEBUG": "1",
+                "RAPID_MLX_TELEMETRY_ENDPOINT": f"http://127.0.0.1:{port}/v1/events",
+            },
+        )
+        assert r.returncode == 0, r.stderr
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # Both lifecycle events must land — they MAY come in the same
+    # batch (short ``models`` run finishes well under ``FLUSH_INTERVAL_S``)
+    # or in two batches if a long-running command crosses the idle
+    # flush boundary. Round 11 codex caught the prior "exactly one
+    # batch" assertion as a real flake risk for long-running serve
+    # processes. Collect events across all batches instead.
+    assert captured, f"no POST captured (return={r.returncode}, stderr={r.stderr})"
+    all_events = [
+        ev
+        for batch in captured
+        if isinstance(batch.get("batch"), list)
+        for ev in batch["batch"]
+    ]
+    # Round 14 codex review: comparing a ``set`` of event names hid
+    # duplicate ``session_start`` / ``session_end`` emissions — a
+    # double-fire from a stray atexit re-registration or a reentered
+    # CLI main would still pass. Assert exact counts instead so that
+    # regression is visible.
+    event_names = [ev.get("event") for ev in all_events]
+    starts = event_names.count("session_start")
+    ends = event_names.count("session_end")
+    assert starts == 1 and ends == 1, (
+        f"expected exactly one session_start + one session_end across "
+        f"{len(captured)} batch(es); got starts={starts}, ends={ends}, "
+        f"all_events={event_names}, batches={captured}"
+    )
+    # ``session_id`` must be identical across both — race-condition
+    # regression catch (round 6 fix #3).
+    session_ids = {ev["session_id"] for ev in all_events}
+    assert len(session_ids) == 1, (
+        f"session_start and session_end carry different session_ids "
+        f"(race in lazy init?): {session_ids}"
+    )
+
+
+def test_telemetry_subcommand_does_not_emit_lifecycle_events(fake_home):
+    """Codex round 1 caught a "phone home before silencing the phone"
+    issue: ``rapid-mlx telemetry disable`` (and ``reset``) would queue
+    a ``session_start`` event before the disable action ran, because
+    cli.py registered the lifecycle emit for every non-None
+    subcommand. The fix excludes the ``telemetry`` subcommand entirely.
+
+    Verified end-to-end: spawn the CLI with debug logging on, run
+    ``telemetry disable`` from an opted-in state, and check the stderr
+    trace contains no ``[telemetry] attempt`` lines."""
+    _run_cli("telemetry", "enable", home=fake_home)
+    r = _run_cli(
+        "telemetry",
+        "disable",
+        home=fake_home,
+        env_overrides={
+            "RAPID_MLX_TELEMETRY_DEBUG": "1",
+            # Force a non-routable endpoint so this test cannot
+            # accidentally exercise the production collector even if
+            # the kill-switch wiring regresses.
+            "RAPID_MLX_TELEMETRY_ENDPOINT": "https://127.0.0.1:1/never",
+        },
+    )
+    assert r.returncode == 0, r.stderr
+    assert "[telemetry] attempt" not in r.stderr, (
+        "telemetry subcommand queued a lifecycle event before disabling — "
+        "the cli must skip session_start/session_end for the telemetry path"
+    )
+
+
 def test_env_kill_switch_via_subprocess(fake_home):
     _run_cli("telemetry", "enable", home=fake_home)
     r = _run_cli(

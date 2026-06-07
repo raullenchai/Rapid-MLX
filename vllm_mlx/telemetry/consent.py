@@ -24,6 +24,7 @@ import sys
 from vllm_mlx import __version__ as _rapid_mlx_version  # noqa: N811
 from vllm_mlx.telemetry.state import (
     ENV_VAR,
+    client_id_path,
     consent_path,
     get_consent_state,
     record_consent,
@@ -44,54 +45,130 @@ _NON_INTERACTIVE_SUBCOMMANDS = frozenset(
     }
 )
 
+# Round 16 codex review: keep this string ASCII-only. Curly punctuation
+# and bullet glyphs raise ``UnicodeEncodeError`` on a terminal with an
+# ASCII-only stdout encoding (some CI runners, ``LC_ALL=C`` envs), and
+# the outer ``except (OSError, EOFError, KeyboardInterrupt)`` does NOT
+# catch ``UnicodeEncodeError`` — so the prompt blew up the user's
+# command. The outer except now also catches ``UnicodeError`` as a
+# belt-and-braces second guard.
 _DISCLOSURE = """\
-Rapid-MLX can send anonymous usage data so we can prioritise the right
-models and catch regressions across the user base.
+Rapid-MLX is open source and built on what its users report. We do not
+ship analytics SDKs, third-party trackers, or ads -- and we never will.
+With your help, we can do three concrete things better:
 
-We collect (only if you say yes): subcommand names, model alias names,
-bucketed token/latency counts, error categories, OS + chip + RAM.
+  - Fix the crashes you actually hit, with anonymous error fingerprints
+    instead of waiting for someone to file an issue.
+  - Tune performance on the Apple Silicon variants people actually run,
+    instead of whatever happens to sit on our desks.
+  - Surface the models the community runs most, so onboarding effort
+    goes where it matters.
 
-We never collect: prompts, completions, file paths, IPs, env-var values,
-or any user-generated text. Source: vllm_mlx/telemetry/.
+WHAT WE SEND (only after you say yes):
+  - Your chip family + RAM tier -- "Apple M3 Ultra, 256 GB", never serial
+  - OS family + major.minor version ("darwin 25.3"), arch ("arm64"),
+    Python major.minor ("3.12"), Rapid-MLX version ("0.6.79")
+  - Which subcommand you ran ("serve" / "chat") and its duration
+  - The NAMES (only) of CLI flags you passed, sorted and de-duplicated
+    (`--api-key sk-XXX` becomes the literal string "api-key"; the value
+    "sk-XXX" is never even read).
+  - The alias your session was for ("mlx-community/Qwen3.5-9B-4bit"
+    or "<local>" if it was an unredacted local path). This is the
+    alias your subcommand was invoked with; if a download was declined
+    or the load failed later, the entry stays -- "what you asked to
+    run", not "what loaded successfully".
+  - A UTC timestamp on each event (no timezone, second precision)
+  - An anonymous crash fingerprint -- a sha256 hash of the exception
+    class plus the frame chain (basename:function:lineno per frame).
+    No exception message, no full file paths, no raw traceback fields.
+  - A random UUID at {client_id_path}, which you can rotate or wipe
+  - A per-process random UUID (a session id) so we can group your
+    session_start + session_end without correlating across runs
 
-Type 'y' to opt in, anything else to decline. You can change this anytime
-with `rapid-mlx telemetry {{enable,disable,reset}}`. To force-disable in
-scripts: set {env}=0.
+LATER (when per-request instrumentation lands, behind the same gate):
+  - Which alias you load, decode tokens/sec and latency in coarse buckets
+
+WHAT WE NEVER SEND, EVER:
+  - Prompts. Generated text. File paths. API keys. Flag VALUES.
+  - Anything from before this prompt or from a session you opted out of.
+
+ABOUT YOUR IP:
+  Any HTTPS request reveals your IP to the receiver at the network
+  layer -- we cannot change that. What we control is what we record.
+  Our Worker never writes your IP to the stored event; it is used
+  only for a transient per-minute rate-limit counter (the counter
+  key is sha256(IP), the raw IP is discarded the same request).
+
+You can see the exact bytes that would leave your machine right now:
+  rapid-mlx telemetry preview
+
+You can pause, resume, or reset your identity anytime:
+  rapid-mlx telemetry {{status,disable,enable,reset}}
+
+To force-disable in scripts or CI: set {env}=0.
 """
 
 
 def maybe_prompt_for_consent(
     subcommand: str | None, *, cli_no_telemetry: bool = False
-) -> None:
+) -> bool:
     """Show the first-run prompt if (and only if) all guards pass.
 
-    Returns silently when any guard skips. Never raises — a broken stdin
-    or unwritable home directory must not crash the user's serve / chat
-    invocation just because we couldn't ask about telemetry.
+    Returns ``True`` IFF the prompt was actually shown AND the user
+    just answered for the first time (regardless of yes/no). Returns
+    ``False`` for every skip path. The caller uses this to suppress
+    lifecycle emit on the same invocation that just collected consent
+    — round 3 codex review caught that emitting ``session_start`` for
+    the argv that ran BEFORE the prompt contradicts the disclosure's
+    "nothing from before this prompt" promise.
+
+    Never raises — a broken stdin or unwritable home directory must
+    not crash the user's serve / chat invocation just because we
+    couldn't ask about telemetry.
     """
+    # ``just_collected`` is owned at function scope (round 14 codex
+    # review fix): the previous structure flipped this back to False
+    # whenever a post-``record_consent`` ``print()`` raised ``OSError``
+    # (e.g. SIGPIPE from a pipe closed by the parent shell), so the
+    # CLI dropped ``_just_collected_consent`` and emitted same-run
+    # lifecycle telemetry — violating the "nothing from before this
+    # prompt" promise. Owning the flag at the outermost scope means
+    # the final ``return`` honours whatever was already persisted, even
+    # if the thank-you / opt-out chatter blew up.
+    just_collected = False
     try:
         if cli_no_telemetry:
-            return
+            return False
         # Env var already decides — no need to prompt.
         import os
 
         if os.environ.get(ENV_VAR) is not None:
-            return
+            return False
         if subcommand in _NON_INTERACTIVE_SUBCOMMANDS:
-            return
+            return False
         if subcommand is None:
-            return
+            return False
         if get_consent_state() is not None:
-            return
+            return False
         if not sys.stdin.isatty():
-            return
+            return False
         if not sys.stdout.isatty():
-            return
+            return False
 
         version = _rapid_mlx_version
         print()
-        print(_DISCLOSURE.format(env=ENV_VAR))
-        print("  [opt-in to anonymous telemetry?  y/N]  ", end="", flush=True)
+        print(
+            _DISCLOSURE.format(
+                env=ENV_VAR,
+                client_id_path=client_id_path(),
+            )
+        )
+        print(
+            "Contribute anonymous telemetry to make rapid-mlx better "
+            "for everyone? [y/N]  ",
+            end="",
+            flush=True,
+        )
         try:
             answer = input().strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -99,25 +176,44 @@ def maybe_prompt_for_consent(
             # be re-prompted next interactive run, since they didn't
             # actually answer.
             print()
-            return
+            return False
         consent = answer in ("y", "yes")
         record_consent(consent, rapid_mlx_version=version)
+        # From here on, consent IS persisted to disk. The flag must
+        # survive any subsequent print failure so the CLI knows not to
+        # emit lifecycle telemetry for the argv that ran before the
+        # prompt.
+        just_collected = True
         if consent:
+            print()
             print(
-                "Thanks — telemetry enabled. Disable anytime with "
-                "`rapid-mlx telemetry disable`."
+                "Thank you for contributing. "
+                "rapid-mlx will get measurably better because you said yes."
+            )
+            print(
+                "Audit anytime: `rapid-mlx telemetry status` / `... preview`. "
+                "Stop anytime: `rapid-mlx telemetry disable`."
             )
         else:
+            print()
             print(
-                "Got it — telemetry stays off. Enable later with "
-                f"`rapid-mlx telemetry enable` (or delete {consent_path()} "
-                "to be re-prompted)."
+                "Got it -- telemetry stays off and we will not ask again. "
+                "You can always opt in later with "
+                "`rapid-mlx telemetry enable`,"
             )
+            print(f"or delete {consent_path()} to be re-prompted.")
         print()
-    except (OSError, EOFError, KeyboardInterrupt):
-        # Telemetry consent is *never* a reason for the CLI to fail —
+        return just_collected
+    except (OSError, EOFError, KeyboardInterrupt, UnicodeError):
+        # Telemetry consent is *never* a reason for the CLI to fail --
         # but only swallow the failure modes we actually expect: I/O on
-        # an unwritable home, terminal weirdness, or user Ctrl-C during
-        # input. Programming errors (AttributeError, TypeError, ...)
-        # propagate so they get noticed in development.
-        return
+        # an unwritable home, terminal weirdness, user Ctrl-C during
+        # input, or (round 16 codex catch) a stdout encoding that
+        # cannot represent every byte of the disclosure.
+        # Programming errors (AttributeError, TypeError, ...) propagate
+        # so they get noticed in development.
+        #
+        # Return ``just_collected`` (not ``False``) so a post-record
+        # OSError still reports "yes, we just collected consent" -- the
+        # round 14 codex blocker.
+        return just_collected

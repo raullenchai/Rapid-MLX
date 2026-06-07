@@ -41,7 +41,18 @@ class SessionPayload:
     subcommand: str  # "serve" | "agents" | "bench" | "chat" | "doctor" | "models"
     duration_seconds: int | None = None  # session_end only; None on session_start
     models_loaded: tuple[str, ...] = ()  # HF repo IDs only (normalized)
-    engine: str = ""  # "batched" / future variants
+    # Schema v1 back-compat slot. Round 4 removed runtime emission of
+    # ``engine`` from the emit helpers (it was a free-form ``str`` slot
+    # with no information content while ``BatchedEngine`` is the only
+    # engine), but the dataclass keeps the optional field so external
+    # callers constructing ``SessionPayload(engine=...)`` against
+    # ``SCHEMA_VERSION == 1`` don't break. Round 7 codex caught that
+    # the field MUST stay in its original positional slot too —
+    # positional ``SessionPayload("serve", 10, models, engine, flags)``
+    # would otherwise silently mis-bind once ``engine`` moved past
+    # ``flag_names``. Re-add to runtime emission only via an enum if a
+    # second engine ever lands; bump SCHEMA_VERSION at the same time.
+    engine: str = ""
     flag_names: tuple[str, ...] = ()  # names only, sorted, no values
 
 
@@ -132,7 +143,6 @@ def sample_preview_payload(
         session=SessionPayload(
             subcommand="serve",
             models_loaded=("mlx-community/Qwen3.5-9B-4bit",),
-            engine="batched",
             flag_names=("port", "host"),
         ),
     )

@@ -4315,13 +4315,155 @@ Examples:
     # interactive subcommands when stdin is a tty. Safe no-op otherwise.
     # Must run *before* heavy subcommand work so the user sees the
     # disclosure before any model load logs scroll past.
+    _just_collected_consent = False
     if getattr(args, "command", None) is not None:
         from vllm_mlx.telemetry import maybe_prompt_for_consent
+        from vllm_mlx.telemetry.state import set_cli_kill_switch
 
-        maybe_prompt_for_consent(
+        # ``--no-telemetry`` is a per-run override; thread it into the
+        # process-level kill switch so every emit site sees it without
+        # having to plumb the flag through every signature.
+        set_cli_kill_switch(getattr(args, "no_telemetry", False))
+
+        _just_collected_consent = maybe_prompt_for_consent(
             args.command,
             cli_no_telemetry=getattr(args, "no_telemetry", False),
         )
+
+    # Telemetry session lifecycle — emit session_start once we know what
+    # subcommand we're dispatching, register an atexit hook for
+    # session_end so the duration covers the whole interactive run
+    # (including ``rapid-mlx chat`` REPLs and ``serve`` processes that
+    # only exit on Ctrl-C). emit.* helpers are individually guarded by
+    # ``is_enabled()`` — when telemetry is off the calls are cheap
+    # no-ops, no payload constructed.
+    #
+    # The ``telemetry`` subcommand itself is excluded: ``telemetry
+    # disable`` / ``reset`` would otherwise queue an event on the way to
+    # turning telemetry OFF — a small but ugly "phone home before
+    # silencing the phone" surprise that codex round 1 caught. ``status``
+    # / ``preview`` / ``enable`` are excluded for consistency; their
+    # observability value is near zero.
+    #
+    # ``_just_collected_consent`` skips the run that JUST collected
+    # first-time opt-in (round 3 codex catch): the disclosure copy
+    # promises "nothing from before this prompt or from a session you
+    # opted out of", and the current invocation's argv was determined
+    # BEFORE the user said yes. The next run starts the contract clean.
+    #
+    # ``_session_models_requested`` is hoisted outside the conditional so
+    # the alias-resolution block below can append to it unconditionally
+    # without a NameError when telemetry was skipped. The closure
+    # passed to ``session_end`` reads the same list, so populate-then-
+    # emit is naturally ordered.
+    #
+    # Round 19 codex catch on the naming: this list captures models
+    # the user's invocation REQUESTED -- the alias passed argparse
+    # validation -- NOT models the loader confirmed it loaded. A
+    # declined auto-pull or a load failure later in the subcommand
+    # handler still leaves the entry here, which the lifecycle event
+    # surfaces verbatim. Phase 2.2 will replace this with confirmed
+    # load events emitted from ``vllm_mlx/engine/loader.py``; until
+    # then, the field semantics is "alias the session was for" and the
+    # helper docstring spells this out.
+    _session_models_requested: list[str] = []
+    if (
+        getattr(args, "command", None) is not None
+        and args.command != "telemetry"
+        and not _just_collected_consent
+    ):
+        import atexit as _atexit
+        import sys as _sys
+        import time as _time
+
+        from vllm_mlx.telemetry import emit as _telemetry_emit
+
+        _session_subcommand = args.command
+        _session_started_at = _time.monotonic()
+        # Round 19 codex catch: extract flag names HERE so raw argv
+        # tokens (which include flag VALUES) never cross into the
+        # telemetry helper signatures. The disclosure promise "values
+        # are never even read" is now literally true at the function-
+        # call boundary.
+        from vllm_mlx.telemetry.redact import (
+            hash_flag_names as _telemetry_extract_flag_names,
+        )
+
+        _session_flag_names = _telemetry_extract_flag_names(_sys.argv[1:])
+        # Round 19 codex NIT: session_start sees an empty IMMUTABLE
+        # snapshot of models_loaded so it does not depend on whether
+        # ``emit.session_start()`` eagerly copies its input. The closure-
+        # captured list keeps mutating until session_end takes its own
+        # snapshot below.
+        _telemetry_emit.session_start(
+            subcommand=_session_subcommand,
+            flag_names=_session_flag_names,
+            models_loaded=(),
+        )
+
+        def _emit_session_end() -> None:
+            try:
+                # Snapshot the closure-captured list to an immutable
+                # tuple so the payload reflects the exact state at this
+                # call (round 19 NIT).
+                _models_snapshot = tuple(_session_models_requested)
+                _telemetry_emit.session_end(
+                    subcommand=_session_subcommand,
+                    duration_seconds=int(_time.monotonic() - _session_started_at),
+                    models_loaded=_models_snapshot,
+                )
+                # Round 5 codex review caught that the atexit handler
+                # for the queue's ``shutdown`` is registered inside
+                # ``session_start`` (LIFO → runs after this handler),
+                # but relying on that ordering is fragile. Force a
+                # synchronous drain here so ``session_end`` actually
+                # lands regardless of atexit ordering quirks. Idempotent
+                # — the queue's own ``shutdown`` will be a no-op when
+                # it runs later.
+                #
+                # ``session_end`` is best-effort by design (round 7
+                # codex catch): the queue's own ``SHUTDOWN_BUDGET_S``
+                # (2 s) caps user-visible exit latency. A slow or
+                # blackholed collector drops the event — that is the
+                # right trade-off, because making the user wait
+                # ~12 s on every ``serve`` Ctrl-C just to file a
+                # better stat is hostile UX.
+                #
+                # Round 19 codex review closed the previous round-17
+                # SIGTERM gap: ``register_session_end_hook`` is wired
+                # below so the FastAPI lifespan shutdown in
+                # ``vllm_mlx.server`` calls this same function on
+                # SIGTERM (systemd / Docker / Kubernetes graceful
+                # stop). The latch inside the emit module makes the
+                # second invocation a no-op so the event lands exactly
+                # once regardless of which path fires first.
+                #
+                # ``_queue is None`` (telemetry was disabled, so
+                # ``session_end`` no-op'd and never instantiated the
+                # singleton) skips ``get_queue()`` — round 7 catch —
+                # otherwise we'd spawn a daemon thread during
+                # interpreter shutdown for nothing.
+                try:
+                    if _telemetry_emit._queue is not None:
+                        _telemetry_emit._queue.shutdown()
+                except BaseException:
+                    pass
+            except BaseException:
+                # atexit handlers are run during interpreter shutdown;
+                # anything that fires here — including a stray
+                # ``KeyboardInterrupt`` or ``SystemExit`` raised inside
+                # redaction / queue code mid-teardown — is purely noise
+                # at this point because the process is already exiting.
+                # Round 9 codex review caught the previous ``Exception``
+                # catch as too narrow for an atexit context.
+                return
+
+        # Register the same callable for both teardown paths. The
+        # latch in ``fire_session_end_hook`` ensures it runs once
+        # regardless of which path (FastAPI lifespan shutdown OR cli
+        # atexit fallback) fires first.
+        _telemetry_emit.register_session_end_hook(_emit_session_end)
+        _atexit.register(_telemetry_emit.fire_session_end_hook)
 
     # Resolve model aliases before dispatch.
     #
@@ -4354,6 +4496,13 @@ Examples:
                 args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
             )
             sys.exit(1)
+        # Round 16 codex catch: record the resolved (or already-canonical)
+        # model so ``session_end`` can report what this invocation loaded.
+        # ``normalize_model_path`` inside the emit helper redacts local
+        # paths to the literal ``<local>`` token, so we don't need to
+        # filter here. Captured after the error-fail path so we never
+        # record a model that failed validation.
+        _session_models_requested.append(args.model)
 
     # --- BEGIN B2: auto-pull confirmation gate -------------------------
     # For subcommands that may trigger a first-time download of a large

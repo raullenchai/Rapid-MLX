@@ -361,6 +361,23 @@ async def lifespan(app: FastAPI):
         await _engine.stop()
         logger.info("Engine stopped")
 
+    # Round 19 codex review (PR #532): Drive the telemetry session_end
+    # path here too. ``atexit`` does NOT fire on SIGTERM (systemd /
+    # Docker / Kubernetes graceful stop), so an opted-in user running
+    # ``rapid-mlx serve`` under a service manager would otherwise lose
+    # the lifecycle end event. uvicorn drives this lifespan shutdown
+    # on SIGTERM, so the hook lands. The latch inside the telemetry
+    # emit module ensures the event is sent exactly once even if
+    # atexit fires later as well.
+    try:
+        from vllm_mlx.telemetry import emit as _telemetry_emit
+
+        _telemetry_emit.fire_session_end_hook()
+    except Exception:
+        # Telemetry must never crash the shutdown path. Logged at
+        # debug only -- this is best-effort cleanup.
+        logger.debug("telemetry session_end hook failed (non-fatal)")
+
 
 app = FastAPI(
     title="Rapid-MLX API",
