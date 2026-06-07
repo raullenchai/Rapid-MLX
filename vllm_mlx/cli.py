@@ -4399,12 +4399,16 @@ Examples:
                 try:
                     if _telemetry_emit._queue is not None:
                         _telemetry_emit._queue.shutdown()
-                except Exception:
+                except BaseException:
                     pass
-            except Exception:
+            except BaseException:
                 # atexit handlers are run during interpreter shutdown;
-                # any uncaught exception there is logged but irrelevant
-                # to the user's exit code. Swallow defensively.
+                # anything that fires here — including a stray
+                # ``KeyboardInterrupt`` or ``SystemExit`` raised inside
+                # redaction / queue code mid-teardown — is purely noise
+                # at this point because the process is already exiting.
+                # Round 9 codex review caught the previous ``Exception``
+                # catch as too narrow for an atexit context.
                 return
 
         _atexit.register(_emit_session_end)

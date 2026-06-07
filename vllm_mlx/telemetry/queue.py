@@ -152,16 +152,21 @@ class TelemetryQueue:
                         self._thread = None
 
     def snapshot(self) -> dict[str, int]:
-        """Cheap counters for ``rapid-mlx telemetry status``."""
+        """Cheap counters for ``rapid-mlx telemetry status``.
+
+        Round 9 codex review: all counters read under the same lock
+        the daemon uses to write them, so ``snapshot`` cannot observe a
+        torn read mid-increment. Cheaper than separate locks per
+        counter, and the daemon is the only writer.
+        """
         with self._lock:
-            pending = len(self._events)
-        return {
-            "pending": pending,
-            "enqueued_total": self.events_enqueued,
-            "dropped_total": self.events_dropped,
-            "flushes_ok": self.flushes_ok,
-            "flushes_failed": self.flushes_failed,
-        }
+            return {
+                "pending": len(self._events),
+                "enqueued_total": self.events_enqueued,
+                "dropped_total": self.events_dropped,
+                "flushes_ok": self.flushes_ok,
+                "flushes_failed": self.flushes_failed,
+            }
 
     # --------------------------------------------------------------- internals
 
@@ -195,7 +200,12 @@ class TelemetryQueue:
             # crashing would silently disable telemetry for the rest
             # of the process — worse than a logged failure.
             ok = False
-        if ok:
-            self.flushes_ok += 1
-        else:
-            self.flushes_failed += 1
+        # Update both counters under the same lock ``snapshot()`` reads
+        # them with (round 9 codex catch). The daemon is the only
+        # writer, so there is no contention with itself; ``enqueue``
+        # holds the lock too briefly to matter.
+        with self._lock:
+            if ok:
+                self.flushes_ok += 1
+            else:
+                self.flushes_failed += 1
