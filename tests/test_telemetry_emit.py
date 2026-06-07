@@ -271,7 +271,15 @@ def test_session_start_models_loaded_capped_at_32(opted_in, stub_queue):
 
 
 def test_request_buckets_not_raw_numbers(opted_in, stub_queue):
-    """Bucketed counts only — raw token counts and TTFT must not survive."""
+    """Bucketed counts only — raw token counts and TTFT must not survive.
+
+    Round 12 codex review caught that a whole-payload ``repr`` scan for
+    raw numeric substrings was flaky: the envelope carries random
+    UUIDs (``client_id``, ``session_id``) and a timestamp, so a uuid
+    that happens to contain the substring ``"137"`` would CI-fail the
+    test even with bucketing intact. Assert specific fields equal
+    expected bucket labels instead.
+    """
     from vllm_mlx.telemetry import emit
 
     emit.request(
@@ -286,13 +294,19 @@ def test_request_buckets_not_raw_numbers(opted_in, stub_queue):
         status=200,
     )
     r = stub_queue[0]["request"]
-    # Bucket strings, not raw ints / floats.
-    assert isinstance(r["prompt_tokens_bucket"], str)
-    assert isinstance(r["ttft_ms_bucket"], str)
-    # Specific values must not survive.
-    blob = repr(stub_queue[0])
+    # Bucket strings, not raw ints / floats — assert the exact labels
+    # the bucketing primitives are documented to produce for these
+    # inputs, so a future bucket-edge regression also trips.
+    assert r["prompt_tokens_bucket"] == "0-256"  # 137 < 256
+    assert r["completion_tokens_bucket"] == "1k-4k"  # 1024 <= 1729 < 4096
+    assert r["ttft_ms_bucket"] == "100-500ms"  # 432.5 < 500
+    assert r["tps_bucket"] == "50-100"  # 58.2 < 100
+    # The raw int/float values must NOT be in any request field — scan
+    # only the request sub-object so envelope UUIDs / timestamps cannot
+    # cause a false positive.
+    request_blob = repr(r)
     for raw in ("137", "1729", "432.5", "58.2"):
-        assert raw not in blob
+        assert raw not in request_blob, f"{raw!r} survived into request payload: {r}"
 
 
 def test_error_category_and_phase_normalised_to_allowlist(opted_in, stub_queue):
