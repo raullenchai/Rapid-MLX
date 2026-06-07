@@ -1,0 +1,144 @@
+name: PR validation pipeline
+
+# Fires `python -m scripts.pr_validate <PR#>` on every PR so the SOP
+# pipeline runs in CI instead of relying on the maintainer to remember.
+#
+# Boundary: anything that needs `rapid-mlx serve` (i.e. real model
+# inference) stays local on M3 — see docs/development/releasing.md
+# §"Pre-release validation gauntlet". Everything else runs here.
+#
+# Steps skipped on CI and why:
+#
+#   stress_e2e_bench   needs a live `rapid-mlx serve` + cached weights.
+#                      GitHub-hosted macOS-14 has 7GB RAM, can't host
+#                      a meaningful stress workload. Re-run locally
+#                      via `make release-check-m3` before release.
+#
+# Steps that SKIP themselves on CI for environmental reasons (by their
+# own design — pipeline does NOT fail when they skip):
+#
+#   codex_review       requires `~/.codex/auth.json` (user's own
+#                      ChatGPT login). Not configurable in CI today.
+#                      Humans run codex locally during review.
+#
+# Output: scorecard posted as a PR comment so the contributor + the
+# maintainer can see the full picture without leaving the PR page.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to validate"
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write  # post scorecard comment
+  issues: write         # gh's pr-comment writes via issues API
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # pr_validate.fetch reads diff vs base
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pr_validate dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # The pipeline itself is mostly stdlib + a few helpers:
+          # - pyyaml: golden_models.yaml parsing in stress_e2e_bench
+          #   (the step skips on CI but the module loads regardless)
+          # - requests: gh API calls in fetch + supply_chain
+          # - pip-audit: dependency CVE scan in supply_chain
+          pip install pyyaml requests pip-audit
+
+      - name: Resolve PR number
+        id: prnum
+        env:
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          INPUT_PR: ${{ github.event.inputs.pr_number }}
+        run: |
+          # pull_request event sets event.pull_request.number;
+          # workflow_dispatch sets inputs.pr_number. Pick whichever.
+          PR=${EVENT_PR:-$INPUT_PR}
+          if [ -z "$PR" ]; then
+            echo "::error::No PR number found in event payload or workflow input"
+            exit 1
+          fi
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          echo "Validating PR #$PR"
+
+      - name: Run pr_validate pipeline (CI mode — skip stress_e2e_bench)
+        id: validate
+        env:
+          # gh CLI auth for the fetch step
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Inference-touching step is the M3-only gate (see boundary
+          # in the workflow comment above). Codex auto-skips for lack
+          # of ~/.codex/auth.json; no need to skip it here.
+          PR_VALIDATE_SKIP_STEPS: stress_e2e_bench
+          # CI: fail-fast off so the scorecard shows every issue at
+          # once, not just the first one. PR-reviewer sees full picture.
+          PR_VALIDATE_FAIL_FAST: ""
+        run: |
+          set +e
+          python -m scripts.pr_validate ${{ steps.prnum.outputs.pr }} \
+            > scorecard.md 2> validate.log
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          # Always surface the log; scorecard goes to PR comment.
+          echo "--- pipeline log (stderr) ---"
+          cat validate.log
+
+      - name: Upload scorecard artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-validate-scorecard
+          path: |
+            scorecard.md
+            validate.log
+          retention-days: 14
+
+      - name: Post scorecard as PR comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.prnum.outputs.pr }}
+        run: |
+          # Wrap the scorecard in a stable marker so we can find and
+          # UPDATE our prior comment on subsequent runs instead of
+          # spamming a new comment per push (`gh pr comment` doesn't
+          # have an "upsert" mode; we implement it with `gh api`).
+          MARKER="<!-- pr-validate-scorecard -->"
+          BODY=$(printf '%s\n\n%s\n' "$MARKER" "$(cat scorecard.md)")
+          # Find prior bot comment carrying our marker.
+          PRIOR_ID=$(gh api \
+            "repos/${{ github.repository }}/issues/$PR/comments" \
+            --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" \
+            | head -1)
+          if [ -n "$PRIOR_ID" ]; then
+            echo "Updating prior scorecard comment $PRIOR_ID"
+            jq -n --arg body "$BODY" '{body: $body}' \
+              | gh api -X PATCH \
+                "repos/${{ github.repository }}/issues/comments/$PRIOR_ID" \
+                --input -
+          else
+            echo "Posting new scorecard comment"
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body "$BODY"
+          fi
+
+      - name: Block merge on pipeline failure
+        if: steps.validate.outputs.exit_code != '0'
+        run: |
+          echo "::error::pr_validate reported issues — see scorecard comment on PR #${{ steps.prnum.outputs.pr }}"
+          exit 1

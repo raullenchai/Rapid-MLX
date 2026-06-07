@@ -130,72 +130,81 @@ chore: bump version to X.Y.Z
 >
 > The `release-preflight.yml` workflow checks bump-PR titles against the same regex up-front; `scripts/validate_release_subject.py` is the structural belt-and-suspenders.
 
-## Pre-release validation gauntlet (11 gates)
+## Pre-release validation gauntlet
 
-The full set of gates that block a release. Some run automatically in CI, others must be run locally on an M-series machine before pushing the bump commit.
+### The boundary
 
-| # | Gate | CI runner | M3-only | Catches |
+Every gate falls on one side of a single hard rule: **does the gate require running model inference (`rapid-mlx serve` + a real model load)?**
+
+- **No** → CI runs it automatically (every PR or every bump PR)
+- **Yes** → M3 local, manually, before pushing the bump commit
+
+This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on macOS-14's 7GB — the perf numbers would be meaningless and the structural coverage no better than unit tests. M3 doesn't re-run gates CI can run cleanly — those are cheap-and-cheerful in the cloud.
+
+### Gate table
+
+| # | Gate | Side | Where it runs | Catches |
 |---|---|---|---|---|
-| G1 | `make release-smoke` — clean-room install + import | `release-preflight.yml` (macOS-14) | — | dev mlx symbol drift (#408) |
-| G2 | Codex review × 2 rounds on the PR | local | local | every PR-author bug class |
-| G3 | CLI ↔ Config fidelity audit | `ci.yml` lint (ubuntu) | — | silent CLI flag drop (#400) |
-| G4 | `make smoke` — lint + 4500+ unit tests | `ci.yml` test-matrix (linux subset) + `test-apple-silicon` (macOS-14) | full `make smoke` on local | parser/router regressions |
-| G5 | `make stress` — 8 scenarios incl. tool storm | — | **M3** (needs cached model + live server) | concurrent-batching regressions |
-| G6 | Live-server fix-path repro | — | **M3** (needs live server) | fix doesn't ship to the user-visible path |
-| G7 | SDK integration (anthropic / pydantic_ai / smolagents) | — | **M3** (needs cached weights + PyPI deps) | router-level breakage that unit tests miss |
-| G8 | Microbench changed code path | — | **M3** (needs perf baseline DB) | silent perf regressions |
-| G9 | 10-sequential latency check | — | **M3** (needs live server) | KV-cache / hot-path regressions |
-| G10 | MLX upstream cross-chip-family audit | `release-preflight.yml` advisory (macOS-14) | review the warnings | M5-style #404 landmines |
-| G11 | Auto-routing escape-hatch registry | `release-preflight.yml` (macOS-14) + `ci.yml` test-apple-silicon | — | silent auto-detection failures (#393/#400/#404) |
+| G1 | `make release-smoke` — clean-room install + import | CI | `release-preflight.yml` (macOS-14) | dev mlx symbol drift (#408) |
+| G2 | Codex review × 2 rounds | local | maintainer machine | every PR-author bug class |
+| G3 | CLI ↔ Config fidelity audit | CI | `ci.yml` lint (ubuntu) | silent CLI flag drop (#400) |
+| G4 | unit suite (≈4500 tests) | CI | `ci.yml` test-matrix (linux) + test-apple-silicon (macOS-14) | parser/router regressions |
+| G5 | `make stress` — 8 scenarios | **M3** | `make release-check-m3` | concurrent-batching regressions |
+| G6 | Live-server fix-path repro | **M3** | `make release-check-m3` | fix doesn't ship to user-visible path |
+| G7 | SDK integration (anthropic / pydantic_ai / smolagents) | **M3** | `make release-check-m3` | router-level breakage unit tests miss |
+| G8a | Parser microbench (×10k iters) | CI | `ci.yml` lint (ubuntu) | >10× parser regression |
+| G8b | End-to-end perf bench (tok/s baseline) | **M3** | `make release-check-m3` | KV-cache / hot-path perf regressions |
+| G9 | 10-sequential latency | **M3** | `make release-check-m3` | tok/s stability degradation |
+| G10 | MLX upstream cross-chip-family audit | CI | `release-preflight.yml` advisory (macOS-14) | M5-style #404 landmines |
+| G11 | Auto-routing escape-hatch registry | CI | `release-preflight.yml` (macOS-14) + ci.yml test-apple-silicon | silent auto-detection failures (#393/#400/#404) |
+| PF-1 | Auto-release subject regex pre-check | CI | `release-preflight.yml` (ubuntu) | `(#NN)` squash suffix trap |
 
-### What CI covers automatically on the bump PR
+### CI coverage — what runs without you lifting a finger
 
-When you open a PR titled `chore: bump version to X.Y.Z`, `release-preflight.yml` runs:
+**Every PR** → `pr-validate.yml` runs the full `pr_validate` pipeline (8 of 9 steps; `stress_e2e_bench` skipped because it needs inference). The scorecard is posted as a PR comment so contributor + maintainer see the verdict without leaving the PR page.
 
-- **PF-1** — `scripts/validate_release_subject.py` checks the title matches the auto-release regex (catches the `(#NN)` trap).
-- **Version coherence** — `pyproject.toml` version line must equal the version in the title.
-- **G1** — `make release-smoke` on macOS-14.
-- **G10** — `scripts/check_mlx_upstream_calls.py` scans the installed mlx-lm/mlx-vlm tree for module-scope calls into chip-family-sensitive APIs; **advisory only**, the release-er decides per finding.
-- **G11** — `tests/test_no_mllm_flag.py` 33-test registry asserts every auto-routing helper exposes both force-on and force-off CLI flags.
+**Every bump PR** (title matches `chore: bump version to X.Y.Z`) → `release-preflight.yml` adds PF-1, G1, G10 (advisory), G11. The `preflight-summary` job aggregates them so the bump PR has a single required check.
 
-The `preflight-summary` job aggregates them so the bump PR has a single required check.
+**Every PR + push to main** → `ci.yml` runs lint (ruff + audit + GHA-pin advisory + parser microbench) + test-matrix (linux curated) + test-apple-silicon (macOS-14 mlx-importing tests).
 
-### What you must run locally on M3 before pushing the bump commit
-
-These need cached model weights and live MLX inference — they can't run on GitHub-hosted runners:
+### M3 local — one command before pushing the bump commit
 
 ```bash
-# In one shell — start the server with the alias the fix targets:
-python3.12 -m vllm_mlx.cli serve qwen3.5-4b --port 8000
-
-# In another shell, run all four:
-make stress                          # G5 — 8-scenario stress test
-# G6 — boot the fix-path-specific curl repro; see PR description
-python3.12 tests/integrations/test_anthropic_sdk.py    # G7
-python3.12 tests/integrations/test_pydantic_ai_full.py # G7
-python3.12 tests/integrations/test_smolagents_full.py  # G7
-# G8 — microbench the changed code path against the prior version
-# G9 — 10 sequential requests, watch tok/s stability
+make release-check-m3              # uses MODEL=qwen3.5-4b (default)
+MODEL=qwen3.6-27b make release-check-m3   # override
 ```
 
-Document each result in the bump PR description. If any M3-only gate is skipped, explain why (e.g. "G7: smolagents failures pre-existing on main, see <ref>").
+Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `rapid-mlx serve` once on port 8000, then runs G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.
+
+Budget: ~10-15 minutes on M3 Ultra with weights warm-cached. Zero $.
+
+If any sub-gate fails, the script exits non-zero with the failure pinpointed. Don't push the bump commit until it's all green.
+
+### Performance-only PRs
+
+For PRs that are explicitly about perf changes (a kernel rewrite, a new fast path), the perf-side gates aren't optional — but they're also not standard PR-CI material because perf measurements on M1 ubuntu runners are meaningless. Convention: run `make release-check-m3` manually on the perf branch, paste the before/after numbers into the PR description, and link the run log. Maintainer reviews the numbers as part of Step 6 (pr_validate doesn't auto-fail; the human reads them).
 
 ### Gates with known pitfalls
 
 | Pitfall | Memory ref | Mitigation |
 |---|---|---|
-| `(#NN)` squash suffix breaks regex | `release_squash_subject` | PF-1 + doc note above |
-| `skip-version-bump` label needs PR close+reopen to refire | `gotcha_skip_version_bump_label` | Doc note in `version-check.yml`; user must close+reopen or push to refire `pull_request` event |
-| Mutable GitHub Actions tags as supply-chain vector | `pr_merge_sop` §7 | `scripts/check_gha_pinning.py` (advisory in `ci.yml` lint pending pinning cleanup) |
-| MLX upstream new module-scope calls (M5 #404) | `release_workflow` G10 | `scripts/check_mlx_upstream_calls.py` runs in `release-preflight.yml` G10 |
-| Codex-skip rationalization on bump PRs ("feels like just a version bump") | `feedback_release_sop_third_offense` | G2 stays local — the 11-gate table above is the explicit override of "feels small" |
+| `(#NN)` squash suffix breaks regex | `release_squash_subject` | PF-1 |
+| `skip-version-bump` label needs PR close+reopen to refire | `gotcha_skip_version_bump_label` | Doc note; close+reopen or push to refire `pull_request` event |
+| Mutable GitHub Actions tags as supply-chain vector | `pr_merge_sop` §7 | `scripts/check_gha_pinning.py` (advisory pending pinning cleanup) |
+| MLX upstream new module-scope calls (M5 #404) | `release_workflow` G10 | `scripts/check_mlx_upstream_calls.py` in `release-preflight.yml` |
+| Codex-skip rationalization on bump PRs ("feels like just a version bump") | `feedback_release_sop_third_offense` | CI/M3 split — most skippable gates are now in CI, not in the human's hands |
 
 ### Adding a new gate
 
-When a release-time bug class recurs:
+Decide first: does the gate require running real inference?
 
-1. Write the gate as a pure-Python script under `scripts/` if it doesn't need MLX.
-2. Add it to `release-preflight.yml` (a new job + the `preflight-summary` aggregator).
-3. Add unit tests under `tests/test_<gate>.py` covering pass + fail + edge cases.
-4. Append a row to the 11-gate table above with the catches/CI columns.
-5. If the gate is M3-only, add it to the "must run locally" list with the exact command.
+- **No** → CI:
+  1. Write a pure-Python script under `scripts/`.
+  2. Wire to `release-preflight.yml` (bump-PR-only) or `ci.yml` (every PR).
+  3. Add unit tests under `tests/test_<gate>.py`.
+  4. Append a row to the gate table above.
+
+- **Yes** → M3:
+  1. Add the gate logic to `scripts/release_check_m3.sh`.
+  2. Update the gate table above.
+  3. If the new gate replaces or subsumes a CI gate, remove the CI entry — duplication causes drift.

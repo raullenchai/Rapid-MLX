@@ -46,6 +46,15 @@ jobs:
         continue-on-error: true
         run: python scripts/check_gha_pinning.py
 
+      # Parser microbench — catches >10x regressions in tool-call
+      # extraction. Pure Python (parsers don't import mlx); thresholds
+      # are intentionally generous (3-5x measured M3 numbers) to
+      # absorb ubuntu-latest's shared-hardware variance.
+      - name: Parser microbench
+        run: |
+          pip install pydantic transformers jsonschema openai-harmony
+          python scripts/microbench_parsers.py
+
   type-check:
     runs-on: ubuntu-latest
     steps:
@@ -113,6 +122,7 @@ jobs:
             tests/test_validate_release_subject.py \
             tests/test_check_gha_pinning.py \
             tests/test_check_mlx_upstream_calls.py \
+            tests/test_microbench_parsers.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
