@@ -114,6 +114,13 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_BASE_URL",
         # Telemetry consent toggle (off/on), not engine routing.
         "RAPID_MLX_TELEMETRY",
+        # Telemetry debug log toggle (stderr trace of POST attempts to
+        # the collector). Pure observability, not engine routing.
+        "RAPID_MLX_TELEMETRY_DEBUG",
+        # Telemetry collector endpoint override for Phase 2 dev rigs and
+        # local-Worker testing. Production stays on
+        # ``telemetry.rapidmlx.com``; never consulted by the engine.
+        "RAPID_MLX_TELEMETRY_ENDPOINT",
         # Port for doctor harness probe checks, not engine routing.
         "RAPID_MLX_PORT",
         # Skip the [y/N] confirmation prompt before large model downloads

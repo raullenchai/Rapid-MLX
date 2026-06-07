@@ -98,6 +98,40 @@ def test_shutdown_drains_remaining_events():
     assert [e["a"] for e in captured] == [1, 2]
 
 
+def test_shutdown_does_not_orphan_thread_for_restart_when_join_times_out():
+    """Codex round 1 caught this: ``shutdown()`` cleared ``_thread``
+    unconditionally, so a subsequent ``start()`` could spawn a SECOND
+    daemon while the original was still draining a slow flusher. With
+    two flushers attached to the same ``_events`` deque, events would
+    flush in arbitrary interleaving and the queue lock would not
+    suffice (each batch is read-then-clear, not atomic with the wake)."""
+    release = threading.Event()
+
+    def slow_flusher(batch):
+        release.wait(timeout=5.0)
+        return True
+
+    q = TelemetryQueue(flusher=slow_flusher, flush_interval_s=60.0, flush_threshold=1)
+    q.start()
+    q.enqueue({"x": 1})
+    time.sleep(0.1)  # let the daemon enter slow_flusher
+
+    q.shutdown(timeout=0.1)  # times out — flusher still blocked on release
+    # The daemon must NOT be considered "gone" yet: a restart would
+    # double the flusher.
+    assert q._thread is not None
+    assert q._thread.is_alive()
+
+    # ``start()`` is documented as idempotent — it must see the still-alive
+    # daemon and not spawn a sibling.
+    q.start()
+    assert threading.active_count() < 1000  # sanity
+
+    # Release the old daemon so the test process can exit.
+    release.set()
+    q.shutdown(timeout=1.0)
+
+
 def test_shutdown_returns_within_budget_even_if_flusher_hangs():
     # Flusher that blocks longer than the shutdown budget.
     release = threading.Event()

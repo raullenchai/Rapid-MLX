@@ -120,13 +120,20 @@ class TelemetryQueue:
 
         Safe to call multiple times. Always returns within ``timeout``
         seconds — a slow Worker must not leave the interpreter hanging.
+
+        ``self._thread`` is cleared only after the join confirms the
+        daemon actually exited. Round 1 codex review caught that
+        unconditional clearing let a later ``start()`` spawn a second
+        daemon while the original was still draining a slow flusher,
+        producing parallel flushers writing to the same queue.
         """
         self._stop.set()
         self._wake.set()
         thread = self._thread
         if thread is not None:
             thread.join(timeout=timeout)
-            self._thread = None
+            if not thread.is_alive():
+                self._thread = None
 
     def snapshot(self) -> dict[str, int]:
         """Cheap counters for ``rapid-mlx telemetry status``."""

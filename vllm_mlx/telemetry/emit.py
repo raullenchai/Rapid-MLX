@@ -140,8 +140,15 @@ def _safe(fn: Any) -> Any:
     every emit site during code review. KeyboardInterrupt / SystemExit
     are intentionally NOT caught — user / programmatic intent always
     wins.
-    """
 
+    ``functools.wraps`` is load-bearing for the signature-pin test in
+    ``tests/test_telemetry_emit.py``: without it, ``inspect.signature``
+    sees the bare ``(*args, **kwargs)`` of the wrapper and the test
+    is silently void. Round 1 codex review caught this.
+    """
+    import functools
+
+    @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> None:
         try:
             fn(*args, **kwargs)
@@ -150,7 +157,6 @@ def _safe(fn: Any) -> Any:
         except Exception:
             return
 
-    wrapper.__name__ = fn.__name__
     return wrapper
 
 

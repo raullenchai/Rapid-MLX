@@ -4336,7 +4336,17 @@ Examples:
     # only exit on Ctrl-C). emit.* helpers are individually guarded by
     # ``is_enabled()`` — when telemetry is off the calls are cheap
     # no-ops, no payload constructed.
-    if getattr(args, "command", None) is not None:
+    #
+    # The ``telemetry`` subcommand itself is excluded: ``telemetry
+    # disable`` / ``reset`` would otherwise queue an event on the way to
+    # turning telemetry OFF — a small but ugly "phone home before
+    # silencing the phone" surprise that codex round 1 caught. ``status``
+    # / ``preview`` / ``enable`` are excluded for consistency; their
+    # observability value is near zero.
+    if (
+        getattr(args, "command", None) is not None
+        and args.command != "telemetry"
+    ):
         import atexit as _atexit
         import sys as _sys
         import time as _time

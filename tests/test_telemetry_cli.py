@@ -141,6 +141,36 @@ def test_global_no_telemetry_flag(fake_home):
     assert "disabled" in r.stdout.lower()
 
 
+def test_telemetry_subcommand_does_not_emit_lifecycle_events(fake_home):
+    """Codex round 1 caught a "phone home before silencing the phone"
+    issue: ``rapid-mlx telemetry disable`` (and ``reset``) would queue
+    a ``session_start`` event before the disable action ran, because
+    cli.py registered the lifecycle emit for every non-None
+    subcommand. The fix excludes the ``telemetry`` subcommand entirely.
+
+    Verified end-to-end: spawn the CLI with debug logging on, run
+    ``telemetry disable`` from an opted-in state, and check the stderr
+    trace contains no ``[telemetry] attempt`` lines."""
+    _run_cli("telemetry", "enable", home=fake_home)
+    r = _run_cli(
+        "telemetry",
+        "disable",
+        home=fake_home,
+        env_overrides={
+            "RAPID_MLX_TELEMETRY_DEBUG": "1",
+            # Force a non-routable endpoint so this test cannot
+            # accidentally exercise the production collector even if
+            # the kill-switch wiring regresses.
+            "RAPID_MLX_TELEMETRY_ENDPOINT": "https://127.0.0.1:1/never",
+        },
+    )
+    assert r.returncode == 0, r.stderr
+    assert "[telemetry] attempt" not in r.stderr, (
+        "telemetry subcommand queued a lifecycle event before disabling — "
+        "the cli must skip session_start/session_end for the telemetry path"
+    )
+
+
 def test_env_kill_switch_via_subprocess(fake_home):
     _run_cli("telemetry", "enable", home=fake_home)
     r = _run_cli(

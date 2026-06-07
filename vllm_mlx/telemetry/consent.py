@@ -59,13 +59,23 @@ With your help, we can do three concrete things better:
 
 WHAT WE SEND (only after you say yes):
   • Your chip family + RAM tier — "Apple M3 Ultra, 256 GB", never serial
-  • Which alias you load, decode tokens/sec and latency in coarse buckets
+  • Which subcommand you ran ("serve" / "chat") and its duration
   • Crash fingerprints — file:line:exception_class, no message text
   • A random UUID at {client_id_path}, which you can rotate or wipe
 
+LATER (when per-request instrumentation lands, behind the same gate):
+  • Which alias you load, decode tokens/sec and latency in coarse buckets
+
 WHAT WE NEVER SEND, EVER:
-  • Prompts. Generated text. File paths. API keys. Your IP.
+  • Prompts. Generated text. File paths. API keys.
   • Anything from before this prompt or from a session you opted out of.
+
+ABOUT YOUR IP:
+  Any HTTPS request reveals your IP to the receiver at the network
+  layer — we cannot change that. What we control is what we record.
+  Our Worker never writes your IP to the stored event; it is used
+  only for a transient per-minute rate-limit counter (the counter
+  key is sha256(IP), the raw IP is discarded the same request).
 
 You can see the exact bytes that would leave your machine right now:
   rapid-mlx telemetry preview
