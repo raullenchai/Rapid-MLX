@@ -168,7 +168,6 @@ def session_start(
     *,
     subcommand: str,
     argv: list[str] | None = None,
-    engine: str = "",
     models_loaded: list[str] | tuple[str, ...] = (),
 ) -> None:
     """Emit a ``session_start`` payload.
@@ -176,13 +175,22 @@ def session_start(
     Called by ``cli.py`` after argparse, before subcommand dispatch.
     ``argv`` carries the raw command-line tokens for flag-name
     redaction; values are never read.
+
+    Round 4 codex review removed the ``engine`` parameter. It was
+    declared with a default of ``""`` and never threaded through from
+    any call site, leaving a free-form ``str`` slot in the payload
+    that the signature red-line test couldn't catch — the same shape
+    of escape hatch closed in earlier rounds for ``endpoint`` /
+    ``category`` / ``phase``. There is effectively one engine today
+    (``BatchedEngine``) since PR #156 deleted ``SimpleEngine``, so
+    the field carried no information either. Re-add as an enum if a
+    second engine ever lands.
     """
     if not is_enabled():
         return
     payload = _envelope("session_start")
     payload["session"] = {
         "subcommand": subcommand,
-        "engine": engine,
         "flag_names": hash_flag_names(argv) if argv is not None else [],
         "models_loaded": [normalize_model_path(m) for m in models_loaded][:32],
     }
@@ -194,7 +202,6 @@ def session_end(
     *,
     subcommand: str,
     duration_seconds: int,
-    engine: str = "",
     models_loaded: list[str] | tuple[str, ...] = (),
 ) -> None:
     """Emit a ``session_end`` payload.
@@ -209,7 +216,6 @@ def session_end(
     payload["session"] = {
         "subcommand": subcommand,
         "duration_seconds": int(max(0, duration_seconds)),
-        "engine": engine,
         "flag_names": [],
         "models_loaded": [normalize_model_path(m) for m in models_loaded][:32],
     }

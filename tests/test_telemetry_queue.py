@@ -190,6 +190,35 @@ def test_start_is_idempotent():
     q.shutdown(timeout=0.1)
 
 
+def test_concurrent_start_does_not_spawn_duplicate_daemons():
+    """Round 4 codex review: the previous ``start()`` check was
+    unlocked, so a multi-init-path race (cli main + FastAPI lifespan
+    both calling ``start()`` from different threads) could pass the
+    ``is_alive()`` check on both and spawn two daemons against the
+    same queue. The fix is a dedicated lifecycle lock around the
+    check + creation."""
+    q = TelemetryQueue(flusher=lambda b: True)
+    started = threading.Event()
+
+    def racer():
+        started.wait(timeout=2.0)
+        q.start()
+
+    threads = [threading.Thread(target=racer) for _ in range(8)]
+    for t in threads:
+        t.start()
+    # Release all at once so the race is real.
+    started.set()
+    for t in threads:
+        t.join(timeout=2.0)
+
+    named = [t for t in threading.enumerate() if t.name == "rapid-mlx-telemetry"]
+    assert len(named) == 1, (
+        f"concurrent start() spawned {len(named)} daemons (want exactly 1)"
+    )
+    q.shutdown(timeout=0.5)
+
+
 def test_snapshot_shape():
     q = TelemetryQueue(flusher=lambda b: True)
     snap = q.snapshot()

@@ -81,11 +81,21 @@ def _is_localhost_override(url: str) -> bool:
     HTTP on 127.0.0.1:8787). Anything else — including a public host
     accidentally typed as ``https://localhost.attacker.example`` — is
     rejected. The match is on the netloc, not a substring.
+
+    ``parts.port`` is touched explicitly to surface a malformed-port
+    ``ValueError`` here rather than later inside ``Request``/``urlopen``
+    where it would escape the ``URLError``/``TimeoutError``/``OSError``
+    catch path and violate the "never raises" contract. Round 4 codex
+    review caught ``http://localhost:bad/`` as the concrete example.
     """
     try:
         from urllib.parse import urlparse
 
         parts = urlparse(url)
+        # Force port validation here; ``parts.port`` raises ValueError
+        # on a non-integer port. We don't care about the value — just
+        # that it parses cleanly.
+        _ = parts.port
     except (TypeError, ValueError):
         return False
     if parts.scheme not in ("http", "https"):
@@ -189,7 +199,11 @@ def post_batch(events: list[dict[str, Any]]) -> bool:
                     # change the answer. Drop and move on.
                     _log(f"attempt {attempt_idx} → {status} (4xx, not retrying)")
                     return False
-                _log(f"attempt {attempt_idx} → {status} (5xx, will retry)")
+                # Be honest about the next move — round 4 codex review
+                # caught that we logged ``"will retry"`` even on the
+                # last attempt when the next thing was ``return False``.
+                tail = "will retry" if backoff is not None else "giving up"
+                _log(f"attempt {attempt_idx} → {status} (5xx, {tail})")
         except HTTPError as e:
             # HTTPError is a URLError subclass but carries the response
             # code; treat it the same as a status-based decision above.
@@ -206,7 +220,8 @@ def post_batch(events: list[dict[str, Any]]) -> bool:
                         "(4xx, not retrying)"
                     )
                     return False
-                _log(f"attempt {attempt_idx} → HTTPError {status} (will retry)")
+                tail = "will retry" if backoff is not None else "giving up"
+                _log(f"attempt {attempt_idx} → HTTPError {status} ({tail})")
             finally:
                 close = getattr(e, "close", None)
                 if callable(close):

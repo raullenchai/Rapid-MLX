@@ -266,6 +266,48 @@ def test_endpoint_override_only_accepts_localhost(monkeypatch):
         )
 
 
+def test_malformed_port_localhost_override_does_not_raise(monkeypatch):
+    """Round 4 codex review: ``http://localhost:bad/`` passed the
+    hostname check, then later ``Request``/``urlopen`` raised a
+    ``ValueError`` outside the URLError/OSError catch — violating the
+    never-raises contract. ``_is_localhost_override`` now forces
+    ``parts.port`` access so the malformed port is rejected here."""
+    from vllm_mlx.telemetry import transport
+
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "http://localhost:bad/v1")
+    # Falls back to production default (the override is silently dropped).
+    assert transport.endpoint() == transport.DEFAULT_ENDPOINT
+
+
+def test_last_attempt_5xx_log_says_giving_up_not_will_retry():
+    """Round 4 codex review: stale 'will retry' log on the final
+    attempt was misleading. Pin both 5xx-status and 5xx-HTTPError
+    branches log ``giving up`` once retries are exhausted."""
+    from vllm_mlx.telemetry import transport
+
+    captured: list[str] = []
+
+    def fake_log(msg):
+        captured.append(msg)
+
+    resp = mock.MagicMock()
+    resp.status = 503
+    resp.__enter__.return_value = resp
+    resp.__exit__.return_value = False
+
+    with (
+        mock.patch.object(transport, "urlopen", return_value=resp),
+        mock.patch.object(transport.time, "sleep"),
+        mock.patch.object(transport, "_log", fake_log),
+    ):
+        assert transport.post_batch([{"x": 1}]) is False
+
+    # The final attempt's log must say "giving up", not "will retry".
+    last = captured[-1]
+    assert "giving up" in last, captured
+    assert "will retry" not in last
+
+
 def test_non_serializable_payload_returns_false_not_raise():
     """Round 3 codex review: ``json.dumps`` ran outside the transport
     try, so a non-serializable payload would have raised through the

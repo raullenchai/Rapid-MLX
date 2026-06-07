@@ -62,6 +62,13 @@ class TelemetryQueue:
         # patching the transport module globally.
         self._events: deque[dict[str, Any]] = deque(maxlen=max_len)
         self._lock = threading.Lock()
+        # Separate lifecycle lock so ``start``/``shutdown`` do not
+        # contend with the hot ``enqueue`` path. Round 4 codex review
+        # caught that the previous ``_thread`` check/assignment in
+        # ``start()`` was unlocked, so two concurrent ``start()`` calls
+        # (e.g. cli main + FastAPI lifespan) could race past the
+        # ``is_alive()`` check and spawn duplicate daemons.
+        self._lifecycle_lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -99,21 +106,24 @@ class TelemetryQueue:
         """Start the flush daemon if not already running.
 
         Idempotent — safe to call from multiple init paths (cli.py
-        main, FastAPI lifespan, test fixture).
+        main, FastAPI lifespan, test fixture). The lifecycle lock
+        prevents a race where two concurrent callers both pass the
+        ``is_alive()`` check and spawn duplicate daemons.
         """
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._wake.clear()
-        self._thread = threading.Thread(
-            target=self._loop,
-            name="rapid-mlx-telemetry",
-            daemon=True,
-        )
-        self._thread.start()
-        if not self._atexit_registered:
-            atexit.register(self.shutdown)
-            self._atexit_registered = True
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._wake.clear()
+            self._thread = threading.Thread(
+                target=self._loop,
+                name="rapid-mlx-telemetry",
+                daemon=True,
+            )
+            self._thread.start()
+            if not self._atexit_registered:
+                atexit.register(self.shutdown)
+                self._atexit_registered = True
 
     def shutdown(self, *, timeout: float = SHUTDOWN_BUDGET_S) -> None:
         """Stop the flush daemon and drain whatever is still in the queue.
@@ -129,11 +139,17 @@ class TelemetryQueue:
         """
         self._stop.set()
         self._wake.set()
-        thread = self._thread
+        with self._lifecycle_lock:
+            thread = self._thread
         if thread is not None:
             thread.join(timeout=timeout)
             if not thread.is_alive():
-                self._thread = None
+                with self._lifecycle_lock:
+                    # Recheck under the lock so a parallel ``start()``
+                    # that already replaced the daemon doesn't lose its
+                    # reference.
+                    if self._thread is thread:
+                        self._thread = None
 
     def snapshot(self) -> dict[str, int]:
         """Cheap counters for ``rapid-mlx telemetry status``."""

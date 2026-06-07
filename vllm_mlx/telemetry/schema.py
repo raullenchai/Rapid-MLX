@@ -41,7 +41,6 @@ class SessionPayload:
     subcommand: str  # "serve" | "agents" | "bench" | "chat" | "doctor" | "models"
     duration_seconds: int | None = None  # session_end only; None on session_start
     models_loaded: tuple[str, ...] = ()  # HF repo IDs only (normalized)
-    engine: str = ""  # "batched" / future variants
     flag_names: tuple[str, ...] = ()  # names only, sorted, no values
 
 
@@ -132,7 +131,6 @@ def sample_preview_payload(
         session=SessionPayload(
             subcommand="serve",
             models_loaded=("mlx-community/Qwen3.5-9B-4bit",),
-            engine="batched",
             flag_names=("port", "host"),
         ),
     )

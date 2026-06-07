@@ -141,7 +141,6 @@ def test_session_start_envelope_when_enabled(opted_in, stub_queue):
     emit.session_start(
         subcommand="serve",
         argv=["serve", "qwen3.5-9b", "--host", "0.0.0.0", "--port", "8000"],
-        engine="batched",
         models_loaded=["mlx-community/Qwen3.5-9B-4bit"],
     )
     assert len(stub_queue) == 1
@@ -340,6 +339,11 @@ def test_public_emit_signatures_have_no_prompt_or_completion_fields():
         "ip",
         "ip_address",
         "hostname",
+        # ``engine`` was removed in round 4 because it was a free-form
+        # ``str`` slot that the signature pin couldn't catch. If a
+        # second engine ever lands, re-add it through a small enum
+        # (the same shape as ``_ALLOWED_ENDPOINTS``).
+        "engine",
     }
     for fn_name in ("session_start", "session_end", "request", "error"):
         fn = getattr(emit, fn_name)
