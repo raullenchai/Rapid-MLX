@@ -135,23 +135,74 @@ def test_no_records_consent_false(fake_home, monkeypatch, capsys):
     assert "stays off" in out.lower()
 
 
-def test_skip_paths_return_false(fake_home, monkeypatch, capsys):
+def test_cached_consent_skip_returns_false(fake_home, monkeypatch, capsys):
     """Round 3 codex review wired the return type into a contract: the
     cli relies on it to skip the SAME run's lifecycle emit only when
-    the prompt actually fired. Every skip path must return False so a
-    cached-consent run still emits normally."""
+    the prompt actually fired. A cached-consent run must return
+    ``False`` so the normal lifecycle emit still runs.
+
+    Round 18 codex review split the previous combined skip-paths test
+    because once cached consent was recorded, the subsequent
+    cli_no_telemetry / non-interactive assertions could have passed
+    even if those guards were deleted -- the cached-consent guard
+    would short-circuit first. Each skip path now lives in its own
+    test with a fresh no-consent state, so the named guard is the
+    only reason ``maybe_prompt_for_consent`` returns ``False``."""
     from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
     from vllm_mlx.telemetry.state import record_consent
 
-    # Cached consent → no prompt → False (lifecycle emit must run).
+    # Stub TTY so the only thing that could SKIP the prompt is the
+    # cached-consent guard (without TTY stubs, isatty=False would skip
+    # for the wrong reason).
+    _stub_tty(monkeypatch)
+
     record_consent(True, rapid_mlx_version="0.0.0+test")
     assert maybe_prompt_for_consent("serve") is False
 
-    # CLI override skip.
-    assert maybe_prompt_for_consent("serve", cli_no_telemetry=True) is False
 
-    # Non-interactive subcommand skip.
+def test_cli_no_telemetry_skip_returns_false(fake_home, monkeypatch, capsys):
+    """``--no-telemetry`` must short-circuit BEFORE the cached-consent
+    check so a CI run with the kill switch wired never even reads the
+    on-disk consent file. Pin the guard in isolation: no cached
+    consent, TTY stubbed in so the only short-circuit available IS
+    the ``cli_no_telemetry`` branch. ``input`` is monkey-patched to
+    raise so a guard removal would surface as a hard failure (not a
+    soft EOFError that the inner except quietly swallows)."""
+    from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
+    from vllm_mlx.telemetry.state import get_consent_state
+
+    _stub_tty(monkeypatch)
+
+    def _no_prompt():
+        raise AssertionError("input() was called -- cli_no_telemetry guard is broken")
+
+    monkeypatch.setattr("builtins.input", _no_prompt)
+    assert get_consent_state() is None  # sanity: fresh home, no record
+    assert maybe_prompt_for_consent("serve", cli_no_telemetry=True) is False
+    assert get_consent_state() is None
+
+
+def test_non_interactive_subcommand_skip_returns_false(fake_home, monkeypatch, capsys):
+    """``version`` / ``help`` / ``ps`` etc. skip the prompt regardless
+    of TTY because they are one-shot informational subcommands.
+    Pin in isolation: no cached consent, TTY stubbed in -- the only
+    short-circuit available is the non-interactive-subcommand
+    branch. ``input`` is monkey-patched to raise so a guard removal
+    would surface as a hard failure."""
+    from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
+    from vllm_mlx.telemetry.state import get_consent_state
+
+    _stub_tty(monkeypatch)
+
+    def _no_prompt():
+        raise AssertionError(
+            "input() was called -- non-interactive subcommand guard is broken"
+        )
+
+    monkeypatch.setattr("builtins.input", _no_prompt)
+    assert get_consent_state() is None
     assert maybe_prompt_for_consent("version") is False
+    assert get_consent_state() is None
 
 
 def test_empty_answer_defaults_to_no(fake_home, monkeypatch):

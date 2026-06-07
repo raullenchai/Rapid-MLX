@@ -71,11 +71,11 @@ WHAT WE SEND (only after you say yes):
   - Which subcommand you ran ("serve" / "chat") and its duration
   - The NAMES (only) of CLI flags you passed, sorted and de-duplicated
     (`--api-key sk-XXX` becomes the literal string "api-key"; the value
-    "sk-XXX" is never even read). Round 16 codex review added this line
-    because hashed flag names DO leak the shape of your invocation
-    (e.g. "you set --tls-cert"), and the opt-in promise needs to cover it.
+    "sk-XXX" is never even read).
   - A UTC timestamp on each event (no timezone, second precision)
-  - Crash fingerprints -- file:line:exception_class, no message text
+  - An anonymous crash fingerprint -- a sha256 hash of the exception
+    class plus the frame chain (basename:function:lineno per frame).
+    No exception message, no full file paths, no raw traceback fields.
   - A random UUID at {client_id_path}, which you can rotate or wipe
   - A per-process random UUID (a session id) so we can group your
     session_start + session_end without correlating across runs
