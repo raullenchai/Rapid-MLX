@@ -364,17 +364,28 @@ def test_user_agent_is_self_identifying():
     ``Python-urllib/*`` UA with HTTP 403 before the request reaches the
     Worker. The transport must therefore set a non-generic UA — and
     the contract is to identify the package + version explicitly so
-    the receiver can attribute traffic."""
+    the receiver can attribute traffic.
+
+    Round 15 codex review caught the previous ``"rapid-mlx" in ua``
+    assertion was too loose: a versionless ``"rapid-mlx"`` UA would
+    have passed, defeating the "package + version" contract advertised
+    in the docstring. Pin the exact ``rapid-mlx/<version>`` shape."""
+    import re
+
     from vllm_mlx.telemetry import transport
 
     ua = transport._user_agent()
-    assert "rapid-mlx" in ua
+    assert re.search(r"\brapid-mlx/\S+", ua), (
+        f"UA must follow 'rapid-mlx/<version>' shape, got {ua!r}"
+    )
     assert "Python-urllib" not in ua
 
 
 def test_post_sends_self_identifying_user_agent():
     """End-to-end: ``post_batch`` must build a Request whose ``user-agent``
     header is the self-identifying string, not the urllib default."""
+    import re
+
     from vllm_mlx.telemetry import transport
 
     captured: dict = {}
@@ -392,7 +403,11 @@ def test_post_sends_self_identifying_user_agent():
     # urllib lowercases header keys when stored on the Request, but
     # the iteration order varies; use a case-insensitive lookup.
     ua = {k.lower(): v for k, v in captured["headers"].items()}["user-agent"]
-    assert "rapid-mlx" in ua
+    # Round 15: same tighter assertion as ``_user_agent`` — package
+    # AND version, not just the package name.
+    assert re.search(r"\brapid-mlx/\S+", ua), (
+        f"UA must follow 'rapid-mlx/<version>' shape, got {ua!r}"
+    )
     assert "Python-urllib" not in ua
 
 

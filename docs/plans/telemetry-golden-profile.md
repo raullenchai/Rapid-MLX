@@ -331,7 +331,14 @@ breaks the deal we made when we asked them to opt in.
    regex does not capture the value half of `--foo=bar`.
 5. **No exception messages, no module paths.** `fingerprint_traceback`
    hashes class name + `basename:func:lineno` only.
-6. **No IP, no UA.** Pinned at the Worker layer (vitest tests in
+6. **No IP, no UA in stored event payloads.** The client DOES send a
+   self-identifying `User-Agent: rapid-mlx/<version>` header — without
+   it, Cloudflare's bot manager rejects the request with HTTP 403 before
+   it reaches the Worker. The contract is that neither the IP nor the
+   UA is written into the R2 object body: the IP is SHA-256'd into a
+   rate-limit KV key and discarded, the UA is read for transport
+   attribution and then dropped on the floor. Pinned at the Worker
+   layer (vitest tests in
    `Rapid-MLX-telemetry-worker/test/worker.test.js`).
 7. **No header forwarding.** Worker never copies a request header
    into the R2 object body.
