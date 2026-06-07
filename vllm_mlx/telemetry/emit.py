@@ -50,6 +50,42 @@ _queue: TelemetryQueue | None = None
 _session_id: str | None = None
 
 
+# Allowlist of subcommands ``session_start``/``session_end`` accept.
+# Round 11 codex review caught that ``subcommand`` was the last
+# free-form ``str`` slot on the privacy-boundary helpers, the same
+# shape of escape hatch closed for ``endpoint`` / ``category`` /
+# ``phase``. The set matches the subcommands wired into ``cli.py``;
+# anything off-list (including a future internal subcommand) collapses
+# to ``"other"``.
+_ALLOWED_SUBCOMMANDS: frozenset[str] = frozenset(
+    {
+        "serve",
+        "chat",
+        "agents",
+        "bench",
+        "doctor",
+        "models",
+        "info",
+        "ps",
+        "pull",
+        "rm",
+        "upgrade",
+        "share",
+        "version",
+        # ``telemetry`` is excluded from lifecycle emit in cli.py, but
+        # external callers using these helpers directly can still pass
+        # it — keep it on-list so it doesn't get redacted needlessly.
+        "telemetry",
+    }
+)
+
+
+def _normalize_subcommand(raw: str) -> str:
+    if not isinstance(raw, str):
+        return "other"
+    return raw if raw in _ALLOWED_SUBCOMMANDS else "other"
+
+
 def get_queue() -> TelemetryQueue:
     """Return the process-singleton queue, constructing it on first use.
 
@@ -207,7 +243,7 @@ def session_start(
     # ``None`` on session_start (defined for session_end only). The
     # ``engine`` slot stays for v1 back-compat with no runtime value.
     payload["session"] = {
-        "subcommand": subcommand,
+        "subcommand": _normalize_subcommand(subcommand),
         "duration_seconds": None,
         "flag_names": hash_flag_names(argv) if argv is not None else [],
         "engine": "",
@@ -239,7 +275,7 @@ def session_end(
     # ``engine`` slot for v1 back-compat, ``flag_names`` empty for
     # session_end (argv parsing happened at session_start).
     payload["session"] = {
-        "subcommand": subcommand,
+        "subcommand": _normalize_subcommand(subcommand),
         "duration_seconds": int(max(0, duration_seconds)),
         "flag_names": [],
         "engine": "",

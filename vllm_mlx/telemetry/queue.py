@@ -114,13 +114,23 @@ class TelemetryQueue:
             if self._thread is not None and self._thread.is_alive():
                 return
             self._stop.clear()
-            self._wake.clear()
+            # Preserve a pending wake (round 11 codex catch): if events
+            # were enqueued past the threshold BEFORE ``start()`` ran,
+            # blindly clearing the wake would lose that signal and the
+            # batch would sit until the 60 s idle flush. Only clear if
+            # we'd otherwise carry over a wake from a previous lifecycle.
+            with self._lock:
+                threshold_already_crossed = len(self._events) >= self._flush_threshold
+            if not threshold_already_crossed:
+                self._wake.clear()
             self._thread = threading.Thread(
                 target=self._loop,
                 name="rapid-mlx-telemetry",
                 daemon=True,
             )
             self._thread.start()
+            if threshold_already_crossed:
+                self._wake.set()
             if not self._atexit_registered:
                 atexit.register(self.shutdown)
                 self._atexit_registered = True

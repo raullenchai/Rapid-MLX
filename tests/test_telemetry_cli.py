@@ -193,18 +193,27 @@ def test_session_end_synchronously_drained_before_exit(fake_home):
         server.shutdown()
         server.server_close()
 
-    # Exactly one POST (single batch) carrying exactly two envelopes.
-    assert len(captured) == 1, f"expected 1 batch, got {len(captured)}: {captured}"
-    batch = captured[0].get("batch")
-    assert isinstance(batch, list), f"missing batch field: {captured[0]}"
-    events = {ev.get("event") for ev in batch}
+    # Both lifecycle events must land — they MAY come in the same
+    # batch (short ``models`` run finishes well under ``FLUSH_INTERVAL_S``)
+    # or in two batches if a long-running command crosses the idle
+    # flush boundary. Round 11 codex caught the prior "exactly one
+    # batch" assertion as a real flake risk for long-running serve
+    # processes. Collect events across all batches instead.
+    assert captured, f"no POST captured (return={r.returncode}, stderr={r.stderr})"
+    all_events = [
+        ev
+        for batch in captured
+        if isinstance(batch.get("batch"), list)
+        for ev in batch["batch"]
+    ]
+    events = {ev.get("event") for ev in all_events}
     assert events == {"session_start", "session_end"}, (
-        f"batch did not contain both lifecycle events; got events={events}, "
-        f"batch={batch}"
+        f"lifecycle events missing across {len(captured)} batch(es); "
+        f"got events={events}, batches={captured}"
     )
     # ``session_id`` must be identical across both — race-condition
     # regression catch (round 6 fix #3).
-    session_ids = {ev["session_id"] for ev in batch}
+    session_ids = {ev["session_id"] for ev in all_events}
     assert len(session_ids) == 1, (
         f"session_start and session_end carry different session_ids "
         f"(race in lazy init?): {session_ids}"

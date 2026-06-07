@@ -169,6 +169,26 @@ def test_cli_kill_switch_overrides_opt_in(opted_in, stub_queue):
 # ---------------------------------------------------------- shape when on
 
 
+def test_subcommand_normalized_to_allowlist(opted_in, stub_queue):
+    """Round 11 codex review: ``subcommand`` was the last free-form
+    ``str`` slot on ``session_start``/``session_end``, the same shape
+    of escape hatch closed for ``endpoint`` / ``category`` / ``phase``.
+    Pin known values pass through, unknown collapse to ``"other"``."""
+    from vllm_mlx.telemetry import emit
+
+    emit.session_start(subcommand="serve")
+    assert stub_queue[-1]["session"]["subcommand"] == "serve"
+
+    emit.session_end(subcommand="serve", duration_seconds=10)
+    assert stub_queue[-1]["session"]["subcommand"] == "serve"
+
+    # An internal / undocumented subcommand collapses.
+    leak = "internal:dump?path=/Users/alice/secrets.txt"
+    emit.session_start(subcommand=leak)
+    assert stub_queue[-1]["session"]["subcommand"] == "other"
+    assert "alice" not in repr(stub_queue[-1])
+
+
 def test_runtime_payload_carries_every_schema_v1_field(opted_in, stub_queue):
     """Round 8 codex review: ``SCHEMA_VERSION == 1`` means the runtime
     payload must include EVERY key the dataclass

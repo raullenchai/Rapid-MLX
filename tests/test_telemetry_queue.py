@@ -192,6 +192,40 @@ def test_flusher_exception_increments_failed_not_crash():
     q.shutdown(timeout=0.5)
 
 
+def test_start_preserves_wake_for_events_enqueued_pre_start():
+    """Round 11 codex review: enqueueing events past the threshold
+    BEFORE ``start()`` runs used to lose the wakeup — ``start()``
+    cleared ``_wake`` unconditionally — and the batch would sit for
+    the full 60 s idle interval. Pin that an over-threshold queue at
+    start time wakes the daemon immediately."""
+    flushed: list[list[dict]] = []
+    flushed_event = threading.Event()
+
+    def flusher(batch):
+        flushed.append(batch)
+        flushed_event.set()
+        return True
+
+    q = TelemetryQueue(flusher=flusher, flush_interval_s=60.0, flush_threshold=2)
+    # Enqueue past threshold BEFORE start. The current implementation
+    # records ``_wake`` as set inside ``enqueue`` only if the daemon
+    # has already started consuming wakes; for pre-start enqueues the
+    # signal would otherwise be lost.
+    q.enqueue({"i": 0})
+    q.enqueue({"i": 1})
+    q.start()
+    try:
+        # If start() preserves the threshold wake, this flush fires in
+        # milliseconds. Without it, it would sit for ~60 s.
+        assert flushed_event.wait(timeout=2.0), (
+            "start() lost the threshold wake — daemon did not flush "
+            "pre-start over-threshold batch within 2 s"
+        )
+        assert flushed and len(flushed[0]) == 2
+    finally:
+        q.shutdown(timeout=0.5)
+
+
 def test_start_is_idempotent():
     q = TelemetryQueue(flusher=lambda b: True)
     q.start()
