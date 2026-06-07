@@ -200,9 +200,17 @@ def session_start(
     if not is_enabled():
         return
     payload = _envelope("session_start")
+    # Round 8 codex review: the runtime payload must include every key
+    # the schema-v1 ``SessionPayload`` dataclass advertises, even
+    # default-valued ones, so external consumers parsing v1 envelopes
+    # can rely on the keys being present. ``duration_seconds`` is
+    # ``None`` on session_start (defined for session_end only). The
+    # ``engine`` slot stays for v1 back-compat with no runtime value.
     payload["session"] = {
         "subcommand": subcommand,
+        "duration_seconds": None,
         "flag_names": hash_flag_names(argv) if argv is not None else [],
+        "engine": "",
         # Slice before normalize (round 7 codex catch): if a caller
         # ever hands us 1000 paths, redacting all of them just to
         # throw 968 away wastes work for no extra privacy.
@@ -227,10 +235,14 @@ def session_end(
     if not is_enabled():
         return
     payload = _envelope("session_end")
+    # Same schema-completeness rationale as ``session_start`` above.
+    # ``engine`` slot for v1 back-compat, ``flag_names`` empty for
+    # session_end (argv parsing happened at session_start).
     payload["session"] = {
         "subcommand": subcommand,
         "duration_seconds": int(max(0, duration_seconds)),
         "flag_names": [],
+        "engine": "",
         "models_loaded": [normalize_model_path(m) for m in tuple(models_loaded)[:32]],
     }
     get_queue().enqueue(payload)

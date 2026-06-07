@@ -169,6 +169,32 @@ def test_cli_kill_switch_overrides_opt_in(opted_in, stub_queue):
 # ---------------------------------------------------------- shape when on
 
 
+def test_runtime_payload_carries_every_schema_v1_field(opted_in, stub_queue):
+    """Round 8 codex review: ``SCHEMA_VERSION == 1`` means the runtime
+    payload must include EVERY key the dataclass
+    ``SessionPayload`` documents — even default-valued ones — so v1
+    consumers parsing the envelope can rely on the keys being present.
+    The previous hand-built payload silently dropped ``duration_seconds``
+    + ``engine`` from session_start and ``engine`` from session_end.
+    Pin both runtime payloads expose the full v1 surface."""
+    from dataclasses import fields as _fields
+
+    from vllm_mlx.telemetry import emit
+    from vllm_mlx.telemetry.schema import SessionPayload
+
+    expected_keys = {f.name for f in _fields(SessionPayload)}
+
+    emit.session_start(subcommand="serve", argv=["serve"])
+    session = stub_queue[-1]["session"]
+    missing = expected_keys - set(session)
+    assert not missing, f"session_start dropped v1 keys: {missing}"
+
+    emit.session_end(subcommand="serve", duration_seconds=42)
+    session = stub_queue[-1]["session"]
+    missing = expected_keys - set(session)
+    assert not missing, f"session_end dropped v1 keys: {missing}"
+
+
 def test_session_start_envelope_when_enabled(opted_in, stub_queue):
     from vllm_mlx.telemetry import emit
 
