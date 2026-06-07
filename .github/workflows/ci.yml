@@ -34,6 +34,18 @@ jobs:
       - name: CLI ↔ Config fidelity audit
         run: python scripts/audit_cli_config_fidelity.py
 
+      # PF-3 — supply-chain hardening. Third-party GitHub Actions must
+      # pin to a 40-char commit SHA, not a mutable tag/branch. The repo
+      # currently has known pre-existing violations (codecov-action,
+      # peaceiris/gh-pages, pypa/gh-action-pypi-publish, peter-evans/
+      # repository-dispatch) tracked for follow-up — advisory mode
+      # (continue-on-error) until those are pinned in a separate
+      # hardening PR. Once clean, drop continue-on-error to make this
+      # a hard gate.
+      - name: GitHub Actions SHA pinning (advisory)
+        continue-on-error: true
+        run: python scripts/check_gha_pinning.py
+
   type-check:
     runs-on: ubuntu-latest
     steps:
@@ -98,6 +110,9 @@ jobs:
             tests/test_minimax_reasoning_parser.py \
             tests/test_pr_validate_runner.py \
             tests/test_pr_validate_codex.py \
+            tests/test_validate_release_subject.py \
+            tests/test_check_gha_pinning.py \
+            tests/test_check_mlx_upstream_calls.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
@@ -152,6 +167,7 @@ jobs:
             tests/test_streaming_simulator.py \
             tests/test_streaming_detokenizer.py \
             tests/test_tool_logits.py \
+            tests/test_no_mllm_flag.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"

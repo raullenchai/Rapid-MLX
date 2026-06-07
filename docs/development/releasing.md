@@ -120,3 +120,82 @@ chore: bump version to X.Y.Z
 ```
 
 — where `X.Y.Z` is three numeric components matching the new `pyproject.toml` version. Anything else (extra words, different prefix, dev suffixes) is silently ignored.
+
+> **Squash-suffix trap.** GitHub's default squash-merge appends `(#NN)` to the subject. That suffix breaks the regex match and strands the version between commit-on-main and PyPI/Homebrew publish (recurring footgun — see `release_squash_subject` memory). Always pass `--subject` to `gh pr merge`:
+>
+> ```bash
+> gh pr merge <PR#> --repo raullenchai/Rapid-MLX --squash \
+>   --subject "chore: bump version to X.Y.Z" --delete-branch
+> ```
+>
+> The `release-preflight.yml` workflow checks bump-PR titles against the same regex up-front; `scripts/validate_release_subject.py` is the structural belt-and-suspenders.
+
+## Pre-release validation gauntlet (11 gates)
+
+The full set of gates that block a release. Some run automatically in CI, others must be run locally on an M-series machine before pushing the bump commit.
+
+| # | Gate | CI runner | M3-only | Catches |
+|---|---|---|---|---|
+| G1 | `make release-smoke` — clean-room install + import | `release-preflight.yml` (macOS-14) | — | dev mlx symbol drift (#408) |
+| G2 | Codex review × 2 rounds on the PR | local | local | every PR-author bug class |
+| G3 | CLI ↔ Config fidelity audit | `ci.yml` lint (ubuntu) | — | silent CLI flag drop (#400) |
+| G4 | `make smoke` — lint + 4500+ unit tests | `ci.yml` test-matrix (linux subset) + `test-apple-silicon` (macOS-14) | full `make smoke` on local | parser/router regressions |
+| G5 | `make stress` — 8 scenarios incl. tool storm | — | **M3** (needs cached model + live server) | concurrent-batching regressions |
+| G6 | Live-server fix-path repro | — | **M3** (needs live server) | fix doesn't ship to the user-visible path |
+| G7 | SDK integration (anthropic / pydantic_ai / smolagents) | — | **M3** (needs cached weights + PyPI deps) | router-level breakage that unit tests miss |
+| G8 | Microbench changed code path | — | **M3** (needs perf baseline DB) | silent perf regressions |
+| G9 | 10-sequential latency check | — | **M3** (needs live server) | KV-cache / hot-path regressions |
+| G10 | MLX upstream cross-chip-family audit | `release-preflight.yml` advisory (macOS-14) | review the warnings | M5-style #404 landmines |
+| G11 | Auto-routing escape-hatch registry | `release-preflight.yml` (macOS-14) + `ci.yml` test-apple-silicon | — | silent auto-detection failures (#393/#400/#404) |
+
+### What CI covers automatically on the bump PR
+
+When you open a PR titled `chore: bump version to X.Y.Z`, `release-preflight.yml` runs:
+
+- **PF-1** — `scripts/validate_release_subject.py` checks the title matches the auto-release regex (catches the `(#NN)` trap).
+- **Version coherence** — `pyproject.toml` version line must equal the version in the title.
+- **G1** — `make release-smoke` on macOS-14.
+- **G10** — `scripts/check_mlx_upstream_calls.py` scans the installed mlx-lm/mlx-vlm tree for module-scope calls into chip-family-sensitive APIs; **advisory only**, the release-er decides per finding.
+- **G11** — `tests/test_no_mllm_flag.py` 33-test registry asserts every auto-routing helper exposes both force-on and force-off CLI flags.
+
+The `preflight-summary` job aggregates them so the bump PR has a single required check.
+
+### What you must run locally on M3 before pushing the bump commit
+
+These need cached model weights and live MLX inference — they can't run on GitHub-hosted runners:
+
+```bash
+# In one shell — start the server with the alias the fix targets:
+python3.12 -m vllm_mlx.cli serve qwen3.5-4b --port 8000
+
+# In another shell, run all four:
+make stress                          # G5 — 8-scenario stress test
+# G6 — boot the fix-path-specific curl repro; see PR description
+python3.12 tests/integrations/test_anthropic_sdk.py    # G7
+python3.12 tests/integrations/test_pydantic_ai_full.py # G7
+python3.12 tests/integrations/test_smolagents_full.py  # G7
+# G8 — microbench the changed code path against the prior version
+# G9 — 10 sequential requests, watch tok/s stability
+```
+
+Document each result in the bump PR description. If any M3-only gate is skipped, explain why (e.g. "G7: smolagents failures pre-existing on main, see <ref>").
+
+### Gates with known pitfalls
+
+| Pitfall | Memory ref | Mitigation |
+|---|---|---|
+| `(#NN)` squash suffix breaks regex | `release_squash_subject` | PF-1 + doc note above |
+| `skip-version-bump` label needs PR close+reopen to refire | `gotcha_skip_version_bump_label` | Doc note in `version-check.yml`; user must close+reopen or push to refire `pull_request` event |
+| Mutable GitHub Actions tags as supply-chain vector | `pr_merge_sop` §7 | `scripts/check_gha_pinning.py` (advisory in `ci.yml` lint pending pinning cleanup) |
+| MLX upstream new module-scope calls (M5 #404) | `release_workflow` G10 | `scripts/check_mlx_upstream_calls.py` runs in `release-preflight.yml` G10 |
+| Codex-skip rationalization on bump PRs ("feels like just a version bump") | `feedback_release_sop_third_offense` | G2 stays local — the 11-gate table above is the explicit override of "feels small" |
+
+### Adding a new gate
+
+When a release-time bug class recurs:
+
+1. Write the gate as a pure-Python script under `scripts/` if it doesn't need MLX.
+2. Add it to `release-preflight.yml` (a new job + the `preflight-summary` aggregator).
+3. Add unit tests under `tests/test_<gate>.py` covering pass + fail + edge cases.
+4. Append a row to the 11-gate table above with the catches/CI columns.
+5. If the gate is M3-only, add it to the "must run locally" list with the exact command.

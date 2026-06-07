@@ -222,6 +222,28 @@ Before merge, the PR description must accurately reflect actual current state:
 - If the squash subject contains `(#NN)` GitHub auto-suffix on a `chore: bump version to X.Y.Z` commit, override with `--subject` — the regex in `auto-release.yml` is strict.
 - After merge, verify `git log raullenchai/main --oneline -1` shows your squash commit.
 
+## CI coverage of these steps
+
+The CI runs a subset of the gauntlet automatically. The table maps each step to where it actually executes — when CI is green, only the local-only rows still require human action:
+
+| Step | CI coverage | M3-local-only | Notes |
+|---|---|---|---|
+| 0 — necessity | — | local | judgment call, can't automate |
+| 1 — pre-flight | partial (`version-check.yml` blast-radius detection) | local | PR description quality is automated in `pr_validate.steps.cl_description_quality` |
+| 2 — codex review | — | local | codex-bot runs on PR push events; convergence is human-judged |
+| 3 — test coverage | `ci.yml` (existence of `tests/test_<scope>*.py` files) | local mutation spot-check | mutation testing is the local part |
+| 4 — lint + format | `ci.yml` lint job (ruff, ruff format, audit_cli_config_fidelity, gha-pinning advisory) | — | full coverage |
+| 5 — broader unit suite | `ci.yml` test-matrix (linux subset) + test-apple-silicon (mlx-dependent) | full `make smoke` | linux runs ~20 curated test files; macOS runs the mlx-importing tests |
+| 6 — pr_validate | partial (test_plan_check + cl_description_quality auto-run by `ci.yml` test-matrix) | full pipeline including deepseek + stress | DeepSeek + stress_e2e_bench are local-only |
+| 7 — supply chain | partial (`pr_validate.supply_chain` step, gha-pinning advisory) | local pip-audit + license review | license drift + transitive deps still local |
+| 8 — doctor `make check` | — | **local** (needs MLX + cached weights) | inference-touching PRs only |
+| 9 — Anthropic-compat | — | **local** (needs MLX + live server) | parser/router PRs only |
+| 10 — CI gate | `ci.yml` aggregation step | — | full coverage |
+| 11 — PR description audit | `pr_validate.cl_description_quality` (auto) | local final read | automated rejects empty bodies and bad titles |
+| 12 — merge | `auto-release.yml` regex match + `release-preflight.yml` PF-1 subject pre-check | — | strict subject enforced both PR-time and post-merge |
+
+For release-time gates (the 11-gate gauntlet that fires on bump PRs), see [`releasing.md` § "Pre-release validation gauntlet"](releasing.md#pre-release-validation-gauntlet-11-gates).
+
 ## Common pitfalls
 
 - **"Tests pass on my branch" ≠ "no regression"** — always confirm pre-existing flakes on clean main, never assume.
@@ -230,6 +252,11 @@ Before merge, the PR description must accurately reflect actual current state:
 - **Hybrid models** (`is_hybrid=True`: Qwen3.5/3.6, Qwopus, Nemotron, Granite4) cannot use spec-decode / suffix-decode. Trust the gate.
 - **Background processes block GPU** — orphaned `rapid-mlx serve` from prior sessions can hang pytest. `pkill -f "vllm_mlx.cli serve"` before benches.
 - **Auto-deploy blast radius** — merging to main with version bump = instant PyPI + Homebrew release. External PR review must include the Step 7 supply-chain audit before merge.
+- **Squash-suffix trap** — GitHub's default squash-merge appends `(#NN)` to the subject, breaking `auto-release.yml`'s regex. Always pass `--subject` to `gh pr merge` for bump PRs. `release-preflight.yml` PF-1 catches this pre-merge.
+- **`skip-version-bump` label refire** — adding the label after `version-check.yml` has already failed does NOT auto-re-run the workflow (the label-add event isn't a `pull_request` event the bypass step listens to). Either close+reopen the PR or push a commit to refire. Memory: `gotcha_skip_version_bump_label_after_run`.
+- **A/B classify validation-surfaced bugs** — when `pr_validate` or codex surfaces a bug, replay against base/main before deciding it's PR-introduced. Pre-existing bugs are follow-up issues, not PR scope creep. Memory: `feedback_pr_scope_ab_classify_first`.
+- **Codex+DeepSeek convergence asymmetry** — codex converges in ~9 rounds, DeepSeek is asymptotic. Run codex to convergence, then ONE DeepSeek round. Memory: `codex_deepseek_convergence_asymmetry`.
+- **Pre-existing pre-existing flake confirmation** — use a worktree, not `git stash`. The stash pattern leaves work stashed if pytest crashes mid-run.
 
 ## Tracked SOP improvements
 

@@ -1,0 +1,180 @@
+name: Release pre-flight
+
+# Runs SOP gates that block a release if they fail. Triggered on PRs
+# whose title matches the strict bump subject ``chore: bump version to
+# X.Y.Z`` — the same regex the auto-release.yml workflow watches post-
+# merge.
+#
+# Gate coverage (see docs/development/release_workflow.md for the
+# canonical list):
+#
+#   G1   clean-room install + import smoke     macOS-14
+#   G2   codex review presence assertion       advisory comment
+#   G3   CLI ↔ Config fidelity audit           covered by ci.yml lint
+#   G10  MLX upstream cross-chip-family scan   advisory
+#   G11  auto-routing escape-hatch registry    macOS-14 (needs MLX)
+#   PF-1 squash subject regex pre-check        ubuntu-latest
+#
+# What this workflow does NOT cover (M3-only, runs locally — see
+# release_workflow.md):
+#   G4 full make smoke (covered by ci.yml test-apple-silicon subset)
+#   G5 make stress      — needs cached weights + live server
+#   G6 fix-path repro   — needs live server
+#   G7 SDK integration  — needs cached weights + network
+#   G8 microbench       — needs perf-baseline infra (#TBD)
+#   G9 latency 10-seq   — needs live server
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  detect-bump-pr:
+    runs-on: ubuntu-latest
+    outputs:
+      is_bump: ${{ steps.check.outputs.is_bump }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - id: check
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # Match the auto-release.yml regex EXACTLY. If the PR title
+          # doesn't match, every job below is skipped — non-bump PRs
+          # pay zero CI cost.
+          if echo "$TITLE" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+$'; then
+            VERSION=$(echo "$TITLE" | sed -E 's/^chore: bump version to ([0-9]+\.[0-9]+\.[0-9]+)$/\1/')
+            echo "is_bump=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "Detected bump PR for v$VERSION"
+          else
+            echo "is_bump=false" >> "$GITHUB_OUTPUT"
+            echo "Not a bump PR — skipping all preflight gates"
+          fi
+
+  pf1-subject-regex:
+    # PF-1 — verifies the PR title would auto-release cleanly. Catches
+    # the `(#NN)` squash-suffix trap upfront instead of after a botched
+    # merge to main. Pure structural; runs on every PR opened/edited.
+    needs: detect-bump-pr
+    if: needs.detect-bump-pr.outputs.is_bump == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: PF-1 — validate bump PR title matches auto-release regex
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: python scripts/validate_release_subject.py --subject "$TITLE"
+      - name: Verify pyproject.toml version matches title
+        env:
+          TITLE_VER: ${{ needs.detect-bump-pr.outputs.version }}
+        run: |
+          PYPROJECT_VER=$(grep -m1 '^version *=' pyproject.toml | awk -F'"' '{print $2}')
+          echo "title: $TITLE_VER"
+          echo "pyproject.toml: $PYPROJECT_VER"
+          if [ "$TITLE_VER" != "$PYPROJECT_VER" ]; then
+            echo "::error::PR title says v$TITLE_VER but pyproject.toml is $PYPROJECT_VER. Bump pyproject.toml or rename the PR."
+            exit 1
+          fi
+
+  g1-release-smoke:
+    # G1 — clean-room install + import smoke on macOS-14. Catches the
+    # #408 class where dev mlx has a symbol PyPI mlx doesn't.
+    needs: detect-bump-pr
+    if: needs.detect-bump-pr.outputs.is_bump == 'true'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: G1 — clean-room install + import smoke
+        run: make release-smoke
+
+  g10-upstream-mlx-scan:
+    # G10 — advisory scan of installed mlx-lm/mlx-vlm for module-scope
+    # calls into chip-family-sensitive APIs. Surfaces, does not block.
+    # The release-er must cite "audited" in the PR description if any
+    # finding lands in a code path our compat shim doesn't already cover.
+    needs: detect-bump-pr
+    if: needs.detect-bump-pr.outputs.is_bump == 'true'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install mlx-lm + mlx-vlm at pyproject-pinned versions
+        # The scan must run against the EXACT version range the bump
+        # ships. Install in user-site so we don't disturb the runner's
+        # default python.
+        run: |
+          python -m pip install --upgrade pip
+          # Install only mlx-* (skip the rest — we just need the wheel
+          # tree on disk to scan).
+          MLX_LM_PIN=$(grep -m1 'mlx-lm' pyproject.toml | grep -oE '>=[0-9.]+|==[0-9.]+|~=[0-9.]+' | head -1 || true)
+          MLX_VLM_PIN=$(grep -m1 'mlx-vlm' pyproject.toml | grep -oE '>=[0-9.]+|==[0-9.]+|~=[0-9.]+' | head -1 || true)
+          pip install "mlx-lm${MLX_LM_PIN}" "mlx-vlm${MLX_VLM_PIN}"
+      - name: G10 — surface module-scope dangerous MLX calls
+        # Advisory only (no --strict). The release reviewer reads the
+        # output and decides whether each finding needs a compat shim.
+        run: python scripts/check_mlx_upstream_calls.py
+
+  g11-escape-hatch:
+    # G11 — auto-routing escape-hatch registry. Catches the class of
+    # bugs in #393 (no --no-mllm), #400 (silent flag drop), #404 (no
+    # user override for hardware probe). Requires MLX because the test
+    # introspects vllm_mlx.engine / vllm_mlx.server signatures.
+    needs: detect-bump-pr
+    if: needs.detect-bump-pr.outputs.is_bump == 'true'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install project (vision extras for full surface coverage)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[vision]"
+          pip install pytest pytest-asyncio
+      - name: G11 — escape-hatch registry test
+        run: pytest tests/test_no_mllm_flag.py -v --tb=short
+
+  preflight-summary:
+    # Roll-up so the bump PR has a single "Release pre-flight" required
+    # check to gate merge on, instead of N independent jobs.
+    needs:
+      - detect-bump-pr
+      - pf1-subject-regex
+      - g1-release-smoke
+      - g10-upstream-mlx-scan
+      - g11-escape-hatch
+    if: always() && needs.detect-bump-pr.outputs.is_bump == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate gate results
+        env:
+          PF1: ${{ needs.pf1-subject-regex.result }}
+          G1: ${{ needs.g1-release-smoke.result }}
+          G10: ${{ needs.g10-upstream-mlx-scan.result }}
+          G11: ${{ needs.g11-escape-hatch.result }}
+        run: |
+          echo "PF-1 subject regex:   $PF1"
+          echo "G1   release-smoke:   $G1"
+          echo "G10  upstream MLX:    $G10  (advisory — never fails)"
+          echo "G11  escape-hatch:    $G11"
+          # G10 is advisory — never blocks. Others must pass.
+          if [ "$PF1" != "success" ] || [ "$G1" != "success" ] || [ "$G11" != "success" ]; then
+            echo "::error::One or more release pre-flight gates failed. See docs/development/release_workflow.md for the gate definitions."
+            exit 1
+          fi
+          echo "All blocking gates passed. M3-only gates (G4-G9) must be run locally."
