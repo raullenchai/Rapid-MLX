@@ -148,6 +148,19 @@ jobs:
 
       - name: Post scorecard as PR comment
         if: github.event_name == 'pull_request'
+        # External-fork PRs run with a read-only GITHUB_TOKEN by
+        # design (GitHub's security model — the fork could otherwise
+        # abuse write access via a malicious workflow change). The
+        # comment-post will then fail with
+        # ``GraphQL: Resource not accessible by integration``.
+        # That's expected and must not block merge: the scorecard is
+        # still uploaded as an artifact in the previous step, and the
+        # ``Block merge on pipeline failure`` step below is what
+        # actually gates merge on the pipeline verdict. Marking this
+        # step best-effort keeps the comment for the common
+        # (internal-PR) path without turning every external-fork PR
+        # red — the actual verdict is already enforced separately.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.prnum.outputs.pr }}
