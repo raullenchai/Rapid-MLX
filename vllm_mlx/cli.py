@@ -4409,6 +4409,18 @@ Examples:
                 # ~12 s on every ``serve`` Ctrl-C just to file a
                 # better stat is hostile UX.
                 #
+                # Round 17 codex review acknowledged a known gap:
+                # ``atexit`` is NOT triggered by SIGTERM (systemd /
+                # Docker / Kubernetes stop signal), so a graceful
+                # service-manager shutdown skips ``session_end``
+                # entirely. The right place to plug this is the FastAPI
+                # ``lifespan`` shutdown hook in ``api/server.py``, which
+                # already coordinates with ``uvicorn``'s own SIGTERM
+                # handler. Adding a top-level ``signal.signal(SIGTERM,
+                # ...)`` here would clobber uvicorn's handler and break
+                # the user-visible "graceful shutdown" UX. Tracked for
+                # Phase 2.2 alongside the request-event wiring.
+                #
                 # ``_queue is None`` (telemetry was disabled, so
                 # ``session_end`` no-op'd and never instantiated the
                 # singleton) skips ``get_queue()`` — round 7 catch —

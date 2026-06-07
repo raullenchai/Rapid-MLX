@@ -14,11 +14,20 @@ Implementation choices, called out because they look unusual:
   install footprint or surfaces an upgrade pin. ``urllib`` is in every
   CPython 3.10+ and is already imported elsewhere in this codebase.
 
-- **HTTPS-only.** The endpoint is overridable via
-  ``RAPID_MLX_TELEMETRY_ENDPOINT`` for debug rigs and local Worker dev,
-  but we refuse anything not on ``https://``. This mirrors the share
-  PR #504 codex round 4 fix where ``URLError`` was discovered NOT to
-  be a ``TimeoutError`` subclass; we keep both in the except tuple.
+- **HTTPS except loopback dev overrides.** The endpoint is overridable
+  via ``RAPID_MLX_TELEMETRY_ENDPOINT`` for debug rigs and local Worker
+  dev. The exact rule (round 17 codex catch -- the prior "HTTPS-only"
+  shorthand made the loopback exemption look like a bug):
+    * Public hosts -- HTTPS required, no exceptions.
+    * Loopback hosts (``localhost`` / ``127.0.0.1`` / ``::1``) --
+      plain HTTP is accepted because ``wrangler dev`` serves over
+      ``http://127.0.0.1:8787`` and the bytes never leave the host.
+    * Anything else (non-loopback host on HTTPS that isn't the
+      production default) -- rejected by ``endpoint()`` returning
+      ``None`` so ``post_batch`` fails closed.
+  Mirrors the share PR #504 codex round 4 fix where ``URLError`` was
+  discovered NOT to be a ``TimeoutError`` subclass; we keep both in
+  the except tuple.
 
 - **Three attempts with two backoffs.** Telemetry must never block the
   foreground for more than ~3 × ``TIMEOUT_S`` + the backoffs (worst

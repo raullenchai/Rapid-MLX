@@ -183,6 +183,16 @@ def test_shutdown_returns_within_budget_even_if_flusher_hangs():
 
 
 def test_flusher_exception_increments_failed_not_crash():
+    """A flusher that raises must not kill the daemon (a dead daemon
+    silently disables telemetry for the rest of the process). After
+    the exception the queue must still accept work AND attempt to
+    flush it.
+
+    Round 17 codex review: the second-enqueue restart path used to
+    pass even if the daemon dropped ``{"x": 2}`` on the floor or
+    never restarted. Pin both flushes_failed >= 2 (second batch did
+    reach the flusher) and pending == 0 (it was drained, not stuck)."""
+
     def bad_flusher(batch):
         raise RuntimeError("synthetic")
 
@@ -194,10 +204,31 @@ def test_flusher_exception_increments_failed_not_crash():
     assert snap["flushes_failed"] >= 1
     assert snap["flushes_ok"] == 0
     q.shutdown(timeout=0.5)
-    # Daemon must still be capable of accepting more work after the bug.
+    # Daemon must still be capable of accepting more work after the bug,
+    # AND it must actually attempt to flush that work (not silently
+    # drop it). The flusher still raises on the second batch -- we are
+    # pinning that the path runs, not that it succeeds.
     q.start()
     q.enqueue({"x": 2})
+    # Wait for the second batch to be picked up.
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        snap = q.snapshot()
+        if snap["flushes_failed"] >= 2:
+            break
+        time.sleep(0.01)
     q.shutdown(timeout=0.5)
+
+    snap_after = q.snapshot()
+    assert snap_after["flushes_failed"] >= 2, (
+        f"second lifecycle did not attempt a flush "
+        f"(flushes_failed={snap_after['flushes_failed']}); "
+        "either the daemon never restarted or the second batch was dropped"
+    )
+    assert snap_after["pending"] == 0, (
+        f"second lifecycle left {snap_after['pending']} event(s) stuck "
+        "in the queue -- the drain on shutdown is broken"
+    )
 
 
 def test_shutdown_called_twice_does_not_double_budget():
