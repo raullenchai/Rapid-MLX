@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import itertools
 import threading
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
@@ -194,11 +195,27 @@ def _safe(fn: Any) -> Any:
     ``tests/test_telemetry_emit.py``: without it, ``inspect.signature``
     sees the bare ``(*args, **kwargs)`` of the wrapper and the test
     is silently void. Round 1 codex review caught this.
+
+    Round 14 codex review: the broad ``except Exception`` used to also
+    swallow ``TypeError`` from a call-site that drifted out of sync
+    with the helper signature (renamed kwarg, missing required arg).
+    That turned a wiring bug into a silent "no telemetry," which the
+    integration tests can't see. ``inspect.signature(fn).bind(...)``
+    is evaluated BEFORE the broad catch so any signature mismatch
+    surfaces as a normal ``TypeError`` at call time. The signature is
+    bound once at decoration time so the per-call cost is just a
+    method invocation.
     """
     import functools
+    import inspect
+
+    sig = inspect.signature(fn)
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> None:
+        # Validate the call-site BEFORE the suppression block. A
+        # TypeError here means a wiring bug; we want it visible.
+        sig.bind(*args, **kwargs)
         try:
             fn(*args, **kwargs)
         except (KeyboardInterrupt, SystemExit):
@@ -217,7 +234,7 @@ def session_start(
     *,
     subcommand: str,
     argv: list[str] | None = None,
-    models_loaded: list[str] | tuple[str, ...] = (),
+    models_loaded: Iterable[str] = (),
 ) -> None:
     """Emit a ``session_start`` payload.
 
@@ -268,7 +285,7 @@ def session_end(
     *,
     subcommand: str,
     duration_seconds: int,
-    models_loaded: list[str] | tuple[str, ...] = (),
+    models_loaded: Iterable[str] = (),
 ) -> None:
     """Emit a ``session_end`` payload.
 

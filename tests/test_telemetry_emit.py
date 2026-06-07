@@ -586,6 +586,38 @@ def test_session_models_loaded_does_not_materialize_full_input(opted_in, stub_qu
     assert len(last["session"]["models_loaded"]) == 32
 
 
+def test_safe_does_not_swallow_signature_mismatch(opted_in, stub_queue):
+    """Round 14 codex review: the broad ``except Exception`` in
+    ``_safe`` used to also swallow ``TypeError`` from a call site that
+    drifted out of sync with the helper signature — a typo on a kwarg
+    name or a missing positional argument silently turned into "no
+    telemetry," and the integration tests couldn't see the wiring
+    bug. ``inspect.signature(fn).bind(...)`` now runs BEFORE the broad
+    catch so signature mismatches raise visibly."""
+    from vllm_mlx.telemetry import emit
+
+    # Bad kwarg name — must raise TypeError, NOT become a silent no-op.
+    with pytest.raises(TypeError):
+        emit.session_start(subkommand="serve")  # typo: subkommand
+
+    # Missing required keyword.
+    with pytest.raises(TypeError):
+        emit.request(
+            # endpoint missing
+            model_alias="qwen3.5-9b",
+            stream=True,
+            tool_call_used=False,
+            prompt_tokens=10,
+            completion_tokens=10,
+            ttft_ms=100.0,
+            tps=10.0,
+            status=200,
+        )
+
+    # And nothing leaked into the queue from the broken calls.
+    assert stub_queue == []
+
+
 def test_request_model_alias_local_path_redacted(opted_in, stub_queue):
     """``model_alias`` is the ONE free-form-ish field on ``request()``,
     but it must be funnelled through ``normalize_model_path`` so a local

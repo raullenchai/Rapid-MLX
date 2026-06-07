@@ -109,6 +109,16 @@ def maybe_prompt_for_consent(
     not crash the user's serve / chat invocation just because we
     couldn't ask about telemetry.
     """
+    # ``just_collected`` is owned at function scope (round 14 codex
+    # review fix): the previous structure flipped this back to False
+    # whenever a post-``record_consent`` ``print()`` raised ``OSError``
+    # (e.g. SIGPIPE from a pipe closed by the parent shell), so the
+    # CLI dropped ``_just_collected_consent`` and emitted same-run
+    # lifecycle telemetry — violating the "nothing from before this
+    # prompt" promise. Owning the flag at the outermost scope means
+    # the final ``return`` honours whatever was already persisted, even
+    # if the thank-you / opt-out chatter blew up.
+    just_collected = False
     try:
         if cli_no_telemetry:
             return False
@@ -152,6 +162,10 @@ def maybe_prompt_for_consent(
             return False
         consent = answer in ("y", "yes")
         record_consent(consent, rapid_mlx_version=version)
+        # From here on, consent IS persisted to disk. The flag must
+        # survive any subsequent print failure so the CLI knows not to
+        # emit lifecycle telemetry for the argv that ran before the
+        # prompt.
         just_collected = True
         if consent:
             print()
@@ -179,4 +193,8 @@ def maybe_prompt_for_consent(
         # an unwritable home, terminal weirdness, or user Ctrl-C during
         # input. Programming errors (AttributeError, TypeError, ...)
         # propagate so they get noticed in development.
-        return False
+        #
+        # Return ``just_collected`` (not ``False``) so a post-record
+        # OSError still reports "yes, we just collected consent" — the
+        # round 14 codex blocker.
+        return just_collected

@@ -204,6 +204,70 @@ def test_records_prompted_version_correctly(fake_home, monkeypatch):
     assert state.prompted_version == actual_version
 
 
+def test_post_record_oserror_still_reports_just_collected(
+    fake_home, monkeypatch, capsys
+):
+    """Round 14 codex review: after ``record_consent(True)`` had
+    already succeeded, an ``OSError`` from a subsequent print (e.g.
+    SIGPIPE from a closed parent pipe) flipped the return value back
+    to ``False``. The CLI then treated the run as "not just collected"
+    and emitted same-run ``session_start`` / ``session_end`` events
+    for the argv that ran BEFORE the disclosure — directly violating
+    the disclosure's "nothing from before this prompt" promise.
+
+    Pin: once consent is persisted, the return value is True even if
+    one of the chatter prints raises OSError."""
+    from vllm_mlx.telemetry import consent as consent_mod
+    from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
+    from vllm_mlx.telemetry.state import get_consent_state
+
+    _stub_tty(monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda: "n")
+
+    # Make the opt-out chatter path raise OSError (this print runs
+    # AFTER record_consent has persisted the decision). The pre-record
+    # prints are unaffected — they go through the normal stdout.
+    def _explode():
+        raise OSError("simulated SIGPIPE from closed parent pipe")
+
+    monkeypatch.setattr(consent_mod, "consent_path", _explode)
+
+    # Despite the OSError, the function must report that consent was
+    # just collected so cli.py suppresses same-run lifecycle emit.
+    assert maybe_prompt_for_consent("serve") is True
+
+    # And the consent is genuinely on disk.
+    state = get_consent_state()
+    assert state is not None
+    assert state.consent is False
+
+
+def test_pre_record_oserror_returns_false(fake_home, monkeypatch, capsys):
+    """Companion to ``test_post_record_oserror_still_reports_just_collected``:
+    an OSError BEFORE ``record_consent`` succeeds must keep returning
+    ``False``. Otherwise we'd skip the lifecycle emit for an invocation
+    where consent was never actually collected — same disclosure
+    violation in the opposite direction."""
+    from vllm_mlx.telemetry import consent as consent_mod
+    from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
+    from vllm_mlx.telemetry.state import get_consent_state
+
+    _stub_tty(monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda: "y")
+
+    # Make ``client_id_path`` (called inside the pre-prompt disclosure
+    # print) raise OSError. Reaches the outer except BEFORE
+    # record_consent runs, so just_collected stays False.
+    def _explode():
+        raise OSError("simulated stdout-closed during disclosure")
+
+    monkeypatch.setattr(consent_mod, "client_id_path", _explode)
+
+    assert maybe_prompt_for_consent("serve") is False
+    # And nothing was persisted.
+    assert get_consent_state() is None
+
+
 def test_unwritable_home_does_not_crash_cli(fake_home, monkeypatch, capsys):
     """If recording consent fails (read-only home, disk full, etc.), the
     CLI must NOT crash — telemetry consent is never a reason for the

@@ -206,10 +206,18 @@ def test_session_end_synchronously_drained_before_exit(fake_home):
         if isinstance(batch.get("batch"), list)
         for ev in batch["batch"]
     ]
-    events = {ev.get("event") for ev in all_events}
-    assert events == {"session_start", "session_end"}, (
-        f"lifecycle events missing across {len(captured)} batch(es); "
-        f"got events={events}, batches={captured}"
+    # Round 14 codex review: comparing a ``set`` of event names hid
+    # duplicate ``session_start`` / ``session_end`` emissions — a
+    # double-fire from a stray atexit re-registration or a reentered
+    # CLI main would still pass. Assert exact counts instead so that
+    # regression is visible.
+    event_names = [ev.get("event") for ev in all_events]
+    starts = event_names.count("session_start")
+    ends = event_names.count("session_end")
+    assert starts == 1 and ends == 1, (
+        f"expected exactly one session_start + one session_end across "
+        f"{len(captured)} batch(es); got starts={starts}, ends={ends}, "
+        f"all_events={event_names}, batches={captured}"
     )
     # ``session_id`` must be identical across both — race-condition
     # regression catch (round 6 fix #3).
