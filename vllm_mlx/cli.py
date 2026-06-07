@@ -4343,10 +4343,7 @@ Examples:
     # silencing the phone" surprise that codex round 1 caught. ``status``
     # / ``preview`` / ``enable`` are excluded for consistency; their
     # observability value is near zero.
-    if (
-        getattr(args, "command", None) is not None
-        and args.command != "telemetry"
-    ):
+    if getattr(args, "command", None) is not None and args.command != "telemetry":
         import atexit as _atexit
         import sys as _sys
         import time as _time

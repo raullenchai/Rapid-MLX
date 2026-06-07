@@ -216,6 +216,39 @@ def session_end(
     get_queue().enqueue(payload)
 
 
+# Allowlist of route identifiers ``request()`` accepts. Round 2 codex
+# review caught that storing ``endpoint`` verbatim was a free-form
+# escape hatch — a future caller threading a path with a query string
+# (``/v1/chat?key=sk-...``) would have leaked it. Constrain to the
+# small set of routes Phase 2.2 actually instruments; anything else
+# collapses to ``"other"``.
+_ALLOWED_ENDPOINTS: frozenset[str] = frozenset(
+    {
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/embeddings",
+        "/v1/audio/transcriptions",
+        "/v1/messages",
+        "/v1/images/generations",
+    }
+)
+
+
+def _normalize_endpoint(raw: str) -> str:
+    """Map a caller-provided route to the small ``_ALLOWED_ENDPOINTS``
+    set; everything else becomes ``"other"``.
+
+    Strips query strings + fragments defensively in case a caller
+    passes a full URL. The signature red-line test demands that no
+    field on the payload carry caller-controlled free-form text — this
+    is the enforcement.
+    """
+    if not isinstance(raw, str):
+        return "other"
+    path = raw.split("?", 1)[0].split("#", 1)[0]
+    return path if path in _ALLOWED_ENDPOINTS else "other"
+
+
 @_safe
 def request(
     *,
@@ -238,7 +271,7 @@ def request(
         return
     payload = _envelope("request")
     payload["request"] = {
-        "endpoint": endpoint,
+        "endpoint": _normalize_endpoint(endpoint),
         "model_alias": normalize_model_path(model_alias),
         "stream": bool(stream),
         "tool_call_used": bool(tool_call_used),

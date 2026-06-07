@@ -145,11 +145,27 @@ def post_batch(events: list[dict[str, Any]]) -> bool:
         except HTTPError as e:
             # HTTPError is a URLError subclass but carries the response
             # code; treat it the same as a status-based decision above.
-            status = getattr(e, "code", 0)
-            if 400 <= status < 500:
-                _log(f"attempt {attempt_idx} → HTTPError {status} (4xx, not retrying)")
-                return False
-            _log(f"attempt {attempt_idx} → HTTPError {status} (will retry)")
+            # ``HTTPError`` ALSO holds a file-like response object on
+            # ``e.fp`` (and is itself an addinfourl). Round 2 codex
+            # review caught that letting it fall out of scope without
+            # an explicit close leaks the underlying socket across
+            # retries on platforms where the gc cycle is slow.
+            try:
+                status = getattr(e, "code", 0)
+                if 400 <= status < 500:
+                    _log(
+                        f"attempt {attempt_idx} → HTTPError {status} "
+                        "(4xx, not retrying)"
+                    )
+                    return False
+                _log(f"attempt {attempt_idx} → HTTPError {status} (will retry)")
+            finally:
+                close = getattr(e, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
         except (URLError, TimeoutError, OSError) as e:
             # URLError is NOT a TimeoutError subclass in 3.10+ — pin both
             # explicitly. ``socket.timeout`` was historically distinct

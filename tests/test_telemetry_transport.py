@@ -141,6 +141,55 @@ def test_http_error_4xx_does_not_retry():
         assert urlopen.call_count == 1
 
 
+def test_http_error_response_body_closed():
+    """Round 2 codex review: ``HTTPError`` holds a file-like response
+    object on ``e.fp``; if the handler returns/retries without an
+    explicit close, the socket leaks until gc cycles it. Pin that
+    ``e.close()`` is called for both 4xx and 5xx paths."""
+    from vllm_mlx.telemetry import transport
+
+    closed_4xx = mock.MagicMock()
+    err_4xx = HTTPError(
+        url="https://x",
+        code=400,
+        msg="bad",
+        hdrs=None,
+        fp=None,  # type: ignore[arg-type]
+    )
+    err_4xx.close = closed_4xx  # type: ignore[method-assign]
+
+    closed_5xx_a = mock.MagicMock()
+    closed_5xx_b = mock.MagicMock()
+    closed_5xx_c = mock.MagicMock()
+    err_5xx_attempts = []
+    for c in (closed_5xx_a, closed_5xx_b, closed_5xx_c):
+        e = HTTPError(
+            url="https://x",
+            code=503,
+            msg="busy",
+            hdrs=None,
+            fp=None,  # type: ignore[arg-type]
+        )
+        e.close = c  # type: ignore[method-assign]
+        err_5xx_attempts.append(e)
+
+    with (
+        mock.patch.object(transport, "urlopen", side_effect=[err_4xx]),
+        mock.patch.object(transport.time, "sleep"),
+    ):
+        transport.post_batch([{"x": 1}])
+    closed_4xx.assert_called_once()
+
+    with (
+        mock.patch.object(transport, "urlopen", side_effect=err_5xx_attempts),
+        mock.patch.object(transport.time, "sleep"),
+    ):
+        transport.post_batch([{"x": 1}])
+    closed_5xx_a.assert_called_once()
+    closed_5xx_b.assert_called_once()
+    closed_5xx_c.assert_called_once()
+
+
 def test_http_error_5xx_retries():
     from vllm_mlx.telemetry import transport
 

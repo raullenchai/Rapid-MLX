@@ -119,13 +119,24 @@ def test_shutdown_does_not_orphan_thread_for_restart_when_join_times_out():
     q.shutdown(timeout=0.1)  # times out — flusher still blocked on release
     # The daemon must NOT be considered "gone" yet: a restart would
     # double the flusher.
-    assert q._thread is not None
-    assert q._thread.is_alive()
+    original_thread = q._thread
+    assert original_thread is not None
+    assert original_thread.is_alive()
 
-    # ``start()`` is documented as idempotent — it must see the still-alive
-    # daemon and not spawn a sibling.
+    # Round 2 codex review caught that an ``active_count`` assert is
+    # too weak — pin the precise property we care about: ``start()``
+    # MUST NOT spawn a sibling. Compare by object identity of the
+    # daemon thread, and also count threads named
+    # ``rapid-mlx-telemetry`` directly so a name-only regression
+    # cannot slip past.
+    before_named = [t for t in threading.enumerate() if t.name == "rapid-mlx-telemetry"]
     q.start()
-    assert threading.active_count() < 1000  # sanity
+    after_named = [t for t in threading.enumerate() if t.name == "rapid-mlx-telemetry"]
+    assert q._thread is original_thread, "start() replaced live daemon"
+    assert len(after_named) == len(before_named), (
+        f"start() spawned a second telemetry daemon "
+        f"(before={len(before_named)}, after={len(after_named)})"
+    )
 
     # Release the old daemon so the test process can exit.
     release.set()

@@ -319,6 +319,64 @@ def test_public_emit_signatures_have_no_prompt_or_completion_fields():
         )
 
 
+def test_request_endpoint_constrained_to_allowlist(opted_in, stub_queue):
+    """Round 2 codex review: ``endpoint`` used to be stored verbatim,
+    which was a free-form escape hatch — a caller threading a path
+    with a query string (``/v1/chat?key=sk-xxx``) would have leaked
+    the value. The helper now normalises to a tiny allowlist."""
+    from vllm_mlx.telemetry import emit
+
+    # Allowed endpoint round-trips verbatim (after strip).
+    emit.request(
+        endpoint="/v1/chat/completions",
+        model_alias="qwen3.5-9b",
+        stream=True,
+        tool_call_used=False,
+        prompt_tokens=10,
+        completion_tokens=10,
+        ttft_ms=100.0,
+        tps=10.0,
+        status=200,
+    )
+    assert stub_queue[-1]["request"]["endpoint"] == "/v1/chat/completions"
+
+    # Query string + fragment stripped before allowlist match.
+    emit.request(
+        endpoint="/v1/chat/completions?api_key=sk-PROD-SECRET#anchor",
+        model_alias="qwen3.5-9b",
+        stream=True,
+        tool_call_used=False,
+        prompt_tokens=10,
+        completion_tokens=10,
+        ttft_ms=100.0,
+        tps=10.0,
+        status=200,
+    )
+    last = stub_queue[-1]
+    assert last["request"]["endpoint"] == "/v1/chat/completions"
+    blob = repr(last)
+    assert "sk-PROD-SECRET" not in blob
+    assert "anchor" not in blob
+
+    # Anything off the allowlist collapses to "other" — no caller
+    # string leaks into the payload.
+    emit.request(
+        endpoint="/internal/dump?path=/Users/alice/secrets.txt",
+        model_alias="qwen3.5-9b",
+        stream=True,
+        tool_call_used=False,
+        prompt_tokens=10,
+        completion_tokens=10,
+        ttft_ms=100.0,
+        tps=10.0,
+        status=200,
+    )
+    last = stub_queue[-1]
+    assert last["request"]["endpoint"] == "other"
+    assert "alice" not in repr(last)
+    assert "secrets.txt" not in repr(last)
+
+
 def test_request_model_alias_local_path_redacted(opted_in, stub_queue):
     """``model_alias`` is the ONE free-form-ish field on ``request()``,
     but it must be funnelled through ``normalize_model_path`` so a local
