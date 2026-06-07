@@ -50,7 +50,14 @@ jobs:
       # extraction. Pure Python (parsers don't import mlx); thresholds
       # are intentionally generous (3-5x measured M3 numbers) to
       # absorb ubuntu-latest's shared-hardware variance.
+      #
+      # PYTHONPATH=. so `from vllm_mlx.tool_parsers...` resolves
+      # without installing the package — pytest auto-adds rootdir but
+      # bare `python` doesn't, and we don't want a full `pip install -e .`
+      # here just for the parser module.
       - name: Parser microbench
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           pip install pydantic transformers jsonschema openai-harmony
           python scripts/microbench_parsers.py

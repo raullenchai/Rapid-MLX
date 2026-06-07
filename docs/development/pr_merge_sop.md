@@ -233,8 +233,8 @@ The full `pr_validate` pipeline runs on every PR via `.github/workflows/pr-valid
 | 2 — codex review | `pr_validate.codex_review` step skips on CI (no `~/.codex/auth.json`); humans run codex locally | maintainer | runs in the human's terminal; conclusions feed the PR thread |
 | 3 — test coverage | `ci.yml` (existence of `tests/test_<scope>*.py` files) | mutation spot-check | mutation testing is the cheap manual step |
 | 4 — lint + format | `ci.yml` lint job (ruff, ruff format, audit_cli_config_fidelity, gha-pinning advisory, parser microbench) | — | full coverage |
-| 5 — broader unit suite | `ci.yml` test-matrix (linux subset) + test-apple-silicon (mlx-dependent) + `pr_validate.full_unit` | — | covered three ways |
-| 6 — pr_validate | **full pipeline** (8 of 9 steps) auto via `pr-validate.yml` | `stress_e2e_bench` only | the inference step runs on M3 (see release-check-m3) |
+| 5 — broader unit suite | `ci.yml` test-matrix (linux-compat subset) + test-apple-silicon (mlx-dependent) | `pr_validate.full_unit` on M3 | CI covers the two surfaces it can; full tests/ tree runs on M3 |
+| 6 — pr_validate | **pipeline** (7 of 9 steps) auto via `pr-validate.yml` | `stress_e2e_bench` + `full_unit` | both skipped steps need MLX / a live server; covered by `make release-check-m3` |
 | 7 — supply chain | `pr_validate.supply_chain` (auto) + gha-pinning advisory | license drift + transitive deps still need a human read | partial automation; pip-audit is automated |
 | 8 — doctor `make check` | — | **M3** (needs MLX + cached weights) | inference-touching PRs only |
 | 9 — Anthropic-compat | — | **M3** (needs MLX + live server) | parser/router PRs only — covered by `make release-check-m3` |

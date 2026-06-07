@@ -161,7 +161,7 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 
 ### CI coverage — what runs without you lifting a finger
 
-**Every PR** → `pr-validate.yml` runs the full `pr_validate` pipeline (8 of 9 steps; `stress_e2e_bench` skipped because it needs inference). The scorecard is posted as a PR comment so contributor + maintainer see the verdict without leaving the PR page.
+**Every PR** → `pr-validate.yml` runs the `pr_validate` pipeline (7 of 9 steps; `stress_e2e_bench` and `full_unit` skipped because both need MLX/a live server which ubuntu-latest can't provide). The scorecard is posted as a PR comment so contributor + maintainer see the verdict without leaving the PR page. The skipped pair is covered on M3 by `make release-check-m3` at release time.
 
 **Every bump PR** (title matches `chore: bump version to X.Y.Z`) → `release-preflight.yml` adds PF-1, G1, G10 (advisory), G11. The `preflight-summary` job aggregates them so the bump PR has a single required check.
 

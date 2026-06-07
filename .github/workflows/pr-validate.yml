@@ -88,10 +88,19 @@ jobs:
         env:
           # gh CLI auth for the fetch step
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Inference-touching step is the M3-only gate (see boundary
-          # in the workflow comment above). Codex auto-skips for lack
-          # of ~/.codex/auth.json; no need to skip it here.
-          PR_VALIDATE_SKIP_STEPS: stress_e2e_bench
+          # Steps that need M3 / a full MLX install run locally only:
+          #   * stress_e2e_bench — needs a live `rapid-mlx serve`
+          #   * full_unit        — runs the WHOLE tests/ tree which
+          #                        includes MLX-importing modules; ubuntu
+          #                        has no MLX, so collection errors stack
+          #                        until pytest hits INTERNALERROR
+          #                        (exit 3). The linux-compat subset is
+          #                        already covered by ci.yml's
+          #                        test-matrix job, which runs the same
+          #                        files on 3.10/3.11/3.12 without MLX.
+          # Codex auto-skips for lack of ~/.codex/auth.json — no skip
+          # entry needed.
+          PR_VALIDATE_SKIP_STEPS: stress_e2e_bench,full_unit
           # CI: fail-fast off so the scorecard shows every issue at
           # once, not just the first one. PR-reviewer sees full picture.
           PR_VALIDATE_FAIL_FAST: ""
