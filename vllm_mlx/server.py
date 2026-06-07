@@ -43,8 +43,9 @@ import logging
 import os
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
 # Re-export for backwards compatibility with tests
@@ -404,16 +405,21 @@ from .middleware.auth import (
 )
 
 
-@app.exception_handler(HTTPException)
+# Registered on the Starlette base class, NOT fastapi.HTTPException,
+# because the router itself raises starlette.exceptions.HTTPException
+# for unknown-route 404s and wrong-method 405s. fastapi.HTTPException
+# is a subclass, so this handler catches both.
+@app.exception_handler(StarletteHTTPException)
 async def _http_exception_handler(
     request: Request,  # noqa: ARG001
-    exc: HTTPException,
+    exc: StarletteHTTPException,
 ):
     error_type_map = {
         400: "invalid_request_error",
         401: "authentication_error",
         403: "permission_error",
         404: "not_found_error",
+        405: "invalid_request_error",
         409: "conflict_error",
         429: "rate_limit_error",
     }
@@ -428,7 +434,7 @@ async def _http_exception_handler(
                 "param": None,
             }
         },
-        headers=exc.headers,
+        headers=getattr(exc, "headers", None),
     )
 
 

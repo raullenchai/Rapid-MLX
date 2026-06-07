@@ -426,3 +426,51 @@ class TestHTTPExceptionHandler:
 
         assert r.status_code == 401
         assert r.json()["error"]["type"] == "authentication_error"
+
+
+class TestHTTPExceptionHandlerOnProductionApp:
+    """End-to-end tests that hit ``vllm_mlx.server.app`` directly.
+
+    The throwaway-app tests above verify the handler's *logic* but
+    would still pass if the production ``@app.exception_handler(...)``
+    registration in ``server.py`` were removed or registered for the
+    wrong exception class. These tests close that gap: they prove the
+    real app produces the OpenAI-style error envelope, including for
+    Starlette-generated 404/405 from the router (which is its own
+    exception class, NOT fastapi.HTTPException).
+    """
+
+    def test_unknown_route_returns_openai_envelope(self):
+        # Router-level 404 raises starlette.exceptions.HTTPException,
+        # NOT fastapi.HTTPException. If the handler is registered for
+        # the fastapi class only, this still returns the default
+        # {"detail": "Not Found"} shape — which would break OpenAI-SDK
+        # clients that parse error.message.
+        from vllm_mlx.server import app
+
+        client = TestClient(app)
+        r = client.get("/this-route-does-not-exist-anywhere")
+
+        assert r.status_code == 404
+        body = r.json()
+        assert "error" in body, (
+            f"production app returned non-OpenAI shape for 404: {body}"
+        )
+        assert body["error"]["type"] == "not_found_error"
+        assert body["error"]["code"] is None
+        assert body["error"]["param"] is None
+
+    def test_wrong_method_returns_openai_envelope(self):
+        # Same class of bug as 404 — router-emitted 405.
+        from vllm_mlx.server import app
+
+        client = TestClient(app)
+        # /healthz is GET-only; a POST should 405 via the router
+        r = client.post("/healthz")
+
+        assert r.status_code == 405
+        body = r.json()
+        assert "error" in body, (
+            f"production app returned non-OpenAI shape for 405: {body}"
+        )
+        assert body["error"]["type"] == "invalid_request_error"
