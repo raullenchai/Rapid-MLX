@@ -45,39 +45,51 @@ _NON_INTERACTIVE_SUBCOMMANDS = frozenset(
     }
 )
 
+# Round 16 codex review: keep this string ASCII-only. Curly punctuation
+# and bullet glyphs raise ``UnicodeEncodeError`` on a terminal with an
+# ASCII-only stdout encoding (some CI runners, ``LC_ALL=C`` envs), and
+# the outer ``except (OSError, EOFError, KeyboardInterrupt)`` does NOT
+# catch ``UnicodeEncodeError`` — so the prompt blew up the user's
+# command. The outer except now also catches ``UnicodeError`` as a
+# belt-and-braces second guard.
 _DISCLOSURE = """\
 Rapid-MLX is open source and built on what its users report. We do not
-ship analytics SDKs, third-party trackers, or ads — and we never will.
+ship analytics SDKs, third-party trackers, or ads -- and we never will.
 With your help, we can do three concrete things better:
 
-  • Fix the crashes you actually hit, with anonymous error fingerprints
+  - Fix the crashes you actually hit, with anonymous error fingerprints
     instead of waiting for someone to file an issue.
-  • Tune performance on the Apple Silicon variants people actually run,
+  - Tune performance on the Apple Silicon variants people actually run,
     instead of whatever happens to sit on our desks.
-  • Surface the models the community runs most, so onboarding effort
+  - Surface the models the community runs most, so onboarding effort
     goes where it matters.
 
 WHAT WE SEND (only after you say yes):
-  • Your chip family + RAM tier — "Apple M3 Ultra, 256 GB", never serial
-  • OS family + major.minor version ("darwin 25.3"), arch ("arm64"),
+  - Your chip family + RAM tier -- "Apple M3 Ultra, 256 GB", never serial
+  - OS family + major.minor version ("darwin 25.3"), arch ("arm64"),
     Python major.minor ("3.12"), Rapid-MLX version ("0.6.79")
-  • Which subcommand you ran ("serve" / "chat") and its duration
-  • A UTC timestamp on each event (no timezone, second precision)
-  • Crash fingerprints — file:line:exception_class, no message text
-  • A random UUID at {client_id_path}, which you can rotate or wipe
-  • A per-process random UUID (a session id) so we can group your
+  - Which subcommand you ran ("serve" / "chat") and its duration
+  - The NAMES (only) of CLI flags you passed, sorted and de-duplicated
+    (`--api-key sk-XXX` becomes the literal string "api-key"; the value
+    "sk-XXX" is never even read). Round 16 codex review added this line
+    because hashed flag names DO leak the shape of your invocation
+    (e.g. "you set --tls-cert"), and the opt-in promise needs to cover it.
+  - A UTC timestamp on each event (no timezone, second precision)
+  - Crash fingerprints -- file:line:exception_class, no message text
+  - A random UUID at {client_id_path}, which you can rotate or wipe
+  - A per-process random UUID (a session id) so we can group your
     session_start + session_end without correlating across runs
 
 LATER (when per-request instrumentation lands, behind the same gate):
-  • Which alias you load, decode tokens/sec and latency in coarse buckets
+  - Which alias you load, decode tokens/sec and latency in coarse buckets
 
 WHAT WE NEVER SEND, EVER:
-  • Prompts. Generated text. File paths. API keys.
-  • Anything from before this prompt or from a session you opted out of.
+  - Prompts. Generated text. File paths. API keys. Flag VALUES.
+  - Anything from before this prompt or from a session you opted out of.
 
 ABOUT YOUR IP:
   Any HTTPS request reveals your IP to the receiver at the network
-  layer — we cannot change that. What we control is what we record.
+  layer -- we cannot change that. What we control is what we record.
   Our Worker never writes your IP to the stored event; it is used
   only for a transient per-minute rate-limit counter (the counter
   key is sha256(IP), the raw IP is discarded the same request).
@@ -180,21 +192,23 @@ def maybe_prompt_for_consent(
         else:
             print()
             print(
-                "Got it — telemetry stays off and we will not ask again. "
+                "Got it -- telemetry stays off and we will not ask again. "
                 "You can always opt in later with "
                 "`rapid-mlx telemetry enable`,"
             )
             print(f"or delete {consent_path()} to be re-prompted.")
         print()
         return just_collected
-    except (OSError, EOFError, KeyboardInterrupt):
-        # Telemetry consent is *never* a reason for the CLI to fail —
+    except (OSError, EOFError, KeyboardInterrupt, UnicodeError):
+        # Telemetry consent is *never* a reason for the CLI to fail --
         # but only swallow the failure modes we actually expect: I/O on
-        # an unwritable home, terminal weirdness, or user Ctrl-C during
-        # input. Programming errors (AttributeError, TypeError, ...)
-        # propagate so they get noticed in development.
+        # an unwritable home, terminal weirdness, user Ctrl-C during
+        # input, or (round 16 codex catch) a stdout encoding that
+        # cannot represent every byte of the disclosure.
+        # Programming errors (AttributeError, TypeError, ...) propagate
+        # so they get noticed in development.
         #
         # Return ``just_collected`` (not ``False``) so a post-record
-        # OSError still reports "yes, we just collected consent" — the
+        # OSError still reports "yes, we just collected consent" -- the
         # round 14 codex blocker.
         return just_collected

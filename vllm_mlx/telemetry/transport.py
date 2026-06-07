@@ -50,7 +50,7 @@ RETRY_BACKOFFS_S: tuple[float, ...] = (0.5, 2.0)
 MAX_BODY_BYTES = 200 * 1024  # Worker caps at 256 KB; leave headroom for envelope.
 
 
-def endpoint() -> str:
+def endpoint() -> str | None:
     """Resolve the production endpoint, honouring the debug env override.
 
     Resolved every call (not cached at import time) so tests can
@@ -61,17 +61,25 @@ def endpoint() -> str:
     a user's shell rc or by a malicious wrapper script) would silently
     redirect every opted-in user's events to a hostile collector, with
     the privacy guarantees of the disclosure ("only our Worker hashes
-    your IP, etc.") no longer applying. The override is now restricted
-    to localhost / 127.0.0.1 — the only legitimate use cases are
-    ``wrangler dev`` and CI fixtures. Anything else is ignored and the
-    production endpoint stands.
+    your IP, etc.") no longer applying. The override is restricted to
+    localhost / 127.0.0.1 -- the only legitimate use cases are
+    ``wrangler dev`` and CI fixtures.
+
+    Round 16 codex review: when the env var IS set but rejected (e.g.
+    a dev typo on the wrangler URL, or a stale shell rc pointing at a
+    decommissioned host), the previous behaviour silently fell back to
+    the production endpoint -- which meant dev/test traffic could leak
+    into the production R2 bucket without the user noticing. Now: a
+    set-but-rejected override returns ``None`` so ``post_batch`` fails
+    closed (drops the batch). Default (no env var at all) still
+    returns ``DEFAULT_ENDPOINT``.
     """
     raw = os.environ.get(ENDPOINT_ENV)
     if raw is None:
         return DEFAULT_ENDPOINT
     if _is_localhost_override(raw):
         return raw
-    return DEFAULT_ENDPOINT
+    return None
 
 
 def _is_localhost_override(url: str) -> bool:
@@ -163,9 +171,22 @@ def post_batch(events: list[dict[str, Any]]) -> bool:
         return False
 
     url = endpoint()
+    if url is None:
+        # Round 16 codex catch: ``RAPID_MLX_TELEMETRY_ENDPOINT`` was
+        # set but rejected by ``endpoint()`` (non-localhost host /
+        # malformed URL). The previous fallback to the production
+        # endpoint could leak dev/test traffic into the production R2
+        # bucket invisibly. Fail closed: drop the batch and log so the
+        # operator can see why nothing landed.
+        _log(
+            f"{ENDPOINT_ENV} was set but rejected -- dropping batch "
+            f"(set a localhost / 127.0.0.1 / ::1 URL or unset the env "
+            f"var to use the production endpoint)"
+        )
+        return False
     # HTTPS-only for any non-loopback host. Loopback is exempt because
     # ``endpoint()`` already restricted the override to localhost (round
-    # 3 codex catch) and ``wrangler dev`` serves over plain HTTP — the
+    # 3 codex catch) and ``wrangler dev`` serves over plain HTTP -- the
     # traffic never leaves the host. A public host on ``http://`` is
     # still refused.
     if not (url.startswith("https://") or _is_localhost_override(url)):

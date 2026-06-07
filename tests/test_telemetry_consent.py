@@ -204,6 +204,50 @@ def test_records_prompted_version_correctly(fake_home, monkeypatch):
     assert state.prompted_version == actual_version
 
 
+def test_disclosure_is_ascii_encodable():
+    """Round 16 codex review: the disclosure used to contain curly
+    bullets and em-dashes that ``str.encode('ascii')`` rejects. On a
+    terminal with an ASCII-only stdout encoding (``LC_ALL=C``, some CI
+    runners), the consent ``print()`` raised ``UnicodeEncodeError`` --
+    which is NOT an ``OSError`` subclass and therefore escaped the
+    outer catch, crashing the user's ``serve``/``chat`` invocation.
+    Pin that every printable byte of the disclosure is ASCII so the
+    prompt path never crashes for encoding reasons."""
+    from vllm_mlx.telemetry.consent import _DISCLOSURE
+
+    # ``format`` to materialize the template substitutions the runtime
+    # would resolve before printing.
+    rendered = _DISCLOSURE.format(env="RAPID_MLX_TELEMETRY", client_id_path="/tmp/x")
+    rendered.encode("ascii")  # raises UnicodeEncodeError if any non-ASCII slipped in
+
+
+def test_disclosure_unicodeerror_is_caught_safely(fake_home, monkeypatch, capsys):
+    """Round 16 codex review: even with the disclosure made ASCII-only,
+    keep ``UnicodeError`` in the outer catch as defense in depth --
+    a future copy edit shouldn't be able to crash the CLI. Pin that a
+    UnicodeError raised by the disclosure print is swallowed and the
+    function returns False (we never even reached input())."""
+    from vllm_mlx.telemetry import consent as consent_mod
+    from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
+    from vllm_mlx.telemetry.state import get_consent_state
+
+    _stub_tty(monkeypatch)
+
+    # ``client_id_path`` is called inside the disclosure format() chain
+    # (used in the WHAT WE SEND list). Make it raise a UnicodeError so
+    # the outer catch sees the kind of failure a stdout-encoding crash
+    # would produce.
+    def _boom():
+        raise UnicodeEncodeError("ascii", "x", 0, 1, "simulated stdout encoding")
+
+    monkeypatch.setattr(consent_mod, "client_id_path", _boom)
+
+    # Must NOT propagate. Returns False (nothing was collected).
+    assert maybe_prompt_for_consent("serve") is False
+    # And nothing landed on disk.
+    assert get_consent_state() is None
+
+
 def test_post_record_oserror_still_reports_just_collected(
     fake_home, monkeypatch, capsys
 ):

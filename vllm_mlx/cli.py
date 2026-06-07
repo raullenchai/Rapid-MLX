@@ -4350,6 +4350,13 @@ Examples:
     # promises "nothing from before this prompt or from a session you
     # opted out of", and the current invocation's argv was determined
     # BEFORE the user said yes. The next run starts the contract clean.
+    #
+    # ``_session_models_loaded`` is hoisted outside the conditional so
+    # the alias-resolution block below can append to it unconditionally
+    # without a NameError when telemetry was skipped. The closure
+    # passed to ``session_end`` reads the same list, so populate-then-
+    # emit is naturally ordered.
+    _session_models_loaded: list[str] = []
     if (
         getattr(args, "command", None) is not None
         and args.command != "telemetry"
@@ -4363,9 +4370,19 @@ Examples:
 
         _session_subcommand = args.command
         _session_started_at = _time.monotonic()
+        # Round 16 codex review: ``session_end`` used to be called with
+        # only ``subcommand`` + ``duration_seconds`` even though the
+        # design doc + tests describe ``models_loaded`` as "final at
+        # session_end" (for ``serve``, this is the alias that was
+        # resolved + handed to the loader). The closure-captured list
+        # is hoisted above this if-block so the alias-resolution step
+        # below populates it AFTER session_start has already fired --
+        # session_start sees an empty list (nothing loaded yet) and
+        # session_end sees the final state at process exit.
         _telemetry_emit.session_start(
             subcommand=_session_subcommand,
             argv=_sys.argv[1:],
+            models_loaded=_session_models_loaded,
         )
 
         def _emit_session_end() -> None:
@@ -4373,6 +4390,7 @@ Examples:
                 _telemetry_emit.session_end(
                     subcommand=_session_subcommand,
                     duration_seconds=int(_time.monotonic() - _session_started_at),
+                    models_loaded=_session_models_loaded,
                 )
                 # Round 5 codex review caught that the atexit handler
                 # for the queue's ``shutdown`` is registered inside
@@ -4444,6 +4462,13 @@ Examples:
                 args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
             )
             sys.exit(1)
+        # Round 16 codex catch: record the resolved (or already-canonical)
+        # model so ``session_end`` can report what this invocation loaded.
+        # ``normalize_model_path`` inside the emit helper redacts local
+        # paths to the literal ``<local>`` token, so we don't need to
+        # filter here. Captured after the error-fail path so we never
+        # record a model that failed validation.
+        _session_models_loaded.append(args.model)
 
     # --- BEGIN B2: auto-pull confirmation gate -------------------------
     # For subcommands that may trigger a first-time download of a large

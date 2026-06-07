@@ -219,19 +219,19 @@ def test_oversized_payload_dropped_locally():
         urlopen.assert_not_called()
 
 
-def test_non_https_non_loopback_override_silently_falls_back_to_default(monkeypatch):
-    """Pre-round-3, an ``http://insecure.example`` override was rejected
-    inside ``post_batch`` ("refusing non-HTTPS endpoint"). After round 3
-    the rejection happens earlier — in ``endpoint()`` — and the override
-    silently falls back to the production HTTPS default. Either way:
-    nothing on plain HTTP, on a non-loopback host, ever sees user
-    events."""
+def test_non_https_non_loopback_override_fails_closed(monkeypatch):
+    """Round 16 codex review: a set-but-rejected
+    ``RAPID_MLX_TELEMETRY_ENDPOINT`` used to silently fall back to the
+    production endpoint, which meant a dev typo (or stale shell rc)
+    could leak opted-in test events into the production R2 bucket
+    without the operator noticing. ``endpoint()`` now returns ``None``
+    when the env var is set but rejected; ``post_batch`` drops the
+    batch on ``None``. Default (env var unset) still resolves to
+    ``DEFAULT_ENDPOINT``."""
     from vllm_mlx.telemetry import transport
 
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "http://insecure.example/v1")
-    # The override is silently dropped; ``endpoint()`` returns the
-    # production default.
-    assert transport.endpoint() == transport.DEFAULT_ENDPOINT
+    assert transport.endpoint() is None
 
 
 def test_endpoint_override_only_accepts_localhost(monkeypatch):
@@ -239,7 +239,10 @@ def test_endpoint_override_only_accepts_localhost(monkeypatch):
     let a hostile shell rc / wrapper script redirect opted-in users'
     events to an attacker-controlled collector. The override is now
     restricted to localhost / 127.0.0.1 / ::1 (the only legitimate use
-    cases: wrangler dev + CI fixtures)."""
+    cases: wrangler dev + CI fixtures).
+
+    Round 16: rejected overrides now fail closed (return ``None``)
+    instead of silently falling back to the production endpoint."""
     from vllm_mlx.telemetry import transport
 
     # Localhost variants pass through.
@@ -252,7 +255,7 @@ def test_endpoint_override_only_accepts_localhost(monkeypatch):
         monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", ok)
         assert transport.endpoint() == ok, f"{ok} should be accepted"
 
-    # Anything else falls back to the production default.
+    # Anything else is REJECTED (returns None -- fail closed).
     for bad in (
         "https://attacker.example/v1/events",
         "https://localhost.attacker.example/v1/events",  # suffix attack
@@ -261,9 +264,34 @@ def test_endpoint_override_only_accepts_localhost(monkeypatch):
         "not-a-url",
     ):
         monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", bad)
-        assert transport.endpoint() == transport.DEFAULT_ENDPOINT, (
-            f"{bad} should be refused"
+        assert transport.endpoint() is None, f"{bad} should be refused (fail closed)"
+
+    # Sanity: env var entirely absent still resolves to the production
+    # default -- the fail-closed change is scoped to set-but-rejected.
+    monkeypatch.delenv("RAPID_MLX_TELEMETRY_ENDPOINT", raising=False)
+    assert transport.endpoint() == transport.DEFAULT_ENDPOINT
+
+
+def test_post_batch_fails_closed_on_rejected_override(monkeypatch):
+    """Round 16 codex review pinned: when the override is invalid,
+    ``post_batch`` must drop the batch -- NOT quietly hit production.
+    Pin the full path so a future refactor that drops the ``None``
+    check (or restores the silent fallback) is caught immediately."""
+    from vllm_mlx.telemetry import transport
+
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "https://attacker.example/v1")
+
+    called = []
+
+    def fake_urlopen(req, timeout):  # pragma: no cover -- must not be reached
+        called.append(req)
+        raise AssertionError(
+            "post_batch hit the network even though the override was rejected"
         )
+
+    with mock.patch.object(transport, "urlopen", fake_urlopen):
+        assert transport.post_batch([{"x": 1}]) is False
+    assert called == [], "fail-closed contract violated: a request was sent"
 
 
 def test_malformed_url_request_does_not_raise(monkeypatch):
@@ -288,14 +316,18 @@ def test_malformed_url_request_does_not_raise(monkeypatch):
 def test_malformed_port_localhost_override_does_not_raise(monkeypatch):
     """Round 4 codex review: ``http://localhost:bad/`` passed the
     hostname check, then later ``Request``/``urlopen`` raised a
-    ``ValueError`` outside the URLError/OSError catch — violating the
+    ``ValueError`` outside the URLError/OSError catch -- violating the
     never-raises contract. ``_is_localhost_override`` now forces
-    ``parts.port`` access so the malformed port is rejected here."""
+    ``parts.port`` access so the malformed port is rejected here.
+
+    Round 16 change: rejected overrides now fail closed (return
+    ``None``) instead of silently falling back to the production
+    endpoint. The "never raises" property is still the contract -- the
+    rejection is silent at this layer; ``post_batch`` logs + drops."""
     from vllm_mlx.telemetry import transport
 
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "http://localhost:bad/v1")
-    # Falls back to production default (the override is silently dropped).
-    assert transport.endpoint() == transport.DEFAULT_ENDPOINT
+    assert transport.endpoint() is None
 
 
 def test_last_attempt_5xx_log_says_giving_up_not_will_retry():
