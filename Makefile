@@ -1,4 +1,4 @@
-.PHONY: help smoke check full benchmark update-baselines lint audit test stress soak release-smoke clean
+.PHONY: help smoke check full benchmark update-baselines lint audit test stress soak release-smoke release-check-m3 clean
 
 # Pick the interpreter:
 #   1. Active venv ($VIRTUAL_ENV/bin/python) — wins so contributors using
@@ -86,6 +86,21 @@ update-baselines:
 # ---------- release gate ----------
 release-smoke:
 	$(PY) scripts/release_smoke.py
+
+# Full M3-only release gauntlet — runs every gate that needs a live
+# `rapid-mlx serve` (G5/G6/G7/G8 end-to-end perf/G9). The CI-side gates
+# (G1/G3/G10/G11/PF-1) run automatically on the bump PR via
+# .github/workflows/release-preflight.yml; pr_validate runs on every PR
+# via .github/workflows/pr-validate.yml. This target covers what CI
+# cannot — every gate that boots a real server.
+#
+# Time budget: ~10-15 minutes on M3 Ultra with weights warm-cached.
+# Cost: zero (your own machine + your own electricity).
+#
+# Override the test model: MODEL=qwen3.6-27b make release-check-m3
+MODEL ?= qwen3.5-4b
+release-check-m3:
+	@MODEL=$(MODEL) PY=$(PY) bash scripts/release_check_m3.sh
 
 clean:
 	rm -rf harness/runs/*

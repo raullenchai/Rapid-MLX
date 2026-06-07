@@ -55,6 +55,7 @@ def run_pipeline(
     *,
     verbose: bool = False,
     fail_fast: bool = False,
+    skip_steps: Sequence[str] = (),
     steps: Sequence[Step] | None = None,
 ) -> int:
     """Execute the pipeline. Returns process exit code (0 = merge-safe).
@@ -67,10 +68,19 @@ def run_pipeline(
     expensive stress/bench step on a PR that already failed lint or
     the codex review is just wasted compute.
 
+    ``skip_steps`` is the list of step names to drop from the pipeline
+    entirely (e.g. ``("stress_e2e_bench",)`` in CI where no MLX
+    runtime is available to boot a server). Unknown names are silently
+    ignored so a typo doesn't surprise-fail the run; the rendered
+    scorecard lists which steps actually ran.
+
     ``steps`` is an injection seam for tests; production callers leave
     it ``None`` and the module-level ``STEPS`` list is used.
     """
     pipeline = STEPS if steps is None else steps
+    if skip_steps:
+        dropped = set(skip_steps)
+        pipeline = [s for s in pipeline if s.name not in dropped]
 
     ctx = Context(pr_number=pr_number, verbose=verbose)
     ctx.work_dir = ctx.work_dir / f"pr-{pr_number}"

@@ -137,6 +137,79 @@ class TestFailFast:
         assert "## [step_c]" not in captured.err
         assert "fail-fast: [step_b]" in captured.err
 
+    def test_skip_steps_drops_named_step_entirely(self, repo_root_cwd, capsys):
+        """``skip_steps=("step_b",)`` removes step_b from the pipeline
+        before iteration. This is what CI uses to drop
+        ``stress_e2e_bench`` — a real ``rapid-mlx serve`` boot can't run
+        on a GitHub-hosted runner.
+        """
+        steps = _fake_pipeline(
+            [
+                ("step_a", "pass"),
+                ("step_b", "pass"),  # should be dropped
+                ("step_c", "pass"),
+            ]
+        )
+        rc = run_pipeline(
+            pr_number=999, fail_fast=False, skip_steps=("step_b",), steps=steps
+        )
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "## [step_a]" in captured.err
+        assert "## [step_b]" not in captured.err  # dropped
+        assert "## [step_c]" in captured.err
+
+    def test_skip_steps_unknown_name_is_silently_ignored(self, repo_root_cwd, capsys):
+        """Typo-tolerant: ``skip_steps=("does_not_exist",)`` doesn't
+        crash and doesn't mutate the pipeline. The scorecard will show
+        which steps ACTUALLY ran so a typo is visible to the operator.
+        """
+        steps = _fake_pipeline(
+            [
+                ("step_a", "pass"),
+                ("step_b", "pass"),
+            ]
+        )
+        rc = run_pipeline(
+            pr_number=999,
+            fail_fast=False,
+            skip_steps=("does_not_exist", "another_typo"),
+            steps=steps,
+        )
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "## [step_a]" in captured.err
+        assert "## [step_b]" in captured.err
+
+    def test_skip_steps_empty_default_runs_full_pipeline(self, repo_root_cwd, capsys):
+        """Default ``skip_steps=()`` is a no-op — confirms the new param
+        doesn't accidentally drop steps when callers don't pass it."""
+        steps = _fake_pipeline([("step_a", "pass"), ("step_b", "pass")])
+        rc = run_pipeline(pr_number=999, steps=steps)
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "## [step_a]" in captured.err
+        assert "## [step_b]" in captured.err
+
+    def test_skip_steps_can_drop_fetch_but_pipeline_still_runs(
+        self, repo_root_cwd, capsys
+    ):
+        """Edge case: even fetch can be skipped via the param. The runner
+        treats this as the operator's choice; downstream steps may then
+        crash for lack of context, but that's the operator's problem, not
+        the runner's. This guarantees the skip filter is uniform across
+        all steps (no special-cased exemption list to maintain)."""
+        # We use only step_a after the skipped fetch so we don't crash on
+        # a real step reading ctx.diff_path et al.
+        steps = _fake_pipeline([("step_a", "pass")])
+        rc = run_pipeline(
+            pr_number=999, fail_fast=False, skip_steps=("fetch",), steps=steps
+        )
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "## [fetch]" not in captured.err
+        assert "## [step_a]" in captured.err
+
     def test_fail_fast_does_not_stop_on_skip(self, repo_root_cwd, capsys):
         """skip is neutral — fail-fast must NOT trigger on it, otherwise
         a high-blast gate skipping on a low-blast PR would look like a

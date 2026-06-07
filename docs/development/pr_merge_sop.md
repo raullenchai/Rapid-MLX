@@ -224,25 +224,37 @@ Before merge, the PR description must accurately reflect actual current state:
 
 ## CI coverage of these steps
 
-The CI runs a subset of the gauntlet automatically. The table maps each step to where it actually executes — when CI is green, only the local-only rows still require human action:
+The full `pr_validate` pipeline runs on every PR via `.github/workflows/pr-validate.yml` — the scorecard is posted as a PR comment so you can see verdicts without leaving the PR page. The table below maps each SOP step to its CI status:
 
-| Step | CI coverage | M3-local-only | Notes |
+| Step | CI coverage | Local-only | Notes |
 |---|---|---|---|
-| 0 — necessity | — | local | judgment call, can't automate |
-| 1 — pre-flight | partial (`version-check.yml` blast-radius detection) | local | PR description quality is automated in `pr_validate.steps.cl_description_quality` |
-| 2 — codex review | — | local | codex-bot runs on PR push events; convergence is human-judged |
-| 3 — test coverage | `ci.yml` (existence of `tests/test_<scope>*.py` files) | local mutation spot-check | mutation testing is the local part |
-| 4 — lint + format | `ci.yml` lint job (ruff, ruff format, audit_cli_config_fidelity, gha-pinning advisory) | — | full coverage |
-| 5 — broader unit suite | `ci.yml` test-matrix (linux subset) + test-apple-silicon (mlx-dependent) | full `make smoke` | linux runs ~20 curated test files; macOS runs the mlx-importing tests |
-| 6 — pr_validate | partial (test_plan_check + cl_description_quality auto-run by `ci.yml` test-matrix) | full pipeline including deepseek + stress | DeepSeek + stress_e2e_bench are local-only |
-| 7 — supply chain | partial (`pr_validate.supply_chain` step, gha-pinning advisory) | local pip-audit + license review | license drift + transitive deps still local |
-| 8 — doctor `make check` | — | **local** (needs MLX + cached weights) | inference-touching PRs only |
-| 9 — Anthropic-compat | — | **local** (needs MLX + live server) | parser/router PRs only |
-| 10 — CI gate | `ci.yml` aggregation step | — | full coverage |
-| 11 — PR description audit | `pr_validate.cl_description_quality` (auto) | local final read | automated rejects empty bodies and bad titles |
+| 0 — necessity | — | judgment | can't automate |
+| 1 — pre-flight | `version-check.yml` blast-radius detection + `pr_validate.fetch` (in pr-validate.yml) | — | PR-template fields still need a human read |
+| 2 — codex review | `pr_validate.codex_review` step skips on CI (no `~/.codex/auth.json`); humans run codex locally | maintainer | runs in the human's terminal; conclusions feed the PR thread |
+| 3 — test coverage | `ci.yml` (existence of `tests/test_<scope>*.py` files) | mutation spot-check | mutation testing is the cheap manual step |
+| 4 — lint + format | `ci.yml` lint job (ruff, ruff format, audit_cli_config_fidelity, gha-pinning advisory, parser microbench) | — | full coverage |
+| 5 — broader unit suite | `ci.yml` test-matrix (linux-compat subset) + test-apple-silicon (mlx-dependent) | `pr_validate.full_unit` on M3 | CI covers the two surfaces it can; full tests/ tree runs on M3 |
+| 6 — pr_validate | **pipeline** (7 of 9 steps) auto via `pr-validate.yml` | `stress_e2e_bench` + `full_unit` | both skipped steps need MLX / a live server; covered by `make release-check-m3` |
+| 7 — supply chain | `pr_validate.supply_chain` (auto) + gha-pinning advisory | license drift + transitive deps still need a human read | partial automation; pip-audit is automated |
+| 8 — doctor `make check` | — | **M3** (needs MLX + cached weights) | inference-touching PRs only |
+| 9 — Anthropic-compat | — | **M3** (needs MLX + live server) | parser/router PRs only — covered by `make release-check-m3` |
+| 10 — CI gate | `ci.yml` aggregation + `pr-validate.yml` scorecard | — | full coverage |
+| 11 — PR description audit | `pr_validate.cl_description_quality` (auto in pr-validate.yml) | final read | automated rejects empty bodies and bad titles |
 | 12 — merge | `auto-release.yml` regex match + `release-preflight.yml` PF-1 subject pre-check | — | strict subject enforced both PR-time and post-merge |
 
-For release-time gates (the 11-gate gauntlet that fires on bump PRs), see [`releasing.md` § "Pre-release validation gauntlet"](releasing.md#pre-release-validation-gauntlet-11-gates).
+For release-time gates (the gauntlet that fires on bump PRs and the M3 manual checklist), see [`releasing.md` § "Pre-release validation gauntlet"](releasing.md#pre-release-validation-gauntlet).
+
+### What "local-only" means now
+
+After the CI build-out, the human-only surface on a typical PR is:
+
+- Step 0 (necessity) — judgment call
+- Step 2 (codex review) — runs in the maintainer's terminal; results posted to PR
+- Step 3 mutation spot-check — quick manual mutation test for critical paths
+- Step 7 partial — license + transitive dep eyeball when deps change
+- Steps 8 + 9 — only for inference-touching PRs, via `make release-check-m3`
+
+Everything else is automated. The `pr_validate` scorecard comment is the single source of truth for "is this PR mergeable?"
 
 ## Common pitfalls
 

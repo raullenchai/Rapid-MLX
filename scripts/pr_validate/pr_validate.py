@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from .context import env_truthy
@@ -36,9 +37,28 @@ def main(argv: list[str] | None = None) -> int:
             "enabled by PR_VALIDATE_FAIL_FAST=1 in the environment."
         ),
     )
+    parser.add_argument(
+        "--skip-steps",
+        default="",
+        help=(
+            "Comma-separated list of step names to drop from the pipeline. "
+            "Used by CI to skip steps that need a live ``rapid-mlx serve`` "
+            "(e.g. ``--skip-steps stress_e2e_bench``) since GitHub-hosted "
+            "runners can't host real model inference. Also accepts the env "
+            "var ``PR_VALIDATE_SKIP_STEPS`` for the same purpose. Unknown "
+            "names are silently ignored."
+        ),
+    )
     args = parser.parse_args(argv)
     fail_fast = args.fail_fast or env_truthy("PR_VALIDATE_FAIL_FAST")
-    return run_pipeline(args.pr_number, verbose=args.verbose, fail_fast=fail_fast)
+    skip_raw = args.skip_steps or os.environ.get("PR_VALIDATE_SKIP_STEPS", "")
+    skip_steps = tuple(s.strip() for s in skip_raw.split(",") if s.strip())
+    return run_pipeline(
+        args.pr_number,
+        verbose=args.verbose,
+        fail_fast=fail_fast,
+        skip_steps=skip_steps,
+    )
 
 
 if __name__ == "__main__":
