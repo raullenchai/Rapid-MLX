@@ -153,16 +153,25 @@ def test_shutdown_returns_within_budget_even_if_flusher_hangs():
 
     q = TelemetryQueue(flusher=slow_flusher, flush_interval_s=60.0, flush_threshold=1)
     q.start()
-    q.enqueue({"x": 1})
-    time.sleep(0.1)  # let daemon start the flush
+    try:
+        q.enqueue({"x": 1})
+        time.sleep(0.1)  # let daemon start the flush
 
-    t0 = time.monotonic()
-    q.shutdown(timeout=0.2)
-    elapsed = time.monotonic() - t0
-    release.set()
-    # We accept some daemon-cleanup overhead, but it must not block on
-    # the slow flusher.
-    assert elapsed < 0.5, f"shutdown blocked {elapsed:.2f}s on slow flusher"
+        t0 = time.monotonic()
+        q.shutdown(timeout=0.2)
+        elapsed = time.monotonic() - t0
+        # We accept some daemon-cleanup overhead, but it must not block on
+        # the slow flusher.
+        assert elapsed < 0.5, f"shutdown blocked {elapsed:.2f}s on slow flusher"
+    finally:
+        # Round 7 codex review caught that releasing the flusher
+        # without a final join leaks a still-running named telemetry
+        # thread into sibling tests (``test_concurrent_start_does_not_*``
+        # would then see an unexpected daemon). Release in ``finally``
+        # so even an assertion failure cleans up, then call shutdown
+        # again to drain the now-released daemon.
+        release.set()
+        q.shutdown(timeout=2.0)
 
 
 def test_flusher_exception_increments_failed_not_crash():

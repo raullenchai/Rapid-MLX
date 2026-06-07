@@ -203,7 +203,10 @@ def session_start(
     payload["session"] = {
         "subcommand": subcommand,
         "flag_names": hash_flag_names(argv) if argv is not None else [],
-        "models_loaded": [normalize_model_path(m) for m in models_loaded][:32],
+        # Slice before normalize (round 7 codex catch): if a caller
+        # ever hands us 1000 paths, redacting all of them just to
+        # throw 968 away wastes work for no extra privacy.
+        "models_loaded": [normalize_model_path(m) for m in tuple(models_loaded)[:32]],
     }
     get_queue().enqueue(payload)
 
@@ -228,7 +231,7 @@ def session_end(
         "subcommand": subcommand,
         "duration_seconds": int(max(0, duration_seconds)),
         "flag_names": [],
-        "models_loaded": [normalize_model_path(m) for m in models_loaded][:32],
+        "models_loaded": [normalize_model_path(m) for m in tuple(models_loaded)[:32]],
     }
     get_queue().enqueue(payload)
 

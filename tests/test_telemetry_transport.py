@@ -342,24 +342,20 @@ def test_non_serializable_payload_returns_false_not_raise():
         urlopen.assert_not_called()
 
 
-def test_retry_constants_define_a_finite_worst_case():
-    """Round 6 codex review: ``cli.py``'s atexit drain budget must be
-    derivable from these constants so a future change to either side
-    cannot regress past the other. Pin the constants exist + sum to a
-    bounded worst case."""
+def test_retry_constants_are_finite():
+    """Round 7 reverted the "atexit waits for transport worst case"
+    design. ``session_end`` is now best-effort: the queue's own
+    ``SHUTDOWN_BUDGET_S`` (~2 s) caps user-visible exit latency, and
+    the transport's own retries run inside that budget. We still pin
+    the constants exist with sane types so a future change can't make
+    them ``None`` or pathologically large."""
     from vllm_mlx.telemetry import transport
 
     assert isinstance(transport.TIMEOUT_S, float)
+    assert 0 < transport.TIMEOUT_S < 10
     assert isinstance(transport.RETRY_BACKOFFS_S, tuple)
-    # 3 attempts × timeout + sum of backoffs is the worst-case wall
-    # clock for ``post_batch``. cli.py's atexit shutdown adds 0.5s
-    # margin on top of this; if either side changes, the other must
-    # follow.
-    worst_case = 3 * transport.TIMEOUT_S + sum(transport.RETRY_BACKOFFS_S)
-    # Must fit in a reasonable user-perceived exit latency budget.
-    assert worst_case < 20.0, (
-        f"transport worst case {worst_case}s exceeds user-tolerable exit "
-        "latency — keep TIMEOUT_S × 3 + backoffs under 20 s"
+    assert all(
+        isinstance(b, (int, float)) and b >= 0 for b in transport.RETRY_BACKOFFS_S
     )
 
 

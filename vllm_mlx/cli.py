@@ -4383,21 +4383,22 @@ Examples:
                 # — the queue's own ``shutdown`` will be a no-op when
                 # it runs later.
                 #
-                # Budget matches ``post_batch``'s worst case (round 6
-                # codex catch): 3 attempts × ``TIMEOUT_S`` + cumulative
-                # ``RETRY_BACKOFFS_S``. A 2 s budget would have killed
-                # session_end on a slow collector. The transport gives
-                # up cleanly inside its own loop, so this is a hard
-                # ceiling on user-perceived exit latency — not a
-                # passive wait.
+                # ``session_end`` is best-effort by design (round 7
+                # codex catch): the queue's own ``SHUTDOWN_BUDGET_S``
+                # (2 s) caps user-visible exit latency. A slow or
+                # blackholed collector drops the event — that is the
+                # right trade-off, because making the user wait
+                # ~12 s on every ``serve`` Ctrl-C just to file a
+                # better stat is hostile UX.
+                #
+                # ``_queue is None`` (telemetry was disabled, so
+                # ``session_end`` no-op'd and never instantiated the
+                # singleton) skips ``get_queue()`` — round 7 catch —
+                # otherwise we'd spawn a daemon thread during
+                # interpreter shutdown for nothing.
                 try:
-                    from vllm_mlx.telemetry.transport import (
-                        RETRY_BACKOFFS_S,
-                        TIMEOUT_S,
-                    )
-
-                    _shutdown_budget_s = 3 * TIMEOUT_S + sum(RETRY_BACKOFFS_S) + 0.5
-                    _telemetry_emit.get_queue().shutdown(timeout=_shutdown_budget_s)
+                    if _telemetry_emit._queue is not None:
+                        _telemetry_emit._queue.shutdown()
                 except Exception:
                     pass
             except Exception:
