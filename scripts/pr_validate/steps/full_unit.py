@@ -14,6 +14,7 @@ broken that's a separate problem and we want to surface it loudly.
 from __future__ import annotations
 
 import subprocess
+import sys
 
 from ..base import Step, StepResult
 from ..context import Context
@@ -34,7 +35,7 @@ class FullUnitStep(Step):
         # live server (covered in step 5), and test_event_loop is the
         # long-running soak — separate budget.
         cmd = [
-            "python3.12",
+            sys.executable,
             "-m",
             "pytest",
             "tests/",

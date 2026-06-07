@@ -104,6 +104,28 @@ jobs:
           echo "--- pipeline log (stderr) ---"
           cat validate.log
 
+      - name: Dump per-step artifact logs (CI debug aid)
+        if: always()
+        run: |
+          # Each pipeline step writes a `<step>.log` under
+          # /tmp/pr_validate/pr-N/. The scorecard summary shows verdict
+          # but truncates the raw output, so when a step fails on CI
+          # the actionable bit (traceback / failing test name) is
+          # hidden in these files. Dump them inline so the PR author
+          # can see "what broke" without downloading artifacts.
+          dir=/tmp/pr_validate/pr-${{ steps.prnum.outputs.pr }}
+          if [ -d "$dir" ]; then
+            for f in "$dir"/*.log; do
+              [ -f "$f" ] || continue
+              echo ""
+              echo "::group::$(basename "$f")"
+              cat "$f"
+              echo "::endgroup::"
+            done
+          else
+            echo "(no artifact dir at $dir — pipeline never reached fetch step)"
+          fi
+
       - name: Upload scorecard artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -112,6 +134,7 @@ jobs:
           path: |
             scorecard.md
             validate.log
+            /tmp/pr_validate/pr-${{ steps.prnum.outputs.pr }}/
           retention-days: 14
 
       - name: Post scorecard as PR comment
