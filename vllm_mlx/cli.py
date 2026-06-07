@@ -4323,6 +4323,41 @@ Examples:
             cli_no_telemetry=getattr(args, "no_telemetry", False),
         )
 
+    # Telemetry session lifecycle — emit session_start once we know what
+    # subcommand we're dispatching, register an atexit hook for
+    # session_end so the duration covers the whole interactive run
+    # (including ``rapid-mlx chat`` REPLs and ``serve`` processes that
+    # only exit on Ctrl-C). emit.* helpers are individually guarded by
+    # ``is_enabled()`` — when telemetry is off the calls are cheap
+    # no-ops, no payload constructed.
+    if getattr(args, "command", None) is not None:
+        import atexit as _atexit
+        import sys as _sys
+        import time as _time
+
+        from vllm_mlx.telemetry import emit as _telemetry_emit
+
+        _session_subcommand = args.command
+        _session_started_at = _time.monotonic()
+        _telemetry_emit.session_start(
+            subcommand=_session_subcommand,
+            argv=_sys.argv[1:],
+        )
+
+        def _emit_session_end() -> None:
+            try:
+                _telemetry_emit.session_end(
+                    subcommand=_session_subcommand,
+                    duration_seconds=int(_time.monotonic() - _session_started_at),
+                )
+            except Exception:
+                # atexit handlers are run during interpreter shutdown;
+                # any uncaught exception there is logged but irrelevant
+                # to the user's exit code. Swallow defensively.
+                return
+
+        _atexit.register(_emit_session_end)
+
     # Resolve model aliases before dispatch.
     #
     # The doctor subcommand is exempt: it intentionally keeps the alias

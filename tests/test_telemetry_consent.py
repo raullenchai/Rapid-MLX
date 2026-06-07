@@ -108,7 +108,11 @@ def test_yes_records_consent_true(fake_home, monkeypatch, capsys):
     assert state is not None
     assert state.consent is True
     out = capsys.readouterr().out
-    assert "telemetry enabled" in out.lower()
+    # The post-opt-in confirmation must thank the user and surface the
+    # disable/audit affordances so they always know how to revisit.
+    lower = out.lower()
+    assert "thank you" in lower
+    assert "rapid-mlx telemetry disable" in lower
 
 
 def test_no_records_consent_false(fake_home, monkeypatch, capsys):

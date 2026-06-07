@@ -24,6 +24,7 @@ import sys
 from vllm_mlx import __version__ as _rapid_mlx_version  # noqa: N811
 from vllm_mlx.telemetry.state import (
     ENV_VAR,
+    client_id_path,
     consent_path,
     get_consent_state,
     record_consent,
@@ -45,18 +46,34 @@ _NON_INTERACTIVE_SUBCOMMANDS = frozenset(
 )
 
 _DISCLOSURE = """\
-Rapid-MLX can send anonymous usage data so we can prioritise the right
-models and catch regressions across the user base.
+Rapid-MLX is open source and built on what its users report. We do not
+ship analytics SDKs, third-party trackers, or ads — and we never will.
+With your help, we can do three concrete things better:
 
-We collect (only if you say yes): subcommand names, model alias names,
-bucketed token/latency counts, error categories, OS + chip + RAM.
+  • Fix the crashes you actually hit, with anonymous error fingerprints
+    instead of waiting for someone to file an issue.
+  • Tune performance on the chips people actually use — Apple Silicon,
+    RTX 4090, M3 Ultra — instead of whatever we happen to own.
+  • Surface the models the community runs most, so onboarding effort
+    goes where it matters.
 
-We never collect: prompts, completions, file paths, IPs, env-var values,
-or any user-generated text. Source: vllm_mlx/telemetry/.
+WHAT WE SEND (only after you say yes):
+  • Your chip family + RAM tier — "Apple M3 Ultra, 256 GB", never serial
+  • Which alias you load, decode tokens/sec and latency in coarse buckets
+  • Crash fingerprints — file:line:exception_class, no message text
+  • A random UUID at {client_id_path}, which you can rotate or wipe
 
-Type 'y' to opt in, anything else to decline. You can change this anytime
-with `rapid-mlx telemetry {{enable,disable,reset}}`. To force-disable in
-scripts: set {env}=0.
+WHAT WE NEVER SEND, EVER:
+  • Prompts. Generated text. File paths. API keys. Your IP.
+  • Anything from before this prompt or from a session you opted out of.
+
+You can see the exact bytes that would leave your machine right now:
+  rapid-mlx telemetry preview
+
+You can pause, resume, or reset your identity anytime:
+  rapid-mlx telemetry {{status,disable,enable,reset}}
+
+To force-disable in scripts or CI: set {env}=0.
 """
 
 
@@ -90,8 +107,18 @@ def maybe_prompt_for_consent(
 
         version = _rapid_mlx_version
         print()
-        print(_DISCLOSURE.format(env=ENV_VAR))
-        print("  [opt-in to anonymous telemetry?  y/N]  ", end="", flush=True)
+        print(
+            _DISCLOSURE.format(
+                env=ENV_VAR,
+                client_id_path=client_id_path(),
+            )
+        )
+        print(
+            "Contribute anonymous telemetry to make rapid-mlx better "
+            "for everyone? [y/N]  ",
+            end="",
+            flush=True,
+        )
         try:
             answer = input().strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -103,16 +130,23 @@ def maybe_prompt_for_consent(
         consent = answer in ("y", "yes")
         record_consent(consent, rapid_mlx_version=version)
         if consent:
+            print()
             print(
-                "Thanks — telemetry enabled. Disable anytime with "
-                "`rapid-mlx telemetry disable`."
+                "Thank you for contributing. "
+                "rapid-mlx will get measurably better because you said yes."
+            )
+            print(
+                "Audit anytime: `rapid-mlx telemetry status` / `... preview`. "
+                "Stop anytime: `rapid-mlx telemetry disable`."
             )
         else:
+            print()
             print(
-                "Got it — telemetry stays off. Enable later with "
-                f"`rapid-mlx telemetry enable` (or delete {consent_path()} "
-                "to be re-prompted)."
+                "Got it — telemetry stays off and we will not ask again. "
+                "You can always opt in later with "
+                "`rapid-mlx telemetry enable`,"
             )
+            print(f"or delete {consent_path()} to be re-prompted.")
         print()
     except (OSError, EOFError, KeyboardInterrupt):
         # Telemetry consent is *never* a reason for the CLI to fail —
