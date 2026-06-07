@@ -159,9 +159,7 @@ class TestFailFast:
         assert "## [step_b]" not in captured.err  # dropped
         assert "## [step_c]" in captured.err
 
-    def test_skip_steps_unknown_name_is_silently_ignored(
-        self, repo_root_cwd, capsys
-    ):
+    def test_skip_steps_unknown_name_is_silently_ignored(self, repo_root_cwd, capsys):
         """Typo-tolerant: ``skip_steps=("does_not_exist",)`` doesn't
         crash and doesn't mutate the pipeline. The scorecard will show
         which steps ACTUALLY ran so a typo is visible to the operator.
@@ -183,9 +181,7 @@ class TestFailFast:
         assert "## [step_a]" in captured.err
         assert "## [step_b]" in captured.err
 
-    def test_skip_steps_empty_default_runs_full_pipeline(
-        self, repo_root_cwd, capsys
-    ):
+    def test_skip_steps_empty_default_runs_full_pipeline(self, repo_root_cwd, capsys):
         """Default ``skip_steps=()`` is a no-op — confirms the new param
         doesn't accidentally drop steps when callers don't pass it."""
         steps = _fake_pipeline([("step_a", "pass"), ("step_b", "pass")])

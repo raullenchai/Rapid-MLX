@@ -60,7 +60,12 @@ jobs:
           #   (the step skips on CI but the module loads regardless)
           # - requests: gh API calls in fetch + supply_chain
           # - pip-audit: dependency CVE scan in supply_chain
-          pip install pyyaml requests pip-audit
+          # - ruff: needed by the `lint` step which shells out to it
+          # - test deps: mirror the test-matrix job so `full_unit` and
+          #   `targeted_tests` see the same import surface they would
+          #   if a contributor ran `make smoke` locally.
+          pip install pyyaml requests pip-audit ruff
+          pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil transformers
 
       - name: Resolve PR number
         id: prnum
