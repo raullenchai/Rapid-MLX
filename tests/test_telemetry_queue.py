@@ -138,9 +138,15 @@ def test_shutdown_does_not_orphan_thread_for_restart_when_join_times_out():
         f"(before={len(before_named)}, after={len(after_named)})"
     )
 
-    # Release the old daemon so the test process can exit.
+    # Release the old daemon so the test process can exit. Round 13:
+    # ``shutdown()`` is now latched (no-op on second call), so wait
+    # for the daemon directly via the thread reference — otherwise a
+    # stray ``rapid-mlx-telemetry`` thread would leak into
+    # ``test_concurrent_start_does_not_spawn_duplicate_daemons`` and
+    # blow its name-count assertion.
     release.set()
-    q.shutdown(timeout=1.0)
+    if q._thread is not None:
+        q._thread.join(timeout=2.0)
 
 
 def test_shutdown_returns_within_budget_even_if_flusher_hangs():
@@ -168,10 +174,12 @@ def test_shutdown_returns_within_budget_even_if_flusher_hangs():
         # without a final join leaks a still-running named telemetry
         # thread into sibling tests (``test_concurrent_start_does_not_*``
         # would then see an unexpected daemon). Release in ``finally``
-        # so even an assertion failure cleans up, then call shutdown
-        # again to drain the now-released daemon.
+        # so even an assertion failure cleans up. Round 13: ``shutdown``
+        # is now latched after the first call, so wait on the thread
+        # directly rather than calling ``shutdown`` a second time.
         release.set()
-        q.shutdown(timeout=2.0)
+        if q._thread is not None:
+            q._thread.join(timeout=2.0)
 
 
 def test_flusher_exception_increments_failed_not_crash():
@@ -190,6 +198,76 @@ def test_flusher_exception_increments_failed_not_crash():
     q.start()
     q.enqueue({"x": 2})
     q.shutdown(timeout=0.5)
+
+
+def test_shutdown_called_twice_does_not_double_budget():
+    """Round 13 codex review: ``TelemetryQueue.start()`` registers
+    ``shutdown`` via ``atexit``, but ``cli.py`` ``_emit_session_end``
+    also calls ``shutdown()`` synchronously so the ``session_end``
+    payload lands before the process tears down. With both wired,
+    a hung flusher could burn the 2 s join budget TWICE at exit —
+    once from the cli atexit hook, once from the queue's own. The
+    fix is a latched ``_shutdown_called`` so the redundant call is a
+    cheap no-op. Pin that property: total elapsed across two
+    back-to-back ``shutdown()`` calls against a hanging flusher is
+    bounded by a single budget, not two."""
+    release = threading.Event()
+
+    def slow_flusher(batch):
+        release.wait(timeout=5.0)
+        return True
+
+    q = TelemetryQueue(flusher=slow_flusher, flush_interval_s=60.0, flush_threshold=1)
+    q.start()
+    try:
+        q.enqueue({"x": 1})
+        time.sleep(0.1)  # let daemon start the flush
+
+        t0 = time.monotonic()
+        q.shutdown(timeout=0.3)
+        q.shutdown(timeout=0.3)  # must return immediately (latched)
+        elapsed = time.monotonic() - t0
+        # If the latch worked, total elapsed is one budget (≈0.3 s)
+        # plus a hair of overhead, NOT two (≈0.6 s+).
+        assert elapsed < 0.5, (
+            f"second shutdown re-spent the budget: "
+            f"elapsed={elapsed:.2f}s (expected <0.5s, latched no-op)"
+        )
+    finally:
+        # Don't let the daemon leak into the next test (the named-thread
+        # count assertion in ``test_concurrent_start_does_not_*`` is
+        # sensitive). ``shutdown`` is now latched, so wait on the
+        # thread directly.
+        release.set()
+        if q._thread is not None:
+            q._thread.join(timeout=2.0)
+
+
+def test_start_clears_shutdown_latch_for_restart():
+    """Companion to ``test_shutdown_called_twice_does_not_double_budget``:
+    a fresh ``start()`` after ``shutdown()`` must clear the latch, or
+    the next ``shutdown()`` would become a no-op and never drain the
+    new lifecycle's events."""
+    captured: list[dict] = []
+
+    def flusher(batch):
+        captured.extend(batch)
+        return True
+
+    q = TelemetryQueue(flusher=flusher, flush_interval_s=60.0, flush_threshold=999)
+    q.start()
+    q.enqueue({"a": 1})
+    q.shutdown(timeout=1.0)
+    assert [e["a"] for e in captured] == [1]
+
+    # Restart and confirm the next shutdown actually drains.
+    captured.clear()
+    q.start()
+    q.enqueue({"a": 2})
+    q.shutdown(timeout=1.0)
+    assert [e["a"] for e in captured] == [2], (
+        "second lifecycle did not drain — shutdown latch leaked across start()"
+    )
 
 
 def test_start_preserves_wake_for_events_enqueued_pre_start():

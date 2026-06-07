@@ -25,9 +25,11 @@ helpers own the four things every call site needs to get right:
 
 from __future__ import annotations
 
+import itertools
 import threading
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from vllm_mlx import __version__ as _rapid_mlx_version  # noqa: N811
 from vllm_mlx.telemetry.queue import TelemetryQueue
@@ -250,7 +252,13 @@ def session_start(
         # Slice before normalize (round 7 codex catch): if a caller
         # ever hands us 1000 paths, redacting all of them just to
         # throw 968 away wastes work for no extra privacy.
-        "models_loaded": [normalize_model_path(m) for m in tuple(models_loaded)[:32]],
+        # Round 13 codex review: ``tuple(models_loaded)[:32]`` would
+        # still materialize the entire input before capping. Use
+        # ``itertools.islice`` so the slice itself is the cap — callers
+        # that hand us a 1000-entry iterable only pay for the first 32.
+        "models_loaded": [
+            normalize_model_path(m) for m in itertools.islice(models_loaded, 32)
+        ],
     }
     get_queue().enqueue(payload)
 
@@ -279,7 +287,10 @@ def session_end(
         "duration_seconds": int(max(0, duration_seconds)),
         "flag_names": [],
         "engine": "",
-        "models_loaded": [normalize_model_path(m) for m in tuple(models_loaded)[:32]],
+        # Same itertools.islice cap as session_start (round 13 catch).
+        "models_loaded": [
+            normalize_model_path(m) for m in itertools.islice(models_loaded, 32)
+        ],
     }
     get_queue().enqueue(payload)
 
@@ -306,14 +317,22 @@ def _normalize_endpoint(raw: str) -> str:
     """Map a caller-provided route to the small ``_ALLOWED_ENDPOINTS``
     set; everything else becomes ``"other"``.
 
-    Strips query strings + fragments defensively in case a caller
-    passes a full URL. The signature red-line test demands that no
-    field on the payload carry caller-controlled free-form text — this
-    is the enforcement.
+    Round 13 codex review: a naive ``split("?")`` left a full URL like
+    ``"https://host/v1/chat/completions"`` unmatched and recorded as
+    ``"other"``, which silently hid one of the very leaks the allowlist
+    is supposed to prevent. ``urlsplit`` extracts the path regardless of
+    whether the caller passed ``"/v1/chat/completions"``, the same with
+    a query string, or a full URL.
+
+    The signature red-line test demands that no field on the payload
+    carry caller-controlled free-form text — this is the enforcement.
     """
     if not isinstance(raw, str):
         return "other"
-    path = raw.split("?", 1)[0].split("#", 1)[0]
+    try:
+        path = urlsplit(raw).path
+    except ValueError:
+        return "other"
     return path if path in _ALLOWED_ENDPOINTS else "other"
 
 

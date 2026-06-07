@@ -507,6 +507,85 @@ def test_request_endpoint_constrained_to_allowlist(opted_in, stub_queue):
     assert "secrets.txt" not in repr(last)
 
 
+def test_request_endpoint_normalizes_full_url_to_path(opted_in, stub_queue):
+    """Round 13 codex review: the previous string-split implementation
+    of ``_normalize_endpoint`` left a full URL like
+    ``https://host/v1/chat/completions`` unmatched and silently collapsed
+    it to ``"other"`` — defeating the very purpose of the allowlist for
+    any caller that builds an endpoint identifier from a full URL.
+    ``urlsplit`` extracts ``/v1/chat/completions`` regardless of the
+    surrounding scheme/netloc so the match succeeds and the field
+    carries the allowlisted route."""
+    from vllm_mlx.telemetry import emit
+
+    emit.request(
+        endpoint="https://api.example.com/v1/chat/completions",
+        model_alias="qwen3.5-9b",
+        stream=True,
+        tool_call_used=False,
+        prompt_tokens=10,
+        completion_tokens=10,
+        ttft_ms=100.0,
+        tps=10.0,
+        status=200,
+    )
+    last = stub_queue[-1]
+    assert last["request"]["endpoint"] == "/v1/chat/completions"
+    # And the surrounding URL bits must not have leaked into the payload.
+    blob = repr(last)
+    assert "api.example.com" not in blob
+    assert "https://" not in blob
+
+    # Combined: full URL + query + fragment still resolves correctly.
+    emit.request(
+        endpoint="https://host/v1/chat/completions?key=sk-PROD-LEAK#frag",
+        model_alias="qwen3.5-9b",
+        stream=True,
+        tool_call_used=False,
+        prompt_tokens=10,
+        completion_tokens=10,
+        ttft_ms=100.0,
+        tps=10.0,
+        status=200,
+    )
+    last = stub_queue[-1]
+    assert last["request"]["endpoint"] == "/v1/chat/completions"
+    blob = repr(last)
+    assert "sk-PROD-LEAK" not in blob
+    assert "frag" not in blob
+    assert "host" not in blob
+
+
+def test_session_models_loaded_does_not_materialize_full_input(opted_in, stub_queue):
+    """Round 13 codex review: the helper sliced after building a tuple
+    of the entire input, which contradicted the documented "slice
+    before normalize" intent and wasted work for callers handing in
+    large iterables. Pin that only the first 32 entries are even
+    pulled from the source by passing a generator that records how
+    many items it yields."""
+    from vllm_mlx.telemetry import emit
+
+    pulled: list[int] = []
+
+    def big_gen():
+        for i in range(10_000):
+            pulled.append(i)
+            yield f"mlx-community/model-{i}"
+
+    emit.session_start(subcommand="serve", models_loaded=big_gen())
+    last = stub_queue[-1]
+    # Generator must have been pulled exactly 32 times, NOT 10000.
+    assert len(pulled) == 32
+    assert len(last["session"]["models_loaded"]) == 32
+
+    # Same property for session_end.
+    pulled.clear()
+    emit.session_end(subcommand="serve", duration_seconds=1, models_loaded=big_gen())
+    last = stub_queue[-1]
+    assert len(pulled) == 32
+    assert len(last["session"]["models_loaded"]) == 32
+
+
 def test_request_model_alias_local_path_redacted(opted_in, stub_queue):
     """``model_alias`` is the ONE free-form-ish field on ``request()``,
     but it must be funnelled through ``normalize_model_path`` so a local

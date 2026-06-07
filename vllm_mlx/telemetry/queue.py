@@ -76,6 +76,14 @@ class TelemetryQueue:
         self._flush_threshold = flush_threshold
         self._flusher = flusher
         self._atexit_registered = False
+        # Round 13 codex review: ``TelemetryQueue.start()`` registers
+        # ``shutdown`` via atexit, but ``cli.py`` ``_emit_session_end``
+        # already calls ``shutdown()`` synchronously to make sure the
+        # session_end event lands before the process tears down. With
+        # both wired, a hung flush could burn the 2 s join budget TWICE
+        # at exit. A latched flag turns the redundant atexit call into
+        # a cheap no-op; ``start()`` clears the latch so restart works.
+        self._shutdown_called = False
         # Bookkeeping the ``rapid-mlx telemetry status`` subcommand can
         # surface. ``last_flush_ts`` is the monotonic clock at the last
         # _completed_ flush attempt (success or failure).
@@ -113,6 +121,10 @@ class TelemetryQueue:
         with self._lifecycle_lock:
             if self._thread is not None and self._thread.is_alive():
                 return
+            # Clear the round-13 shutdown latch so a fresh lifecycle
+            # actually drains again. (start/shutdown/start/shutdown is
+            # exercised by ``test_shutdown_does_not_orphan_thread*``.)
+            self._shutdown_called = False
             self._stop.clear()
             # Preserve a pending wake (round 11 codex catch): if events
             # were enqueued past the threshold BEFORE ``start()`` ran,
@@ -146,7 +158,18 @@ class TelemetryQueue:
         unconditional clearing let a later ``start()`` spawn a second
         daemon while the original was still draining a slow flusher,
         producing parallel flushers writing to the same queue.
+
+        Round 13 codex review: ``cli.py`` calls this from its session
+        atexit hook, and ``start()`` already registered another atexit
+        binding that calls it again. The latched ``_shutdown_called``
+        guard makes the second call a no-op so the 2 s join budget
+        cannot be spent twice on the same hung flusher. ``start()``
+        clears the latch so restart paths still drain.
         """
+        with self._lifecycle_lock:
+            if self._shutdown_called:
+                return
+            self._shutdown_called = True
         self._stop.set()
         self._wake.set()
         with self._lifecycle_lock:
