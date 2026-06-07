@@ -59,9 +59,14 @@ With your help, we can do three concrete things better:
 
 WHAT WE SEND (only after you say yes):
   • Your chip family + RAM tier — "Apple M3 Ultra, 256 GB", never serial
+  • OS family + major.minor version ("darwin 25.3"), arch ("arm64"),
+    Python major.minor ("3.12"), Rapid-MLX version ("0.6.79")
   • Which subcommand you ran ("serve" / "chat") and its duration
+  • A UTC timestamp on each event (no timezone, second precision)
   • Crash fingerprints — file:line:exception_class, no message text
   • A random UUID at {client_id_path}, which you can rotate or wipe
+  • A per-process random UUID (a session id) so we can group your
+    session_start + session_end without correlating across runs
 
 LATER (when per-request instrumentation lands, behind the same gate):
   • Which alias you load, decode tokens/sec and latency in coarse buckets

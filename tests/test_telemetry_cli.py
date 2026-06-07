@@ -151,7 +151,6 @@ def test_session_end_synchronously_drained_before_exit(fake_home):
     batch."""
     import http.server
     import json as _json
-    import socket
     import threading as _threading
 
     captured: list[dict] = []
@@ -172,11 +171,11 @@ def test_session_end_synchronously_drained_before_exit(fake_home):
         def log_message(self, *_a, **_k):  # silence
             return
 
-    # Bind to a free port so parallel test runs don't fight.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _CaptureHandler)
+    # Round 10 codex review caught a probe-then-bind race in the
+    # earlier version (separate ``socket.bind`` → close → re-bind).
+    # Let the server bind port 0 itself and read ``server_port``.
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    port = server.server_port
     t = _threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     try:
