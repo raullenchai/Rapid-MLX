@@ -236,6 +236,21 @@ def post_batch(events: list[dict[str, Any]]) -> bool:
             # bare ``TimeoutError`` catches both. ``OSError`` catches a
             # DNS lookup failure on some platforms.
             _log(f"attempt {attempt_idx} failed: {type(e).__name__}: {e}")
+        except (KeyboardInterrupt, SystemExit):
+            # User intent and programmatic intent always win. Telemetry
+            # must not turn a Ctrl-C into a hang.
+            raise
+        except Exception as e:
+            # Final guard for the "never raises" contract. Round 5
+            # codex review caught that ``Request(...)`` raises
+            # ``ValueError`` for control bytes and that some upstream
+            # platforms surface URL-malformed-ness as
+            # ``http.client.InvalidURL`` (an ``HTTPException`` subclass,
+            # NOT a ``URLError``). Treat anything else as a transport
+            # failure: log, drop, do not retry — retrying a malformed
+            # URL just generates the same error.
+            _log(f"attempt {attempt_idx} failed (unexpected): {type(e).__name__}: {e}")
+            return False
 
         if backoff is None:
             return False

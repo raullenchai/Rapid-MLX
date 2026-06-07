@@ -296,6 +296,12 @@ def request(
 # threading exception text or user input would have leaked. The
 # allowlists below are intentionally short — every NEW value requires
 # editing this file, which puts a privacy review on the path.
+# Aligned with the design doc's "WHEN" column in
+# ``docs/plans/telemetry-golden-profile.md`` — every Phase 2.2 call
+# site has a slot here. Round 5 codex review caught that ``oom`` was
+# missing, which would have made the planned scheduler.py MemoryError
+# handler silently collapse its category to ``"other"`` and lose the
+# triage signal.
 _ALLOWED_ERROR_CATEGORIES: frozenset[str] = frozenset(
     {
         "model_load_failure",
@@ -304,6 +310,9 @@ _ALLOWED_ERROR_CATEGORIES: frozenset[str] = frozenset(
         "request_failure",
         "lifespan_failure",
         "tool_call_failure",
+        "tool_parse",
+        "oom",
+        "shutdown_traceback",
     }
 )
 _ALLOWED_ERROR_PHASES: frozenset[str] = frozenset(
@@ -316,6 +325,7 @@ _ALLOWED_ERROR_PHASES: frozenset[str] = frozenset(
         "shutdown",
         "chat",
         "serve",
+        "request",
     }
 )
 

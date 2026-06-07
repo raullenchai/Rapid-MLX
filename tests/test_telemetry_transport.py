@@ -266,6 +266,25 @@ def test_endpoint_override_only_accepts_localhost(monkeypatch):
         )
 
 
+def test_malformed_url_request_does_not_raise(monkeypatch):
+    """Round 5 codex review: ``Request(url, ...)`` raises ``ValueError``
+    on a malformed URL (control bytes, NULL, etc.). The never-raises
+    contract was leaking that. Pin both the URL with embedded control
+    char path and the empty-scheme path."""
+    from vllm_mlx.telemetry import transport
+
+    # Patch ``endpoint()`` to return a malformed URL that nonetheless
+    # passes the prefix check (so we reach ``Request``).
+    bad_url = "https://example.com/v1/\x00events"  # NULL → ValueError
+    with (
+        mock.patch.object(transport, "endpoint", return_value=bad_url),
+        mock.patch.object(transport, "_is_localhost_override", return_value=False),
+        mock.patch.object(transport.time, "sleep"),
+    ):
+        # Must NOT raise the ValueError out to the caller.
+        assert transport.post_batch([{"x": 1}]) is False
+
+
 def test_malformed_port_localhost_override_does_not_raise(monkeypatch):
     """Round 4 codex review: ``http://localhost:bad/`` passed the
     hostname check, then later ``Request``/``urlopen`` raised a

@@ -4374,6 +4374,18 @@ Examples:
                     subcommand=_session_subcommand,
                     duration_seconds=int(_time.monotonic() - _session_started_at),
                 )
+                # Round 5 codex review caught that the atexit handler
+                # for the queue's ``shutdown`` is registered inside
+                # ``session_start`` (LIFO → runs after this handler),
+                # but relying on that ordering is fragile. Force a
+                # synchronous drain here so ``session_end`` actually
+                # lands regardless of atexit ordering quirks. Idempotent
+                # — the queue's own ``shutdown`` will be a no-op when
+                # it runs later.
+                try:
+                    _telemetry_emit.get_queue().shutdown(timeout=2.0)
+                except Exception:
+                    pass
             except Exception:
                 # atexit handlers are run during interpreter shutdown;
                 # any uncaught exception there is logged but irrelevant

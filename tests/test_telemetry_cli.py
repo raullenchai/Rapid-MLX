@@ -141,6 +141,49 @@ def test_global_no_telemetry_flag(fake_home):
     assert "disabled" in r.stdout.lower()
 
 
+def test_session_end_synchronously_drained_before_exit(fake_home):
+    """Round 5 codex review caught that the lifecycle ordering at exit
+    was implicit (atexit LIFO + queue.shutdown registered inside
+    session_start). Make the contract explicit instead: ``_emit_session_end``
+    calls ``get_queue().shutdown()`` after enqueueing, so the event
+    lands regardless of atexit ordering. Verify the subprocess emits
+    BOTH ``[telemetry]`` attempt lines (session_start + session_end)
+    when consent is enabled — a single line would mean session_end
+    was queued but never flushed."""
+    _run_cli("telemetry", "enable", home=fake_home)
+    r = _run_cli(
+        "models",
+        home=fake_home,
+        env_overrides={
+            "RAPID_MLX_TELEMETRY_DEBUG": "1",
+            # Point at a localhost endpoint that won't respond, so the
+            # transport's 3xtry+backoffs run quickly without polluting
+            # the production collector. The test cares about WHETHER
+            # the flush ATTEMPT is made, not whether it succeeds.
+            "RAPID_MLX_TELEMETRY_ENDPOINT": "http://127.0.0.1:1/never",
+        },
+    )
+    assert r.returncode == 0, r.stderr
+    # ``127.0.0.1:1`` rejects connections; the transport runs 3
+    # attempts per flush. If session_start and session_end were
+    # drained in the SAME flush, we see exactly 3 attempt lines.
+    # If session_end was queued AFTER the daemon had stopped (the
+    # atexit-ordering bug Round 5 codex review surfaced), the
+    # synchronous shutdown in ``_emit_session_end`` either drains
+    # session_end in a SECOND batch (6 attempts) or drops it entirely
+    # (3 attempts but the queue's ``enqueued_total`` would be 1, not
+    # 2 — which we can't inspect from a subprocess).
+    #
+    # With the fix in place we expect exactly 3 attempts (1 batch
+    # carrying 2 events). Lock that.
+    attempts = [line for line in r.stderr.splitlines() if "[telemetry] attempt" in line]
+    assert len(attempts) == 3, (
+        f"expected exactly 3 attempt lines for 1 batch of 2 events "
+        f"(got {len(attempts)}); session_end may have been queued late "
+        f"or dropped:\n{r.stderr}"
+    )
+
+
 def test_telemetry_subcommand_does_not_emit_lifecycle_events(fake_home):
     """Codex round 1 caught a "phone home before silencing the phone"
     issue: ``rapid-mlx telemetry disable`` (and ``reset``) would queue
