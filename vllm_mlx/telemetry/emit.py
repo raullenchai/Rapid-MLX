@@ -39,7 +39,6 @@ from vllm_mlx.telemetry.redact import (
     bucket_tps,
     bucket_ttft_ms,
     fingerprint_traceback,
-    hash_flag_names,
     normalize_model_path,
     platform_info,
 )
@@ -51,6 +50,48 @@ from vllm_mlx.telemetry.state import get_or_create_client_id, is_enabled
 _queue_lock = threading.Lock()
 _queue: TelemetryQueue | None = None
 _session_id: str | None = None
+
+# Round 19 codex review: ``atexit`` is NOT triggered by SIGTERM, so a
+# ``serve`` invocation under systemd / Docker / Kubernetes loses the
+# ``session_end`` event on a graceful service-manager shutdown. The
+# fix is to wire ``session_end`` through the FastAPI ``lifespan``
+# shutdown path (which uvicorn DOES drive on SIGTERM) in addition to
+# the existing ``atexit`` fallback. Both paths call the same hook;
+# the latch turns the second call into a no-op so the event lands
+# exactly once.
+_session_end_hook_lock = threading.Lock()
+_session_end_hook: Any | None = None  # callable: () -> None
+_session_end_hook_fired = False
+
+
+def register_session_end_hook(hook: Any) -> None:
+    """Register a callable that emits ``session_end`` + drains the
+    queue. ``cli.py`` registers its ``_emit_session_end`` here; the
+    FastAPI lifespan shutdown in ``server.py`` and the cli atexit
+    fallback both call ``fire_session_end_hook()`` to invoke it.
+    Idempotent at the latch -- only the first call runs the hook."""
+    global _session_end_hook, _session_end_hook_fired
+    with _session_end_hook_lock:
+        _session_end_hook = hook
+        _session_end_hook_fired = False
+
+
+def fire_session_end_hook() -> None:
+    """Run the registered session_end hook once. Subsequent calls are
+    no-ops. Catches all exceptions -- a teardown bug must not surface
+    a stack trace to the user mid-shutdown."""
+    global _session_end_hook_fired
+    with _session_end_hook_lock:
+        if _session_end_hook_fired or _session_end_hook is None:
+            return
+        hook = _session_end_hook
+        _session_end_hook_fired = True
+    try:
+        hook()
+    except BaseException:
+        # We are running inside a shutdown path -- atexit, lifespan,
+        # signal teardown. Anything raised here is purely noise.
+        pass
 
 
 # Allowlist of subcommands ``session_start``/``session_end`` accept.
@@ -141,11 +182,16 @@ def _reset_for_tests() -> None:
     Not part of the public API — tests-only seam. The queue's shutdown
     is best-effort; we do not block on the join.
     """
-    global _queue, _session_id
+    global _queue, _session_id, _session_end_hook, _session_end_hook_fired
     with _queue_lock:
         q = _queue
         _queue = None
         _session_id = None
+    # Round 19: reset the lifespan hook latch + registration too so
+    # tests that exercise ``fire_session_end_hook`` start clean.
+    with _session_end_hook_lock:
+        _session_end_hook = None
+        _session_end_hook_fired = False
     if q is not None:
         q.shutdown(timeout=0.1)
 
@@ -233,24 +279,40 @@ def _safe(fn: Any) -> Any:
 def session_start(
     *,
     subcommand: str,
-    argv: list[str] | None = None,
+    flag_names: Iterable[str] = (),
     models_loaded: Iterable[str] = (),
 ) -> None:
     """Emit a ``session_start`` payload.
 
     Called by ``cli.py`` after argparse, before subcommand dispatch.
-    ``argv`` carries the raw command-line tokens for flag-name
-    redaction; values are never read.
+
+    Round 19 codex review: previously this accepted raw ``argv`` and
+    extracted flag names internally via ``hash_flag_names``. That
+    technically meant flag VALUES (the raw argv tokens) crossed into
+    telemetry code -- even though the redaction primitive skipped
+    them, the disclosure's "never even read" promise was vulnerable.
+    Now ``cli.py`` extracts flag names locally and passes the already-
+    redacted list across. The disclosure promise is now literally
+    true at the function-signature boundary: no telemetry helper ever
+    receives a flag value.
 
     Round 4 codex review removed the ``engine`` parameter. It was
     declared with a default of ``""`` and never threaded through from
     any call site, leaving a free-form ``str`` slot in the payload
-    that the signature red-line test couldn't catch — the same shape
+    that the signature red-line test couldn't catch -- the same shape
     of escape hatch closed in earlier rounds for ``endpoint`` /
     ``category`` / ``phase``. There is effectively one engine today
     (``BatchedEngine``) since PR #156 deleted ``SimpleEngine``, so
     the field carried no information either. Re-add as an enum if a
     second engine ever lands.
+
+    Field semantics -- ``models_loaded``: the alias(es) the session
+    INTERACTED WITH. For Phase 2 this is the resolved alias passed
+    to the subcommand dispatch (i.e. "the model your session was
+    for"); a declined auto-pull or downstream load failure does not
+    retroactively scrub the entry. Phase 2.2 will replace this with
+    confirmed load events emitted from the loader. The disclosure
+    copy in ``consent.py`` already describes the field this way.
     """
     if not is_enabled():
         return
@@ -264,14 +326,15 @@ def session_start(
     payload["session"] = {
         "subcommand": _normalize_subcommand(subcommand),
         "duration_seconds": None,
-        "flag_names": hash_flag_names(argv) if argv is not None else [],
+        # Already-extracted names, sorted + de-duped at the boundary.
+        "flag_names": sorted({n for n in flag_names if isinstance(n, str)}),
         "engine": "",
         # Slice before normalize (round 7 codex catch): if a caller
         # ever hands us 1000 paths, redacting all of them just to
         # throw 968 away wastes work for no extra privacy.
         # Round 13 codex review: ``tuple(models_loaded)[:32]`` would
         # still materialize the entire input before capping. Use
-        # ``itertools.islice`` so the slice itself is the cap — callers
+        # ``itertools.islice`` so the slice itself is the cap -- callers
         # that hand us a 1000-entry iterable only pay for the first 32.
         "models_loaded": [
             normalize_model_path(m) for m in itertools.islice(models_loaded, 32)

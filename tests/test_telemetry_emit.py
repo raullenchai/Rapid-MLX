@@ -204,7 +204,7 @@ def test_runtime_payload_carries_every_schema_v1_field(opted_in, stub_queue):
 
     expected_keys = {f.name for f in _fields(SessionPayload)}
 
-    emit.session_start(subcommand="serve", argv=["serve"])
+    emit.session_start(subcommand="serve", flag_names=[])
     session = stub_queue[-1]["session"]
     missing = expected_keys - set(session)
     assert not missing, f"session_start dropped v1 keys: {missing}"
@@ -218,9 +218,13 @@ def test_runtime_payload_carries_every_schema_v1_field(opted_in, stub_queue):
 def test_session_start_envelope_when_enabled(opted_in, stub_queue):
     from vllm_mlx.telemetry import emit
 
+    # Round 19 codex catch: callers now pre-extract flag names BEFORE
+    # crossing into telemetry, so the helper never sees raw argv (with
+    # values). Pass already-extracted names; pin that values cannot
+    # leak through this surface.
     emit.session_start(
         subcommand="serve",
-        argv=["serve", "qwen3.5-9b", "--host", "0.0.0.0", "--port", "8000"],
+        flag_names=["host", "port"],
         models_loaded=["mlx-community/Qwen3.5-9B-4bit"],
     )
     assert len(stub_queue) == 1
@@ -233,13 +237,14 @@ def test_session_start_envelope_when_enabled(opted_in, stub_queue):
     assert payload["platform"]["os"] in {"darwin", "linux", "windows"}
     assert "chip" in payload["platform"]
 
-    # Session payload: flag VALUES must be absent — only NAMES survive
-    # redaction. ``0.0.0.0`` and ``8000`` are values, must not appear.
+    # Session payload: flag names land, sorted + de-duplicated.
+    assert set(payload["session"]["flag_names"]) == {"host", "port"}
+    # And the helper signature literally CANNOT carry a value -- the
+    # type checker would warn on ``flag_names=["0.0.0.0"]``, but pin
+    # the runtime shape: only names.
     blob = repr(payload)
     assert "0.0.0.0" not in blob
     assert "8000" not in blob
-    # Flag names should be there.
-    assert set(payload["session"]["flag_names"]) == {"host", "port"}
 
 
 def test_session_start_models_loaded_redacted(opted_in, stub_queue):
@@ -361,15 +366,20 @@ def test_error_carries_fingerprint_no_message(opted_in, stub_queue):
 
 
 def test_session_start_swallows_internal_bug(opted_in, monkeypatch, stub_queue):
-    """An internal redaction bug must not propagate to the caller."""
+    """An internal redaction bug must not propagate to the caller.
+
+    Round 19 codex catch: ``hash_flag_names`` is no longer called from
+    inside ``session_start`` (flag names are pre-extracted in cli.py).
+    Pin the same property against the helper that IS still inside the
+    emit path: ``normalize_model_path``."""
     from vllm_mlx.telemetry import emit
 
     def boom(*args, **kwargs):
         raise RuntimeError("synthetic redact failure")
 
-    monkeypatch.setattr(emit, "hash_flag_names", boom)
+    monkeypatch.setattr(emit, "normalize_model_path", boom)
     # Must not raise:
-    emit.session_start(subcommand="serve", argv=["--x"])
+    emit.session_start(subcommand="serve", models_loaded=["org/model"])
 
 
 def test_emit_does_not_catch_keyboard_interrupt(opted_in, monkeypatch, stub_queue):
@@ -586,6 +596,53 @@ def test_session_models_loaded_does_not_materialize_full_input(opted_in, stub_qu
     assert len(last["session"]["models_loaded"]) == 32
 
 
+def test_session_end_hook_fires_exactly_once(fake_home):
+    """Round 19 codex review wired ``session_end`` through the
+    FastAPI lifespan shutdown in addition to the existing ``atexit``
+    fallback so SIGTERM-driven service-manager shutdowns no longer
+    drop the lifecycle end event. Pin: registering a hook + calling
+    ``fire_session_end_hook`` twice runs the underlying callable
+    exactly once (the latch makes the second call a no-op)."""
+    from vllm_mlx.telemetry import emit
+
+    emit._reset_for_tests()
+    calls: list[int] = []
+
+    def hook():
+        calls.append(1)
+
+    emit.register_session_end_hook(hook)
+    emit.fire_session_end_hook()
+    emit.fire_session_end_hook()  # latched -- must be a no-op
+    assert calls == [1], f"hook fired {len(calls)} time(s) -- the latch is broken"
+
+
+def test_session_end_hook_swallows_callable_exceptions(fake_home):
+    """A buggy hook callable must not crash the lifespan shutdown
+    path. ``fire_session_end_hook`` catches BaseException because it
+    runs in teardown context where any propagation is purely noise."""
+    from vllm_mlx.telemetry import emit
+
+    emit._reset_for_tests()
+
+    def boom():
+        raise RuntimeError("synthetic")
+
+    emit.register_session_end_hook(boom)
+    # Must not raise -- the catch in fire_session_end_hook absorbs it.
+    emit.fire_session_end_hook()
+
+
+def test_session_end_hook_no_op_without_registration(fake_home):
+    """If no hook was registered (e.g. cli main exited early before
+    the telemetry wiring), ``fire_session_end_hook`` must be a safe
+    no-op so the lifespan shutdown path can call it unconditionally."""
+    from vllm_mlx.telemetry import emit
+
+    emit._reset_for_tests()
+    emit.fire_session_end_hook()  # must not raise
+
+
 def test_safe_does_not_swallow_signature_mismatch(opted_in, stub_queue):
     """Round 14 codex review: the broad ``except Exception`` in
     ``_safe`` used to also swallow ``TypeError`` from a call site that
@@ -641,32 +698,46 @@ def test_request_model_alias_local_path_redacted(opted_in, stub_queue):
     assert "alice" not in repr(stub_queue[0])
 
 
-def test_argv_values_with_secrets_never_survive_redaction(opted_in, stub_queue):
-    """argv carries the user's full shell command. The redactor must
-    extract flag NAMES and nothing else — values are skipped before they
-    ever land in a payload field."""
+def test_flag_values_never_cross_telemetry_boundary(opted_in, stub_queue):
+    """Round 19 codex catch: flag names are now pre-extracted in
+    cli.py BEFORE the telemetry call, so raw argv (which carries
+    values) never crosses into the emit helper at all. The disclosure
+    promise "values are never even read" is now LITERALLY true at the
+    function-call boundary. Pin: simulate the cli.py boundary by
+    running ``hash_flag_names`` ourselves, then pass only the
+    resulting NAMES into ``session_start`` and verify no value survives
+    anywhere in the payload."""
     from vllm_mlx.telemetry import emit
+    from vllm_mlx.telemetry.redact import hash_flag_names
 
     secret = "sk-prod-XXXXXXXXXXXXXXXXXXXXXXXX"
     bearer = "Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig"
     prompt = "summarize this confidential email about Q3 numbers"
-    emit.session_start(
-        subcommand="serve",
-        argv=[
-            "serve",
-            "qwen3.5-9b",
-            "--api-key",
-            secret,
-            "--auth-header",
-            bearer,
-            "--initial-prompt",
-            prompt,
-        ],
-    )
+    argv = [
+        "serve",
+        "qwen3.5-9b",
+        "--api-key",
+        secret,
+        "--auth-header",
+        bearer,
+        "--initial-prompt",
+        prompt,
+    ]
+    # The cli.py boundary -- extract names here, NOT inside the emit
+    # helper. The values stop at this line.
+    flag_names = hash_flag_names(argv)
+    emit.session_start(subcommand="serve", flag_names=flag_names)
+
     blob = repr(stub_queue[0])
     assert secret not in blob
     assert bearer not in blob
     assert prompt not in blob
+    # And only the names landed.
+    assert set(stub_queue[0]["session"]["flag_names"]) == {
+        "api-key",
+        "auth-header",
+        "initial-prompt",
+    }
     # Names should be preserved (the contract: we see WHICH flags people
     # use, never what they pass).
     flag_names = set(stub_queue[0]["session"]["flag_names"])

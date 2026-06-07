@@ -72,6 +72,11 @@ WHAT WE SEND (only after you say yes):
   - The NAMES (only) of CLI flags you passed, sorted and de-duplicated
     (`--api-key sk-XXX` becomes the literal string "api-key"; the value
     "sk-XXX" is never even read).
+  - The alias your session was for ("mlx-community/Qwen3.5-9B-4bit"
+    or "<local>" if it was an unredacted local path). This is the
+    alias your subcommand was invoked with; if a download was declined
+    or the load failed later, the entry stays -- "what you asked to
+    run", not "what loaded successfully".
   - A UTC timestamp on each event (no timezone, second precision)
   - An anonymous crash fingerprint -- a sha256 hash of the exception
     class plus the frame chain (basename:function:lineno per frame).

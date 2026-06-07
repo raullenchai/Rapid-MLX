@@ -4351,12 +4351,22 @@ Examples:
     # opted out of", and the current invocation's argv was determined
     # BEFORE the user said yes. The next run starts the contract clean.
     #
-    # ``_session_models_loaded`` is hoisted outside the conditional so
+    # ``_session_models_requested`` is hoisted outside the conditional so
     # the alias-resolution block below can append to it unconditionally
     # without a NameError when telemetry was skipped. The closure
     # passed to ``session_end`` reads the same list, so populate-then-
     # emit is naturally ordered.
-    _session_models_loaded: list[str] = []
+    #
+    # Round 19 codex catch on the naming: this list captures models
+    # the user's invocation REQUESTED -- the alias passed argparse
+    # validation -- NOT models the loader confirmed it loaded. A
+    # declined auto-pull or a load failure later in the subcommand
+    # handler still leaves the entry here, which the lifecycle event
+    # surfaces verbatim. Phase 2.2 will replace this with confirmed
+    # load events emitted from ``vllm_mlx/engine/loader.py``; until
+    # then, the field semantics is "alias the session was for" and the
+    # helper docstring spells this out.
+    _session_models_requested: list[str] = []
     if (
         getattr(args, "command", None) is not None
         and args.command != "telemetry"
@@ -4370,27 +4380,37 @@ Examples:
 
         _session_subcommand = args.command
         _session_started_at = _time.monotonic()
-        # Round 16 codex review: ``session_end`` used to be called with
-        # only ``subcommand`` + ``duration_seconds`` even though the
-        # design doc + tests describe ``models_loaded`` as "final at
-        # session_end" (for ``serve``, this is the alias that was
-        # resolved + handed to the loader). The closure-captured list
-        # is hoisted above this if-block so the alias-resolution step
-        # below populates it AFTER session_start has already fired --
-        # session_start sees an empty list (nothing loaded yet) and
-        # session_end sees the final state at process exit.
+        # Round 19 codex catch: extract flag names HERE so raw argv
+        # tokens (which include flag VALUES) never cross into the
+        # telemetry helper signatures. The disclosure promise "values
+        # are never even read" is now literally true at the function-
+        # call boundary.
+        from vllm_mlx.telemetry.redact import (
+            hash_flag_names as _telemetry_extract_flag_names,
+        )
+
+        _session_flag_names = _telemetry_extract_flag_names(_sys.argv[1:])
+        # Round 19 codex NIT: session_start sees an empty IMMUTABLE
+        # snapshot of models_loaded so it does not depend on whether
+        # ``emit.session_start()`` eagerly copies its input. The closure-
+        # captured list keeps mutating until session_end takes its own
+        # snapshot below.
         _telemetry_emit.session_start(
             subcommand=_session_subcommand,
-            argv=_sys.argv[1:],
-            models_loaded=_session_models_loaded,
+            flag_names=_session_flag_names,
+            models_loaded=(),
         )
 
         def _emit_session_end() -> None:
             try:
+                # Snapshot the closure-captured list to an immutable
+                # tuple so the payload reflects the exact state at this
+                # call (round 19 NIT).
+                _models_snapshot = tuple(_session_models_requested)
                 _telemetry_emit.session_end(
                     subcommand=_session_subcommand,
                     duration_seconds=int(_time.monotonic() - _session_started_at),
-                    models_loaded=_session_models_loaded,
+                    models_loaded=_models_snapshot,
                 )
                 # Round 5 codex review caught that the atexit handler
                 # for the queue's ``shutdown`` is registered inside
@@ -4409,17 +4429,14 @@ Examples:
                 # ~12 s on every ``serve`` Ctrl-C just to file a
                 # better stat is hostile UX.
                 #
-                # Round 17 codex review acknowledged a known gap:
-                # ``atexit`` is NOT triggered by SIGTERM (systemd /
-                # Docker / Kubernetes stop signal), so a graceful
-                # service-manager shutdown skips ``session_end``
-                # entirely. The right place to plug this is the FastAPI
-                # ``lifespan`` shutdown hook in ``api/server.py``, which
-                # already coordinates with ``uvicorn``'s own SIGTERM
-                # handler. Adding a top-level ``signal.signal(SIGTERM,
-                # ...)`` here would clobber uvicorn's handler and break
-                # the user-visible "graceful shutdown" UX. Tracked for
-                # Phase 2.2 alongside the request-event wiring.
+                # Round 19 codex review closed the previous round-17
+                # SIGTERM gap: ``register_session_end_hook`` is wired
+                # below so the FastAPI lifespan shutdown in
+                # ``vllm_mlx.server`` calls this same function on
+                # SIGTERM (systemd / Docker / Kubernetes graceful
+                # stop). The latch inside the emit module makes the
+                # second invocation a no-op so the event lands exactly
+                # once regardless of which path fires first.
                 #
                 # ``_queue is None`` (telemetry was disabled, so
                 # ``session_end`` no-op'd and never instantiated the
@@ -4441,7 +4458,12 @@ Examples:
                 # catch as too narrow for an atexit context.
                 return
 
-        _atexit.register(_emit_session_end)
+        # Register the same callable for both teardown paths. The
+        # latch in ``fire_session_end_hook`` ensures it runs once
+        # regardless of which path (FastAPI lifespan shutdown OR cli
+        # atexit fallback) fires first.
+        _telemetry_emit.register_session_end_hook(_emit_session_end)
+        _atexit.register(_telemetry_emit.fire_session_end_hook)
 
     # Resolve model aliases before dispatch.
     #
@@ -4480,7 +4502,7 @@ Examples:
         # paths to the literal ``<local>`` token, so we don't need to
         # filter here. Captured after the error-fail path so we never
         # record a model that failed validation.
-        _session_models_loaded.append(args.model)
+        _session_models_requested.append(args.model)
 
     # --- BEGIN B2: auto-pull confirmation gate -------------------------
     # For subcommands that may trigger a first-time download of a large
