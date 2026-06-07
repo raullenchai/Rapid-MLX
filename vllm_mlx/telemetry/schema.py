@@ -42,6 +42,15 @@ class SessionPayload:
     duration_seconds: int | None = None  # session_end only; None on session_start
     models_loaded: tuple[str, ...] = ()  # HF repo IDs only (normalized)
     flag_names: tuple[str, ...] = ()  # names only, sorted, no values
+    # Schema v1 back-compat slot. Round 4 removed runtime emission of
+    # ``engine`` from the emit helpers (it was a free-form ``str`` slot
+    # with no information content while ``BatchedEngine`` is the only
+    # engine), but the dataclass keeps the optional field so external
+    # callers constructing ``SessionPayload(engine=...)`` against
+    # ``SCHEMA_VERSION == 1`` don't break. Re-add to runtime emission
+    # only via an enum if a second engine ever lands; bump SCHEMA_VERSION
+    # at the same time. Round 6 codex catch.
+    engine: str = ""
 
 
 @dataclass(frozen=True)

@@ -142,45 +142,73 @@ def test_global_no_telemetry_flag(fake_home):
 
 
 def test_session_end_synchronously_drained_before_exit(fake_home):
-    """Round 5 codex review caught that the lifecycle ordering at exit
-    was implicit (atexit LIFO + queue.shutdown registered inside
-    session_start). Make the contract explicit instead: ``_emit_session_end``
-    calls ``get_queue().shutdown()`` after enqueueing, so the event
-    lands regardless of atexit ordering. Verify the subprocess emits
-    BOTH ``[telemetry]`` attempt lines (session_start + session_end)
-    when consent is enabled — a single line would mean session_end
-    was queued but never flushed."""
-    _run_cli("telemetry", "enable", home=fake_home)
-    r = _run_cli(
-        "models",
-        home=fake_home,
-        env_overrides={
-            "RAPID_MLX_TELEMETRY_DEBUG": "1",
-            # Point at a localhost endpoint that won't respond, so the
-            # transport's 3xtry+backoffs run quickly without polluting
-            # the production collector. The test cares about WHETHER
-            # the flush ATTEMPT is made, not whether it succeeds.
-            "RAPID_MLX_TELEMETRY_ENDPOINT": "http://127.0.0.1:1/never",
-        },
+    """Round 5 codex review caught the atexit-ordering risk; round 6
+    sharpened the regression test. We now stand up a local HTTPServer
+    that captures the actual POST body, then assert the batch carries
+    BOTH ``session_start`` AND ``session_end`` envelopes. The previous
+    retry-count assertion (round 5) would have passed even if
+    ``session_end`` were deleted and shutdown flushed a 1-event
+    batch."""
+    import http.server
+    import json as _json
+    import socket
+    import threading as _threading
+
+    captured: list[dict] = []
+
+    class _CaptureHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 — name dictated by stdlib
+            length = int(self.headers.get("content-length", "0"))
+            raw = self.rfile.read(length)
+            try:
+                captured.append(_json.loads(raw.decode("utf-8")))
+            except Exception:
+                captured.append({"_raw": raw[:200].decode("utf-8", "replace")})
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
+        def log_message(self, *_a, **_k):  # silence
+            return
+
+    # Bind to a free port so parallel test runs don't fight.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _CaptureHandler)
+    t = _threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        _run_cli("telemetry", "enable", home=fake_home)
+        r = _run_cli(
+            "models",
+            home=fake_home,
+            env_overrides={
+                "RAPID_MLX_TELEMETRY_DEBUG": "1",
+                "RAPID_MLX_TELEMETRY_ENDPOINT": f"http://127.0.0.1:{port}/v1/events",
+            },
+        )
+        assert r.returncode == 0, r.stderr
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # Exactly one POST (single batch) carrying exactly two envelopes.
+    assert len(captured) == 1, f"expected 1 batch, got {len(captured)}: {captured}"
+    batch = captured[0].get("batch")
+    assert isinstance(batch, list), f"missing batch field: {captured[0]}"
+    events = {ev.get("event") for ev in batch}
+    assert events == {"session_start", "session_end"}, (
+        f"batch did not contain both lifecycle events; got events={events}, "
+        f"batch={batch}"
     )
-    assert r.returncode == 0, r.stderr
-    # ``127.0.0.1:1`` rejects connections; the transport runs 3
-    # attempts per flush. If session_start and session_end were
-    # drained in the SAME flush, we see exactly 3 attempt lines.
-    # If session_end was queued AFTER the daemon had stopped (the
-    # atexit-ordering bug Round 5 codex review surfaced), the
-    # synchronous shutdown in ``_emit_session_end`` either drains
-    # session_end in a SECOND batch (6 attempts) or drops it entirely
-    # (3 attempts but the queue's ``enqueued_total`` would be 1, not
-    # 2 — which we can't inspect from a subprocess).
-    #
-    # With the fix in place we expect exactly 3 attempts (1 batch
-    # carrying 2 events). Lock that.
-    attempts = [line for line in r.stderr.splitlines() if "[telemetry] attempt" in line]
-    assert len(attempts) == 3, (
-        f"expected exactly 3 attempt lines for 1 batch of 2 events "
-        f"(got {len(attempts)}); session_end may have been queued late "
-        f"or dropped:\n{r.stderr}"
+    # ``session_id`` must be identical across both — race-condition
+    # regression catch (round 6 fix #3).
+    session_ids = {ev["session_id"] for ev in batch}
+    assert len(session_ids) == 1, (
+        f"session_start and session_end carry different session_ids "
+        f"(race in lazy init?): {session_ids}"
     )
 
 

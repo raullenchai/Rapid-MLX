@@ -4382,8 +4382,22 @@ Examples:
                 # lands regardless of atexit ordering quirks. Idempotent
                 # — the queue's own ``shutdown`` will be a no-op when
                 # it runs later.
+                #
+                # Budget matches ``post_batch``'s worst case (round 6
+                # codex catch): 3 attempts × ``TIMEOUT_S`` + cumulative
+                # ``RETRY_BACKOFFS_S``. A 2 s budget would have killed
+                # session_end on a slow collector. The transport gives
+                # up cleanly inside its own loop, so this is a hard
+                # ceiling on user-perceived exit latency — not a
+                # passive wait.
                 try:
-                    _telemetry_emit.get_queue().shutdown(timeout=2.0)
+                    from vllm_mlx.telemetry.transport import (
+                        RETRY_BACKOFFS_S,
+                        TIMEOUT_S,
+                    )
+
+                    _shutdown_budget_s = 3 * TIMEOUT_S + sum(RETRY_BACKOFFS_S) + 0.5
+                    _telemetry_emit.get_queue().shutdown(timeout=_shutdown_budget_s)
                 except Exception:
                     pass
             except Exception:

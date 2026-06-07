@@ -74,14 +74,25 @@ def session_id() -> str:
     process-scoped (not persisted) — the on-disk client_id is the only
     stable identity. Reset by ``_reset_for_tests`` so each test gets a
     fresh id.
+
+    Round 6 codex review caught that the prior lazy init was unlocked,
+    so two concurrent emit sites racing past the ``is None`` check
+    would generate different uuids in the same process and the
+    aggregation pipeline would see two sessions per real session. The
+    queue's ``_queue_lock`` is the same one that guards singleton
+    creation; reuse it so we don't introduce a second lock for the
+    same "first-call-init" pattern.
     """
     global _session_id
-    if _session_id is None:
-        # uuid4 imported lazily so importing emit at module-scan time
-        # does not touch /dev/urandom in CI fast-paths.
-        import uuid
+    if _session_id is not None:
+        return _session_id
+    with _queue_lock:
+        if _session_id is None:
+            # uuid4 imported lazily so importing emit at module-scan time
+            # does not touch /dev/urandom in CI fast-paths.
+            import uuid
 
-        _session_id = str(uuid.uuid4())
+            _session_id = str(uuid.uuid4())
     return _session_id
 
 

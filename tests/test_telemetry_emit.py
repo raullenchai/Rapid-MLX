@@ -99,6 +99,40 @@ def test_error_no_op_when_disabled(fake_home, stub_queue):
     assert stub_queue == []
 
 
+def test_session_id_is_stable_under_concurrent_first_callers(fake_home):
+    """Round 6 codex review: the prior lazy ``_session_id`` init was
+    unlocked. Two concurrent first-emitters could race past the
+    ``is None`` check and generate different uuids → aggregation
+    pipeline sees two sessions per real session. Pin that 32 threads
+    racing ``session_id()`` agree on one value."""
+    import threading
+
+    from vllm_mlx.telemetry import emit
+
+    emit._reset_for_tests()
+
+    results: list[str] = []
+    started = threading.Event()
+    barrier = threading.Barrier(32)
+
+    def racer():
+        barrier.wait(timeout=5.0)
+        results.append(emit.session_id())
+
+    threads = [threading.Thread(target=racer) for _ in range(32)]
+    for t in threads:
+        t.start()
+    started.set()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    assert len(results) == 32
+    assert len(set(results)) == 1, (
+        f"concurrent first callers generated {len(set(results))} distinct "
+        f"session_ids: {set(results)}"
+    )
+
+
 def test_cli_kill_switch_overrides_opt_in(opted_in, stub_queue):
     """``--no-telemetry`` (threaded through ``set_cli_kill_switch``) must
     suppress every emit site, even when the user has previously opted in
