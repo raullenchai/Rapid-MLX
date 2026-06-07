@@ -284,6 +284,42 @@ def request(
     get_queue().enqueue(payload)
 
 
+# Round 3 codex review: ``category`` + ``phase`` on ``error()`` were
+# stored verbatim, the same free-form escape hatch the signature
+# red-line test cannot catch (type is ``str``). A future caller
+# threading exception text or user input would have leaked. The
+# allowlists below are intentionally short — every NEW value requires
+# editing this file, which puts a privacy review on the path.
+_ALLOWED_ERROR_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "model_load_failure",
+        "parser_failure",
+        "scheduler_failure",
+        "request_failure",
+        "lifespan_failure",
+        "tool_call_failure",
+    }
+)
+_ALLOWED_ERROR_PHASES: frozenset[str] = frozenset(
+    {
+        "startup",
+        "warmup",
+        "prefill",
+        "decode",
+        "stream",
+        "shutdown",
+        "chat",
+        "serve",
+    }
+)
+
+
+def _normalize_error_field(raw: str, allowed: frozenset[str]) -> str:
+    if not isinstance(raw, str):
+        return "other"
+    return raw if raw in allowed else "other"
+
+
 @_safe
 def error(
     *,
@@ -296,13 +332,17 @@ def error(
     ``exc`` is fingerprinted with ``fingerprint_traceback`` — only
     ``basename:func:lineno`` of each frame plus the exception class
     name participate. No message text, no module path.
+
+    ``category`` and ``phase`` are constrained to a small allowlist
+    (see ``_ALLOWED_ERROR_CATEGORIES`` / ``_ALLOWED_ERROR_PHASES``);
+    anything else collapses to ``"other"``.
     """
     if not is_enabled():
         return
     payload = _envelope("error")
     payload["error"] = {
-        "category": category,
+        "category": _normalize_error_field(category, _ALLOWED_ERROR_CATEGORIES),
         "fingerprint": fingerprint_traceback(exc),
-        "phase": phase,
+        "phase": _normalize_error_field(phase, _ALLOWED_ERROR_PHASES),
     }
     get_queue().enqueue(payload)

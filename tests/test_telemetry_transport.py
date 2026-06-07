@@ -219,20 +219,66 @@ def test_oversized_payload_dropped_locally():
         urlopen.assert_not_called()
 
 
-def test_non_https_endpoint_refused(monkeypatch):
+def test_non_https_non_loopback_override_silently_falls_back_to_default(monkeypatch):
+    """Pre-round-3, an ``http://insecure.example`` override was rejected
+    inside ``post_batch`` ("refusing non-HTTPS endpoint"). After round 3
+    the rejection happens earlier — in ``endpoint()`` — and the override
+    silently falls back to the production HTTPS default. Either way:
+    nothing on plain HTTP, on a non-loopback host, ever sees user
+    events."""
     from vllm_mlx.telemetry import transport
 
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "http://insecure.example/v1")
-    with mock.patch.object(transport, "urlopen") as urlopen:
-        assert transport.post_batch([{"x": 1}]) is False
-        urlopen.assert_not_called()
+    # The override is silently dropped; ``endpoint()`` returns the
+    # production default.
+    assert transport.endpoint() == transport.DEFAULT_ENDPOINT
 
 
-def test_endpoint_override_via_env(monkeypatch):
+def test_endpoint_override_only_accepts_localhost(monkeypatch):
+    """Round 3 codex review: an unrestricted ``RAPID_MLX_TELEMETRY_ENDPOINT``
+    let a hostile shell rc / wrapper script redirect opted-in users'
+    events to an attacker-controlled collector. The override is now
+    restricted to localhost / 127.0.0.1 / ::1 (the only legitimate use
+    cases: wrangler dev + CI fixtures)."""
     from vllm_mlx.telemetry import transport
 
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "https://debug.example/v1")
-    assert transport.endpoint() == "https://debug.example/v1"
+    # Localhost variants pass through.
+    for ok in (
+        "http://localhost:8787/v1/events",
+        "http://127.0.0.1:8787/v1/events",
+        "https://localhost/v1/events",
+        "http://[::1]:8787/v1/events",
+    ):
+        monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", ok)
+        assert transport.endpoint() == ok, f"{ok} should be accepted"
+
+    # Anything else falls back to the production default.
+    for bad in (
+        "https://attacker.example/v1/events",
+        "https://localhost.attacker.example/v1/events",  # suffix attack
+        "https://telemetry.attacker.example/v1/events",
+        "ftp://localhost/v1/events",
+        "not-a-url",
+    ):
+        monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", bad)
+        assert transport.endpoint() == transport.DEFAULT_ENDPOINT, (
+            f"{bad} should be refused"
+        )
+
+
+def test_non_serializable_payload_returns_false_not_raise():
+    """Round 3 codex review: ``json.dumps`` ran outside the transport
+    try, so a non-serializable payload would have raised through the
+    ``never raises`` contract. Pin that it returns ``False`` instead."""
+    from vllm_mlx.telemetry import transport
+
+    class _NotSerializable:
+        pass
+
+    with mock.patch.object(transport, "urlopen") as urlopen:
+        # Must not raise — ``post_batch`` is the privacy/safety boundary.
+        assert transport.post_batch([{"x": _NotSerializable()}]) is False
+        urlopen.assert_not_called()
 
 
 def test_user_agent_is_self_identifying():

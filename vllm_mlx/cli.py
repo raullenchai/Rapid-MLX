@@ -4315,6 +4315,7 @@ Examples:
     # interactive subcommands when stdin is a tty. Safe no-op otherwise.
     # Must run *before* heavy subcommand work so the user sees the
     # disclosure before any model load logs scroll past.
+    _just_collected_consent = False
     if getattr(args, "command", None) is not None:
         from vllm_mlx.telemetry import maybe_prompt_for_consent
         from vllm_mlx.telemetry.state import set_cli_kill_switch
@@ -4324,7 +4325,7 @@ Examples:
         # having to plumb the flag through every signature.
         set_cli_kill_switch(getattr(args, "no_telemetry", False))
 
-        maybe_prompt_for_consent(
+        _just_collected_consent = maybe_prompt_for_consent(
             args.command,
             cli_no_telemetry=getattr(args, "no_telemetry", False),
         )
@@ -4343,7 +4344,17 @@ Examples:
     # silencing the phone" surprise that codex round 1 caught. ``status``
     # / ``preview`` / ``enable`` are excluded for consistency; their
     # observability value is near zero.
-    if getattr(args, "command", None) is not None and args.command != "telemetry":
+    #
+    # ``_just_collected_consent`` skips the run that JUST collected
+    # first-time opt-in (round 3 codex catch): the disclosure copy
+    # promises "nothing from before this prompt or from a session you
+    # opted out of", and the current invocation's argv was determined
+    # BEFORE the user said yes. The next run starts the contract clean.
+    if (
+        getattr(args, "command", None) is not None
+        and args.command != "telemetry"
+        and not _just_collected_consent
+    ):
         import atexit as _atexit
         import sys as _sys
         import time as _time

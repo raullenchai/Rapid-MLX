@@ -216,6 +216,38 @@ def test_request_buckets_not_raw_numbers(opted_in, stub_queue):
         assert raw not in blob
 
 
+def test_error_category_and_phase_normalised_to_allowlist(opted_in, stub_queue):
+    """Round 3 codex review: ``category`` + ``phase`` were stored
+    verbatim. Same escape hatch as ``endpoint`` — a future caller
+    threading exception text or user input would have leaked. Pin
+    that off-allowlist values collapse to ``"other"`` and known
+    values pass through."""
+    from vllm_mlx.telemetry import emit
+
+    # Known good values pass through.
+    try:
+        raise RuntimeError("synthetic")
+    except RuntimeError as exc:
+        emit.error(category="model_load_failure", exc=exc, phase="startup")
+    e = stub_queue[-1]["error"]
+    assert e["category"] == "model_load_failure"
+    assert e["phase"] == "startup"
+
+    # Free-form text — even text containing what looks like a prompt —
+    # collapses to "other".
+    leak = "user typed: please summarize Q3 numbers"
+    try:
+        raise RuntimeError("x")
+    except RuntimeError as exc:
+        emit.error(category=leak, exc=exc, phase=leak)
+    e = stub_queue[-1]["error"]
+    assert e["category"] == "other"
+    assert e["phase"] == "other"
+    blob = repr(stub_queue[-1])
+    assert "summarize" not in blob
+    assert "Q3" not in blob
+
+
 def test_error_carries_fingerprint_no_message(opted_in, stub_queue):
     """Crash fingerprint excludes message text and module path."""
     from vllm_mlx.telemetry import emit

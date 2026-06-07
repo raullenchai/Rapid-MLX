@@ -55,8 +55,43 @@ def endpoint() -> str:
 
     Resolved every call (not cached at import time) so tests can
     monkey-patch ``os.environ`` per case without poisoning each other.
+
+    Round 3 codex review caught that an unrestricted override
+    (``RAPID_MLX_TELEMETRY_ENDPOINT=https://attacker.example/`` set in
+    a user's shell rc or by a malicious wrapper script) would silently
+    redirect every opted-in user's events to a hostile collector, with
+    the privacy guarantees of the disclosure ("only our Worker hashes
+    your IP, etc.") no longer applying. The override is now restricted
+    to localhost / 127.0.0.1 — the only legitimate use cases are
+    ``wrangler dev`` and CI fixtures. Anything else is ignored and the
+    production endpoint stands.
     """
-    return os.environ.get(ENDPOINT_ENV, DEFAULT_ENDPOINT)
+    raw = os.environ.get(ENDPOINT_ENV)
+    if raw is None:
+        return DEFAULT_ENDPOINT
+    if _is_localhost_override(raw):
+        return raw
+    return DEFAULT_ENDPOINT
+
+
+def _is_localhost_override(url: str) -> bool:
+    """True iff ``url`` targets localhost — the only allowed override.
+
+    Accepts ``http://`` for localhost (wrangler dev defaults to plain
+    HTTP on 127.0.0.1:8787). Anything else — including a public host
+    accidentally typed as ``https://localhost.attacker.example`` — is
+    rejected. The match is on the netloc, not a substring.
+    """
+    try:
+        from urllib.parse import urlparse
+
+        parts = urlparse(url)
+    except (TypeError, ValueError):
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    host = (parts.hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1")
 
 
 def debug_enabled() -> bool:
@@ -102,7 +137,15 @@ def post_batch(events: list[dict[str, Any]]) -> bool:
     if not events:
         return True
 
-    body = json.dumps({"batch": events}, separators=(",", ":")).encode("utf-8")
+    # Round 3 codex review: ``json.dumps`` outside the try-catch
+    # violates the "never raises" contract — a non-JSON-serializable
+    # payload would have surfaced as a ``TypeError`` to the caller. The
+    # transport must absorb everything that isn't a system exception.
+    try:
+        body = json.dumps({"batch": events}, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError) as e:
+        _log(f"refusing payload that failed to serialize: {type(e).__name__}: {e}")
+        return False
     if len(body) > MAX_BODY_BYTES:
         # Worker would 413 us; drop locally to save a roundtrip and an
         # entry in the collector's reject metric.
@@ -110,7 +153,12 @@ def post_batch(events: list[dict[str, Any]]) -> bool:
         return False
 
     url = endpoint()
-    if not url.startswith("https://"):
+    # HTTPS-only for any non-loopback host. Loopback is exempt because
+    # ``endpoint()`` already restricted the override to localhost (round
+    # 3 codex catch) and ``wrangler dev`` serves over plain HTTP — the
+    # traffic never leaves the host. A public host on ``http://`` is
+    # still refused.
+    if not (url.startswith("https://") or _is_localhost_override(url)):
         _log(f"refusing non-HTTPS endpoint {url!r}")
         return False
 

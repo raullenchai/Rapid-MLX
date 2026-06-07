@@ -89,31 +89,39 @@ To force-disable in scripts or CI: set {env}=0.
 
 def maybe_prompt_for_consent(
     subcommand: str | None, *, cli_no_telemetry: bool = False
-) -> None:
+) -> bool:
     """Show the first-run prompt if (and only if) all guards pass.
 
-    Returns silently when any guard skips. Never raises — a broken stdin
-    or unwritable home directory must not crash the user's serve / chat
-    invocation just because we couldn't ask about telemetry.
+    Returns ``True`` IFF the prompt was actually shown AND the user
+    just answered for the first time (regardless of yes/no). Returns
+    ``False`` for every skip path. The caller uses this to suppress
+    lifecycle emit on the same invocation that just collected consent
+    — round 3 codex review caught that emitting ``session_start`` for
+    the argv that ran BEFORE the prompt contradicts the disclosure's
+    "nothing from before this prompt" promise.
+
+    Never raises — a broken stdin or unwritable home directory must
+    not crash the user's serve / chat invocation just because we
+    couldn't ask about telemetry.
     """
     try:
         if cli_no_telemetry:
-            return
+            return False
         # Env var already decides — no need to prompt.
         import os
 
         if os.environ.get(ENV_VAR) is not None:
-            return
+            return False
         if subcommand in _NON_INTERACTIVE_SUBCOMMANDS:
-            return
+            return False
         if subcommand is None:
-            return
+            return False
         if get_consent_state() is not None:
-            return
+            return False
         if not sys.stdin.isatty():
-            return
+            return False
         if not sys.stdout.isatty():
-            return
+            return False
 
         version = _rapid_mlx_version
         print()
@@ -136,9 +144,10 @@ def maybe_prompt_for_consent(
             # be re-prompted next interactive run, since they didn't
             # actually answer.
             print()
-            return
+            return False
         consent = answer in ("y", "yes")
         record_consent(consent, rapid_mlx_version=version)
+        just_collected = True
         if consent:
             print()
             print(
@@ -158,10 +167,11 @@ def maybe_prompt_for_consent(
             )
             print(f"or delete {consent_path()} to be re-prompted.")
         print()
+        return just_collected
     except (OSError, EOFError, KeyboardInterrupt):
         # Telemetry consent is *never* a reason for the CLI to fail —
         # but only swallow the failure modes we actually expect: I/O on
         # an unwritable home, terminal weirdness, or user Ctrl-C during
         # input. Programming errors (AttributeError, TypeError, ...)
         # propagate so they get noticed in development.
-        return
+        return False

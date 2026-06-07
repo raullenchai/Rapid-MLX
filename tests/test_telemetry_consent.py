@@ -102,7 +102,10 @@ def test_yes_records_consent_true(fake_home, monkeypatch, capsys):
 
     _stub_tty(monkeypatch)
     monkeypatch.setattr("builtins.input", lambda: "y")
-    maybe_prompt_for_consent("serve")
+    # Round 3: ``maybe_prompt_for_consent`` returns True when it just
+    # collected first-time consent. The cli uses this to suppress the
+    # SAME run's lifecycle emit (which captured pre-prompt argv).
+    assert maybe_prompt_for_consent("serve") is True
 
     state = get_consent_state()
     assert state is not None
@@ -121,13 +124,34 @@ def test_no_records_consent_false(fake_home, monkeypatch, capsys):
 
     _stub_tty(monkeypatch)
     monkeypatch.setattr("builtins.input", lambda: "n")
-    maybe_prompt_for_consent("serve")
+    # Even a "no" answer counts as "just collected" for the lifecycle
+    # skip — the contract is per-invocation, not per-yes.
+    assert maybe_prompt_for_consent("serve") is True
 
     state = get_consent_state()
     assert state is not None
     assert state.consent is False
     out = capsys.readouterr().out
     assert "stays off" in out.lower()
+
+
+def test_skip_paths_return_false(fake_home, monkeypatch, capsys):
+    """Round 3 codex review wired the return type into a contract: the
+    cli relies on it to skip the SAME run's lifecycle emit only when
+    the prompt actually fired. Every skip path must return False so a
+    cached-consent run still emits normally."""
+    from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
+    from vllm_mlx.telemetry.state import record_consent
+
+    # Cached consent → no prompt → False (lifecycle emit must run).
+    record_consent(True, rapid_mlx_version="0.0.0+test")
+    assert maybe_prompt_for_consent("serve") is False
+
+    # CLI override skip.
+    assert maybe_prompt_for_consent("serve", cli_no_telemetry=True) is False
+
+    # Non-interactive subcommand skip.
+    assert maybe_prompt_for_consent("version") is False
 
 
 def test_empty_answer_defaults_to_no(fake_home, monkeypatch):
