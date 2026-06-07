@@ -4317,6 +4317,12 @@ Examples:
     # disclosure before any model load logs scroll past.
     if getattr(args, "command", None) is not None:
         from vllm_mlx.telemetry import maybe_prompt_for_consent
+        from vllm_mlx.telemetry.state import set_cli_kill_switch
+
+        # ``--no-telemetry`` is a per-run override; thread it into the
+        # process-level kill switch so every emit site sees it without
+        # having to plumb the flag through every signature.
+        set_cli_kill_switch(getattr(args, "no_telemetry", False))
 
         maybe_prompt_for_consent(
             args.command,

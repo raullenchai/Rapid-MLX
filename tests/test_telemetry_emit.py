@@ -99,6 +99,39 @@ def test_error_no_op_when_disabled(fake_home, stub_queue):
     assert stub_queue == []
 
 
+def test_cli_kill_switch_overrides_opt_in(opted_in, stub_queue):
+    """``--no-telemetry`` (threaded through ``set_cli_kill_switch``) must
+    suppress every emit site, even when the user has previously opted in
+    via the consent file. Before this was wired, ``rapid-mlx --no-telemetry
+    models`` still POSTed two events to the collector."""
+    from vllm_mlx.telemetry import emit
+    from vllm_mlx.telemetry.state import set_cli_kill_switch
+
+    set_cli_kill_switch(True)
+    try:
+        emit.session_start(subcommand="serve")
+        emit.session_end(subcommand="serve", duration_seconds=42)
+        emit.request(
+            endpoint="/v1/chat/completions",
+            model_alias="qwen3.5-9b",
+            stream=True,
+            tool_call_used=False,
+            prompt_tokens=100,
+            completion_tokens=400,
+            ttft_ms=250.0,
+            tps=42.0,
+            status=200,
+        )
+        emit.error(
+            category="model_load_failure",
+            exc=RuntimeError("x"),
+            phase="startup",
+        )
+    finally:
+        set_cli_kill_switch(False)
+    assert stub_queue == []
+
+
 # ---------------------------------------------------------- shape when on
 
 
@@ -224,3 +257,135 @@ def test_emit_does_not_catch_keyboard_interrupt(opted_in, monkeypatch, stub_queu
     monkeypatch.setattr(emit, "platform_info", interrupt)
     with pytest.raises(KeyboardInterrupt):
         emit.session_start(subcommand="serve")
+
+
+# ---------------------------------------------------------- prompt-leak red line
+#
+# These tests do not exercise behaviour — they pin the API CONTRACT: the
+# four public helpers must never expose a parameter that could carry user
+# prompts, completions, generated text, file paths, secrets, or anything
+# resembling them. A future maintainer adding ``prompt_text=...`` to
+# ``request()`` will trip these and have to delete the test on the way
+# in, which is the bright line we want.
+
+
+def test_public_emit_signatures_have_no_prompt_or_completion_fields():
+    """Lock the parameter names of the public emit helpers.
+
+    If you are looking at this test because you want to ship a new field,
+    that's fine — but the new field must NOT be raw text. Anything
+    free-form must go through ``redact.py`` first and land here as a
+    bucket / fingerprint / hash, never as the raw value.
+    """
+    import inspect
+
+    from vllm_mlx.telemetry import emit
+
+    forbidden = {
+        "prompt",
+        "prompt_text",
+        "prompts",
+        "messages",
+        "user_message",
+        "completion",
+        "completion_text",
+        "completions",
+        "generated_text",
+        "response_text",
+        "input_text",
+        "output_text",
+        "content",
+        "text",
+        "system_prompt",
+        "api_key",
+        "auth_token",
+        "bearer",
+        "file_path",
+        "filepath",
+        "path",
+        "url",
+        "stream_url",
+        "ip",
+        "ip_address",
+        "hostname",
+    }
+    for fn_name in ("session_start", "session_end", "request", "error"):
+        fn = getattr(emit, fn_name)
+        params = set(inspect.signature(fn).parameters.keys())
+        leak = params & forbidden
+        assert not leak, (
+            f"emit.{fn_name} exposes prompt-like parameter(s) {leak!r}; "
+            "free-form text must go through redact.py first"
+        )
+
+
+def test_request_model_alias_local_path_redacted(opted_in, stub_queue):
+    """``model_alias`` is the ONE free-form-ish field on ``request()``,
+    but it must be funnelled through ``normalize_model_path`` so a local
+    checkout path collapses to ``"<local>"`` instead of leaking the
+    user's home-directory layout."""
+    from vllm_mlx.telemetry import emit
+
+    emit.request(
+        endpoint="/v1/chat/completions",
+        model_alias="/Users/alice/private-model-checkout",
+        stream=True,
+        tool_call_used=False,
+        prompt_tokens=100,
+        completion_tokens=400,
+        ttft_ms=250.0,
+        tps=42.0,
+        status=200,
+    )
+    r = stub_queue[0]["request"]
+    assert r["model_alias"] == "<local>"
+    assert "alice" not in repr(stub_queue[0])
+
+
+def test_argv_values_with_secrets_never_survive_redaction(opted_in, stub_queue):
+    """argv carries the user's full shell command. The redactor must
+    extract flag NAMES and nothing else — values are skipped before they
+    ever land in a payload field."""
+    from vllm_mlx.telemetry import emit
+
+    secret = "sk-prod-XXXXXXXXXXXXXXXXXXXXXXXX"
+    bearer = "Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig"
+    prompt = "summarize this confidential email about Q3 numbers"
+    emit.session_start(
+        subcommand="serve",
+        argv=[
+            "serve",
+            "qwen3.5-9b",
+            "--api-key",
+            secret,
+            "--auth-header",
+            bearer,
+            "--initial-prompt",
+            prompt,
+        ],
+    )
+    blob = repr(stub_queue[0])
+    assert secret not in blob
+    assert bearer not in blob
+    assert prompt not in blob
+    # Names should be preserved (the contract: we see WHICH flags people
+    # use, never what they pass).
+    flag_names = set(stub_queue[0]["session"]["flag_names"])
+    assert {"api-key", "auth-header", "initial-prompt"} <= flag_names
+
+
+def test_error_fingerprint_does_not_echo_exception_message(opted_in, stub_queue):
+    """A user's prompt CAN end up in an exception message — e.g. a parser
+    crash that prints the offending input. The fingerprint must not echo
+    it."""
+    from vllm_mlx.telemetry import emit
+
+    prompt_in_exc = "summarize this confidential email about Q3 numbers"
+    try:
+        raise ValueError(f"parser failed on: {prompt_in_exc}")
+    except ValueError as exc:
+        emit.error(category="parser_failure", exc=exc, phase="chat")
+
+    blob = repr(stub_queue[0])
+    assert prompt_in_exc not in blob
+    assert "parser failed" not in blob

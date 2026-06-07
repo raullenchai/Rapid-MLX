@@ -202,6 +202,25 @@ def _env_kill_switch_active() -> bool:
     return raw.strip().lower() in ("0", "false", "no", "off", "")
 
 
+# Process-level kill switch set by ``cli.py`` when ``--no-telemetry`` is
+# passed. The ``cli_no_telemetry=`` keyword on ``is_enabled`` only helps
+# the few call sites that explicitly thread it through (``status`` /
+# ``preview`` UX); the four event-emit helpers in ``emit.py`` do NOT
+# accept the kwarg (it would balloon every emit-site signature), so they
+# read this flag instead. Set once, after argparse, before any emit.
+_cli_kill_switch_active = False
+
+
+def set_cli_kill_switch(active: bool) -> None:
+    """Mark the current process as ``--no-telemetry``.
+
+    Idempotent and global within the process. ``emit.session_start`` is
+    the first caller affected; it reads the flag via ``is_enabled()``.
+    """
+    global _cli_kill_switch_active
+    _cli_kill_switch_active = bool(active)
+
+
 def is_enabled(*, cli_no_telemetry: bool = False) -> bool:
     """Single decision point used by every event-emit site.
 
@@ -209,7 +228,7 @@ def is_enabled(*, cli_no_telemetry: bool = False) -> bool:
     it with no further design work, and so tests can pin the precedence
     contract today.
     """
-    if cli_no_telemetry:
+    if cli_no_telemetry or _cli_kill_switch_active:
         return False
     if _env_kill_switch_active():
         return False
@@ -225,7 +244,7 @@ def consent_source(*, cli_no_telemetry: bool = False) -> str:
     Used by ``rapid-mlx telemetry status`` so users can debug why
     telemetry is (or isn't) enabled without reading our code.
     """
-    if cli_no_telemetry:
+    if cli_no_telemetry or _cli_kill_switch_active:
         return "cli-flag (--no-telemetry)"
     if _env_kill_switch_active():
         return f"env-var ({ENV_VAR}={os.environ.get(ENV_VAR, '')!r})"

@@ -66,6 +66,29 @@ def debug_enabled() -> bool:
     return raw.strip().lower() not in ("0", "", "false", "no", "off")
 
 
+def _user_agent() -> str:
+    """Self-identifying UA for the telemetry client.
+
+    Cloudflare's zone-level bot manager rejects the stdlib default
+    ``Python-urllib/3.X`` UA with HTTP 403 before the request ever
+    reaches our Worker (verified live 2026-06-06 against the production
+    endpoint). Setting a non-generic UA is therefore load-bearing for
+    the pipeline to function at all.
+
+    The UA exposes only the package name + version, which is already
+    in the payload's ``rapid_mlx_version`` field — no new PII. The
+    repository link is conventional courtesy so an analytics consumer
+    on the receiver side can attribute hits without guessing.
+    """
+    try:
+        from importlib.metadata import version
+
+        v = version("rapid-mlx")
+    except Exception:
+        v = "dev"
+    return f"rapid-mlx/{v} (+https://github.com/raullenchai/Rapid-MLX)"
+
+
 def post_batch(events: list[dict[str, Any]]) -> bool:
     """Send a batch of payloads to the collector.
 
@@ -98,7 +121,10 @@ def post_batch(events: list[dict[str, Any]]) -> bool:
                 url,
                 data=body,
                 method="POST",
-                headers={"content-type": "application/json"},
+                headers={
+                    "content-type": "application/json",
+                    "user-agent": _user_agent(),
+                },
             )
             with urlopen(req, timeout=TIMEOUT_S) as resp:  # noqa: S310 — URL is constant.
                 status = getattr(resp, "status", None)

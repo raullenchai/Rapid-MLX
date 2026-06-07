@@ -186,6 +186,43 @@ def test_endpoint_override_via_env(monkeypatch):
     assert transport.endpoint() == "https://debug.example/v1"
 
 
+def test_user_agent_is_self_identifying():
+    """Cloudflare's bot manager rejects the stdlib default
+    ``Python-urllib/*`` UA with HTTP 403 before the request reaches the
+    Worker. The transport must therefore set a non-generic UA — and
+    the contract is to identify the package + version explicitly so
+    the receiver can attribute traffic."""
+    from vllm_mlx.telemetry import transport
+
+    ua = transport._user_agent()
+    assert "rapid-mlx" in ua
+    assert "Python-urllib" not in ua
+
+
+def test_post_sends_self_identifying_user_agent():
+    """End-to-end: ``post_batch`` must build a Request whose ``user-agent``
+    header is the self-identifying string, not the urllib default."""
+    from vllm_mlx.telemetry import transport
+
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout):
+        captured["headers"] = dict(req.headers)
+        resp = mock.MagicMock()
+        resp.status = 200
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        return resp
+
+    with mock.patch.object(transport, "urlopen", fake_urlopen):
+        assert transport.post_batch([{"x": 1}]) is True
+    # urllib lowercases header keys when stored on the Request, but
+    # the iteration order varies; use a case-insensitive lookup.
+    ua = {k.lower(): v for k, v in captured["headers"].items()}["user-agent"]
+    assert "rapid-mlx" in ua
+    assert "Python-urllib" not in ua
+
+
 def test_debug_env_truthy_off_by_default(monkeypatch):
     from vllm_mlx.telemetry import transport
 
