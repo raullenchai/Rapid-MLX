@@ -39,15 +39,19 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-# Threshold: microseconds-per-call. Set 3-5x what's been measured on
-# M3 + small buffer for ubuntu's variance + GIL contention. If a
-# parser EXCEEDS its threshold, we want a hard signal; this is much
-# looser than a "perf regression" check would be.
+# Threshold: microseconds-per-call. Set 8-10x what's been measured on
+# M3 + buffer for GitHub Actions ubuntu-latest shared-runner variance.
+# Empirically a shared Linux runner measures ~5x M3 baseline at p50 and
+# spikes near 6x at p100 (observed 30.28 μs/call vs 5.5 μs M3 on
+# hermes during the 2026-06-07 flake); aim for ~10x M3 so the gate
+# stays a real regression check, not a noise canary. If a parser
+# EXCEEDS its threshold, we want a hard signal; this is much looser
+# than a "perf regression" check would be.
 THRESHOLDS_US_PER_CALL: dict[str, float] = {
-    "hermes": 30.0,  # measured ~5.5 μs on M3
-    "minimax": 60.0,  # complex regex, larger budget
-    "glm47": 40.0,  # similar shape to hermes
-    "harmony": 80.0,  # multi-channel protocol, heavier
+    "hermes": 60.0,  # measured ~5.5 μs on M3, ~30 μs on ubuntu-latest
+    "minimax": 120.0,  # complex regex, larger budget
+    "glm47": 80.0,  # similar shape to hermes
+    "harmony": 160.0,  # multi-channel protocol, heavier
 }
 
 # Realistic sample inputs for each parser. Each represents a single
