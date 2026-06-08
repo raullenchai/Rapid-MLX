@@ -264,8 +264,11 @@ class TestEmbeddingsEndpoint:
             )
             assert resp.status_code == 400
             body = resp.json()
-            assert "locked-model" in body["detail"]
-            assert "other-model" in body["detail"]
+            # OpenAI-style error envelope, per the server-wide
+            # StarletteHTTPException handler installed by PR #491.
+            message = body["error"]["message"]
+            assert "locked-model" in message
+            assert "other-model" in message
         finally:
             srv._embedding_engine = original_engine
             srv._embedding_model_locked = original_locked
