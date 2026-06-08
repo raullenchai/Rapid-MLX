@@ -423,10 +423,86 @@ class EngineCore:
         _consecutive_step_failures = 0
         _STEP_FAILURE_BURST = 10
 
+        # ----- B=1 perf probe (RAPID_MLX_PROBE_ENGINE_LOOP=1) -----
+        # Investigates the rapid-mlx HTTP B=1 ~33% gap to mlx-vlm on M3
+        # Ultra. Initial hypothesis was that the gap lived in the asyncio
+        # dispatch around scheduler.step() — run_in_executor round-trip
+        # + per-token SSE/postprocessor work on the loop thread blocking
+        # the next executor re-entry. This probe times three things
+        # separately so we can decide where to spend the next perf PR:
+        #
+        #   step_inside_ms   — pure scheduler.step() wall, measured
+        #                      inside the executor thread. This is the
+        #                      MLX compute + sampler + KV cache work.
+        #   step_await_ms    — wall from before ``await run_in_executor``
+        #                      to after it returns on the asyncio loop.
+        #                      step_await_ms - step_inside_ms = the
+        #                      asyncio/executor round-trip overhead.
+        #   dispatch_ms      — wall from start of output distribution
+        #                      (collector puts, mx.clear_cache on
+        #                      finished, asyncio.sleep(0)) to the end
+        #                      of that block — i.e. all the loop work
+        #                      between two scheduler.step() calls.
+        #
+        # Zero overhead when the env var is unset: the `if _probe_enabled`
+        # branch is a single dict lookup at module load + a constant
+        # bool check per step.
+        _probe_enabled = os.environ.get("RAPID_MLX_PROBE_ENGINE_LOOP", "0") not in (
+            "0",
+            "",
+            "false",
+            "False",
+        )
+        _probe_log_every = max(
+            1, int(os.environ.get("RAPID_MLX_PROBE_LOG_EVERY", "32"))
+        )
+        _probe_step_inside_ms_sum = 0.0
+        _probe_step_inside_ms_min = float("inf")
+        _probe_step_inside_ms_max = 0.0
+        _probe_step_await_ms_sum = 0.0
+        _probe_step_await_ms_min = float("inf")
+        _probe_step_await_ms_max = 0.0
+        _probe_dispatch_ms_sum = 0.0
+        _probe_dispatch_ms_min = float("inf")
+        _probe_dispatch_ms_max = 0.0
+        _probe_step_count = 0
+        _probe_token_count = 0
+
+        def _timed_step():
+            # Runs on the MLX executor thread (see _init_mlx_step_thread).
+            # Pairs the bare scheduler.step() wall with the output so we
+            # can attribute the await round-trip cost (asyncio + executor
+            # context switch) separately from the engine wall.
+            _t = time.perf_counter()
+            _out = self.scheduler.step()
+            return _out, (time.perf_counter() - _t) * 1000.0
+
         while self._running:
             try:
                 if self.scheduler.has_requests():
-                    output = await loop.run_in_executor(_executor, self.scheduler.step)
+                    if _probe_enabled:
+                        _probe_t_await = time.perf_counter()
+                        output, _probe_step_inside_ms = await loop.run_in_executor(
+                            _executor, _timed_step
+                        )
+                        _probe_step_await_ms = (
+                            time.perf_counter() - _probe_t_await
+                        ) * 1000.0
+                        _probe_step_inside_ms_sum += _probe_step_inside_ms
+                        if _probe_step_inside_ms < _probe_step_inside_ms_min:
+                            _probe_step_inside_ms_min = _probe_step_inside_ms
+                        if _probe_step_inside_ms > _probe_step_inside_ms_max:
+                            _probe_step_inside_ms_max = _probe_step_inside_ms
+                        _probe_step_await_ms_sum += _probe_step_await_ms
+                        if _probe_step_await_ms < _probe_step_await_ms_min:
+                            _probe_step_await_ms_min = _probe_step_await_ms
+                        if _probe_step_await_ms > _probe_step_await_ms_max:
+                            _probe_step_await_ms_max = _probe_step_await_ms
+                        _probe_t_dispatch = time.perf_counter()
+                    else:
+                        output = await loop.run_in_executor(
+                            _executor, self.scheduler.step
+                        )
                     self._steps_executed += 1
                     _consecutive_step_failures = 0
 
@@ -495,6 +571,63 @@ class EngineCore:
                         # request still in scheduler) block the entire event loop,
                         # making the server unresponsive to all HTTP requests.
                         await asyncio.sleep(0)
+
+                    if _probe_enabled:
+                        _probe_dispatch_ms = (
+                            time.perf_counter() - _probe_t_dispatch
+                        ) * 1000.0
+                        _probe_dispatch_ms_sum += _probe_dispatch_ms
+                        if _probe_dispatch_ms < _probe_dispatch_ms_min:
+                            _probe_dispatch_ms_min = _probe_dispatch_ms
+                        if _probe_dispatch_ms > _probe_dispatch_ms_max:
+                            _probe_dispatch_ms_max = _probe_dispatch_ms
+                        _probe_step_count += 1
+                        _probe_token_count += len(outputs)
+                        if _probe_step_count >= _probe_log_every:
+                            # Structured single-line tag so grep / awk pulls
+                            # the numbers out cleanly. Keep keys stable across
+                            # this PR's lifetime so the bench harness can
+                            # parse them without a schema bump. step_await -
+                            # step_inside = the asyncio + executor RTT
+                            # overhead; if this gap is large the next perf
+                            # PR is the dedicated-step-thread rewrite, if
+                            # it is small the next PR is inside Scheduler.
+                            logger.info(
+                                "[engine_loop_probe] steps=%d tokens=%d "
+                                "step_inside_ms_avg=%.3f step_inside_ms_min=%.3f "
+                                "step_inside_ms_max=%.3f step_await_ms_avg=%.3f "
+                                "step_await_ms_min=%.3f step_await_ms_max=%.3f "
+                                "dispatch_ms_avg=%.3f dispatch_ms_min=%.3f "
+                                "dispatch_ms_max=%.3f tok_per_s=%.2f",
+                                _probe_step_count,
+                                _probe_token_count,
+                                _probe_step_inside_ms_sum / _probe_step_count,
+                                _probe_step_inside_ms_min,
+                                _probe_step_inside_ms_max,
+                                _probe_step_await_ms_sum / _probe_step_count,
+                                _probe_step_await_ms_min,
+                                _probe_step_await_ms_max,
+                                _probe_dispatch_ms_sum / _probe_step_count,
+                                _probe_dispatch_ms_min,
+                                _probe_dispatch_ms_max,
+                                1000.0
+                                * _probe_token_count
+                                / (_probe_step_await_ms_sum + _probe_dispatch_ms_sum)
+                                if (_probe_step_await_ms_sum + _probe_dispatch_ms_sum)
+                                > 0
+                                else 0.0,
+                            )
+                            _probe_step_inside_ms_sum = 0.0
+                            _probe_step_inside_ms_min = float("inf")
+                            _probe_step_inside_ms_max = 0.0
+                            _probe_step_await_ms_sum = 0.0
+                            _probe_step_await_ms_min = float("inf")
+                            _probe_step_await_ms_max = 0.0
+                            _probe_dispatch_ms_sum = 0.0
+                            _probe_dispatch_ms_min = float("inf")
+                            _probe_dispatch_ms_max = 0.0
+                            _probe_step_count = 0
+                            _probe_token_count = 0
                 else:
                     # No work — block until ``add_request`` sets the
                     # event, with a long fallback timeout for
