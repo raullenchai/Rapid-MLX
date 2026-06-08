@@ -6,7 +6,7 @@ Persona-3 ("Ollama switcher") feedback (2026-05): running
     rapid-mlx chat qwen3-coder
 
 against an alias that wasn't yet cached silently kicked off a 41.8 GB
-download with no ``[y/N]`` prompt. The download itself ran fine, but
+download with no ``[Y/n]`` prompt. The download itself ran fine, but
 because the spawned ``serve`` subprocess captured stdout to a logfile,
 the user saw a blank screen and assumed the CLI was hung.
 
@@ -482,16 +482,21 @@ def confirm_or_abort(
     if logfile_hint:
         print(f"    Download progress will appear in {logfile_hint}; tail it to watch.")
     print()
+    # Default Y — the user explicitly invoked a subcommand on a specific
+    # alias ("rapid-mlx serve qwen…", "rapid-mlx share gemma…"); intent
+    # to use that model is clear. Pressing Enter shouldn't punish them
+    # with an abort. Ctrl-C still cancels.
     try:
-        answer = input("  Continue? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
+        answer = input("  Continue? [Y/n]: ").strip().lower()
+    except EOFError:
+        answer = ""  # equivalent to Enter
+    except KeyboardInterrupt:
+        answer = "n"  # explicit user cancel
 
-    if answer in {"y", "yes"}:
-        return True
-
-    print(
-        f"  Aborted. Use 'rapid-mlx pull {repo_id}' to download separately, "
-        f"or set {auto_yes_env}=1 to skip this prompt."
-    )
-    sys.exit(1)
+    if answer in {"n", "no"}:
+        print(
+            f"  Aborted. Use 'rapid-mlx pull {repo_id}' to download separately, "
+            f"or set {auto_yes_env}=1 to skip this prompt."
+        )
+        sys.exit(1)
+    return True

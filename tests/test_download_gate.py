@@ -195,14 +195,16 @@ def test_confirm_aborts_on_no(monkeypatch, capsys):
     assert "RAPID_MLX_AUTO_PULL" in out
 
 
-def test_confirm_aborts_on_empty_input(monkeypatch):
-    """Empty input (the default) → abort. ``[y/N]`` means N is the default."""
+def test_confirm_proceeds_on_empty_input(monkeypatch):
+    """Empty input (just hit Enter) → proceed. ``[Y/n]`` means Y is the
+    default — the user already typed the subcommand on a specific alias,
+    so Enter should respect their intent, not abort.
+    """
     monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: "")
 
-    with pytest.raises(SystemExit):
-        gate.confirm_or_abort("foo/huge", 41 * 1024**3)
+    assert gate.confirm_or_abort("foo/huge", 41 * 1024**3) is True
 
 
 def test_confirm_aborts_on_ctrl_c(monkeypatch):

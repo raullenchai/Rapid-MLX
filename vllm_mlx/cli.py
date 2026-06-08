@@ -3121,12 +3121,16 @@ def upgrade_command(args):
     if args.yes:
         confirmed = True
     else:
+        # Default Y — the user already typed the upgrade command;
+        # punishing the Enter key with a no-op skip is bad UX.
         try:
-            answer = input("  Run now? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+            answer = input("  Run now? [Y/n] ").strip().lower()
+        except EOFError:
+            answer = ""
+        except KeyboardInterrupt:
             print()
             return
-        confirmed = answer in {"y", "yes"}
+        confirmed = answer not in {"n", "no"}
 
     if not confirmed:
         print("  Skipped — run the command above when ready.\n")
