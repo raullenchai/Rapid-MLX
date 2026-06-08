@@ -140,6 +140,12 @@ def _make_completions_client(engine) -> TestClient:
 
 
 def _parse_sse_events(text: str) -> list[dict]:
+    # NOTE: do NOT silently swallow ``JSONDecodeError`` here. The streaming
+    # usage-block tests assert on a chunk near the end of the SSE response;
+    # if an earlier chunk regresses to invalid JSON, an except-pass loop
+    # would skip it and the test could still pass on the trailing valid
+    # chunk — masking a real wire-format regression. Surface the parse
+    # failure so the suite is the canary it claims to be.
     events: list[dict] = []
     for line in text.splitlines():
         line = line.strip()
@@ -148,10 +154,7 @@ def _parse_sse_events(text: str) -> list[dict]:
         payload = line.removeprefix("data:").strip()
         if payload == "[DONE]":
             continue
-        try:
-            events.append(json.loads(payload))
-        except json.JSONDecodeError:
-            continue
+        events.append(json.loads(payload))
     return events
 
 

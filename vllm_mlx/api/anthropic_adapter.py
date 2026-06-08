@@ -187,8 +187,13 @@ def openai_to_anthropic(
     cached_tokens = 0
     if response.usage and response.usage.prompt_tokens_details is not None:
         cached_tokens = response.usage.prompt_tokens_details.cached_tokens or 0
+    # Clamp once so cache_read + input_tokens cannot exceed prompt_tokens —
+    # a defensive guard against an upstream over-report (e.g. prefix-cache
+    # bookkeeping bug) that would otherwise emit an impossible Anthropic
+    # usage block where cache_read_input_tokens > total prompt tokens.
+    cached_tokens = min(cached_tokens, prompt_tokens)
     cache_read = cached_tokens if cached_tokens else None
-    input_tokens = max(0, prompt_tokens - cached_tokens)
+    input_tokens = prompt_tokens - cached_tokens
     return AnthropicResponse(
         model=model,
         content=content,
