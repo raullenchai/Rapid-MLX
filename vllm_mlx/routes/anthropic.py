@@ -745,8 +745,13 @@ async def _stream_anthropic_messages(
     # ``cache_control`` breakpoints (billed 1.25x), which has no
     # analog on a local engine. Cache field stays absent when the
     # engine didn't report a hit (e.g. dflash, MLLM).
+    # Clamp once so cache_read + input_tokens cannot exceed prompt_tokens —
+    # an over-reported cache count from the engine would otherwise emit an
+    # impossible usage block where ``cache_read_input_tokens > prompt_tokens``.
+    # Mirrors ``openai_to_anthropic`` in ``api/anthropic_adapter.py``.
+    cached_tokens = min(cached_tokens, prompt_tokens)
     usage_payload: dict[str, int] = {
-        "input_tokens": max(0, prompt_tokens - cached_tokens),
+        "input_tokens": prompt_tokens - cached_tokens,
         "output_tokens": completion_tokens,
     }
     if cached_tokens:
