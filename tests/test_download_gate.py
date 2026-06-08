@@ -207,8 +207,15 @@ def test_confirm_proceeds_on_empty_input(monkeypatch):
     assert gate.confirm_or_abort("foo/huge", 41 * 1024**3) is True
 
 
-def test_confirm_aborts_on_ctrl_c(monkeypatch):
-    """Ctrl-C at the prompt → treated as abort, not a stack trace."""
+def test_confirm_aborts_on_ctrl_c(monkeypatch, capsys):
+    """Ctrl-C at the prompt → treated as abort (mapped to ``n`` internally,
+    same ``sys.exit(1)`` path as a typed ``n``), not a stack trace.
+
+    Pinning the exit code (not just ``SystemExit``) keeps the contract
+    explicit: a future refactor that re-maps Ctrl-C to ``130`` would
+    flip the gate's semantics for callers that distinguish "user
+    cancelled" from "abort hint printed and exited".
+    """
     monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
 
@@ -217,8 +224,61 @@ def test_confirm_aborts_on_ctrl_c(monkeypatch):
 
     monkeypatch.setattr("builtins.input", _raise)
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         gate.confirm_or_abort("foo/huge", 41 * 1024**3)
+    assert excinfo.value.code == 1
+
+    out = capsys.readouterr().out
+    assert "Aborted" in out
+    assert "rapid-mlx pull foo/huge" in out
+
+
+def test_confirm_proceeds_on_eof(monkeypatch):
+    """EOFError on ``input()`` (e.g. stdin closed mid-prompt by a script
+    that fed an empty pipe but kept the TTY check tricked) → treat as
+    Enter and proceed. Previously bundled with ``KeyboardInterrupt``
+    (both → abort); now split so Ctrl-C cancels but EOF defers to the
+    ``[Y/n]`` default. Pins the new split-handler contract."""
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    def _eof(_=None):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof)
+
+    assert gate.confirm_or_abort("foo/huge", 41 * 1024**3) is True
+
+
+@pytest.mark.parametrize("typo", ["ys", "yres", "nope", "q", "abort", "go"])
+def test_confirm_proceeds_on_non_no_typos(monkeypatch, typo):
+    """``[Y/n]`` semantics: only an explicit ``n``/``no`` aborts. Typos
+    (``ys``, ``yres``) and stray words (``nope``, ``q``, ``abort``) all
+    proceed because the user already invoked the subcommand and the
+    only "danger" is downloading the very alias they typed.
+
+    This generosity is intentional — pin it so a stricter rewrite
+    (e.g. "only accept y/yes/empty, re-prompt on anything else") has
+    to delete this test on purpose. ``nope`` proceeding is the most
+    surprising one; documented here.
+    """
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _=None: typo)
+
+    assert gate.confirm_or_abort("foo/huge", 41 * 1024**3) is True
+
+
+def test_confirm_aborts_on_no_uppercase(monkeypatch):
+    """``N`` (single capital) → abort. ``.lower()`` already runs on the
+    raw input, but pin the case-insensitivity contract explicitly."""
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _=None: "N")
+
+    with pytest.raises(SystemExit) as excinfo:
+        gate.confirm_or_abort("foo/huge", 41 * 1024**3)
+    assert excinfo.value.code == 1
 
 
 def test_confirm_logfile_hint_appears_in_prompt(monkeypatch, capsys):

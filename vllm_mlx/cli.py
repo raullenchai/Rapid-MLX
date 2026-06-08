@@ -3122,7 +3122,12 @@ def upgrade_command(args):
         confirmed = True
     else:
         # Default Y — the user already typed the upgrade command;
-        # punishing the Enter key with a no-op skip is bad UX.
+        # punishing the Enter key with a no-op skip is bad UX. EOF on
+        # stdin is treated as Enter (proceed), mirroring the download
+        # gate. Ctrl-C is the only "skip" path — it returns silently
+        # without ``sys.exit`` because upgrade is a leaf operation, so
+        # there's nothing downstream to abort; cf. the gate, which
+        # exits 1 because it's gatekeeping a multi-GB download.
         try:
             answer = input("  Run now? [Y/n] ").strip().lower()
         except EOFError:

@@ -444,8 +444,11 @@ def confirm_or_abort(
     heads-up but proceed — blocking on a transient API failure would be
     worse than the silent-download problem we're trying to fix.
 
-    When the user types anything other than ``y``/``yes``, we print a
-    one-line abort hint and call ``sys.exit(1)``.
+    Prompt default is Y (``[Y/n]``): the user already typed a subcommand
+    naming a specific alias, so pressing Enter is treated as confirmation.
+    Only an explicit ``n``/``no`` (case-insensitive) — or Ctrl-C, which is
+    mapped to ``n`` internally — triggers the abort hint and
+    ``sys.exit(1)``. EOF on stdin is treated as Enter (proceed).
     """
     # Env override always wins.
     env_val = os.environ.get(auto_yes_env, "").strip().lower()
