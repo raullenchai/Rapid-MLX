@@ -249,10 +249,20 @@ class RequestOutput:
 
     @property
     def usage(self) -> dict[str, int]:
-        """Return usage statistics compatible with OpenAI API."""
+        """Return usage statistics compatible with OpenAI API.
+
+        ``cached_tokens`` is intentionally NOT exposed here. The OpenAI
+        spec nests it under ``prompt_tokens_details.cached_tokens`` on
+        the response ``usage`` object — surfacing it as a top-level
+        sibling of ``prompt_tokens`` here would create a non-spec key
+        that any caller serialising this dict directly would leak.
+        Production code constructs ``Usage`` via ``service.helpers.
+        _build_usage`` (which reads ``cached_tokens`` from the
+        ``RequestOutput`` dataclass field above), keeping the
+        wire-shape spec-compliant.
+        """
         return {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.prompt_tokens + self.completion_tokens,
-            "cached_tokens": self.cached_tokens,
         }
