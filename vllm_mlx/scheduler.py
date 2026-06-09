@@ -12,6 +12,7 @@ The scheduler follows vLLM's design with:
 """
 
 import logging
+import os
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -32,6 +33,10 @@ from mlx_lm.generate import BatchGenerator  # noqa: E402
 from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E402
 from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
 
+from ._sampler_fast_path import (  # noqa: E402
+    is_fused_top_p_eligible,
+    make_fused_top_p_temp_sampler,
+)
 from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
@@ -1895,23 +1900,66 @@ class Scheduler:
         homogeneous-looking batches would silently share an incorrect
         sampler.
         """
+        # Codex round-2 BLOCKER #3 fix: read the env-var BEFORE the cache
+        # lookup so that flipping ``RAPID_MLX_DISABLE_FUSED_SAMPLER`` in a
+        # long-lived process can disable the fast path on the next request
+        # without us serving a stale cached fused sampler. The disabled
+        # state is folded into the cache key so the two branches don't
+        # collide either.
+        # Codex round-5 NIT: accept a small set of truthy values so operators
+        # who set ``RAPID_MLX_DISABLE_FUSED_SAMPLER=true`` (the more natural
+        # form for a boolean knob) actually get the fast path disabled,
+        # instead of silently leaving it on.
+        _fused_disabled = os.environ.get(
+            "RAPID_MLX_DISABLE_FUSED_SAMPLER", "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
         key = (
             sampling_params.temperature,
             sampling_params.top_p,
             sampling_params.min_p,
             sampling_params.top_k,
+            _fused_disabled,
         )
         cached = self._sampler_cache.get(key)
         if cached is not None:
             # LRU bookkeeping — keep the hot key warm.
             self._sampler_cache.move_to_end(key)
             return cached
-        sampler = make_sampler(
-            temp=sampling_params.temperature,
+        # Fast path for the dominant chat config (temp + top_p, with or
+        # without top_k). See ``vllm_mlx/_sampler_fast_path.py`` for the
+        # math-equivalence argument and the perf data behind it (Qwen 3.6
+        # 35B 4-bit B=1: 65 -> 92 tok/s). Falls through to mlx-lm's chain
+        # whenever the request enables min_p, xtc, sets temperature == 0
+        # (mlx-lm already short-circuits to argmax), is top-k-only with no
+        # nucleus cut (mlx-lm uses a cheaper partition primitive there),
+        # or whenever the operator sets
+        # ``RAPID_MLX_DISABLE_FUSED_SAMPLER=1`` as an escape hatch.
+        if not _fused_disabled and is_fused_top_p_eligible(
+            temperature=sampling_params.temperature,
             top_p=sampling_params.top_p,
             min_p=sampling_params.min_p,
             top_k=sampling_params.top_k,
-        )
+        ):
+            sampler = make_fused_top_p_temp_sampler(
+                temperature=sampling_params.temperature,
+                top_p=sampling_params.top_p,
+                top_k=sampling_params.top_k,
+            )
+            if not getattr(self, "_fused_top_p_logged", False):
+                logger.info(
+                    "[fused_top_p_sampler] engaged for temp=%.3f top_p=%.3f top_k=%d",
+                    sampling_params.temperature,
+                    sampling_params.top_p,
+                    sampling_params.top_k,
+                )
+                self._fused_top_p_logged = True
+        else:
+            sampler = make_sampler(
+                temp=sampling_params.temperature,
+                top_p=sampling_params.top_p,
+                min_p=sampling_params.min_p,
+                top_k=sampling_params.top_k,
+            )
         self._sampler_cache[key] = sampler
         # Evict the least-recently-used entry once we exceed the cap.
         # Identity-sharing only matters for live in-flight batches; a

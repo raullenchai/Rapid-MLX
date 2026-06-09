@@ -230,7 +230,7 @@ def test_sampler_cache_interns_by_param_tuple():
     assert len(sched._sampler_cache) == 2
 
 
-def test_sampler_cache_is_bounded_lru():
+def test_sampler_cache_is_bounded_lru(monkeypatch):
     """The cache key is request-controlled (clients pick temp/top_p), so
     the cache MUST be bounded. Without a cap, an adversarial client
     streaming unique floats grows ``_sampler_cache`` without bound for
@@ -238,6 +238,11 @@ def test_sampler_cache_is_bounded_lru():
     from collections import OrderedDict
 
     from vllm_mlx.scheduler import Scheduler
+
+    # Codex round-3 NIT #3: pin the escape-hatch env var so the cache
+    # key's 5th element is deterministic regardless of test invocation
+    # environment.
+    monkeypatch.delenv("RAPID_MLX_DISABLE_FUSED_SAMPLER", raising=False)
 
     sched = Scheduler.__new__(Scheduler)
     sched._sampler_cache = OrderedDict()
@@ -254,16 +259,18 @@ def test_sampler_cache_is_bounded_lru():
     samplers = [sched._get_request_sampler(_SP(0.1 * i)) for i in range(6)]
     assert len(sched._sampler_cache) == 4, "cap must hold even under churn"
 
-    # Oldest entries (temp=0.0, 0.1) are evicted.
+    # Oldest entries (temp=0.0, 0.1) are evicted. The 5th tuple element
+    # is the ``RAPID_MLX_DISABLE_FUSED_SAMPLER`` flag — False here because
+    # we explicitly deleted the env var above.
     keys = list(sched._sampler_cache.keys())
-    assert (0.0, 0.95, 0.0, 20) not in keys
-    assert (0.1, 0.95, 0.0, 20) not in keys
+    assert (0.0, 0.95, 0.0, 20, False) not in keys
+    assert (0.1, 0.95, 0.0, 20, False) not in keys
     # Newest entry is at the LRU tail.
-    assert keys[-1] == (0.5, 0.95, 0.0, 20)
+    assert keys[-1] == (0.5, 0.95, 0.0, 20, False)
 
     # Hot-key LRU bookkeeping: hitting an existing key bumps it to MRU.
     sched._get_request_sampler(_SP(0.2))  # was middle of the LRU
-    assert list(sched._sampler_cache.keys())[-1] == (0.2, 0.95, 0.0, 20)
+    assert list(sched._sampler_cache.keys())[-1] == (0.2, 0.95, 0.0, 20, False)
 
 
 def test_method_type_wrapper_sees_correct_self():
