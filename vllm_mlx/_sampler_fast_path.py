@@ -7,9 +7,10 @@ mlx-lm's ``make_sampler`` builds a closure chain of independent
         apply_top_p(logprobs, top_p)         # @mx.compile #1
         categorical_sampling(masked, temp)   # @mx.compile #2
 
-For the dominant chat config ``(temp > 0, at least one of 0 < top_p < 1
-or top_k > 0, no min_p, no xtc, no logits_processors)`` this costs ~4.3 ms
-/ token on Qwen 3.6 35B 4-bit @ B=1 on M3 Ultra, split as:
+For the dominant chat config ``(temp > 0, 0 < top_p < 1, no min_p, no
+xtc, no logits_processors)`` (with optional ``top_k > 0`` layered on top
+of the active nucleus cut) this costs ~4.3 ms / token on Qwen 3.6 35B
+4-bit @ B=1 on M3 Ultra, split as:
 
 * ~0.9 ms Python — three closure dispatches per step (mlx-lm chain runs
   ``apply_top_p`` closure, then ``categorical_sampling`` closure, both
@@ -62,17 +63,20 @@ def is_fused_top_p_eligible(
     min_p: float,
     top_k: int,
 ) -> bool:
-    """Return True when the sampler chain reduces to a subset of
-    ``{apply_top_p, apply_top_k, categorical_sampling}``.
+    """Return True when the sampler chain reduces to ``apply_top_p`` plus
+    an optional ``apply_top_k`` plus ``categorical_sampling``, and the
+    fused replacement is expected to win against mlx-lm.
 
-    mlx-lm's ``make_sampler`` builds the chain conditionally. With
-    ``min_p == 0`` (rapid-mlx never forwards ``xtc_*`` knobs) and at
-    least one of ``0 < top_p < 1`` or ``top_k > 0`` active, the chain
-    is at most three ops — the case this fast path replaces.
-    ``temperature > 0`` is required because ``temperature == 0`` already
-    short-circuits in mlx-lm (``make_sampler`` returns
-    ``lambda x: mx.argmax(x, axis=-1)`` directly), so there is nothing
-    to optimise.
+    Eligible iff ``temperature > 0`` AND ``min_p == 0`` AND
+    ``0 < top_p < 1`` (with ``top_k`` optional — if set, layered as an
+    additional mask on top of the active nucleus cut).
+
+    Top-k-only configurations are explicitly NOT eligible: mlx-lm's
+    ``apply_top_k`` uses ``mx.partition`` which is cheaper than our
+    full vocab ``argsort`` when top-p isn't also active, so swapping in
+    the fused path would be a regression there. ``temperature == 0`` is
+    also not eligible because mlx-lm already short-circuits to
+    ``argmax`` directly — nothing to optimise.
     """
     # Codex round-2 BLOCKER #2 fix: top-k-only configurations route back
     # through mlx-lm's chain because ``apply_top_k`` uses ``mx.partition``

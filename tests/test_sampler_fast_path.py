@@ -197,9 +197,55 @@ class TestDistributionalEquivalence:
             f"chain={set(chain_counts.keys())}"
         )
 
+    def test_per_token_frequency_matches_mlx_lm(self):
+        """Codex round-3 NIT #4: check the per-token frequency for every
+        kept token, not just the argmax marginal. A sampler that gives
+        the wrong relative probabilities to the rest of the kept set
+        would pass the prior argmax-only assertion but fail this one.
+
+        Strategy: use a sharp 32-vocab distribution where the kept set is
+        4-5 tokens with probabilities differing by 3-8x. After 4000 draws
+        each kept token's empirical frequency has a 3-sigma binomial
+        band of ~0.024 at p~0.3, so a 0.05 tolerance comfortably absorbs
+        MLX RNG noise but still flags any kept token whose relative
+        weight is off by more than ~50%.
+        """
+        vocab = 32
+        logits = mx.full((vocab,), -8.0)
+        logits[0] = 2.0  # ~0.40
+        logits[5] = 1.5  # ~0.24
+        logits[12] = 1.0  # ~0.15
+        logits[20] = 0.5  # ~0.09
+        logits[27] = 0.0  # ~0.05
+        logits[31] = -0.5  # ~0.03
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+
+        fused = make_fused_top_p_temp_sampler(0.7, 0.95)
+        mlx_chain = make_sampler(temp=0.7, top_p=0.95)
+
+        n = 4000
+        mx.random.seed(0)
+        fused_counts = self._empirical_distribution(fused, logprobs, n)
+        mx.random.seed(0)
+        chain_counts = self._empirical_distribution(mlx_chain, logprobs, n)
+
+        kept = set(fused_counts.keys()) | set(chain_counts.keys())
+        assert kept, "no tokens sampled — check the test setup"
+        # Per-token freq must match within 5% (3-sigma slack for n=4000).
+        for tok in kept:
+            fused_freq = fused_counts.get(tok, 0) / n
+            chain_freq = chain_counts.get(tok, 0) / n
+            assert abs(fused_freq - chain_freq) < 0.05, (
+                f"per-token freq diverges for token {tok}: "
+                f"fused={fused_freq:.3f}, chain={chain_freq:.3f}"
+            )
+
     def test_top_token_frequency_matches(self):
         """The most-likely token (argmax of the original distribution)
         should be sampled at the same rate within sampling noise.
+        Complements ``test_per_token_frequency_matches_mlx_lm`` by
+        running on the larger noisy 4096-vocab distribution so we catch
+        any Gumbel-noise weighting bug that only shows up at scale.
         """
         mx.random.seed(0)
         vocab = 4096
