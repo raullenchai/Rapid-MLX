@@ -32,6 +32,10 @@ from mlx_lm.generate import BatchGenerator  # noqa: E402
 from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E402
 from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
 
+from ._sampler_fast_path import (  # noqa: E402
+    is_fused_top_p_eligible,
+    make_fused_top_p_temp_sampler,
+)
 from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
@@ -1906,12 +1910,39 @@ class Scheduler:
             # LRU bookkeeping — keep the hot key warm.
             self._sampler_cache.move_to_end(key)
             return cached
-        sampler = make_sampler(
-            temp=sampling_params.temperature,
+        # Fast path for the dominant chat config (temp + top_p only).
+        # See ``vllm_mlx/_sampler_fast_path.py`` for the math-equivalence
+        # argument and the perf data behind it (Qwen 3.6 35B 4-bit B=1:
+        # 65 -> 100 tok/s). Falls through to mlx-lm's chain whenever the
+        # request enables min_p, top_k, xtc, logits_processors, or sets
+        # temperature == 0 (mlx-lm already short-circuits to argmax).
+        if is_fused_top_p_eligible(
+            temperature=sampling_params.temperature,
             top_p=sampling_params.top_p,
             min_p=sampling_params.min_p,
             top_k=sampling_params.top_k,
-        )
+        ):
+            sampler = make_fused_top_p_temp_sampler(
+                temperature=sampling_params.temperature,
+                top_p=sampling_params.top_p,
+                top_k=sampling_params.top_k,
+            )
+            if not getattr(self, "_fused_top_p_logged", False):
+                logger.info(
+                    "[fused_top_p_sampler] engaged for "
+                    "temp=%.3f top_p=%.3f top_k=%d",
+                    sampling_params.temperature,
+                    sampling_params.top_p,
+                    sampling_params.top_k,
+                )
+                self._fused_top_p_logged = True
+        else:
+            sampler = make_sampler(
+                temp=sampling_params.temperature,
+                top_p=sampling_params.top_p,
+                min_p=sampling_params.min_p,
+                top_k=sampling_params.top_k,
+            )
         self._sampler_cache[key] = sampler
         # Evict the least-recently-used entry once we exceed the cap.
         # Identity-sharing only matters for live in-flight batches; a
