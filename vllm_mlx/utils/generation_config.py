@@ -128,8 +128,13 @@ def load_generation_config_eos_ids(model_path: str | None) -> tuple[int, ...]:
 
     * Returns ``()`` for missing path, missing file, parse error,
       non-dict payload, or no ``eos_token_id`` key.
-    * Returns ``()`` when the value is a single int — that case is
-      already covered by the tokenizer's own ``eos_token_id``.
+    * Accepts both list and single-int forms. HF's transformers
+      generator treats ``generation_config.json`` as authoritative
+      and overrides ``tokenizer.eos_token_id`` from it; if a fine-tune
+      ships a single int here that differs from the tokenizer
+      default, dropping it would let the model run to ``max_tokens``.
+      The downstream consumer unions into a set, so returning a
+      duplicate is harmless.
     * Filters out booleans (JSON ``True``/``False`` decode to
       ``int``) and non-finite values.
     """
@@ -147,10 +152,17 @@ def load_generation_config_eos_ids(model_path: str | None) -> tuple[int, ...]:
     if not isinstance(raw, dict):
         return ()
     value = raw.get("eos_token_id")
-    if not isinstance(value, list):
+    if isinstance(value, bool):
+        # JSON booleans decode to int — never accept as a token id.
+        return ()
+    if isinstance(value, int):
+        items: list = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
         return ()
     out: list[int] = []
-    for item in value:
+    for item in items:
         if isinstance(item, bool):
             continue
         if not isinstance(item, int):

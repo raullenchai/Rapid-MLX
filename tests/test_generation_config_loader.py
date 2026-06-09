@@ -269,10 +269,19 @@ class TestLoadGenerationConfigEosIds:
         )
         assert load_generation_config_eos_ids(d) == (1, 106)
 
-    def test_single_int_eos_returns_empty(self, tmp_path):
-        # A bare int is already covered by tokenizer.eos_token_id —
-        # returning it here would add no new information.
+    def test_single_int_eos_returned_as_one_tuple(self, tmp_path):
+        # HF semantics: generation_config.eos_token_id OVERRIDES
+        # the tokenizer default, so a single int that differs from
+        # tokenizer.eos_token_id still has to make it into the stop
+        # set. Downstream consumers union into a set, so returning
+        # a duplicate when it matches is harmless.
         d = _write(tmp_path, {"eos_token_id": 2})
+        assert load_generation_config_eos_ids(d) == (2,)
+
+    def test_single_int_eos_filters_bool(self, tmp_path):
+        # JSON ``True`` decodes to ``int(1)`` — must not be accepted
+        # as a token id even in the single-value form.
+        d = _write(tmp_path, {"eos_token_id": True})
         assert load_generation_config_eos_ids(d) == ()
 
     def test_missing_eos_key_returns_empty(self, tmp_path):
@@ -380,7 +389,9 @@ class TestAugmentEosFromGenerationConfig:
         augment_eos_token_ids_from_generation_config(tok, d)
         assert tuple(getattr(tok, RAPID_EXTRA_EOS_ATTR)) == (1, 42, 106)
 
-    def test_no_extras_is_no_op(self, tmp_path):
+    def test_no_eos_key_is_no_op(self, tmp_path):
+        # Missing ``eos_token_id`` entirely → augment must not touch
+        # the tokenizer at all.
         from vllm_mlx.utils.tokenizer import (
             augment_eos_token_ids_from_generation_config,
         )
@@ -389,10 +400,28 @@ class TestAugmentEosFromGenerationConfig:
             def __init__(self):
                 self._eos_token_ids = {1}
 
-        d = _write(tmp_path, {"eos_token_id": 2})  # singular, not a list
+        d = _write(tmp_path, {"temperature": 0.6})  # no eos_token_id key
         tok = _WrapperStub()
         augment_eos_token_ids_from_generation_config(tok, d)
         assert tok._eos_token_ids == {1}
+
+    def test_shape1_single_int_override_added_to_set(self, tmp_path):
+        # generation_config.json with a single int EOS that differs
+        # from the tokenizer default is the codex-round-1 regression
+        # case — used to silently fall through; must now widen the
+        # stop set.
+        from vllm_mlx.utils.tokenizer import (
+            augment_eos_token_ids_from_generation_config,
+        )
+
+        class _WrapperStub:
+            def __init__(self):
+                self._eos_token_ids = {1}
+
+        d = _write(tmp_path, {"eos_token_id": 7})
+        tok = _WrapperStub()
+        augment_eos_token_ids_from_generation_config(tok, d)
+        assert tok._eos_token_ids == {1, 7}
 
     def test_scheduler_reads_wrapper_set_via_get_stop_tokens(self):
         """End-to-end union: a wrapper-shaped tokenizer with a grown
