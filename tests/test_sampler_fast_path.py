@@ -4,10 +4,10 @@
 Pins three properties of ``vllm_mlx._sampler_fast_path``:
 
 1. ``is_fused_top_p_eligible`` covers the eligible knob window exactly —
-   eligible when ``temperature > 0`` and ``min_p == 0`` and at least one
-   of ``0 < top_p < 1`` or ``top_k > 0`` is active; every other
-   combination (greedy, ``min_p > 0``, both top-p and top-k disabled)
-   returns False.
+   eligible iff ``temperature > 0`` AND ``min_p == 0`` AND
+   ``0 < top_p < 1``. ``top_k`` is optional (additional mask layered on
+   top of the active nucleus cut). Every other combination — greedy,
+   ``min_p > 0``, top-k-only (``top_p`` disabled) — returns False.
 2. The fused sampler returns the right shape contract: ``[V]`` -> ``[]``,
    ``[B, V]`` -> ``[B]``, output dtype is ``uint32`` (matching mlx-lm's
    sample token type).
@@ -284,6 +284,68 @@ class TestDistributionalEquivalence:
         fused = make_fused_top_p_temp_sampler(1.0, 0.5)
         for _ in range(10):
             assert int(fused(logprobs)) == 42
+
+    def test_top_k_tie_at_boundary_keeps_k_tokens(self):
+        """Tied logits at the ``top_k`` cutoff: mlx-lm's ``apply_top_k``
+        uses ``mx.argpartition`` (also position-based, unstable on ties),
+        so both paths keep exactly ``top_k`` tokens. They may arbitrarily
+        disagree on WHICH tied token gets picked, but the kept-set SIZE
+        is invariant and the distribution shape is unaffected.
+
+        Codex round 4 raised a BLOCKER claiming mlx-lm was partition+
+        threshold ("keep all ties"); inspecting ``apply_top_k`` in
+        mlx-lm 0.21 falsified that — it is position-based via
+        ``argpartition``. This test pins the verified contract so future
+        codex rounds don't re-raise the same false BLOCKER.
+        """
+        vocab = 16
+        # Three strictly larger, then a tied pair at the boundary,
+        # then strict losers. top_k=4 cutoff lands on the tie.
+        logits = mx.full((vocab,), -8.0)
+        logits[0] = 3.0  # strictly largest
+        logits[3] = 2.5  # strictly second
+        logits[7] = 2.0  # strictly third
+        logits[10] = 1.5  # tied with token 13 — kth value
+        logits[13] = 1.5  # tied with token 10
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+
+        fused = make_fused_top_p_temp_sampler(0.7, 0.99, top_k=4)
+        mlx_chain = make_sampler(temp=0.7, top_p=0.99, top_k=4)
+
+        mx.random.seed(0)
+        fused_counts = self._empirical_distribution(fused, logprobs, n=2000)
+        mx.random.seed(0)
+        chain_counts = self._empirical_distribution(mlx_chain, logprobs, n=2000)
+
+        # Both paths must keep exactly 4 tokens. WHICH tied token wins
+        # may differ across paths (unstable tie-break is allowed) but
+        # the size is invariant.
+        assert len(fused_counts) == 4, (
+            f"fused kept {len(fused_counts)} tokens, expected 4; "
+            f"got {set(fused_counts.keys())}"
+        )
+        assert len(chain_counts) == 4, (
+            f"mlx-lm chain kept {len(chain_counts)} tokens, expected 4; "
+            f"got {set(chain_counts.keys())}"
+        )
+        # The 3 strictly larger tokens are always kept by both paths.
+        assert {0, 3, 7}.issubset(set(fused_counts.keys())), (
+            f"strict winners 0, 3, 7 must be in fused kept set, "
+            f"got {set(fused_counts.keys())}"
+        )
+        assert {0, 3, 7}.issubset(set(chain_counts.keys())), (
+            f"strict winners 0, 3, 7 must be in mlx-lm kept set, "
+            f"got {set(chain_counts.keys())}"
+        )
+        # Exactly ONE of the tied tokens (10 or 13) is in each kept set.
+        tied_in_fused = {10, 13} & set(fused_counts.keys())
+        tied_in_chain = {10, 13} & set(chain_counts.keys())
+        assert len(tied_in_fused) == 1, (
+            f"exactly one tied token expected in fused kept set, got {tied_in_fused}"
+        )
+        assert len(tied_in_chain) == 1, (
+            f"exactly one tied token expected in mlx-lm kept set, got {tied_in_chain}"
+        )
 
     def test_top_p_plus_top_k_kept_set_matches_mlx_lm(self):
         """When both top_p and top_k are active the fused sampler must

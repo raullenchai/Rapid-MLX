@@ -104,16 +104,17 @@ def make_fused_top_p_temp_sampler(
 
     Args:
         temperature: Sampling temperature. Must be > 0.
-        top_p: Nucleus cutoff. ``0 < top_p < 1`` enables top-p; values
-            outside that range disable it (matching mlx-lm's
-            ``make_sampler`` gate).
-        top_k: Top-k cutoff. ``top_k > 0`` enables; ``top_k == 0``
-            disables.
+        top_p: Nucleus cutoff. Must be in ``(0, 1)`` — the fast path
+            requires an active nucleus cut. ``top_p == 1`` short-circuits
+            in mlx-lm (no mask to apply); ``top_p == 0`` is degenerate.
+        top_k: Top-k cutoff. ``top_k > 0`` enables the additional mask
+            layered on top of top-p; ``top_k == 0`` (default) leaves
+            only top-p active.
 
-    At least one of top-p or top-k must be active — otherwise there is
-    nothing to mask and the call collapses to plain
-    ``mx.random.categorical(logits / T)``, which mlx-lm handles fine and
-    we should not steal.
+    Active top-p is required — top-k-only configurations should route
+    through mlx-lm's ``apply_top_k`` (``mx.partition``-based) primitive
+    because that's cheaper than our full vocab ``argsort`` when nucleus
+    isn't also active. See ``is_fused_top_p_eligible``.
 
     Returns:
         A callable ``sampler(logprobs) -> token_ids`` matching the
@@ -165,10 +166,23 @@ def make_fused_top_p_temp_sampler(
         top_one_mask = mx.arange(vocab) == (vocab - 1)
         mask = (cumulative > one_minus_p) | top_one_mask
         if use_top_k:
+            # Codex round-4 raised a BLOCKER claiming mlx-lm's
+            # ``apply_top_k`` is partition+threshold ("keep all ties at
+            # the boundary"). Verified false against the live mlx-lm
+            # 0.21 source: ``apply_top_k`` is
+            #   ``mask_idx = mx.argpartition(-logprobs, kth=top_k-1)[top_k:]``
+            # which is itself position-based + unstable on ties. Both
+            # mlx-lm and our position-based mask keep exactly ``top_k``
+            # tokens; on a tied cutoff both paths arbitrarily admit one
+            # of the ties and drop the other (the WHICH may differ across
+            # paths, but the kept-set SIZE matches and the distribution
+            # shape is unaffected). See
+            # ``test_top_k_tie_at_boundary_keeps_k_tokens`` for the
+            # contract.
             top_k_mask = mx.arange(vocab) >= (vocab - top_k_val)
-            # Re-apply the top-1 guarantee after intersecting with top-k so
-            # the same edge case doesn't reopen via a degenerate top_k=0
-            # mask (already excluded by ``use_top_k`` but cheap to be safe).
+            # Re-apply the top-1 guarantee after intersecting with top-k
+            # so degenerate inputs (e.g. all-equal logits) still keep at
+            # least one sampleable token.
             mask = (mask & top_k_mask) | top_one_mask
 
         masked_sorted = mx.where(
