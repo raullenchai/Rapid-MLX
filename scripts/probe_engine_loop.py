@@ -30,6 +30,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from typing import Any
 
 PROBE_LINE_RE = re.compile(
     r"\[engine_loop_probe\] "
@@ -46,6 +47,21 @@ PROBE_LINE_RE = re.compile(
     r"tok_per_s=(?P<tps>[\d.]+)"
 )
 
+SCHED_PROBE_LINE_RE = re.compile(
+    r"\[scheduler_step_probe\] "
+    r"steps=(?P<steps>\d+) tokens=(?P<tokens>\d+) "
+    r"total_avg=(?P<total_avg>[\d.]+) "
+    r"bg_next_avg=(?P<bg_next_avg>[\d.]+) "
+    r"process_resp_avg=(?P<process_resp_avg>[\d.]+) "
+    r"schedule_avg=(?P<schedule_avg>[\d.]+) "
+    r"snapshot_avg=(?P<snapshot_avg>[\d.]+) "
+    r"aborts_avg=(?P<aborts_avg>[\d.]+) "
+    r"periodic_avg=(?P<periodic_avg>[\d.]+) "
+    r"other_avg=(?P<other_avg>[\d.]+) "
+    r"bg_next_pct=(?P<bg_next_pct>[\d.]+) "
+    r"tok_per_s=(?P<tps>[\d.]+)"
+)
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -57,6 +73,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--max-tokens", type=int, default=200)
     p.add_argument("--temperature", type=float, default=0.7)
+    p.add_argument(
+        "--top-p",
+        type=float,
+        default=1.0,
+        help="top_p override; default 1.0 lets the model default win (probe stays neutral). Pass 0 + temperature=0 to force greedy and isolate sampler cost.",
+    )
     p.add_argument("--ready-timeout", type=float, default=120.0)
     p.add_argument("--log-every", type=int, default=32)
     return p.parse_args()
@@ -77,16 +99,24 @@ def wait_for_ready(port: int, timeout: float) -> bool:
     return False
 
 
-def fire_chat(port: int, alias: str, prompt: str, max_tokens: int, temp: float) -> dict:
-    body = json.dumps(
-        {
-            "model": alias,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": temp,
-            "stream": True,
-        }
-    ).encode()
+def fire_chat(
+    port: int,
+    alias: str,
+    prompt: str,
+    max_tokens: int,
+    temp: float,
+    top_p: float | None = None,
+) -> dict:
+    payload: dict[str, Any] = {
+        "model": alias,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temp,
+        "stream": True,
+    }
+    if top_p is not None:
+        payload["top_p"] = top_p
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/chat/completions",
         data=body,
@@ -146,10 +176,15 @@ def main() -> int:
         print("[probe] server ready, firing request", flush=True)
         # Tiny warmup so the very first request's prefill cost doesn't
         # dominate the per-step measurements.
-        fire_chat(args.port, args.alias, "Say hi.", 16, args.temperature)
+        fire_chat(args.port, args.alias, "Say hi.", 16, args.temperature, args.top_p)
         time.sleep(0.5)
         result = fire_chat(
-            args.port, args.alias, args.prompt, args.max_tokens, args.temperature
+            args.port,
+            args.alias,
+            args.prompt,
+            args.max_tokens,
+            args.temperature,
+            args.top_p,
         )
         print(
             f"[probe] request done: chunks={result['chunks']} wall={result['wall_s']:.2f}s "
@@ -236,6 +271,51 @@ def main() -> int:
         )
     print(f"  raw log          : {log_path}")
     print(f"  windows captured : {len(samples)} (decode={len(decode_samples)})")
+
+    # Scheduler sub-phase probe (only present when scheduler.py probe is
+    # enabled in the build under test — shares the same env var).
+    sched_samples: list[dict[str, float | int]] = []
+    with open(log_path) as f:
+        for raw in f:
+            m = SCHED_PROBE_LINE_RE.search(raw)
+            if m:
+                sched_samples.append({k: float(v) for k, v in m.groupdict().items()})
+    if sched_samples:
+        sched_decode = sched_samples[1:] if len(sched_samples) > 1 else sched_samples
+        sched_total_steps = sum(int(s["steps"]) for s in sched_decode)
+
+        def _w(field_name: str) -> float:
+            return sum(s[field_name] * s["steps"] for s in sched_decode) / max(
+                1, sched_total_steps
+            )
+
+        print()
+        print("-" * 72)
+        print(
+            f"SCHEDULER SUB-PHASE SUMMARY ({sched_total_steps} steps, "
+            f"{sum(int(s['tokens']) for s in sched_decode)} tokens)"
+        )
+        print("-" * 72)
+        total = _w("total_avg")
+        buckets = [
+            ("bg_next_avg", "bg_next (BatchGenerator.next: MLX forward + sampler)"),
+            ("process_resp_avg", "process_resp (detokenise + stop check + outputs)"),
+            ("schedule_avg", "schedule (admit waiting + prompt token accounting)"),
+            ("snapshot_avg", "snapshot (hybrid prompt + boundary KV cache hooks)"),
+            ("aborts_avg", "aborts (drain abort queue)"),
+            ("periodic_avg", "periodic (mx.eval / mx.clear_cache / memory log)"),
+            ("other_avg", "other (loop overhead, retry frame, idle work)"),
+        ]
+        for key, label in buckets:
+            val = _w(key)
+            pct = 100.0 * val / max(1e-9, total)
+            print(f"  {label:<60s} avg={val:7.3f} ms  ({pct:5.1f}%)")
+        print(f"  {'TOTAL':<60s} avg={total:7.3f} ms")
+        print(f"  derived tok/s   : {1000.0 / max(1e-9, total):.2f}")
+    else:
+        print(
+            "  (no [scheduler_step_probe] lines — scheduler.py probe not in this build)"
+        )
     return 0
 
 

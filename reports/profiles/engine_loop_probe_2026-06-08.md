@@ -134,3 +134,93 @@ python3.12 scripts/probe_engine_loop.py --alias qwen3.6-35b --max-tokens 256
 
 Raw log artefacts: `/tmp/probe_engine_loop_qwen3.5-4b.log`,
 `/tmp/probe_engine_loop_qwen3.6-35b.log`.
+
+---
+
+## Phase 2 — scheduler sub-phase probe (same day)
+
+After the engine-loop probe ruled out the asyncio wrapper, `Scheduler.step()`
+was instrumented with a second probe (same env var
+`RAPID_MLX_PROBE_ENGINE_LOOP=1`) that splits each step into six measurable
+buckets: `bg_next` (`self.batch_generator.next()` — mlx-lm's
+`BatchGenerator.next()`), `process_resp` (detokenise + stop check +
+output construction + cleanup_finished), `schedule` (admit waiting +
+prompt token accounting), `snapshot` (hybrid prompt + boundary KV cache
+hooks), `aborts`, `periodic` (`mx.eval` + `mx.clear_cache` + memory
+log), and `other`.
+
+### Numbers (B=1, M3 Ultra, default sampling = temperature 0.7, top_p model default)
+
+Qwen 3.6 35B-A3B 4-bit::
+
+    bg_next       : avg=14.302 ms (99.3%)
+    process_resp  : avg= 0.082 ms ( 0.6%)
+    schedule      : avg= 0.002 ms ( 0.0%)
+    snapshot      : avg= 0.002 ms ( 0.0%)
+    aborts        : avg= 0.001 ms ( 0.0%)
+    periodic      : avg= 0.015 ms ( 0.1%)
+    other         : avg= 0.003 ms ( 0.0%)
+    TOTAL         : avg=14.406 ms      -> 69.4 tok/s engine
+    end-to-end HTTP: 64.9 tok/s
+
+99.3% of per-step time is inside `BatchGenerator.next()` — the same mlx-lm
+call mlx-vlm also makes. Our rapid-mlx-specific Python wrapper code
+(`process_resp` + `schedule` + `snapshot` + `aborts` + `periodic` +
+`other`) is **under 1% combined**. So the gap to mlx-vlm is **not in
+our wrapper code** either; it lives inside `BatchGenerator.next()`.
+
+### Where inside `BatchGenerator.next()` — sampler cost isolated
+
+Re-ran the same probe with `temperature=0`, `top_p=1.0` (greedy), so
+the sampler degenerates to argmax:
+
+Qwen 3.6 35B-A3B 4-bit, greedy::
+
+    bg_next       : avg= 9.690 ms (99.2%)
+    TOTAL         : avg= 9.769 ms      -> 102.4 tok/s engine
+    end-to-end HTTP: 92.4 tok/s
+
+Qwen 3.5 4B 4-bit, greedy::
+
+    bg_next       : avg= 5.786 ms (99.0%)
+    TOTAL         : avg= 5.847 ms      -> 171.0 tok/s engine
+    end-to-end HTTP: 165 tok/s (vs 128 with sampling)
+
+Summary (HTTP, B=1):
+
+| Model | sampled tok/s | greedy tok/s | sampler cost / token |
+|---|---|---|---|
+| qwen3.5-4b 4-bit | 128.5 | 165 | ~1.2 ms |
+| qwen3.6-35b-a3b 4-bit | 64.9 | 92.4 | ~4.6 ms |
+
+The greedy 92.4 tok/s on Qwen 3.6 35B-A3B matches mlx-vlm's reported
+91.6 tok/s within noise. The earlier "rapid-mlx is 30% behind mlx-vlm"
+framing was driven by **default sampling overhead in `BatchGenerator`'s
+full softmax + top_p mask + cumulative sort**, which mlx-vlm avoids
+when its `_greedy_argmax_step` fast path
+(`mlx_vlm/generate/ar.py:886-914`) detects neutral sampler knobs.
+
+## Final conclusion
+
+The B=1 gap to mlx-vlm has three components, in order of size:
+
+1. **Sampler cost** (4.6 ms / token on 35B-A3B, 1.2 ms on 4B): the
+   sampler runs full softmax + top_p cumulative when sampling
+   parameters are neutral but not explicitly identified as such. **This
+   is the only addressable bottleneck.** A `_greedy_argmax_step`-style
+   shortcut that skips the full softmax when the sampler is detected
+   as degenerate (temp=0 OR top_p ≥ 0.999 with other knobs neutral)
+   would close it. mlx-vlm has this; mlx-lm and rapid-mlx do not.
+2. **rapid-mlx wrapper Python overhead** (~0.1 ms total): scheduler
+   bookkeeping + collector dispatch + asyncio loop. Combined, less
+   than 1%. Not worth touching.
+3. **asyncio dispatch** (~0.1 ms): falsified hypothesis from earlier
+   today. Not the bottleneck.
+
+## Next perf PR
+
+Implement a sampler short-circuit gated on `temperature=0` OR
+`top_p>=0.999` AND `min_p<=0`, plumbed into the BatchGenerator code
+path used by hybrid models. Open as a follow-up; not in scope for the
+probe PR (this one).
+

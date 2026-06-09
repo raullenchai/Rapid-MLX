@@ -12,6 +12,8 @@ The scheduler follows vLLM's design with:
 """
 
 import logging
+import os
+import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -1811,6 +1813,38 @@ class Scheduler:
         self._clear_cache_interval = 32
         self._memory_log_interval = 256
 
+        # ----- step sub-phase probe (RAPID_MLX_PROBE_ENGINE_LOOP=1) -----
+        # Shares the engine_loop probe's env var so a single bench run
+        # yields both engine-level and scheduler-level breakdowns. Splits
+        # Scheduler.step() into six measurable buckets so we can attribute
+        # the rapid-mlx HTTP B=1 ~3.3 ms/token gap to mlx-vlm correctly
+        # (the engine_loop probe already ruled out the asyncio wrapper;
+        # see reports/profiles/engine_loop_probe_2026-06-08.md).
+        #
+        # Zero overhead when the env var is unset: __init__ pays one
+        # os.environ.get + a couple of attribute assignments, and step()
+        # gates the entire instrumentation behind a single bool check.
+        self._probe_enabled = os.environ.get(
+            "RAPID_MLX_PROBE_ENGINE_LOOP", "0"
+        ) not in (
+            "0",
+            "",
+            "false",
+            "False",
+        )
+        self._probe_log_every = max(
+            1, int(os.environ.get("RAPID_MLX_PROBE_LOG_EVERY", "32"))
+        )
+        self._probe_counter = 0
+        self._probe_aborts_ms = 0.0
+        self._probe_schedule_ms = 0.0
+        self._probe_bg_next_ms = 0.0
+        self._probe_snapshot_ms = 0.0
+        self._probe_process_resp_ms = 0.0
+        self._probe_periodic_ms = 0.0
+        self._probe_total_ms = 0.0
+        self._probe_tokens = 0
+
         # Prompt-boundary cache snapshot callback for the new mlx-lm 0.31+ API.
         # Built lazily once memory_aware_cache exists and reused per step.
         # Without this hook, hybrid models can't satisfy repeated identical
@@ -3480,41 +3514,71 @@ class Scheduler:
             SchedulerOutput with results of this step
         """
         output = SchedulerOutput()
+        # Probe locals captured up-front so the `if self._probe_enabled`
+        # gates downstream don't pay a per-step attribute lookup. When
+        # the probe is off, _probe is False and nothing else fires.
+        _probe = self._probe_enabled
+        _probe_t_total = time.perf_counter() if _probe else 0.0
 
         # Process pending aborts FIRST (in executor thread, safe for MLX)
+        if _probe:
+            _p0 = time.perf_counter()
         self._process_pending_aborts()
+        if _probe:
+            self._probe_aborts_ms += (time.perf_counter() - _p0) * 1000.0
 
         for attempt in range(max_retries + 1):
             try:
                 # Schedule waiting requests
+                if _probe:
+                    _p0 = time.perf_counter()
                 scheduled = self._schedule_waiting()
                 output.scheduled_request_ids = [r.request_id for r in scheduled]
                 output.num_scheduled_tokens = sum(
                     r.num_prompt_tokens for r in scheduled
                 )
+                if _probe:
+                    self._probe_schedule_ms += (time.perf_counter() - _p0) * 1000.0
 
                 # Run generation step if we have running requests
                 if self.batch_generator is not None and self.running:
+                    if _probe:
+                        _p0 = time.perf_counter()
                     raw_next = self.batch_generator.next()
+                    if _probe:
+                        self._probe_bg_next_ms += (time.perf_counter() - _p0) * 1000.0
                     output.has_work = True
 
                     # mlx-lm 0.31+ returns (prompt_responses, generation_responses) tuple
                     # older versions return a flat list of responses
                     if isinstance(raw_next, tuple):
                         prompt_responses, responses = raw_next
+                        if _probe:
+                            _p0 = time.perf_counter()
                         self._snapshot_promoted_prompts(prompt_responses)
                         # issue #427: per-message boundary snapshot for
                         # multi-turn hybrid workloads (segment finished
                         # but prompt still has tail to process).
                         self._snapshot_boundary_segments(prompt_responses)
+                        if _probe:
+                            self._probe_snapshot_ms += (
+                                time.perf_counter() - _p0
+                            ) * 1000.0
                     else:
                         responses = raw_next
 
                     if responses:
+                        if _probe:
+                            _p0 = time.perf_counter()
                         outputs, finished_ids = self._process_batch_responses(responses)
                         output.outputs = outputs
                         output.finished_request_ids = finished_ids
                         self._cleanup_finished(finished_ids)
+                        if _probe:
+                            self._probe_process_resp_ms += (
+                                time.perf_counter() - _p0
+                            ) * 1000.0
+                            self._probe_tokens += len(outputs)
 
                 # Success - break out of retry loop
                 break
@@ -3579,6 +3643,8 @@ class Scheduler:
         )
 
         self._step_count += 1
+        if _probe:
+            _p0 = time.perf_counter()
         if self._step_count % effective_interval == 0:
             # Evaluate batch tokens to collapse lazy concatenation chains
             # mlx-lm 0.31+ renamed active_batch to _generation_batch
@@ -3608,6 +3674,54 @@ class Scheduler:
                     )
             except Exception:
                 pass
+        if _probe:
+            self._probe_periodic_ms += (time.perf_counter() - _p0) * 1000.0
+            self._probe_total_ms += (time.perf_counter() - _probe_t_total) * 1000.0
+            self._probe_counter += 1
+            if self._probe_counter >= self._probe_log_every:
+                n = self._probe_counter
+                accounted = (
+                    self._probe_aborts_ms
+                    + self._probe_schedule_ms
+                    + self._probe_bg_next_ms
+                    + self._probe_snapshot_ms
+                    + self._probe_process_resp_ms
+                    + self._probe_periodic_ms
+                )
+                other = max(0.0, self._probe_total_ms - accounted)
+                # Single structured line so a future bench can grep it.
+                # bg_next is what mlx-vlm's BatchGenerator.next() also
+                # does — anything else here is rapid-mlx-specific Python
+                # overhead the upstream engines don't pay.
+                logger.info(
+                    "[scheduler_step_probe] steps=%d tokens=%d "
+                    "total_avg=%.3f bg_next_avg=%.3f "
+                    "process_resp_avg=%.3f schedule_avg=%.3f "
+                    "snapshot_avg=%.3f aborts_avg=%.3f "
+                    "periodic_avg=%.3f other_avg=%.3f "
+                    "bg_next_pct=%.1f tok_per_s=%.2f",
+                    n,
+                    self._probe_tokens,
+                    self._probe_total_ms / n,
+                    self._probe_bg_next_ms / n,
+                    self._probe_process_resp_ms / n,
+                    self._probe_schedule_ms / n,
+                    self._probe_snapshot_ms / n,
+                    self._probe_aborts_ms / n,
+                    self._probe_periodic_ms / n,
+                    other / n,
+                    100.0 * self._probe_bg_next_ms / max(1e-9, self._probe_total_ms),
+                    1000.0 * self._probe_tokens / max(1e-9, self._probe_total_ms),
+                )
+                self._probe_counter = 0
+                self._probe_aborts_ms = 0.0
+                self._probe_schedule_ms = 0.0
+                self._probe_bg_next_ms = 0.0
+                self._probe_snapshot_ms = 0.0
+                self._probe_process_resp_ms = 0.0
+                self._probe_periodic_ms = 0.0
+                self._probe_total_ms = 0.0
+                self._probe_tokens = 0
 
         return output
 
