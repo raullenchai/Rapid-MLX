@@ -138,11 +138,17 @@ def make_fused_top_p_temp_sampler(
     def sampler(logprobs: mx.array) -> mx.array:
         # mlx-lm passes ``logprobs`` = ``logits - logsumexp(logits)``;
         # exp(logprobs) is exactly the unscaled probability distribution
-        # that ``apply_top_p`` masks on. ``mx.cumsum`` over bfloat16 is
-        # unsupported as of MLX 0.21 — promote first.
-        work = (
-            logprobs.astype(mx.float32) if logprobs.dtype == mx.bfloat16 else logprobs
-        )
+        # that ``apply_top_p`` masks on.
+        #
+        # Codex round-6 BLOCKER #1 fix: promote any low-precision input
+        # (``bfloat16`` / ``float16``) to ``float32`` so the
+        # ``exp`` / ``cumsum`` chain doesn't round the nucleus cutoff
+        # away. Half-precision has only ~3 decimal digits — a top_p
+        # cutoff of 0.95 vs a cumsum value of 0.9501 can swap inclusion
+        # state under fp16 noise, silently changing the kept set vs
+        # mlx-lm on production half-precision logits. ``mx.cumsum`` over
+        # bfloat16 is also unsupported as of MLX 0.21.
+        work = logprobs.astype(mx.float32) if logprobs.dtype != mx.float32 else logprobs
         probs = mx.exp(work)
         sorted_indices = mx.argsort(probs, axis=-1)
         sorted_logits = mx.take_along_axis(work, sorted_indices, axis=-1)

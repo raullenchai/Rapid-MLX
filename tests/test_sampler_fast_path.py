@@ -306,32 +306,44 @@ class TestDistributionalEquivalence:
         together — they share the same contract. This test pins it.
         """
         import inspect
+        import re
 
         from mlx_lm.generate import GenerationBatch
 
         step_src = inspect.getsource(GenerationBatch._step)
-        assert "logsumexp" in step_src, (
-            "mlx-lm GenerationBatch._step no longer normalizes inputs "
-            "via logsumexp — the fast path's normalized-logprobs "
-            "contract is broken. Coordinate with the mlx-lm bump."
+
+        # Codex round-6 BLOCKER #2 fix: regex-match the actual sampler
+        # dispatch expression (``<name>_sampler(logprobs...)``) instead
+        # of a substring search for "sampler" — the substring form would
+        # match parameter declarations, type hints, comments, or
+        # docstrings that mention "sampler" before the real call site
+        # and silently pass on a future refactor that drops the actual
+        # call but leaves a header line mentioning samplers behind.
+        dispatch_pattern = re.compile(r"\b\w*sampler\(\s*logprobs\b")
+        dispatch_match = dispatch_pattern.search(step_src)
+        assert dispatch_match, (
+            "mlx-lm GenerationBatch._step no longer dispatches the "
+            "sampler with logprobs (expected a ``<name>_sampler(logprobs...)`` "
+            "call). The fast path's input contract is broken — coordinate "
+            "with the mlx-lm bump."
         )
-        # Tighten: ensure the normalization happens BEFORE the sampler
-        # dispatch (in the same body), not after.
-        sampler_call_line = next(
-            (line for line in step_src.splitlines() if "sampler" in line.lower()),
-            None,
+
+        # Normalization: ``logprobs = logits - logsumexp(...)``.
+        normalize_pattern = re.compile(r"\blogprobs\s*=\s*[^=].*logsumexp\b")
+        normalize_match = normalize_pattern.search(step_src)
+        assert normalize_match, (
+            "mlx-lm GenerationBatch._step no longer normalizes logits via "
+            "logsumexp before the sampler dispatch — the fast path's "
+            "normalized-logprobs contract is broken. Coordinate with the "
+            "mlx-lm bump."
         )
-        normalize_line = next(
-            (line for line in step_src.splitlines() if "logsumexp" in line),
-            None,
-        )
-        assert normalize_line and sampler_call_line, (
-            "expected both a logsumexp normalization and a sampler call "
-            "inside GenerationBatch._step"
-        )
-        assert step_src.index(normalize_line) < step_src.index(sampler_call_line), (
-            "mlx-lm GenerationBatch._step calls the sampler BEFORE "
-            "normalizing logits — raw-logits would reach our fast path"
+
+        # Order: normalization must precede dispatch.
+        assert normalize_match.start() < dispatch_match.start(), (
+            f"mlx-lm GenerationBatch._step calls the sampler at offset "
+            f"{dispatch_match.start()} BEFORE normalizing logits at "
+            f"offset {normalize_match.start()} — raw-logits would reach "
+            f"our fast path."
         )
 
     def test_top_k_tie_at_boundary_keeps_k_tokens(self):
