@@ -12,6 +12,7 @@ The scheduler follows vLLM's design with:
 """
 
 import logging
+import os
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -1910,13 +1911,19 @@ class Scheduler:
             # LRU bookkeeping — keep the hot key warm.
             self._sampler_cache.move_to_end(key)
             return cached
-        # Fast path for the dominant chat config (temp + top_p only).
+        # Fast path for the dominant chat config (temp + top_p / top_k).
         # See ``vllm_mlx/_sampler_fast_path.py`` for the math-equivalence
         # argument and the perf data behind it (Qwen 3.6 35B 4-bit B=1:
-        # 65 -> 100 tok/s). Falls through to mlx-lm's chain whenever the
-        # request enables min_p, top_k, xtc, logits_processors, or sets
-        # temperature == 0 (mlx-lm already short-circuits to argmax).
-        if is_fused_top_p_eligible(
+        # 65 -> 92 tok/s). Falls through to mlx-lm's chain whenever the
+        # request enables min_p, xtc, sets temperature == 0 (mlx-lm
+        # already short-circuits to argmax), or whenever the operator
+        # sets ``RAPID_MLX_DISABLE_FUSED_SAMPLER=1`` as an escape hatch
+        # if some downstream surface ever needs mlx-lm's bit-level Gumbel
+        # ordering rather than the math-equivalent fused path.
+        _fused_disabled = (
+            os.environ.get("RAPID_MLX_DISABLE_FUSED_SAMPLER", "0") == "1"
+        )
+        if not _fused_disabled and is_fused_top_p_eligible(
             temperature=sampling_params.temperature,
             top_p=sampling_params.top_p,
             min_p=sampling_params.min_p,
