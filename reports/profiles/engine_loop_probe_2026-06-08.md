@@ -305,3 +305,97 @@ The probes are the durable artefact. They take seconds to re-run
 whenever a new perf hypothesis appears, and have already disproven
 two of them in one day.
 
+## Phase 4 — direct mlx-vlm bench at top_p=0.95 (same day)
+
+Phase 3 left one question open: is mlx-vlm actually faster than us at
+`temp=0.7, top_p=0.95`, or was the earlier 91.6 tok/s number an
+artefact of measuring greedy in disguise? Ran mlx-vlm directly on the
+same model + hardware to settle it.
+
+Setup: `mlx-vlm 0.6.1` HTTP server on port 8765, Qwen 3.6 35B-A3B
+4-bit, B=1 streaming chat completion, 256 max tokens, same prompt as
+the rapid-mlx bench, three sampler configs.
+
+```
+config                          chunks  wall      tok/s
+temp=0.7  top_p=0.95   (contested)  258  2.78 s    92.73
+temp=0.7  top_p=1.0    (no top_p)   258  2.77 s    93.25
+temp=0    top_p=1.0    (greedy)      258  2.76 s    93.32
+```
+
+### Reversal
+
+mlx-vlm under sampling **does** run ~92 tok/s — within 1% of greedy.
+The earlier 91.6 tok/s number was correct, not a misframing. **The
+30% gap is real and lives somewhere in the sampling code path that
+both engines share at the mlx-lm level but mlx-vlm does differently.**
+
+### New hypothesis: full-vocab logprob materialisation
+
+Closer reading of mlx-vlm `_step` vs mlx-lm `_step` surfaces one
+concrete divergence in what each engine forces the GPU to evaluate
+per token:
+
+**mlx-lm** `generate.py:1367-1374` (the one we use):
+```python
+self._next_tokens = sampled
+self._next_logprobs = list(logprobs)              # [B, vocab] → list of B [vocab,] arrays
+mx.async_eval(self._next_tokens, self._next_logprobs, token_context)
+mx.eval(inputs, self._current_logprobs)           # forces last step's full [B, vocab] tensor
+```
+
+**mlx-vlm** `generate/ar.py:977-981`:
+```python
+if self.compute_logprobs:
+    self._next_lps = logprobs[mx.arange(sampled.shape[0]), sampled]  # [B,] — sampled token only
+    eval_targets.append(self._next_lps)
+else:
+    self._next_lps = None                          # default path skips logprobs eval entirely
+```
+
+mlx-lm materialises the full `[B, vocab]` logprob distribution
+**every step** (forced by the eval of `self._current_logprobs`).
+mlx-vlm by default only materialises B scalars — the logprob of the
+sampled token at each batch row — and skips even that when
+`compute_logprobs=False`. For Qwen 3.6's 151k vocab at B=1, that's
+~150k floats forced per step on the mlx-lm side and zero on the
+mlx-vlm side under typical chat. Same `logsumexp`, same
+`categorical_sampling`, but mlx-vlm doesn't pay the materialisation
+cost.
+
+This is consistent with Phase 3's finding that the `logsumexp` op
+itself isn't the bottleneck — what costs is being forced to
+**realise** the result. MLX is lazy; the cost is at `mx.eval`, not at
+graph construction. Move the eval off the critical path → save the
+ms.
+
+### Status: HYPOTHESIS, NOT VALIDATED
+
+This explanation is the cleanest one consistent with all four phases'
+data, but it has not been tested in this PR. The validation requires
+either monkey-patching mlx-lm's `_step` or wrapping
+`BatchGenerator.next()` to drop the `_next_logprobs` materialisation
+when no downstream consumer needs the full distribution (our
+`_process_batch_responses` reads logprobs but typical OpenAI clients
+don't request the `logprobs` field).
+
+The fix is non-trivial because the `next()` API returns
+`(inputs, self._current_logprobs)` and `Scheduler.step()` builds
+responses with logprobs payloads regardless of client interest. A
+real fix needs an interface change: route only the sampled tokens'
+logprobs through (the `[B,]` slice), and require an opt-in flag for
+the full distribution. Codex rounds + SOP. **Out of scope for this
+PR.**
+
+### Decision
+
+- Ship this PR as **research artefacts only**: the two env-gated
+  probes + the four-phase falsification/validation report. No
+  production fix.
+- File a follow-up perf PR: "skip full-vocab logprob materialisation
+  when client doesn't request it." Target: close 3-4 ms / token on
+  35B-A3B B=1, lifting rapid-mlx from ~65 to ~85-90 tok/s HTTP.
+- Hypothesis is concrete enough to be cheap to test before that PR
+  opens — a quick monkey-patch experiment in a scratch branch can
+  confirm or kill it inside an hour.
+
