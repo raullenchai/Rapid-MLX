@@ -25,7 +25,7 @@ contention never crossed engine boundaries.
 | qwen3.5-4b                         |     261.1 |     173.2 | qwen3:4b                          |  119.5 |     1.51x |     2.18x |
 | qwen3.5-9b                         |     180.0 |     136.3 | qwen3:8b                          |   84.1 |     1.32x |     2.14x |
 | qwen3.5-27b                        |      65.9 |      54.9 | qwen3:32b¹                        |   27.1 |     1.20x |     2.43x |
-| gemma-4-12b                        |      55.4 |     crash²| gemma3:12b                        |   56.1 |       —   |     0.99x |
+| gemma-4-12b                        |      55.4 |     crash²| gemma3:12b                        |   56.1 |       —   |     1.00x |
 | gpt-oss-20b                        |     220.5 |     162.0 | gpt-oss:20b                       |   96.5 |     1.36x |     2.29x |
 | qwen3.6-35b (A3B 4-bit)            |     176.4 |     128.6 | qwen3:30b-a3b                     |   87.1 |     1.37x |     2.02x |
 | qwen3.5-35b (A3B 8-bit)            |     151.4 |     112.0 | qwen3:30b-a3b                     |   87.1 |     1.35x |     1.74x |
@@ -83,3 +83,37 @@ follow-up A/B work.
    - gemma-4-12b → gemma3:12b (Gemma 3, prior generation)
 4. gpt-oss-20b is the only direct apples-to-apples row: same model
    weights both sides. The 2.29x is unmodified by arch gap.
+
+## v0.6.83 hero-table refresh (B=1 single-user)
+
+Re-measured 2026-06-09 after v0.6.83 shipped the fused top-p sampler
+(PR #542). Same machine, same prompt, same `enable_thinking=False`,
+B=1 (single user, 256 max output tokens, median of 3 rounds).
+Raw JSON: `results-20260609-070403.json`.
+
+| Model (alias)         | v0.6.80 README | **v0.6.83** | Δ      |
+|-----------------------|---------------:|------------:|:------:|
+| qwen3.5-4b            |            130 |     **147** | +13 %  |
+| qwen3.5-9b            |            100 |     **101** |  +1 %  |
+| qwen3.5-27b           |             33 |      **37** | +13 %  |
+| gemma-4-12b           |             42 |      **64** | +53 %¹ |
+| gpt-oss-20b           |            106 |     **119** | +12 %  |
+| qwen3.6-35b (A3B 4b)  |             67 |      **93** | +38 %  |
+| qwen3.5-35b (A3B 8b)  |             59 |      **80** | +35 %  |
+
+The 35B-A3B rows (+35-38 %) match the fused-sampler PR #542
+prediction of +42 % at B=1 on Qwen 3.6 35B-A3B almost exactly.
+
+¹ The gemma-4-12b row jumped 42 → 64 tok/s. This is too large to
+attribute to PR #542 alone (PR #542 targets dense Qwen at B=1). The
+prior 42 number was not produced by `bench_readme_refresh.py` — the
+B=4 sweep recorded a different gemma-4 baseline. The 64 number is the
+canonical v0.6.83 baseline going forward; older "42 tok/s" mentions
+should not be reconciled, only superseded.
+
+The cross-engine A/B table above stays at v0.6.80 numbers because
+Ollama and mlx-lm were not re-bench'd today. If the apples-to-apples
+gpt-oss-20b row were re-run on 0.6.83, the rapid-mlx column would
+plausibly move 220.5 → ~245 tok/s (B=4 aggregate has less room to
+gain than B=1 single-user) and the vs-Ollama speedup would widen
+toward 2.5x. Not done in this refresh.
