@@ -51,10 +51,18 @@ class TestEligibility:
             temperature=0.7, top_p=0.0, min_p=0.0, top_k=0
         )
 
-    def test_top_k_only_eligible(self):
-        # top_k > 0 alone is enough — common when alias defaults inject
-        # top_k from generation_config.json.
-        assert is_fused_top_p_eligible(temperature=0.7, top_p=0.0, min_p=0.0, top_k=20)
+    def test_top_k_only_rejected(self):
+        # Codex round-2 BLOCKER #2 fix: top-k-only configurations fall
+        # through to mlx-lm's chain because ``apply_top_k`` uses a cheaper
+        # ``mx.partition`` primitive than our full-vocab ``argsort``. The
+        # fast path's win comes from collapsing apply_top_p + categorical;
+        # without nucleus we have nothing to collapse.
+        assert not is_fused_top_p_eligible(
+            temperature=0.7, top_p=0.0, min_p=0.0, top_k=20
+        )
+        assert not is_fused_top_p_eligible(
+            temperature=0.7, top_p=1.0, min_p=0.0, top_k=20
+        )
 
     def test_top_p_and_top_k_eligible(self):
         # The combination this PR was originally motivated by: Qwen
@@ -98,19 +106,42 @@ class TestShapeContract:
             make_fused_top_p_temp_sampler(0.0, 0.95)
 
     def test_invalid_top_p_raises(self):
-        # Both top_p and top_k disabled => no mask to build, refuse.
+        # ``top_p`` must be strictly in (0, 1). Outside that window the
+        # fused path can't beat mlx-lm (top_p == 1 short-circuits;
+        # top_p == 0 with top_k routes through partition).
         with pytest.raises(ValueError, match="top_p"):
             make_fused_top_p_temp_sampler(0.7, 1.0, top_k=0)
         with pytest.raises(ValueError, match="top_p"):
             make_fused_top_p_temp_sampler(0.7, 0.0, top_k=0)
 
-    def test_top_k_only_constructs(self):
-        # top_k > 0 alone (top_p disabled) must build the sampler.
-        sampler = make_fused_top_p_temp_sampler(0.7, 0.0, top_k=20)
-        logprobs = mx.random.normal(shape=(1, 8000))
-        logprobs = logprobs - mx.logsumexp(logprobs, axis=-1, keepdims=True)
-        out = sampler(logprobs)
-        assert out.shape == (1,)
+    def test_top_k_only_rejected_at_construction(self):
+        # top_k > 0 with top_p disabled must refuse — eligibility predicate
+        # already excludes this path so the constructor is the second
+        # safety net (defense in depth against caller bugs).
+        with pytest.raises(ValueError, match="top_p"):
+            make_fused_top_p_temp_sampler(0.7, 0.0, top_k=20)
+        with pytest.raises(ValueError, match="top_p"):
+            make_fused_top_p_temp_sampler(0.7, 1.0, top_k=20)
+
+    def test_tiny_top_p_does_not_produce_all_inf(self):
+        # Codex round-2 BLOCKER #1 — sub-fp32-epsilon top_p makes
+        # ``1.0 - top_p`` round to 1.0 in the float32 comparison and
+        # ``cumulative > 1 - top_p`` evaluates all-false. Without the
+        # top-1 OR guarantee the sampler would feed all -inf logits to
+        # ``mx.random.categorical`` and either crash or produce garbage.
+        # We assert it returns a real token id matching the argmax.
+        vocab = 1024
+        logits = mx.random.normal(shape=(vocab,)) * 3.0
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        expected_argmax = int(mx.argmax(logprobs, axis=-1))
+
+        sampler = make_fused_top_p_temp_sampler(0.7, 1e-9)
+        for _ in range(5):
+            tok = int(sampler(logprobs))
+            assert tok == expected_argmax, (
+                f"tiny top_p must keep at least the argmax; got token "
+                f"{tok}, expected {expected_argmax}"
+            )
 
 
 class TestDistributionalEquivalence:
@@ -207,3 +238,41 @@ class TestDistributionalEquivalence:
         fused = make_fused_top_p_temp_sampler(1.0, 0.5)
         for _ in range(10):
             assert int(fused(logprobs)) == 42
+
+    def test_top_p_plus_top_k_kept_set_matches_mlx_lm(self):
+        """When both top_p and top_k are active the fused sampler must
+        produce the SAME kept set as mlx-lm's ``apply_top_p`` ->
+        ``apply_top_k`` -> categorical chain. Codex round-2 NIT #4: the
+        prior tests only pinned shape for combined configs; this asserts
+        the intersection (top_p ∩ top_k) actually matches.
+        """
+        vocab = 32
+        logits = mx.full((vocab,), -8.0)
+        # Sharp distribution: dominant tokens get most of the mass.
+        logits[0] = 2.0
+        logits[5] = 1.5
+        logits[12] = 1.0
+        logits[20] = 0.5
+        logits[27] = 0.0
+        logits[31] = -0.5
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+
+        # top_k=3 forces only the top-3 (tokens 0, 5, 12) to be kept,
+        # even though top_p=0.95 would otherwise admit 4-5 tokens.
+        fused = make_fused_top_p_temp_sampler(0.7, 0.95, top_k=3)
+        mlx_chain = make_sampler(temp=0.7, top_p=0.95, top_k=3)
+
+        mx.random.seed(0)
+        fused_counts = self._empirical_distribution(fused, logprobs, n=1000)
+        mx.random.seed(0)
+        chain_counts = self._empirical_distribution(mlx_chain, logprobs, n=1000)
+
+        assert set(fused_counts.keys()) == set(chain_counts.keys()), (
+            f"top_p+top_k kept-set mismatch: fused={set(fused_counts.keys())}, "
+            f"chain={set(chain_counts.keys())}"
+        )
+        # Sanity-check the intersection actually constrained the set:
+        # top_k=3 means at most 3 tokens are sampleable.
+        assert len(fused_counts) <= 3, (
+            f"top_k=3 should cap kept set at 3, got {len(fused_counts)}"
+        )

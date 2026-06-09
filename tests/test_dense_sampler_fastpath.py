@@ -254,16 +254,18 @@ def test_sampler_cache_is_bounded_lru():
     samplers = [sched._get_request_sampler(_SP(0.1 * i)) for i in range(6)]
     assert len(sched._sampler_cache) == 4, "cap must hold even under churn"
 
-    # Oldest entries (temp=0.0, 0.1) are evicted.
+    # Oldest entries (temp=0.0, 0.1) are evicted. The 5th tuple element
+    # is the ``RAPID_MLX_DISABLE_FUSED_SAMPLER`` flag — False here because
+    # the env var is unset in the test environment.
     keys = list(sched._sampler_cache.keys())
-    assert (0.0, 0.95, 0.0, 20) not in keys
-    assert (0.1, 0.95, 0.0, 20) not in keys
+    assert (0.0, 0.95, 0.0, 20, False) not in keys
+    assert (0.1, 0.95, 0.0, 20, False) not in keys
     # Newest entry is at the LRU tail.
-    assert keys[-1] == (0.5, 0.95, 0.0, 20)
+    assert keys[-1] == (0.5, 0.95, 0.0, 20, False)
 
     # Hot-key LRU bookkeeping: hitting an existing key bumps it to MRU.
     sched._get_request_sampler(_SP(0.2))  # was middle of the LRU
-    assert list(sched._sampler_cache.keys())[-1] == (0.2, 0.95, 0.0, 20)
+    assert list(sched._sampler_cache.keys())[-1] == (0.2, 0.95, 0.0, 20, False)
 
 
 def test_method_type_wrapper_sees_correct_self():

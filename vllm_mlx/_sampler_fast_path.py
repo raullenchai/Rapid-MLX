@@ -74,7 +74,15 @@ def is_fused_top_p_eligible(
     ``lambda x: mx.argmax(x, axis=-1)`` directly), so there is nothing
     to optimise.
     """
-    return temperature > 0.0 and min_p == 0.0 and ((0.0 < top_p < 1.0) or top_k > 0)
+    # Codex round-2 BLOCKER #2 fix: top-k-only configurations route back
+    # through mlx-lm's chain because ``apply_top_k`` uses ``mx.partition``
+    # which is cheaper than our full vocab ``argsort`` when top-p is not
+    # also active. The fast path's win comes from collapsing the top_p +
+    # categorical chain — without top_p, we'd be replacing mlx-lm's
+    # partition with a heavier sort for no upside. ``top_k > 0`` remains
+    # supported as an *additional* mask layered on top of an active
+    # nucleus cut (the qwen3.6 + alias cascade case this PR targets).
+    return temperature > 0.0 and min_p == 0.0 and 0.0 < top_p < 1.0
 
 
 def make_fused_top_p_temp_sampler(
@@ -111,12 +119,12 @@ def make_fused_top_p_temp_sampler(
     """
     if temperature <= 0.0:
         raise ValueError("fused sampler requires temperature > 0")
-    use_top_p = 0.0 < top_p < 1.0
-    use_top_k = top_k > 0
-    if not (use_top_p or use_top_k):
+    if not (0.0 < top_p < 1.0):
         raise ValueError(
-            "fused sampler requires at least one of top_p in (0,1) or top_k > 0"
+            "fused sampler requires top_p in (0, 1); top-k-only configurations "
+            "should route through mlx-lm's apply_top_k partition primitive"
         )
+    use_top_k = top_k > 0
 
     temp_inv = 1.0 / float(temperature)
     one_minus_p = 1.0 - float(top_p)
@@ -137,16 +145,27 @@ def make_fused_top_p_temp_sampler(
         # Build mask in sorted space. argsort returns ascending order, so
         # the top-k tokens sit at positions ``[V - top_k, V - 1]`` and
         # top-p's cumulative-from-low cutoff is ``cumulative > 1 - top_p``.
+        # The fast path is only constructed when top_p is active (top-k-only
+        # falls through to mlx-lm — see ``is_fused_top_p_eligible``), so
+        # we always build the top_p mask first.
         vocab = sorted_logits.shape[-1]
-        mask: mx.array | None = None
-        if use_top_p:
-            sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
-            cumulative = mx.cumsum(sorted_probs, axis=-1)
-            top_p_mask = cumulative > one_minus_p
-            mask = top_p_mask
+        sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
+        cumulative = mx.cumsum(sorted_probs, axis=-1)
+        # Codex round-2 BLOCKER #1 fix: for sub-fp32-epsilon top_p (e.g.
+        # 1e-9), ``one_minus_p`` rounds to 1.0 in the float32 comparison
+        # and ``cumulative > one_minus_p`` is all-false, producing an
+        # all-``-inf`` masked vector that breaks ``mx.random.categorical``.
+        # OR in the top-1 position (vocab - 1 under ascending argsort) to
+        # guarantee the argmax token is always sampleable, mirroring
+        # mlx-lm's "at least one token" invariant on its apply_top_p path.
+        top_one_mask = mx.arange(vocab) == (vocab - 1)
+        mask = (cumulative > one_minus_p) | top_one_mask
         if use_top_k:
             top_k_mask = mx.arange(vocab) >= (vocab - top_k_val)
-            mask = top_k_mask if mask is None else mask & top_k_mask
+            # Re-apply the top-1 guarantee after intersecting with top-k so
+            # the same edge case doesn't reopen via a degenerate top_k=0
+            # mask (already excluded by ``use_top_k`` but cheap to be safe).
+            mask = (mask & top_k_mask) | top_one_mask
 
         masked_sorted = mx.where(
             mask,

@@ -1900,27 +1900,34 @@ class Scheduler:
         homogeneous-looking batches would silently share an incorrect
         sampler.
         """
+        # Codex round-2 BLOCKER #3 fix: read the env-var BEFORE the cache
+        # lookup so that flipping ``RAPID_MLX_DISABLE_FUSED_SAMPLER`` in a
+        # long-lived process can disable the fast path on the next request
+        # without us serving a stale cached fused sampler. The disabled
+        # state is folded into the cache key so the two branches don't
+        # collide either.
+        _fused_disabled = os.environ.get("RAPID_MLX_DISABLE_FUSED_SAMPLER", "0") == "1"
         key = (
             sampling_params.temperature,
             sampling_params.top_p,
             sampling_params.min_p,
             sampling_params.top_k,
+            _fused_disabled,
         )
         cached = self._sampler_cache.get(key)
         if cached is not None:
             # LRU bookkeeping — keep the hot key warm.
             self._sampler_cache.move_to_end(key)
             return cached
-        # Fast path for the dominant chat config (temp + top_p / top_k).
-        # See ``vllm_mlx/_sampler_fast_path.py`` for the math-equivalence
-        # argument and the perf data behind it (Qwen 3.6 35B 4-bit B=1:
-        # 65 -> 92 tok/s). Falls through to mlx-lm's chain whenever the
-        # request enables min_p, xtc, sets temperature == 0 (mlx-lm
-        # already short-circuits to argmax), or whenever the operator
-        # sets ``RAPID_MLX_DISABLE_FUSED_SAMPLER=1`` as an escape hatch
-        # if some downstream surface ever needs mlx-lm's bit-level Gumbel
-        # ordering rather than the math-equivalent fused path.
-        _fused_disabled = os.environ.get("RAPID_MLX_DISABLE_FUSED_SAMPLER", "0") == "1"
+        # Fast path for the dominant chat config (temp + top_p, with or
+        # without top_k). See ``vllm_mlx/_sampler_fast_path.py`` for the
+        # math-equivalence argument and the perf data behind it (Qwen 3.6
+        # 35B 4-bit B=1: 65 -> 92 tok/s). Falls through to mlx-lm's chain
+        # whenever the request enables min_p, xtc, sets temperature == 0
+        # (mlx-lm already short-circuits to argmax), is top-k-only with no
+        # nucleus cut (mlx-lm uses a cheaper partition primitive there),
+        # or whenever the operator sets
+        # ``RAPID_MLX_DISABLE_FUSED_SAMPLER=1`` as an escape hatch.
         if not _fused_disabled and is_fused_top_p_eligible(
             temperature=sampling_params.temperature,
             top_p=sampling_params.top_p,
