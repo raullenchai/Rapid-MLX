@@ -285,6 +285,55 @@ class TestDistributionalEquivalence:
         for _ in range(10):
             assert int(fused(logprobs)) == 42
 
+    def test_mlx_lm_callsite_passes_normalized_logprobs(self):
+        """Codex round-5 BLOCKER: "if the caller supplies raw logits to
+        the sampler, top-p masking becomes unnormalized and can
+        keep/drop the wrong tokens."
+
+        Refute by source-introspecting mlx-lm's actual call site. The
+        sampler is installed into ``GenerationBatch.samplers`` /
+        ``fallback_sampler`` and invoked from
+        ``GenerationBatch._step``. As of mlx-lm 0.21 (and matching
+        ``apply_top_p``'s own expectation), that step normalizes the
+        logits before dispatch:
+
+            logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+            ...
+            sampled = sample_sampler(logprobs[e : e + 1])
+
+        If a future mlx-lm ever drops the ``logsumexp`` normalization,
+        BOTH our fast path AND mlx-lm's own ``apply_top_p`` would break
+        together — they share the same contract. This test pins it.
+        """
+        import inspect
+
+        from mlx_lm.generate import GenerationBatch
+
+        step_src = inspect.getsource(GenerationBatch._step)
+        assert "logsumexp" in step_src, (
+            "mlx-lm GenerationBatch._step no longer normalizes inputs "
+            "via logsumexp — the fast path's normalized-logprobs "
+            "contract is broken. Coordinate with the mlx-lm bump."
+        )
+        # Tighten: ensure the normalization happens BEFORE the sampler
+        # dispatch (in the same body), not after.
+        sampler_call_line = next(
+            (line for line in step_src.splitlines() if "sampler" in line.lower()),
+            None,
+        )
+        normalize_line = next(
+            (line for line in step_src.splitlines() if "logsumexp" in line),
+            None,
+        )
+        assert normalize_line and sampler_call_line, (
+            "expected both a logsumexp normalization and a sampler call "
+            "inside GenerationBatch._step"
+        )
+        assert step_src.index(normalize_line) < step_src.index(sampler_call_line), (
+            "mlx-lm GenerationBatch._step calls the sampler BEFORE "
+            "normalizing logits — raw-logits would reach our fast path"
+        )
+
     def test_top_k_tie_at_boundary_keeps_k_tokens(self):
         """Tied logits at the ``top_k`` cutoff: mlx-lm's ``apply_top_k``
         uses ``mx.argpartition`` (also position-based, unstable on ties),

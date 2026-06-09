@@ -1906,7 +1906,13 @@ class Scheduler:
         # without us serving a stale cached fused sampler. The disabled
         # state is folded into the cache key so the two branches don't
         # collide either.
-        _fused_disabled = os.environ.get("RAPID_MLX_DISABLE_FUSED_SAMPLER", "0") == "1"
+        # Codex round-5 NIT: accept a small set of truthy values so operators
+        # who set ``RAPID_MLX_DISABLE_FUSED_SAMPLER=true`` (the more natural
+        # form for a boolean knob) actually get the fast path disabled,
+        # instead of silently leaving it on.
+        _fused_disabled = os.environ.get(
+            "RAPID_MLX_DISABLE_FUSED_SAMPLER", "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
         key = (
             sampling_params.temperature,
             sampling_params.top_p,
