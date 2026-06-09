@@ -7,9 +7,9 @@ mlx-lm's ``make_sampler`` builds a closure chain of independent
         apply_top_p(logprobs, top_p)         # @mx.compile #1
         categorical_sampling(masked, temp)   # @mx.compile #2
 
-For the dominant chat config ``(temp > 0, 0 < top_p < 1, no min_p, no top_k,
-no xtc, no logits_processors)`` this costs ~4.3 ms / token on Qwen 3.6 35B
-4-bit @ B=1 on M3 Ultra, split as:
+For the dominant chat config ``(temp > 0, at least one of 0 < top_p < 1
+or top_k > 0, no min_p, no xtc, no logits_processors)`` this costs ~4.3 ms
+/ token on Qwen 3.6 35B 4-bit @ B=1 on M3 Ultra, split as:
 
 * ~0.9 ms Python — three closure dispatches per step (mlx-lm chain runs
   ``apply_top_p`` closure, then ``categorical_sampling`` closure, both

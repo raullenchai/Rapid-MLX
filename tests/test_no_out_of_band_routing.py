@@ -109,6 +109,14 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
     {
         "RAPID_MLX_DISABLE_VERSION_CHECK",  # opt-out of version check
         "RAPID_MLX_PROFILE_VERBOSE",  # debug verbosity for profile logs
+        # Opt-out of the fused top-p/top-k/temperature sampler fast path
+        # (PR #542). Same shape as DISABLE_VERSION_CHECK — a perf shortcut
+        # toggle, not a routing decision. The math collapses to mlx-lm's
+        # apply_top_p + apply_top_k + categorical_sampling chain when set;
+        # which model loads, which parser fires, which tier engages — none
+        # of that changes. Read by ``vllm_mlx.scheduler._get_request_sampler``
+        # only, never by config / aliases / model_auto_config.
+        "RAPID_MLX_DISABLE_FUSED_SAMPLER",
         # Test/integration helpers — server URL for integration suites,
         # not consulted at runtime by the engine.
         "RAPID_MLX_BASE_URL",

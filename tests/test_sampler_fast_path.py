@@ -4,8 +4,10 @@
 Pins three properties of ``vllm_mlx._sampler_fast_path``:
 
 1. ``is_fused_top_p_eligible`` covers the eligible knob window exactly —
-   ``(temp > 0, 0 < top_p < 1, min_p == 0, top_k == 0)`` returns True,
-   any other combination returns False.
+   eligible when ``temperature > 0`` and ``min_p == 0`` and at least one
+   of ``0 < top_p < 1`` or ``top_k > 0`` is active; every other
+   combination (greedy, ``min_p > 0``, both top-p and top-k disabled)
+   returns False.
 2. The fused sampler returns the right shape contract: ``[V]`` -> ``[]``,
    ``[B, V]`` -> ``[B]``, output dtype is ``uint32`` (matching mlx-lm's
    sample token type).
