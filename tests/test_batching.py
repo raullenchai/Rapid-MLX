@@ -694,6 +694,45 @@ class TestSchedulerBasic:
         assert scheduler.get_num_running() == 0
         assert not scheduler.has_requests()
 
+    def test_step_normalizes_stale_none_logits_processor_slots(
+        self, mock_model, mock_tokenizer
+    ):
+        """Scheduler should sanitize stale BatchGenerator per-slot None values."""
+
+        class FakeActiveBatch:
+            logits_processors = [None]
+
+        class FakeBatchGenerator:
+            def __init__(self):
+                self.active_batch = FakeActiveBatch()
+                self.called = False
+
+            def next(self):
+                self.called = True
+                assert self.active_batch.logits_processors == [[]]
+                return []
+
+        scheduler = Scheduler(
+            model=mock_model,
+            tokenizer=mock_tokenizer,
+        )
+        request = Request(
+            request_id="test-1",
+            prompt="Hello",
+            sampling_params=SamplingParams(max_tokens=2),
+        )
+        request.status = RequestStatus.RUNNING
+        scheduler.requests[request.request_id] = request
+        scheduler.running[request.request_id] = request
+        batch_generator = FakeBatchGenerator()
+        scheduler.batch_generator = batch_generator
+
+        output = scheduler.step()
+
+        assert batch_generator.called is True
+        assert output.finished_request_ids == set()
+        assert request.request_id in scheduler.running
+
 
 # Integration tests require actual MLX model
 @pytest.mark.integration

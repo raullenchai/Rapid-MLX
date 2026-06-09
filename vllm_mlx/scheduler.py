@@ -42,6 +42,28 @@ CACHE_CORRUPTION_PATTERNS = [
 ]
 
 
+def _normalize_logits_processors(logits_processors):
+    """Normalize empty per-sequence processor slots to lists."""
+    if logits_processors is None:
+        return None
+    return [processors or [] for processors in logits_processors]
+
+
+def _sanitize_batch_generator_logits_processors(batch_generator) -> None:
+    """Sanitize stale BatchGenerator processor state before decode."""
+    active_batch = getattr(batch_generator, "active_batch", None)
+    if active_batch is not None and hasattr(active_batch, "logits_processors"):
+        active_batch.logits_processors = _normalize_logits_processors(
+            active_batch.logits_processors
+        )
+
+    partial = getattr(batch_generator, "_partial", None)
+    if isinstance(partial, dict) and "logits_processors" in partial:
+        partial["logits_processors"] = _normalize_logits_processors(
+            partial["logits_processors"]
+        )
+
+
 class SchedulingPolicy(Enum):
     """Scheduling policy for request ordering."""
 
@@ -786,6 +808,7 @@ def _install_mtp(
             logits = logits[:, -1, :]
 
         # --- Apply logits processors + sample primary ---
+        logits_processors = _normalize_logits_processors(logits_processors) or []
         if any(logits_processors):
             logger.debug(
                 f"[logits_proc] applying {sum(len(lp) for lp in logits_processors)} "
@@ -2497,6 +2520,7 @@ class Scheduler:
 
                 # Run generation step if we have running requests
                 if self.batch_generator is not None and self.running:
+                    _sanitize_batch_generator_logits_processors(self.batch_generator)
                     result = self.batch_generator.next()
                     output.has_work = True
 
