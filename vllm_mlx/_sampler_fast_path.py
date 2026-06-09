@@ -37,12 +37,29 @@ mlx-lm semantics exactly**: the top-p cutoff is computed on
 vocab order) — the kept set, the relative weights inside it, and the
 expected sample distribution are all identical to mlx-lm's chain.
 
-The one observable difference is sample determinism under a fixed
-``mx.random.seed``: mlx-lm draws Gumbel noise in vocab order while we
-draw it in sorted order, so two engines with the same seed pick
-different tokens. The distributions match; the bit-level sequence does
-not. Documented; not a regression for OpenAI-style ``seed=`` requests
-which only promise within-engine reproducibility.
+The two observable differences vs mlx-lm are both bit-level (not
+distributional):
+
+1. Sample determinism under a fixed ``mx.random.seed``: mlx-lm draws
+   Gumbel noise in vocab order while we draw it in sorted order, so
+   two engines with the same seed pick different tokens. The
+   distributions match; the bit-level sequence does not. Not a
+   regression for OpenAI-style ``seed=`` requests which only promise
+   within-engine reproducibility.
+
+2. Tie-break at the ``top_k`` cutoff: mlx-lm's ``apply_top_k`` uses
+   ``mx.argpartition`` (unstable on ties), the fast path uses
+   ``mx.argsort`` + position-based mask (stable but ordering depends on
+   the sort implementation). When two logits are bit-exact tied at the
+   ``top_k`` cutoff, the two paths may keep different specific tokens
+   from the tied pair — but BOTH paths keep exactly ``top_k`` tokens
+   and the dropped one has the same logit value as the kept one. The
+   sampled token-frequency distribution is therefore mathematically
+   identical (tied tokens are fungible by definition); only the
+   specific token ID differs. In practice production fp32 logits from
+   real models never tie exactly (probability ~2⁻²³ per pair), so this
+   corner case only matters for synthetic test inputs. Pinned with
+   ``test_top_k_tie_at_boundary_keeps_k_tokens``.
 
 Validated 2026-06-08 against Qwen 3.6 35B-A3B 4-bit B=1 HTTP:
 ``bg_next`` 14.07 -> 9.77 ms, HTTP 65.7 -> 100.3 tok/s (also clears
