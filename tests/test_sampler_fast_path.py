@@ -35,9 +35,7 @@ class TestEligibility:
     knob set and reject every off-path variant."""
 
     def test_canonical_chat_knobs_eligible(self):
-        assert is_fused_top_p_eligible(
-            temperature=0.7, top_p=0.95, min_p=0.0, top_k=0
-        )
+        assert is_fused_top_p_eligible(temperature=0.7, top_p=0.95, min_p=0.0, top_k=0)
 
     def test_default_top_p_one_rejected(self):
         # top_p=1.0 means no nucleus — mlx-lm short-circuits apply_top_p.
@@ -54,16 +52,12 @@ class TestEligibility:
     def test_top_k_only_eligible(self):
         # top_k > 0 alone is enough — common when alias defaults inject
         # top_k from generation_config.json.
-        assert is_fused_top_p_eligible(
-            temperature=0.7, top_p=0.0, min_p=0.0, top_k=20
-        )
+        assert is_fused_top_p_eligible(temperature=0.7, top_p=0.0, min_p=0.0, top_k=20)
 
     def test_top_p_and_top_k_eligible(self):
         # The combination this PR was originally motivated by: Qwen
         # alias defaults top_k=20 in addition to the request's top_p.
-        assert is_fused_top_p_eligible(
-            temperature=0.7, top_p=0.95, min_p=0.0, top_k=20
-        )
+        assert is_fused_top_p_eligible(temperature=0.7, top_p=0.95, min_p=0.0, top_k=20)
 
     def test_greedy_rejected(self):
         # temp=0 already returns argmax in mlx-lm — nothing to fuse.
@@ -126,9 +120,7 @@ class TestDistributionalEquivalence:
     """
 
     @staticmethod
-    def _empirical_distribution(
-        sampler, logprobs: mx.array, n: int
-    ) -> dict[int, int]:
+    def _empirical_distribution(sampler, logprobs: mx.array, n: int) -> dict[int, int]:
         counts: dict[int, int] = {}
         for _ in range(n):
             tok = int(sampler(logprobs))
@@ -190,8 +182,7 @@ class TestDistributionalEquivalence:
             self._empirical_distribution(fused, logprobs, n).get(top_token, 0) / n
         )
         chain_top_rate = (
-            self._empirical_distribution(mlx_chain, logprobs, n).get(top_token, 0)
-            / n
+            self._empirical_distribution(mlx_chain, logprobs, n).get(top_token, 0) / n
         )
         # Both paths sample the argmax with the same expected rate.
         # 3-sigma binomial band for n=4000 at p~0.5 is ~0.024 — use 0.04

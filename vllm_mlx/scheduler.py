@@ -1920,9 +1920,7 @@ class Scheduler:
         # sets ``RAPID_MLX_DISABLE_FUSED_SAMPLER=1`` as an escape hatch
         # if some downstream surface ever needs mlx-lm's bit-level Gumbel
         # ordering rather than the math-equivalent fused path.
-        _fused_disabled = (
-            os.environ.get("RAPID_MLX_DISABLE_FUSED_SAMPLER", "0") == "1"
-        )
+        _fused_disabled = os.environ.get("RAPID_MLX_DISABLE_FUSED_SAMPLER", "0") == "1"
         if not _fused_disabled and is_fused_top_p_eligible(
             temperature=sampling_params.temperature,
             top_p=sampling_params.top_p,
@@ -1936,8 +1934,7 @@ class Scheduler:
             )
             if not getattr(self, "_fused_top_p_logged", False):
                 logger.info(
-                    "[fused_top_p_sampler] engaged for "
-                    "temp=%.3f top_p=%.3f top_k=%d",
+                    "[fused_top_p_sampler] engaged for temp=%.3f top_p=%.3f top_k=%d",
                     sampling_params.temperature,
                     sampling_params.top_p,
                     sampling_params.top_k,

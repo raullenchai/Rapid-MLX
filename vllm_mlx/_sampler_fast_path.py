@@ -74,11 +74,7 @@ def is_fused_top_p_eligible(
     ``lambda x: mx.argmax(x, axis=-1)`` directly), so there is nothing
     to optimise.
     """
-    return (
-        temperature > 0.0
-        and min_p == 0.0
-        and ((0.0 < top_p < 1.0) or top_k > 0)
-    )
+    return temperature > 0.0 and min_p == 0.0 and ((0.0 < top_p < 1.0) or top_k > 0)
 
 
 def make_fused_top_p_temp_sampler(
@@ -132,9 +128,7 @@ def make_fused_top_p_temp_sampler(
         # that ``apply_top_p`` masks on. ``mx.cumsum`` over bfloat16 is
         # unsupported as of MLX 0.21 — promote first.
         work = (
-            logprobs.astype(mx.float32)
-            if logprobs.dtype == mx.bfloat16
-            else logprobs
+            logprobs.astype(mx.float32) if logprobs.dtype == mx.bfloat16 else logprobs
         )
         probs = mx.exp(work)
         sorted_indices = mx.argsort(probs, axis=-1)
