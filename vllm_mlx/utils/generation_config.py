@@ -111,6 +111,62 @@ def load_generation_config_sampling(model_path: str | None) -> dict[str, float |
     return out
 
 
+def load_generation_config_eos_ids(model_path: str | None) -> tuple[int, ...]:
+    """Return the ``eos_token_id`` list from ``<model_path>/generation_config.json``.
+
+    Many chat-tuned models ship a primary ``<eos>`` token in
+    ``tokenizer_config.json`` (e.g. id 1 for Gemma 3 / 3n) but
+    declare the wider stop set — including the chat-template
+    terminator like ``<end_of_turn>`` (id 106) — only in
+    ``generation_config.json``'s ``eos_token_id`` array. mlx-lm's
+    tokenizer wrapper exposes only the primary id, so without this
+    helper the scheduler never adds the chat-template terminator to
+    its stop set and the model emits ``<end_of_turn>`` as a literal
+    token until ``max_tokens`` is hit.
+
+    The helper is intentionally conservative:
+
+    * Returns ``()`` for missing path, missing file, parse error,
+      non-dict payload, or no ``eos_token_id`` key.
+    * Returns ``()`` when the value is a single int — that case is
+      already covered by the tokenizer's own ``eos_token_id``.
+    * Filters out booleans (JSON ``True``/``False`` decode to
+      ``int``) and non-finite values.
+    """
+    if not model_path:
+        return ()
+    config_path = _resolve_config_path(model_path)
+    if config_path is None:
+        return ()
+    try:
+        with open(config_path) as fh:
+            raw = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug(
+            "generation_config: eos read failed for %s: %s", config_path, exc
+        )
+        return ()
+    if not isinstance(raw, dict):
+        return ()
+    value = raw.get("eos_token_id")
+    if not isinstance(value, list):
+        return ()
+    out: list[int] = []
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        if not isinstance(item, int):
+            continue
+        out.append(item)
+    if out:
+        logger.info(
+            "generation_config: loaded extra EOS token ids from %s: %s",
+            config_path,
+            out,
+        )
+    return tuple(out)
+
+
 def _resolve_config_path(model_path: str) -> str | None:
     """Best-effort locate ``generation_config.json`` for ``model_path``.
 

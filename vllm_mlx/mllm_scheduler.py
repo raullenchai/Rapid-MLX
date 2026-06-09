@@ -256,25 +256,43 @@ class MLLMScheduler:
         self.total_completion_tokens = 0
 
     def _get_stop_tokens(self) -> set[int]:
-        """Get stop token IDs from tokenizer."""
-        stop_tokens = set()
+        """Get stop token IDs from tokenizer.
+
+        Mirrors ``Scheduler._get_stop_tokens`` — see that docstring
+        for the rationale behind each of the four sources.
+        """
+        from .utils.tokenizer import RAPID_EXTRA_EOS_ATTR
+
+        stop_tokens: set[int] = set()
         tokenizer = (
             self.processor.tokenizer
             if hasattr(self.processor, "tokenizer")
             else self.processor
         )
 
+        # Source 1: mlx-lm TokenizerWrapper's curated set.
+        wrapper_ids = getattr(tokenizer, "_eos_token_ids", None)
+        if wrapper_ids:
+            stop_tokens.update(wrapper_ids)
+
+        # Source 2: legacy singular path.
         if hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id is not None:
             if isinstance(tokenizer.eos_token_id, list):
                 stop_tokens.update(tokenizer.eos_token_id)
             else:
                 stop_tokens.add(tokenizer.eos_token_id)
 
+        # Source 3: processor-style plural path.
         if hasattr(tokenizer, "eos_token_ids") and tokenizer.eos_token_ids is not None:
             if isinstance(tokenizer.eos_token_ids, (list, set, tuple)):
                 stop_tokens.update(tokenizer.eos_token_ids)
             else:
                 stop_tokens.add(tokenizer.eos_token_ids)
+
+        # Source 4: Rapid-MLX extras stash (see RAPID_EXTRA_EOS_ATTR).
+        extras = getattr(tokenizer, RAPID_EXTRA_EOS_ATTR, None)
+        if extras:
+            stop_tokens.update(extras)
 
         return stop_tokens
 

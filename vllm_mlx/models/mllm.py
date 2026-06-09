@@ -745,6 +745,24 @@ class MLXMultimodalLM:
             self.model, self.processor = load(self.model_name)
             self.config = load_config(self.model_name)
 
+            # Augment the wrapped tokenizer's EOS set with the chat-
+            # template terminator ids from ``generation_config.json``.
+            # Gemma 3 / 3n VL variants are the canonical case:
+            # ``tokenizer.eos_token_id == 1`` but the model halts on
+            # ``<end_of_turn>`` (id 106), which lives only in the
+            # generation config. See ``augment_eos_token_ids_from_generation_config``
+            # for the full rationale.
+            from ..utils.tokenizer import (
+                augment_eos_token_ids_from_generation_config,
+            )
+
+            tok = (
+                self.processor.tokenizer
+                if hasattr(self.processor, "tokenizer")
+                else self.processor
+            )
+            augment_eos_token_ids_from_generation_config(tok, self.model_name)
+
             self._loaded = True
             self._video_native = hasattr(
                 self.model.config, "video_token_id"

@@ -28,6 +28,120 @@ def _needs_tokenizer_fallback(model_name: str) -> bool:
     return any(pattern.lower() in model_lower for pattern in FALLBACK_MODELS)
 
 
+# Attribute name used to stash the union of ``generation_config.json``
+# EOS ids on raw HF tokenizers (mlx-vlm processors). Read by
+# ``Scheduler._get_stop_tokens`` and ``MLLMScheduler._get_stop_tokens``
+# as a fourth-source union, alongside the legacy
+# ``eos_token_id`` / ``eos_token_ids`` / ``_eos_token_ids`` surfaces.
+# Public so consumers outside this module (DFlash drafter, future
+# code paths) can read it without importing private symbols.
+RAPID_EXTRA_EOS_ATTR = "_rapid_extra_eos_token_ids"
+
+
+def augment_eos_token_ids_from_generation_config(tokenizer, model_path_or_name: str) -> None:
+    """Union ``generation_config.json``'s ``eos_token_id`` list into
+    the tokenizer's stop-token surface so the chat-template
+    terminator halts generation.
+
+    Why this is necessary:
+
+    The HuggingFace convention is that ``tokenizer_config.json``
+    declares a single primary ``eos_token`` (and therefore a single
+    ``tokenizer.eos_token_id``), while ``generation_config.json``
+    declares the *full* set of stop tokens — including the
+    chat-template terminator that's distinct from the model-level
+    ``<eos>``. Concretely:
+
+    * Gemma 3 / 3n: ``tokenizer.eos_token_id == 1`` (``<eos>``);
+      ``generation_config.json`` declares ``[1, 106]`` where 106 is
+      ``<end_of_turn>``.
+    * Qwen3 / Qwen2.5: ``tokenizer.eos_token_id == 151645``
+      (``<|im_end|>``); ``generation_config.json`` declares
+      ``[151645, 151643]`` where 151643 is ``<|endoftext|>``.
+    * Llama 3: ``tokenizer.eos_token_id == 128001``
+      (``<|end_of_text|>``); ``generation_config.json`` declares
+      ``[128001, 128009]`` where 128009 is ``<|eot_id|>``.
+
+    Without this augmentation every downstream consumer that halts
+    on ``eos_token_id`` (our schedulers, mlx-lm's ``BatchGenerator``,
+    DFlash drafter, streaming detokenizer) misses the chat-template
+    terminator and the model emits it as a literal token until
+    ``max_tokens`` is hit. User-visible symptom on Gemma 3n:
+    ``hello -> "Okay.<end_of_turn><end_of_turn>..."``.
+
+    Two tokenizer shapes flow through Rapid-MLX:
+
+    1. **mlx-lm ``TokenizerWrapper``** — has a curated
+       ``_eos_token_ids: set[int]`` plus an ``add_eos_token`` method
+       that grows it. mlx-lm's own ``BatchGenerator`` reads this
+       set, so mutating it here also fixes upstream batching.
+
+    2. **Raw HF tokenizer** (mlx-vlm processors return these
+       directly — ``Gemma3Processor.tokenizer`` is a
+       ``GemmaTokenizer``, not a wrapper). The HF tokenizer's
+       ``add_eos_token`` is an unrelated property setter, NOT a
+       method that grows a stop set, so we can't reuse it. Instead
+       we set the plural ``eos_token_ids`` attribute as an instance-
+       level union — the schedulers' source-3 branch
+       (``Scheduler._get_stop_tokens`` / ``MLLMScheduler._get_stop_tokens``)
+       already reads it.
+
+    The fix is one mutation point per model load rather than an
+    N-way patch across every consumer.
+    """
+    from .generation_config import load_generation_config_eos_ids
+
+    extras = load_generation_config_eos_ids(model_path_or_name)
+    if not extras:
+        return
+
+    # Shape 1: mlx-lm TokenizerWrapper. The ``_eos_token_ids`` set
+    # is the curated stop set mlx-lm's BatchGenerator consults; we
+    # add to it directly rather than going through ``add_eos_token``
+    # (which exists but is also defined on raw HF tokenizers with
+    # totally different semantics — see Shape 2 below).
+    wrapper_set = getattr(tokenizer, "_eos_token_ids", None)
+    if isinstance(wrapper_set, set):
+        before = set(wrapper_set)
+        wrapper_set.update(extras)
+        added = sorted(set(wrapper_set) - before)
+        if added:
+            logger.info(
+                "augment_eos: added %s to TokenizerWrapper stop set for %s",
+                added,
+                model_path_or_name,
+            )
+        return
+
+    # Shape 2: raw HF tokenizer (e.g. ``GemmaTokenizer`` returned by
+    # mlx-vlm processors). HF defines ``eos_token_id`` and
+    # ``eos_token_ids`` as property descriptors backed by setters
+    # that reject non-string values — so we can't just assign a
+    # list. Instead stash on a Rapid-MLX-owned attribute name that
+    # doesn't collide with any HF descriptor, and have the
+    # schedulers' source-4 union branch read it. This avoids
+    # monkey-patching HF internals and keeps ``tokenizer.eos_token``
+    # (used by other HF code paths) untouched.
+    try:
+        existing = getattr(tokenizer, RAPID_EXTRA_EOS_ATTR, None) or ()
+        merged_set = set(int(x) for x in existing) | set(extras)
+        merged = tuple(sorted(merged_set))
+        setattr(tokenizer, RAPID_EXTRA_EOS_ATTR, merged)
+        logger.info(
+            "augment_eos: set %s=%s on %s for %s",
+            RAPID_EXTRA_EOS_ATTR,
+            list(merged),
+            type(tokenizer).__name__,
+            model_path_or_name,
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive only
+        logger.debug(
+            "augment_eos: could not stash extras on %s (%s)",
+            type(tokenizer).__name__,
+            exc,
+        )
+
+
 def _apply_chat_template_sidecar(model_path: Path, tokenizer) -> bool:
     """Populate ``tokenizer.chat_template`` from a sidecar file if missing.
 
@@ -200,6 +314,7 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
                 mp = _resolve_model_path(model_name)
                 if mp is not None:
                     _apply_chat_template_sidecar(mp, tokenizer)
+            augment_eos_token_ids_from_generation_config(tokenizer, model_name)
             return model, tokenizer
         except Exception as e:
             # Fall back to our wrapper for older mlx-lm versions
@@ -228,6 +343,7 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
             mp = _resolve_model_path(model_name)
             if mp is not None:
                 _apply_chat_template_sidecar(mp, tokenizer)
+        augment_eos_token_ids_from_generation_config(tokenizer, model_name)
         return model, tokenizer
     except ValueError as e:
         # Fallback for models with non-standard tokenizers, OR newer model_types
@@ -278,6 +394,7 @@ def _load_strict_false(model_name: str, tokenizer_config: dict = None):
     # Inject MTP support if model has MTP config + weights
     _try_inject_mtp(model, model_path, config)
     _apply_chat_template_sidecar(model_path, tokenizer)
+    augment_eos_token_ids_from_generation_config(tokenizer, str(model_path))
     return model, tokenizer
 
 
@@ -350,6 +467,7 @@ def _load_non_strict(model_name: str, tokenizer_config: dict = None):
     model, _ = load_model(model_path, strict=False)
     tokenizer = load_tokenizer(model_path, tokenizer_config or {})
     _apply_chat_template_sidecar(model_path, tokenizer)
+    augment_eos_token_ids_from_generation_config(tokenizer, str(model_path))
     return model, tokenizer
 
 

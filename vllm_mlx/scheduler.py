@@ -1864,23 +1864,56 @@ class Scheduler:
         self._detokenizer_pool.pop(request_id, None)
 
     def _get_stop_tokens(self) -> set[int]:
-        """Get stop token IDs from tokenizer or processor."""
-        stop_tokens = set()
+        """Get stop token IDs from tokenizer or processor.
+
+        Resolution order (all sources unioned — set semantics make
+        overlap harmless):
+
+        1. ``TokenizerWrapper._eos_token_ids`` — the curated set
+           mlx-lm's own ``BatchGenerator`` uses to halt generation.
+           Grown at load time by
+           ``augment_eos_token_ids_from_generation_config`` to
+           include the chat-template terminator (Gemma 3
+           ``<end_of_turn>``, Qwen3 ``<|endoftext|>``, Llama 3
+           ``<|eot_id|>``, etc.).
+        2. ``tok.eos_token_id`` — the underlying HF tokenizer's
+           primary id. Required for non-wrapped tokenizers (custom
+           fallback paths, mlx-vlm processor objects).
+        3. ``tok.eos_token_ids`` — some processors expose the plural
+           form natively.
+        4. ``tok._rapid_extra_eos_token_ids`` — the union stashed by
+           ``augment_eos_token_ids_from_generation_config`` on raw
+           HF tokenizers whose ``eos_token_ids`` is a property that
+           rejects non-string assignment. This is the surface that
+           rescues mlx-vlm processors (Gemma 3 VL etc.).
+        """
+        from .utils.tokenizer import RAPID_EXTRA_EOS_ATTR
+
+        stop_tokens: set[int] = set()
         # Check both the processor/tokenizer and the actual tokenizer
         for tok in [self.tokenizer, self._actual_tokenizer]:
             if tok is None:
                 continue
+            # Source 1: mlx-lm TokenizerWrapper's curated set.
+            wrapper_ids = getattr(tok, "_eos_token_ids", None)
+            if wrapper_ids:
+                stop_tokens.update(wrapper_ids)
+            # Source 2: legacy singular path.
             if hasattr(tok, "eos_token_id") and tok.eos_token_id is not None:
                 if isinstance(tok.eos_token_id, list):
                     stop_tokens.update(tok.eos_token_id)
                 else:
                     stop_tokens.add(tok.eos_token_id)
+            # Source 3: processor-style plural path.
             if hasattr(tok, "eos_token_ids") and tok.eos_token_ids is not None:
                 if isinstance(tok.eos_token_ids, (list, set, tuple)):
                     stop_tokens.update(tok.eos_token_ids)
                 else:
-                    # Handle case where eos_token_ids is a single int
                     stop_tokens.add(tok.eos_token_ids)
+            # Source 4: Rapid-MLX extras stash (see RAPID_EXTRA_EOS_ATTR).
+            extras = getattr(tok, RAPID_EXTRA_EOS_ATTR, None)
+            if extras:
+                stop_tokens.update(extras)
         return stop_tokens
 
     def _get_request_sampler(self, sampling_params: SamplingParams) -> Any:
