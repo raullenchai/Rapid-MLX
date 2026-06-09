@@ -142,9 +142,7 @@ def load_generation_config_eos_ids(model_path: str | None) -> tuple[int, ...]:
         with open(config_path) as fh:
             raw = json.load(fh)
     except (OSError, json.JSONDecodeError) as exc:
-        logger.debug(
-            "generation_config: eos read failed for %s: %s", config_path, exc
-        )
+        logger.debug("generation_config: eos read failed for %s: %s", config_path, exc)
         return ()
     if not isinstance(raw, dict):
         return ()

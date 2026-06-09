@@ -38,7 +38,9 @@ def _needs_tokenizer_fallback(model_name: str) -> bool:
 RAPID_EXTRA_EOS_ATTR = "_rapid_extra_eos_token_ids"
 
 
-def augment_eos_token_ids_from_generation_config(tokenizer, model_path_or_name: str) -> None:
+def augment_eos_token_ids_from_generation_config(
+    tokenizer, model_path_or_name: str
+) -> None:
     """Union ``generation_config.json``'s ``eos_token_id`` list into
     the tokenizer's stop-token surface so the chat-template
     terminator halts generation.
@@ -78,13 +80,13 @@ def augment_eos_token_ids_from_generation_config(tokenizer, model_path_or_name: 
 
     2. **Raw HF tokenizer** (mlx-vlm processors return these
        directly — ``Gemma3Processor.tokenizer`` is a
-       ``GemmaTokenizer``, not a wrapper). The HF tokenizer's
-       ``add_eos_token`` is an unrelated property setter, NOT a
-       method that grows a stop set, so we can't reuse it. Instead
-       we set the plural ``eos_token_ids`` attribute as an instance-
-       level union — the schedulers' source-3 branch
-       (``Scheduler._get_stop_tokens`` / ``MLLMScheduler._get_stop_tokens``)
-       already reads it.
+       ``GemmaTokenizer``, not a wrapper). HF defines both
+       ``eos_token_id`` and ``eos_token_ids`` as property
+       descriptors backed by setters that reject non-string values,
+       so we can't assign a list to either. Instead we stash the
+       union on a Rapid-MLX-owned attribute name
+       (``RAPID_EXTRA_EOS_ATTR``) that doesn't collide with any HF
+       descriptor; both schedulers' source-4 union branch reads it.
 
     The fix is one mutation point per model load rather than an
     N-way patch across every consumer.
