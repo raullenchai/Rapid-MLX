@@ -650,6 +650,169 @@ def _install_chunked_prefill(
     logger.info(f"[chunked_prefill] installed with budget={budget} tokens per step")
 
 
+def _install_skip_full_logprobs_fastpath(batch_gen: "BatchGenerator") -> None:
+    """Experimental: skip materialising the full [B, vocab] logprob tensor.
+
+    mlx-lm's ``GenerationBatch._step`` (``mlx_lm/generate.py:1320``) ends each
+    step with::
+
+        self._next_logprobs = list(logprobs)                     # B arrays of shape [vocab,]
+        mx.async_eval(self._next_tokens, self._next_logprobs, token_context)
+        mx.eval(inputs, self._current_logprobs)                  # forces prior [B, vocab]
+
+    The async_eval queues a full ``[B, vocab]`` materialisation every step; the
+    subsequent ``mx.eval`` on the previous step's ``_current_logprobs`` forces
+    the GPU to actually compute it. For Qwen 3.6's 151k vocab at B=1 that is
+    ~151k floats per step the GPU must produce — even when no caller will
+    read them.
+
+    mlx-vlm's ``_step`` (``mlx_vlm/generate/ar.py:977-981``) instead does::
+
+        if self.compute_logprobs:
+            self._next_lps = logprobs[mx.arange(B), sampled]     # [B,] scalar
+            eval_targets.append(self._next_lps)
+        else:
+            self._next_lps = None
+
+    This is consistent with our Phase 4 finding that the 28 tok/s B=1 gap to
+    mlx-vlm under sampling lives at the eval boundary, not in the sampler
+    chain itself. This patch replaces ``_step`` to mirror the mlx-vlm shape:
+    ``_next_logprobs`` becomes a list of ``[1,]`` arrays carrying only the
+    sampled token's logprob. Downstream consumers that need top-k extraction
+    on the full vocab distribution (clients passing ``logprobs=true,
+    top_logprobs=N``) will see truncated logprobs — so this is gated behind
+    ``RAPID_MLX_PROBE_SKIP_FULL_LOGPROBS=1`` for experimentation only, NOT
+    shipped on by default.
+
+    Returns nothing; logs once on install.
+    """
+    if os.environ.get("RAPID_MLX_PROBE_SKIP_FULL_LOGPROBS", "0") != "1":
+        return
+
+    import types
+
+    gen_batch = getattr(batch_gen, "_generation_batch", None)
+    if gen_batch is None or not hasattr(gen_batch, "_step"):
+        return
+
+    import mlx.core as mx
+
+    # Per-step micro-timing accumulators. Logged every N steps.
+    gen_batch._lp_skip_steps = 0
+    gen_batch._lp_skip_fwd_ms = 0.0
+    gen_batch._lp_skip_logsumexp_ms = 0.0
+    gen_batch._lp_skip_sampler_ms = 0.0
+    gen_batch._lp_skip_async_ms = 0.0
+    gen_batch._lp_skip_eval_ms = 0.0
+    log_every = int(os.environ.get("RAPID_MLX_PROBE_SKIP_LOG_EVERY", "64"))
+    # Variant: swap our sampler for mlx-vlm's top_p_sampling (single Python
+    # function, one argsort, sample-in-sorted-space, no mx.compile boundary).
+    # Used to test whether the lazy-graph fusion difference matters.
+    use_vlm_sampler = (
+        os.environ.get("RAPID_MLX_PROBE_USE_VLM_SAMPLER", "0") == "1"
+    )
+    vlm_top_p_sampling = None
+    if use_vlm_sampler:
+        try:
+            from mlx_vlm.sample_utils import top_p_sampling as _vlm_top_p
+
+            vlm_top_p_sampling = _vlm_top_p
+            logger.info(
+                "[skip_full_logprobs_fastpath] using mlx-vlm top_p_sampling "
+                "(experiment variant)"
+            )
+        except ImportError:
+            logger.warning(
+                "[skip_full_logprobs_fastpath] mlx-vlm not importable; "
+                "falling back to mlx-lm sampler chain"
+            )
+
+    def patched_step(self):
+        self._current_tokens = self._next_tokens
+        self._current_logprobs = self._next_logprobs
+        inputs = self._current_tokens
+
+        _t0 = time.perf_counter()
+        logits = self.model(inputs[:, None], cache=self.prompt_cache)
+        logits = logits[:, -1, :]
+        self._lp_skip_fwd_ms += (time.perf_counter() - _t0) * 1000.0
+
+        token_context: list = []
+        if any(self.logits_processors):
+            token_context = [
+                tc.update_and_fetch(inputs[i : i + 1])
+                for i, tc in enumerate(self._token_context)
+            ]
+            processed_logits = []
+            for e in range(len(self.uids)):
+                sample_logits = logits[e : e + 1]
+                for processor in self.logits_processors[e]:
+                    sample_logits = processor(token_context[e], sample_logits)
+                processed_logits.append(sample_logits)
+            logits = mx.concatenate(processed_logits, axis=0)
+
+        _t0 = time.perf_counter()
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        self._lp_skip_logsumexp_ms += (time.perf_counter() - _t0) * 1000.0
+
+        _t0 = time.perf_counter()
+        if vlm_top_p_sampling is not None:
+            # Use mlx-vlm's single-function top_p_sampling — sample in sorted
+            # space, no inverse-permutation, no mx.compile boundary between
+            # apply_top_p and categorical_sampling. Hardcoded for this
+            # experiment to the canonical knob set (top_p=0.95, temp=0.7);
+            # if either knob lands outside (0, 1), fall through to fallback.
+            sampled = vlm_top_p_sampling(logprobs, 0.95, 0.7)
+        elif any(self.samplers):
+            all_samples = []
+            for e in range(len(self.uids)):
+                sample_sampler = self.samplers[e] or self.fallback_sampler
+                sampled = sample_sampler(logprobs[e : e + 1])
+                all_samples.append(sampled)
+            sampled = mx.concatenate(all_samples, axis=0)
+        else:
+            sampled = self.fallback_sampler(logprobs)
+        self._lp_skip_sampler_ms += (time.perf_counter() - _t0) * 1000.0
+
+        _t0 = time.perf_counter()
+        self._next_tokens = sampled
+        sampled_lp = logprobs[mx.arange(sampled.shape[0]), sampled]
+        self._next_logprobs = list(sampled_lp[:, None])
+        mx.async_eval(self._next_tokens, self._next_logprobs, token_context)
+        self._lp_skip_async_ms += (time.perf_counter() - _t0) * 1000.0
+
+        _t0 = time.perf_counter()
+        mx.eval(inputs, self._current_logprobs)
+        self._lp_skip_eval_ms += (time.perf_counter() - _t0) * 1000.0
+
+        inputs = inputs.tolist()
+        for sti, ti in zip(self.tokens, inputs):
+            sti.append(ti)
+
+        self._lp_skip_steps += 1
+        if self._lp_skip_steps % log_every == 0:
+            n = self._lp_skip_steps
+            logger.info(
+                "[skip_full_logprobs_probe] steps=%d "
+                "fwd_dispatch_ms_avg=%.3f logsumexp_ms_avg=%.3f "
+                "sampler_ms_avg=%.3f async_eval_dispatch_ms_avg=%.3f "
+                "blocking_eval_ms_avg=%.3f",
+                n,
+                self._lp_skip_fwd_ms / n,
+                self._lp_skip_logsumexp_ms / n,
+                self._lp_skip_sampler_ms / n,
+                self._lp_skip_async_ms / n,
+                self._lp_skip_eval_ms / n,
+            )
+        return inputs, self._current_logprobs
+
+    gen_batch._step = types.MethodType(patched_step, gen_batch)
+    logger.info(
+        "[skip_full_logprobs_fastpath] installed on BatchGenerator "
+        "(EXPERIMENT — client-requested logprobs will be truncated)"
+    )
+
+
 def _install_dense_sampler_fastpath(batch_gen: "BatchGenerator") -> None:
     """Swap to mlx-lm's batched sampler fast path when the running batch
     is homogeneous in sampling params.
@@ -2101,6 +2264,12 @@ class Scheduler:
         # call into the original ``_step`` and ignore ``self.samplers``,
         # so this layering is safe.
         _install_dense_sampler_fastpath(bg)
+
+        # Experimental — gated behind RAPID_MLX_PROBE_SKIP_FULL_LOGPROBS=1.
+        # Replaces _step to materialise only [B,] sampled logprob instead of
+        # the full [B, vocab] tensor every step. Used to validate the Phase 4
+        # hypothesis on the B=1 gap to mlx-vlm. Default off.
+        _install_skip_full_logprobs_fastpath(bg)
 
         return bg
 

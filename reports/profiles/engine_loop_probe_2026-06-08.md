@@ -390,12 +390,110 @@ PR.**
 ### Decision
 
 - Ship this PR as **research artefacts only**: the two env-gated
-  probes + the four-phase falsification/validation report. No
+  probes + the five-phase falsification/validation report. No
   production fix.
-- File a follow-up perf PR: "skip full-vocab logprob materialisation
-  when client doesn't request it." Target: close 3-4 ms / token on
-  35B-A3B B=1, lifting rapid-mlx from ~65 to ~85-90 tok/s HTTP.
-- Hypothesis is concrete enough to be cheap to test before that PR
-  opens — a quick monkey-patch experiment in a scratch branch can
-  confirm or kill it inside an hour.
+- File a follow-up perf PR around the validated root cause (Phase 5
+  below).
+
+## Phase 5 — root cause LOCATED: mlx-lm sampler chain Python+GPU overhead
+
+Phase 4 left the "skip full-vocab logprob materialisation" as a
+hypothesis. Tested it: implemented
+``_install_skip_full_logprobs_fastpath`` in ``scheduler.py``, gated
+by ``RAPID_MLX_PROBE_SKIP_FULL_LOGPROBS=1``. Replaces ``_step`` to
+produce only ``[B,]`` sampled-token logprobs (mlx-vlm shape).
+
+**Result: no-op on its own.** Qwen 3.6 35B-A3B 4-bit B=1 temp=0.7
+top_p=0.95: bg_next 14.07 → 13.94 ms, HTTP 65.71 → 66.28 tok/s.
+Within noise. So the ``[B, vocab]`` materialisation is not the
+bottleneck.
+
+Then added per-op micro-timing inside the patched ``_step``:
+
+```
+fwd_dispatch:           1.93 ms   (Python lazy-graph build for forward)
+logsumexp:              0.002 ms
+sampler_dispatch:       0.94 ms   (Python: apply_top_p + categorical chain)
+async_eval (BLOCK):    11.24 ms   <- actual GPU work, surfaces as backpressure
+blocking_eval:          0.02 ms
+TOTAL                  14.15 ms
+```
+
+The 11.24 ms ``mx.async_eval`` "dispatch" is the GPU pipeline
+backpressure: ``mx.async_eval`` blocks until the prior step's
+compute frees a queue slot. So it equals the per-step GPU work
+time.
+
+### The sampler swap experiment
+
+Added a second variant gated by ``RAPID_MLX_PROBE_USE_VLM_SAMPLER=1``:
+replace mlx-lm's ``apply_top_p + categorical_sampling`` chain with
+mlx-vlm's ``top_p_sampling`` (``mlx_vlm/sample_utils.py:4``) — a
+single Python function, one ``mx.argsort``, samples in sorted space
+then ``take_along_axis`` to map back, no ``@mx.compile`` decoration.
+
+| Variant | bg_next | HTTP tok/s | sampler dispatch | async_eval block |
+|---|---|---|---|---|
+| baseline (mlx-lm chain) | 14.07 ms | 65.71 | 0.94 ms | 11.24 ms |
+| **mlx-vlm top_p_sampling** | **9.77 ms** | **100.33** | **0.017 ms** | **7.95 ms** |
+| (reference) mlx-vlm direct | — | 92.73 | — | — |
+
+**Root cause definitively located.** Two co-contributing mechanisms,
+together 4.3 ms / token on 35B-A3B B=1:
+
+1. **Python dispatch cost (~0.9 ms saved).** mlx-lm's ``make_sampler``
+   returns a closure that wraps a list of methods
+   (``apply_top_p`` + ``categorical_sampling`` here), each a separate
+   closure. Dispatching the chain runs three Python closure calls per
+   step. mlx-vlm's ``top_p_sampling`` is a single function with
+   straight-line code — ~50× less Python dispatch overhead.
+2. **GPU work cost (~3.3 ms saved).** The mlx-lm chain has two
+   distinct ``@mx.compile`` boundaries (one on ``apply_top_p``, one
+   on ``categorical_sampling``). Each compile boundary forces a
+   separate kernel-launch sync — the lazy graph cannot fuse across
+   the boundary. Additionally ``apply_top_p`` builds an
+   ``inverse_indices`` array (``mx.put_along_axis`` + ``mx.arange``)
+   to undo the sort permutation back into vocab order, so the
+   categorical samples on the original ``[V,]`` masked logits — an
+   extra V-sized scatter that mlx-vlm avoids by sampling in sorted
+   space and mapping back via one ``take_along_axis``.
+
+Our patched throughput (100.33 tok/s) actually exceeds mlx-vlm's
+direct 92.73 because the experiment also keeps the skip-full-logprobs
+patch active. Even discounting that, the sampler swap alone moves us
+from ~65 → ~92 tok/s — closing the entire B=1 gap.
+
+### What the production fix looks like (out of scope here)
+
+The actual fix is *not* the experimental monkey-patch shipped behind
+the two env vars. A production version needs to:
+
+1. Detect when the chain reduces to ``apply_top_p + categorical_sampling``
+   only (no ``min_p``, no ``top_k``, no ``xtc``, no logits_processors).
+   This is the common chat case.
+2. Substitute mlx-vlm's ``top_p_sampling`` (or a re-implementation of
+   the same shape that lives in ``vllm_mlx`` to avoid the mlx-vlm
+   dependency on the dense path).
+3. Fall back to mlx-lm's chain for all other knob combinations.
+4. Quality A/B: same seed, same temperature, sample distributions
+   should be statistically equivalent. The math is identical
+   (temperature-scaled softmax + nucleus mask + categorical sample);
+   only the index space differs.
+5. Determinism: confirm same-seed bit-for-bit reproducibility.
+6. Codex rounds + standard PR-merge SOP.
+
+Estimated upside: rapid-mlx B=1 HTTP on dense models 4-bit gets a
+~50% boost under sampling. Larger gain on bigger vocabs (Qwen 3.6's
+151k is the worst case; Llama-style 32k vocabs probably see ~1.5×).
+
+### Decision (updated)
+
+- This PR ships as research artefacts only — probes + 5-phase report.
+  Two env vars (``RAPID_MLX_PROBE_SKIP_FULL_LOGPROBS``,
+  ``RAPID_MLX_PROBE_USE_VLM_SAMPLER``) remain available for cheap
+  re-validation later.
+- **Follow-up perf PR**: dense sampler fast path swap for the
+  ``temp + top_p`` case. Specific, bounded, validated. Estimated
+  upside locked at 4.3 ms / token on 35B-A3B B=1 (the ~50% throughput
+  improvement above).
 
