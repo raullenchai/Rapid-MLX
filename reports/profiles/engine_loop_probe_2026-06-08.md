@@ -217,10 +217,91 @@ The B=1 gap to mlx-vlm has three components, in order of size:
 3. **asyncio dispatch** (~0.1 ms): falsified hypothesis from earlier
    today. Not the bottleneck.
 
-## Next perf PR
+## Phase 3 — greedy logsumexp-skip experiment (also same day)
 
-Implement a sampler short-circuit gated on `temperature=0` OR
-`top_p>=0.999` AND `min_p<=0`, plumbed into the BatchGenerator code
-path used by hybrid models. Open as a follow-up; not in scope for the
-probe PR (this one).
+Followed Phase 2 with an implementation of the suspected fix:
+``_install_greedy_skip_fastpath`` in ``scheduler.py``, which detects
+all-greedy sampler batches and monkey-patches ``GenerationBatch._step``
+to skip the ``logprobs = logits - mx.logsumexp(logits, axis=-1)``
+normalisation. Argmax is invariant under additive shifts along the
+vocab axis, so the sampled token is byte-identical.
+
+### Empirical result: the patch is a no-op
+
+Qwen 3.6 35B-A3B 4-bit, B=1, greedy (temp=0, top_p=1):
+
+| Variant | bg_next ms | HTTP tok/s |
+|---|---|---|
+| no patch | 9.690 | 92.39 |
+| with `RAPID_MLX_GREEDY_SKIP_FAST_PATH=1` patch installed | 9.838 | 91.77 |
+
+Within noise. The patch fired (`[greedy_skip_fastpath] installed`
+appears in the log, and the `_greedy_step` path branched correctly),
+but the saving wasn't measurable.
+
+### Why the patch doesn't help
+
+The Phase 2 numbers had me chasing the wrong op. The 4.6 ms gap
+between sampled and greedy at the BatchGenerator level **was never in
+``mx.logsumexp``**. It is in ``mx.random.categorical`` (and other
+sampler-chain ops) that mlx-lm already short-circuits when
+``make_sampler(temp=0)`` is called:
+
+```python
+# mlx-lm sample_utils.py:46
+def make_sampler(temp=0.0, top_p=0.0, ...):
+    if temp == 0:
+        return lambda x: mx.argmax(x, axis=-1)
+    ...  # builds the categorical chain only when temp != 0
+```
+
+So mlx-lm's `_step` at `temp=0` already runs the cheapest possible
+sampler — argmax on logprobs (which is equivalent to argmax on logits).
+The wasted ``mx.logsumexp`` is presumably (a) cheap on its own at the
+M3 Ultra vocab dims (the GPU runs it in parallel with downstream ops
+via MLX's lazy graph), or (b) elided by MLX's eval-time fusion. Either
+way: removing it doesn't move the wall.
+
+### Cross-check: where the 4.6 ms gap really lives
+
+Re-ran Phase 1 with `temp=0.7, top_p=1.0` (sampling with the most
+trivial possible chain — no `apply_top_p`, no `min_p`, no `top_k`):
+
+```
+qwen3.6-35b 4-bit, B=1, temp=0.7, top_p=1.0:
+  bg_next: 14.139 ms  (essentially identical to default sampling 14.302 ms)
+```
+
+Setting `top_p=1.0` skips `apply_top_p` entirely (the mlx-lm sampler
+chain becomes a single `categorical_sampling(logits, 0.7) =
+mx.random.categorical(logits * (1/0.7))`). Yet bg_next stays at
+~14.14 ms.
+
+So the cost is **``mx.random.categorical`` itself** — the 150k-vocab
+Gumbel-trick categorical sample on Apple MTL. Not amortisable by
+anything we can do in our layer.
+
+### Decision
+
+- **Revert the greedy fast path** (not shipped in this PR).
+  ``scheduler.py`` returns to its pre-Phase-3 state; only the Phase 1
+  + 2 probes remain.
+- **Re-frame the "B=1 ~30% gap"**: at greedy we already have parity
+  with mlx-vlm (92.4 tok/s vs 91.6). The gap to mlx-vlm under
+  sampling is **unverified** — the original investigation cited 91.6
+  tok/s "greedy or top-p 0.95 — both ~same", but Phase 3 leaves us
+  doubting whether the top-p number was correct. mlx-vlm uses the same
+  mlx-lm sample_utils internally; there's no architectural reason it
+  would be faster at top-p 0.95 than we are.
+- **Follow-up to validate** (not this PR): bench mlx-vlm directly at
+  `temp=0.7, top_p=0.95` on the same model + hardware. If mlx-vlm is
+  also ~65 tok/s there, we have parity end-to-end and the "B=1 30%
+  gap" framing was an artefact of comparing rapid-mlx-default-sampling
+  vs mlx-vlm-greedy. If mlx-vlm is still 91 tok/s there, the gap is
+  inside their forward pass (model code differences) and we go look
+  at that.
+
+The probes are the durable artefact. They take seconds to re-run
+whenever a new perf hypothesis appears, and have already disproven
+two of them in one day.
 
