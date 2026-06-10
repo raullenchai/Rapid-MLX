@@ -163,8 +163,13 @@ def main() -> int:
     # elsewhere in the codebase. ``gemma4`` is the parser ID
     # (registered in ``gemma4_tool_parser.py``, referenced from
     # ``model_auto_config.py``, ``output_router.py``, etc.) — auto-
-    # rewriting it would corrupt the parser registry. These are handled
-    # by a hand-written pass below.
+    # rewriting it would corrupt the parser registry, so the sweep
+    # leaves every occurrence of ``gemma4`` untouched. The matching
+    # codename alias was removed from ``aliases.json`` by
+    # ``rename_aliases.py``; any remaining alias-context usage (e.g.
+    # ``rapid-mlx serve gemma4``) is a manual edit, NOT something this
+    # script will rewrite. Rerunning this script on a fresh checkout is
+    # therefore intentionally a no-op for ``gemma4``.
     HAND_HANDLED = {"gemma4"}
     rename_map = {o: n for o, n in rename_map.items() if o not in HAND_HANDLED}
 

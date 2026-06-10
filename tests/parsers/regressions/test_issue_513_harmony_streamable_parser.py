@@ -699,7 +699,13 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
         "my-not-gpt-oss-20b",
         "notgpt-oss-fake",
         "some-user/gpt-oss-remapped",
-        "evil-org/gpt-oss-20b-mxfp4-q8",
+        # ``evil-org/gpt-oss-20b`` is the canonical spoof case — a third-party
+        # org happens to use the same bare repo name as OpenAI's. A matcher
+        # that accepts any ``*/gpt-oss-20b`` would false-accept this. Kept
+        # verbatim (no alias suffix) so the spoof shape stays representative
+        # — adding the canonical alias suffix would only test a stricter
+        # variant that's already covered by the matcher.
+        "evil-org/gpt-oss-20b",
         "anonymous/gpt-oss",
     )
     for name in rejected_names:
@@ -713,15 +719,21 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
         )
 
     accepted_names = (
+        # OpenAI's canonical bare repo id — kept verbatim so the matcher
+        # is tested against the real upstream shape, not just the rapid-mlx
+        # alias form.
+        "openai/gpt-oss-20b",
+        # rapid-mlx alias post-rename — separately covered so an alias
+        # match doesn't shadow the bare repo match above.
         "openai/gpt-oss-20b-mxfp4-q8",
         "mlx-community/gpt-oss-20b-MXFP4-Q8",
         "unsloth/gpt-oss-20b-MLX-8bit",
         "gpt-oss-20b-mxfp4-q8",
         "gpt-oss",
-        "/models/gpt-oss-20b-mxfp4-q8",
-        "~/lmstudio-models/gpt-oss-20b-mxfp4-q8",
+        "/models/gpt-oss-20b",
+        "~/lmstudio-models/gpt-oss-20b",
         "./gpt-oss-20b-quantized",
-        "../models/gpt-oss-20b-mxfp4-q8",
+        "../models/gpt-oss-20b",
     )
     for name in accepted_names:
 

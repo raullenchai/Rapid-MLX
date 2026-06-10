@@ -153,9 +153,20 @@ def main() -> None:
         json.dump(rename_map, fp, indent=2, sort_keys=True)
         fp.write("\n")
 
-    renamed = sum(1 for o, n in rename_map.items() if n and o != n)
-    dropped = sum(1 for n in rename_map.values() if n is None)
-    kept = sum(1 for o, n in rename_map.items() if n and o == n)
+    # Counters from the input data's perspective so the three lines add
+    # back up to the input alias count. Each input alias is exactly one
+    # of: dropped (MANUAL says ``drop=True``), renamed (name changed),
+    # or kept (name unchanged because the old key already carried the
+    # canonical quant suffix). Counting drops via ``rename_map[o] is None``
+    # would always print 0 because dropped codename aliases store their
+    # redirect target — non-None — in the rename map.
+    def _is_drop(old: str) -> bool:
+        spec = MANUAL.get(old)
+        return isinstance(spec, dict) and bool(spec.get("drop"))
+
+    dropped = sum(1 for old in data if _is_drop(old))
+    renamed = sum(1 for old in data if not _is_drop(old) and rename_map[old] != old)
+    kept = sum(1 for old in data if not _is_drop(old) and rename_map[old] == old)
     print(f"  renamed: {renamed}")
     print(f"  dropped: {dropped}")
     print(f"  kept (already explicit): {kept}")
