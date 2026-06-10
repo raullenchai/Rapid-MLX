@@ -1,143 +1,526 @@
-"""Diffusion lane — discrete text-diffusion inference path.
+"""Diffusion lane — discrete text-diffusion inference engine.
 
-This module is a **skeleton placeholder** for the DiffusionGemma
-integration. It is intentionally not wired into any active code path:
-no alias in ``aliases.json`` currently sets ``modality="text-diffusion"``,
-so ``get_diffusion_runner`` is never reached at runtime. The skeleton
-lets us land the modality field + dispatch shape in one PR (#TBD)
-while the real implementation waits on:
+Wraps mlx-vlm 0.6.3's ``stream_diffusion_generate`` so DiffusionGemma
+(and any future block-diffusion text model in the same family) can ride
+the same ``BaseEngine`` contract as ``BatchedEngine`` does for AR LLMs.
 
-  1. The active environment's ``mlx-vlm`` being upgraded to **v0.6.3 or
-     later** — that release includes Blaizzy/mlx-vlm#1347 (Gemma 4
-     DLM model files) and #1348 (DiffusionGemma long-context prefill
-     fix). Confirmed import-OK as of 2026-06-10.
-  2. ``pyproject.toml`` bumping the ``mlx-vlm`` dependency floor to
-     ``>=0.6.3`` so a fresh ``pip install rapid-mlx`` doesn't land on a
-     pre-DLM build and surface a confusing import error at request time.
-
-Once the pyproject pin lands, fill in the bodies of ``load_runner``
-and ``DiffusionRunner.generate`` to delegate to mlx-vlm's
-block-streaming denoising loop (see ``mlx_vlm.server.generation``
-upstream) and the SSE adapter in ``routes/chat.py`` will already have
-the dispatch hook in place.
-
-Why this lane exists at all
----------------------------
-DiffusionGemma denoises a fixed-size canvas (default 256 tokens, MoE
-3.8B-active) for K steps and emits the whole block at once, then
-slides the window. This is incompatible with the auto-regressive
-``Scheduler.step()`` loop in three ways:
+Why a separate engine — not a path inside ``BatchedEngine``
+-----------------------------------------------------------
+DiffusionGemma denoises a fixed-size canvas (default 256 tokens) for K
+steps and emits the whole block at once, then slides the window. This
+is incompatible with the auto-regressive scheduler in three ways:
 
   * No per-token logits stream — emission is block-granular.
-  * No KV cache mutation per token — the canvas is overwritten in place.
-  * Spec-decode + DFlash are silently meaningless (no draft tokens
-    to verify when the whole block lands at once).
+  * No KV cache mutation per token — the canvas is overwritten in
+    place.
+  * Spec-decode + DFlash are silently meaningless (no draft tokens to
+    verify when the whole block lands at once).
 
-So instead of trying to shoehorn the diffusion path into ``Scheduler``,
-we route at the ``modality`` boundary. The AR lane stays exactly as it
-is today; this lane owns its own loop + its own SSE adapter.
+So we route at the ``modality`` boundary in ``server.load_model``: a
+``modality="text-diffusion"`` alias instantiates ``DiffusionEngine``
+here instead of ``BatchedEngine``. Everything downstream of the
+``_engine`` slot in ``server.py`` is blind to the difference because
+``DiffusionEngine`` implements the same ``BaseEngine`` interface.
 
-Status: 2026-06-10 — skeleton landed, real implementation pending.
+Dependency
+----------
+mlx-vlm >= 0.6.3, which contains Blaizzy/mlx-vlm#1347 (Gemma 4 DLM
+model files) and #1348 (long-context prefill fix). Verified locally
+2026-06-10. The pyproject pin floor is bumped to ``>=0.6.3`` so a
+fresh ``pip install rapid-mlx`` lands a build that has the
+``mlx_vlm.models.diffusion_gemma`` package on disk.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import queue
+import threading
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
+
+from ..engine.base import BaseEngine, GenerationOutput
 
 logger = logging.getLogger(__name__)
 
 
 # Bumped when the wire format we expose to ``routes/chat.py`` changes
-# (e.g. block-vs-token deltas, finish_reason semantics). Keeps the
-# adapter contract explicit so a future mlx-vlm version bump that
-# changes the upstream generator surface doesn't silently reshape our
-# SSE output.
-DIFFUSION_LANE_VERSION = "0.0-skeleton"
+# (e.g. block-vs-token deltas, finish_reason semantics).
+DIFFUSION_LANE_VERSION = "0.1-wired"
+
+# Sentinel pushed onto the streaming queue to signal end of generation.
+# Plain string to keep the queue homogeneous-ish; the consumer checks
+# ``is`` identity, so the value is irrelevant.
+_STREAM_DONE = object()
 
 
 @dataclass(frozen=True)
 class DiffusionGenerationConfig:
     """Sampling / decoding knobs for the diffusion lane.
 
-    Mirrors the subset of mlx-vlm's diffusion generator parameters we
-    intend to surface through ``/v1/chat/completions``. The real
-    implementation will translate from ``ChatCompletionRequest`` →
-    this dataclass at the dispatch boundary (``routes/chat.py``) so
-    the diffusion runner never sees the OpenAI schema directly.
+    Holds the subset of mlx-vlm's diffusion-generator parameters that
+    we surface through ``/v1/chat/completions``. The route layer
+    translates from the OpenAI schema → this dataclass at the dispatch
+    boundary so the engine never sees ``ChatCompletionRequest``
+    directly.
     """
 
-    # Number of denoising steps per block. Lower = faster but lossier;
-    # mlx-vlm default is 16. Surface to the API as ``max_tokens`` /
-    # ``n`` analog once the real loop is wired.
-    diffusion_steps: int = 16
-    # Block size (tokens) — the canvas the denoiser operates on.
-    # DiffusionGemma trains on 256; smaller values are valid but waste
-    # the trained denoiser's capacity. Surfaced to the API only via a
-    # ``stream`` flag in the request extras dict.
-    block_tokens: int = 256
+    # Per-block denoising steps. ``None`` → use the model's own
+    # generation_config default (mlx-vlm: 48 for DiffusionGemma).
+    diffusion_steps: int | None = None
     # Temperature applied at the per-token argmax inside the denoiser.
-    # 0.0 means greedy; matches the AR lane's convention.
+    # 0.0 = greedy; matches the AR lane's convention.
     temperature: float = 0.0
+    # Sampler family. Currently mlx-vlm 0.6.3 only ships
+    # ``entropy-bound``; ``confidence-threshold`` exists in code but
+    # the only canvas_length-driven config DiffusionGemma uses points
+    # at the entropy-bound sampler. Surface the knob anyway so callers
+    # can switch when mlx-vlm extends it.
+    diffusion_sampler: str = "entropy-bound"
 
 
-class DiffusionRunner:
-    """Wraps mlx-vlm's discrete-text-diffusion generator.
+class DiffusionEngine(BaseEngine):
+    """``BaseEngine`` adapter over mlx-vlm's diffusion-text generator.
 
-    NOT YET IMPLEMENTED. Holds the contract surface so callers
-    (``routes/chat.py``, ``service/text.py``) can be written against
-    a stable shape while the body waits on the mlx-vlm dependency.
+    Single-batch only — mlx-vlm's diffusion code path raises on
+    ``input_ids.shape[0] > 1``. The route layer rejects ``n > 1`` and
+    structured-output flags before the engine sees them.
+
+    Threading model: ``stream_diffusion_generate`` is a synchronous
+    generator that occupies the GPU for a non-trivial slice (block of
+    256 tokens × K denoising steps). We push it onto a worker thread
+    and drain into an ``asyncio.Queue`` so the event loop stays
+    responsive. One thread per active request — DiffusionGemma is
+    batch-1 only, so concurrent requests sit in admission queue at
+    the route layer, not here.
     """
 
-    def __init__(self, model: object, tokenizer: object, hf_path: str) -> None:
-        self._model = model
-        self._tokenizer = tokenizer
-        self._hf_path = hf_path
+    def __init__(self, model_name: str, max_tokens: int = 4096) -> None:
+        self._model_name = model_name
+        self._max_tokens = max_tokens
+        self._model: Any = None
+        self._processor: Any = None
+        self._loaded = False
+        # Per-engine lock — DiffusionGemma is single-batch only, so we
+        # serialize the generator at the engine level rather than rely
+        # on the route admission queue. Two concurrent
+        # ``stream_diffusion_generate`` calls against the same model
+        # corrupt each other's canvas state.
+        self._generation_lock = threading.Lock()
 
-    def generate(
+    # ------------------------------------------------------------------
+    # BaseEngine — required properties
+    # ------------------------------------------------------------------
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @property
+    def is_mllm(self) -> bool:
+        # DiffusionGemma technically inherits the Gemma 4 multimodal
+        # processor, but v0 of this engine routes text-only — vision
+        # inputs raise at chat() time. Reporting ``False`` keeps the
+        # route's text-only paths (cloud routing, build_prompt) wired.
+        return False
+
+    @property
+    def tokenizer(self) -> Any:
+        self._ensure_loaded()
+        return self._processor.tokenizer
+
+    # ------------------------------------------------------------------
+    # BaseEngine — lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        await asyncio.to_thread(self._load_blocking)
+
+    async def stop(self) -> None:
+        # mlx-vlm loads weights into mx.array buffers backed by the
+        # MTL allocator. Clearing references is enough for the next
+        # serve cycle to repopulate — there is no explicit ``unload``
+        # in mlx-vlm 0.6.3.
+        self._model = None
+        self._processor = None
+        self._loaded = False
+
+    def _ensure_loaded(self) -> None:
+        if not self._loaded:
+            raise RuntimeError("DiffusionEngine not loaded — call start() first")
+
+    def _load_blocking(self) -> None:
+        if self._loaded:
+            return
+        # Import inside the load path so a stale mlx-vlm (< 0.6.3)
+        # surfaces a clean error at server start rather than at module
+        # import — the error message can then name the alias and the
+        # remediation, which a generic ImportError can't.
+        try:
+            from mlx_vlm.generate.diffusion import diffusion_generation_family
+            from mlx_vlm.utils import load
+        except ImportError as e:
+            raise RuntimeError(
+                f"DiffusionEngine requires mlx-vlm >= 0.6.3 with the "
+                f"diffusion_gemma package. Install or upgrade: "
+                f"`pip install -U 'mlx-vlm>=0.6.3'`. Underlying error: {e}"
+            ) from e
+        logger.info(f"Loading DiffusionEngine model: {self._model_name}")
+        self._model, self._processor = load(self._model_name)
+        family = diffusion_generation_family(self._model)
+        if family != "block":
+            raise RuntimeError(
+                f"{self._model_name!r} is not a block-diffusion model "
+                f"(diffusion_generation_family returned {family!r}). "
+                "DiffusionEngine only supports DiffusionGemma-family "
+                "block-canvas checkpoints; use BatchedEngine for AR "
+                "models or open an issue for masked-diffusion support."
+            )
+        self._loaded = True
+
+    # ------------------------------------------------------------------
+    # BaseEngine — prompt / token helpers used by the route layer
+    # ------------------------------------------------------------------
+
+    def build_prompt(
         self,
-        prompt_ids: list[int],
-        config: DiffusionGenerationConfig,
-    ) -> Any:
-        """Block-stream denoised text.
-
-        Real implementation will yield ``(block_text, is_final)`` tuples
-        so the chat route can wrap each into an SSE ``delta.content``
-        event. The non-streaming branch will fold blocks into a single
-        completion string.
-
-        Until the mlx-vlm dependency is released, calling this raises
-        explicitly so a misconfigured alias surfaces at request time
-        with a clear remediation hint rather than a confusing
-        AttributeError deep in the engine loop.
-        """
-        raise NotImplementedError(
-            "DiffusionRunner.generate is not implemented yet — this lane "
-            "is gated on mlx-vlm >= 0.6.3 containing PRs Blaizzy/mlx-vlm"
-            "#1347 + #1348. No alias should currently be routing here."
+        messages: list[dict[str, Any]],
+        tools: list[dict] | None = None,
+        enable_thinking: bool | None = None,
+    ) -> str:
+        self._ensure_loaded()
+        if tools:
+            # Tool calls aren't part of DiffusionGemma's surface — the
+            # generator emits a free-form denoised canvas with no
+            # function-call grammar. Reject early with a clear message
+            # rather than silently dropping ``tools`` and confusing the
+            # caller.
+            raise RuntimeError(
+                "DiffusionEngine does not support tool calls. Use an "
+                "AR alias (e.g. qwen3.5-27b) for function-calling "
+                "workloads."
+            )
+        # ``apply_chat_template`` returns either a string or a list of
+        # token IDs depending on tokenize=. We want the rendered text
+        # for build_prompt's contract; the tokenization happens inside
+        # stream_chat right before we hand off to mlx-vlm.
+        return self._processor.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
         )
 
+    def estimate_new_tokens(self, prompt: str) -> tuple[int, int]:
+        self._ensure_loaded()
+        ids = self._processor.tokenizer.encode(prompt)
+        n = len(ids)
+        return (n, n)
 
-def load_runner(hf_path: str) -> DiffusionRunner:
-    """Construct a ``DiffusionRunner`` for the given HF path.
+    # ------------------------------------------------------------------
+    # BaseEngine — chat / generate
+    # ------------------------------------------------------------------
 
-    Skeleton: refuses to load until the mlx-vlm dependency contains
-    the upstream diffusion-gemma PRs. The dispatch tree in
-    ``routes/chat.py`` will call this only for aliases with
-    ``modality="text-diffusion"`` — and no such alias exists today,
-    so this is dead code until the unblock arrives.
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        tools: list[dict] | None = None,
+        images: list[str] | None = None,
+        videos: list[str] | None = None,
+        **kwargs,
+    ) -> GenerationOutput:
+        # Buffer the stream into one output. The diffusion lane has no
+        # cheaper non-stream path inside mlx-vlm — the same generator
+        # underlies both surfaces.
+        text_parts: list[str] = []
+        last: GenerationOutput | None = None
+        async for chunk in self.stream_chat(
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            tools=tools,
+            images=images,
+            videos=videos,
+            **kwargs,
+        ):
+            text_parts.append(chunk.new_text)
+            last = chunk
+        if last is None:
+            return GenerationOutput(text="", finish_reason="stop")
+        return GenerationOutput(
+            text="".join(text_parts),
+            tokens=last.tokens,
+            prompt_tokens=last.prompt_tokens,
+            completion_tokens=last.completion_tokens,
+            finish_reason=last.finish_reason or "stop",
+            finished=True,
+        )
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,  # noqa: ARG002 — diffusion lane ignores it
+        tools: list[dict] | None = None,
+        images: list[str] | None = None,
+        videos: list[str] | None = None,
+        **kwargs,
+    ) -> AsyncIterator[GenerationOutput]:
+        self._ensure_loaded()
+        if tools:
+            raise RuntimeError("DiffusionEngine does not support tool calls.")
+        if images or videos:
+            raise RuntimeError(
+                "DiffusionEngine v0 is text-only. Vision inputs "
+                "(images/videos) will be wired in a follow-up; for now "
+                "drop them from the request."
+            )
+        cfg = DiffusionGenerationConfig(
+            diffusion_steps=kwargs.get("diffusion_steps"),
+            temperature=temperature,
+            diffusion_sampler=kwargs.get("diffusion_sampler", "entropy-bound"),
+        )
+
+        prompt = self.build_prompt(messages)
+        loop = asyncio.get_running_loop()
+        # Asyncio queue is owned by the loop; the worker thread pushes
+        # via ``loop.call_soon_threadsafe`` so we don't cross thread
+        # boundaries directly on the asyncio.Queue.
+        q: asyncio.Queue[Any] = asyncio.Queue()
+
+        thread_q: queue.Queue[Any] = queue.Queue()
+
+        def worker() -> None:
+            try:
+                with self._generation_lock:
+                    self._run_generator(prompt, max_tokens, cfg, thread_q)
+            except BaseException as exc:  # noqa: BLE001 — surface to caller
+                thread_q.put(exc)
+            finally:
+                thread_q.put(_STREAM_DONE)
+
+        def pump() -> None:
+            # Drain the synchronous queue.Queue into the asyncio.Queue
+            # on a second thread; this lets the worker push items
+            # without knowing about asyncio. ``call_soon_threadsafe``
+            # is the supported asyncio→thread bridge.
+            while True:
+                item = thread_q.get()
+                loop.call_soon_threadsafe(q.put_nowait, item)
+                if item is _STREAM_DONE:
+                    return
+
+        worker_thread = threading.Thread(
+            target=worker,
+            name="rapid-mlx-diffusion-worker",
+            daemon=True,
+        )
+        pump_thread = threading.Thread(
+            target=pump,
+            name="rapid-mlx-diffusion-pump",
+            daemon=True,
+        )
+        worker_thread.start()
+        pump_thread.start()
+        try:
+            while True:
+                item = await q.get()
+                if item is _STREAM_DONE:
+                    return
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            # Wait for the worker to drain so a request abort doesn't
+            # leave the model state mid-block on the GPU for the next
+            # request. The worker holds the generation lock, so the
+            # next request would block on it anyway — but joining
+            # makes the timing predictable.
+            worker_thread.join(timeout=30.0)
+            pump_thread.join(timeout=1.0)
+
+    async def generate(
+        self,
+        prompt: str,
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002 — block diffusion ignores
+        **kwargs,
+    ) -> GenerationOutput:
+        return await self.chat(
+            [{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            **kwargs,
+        )
+
+    async def stream_generate(
+        self,
+        prompt: str,
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,  # noqa: ARG002
+        stop: list[str] | None = None,  # noqa: ARG002
+        **kwargs,
+    ) -> AsyncIterator[GenerationOutput]:
+        async for chunk in self.stream_chat(
+            [{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            **kwargs,
+        ):
+            yield chunk
+
+    # ------------------------------------------------------------------
+    # Internal — sync generator pump
+    # ------------------------------------------------------------------
+
+    def _run_generator(
+        self,
+        prompt: str,
+        max_tokens: int,
+        cfg: DiffusionGenerationConfig,
+        out_q: queue.Queue,
+    ) -> None:
+        """Run mlx-vlm's diffusion generator on the current thread and
+        push collapsed-per-block ``GenerationOutput`` instances onto
+        ``out_q``. Mirrors mlx-vlm's own ``_diffusion_block_chunks``
+        helper in ``server/generation.py:750-784`` — one SSE-friendly
+        chunk per finished block.
+        """
+        import mlx.core as mx
+        from mlx_vlm.generate.common import generation_stream, wired_limit
+        from mlx_vlm.generate.diffusion import stream_diffusion_generate
+
+        tokenizer = self._processor.tokenizer
+        eos_id = getattr(self._model.config, "eos_token_id", None)
+        if eos_id is not None and hasattr(tokenizer, "stopping_criteria"):
+            tokenizer.stopping_criteria.reset(eos_id)
+
+        # mlx-vlm expects ``input_ids`` as an mx.array of shape [1, N].
+        ids = tokenizer.encode(prompt)
+        input_ids = mx.array(ids)[None]
+
+        skip_ids: set[int] = set()
+        special = getattr(tokenizer, "all_special_ids", None) or []
+        for sid in special:
+            skip_ids.add(int(sid))
+
+        kwargs: dict[str, Any] = {
+            "max_tokens": max_tokens,
+            "skip_special_token_ids": skip_ids,
+            "temperature": float(cfg.temperature),
+            "diffusion_sampler": cfg.diffusion_sampler,
+        }
+        if cfg.diffusion_steps is not None:
+            kwargs["max_denoising_steps"] = int(cfg.diffusion_steps)
+
+        block_parts: list[str] = []
+        last_prompt_tokens = 0
+        last_completion_tokens = 0
+        last_token: int = 0
+
+        with wired_limit(self._model, [generation_stream]):
+            for result in stream_diffusion_generate(
+                self._model,
+                self._processor,
+                tokenizer,
+                input_ids,
+                None,  # pixel_values — text-only path
+                None,  # attention_mask — auto from input_ids
+                **kwargs,
+            ):
+                if getattr(result, "is_draft", False):
+                    # Mid-canvas denoising preview; ignore for SSE.
+                    continue
+
+                if getattr(result, "prompt_tokens", 0):
+                    last_prompt_tokens = result.prompt_tokens
+                if getattr(result, "generation_tokens", 0):
+                    last_completion_tokens = result.generation_tokens
+                last_token = int(getattr(result, "token", last_token) or last_token)
+
+                text_piece = result.text or ""
+                if text_piece:
+                    block_parts.append(text_piece)
+
+                block_complete = bool(
+                    getattr(result, "diffusion_block_complete", False)
+                )
+                finish_reason = getattr(result, "finish_reason", None)
+
+                if block_complete or finish_reason:
+                    joined = "".join(block_parts)
+                    block_parts.clear()
+                    if joined or finish_reason:
+                        out_q.put(
+                            GenerationOutput(
+                                text="",
+                                new_text=joined,
+                                tokens=[last_token],
+                                prompt_tokens=last_prompt_tokens,
+                                completion_tokens=last_completion_tokens,
+                                finish_reason=(
+                                    finish_reason if finish_reason else None
+                                ),
+                                finished=bool(finish_reason),
+                                channel="content",
+                            )
+                        )
+                    if finish_reason:
+                        return
+
+        # Generator exited without an explicit finish_reason (rare —
+        # treat as a hard stop). Flush any trailing buffer.
+        if block_parts:
+            out_q.put(
+                GenerationOutput(
+                    text="",
+                    new_text="".join(block_parts),
+                    tokens=[last_token],
+                    prompt_tokens=last_prompt_tokens,
+                    completion_tokens=last_completion_tokens,
+                    finish_reason="stop",
+                    finished=True,
+                    channel="content",
+                )
+            )
+
+
+# ------------------------------------------------------------------
+# Backward-compat shim — PR #551 (skeleton) introduced ``DiffusionRunner``
+# and ``load_runner``. Keep them as thin aliases so the existing test
+# imports and any downstream draft branches keep working.
+# ------------------------------------------------------------------
+
+DiffusionRunner = DiffusionEngine
+"""Alias retained from the skeleton PR; new code should use
+``DiffusionEngine`` directly so the BaseEngine inheritance is
+explicit at the call site."""
+
+
+def load_runner(hf_path: str) -> DiffusionEngine:
+    """Construct and load a ``DiffusionEngine`` for ``hf_path``.
+
+    Synchronous — calls into mlx-vlm's blocking loader. Async callers
+    should ``await asyncio.to_thread(load_runner, hf_path)`` instead
+    of calling this directly from the event loop.
     """
-    raise NotImplementedError(
-        f"diffusion lane is gated on mlx-vlm >= 0.6.3 (hf_path={hf_path!r}). "
-        "Verify with: "
-        '`python -c "from mlx_vlm.models.diffusion_gemma.language import *"` '
-        "and then remove this guard."
-    )
+    engine = DiffusionEngine(model_name=hf_path)
+    engine._load_blocking()  # noqa: SLF001 — module-internal helper
+    return engine
 
 
 __all__ = [
     "DIFFUSION_LANE_VERSION",
+    "DiffusionEngine",
     "DiffusionGenerationConfig",
     "DiffusionRunner",
     "load_runner",

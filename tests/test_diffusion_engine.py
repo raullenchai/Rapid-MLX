@@ -1,0 +1,406 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Behaviour tests for ``DiffusionEngine`` — the BaseEngine wrapper
+over mlx-vlm 0.6.3's diffusion generator.
+
+We mock mlx-vlm at the import surface (``mlx_vlm.utils.load``,
+``mlx_vlm.generate.diffusion.stream_diffusion_generate``, etc.) so the
+tests run without weights and without touching the GPU. The mock
+shape mirrors the actual upstream contract documented in
+``vllm_mlx/runtime/diffusion_lane.py`` so any drift between the
+expected and real surface is loud at unit-test time.
+"""
+
+from __future__ import annotations
+
+import sys
+import types
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Any
+
+import pytest
+
+# ----------------------------------------------------------------------
+# Helpers — minimal mlx-vlm surface mock
+# ----------------------------------------------------------------------
+
+
+@dataclass
+class FakeGenerationResult:
+    """Mirror of mlx_vlm.generate.common.GenerationResult — only the
+    fields DiffusionEngine reads. Keeps the test free of any actual
+    mlx-vlm import."""
+
+    text: str = ""
+    token: int = 0
+    prompt_tokens: int = 0
+    generation_tokens: int = 0
+    finish_reason: str | None = None
+    is_draft: bool = False
+    diffusion_block_complete: bool = False
+
+
+class FakeTokenizer:
+    """The bits of mlx-vlm's TokenizerWrapper that DiffusionEngine
+    touches: ``apply_chat_template``, ``encode``, ``all_special_ids``,
+    plus a no-op ``stopping_criteria.reset``."""
+
+    all_special_ids = [0, 1, 2]
+
+    class _StoppingCriteria:
+        def reset(self, *_args: Any) -> None:
+            pass
+
+    stopping_criteria = _StoppingCriteria()
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, Any]],
+        tokenize: bool = False,
+        add_generation_prompt: bool = True,
+    ) -> str:
+        # Concatenate the user turns; good enough for a deterministic
+        # prompt fingerprint inside the test.
+        rendered = "\n".join(m.get("content", "") for m in messages)
+        if add_generation_prompt:
+            rendered += "\n<start_of_turn>model\n"
+        return rendered
+
+    def encode(self, text: str) -> list[int]:
+        # Map characters to incrementing IDs; deterministic and
+        # length-correlated so estimate_new_tokens can be exercised.
+        return [ord(c) % 256 for c in text]
+
+
+class FakeProcessor:
+    def __init__(self) -> None:
+        self.tokenizer = FakeTokenizer()
+
+
+class FakeModelConfig:
+    eos_token_id = 7
+    canvas_length = 256
+
+
+class FakeModel:
+    config = FakeModelConfig()
+
+
+def _install_mlx_vlm_mock(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    family: str = "block",
+    stream_yields: list[FakeGenerationResult] | None = None,
+) -> None:
+    """Wire stub modules into ``sys.modules`` so the real mlx-vlm
+    imports inside ``diffusion_lane.py`` resolve to our fakes. We
+    install everything DiffusionEngine touches; anything else will
+    raise AttributeError at import time, which is the loud-failure
+    behaviour we want."""
+
+    # The real ``mlx`` package is a hard dependency and already
+    # installed; we use ``mx.array`` from it directly. Only mock the
+    # mlx-vlm-side modules so this test can run without the
+    # 14 GB DiffusionGemma checkpoint on disk.
+
+    # mlx_vlm.utils.load
+    mlx_vlm_pkg = sys.modules.get("mlx_vlm") or types.ModuleType("mlx_vlm")
+    mlx_vlm_utils = types.ModuleType("mlx_vlm.utils")
+
+    def _load(hf_path: str) -> tuple[FakeModel, FakeProcessor]:
+        return FakeModel(), FakeProcessor()
+
+    mlx_vlm_utils.load = _load  # type: ignore[attr-defined]
+
+    # mlx_vlm.generate.diffusion
+    mlx_vlm_generate = types.ModuleType("mlx_vlm.generate")
+    mlx_vlm_diffusion = types.ModuleType("mlx_vlm.generate.diffusion")
+
+    def _family(_model: Any) -> str:
+        return family
+
+    captured_calls: dict[str, Any] = {}
+
+    def _stream(
+        model: Any,
+        processor: Any,
+        tokenizer: Any,
+        input_ids: Any,
+        pixel_values: Any,
+        attention_mask: Any,
+        **kwargs: Any,
+    ) -> Iterator[FakeGenerationResult]:
+        captured_calls["last"] = {
+            "input_ids": input_ids,
+            "kwargs": kwargs,
+            "pixel_values": pixel_values,
+            "attention_mask": attention_mask,
+        }
+        yield from (stream_yields or [])
+
+    mlx_vlm_diffusion.diffusion_generation_family = _family  # type: ignore[attr-defined]
+    mlx_vlm_diffusion.stream_diffusion_generate = _stream  # type: ignore[attr-defined]
+    mlx_vlm_diffusion.__captured__ = captured_calls  # type: ignore[attr-defined]
+
+    # mlx_vlm.generate.common
+    mlx_vlm_common = types.ModuleType("mlx_vlm.generate.common")
+
+    class _WiredLimit:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        def __enter__(self) -> _WiredLimit:
+            return self
+
+        def __exit__(self, *_a: Any) -> None:
+            pass
+
+    mlx_vlm_common.wired_limit = _WiredLimit  # type: ignore[attr-defined]
+    mlx_vlm_common.generation_stream = object()  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", mlx_vlm_utils)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", mlx_vlm_generate)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.diffusion", mlx_vlm_diffusion)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.common", mlx_vlm_common)
+
+
+# ----------------------------------------------------------------------
+# Tests
+# ----------------------------------------------------------------------
+
+
+class TestLoadAndIntrospection:
+    def test_load_succeeds_for_block_family(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        assert engine.model_name == "x/y"
+        assert engine.is_mllm is False
+        assert engine.tokenizer is not None
+
+    def test_load_rejects_non_block_family(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_mlx_vlm_mock(monkeypatch, family="masked")
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        with pytest.raises(RuntimeError, match="not a block-diffusion model"):
+            engine._load_blocking()
+
+
+class TestPromptAndTokenAccounting:
+    def test_build_prompt_renders_via_chat_template(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        rendered = engine.build_prompt([{"role": "user", "content": "Hello there"}])
+        assert "Hello there" in rendered
+        assert rendered.endswith("model\n")
+
+    def test_build_prompt_rejects_tools(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        with pytest.raises(RuntimeError, match="does not support tool calls"):
+            engine.build_prompt(
+                [{"role": "user", "content": "hi"}], tools=[{"name": "foo"}]
+            )
+
+    def test_estimate_new_tokens_returns_conservative_pair(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        total, new = engine.estimate_new_tokens("hello")
+        assert total == new == 5
+
+
+class TestStreamChatBlockCollapse:
+    @pytest.mark.asyncio
+    async def test_yields_one_chunk_per_block_complete(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Two finished blocks then a finish_reason — DiffusionEngine
+        # should emit three GenerationOutput chunks (block1, block2,
+        # terminal flush).
+        yields = [
+            # canvas 0: token yields → block complete
+            FakeGenerationResult(text="Once "),
+            FakeGenerationResult(text="upon "),
+            FakeGenerationResult(text="a time.", diffusion_block_complete=True),
+            # canvas 1: token yields → block complete
+            FakeGenerationResult(text="There "),
+            FakeGenerationResult(text="was a", diffusion_block_complete=True),
+            # final stop marker
+            FakeGenerationResult(
+                text=" cat.",
+                finish_reason="stop",
+                prompt_tokens=4,
+                generation_tokens=7,
+            ),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "tell story"}],
+            max_tokens=64,
+        ):
+            collected.append(out)
+
+        assert [c.new_text for c in collected] == [
+            "Once upon a time.",
+            "There was a",
+            " cat.",
+        ]
+        # Only the final chunk carries finish_reason; the route uses
+        # this to emit the terminal SSE event.
+        assert collected[-1].finish_reason == "stop"
+        assert collected[-1].finished is True
+        assert collected[0].finish_reason is None
+        # Token accounting flows through on the terminal chunk.
+        assert collected[-1].prompt_tokens == 4
+        assert collected[-1].completion_tokens == 7
+
+    @pytest.mark.asyncio
+    async def test_drafts_are_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Drafts (mid-canvas previews) must not reach the SSE stream
+        # — they would flicker through the chat UI as in-progress
+        # garbage. Only block_complete and finish_reason emit.
+        yields = [
+            FakeGenerationResult(text="[Mask][Mask]", is_draft=True),
+            FakeGenerationResult(text="[Mask]Hi", is_draft=True),
+            FakeGenerationResult(text="Hi there", diffusion_block_complete=True),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "hi"}], max_tokens=16
+        ):
+            collected.append(out)
+        # Block 1 only; terminal finish carries no text payload but
+        # still emits because the finish_reason needs to land.
+        assert [c.new_text for c in collected] == ["Hi there", ""]
+        assert collected[-1].finish_reason == "stop"
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_rejects_tools(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        with pytest.raises(RuntimeError, match="does not support tool calls"):
+            async for _ in engine.stream_chat(
+                [{"role": "user", "content": "hi"}], tools=[{"name": "f"}]
+            ):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_rejects_vision(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        with pytest.raises(RuntimeError, match="text-only"):
+            async for _ in engine.stream_chat(
+                [{"role": "user", "content": "hi"}],
+                images=["/tmp/x.png"],
+            ):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_chat_buffers_into_single_output(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        yields = [
+            FakeGenerationResult(text="part 1 ", diffusion_block_complete=True),
+            FakeGenerationResult(text="part 2", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        out = await engine.chat([{"role": "user", "content": "hi"}], max_tokens=32)
+        assert out.text == "part 1 part 2"
+        assert out.finish_reason == "stop"
+        assert out.finished is True
+
+    @pytest.mark.asyncio
+    async def test_kwargs_forwarded_to_mlx_vlm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The diffusion-specific knobs (diffusion_steps, sampler) must
+        # land in the stream_diffusion_generate call; without this
+        # pin a future refactor could silently drop them.
+        yields = [FakeGenerationResult(text="ok", finish_reason="stop")]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        async for _ in engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            max_tokens=128,
+            temperature=0.4,
+            diffusion_steps=24,
+            diffusion_sampler="entropy-bound",
+        ):
+            pass
+
+        captured = sys.modules["mlx_vlm.generate.diffusion"].__captured__["last"]  # type: ignore[attr-defined]
+        kwargs = captured["kwargs"]
+        assert kwargs["max_tokens"] == 128
+        assert kwargs["temperature"] == 0.4
+        assert kwargs["max_denoising_steps"] == 24
+        assert kwargs["diffusion_sampler"] == "entropy-bound"
+        # Special-token skip set is forwarded; the FakeTokenizer
+        # advertises three special IDs.
+        assert {0, 1, 2} == kwargs["skip_special_token_ids"]
+
+
+class TestAliasIntegration:
+    def test_diffusion_gemma_alias_resolves_to_text_diffusion_modality(
+        self,
+    ) -> None:
+        # End-to-end pin on the actual aliases.json entry — if a
+        # future edit drops the modality field, this test catches it
+        # before the server boot does.
+        from vllm_mlx.model_aliases import resolve_profile
+
+        profile = resolve_profile("diffusion-gemma-26b")
+        assert profile is not None
+        assert profile.modality == "text-diffusion"
+        assert profile.supports_spec_decode is False
+        assert profile.supports_dflash is False
+        assert profile.hf_path == "mlx-community/diffusiongemma-26B-A4B-it-4bit"

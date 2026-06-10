@@ -111,33 +111,47 @@ class TestNonTextLaneRejectsARGates:
             )
 
 
-class TestDiffusionLaneSkeleton:
+class TestDiffusionLaneWired:
     def test_module_importable(self) -> None:
-        # The whole point of the skeleton: it must import cleanly so
-        # alias loaders that branch on modality have a stable symbol
-        # to reach for. The bodies stay NotImplementedError until
-        # mlx-vlm >= 0.6.3 lands.
+        # The module exposes a working DiffusionEngine that subclasses
+        # BaseEngine. The skeleton aliases (DiffusionRunner /
+        # load_runner) remain as backward-compat shims so any external
+        # caller carried over from PR #551's draft surface still works.
         from vllm_mlx.runtime import diffusion_lane
 
-        assert diffusion_lane.DIFFUSION_LANE_VERSION == "0.0-skeleton"
+        assert diffusion_lane.DIFFUSION_LANE_VERSION == "0.1-wired"
+        assert hasattr(diffusion_lane, "DiffusionEngine")
         assert hasattr(diffusion_lane, "DiffusionRunner")
         assert hasattr(diffusion_lane, "load_runner")
 
-    def test_load_runner_raises_with_remediation_hint(self) -> None:
-        from vllm_mlx.runtime.diffusion_lane import load_runner
+    def test_engine_inherits_base_engine(self) -> None:
+        from vllm_mlx.engine.base import BaseEngine
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-        with pytest.raises(NotImplementedError, match="mlx-vlm >= 0.6.3"):
-            load_runner("mlx-community/diffusiongemma-26B-A4B-it-4bit")
+        assert issubclass(DiffusionEngine, BaseEngine)
 
-    def test_runner_generate_raises_until_wired(self) -> None:
-        from vllm_mlx.runtime.diffusion_lane import (
-            DiffusionGenerationConfig,
-            DiffusionRunner,
-        )
+    def test_engine_unloaded_method_calls_raise(self) -> None:
+        # Defensive: every public method that needs the loaded model
+        # must call _ensure_loaded() so a misconfigured server (the
+        # engine was instantiated but start() was never awaited)
+        # surfaces a clear error.
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-        runner = DiffusionRunner(model=object(), tokenizer=object(), hf_path="x/y")
-        with pytest.raises(NotImplementedError, match="mlx-vlm >= 0.6.3"):
-            runner.generate([1, 2, 3], DiffusionGenerationConfig())
+        engine = DiffusionEngine(model_name="mlx-community/whatever")
+        with pytest.raises(RuntimeError, match="not loaded"):
+            _ = engine.tokenizer
+        with pytest.raises(RuntimeError, match="not loaded"):
+            engine.build_prompt([{"role": "user", "content": "hi"}])
+        with pytest.raises(RuntimeError, match="not loaded"):
+            engine.estimate_new_tokens("hi")
+
+    def test_runner_alias_points_at_engine(self) -> None:
+        # PR #551 shipped a ``DiffusionRunner`` symbol; we kept it as
+        # an alias so the draft branch's tests still pass once it
+        # rebases on this work.
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine, DiffusionRunner
+
+        assert DiffusionRunner is DiffusionEngine
 
 
 class TestAliasProfileDataclassShape:

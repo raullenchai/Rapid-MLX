@@ -43,6 +43,7 @@ from vllm_mlx.tool_parsers import ToolParserManager
 ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
     {
         "hf_path",
+        "modality",
         "tool_call_parser",
         "reasoning_parser",
         "is_hybrid",

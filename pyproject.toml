@@ -80,7 +80,7 @@ dependencies = [
 # Required for any model with vision input. Text-only models work without this.
 # 0.5.0+ also unlocks DFlash speculative decoding (see [dflash] extras).
 vision = [
-    "mlx-vlm>=0.6.1",  # 0.6.1: gemma4_unified architecture (gemma-4-12b-4bit/12b-8bit aliases require it). 0.5.0 baseline: gemma4 multi-image + tool-parser fixes, TurboQuant race-condition fix, continuous-batching guard. Also unlocks DFlash spec-decode hooks (see [dflash] extras).
+    "mlx-vlm>=0.6.3",  # 0.6.3: DiffusionGemma (Gemma 4 DLM PR #1347 + long-context prefill PR #1348). 0.6.1 floor: gemma4_unified architecture. 0.5.0 baseline: gemma4 multi-image + tool-parser fixes, TurboQuant race-condition fix, continuous-batching guard. Also unlocks DFlash spec-decode hooks (see [dflash] extras).
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
@@ -91,7 +91,7 @@ vision = [
 # the vision extras do. Only enable if you serve a DFlash-eligible alias
 # (e.g. qwen3.5-27b-8bit) with --enable-dflash.
 dflash = [
-    "mlx-vlm>=0.6.1",
+    "mlx-vlm>=0.6.3",
 ]
 # Embedding endpoint
 embeddings = [
@@ -107,7 +107,7 @@ chat = [
 # pip install .[all] and editable installs.
 all = [
     # vision
-    "mlx-vlm>=0.6.1",
+    "mlx-vlm>=0.6.3",
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
