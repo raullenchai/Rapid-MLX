@@ -232,7 +232,7 @@ benches live in the dev-only `scripts/` directory (source checkout only). For
 a quick text-only sanity bench against a VLM, you can still run:
 
 ```bash
-rapid-mlx bench qwen3-vl-4b
+rapid-mlx bench qwen3-vl-4b-4bit
 ```
 
 ## MLLM Cache
@@ -307,7 +307,7 @@ For an interactive multimodal session, start a server and use any OpenAI-
 compatible web UI (Open WebUI, LibreChat, etc.) pointed at it:
 
 ```bash
-rapid-mlx serve qwen3-vl-4b --mllm --port 8000
+rapid-mlx serve qwen3-vl-4b-4bit --mllm --port 8000
 ```
 
 The shipped `rapid-mlx chat` REPL is text-only. The optional Gradio web UI

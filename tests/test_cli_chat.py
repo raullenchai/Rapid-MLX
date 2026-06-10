@@ -107,8 +107,8 @@ def test_chat_no_model_defaults_to_qwen35_4b():
     # signals the default plumbed through. The canonical alias is the one
     # we documented as the default; confirm via the round-trip name.
     assert (
-        args.model == "qwen3.5-4b"
-        or getattr(args, "_original_alias", None) == "qwen3.5-4b"
+        args.model == "qwen3.5-4b-4bit"
+        or getattr(args, "_original_alias", None) == "qwen3.5-4b-4bit"
     )
 
 
@@ -116,15 +116,15 @@ def test_chat_with_alias_overrides_default():
     """`rapid-mlx chat <alias>` uses the user-supplied alias, not the default."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "smollm3-3b"]),
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "smollm3-3b-4bit"]),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
     assert len(captured) == 1
     args = captured[0]
     assert (
-        args.model == "smollm3-3b"
-        or getattr(args, "_original_alias", None) == "smollm3-3b"
+        args.model == "smollm3-3b-4bit"
+        or getattr(args, "_original_alias", None) == "smollm3-3b-4bit"
     )
 
 
@@ -209,7 +209,7 @@ def test_chat_command_repl_multi_turn(monkeypatch, capsys):
         ns.temperature = 0.0
         ns.ready_timeout = 5
         ns.response_timeout = 5
-        ns.model = "qwen3.5-4b"
+        ns.model = "qwen3.5-4b-4bit"
 
         cli.chat_command(ns)
 
@@ -236,7 +236,7 @@ def test_chat_command_system_prompt_prepended(monkeypatch):
         ns.temperature = 0.0
         ns.ready_timeout = 5
         ns.response_timeout = 5
-        ns.model = "qwen3.5-4b"
+        ns.model = "qwen3.5-4b-4bit"
         cli.chat_command(ns)
     assert payloads[0]["messages"][0] == {"role": "system", "content": "be terse"}
     assert payloads[0]["messages"][1] == {"role": "user", "content": "q1"}
@@ -246,7 +246,7 @@ def test_chat_command_default_thinking_off_sends_enable_thinking_false(monkeypat
     """Chat REPL defaults to thinking OFF.
 
     Reasoning models like Qwen3.5 otherwise leak raw chain-of-thought into
-    the user-visible REPL output, and on the default qwen3.5-4b model
+    the user-visible REPL output, and on the default qwen3.5-4b-4bit model
     degenerate into infinite repetition until max-tokens — producing zero
     usable output for a brand-new user. Pinning the default here so a
     refactor doesn't silently restore the broken behavior shipped in 0.6.26.
@@ -264,7 +264,7 @@ def test_chat_command_default_thinking_off_sends_enable_thinking_false(monkeypat
         ns.temperature = 0.0
         ns.ready_timeout = 5
         ns.response_timeout = 5
-        ns.model = "qwen3.5-4b"
+        ns.model = "qwen3.5-4b-4bit"
         cli.chat_command(ns)
     assert payloads[0].get("enable_thinking") is False
     # The unsupported nested form must NOT be present.
@@ -288,7 +288,7 @@ def test_chat_command_explicit_think_omits_enable_thinking_field(monkeypatch):
         ns.temperature = 0.0
         ns.ready_timeout = 5
         ns.response_timeout = 5
-        ns.model = "qwen3.5-4b"
+        ns.model = "qwen3.5-4b-4bit"
         cli.chat_command(ns)
     assert "enable_thinking" not in payloads[0]
 
@@ -330,7 +330,7 @@ def test_chat_command_survives_connection_failure(monkeypatch, capsys):
     ns.temperature = 0.0
     ns.ready_timeout = 1
     ns.response_timeout = 2
-    ns.model = "qwen3.5-4b"
+    ns.model = "qwen3.5-4b-4bit"
     # Should not raise — REPL prints "Request failed" and continues to "exit".
     cli.chat_command(ns)
     captured = capsys.readouterr()
@@ -387,7 +387,7 @@ def test_chat_command_history_unchanged_on_http_error(monkeypatch):
         ns.temperature = 0.0
         ns.ready_timeout = 5
         ns.response_timeout = 5
-        ns.model = "qwen3.5-4b"
+        ns.model = "qwen3.5-4b-4bit"
         cli.chat_command(ns)
 
         _ErrHandler.do_POST = orig  # type: ignore[assignment]
@@ -412,7 +412,7 @@ def _ns_for_chat(port: int, **overrides) -> object:
     ns.temperature = 0.0
     ns.ready_timeout = 5
     ns.response_timeout = 5
-    ns.model = "qwen3.5-4b"
+    ns.model = "qwen3.5-4b-4bit"
     for k, v in overrides.items():
         setattr(ns, k, v)
     return ns
@@ -756,7 +756,7 @@ def test_chat_command_save_refuses_on_empty_conversation(monkeypatch, tmp_path, 
 
 
 def test_stream_chat_response_aborts_on_no_whitespace_repetition(monkeypatch):
-    """The new char-level guard must fire on the qwen3.5-4b regression
+    """The new char-level guard must fire on the qwen3.5-4b-4bit regression
     where the model emits ``BarleyBarleyBarley...`` with NO whitespace
     separator. The whitespace-token guard cannot catch this — a single
     chunk of 6000 chars splits to one token whose count is 1.
@@ -1105,7 +1105,7 @@ def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys)
         port = fake_port
         inputs = iter(["first turn", "/model bogus", "second turn", "exit"])
         monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
-        ns = _ns_for_chat(fake_port, model="qwen3.5-4b")
+        ns = _ns_for_chat(fake_port, model="qwen3.5-4b-4bit")
         ns.base_url = None
         ns.port = None
         cli.chat_command(ns)
@@ -1142,7 +1142,7 @@ def test_chat_command_slash_command_dispatch_uses_exact_match(
         inputs = iter(
             [
                 f"/savefoo {target}",
-                "/modelfoo qwen3.5-4b",
+                "/modelfoo qwen3.5-4b-4bit",
                 "exit",
             ]
         )
@@ -1221,12 +1221,12 @@ def test_stream_chat_response_repetition_truncates_at_cutoff_in_one_chunk(
 def test_chat_think_bumps_max_tokens_default_to_4096():
     """``--think`` with no explicit ``--max-tokens`` raises the default
     from 2048 to 4096 so reasoning + final answer fit a small-model
-    budget. Round-1 finding: ``chat qwen3.5-4b --think`` consumed the
+    budget. Round-1 finding: ``chat qwen3.5-4b-4bit --think`` consumed the
     full 2048 budget with reasoning alone and emitted an empty answer
     with ``finish_reason='length'``."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "qwen3.5-4b", "--think"]),
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "qwen3.5-4b-4bit", "--think"]),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
@@ -1392,7 +1392,7 @@ def test_chat_port_unbound_exits_with_friendly_error(capsys, monkeypatch):
     ns.temperature = 0.0
     ns.ready_timeout = 1
     ns.response_timeout = 1
-    ns.model = "qwen3.5-4b"
+    ns.model = "qwen3.5-4b-4bit"
     with pytest.raises(SystemExit) as exc:
         cli.chat_command(ns)
     assert exc.value.code == 1
@@ -1411,7 +1411,7 @@ def test_run_is_alias_for_chat(monkeypatch):
     same args as ``rapid-mlx chat <model>``."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "run", "qwen3.5-4b"]),
+        patch.object(sys, "argv", ["rapid-mlx", "run", "qwen3.5-4b-4bit"]),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
@@ -1432,7 +1432,7 @@ def test_run_alias_accepts_chat_flags():
         patch.object(
             sys,
             "argv",
-            ["rapid-mlx", "run", "qwen3.5-4b", "--think", "--max-tokens", "1024"],
+            ["rapid-mlx", "run", "qwen3.5-4b-4bit", "--think", "--max-tokens", "1024"],
         ),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
@@ -1534,7 +1534,9 @@ def test_serve_accepts_no_think_as_alias_for_no_thinking():
     ``no_thinking=True`` destination as ``serve --no-thinking``."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b", "--no-think"]),
+        patch.object(
+            sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--no-think"]
+        ),
         patch.object(cli, "serve_command", side_effect=captured.append),
     ):
         cli.main()
@@ -1944,7 +1946,7 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
     monkeypatch.setattr("subprocess.Popen", _FakePopen)
 
     log_path = tmp_path / "fake.log"
-    proc, base_url = cli._spawn_chat_server("qwen3.5-4b", str(log_path))
+    proc, base_url = cli._spawn_chat_server("qwen3.5-4b-4bit", str(log_path))
 
     assert captured["env"] is not None
     assert captured["env"].get("RAPID_MLX_CHAT_SPAWN") == "1"
@@ -2235,7 +2237,7 @@ def test_chat_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
     With ``allow_abbrev=False`` argparse must reject the ambiguous form
     instead of silently resolving it to whichever flag was added first."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "qwen3.5-4b", "--no-thi"]),
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "qwen3.5-4b-4bit", "--no-thi"]),
         pytest.raises(SystemExit),
     ):
         cli.main()
@@ -2247,7 +2249,9 @@ def test_serve_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
     """Same as the chat case — ``serve`` also got the hidden cross-alias
     and the same ambiguity must be reported, not silently resolved."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b", "--no-thi"]),
+        patch.object(
+            sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--no-thi"]
+        ),
         pytest.raises(SystemExit),
     ):
         cli.main()

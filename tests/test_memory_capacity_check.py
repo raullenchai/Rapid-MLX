@@ -62,7 +62,7 @@ def test_hard_warning_fires_on_24gb_mac_with_14gb_model_realistic_load(
     actually hit this gets the strongest message, not a soft hint."""
     _patch_size_bytes(monkeypatch, size_gb=14.0)
     with patch.dict("sys.modules", {"psutil": _fake_psutil(24.0, used_gb=6.0)}):
-        _check_memory_capacity("/local/path/to/gemma-4-26b")
+        _check_memory_capacity("/local/path/to/gemma-4-26b-4bit")
     out = capsys.readouterr().out
     assert "kernel panic" in out, (
         f"the very case that filed the issue must hit the hard tier: {out!r}"
@@ -77,7 +77,7 @@ def test_hard_warning_still_fires_at_fresh_boot_on_24gb_mac(monkeypatch, capsys)
     """
     _patch_size_bytes(monkeypatch, size_gb=14.0)
     with patch.dict("sys.modules", {"psutil": _fake_psutil(24.0, used_gb=0.0)}):
-        _check_memory_capacity("/local/path/to/gemma-4-26b")
+        _check_memory_capacity("/local/path/to/gemma-4-26b-4bit")
     out = capsys.readouterr().out
     assert "Memory pressure" in out, f"expected warning, got: {out!r}"
     # 0 + 21 = 21 / 24 = 87.5% → HARD tier
@@ -208,7 +208,7 @@ def test_warning_includes_actionable_recommendations(monkeypatch, capsys):
     Pins the actionability of the message."""
     _patch_size_bytes(monkeypatch, size_gb=14.0)
     with patch.dict("sys.modules", {"psutil": _fake_psutil(24.0, used_gb=0.0)}):
-        _check_memory_capacity("/local/path/to/gemma-4-26b")
+        _check_memory_capacity("/local/path/to/gemma-4-26b-4bit")
     out = capsys.readouterr().out
     assert "--gpu-memory-utilization" in out
 

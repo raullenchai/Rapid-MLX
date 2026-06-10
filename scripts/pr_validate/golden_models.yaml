@@ -127,7 +127,7 @@ families:
       # absent from this matrix when Bug A shipped, so no PR could have
       # caught the regression at the integration layer. Gemma 4 remains
       # excluded (see note below — model-side instruction-following
-      # weaknesses produce agent-test flake), but gpt-oss-20b
+      # weaknesses produce agent-test flake), but gpt-oss-20b-mxfp4-q8
       # (Harmony format) does NOT have those issues and gives us live
       # OutputRouter coverage for the second allowlist family.
       #
@@ -182,8 +182,8 @@ families:
 #     single fail (pydantic_ai single tool call) is a model-quality
 #     edge case (off-topic Java/Spring response). Not flaky enough
 #     to block merges, but adding here would gate every PR on it.
-# Both families remain available via ``rapid-mlx serve smollm3-3b``
-# and ``rapid-mlx serve granite4-tiny`` (auto-detected parsers).
+# Both families remain available via ``rapid-mlx serve smollm3-3b-4bit``
+# and ``rapid-mlx serve granite4-tiny-4bit`` (auto-detected parsers).
 
 # Per-model overrides: extra CLI args (e.g. parser overrides for
 # tool-calling tests). Keep small — most models don't need this.
@@ -211,7 +211,7 @@ overrides:
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
   # Harmony parser handles both <|channel|>commentary tool-call blocks and
   # the final-channel content for gpt-oss-20b. The auto-detect registry
-  # picks it via gpt-oss-20b alias profile, but the explicit override
+  # picks it via gpt-oss-20b-mxfp4-q8 alias profile, but the explicit override
   # documents intent at the validation surface (mirrors the qwen3.5/3.6
   # convention above).
   "mlx-community/gpt-oss-20b-MXFP4-Q8":

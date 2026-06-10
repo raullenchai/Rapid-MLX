@@ -38,8 +38,8 @@ _aliases: dict[str, "AliasProfile"] | None = None
 # Reverse index: hf_path → first alias that references it. Built once
 # alongside ``_aliases`` so reverse lookups in ``resolve_profile`` are
 # O(1) instead of scanning all 50+ profiles on every cache-miss.
-# When two aliases share the same hf_path (e.g. ``nemotron-30b`` and
-# ``nemotron-nano`` both pointing at the same MLX repo), the first one
+# When two aliases share the same hf_path (e.g. ``nemotron-30b-4bit`` and
+# ``nemotron-30b-4bit`` both pointing at the same MLX repo), the first one
 # in JSON order wins. The contract is "any profile valid for this
 # path" rather than "the canonical alias", so this is fine.
 _hf_to_alias: dict[str, str] | None = None
@@ -306,7 +306,7 @@ def resolve_profile(name: str) -> AliasProfile | None:
     """Return the profile for an alias name or full HF path.
 
     Two lookups in order:
-    1. Direct alias name match (``qwen3.5-4b``).
+    1. Direct alias name match (``qwen3.5-4b-4bit``).
     2. Reverse HF-path match (``mlx-community/Qwen3.5-4B-MLX-4bit``)
        via the pre-built ``_hf_to_alias`` index — O(1).
 
@@ -332,7 +332,7 @@ def _family_prefix(name: str) -> str:
     ``hermes`` → ``hermes`` (single token, no change)
 
     Used to keep typo suggestions inside the same family — ``deepseek-v4-27b``
-    suggests ``deepseek-v4-flash``, not ``deepseek-r1-32b``.
+    suggests ``deepseek-v4-flash-8bit``, not ``deepseek-r1-32b-4bit``.
     """
     parts = name.split("-")
     while parts:
@@ -355,7 +355,7 @@ def _letters_only_prefix(name: str) -> str:
     returns nothing useful — handles cases where the user collapses or
     inserts separators we don't use (``gemma4-27b`` → ``gemma``, matches
     our ``gemma-4-*`` and ``gemma3-*`` aliases; ``mistral24b`` →
-    ``mistral``, matches ``mistral-24b``).
+    ``mistral``, matches ``mistral-24b-4bit``).
     """
     out = []
     for ch in name.lower():
@@ -372,7 +372,7 @@ def suggest_similar(name: str, n: int = 3, cutoff: float = 0.5) -> list[str]:
     Family-aware in two passes:
     1. **Strict family match** — uses ``_family_prefix`` (drops trailing
        size/quant tokens). Keeps the wrong-family bait-and-switch (typing
-       ``deepseek-v4-27b`` and being told ``deepseek-r1-32b``) from
+       ``deepseek-v4-27b`` and being told ``deepseek-r1-32b-4bit``) from
        happening, and prevents legitimate single-segment HuggingFace IDs
        like ``gpt2`` or ``bert-base-uncased`` from spuriously matching.
     2. **Letter-only prefix fallback** — if step 1 finds nothing, retry
@@ -397,7 +397,7 @@ def suggest_similar(name: str, n: int = 3, cutoff: float = 0.5) -> list[str]:
         if same_fam and same_fam != [fam]:
             # If we found candidates in the same strict family, trust the
             # cutoff — even if it filters everything out. The cutoff
-            # rejecting ``gpt2`` against ``gpt-oss-20b`` is the
+            # rejecting ``gpt2`` against ``gpt-oss-20b-mxfp4-q8`` is the
             # legitimate-HF-ID guarantee at work; the letter-only
             # fallback below would override that and is wrong here.
             return difflib.get_close_matches(name, same_fam, n=n, cutoff=cutoff)
@@ -439,12 +439,12 @@ def suggest_similar(name: str, n: int = 3, cutoff: float = 0.5) -> list[str]:
 # the small/fast tier and one well-known representative per category —
 # auto-generation would spit out alphabetic noise like ``bonsai-*`` first.
 POPULAR_ALIASES: tuple[str, ...] = (
-    "qwen3.5-4b",  # default smoke / small
-    "qwen3.5-9b",  # mid-size general
-    "qwen3.6-27b",  # latest hybrid family
-    "qwen3-coder-30b",  # coding
-    "gemma4",  # gemma family rep (12B QAT 4-bit)
-    "llama3-3b",  # tiny llama
-    "mistral-24b",  # mistral
-    "deepseek-r1-32b",  # reasoning
+    "qwen3.5-4b-4bit",  # default smoke / small
+    "qwen3.5-9b-4bit",  # mid-size general
+    "qwen3.6-27b-4bit",  # latest hybrid family
+    "qwen3-coder-30b-4bit",  # coding
+    "gemma-4-12b-qat-4bit",  # gemma family rep (12B QAT 4-bit)
+    "llama3-3b-4bit",  # tiny llama
+    "mistral-24b-4bit",  # mistral
+    "deepseek-r1-32b-4bit",  # reasoning
 )

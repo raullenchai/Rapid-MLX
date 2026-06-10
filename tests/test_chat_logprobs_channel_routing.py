@@ -11,7 +11,7 @@ field, but ``output.reasoning_text`` was never populated — so
 back to the text-regex parser, which leaked analysis-channel content into
 ``message.content`` and dropped ``reasoning_content`` entirely.
 
-Surfaced by the iter7 onboarding sweep on gpt-oss-20b: identical request
+Surfaced by the iter7 onboarding sweep on gpt-oss-20b-mxfp4-q8: identical request
 with vs without ``logprobs:true`` produced different channel routing — same
 shape as #442 (PR #443) but on the logprobs codepath instead of truncated
 output. Fix: accumulate ``new_text`` by ``channel`` while iterating the

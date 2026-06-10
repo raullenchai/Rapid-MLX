@@ -82,15 +82,15 @@ curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
 ```bash
 rapid-mlx chat
 ```
-Defaults to `qwen3.5-4b`. First run downloads the model (~2.5 GB) — you'll see a progress bar. Drops you into a REPL when it's ready. Type `/help` for slash commands, `/exit` to quit. Pass `--think` to surface chain-of-thought.
+Defaults to `qwen3.5-4b-4bit`. First run downloads the model (~2.5 GB) — you'll see a progress bar. Drops you into a REPL when it's ready. Type `/help` for slash commands, `/exit` to quit. Pass `--think` to surface chain-of-thought.
 
 **Step 2b — Or serve a model for use from other apps:**
 ```bash
-rapid-mlx serve qwen3.5-4b
+rapid-mlx serve qwen3.5-4b-4bit
 ```
 Same model, same download — but this starts an OpenAI-compatible HTTP server instead of a REPL. Wait for `Ready: http://localhost:8000/v1`.
 
-> Want vision? `pip install 'rapid-mlx[vision]'` then `rapid-mlx serve gemma-4-26b` (~14 GB).
+> Want vision? `pip install 'rapid-mlx[vision]'` then `rapid-mlx serve gemma-4-26b-4bit` (~14 GB).
 
 **Step 3 — Hit the API** (from a second terminal tab):
 ```bash
@@ -113,7 +113,7 @@ The default chat surface is our hosted Big-AGI fork (tool calling, personas, voi
 
 > **Want a Claude Code-like TUI?** Rapid-MLX is the *backend* — pair it with an open-source agent CLI like [OpenCode](https://github.com/sst/opencode) or [codex](https://github.com/openai/codex) for the full slash-commands / tool-use / multi-turn experience. Run `rapid-mlx agents opencode --setup` (or `codex --setup`) to wire it up automatically.
 
-> **Tip:** Run `rapid-mlx models` to see all available model aliases. For a smaller/faster model, try `rapid-mlx serve qwen3.5-9b` (~5 GB).
+> **Tip:** Run `rapid-mlx models` to see all available model aliases. For a smaller/faster model, try `rapid-mlx serve qwen3.5-9b-4bit` (~5 GB).
 
 <details>
 <summary>More install options</summary>
@@ -221,7 +221,7 @@ Run `rapid-mlx agents` to see all supported agents and `python3 scripts/mhi_eval
 ```
 OpenAI API Base:  http://localhost:8000/v1
 API Key:          not-needed
-Model name:       default          (or qwen3.5-9b — either works)
+Model name:       default          (or qwen3.5-9b-4bit — either works)
 ```
 Cursor's agent/composer mode uses tool calls automatically — Rapid-MLX handles them natively with Qwen3.5 models, no extra flags needed.
 
@@ -405,27 +405,64 @@ The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monit
 
 > **4bit vs 8bit:** 4bit models are compressed to use less memory (recommended for most users). 8bit models are higher quality but need more RAM. "mxfp4" is a high-quality 4bit format.
 
+### Naming convention
+
+Every alias follows the same template so you can read off the model family, parameter count, training technique, and quantization at a glance:
+
+`<family>-<version>-<params>-<modality?>-<technique?>-<quant>`
+
+| Segment | Meaning | Examples |
+|---|---|---|
+| **family** | Model family | `gemma`, `qwen`, `llama`, `mistral`, `deepseek`, `phi` |
+| **version** | Major version | `-4`, `3.5`, `3.6`, `-r1`, `-v4-flash` |
+| **params** | Parameter count (MoE includes the active count) | `12b`, `27b`, `35b-a3b` (35B total / 3B active) |
+| **modality** *(optional)* | Non-text variants | `-vl` (vision), `-coder` (code) |
+| **technique** *(optional)* | Training-time modifier | `-qat` (Quantization-Aware Training), `-distill`, `-thinking` |
+| **quant** *(mandatory)* | Quantization tier (see below) | `-4bit`, `-8bit`, `-mxfp4`, `-qat-8bit`, … |
+
+The **quantization suffix is mandatory on every alias** — `qwen3.5-4b-4bit` not `qwen3.5-4b`, `gemma-4-12b-qat-8bit` not `gemma-4-12b-qat`. This mirrors LM Studio's `…-MLX-4bit` / `…-MLX-8bit` HuggingFace convention so you never have to guess the bit width.
+
+| Suffix | Meaning |
+|---|---|
+| `-4bit` | Standard MLX 4-bit (most common) |
+| `-8bit` | Standard MLX 8-bit (higher quality, ~2× RAM) |
+| `-2bit`, `-3bit`, `-6bit` | Other bit widths |
+| `-mxfp4` | Microscaling FP4 (high-quality 4-bit) |
+| `-mxfp4-q8` | MXFP4 weights + Q8 head (GPT-OSS style) |
+| `-dwq` | Dynamic Weight Quantization (mlx-community) |
+| `-ud` | Unsloth Dynamic (mixed-precision per-layer) |
+| `-unpacked` | Original FP16 / BF16 weights, no quantization |
+
+`-qat` is a *technique* suffix, not a quant — it stacks before the quant. So a QAT-trained Gemma 4 12B in 4-bit is `gemma-4-12b-qat-4bit`, and the 8-bit variant is `gemma-4-12b-qat-8bit`.
+
+Decoded examples:
+
+- `gemma-4-12b-qat-4bit` = Gemma 4 · 12B params · QAT-trained · 4-bit quant
+- `qwen3.5-35b-8bit` = Qwen 3.5 · 35B params (3B active MoE) · 8-bit quant
+- `gpt-oss-20b-mxfp4-q8` = GPT-OSS · 20B params · MXFP4 weights + Q8 head
+- `bonsai-1.7b-unpacked` = Bonsai · 1.7B params · no quantization
+
 ### Full model lineup
 
-66 short aliases across 13 families ship today. Run `rapid-mlx models` for the live list with quant tier, MoE / hybrid flags, and DFlash eligibility.
+72 explicit aliases across 13 families ship today. Run `rapid-mlx models` for the live list with parser, hybrid / MoE flags, and DFlash eligibility.
 
 <details>
-<summary><strong>Show all 66 aliases by family</strong></summary>
+<summary><strong>Show all 72 aliases by family</strong></summary>
 
 | Family | Aliases | Notable |
 |---|---|---|
-| **Qwen3.5** | `qwen3.5-4b`, `-4b-8bit`, `-9b`, `-9b-8bit`, `-27b`, `-27b-8bit` ✨, `-35b`, `-35b-4bit`, `-122b`, `-122b-8bit` | DeltaNet hybrid; **27b-8bit DFlash-eligible** |
-| **Qwen3.6** | `qwen3.6-27b`, `-27b-8bit` ✨, `-27b-ud`, `-35b`, `-35b-6bit`, `-35b-8bit`, `-35b-dwq`, `-35b-ud` | 262K ctx, 256 MoE experts; **27b-8bit DFlash-eligible** |
-| **Qwen3** | `qwen3-0.6b-8bit`, `-4b-8bit`, `-8b-8bit`, `qwen3-coder`, `qwen3-coder-30b`, `qwen3-vl-4b`, `-8b`, `-30b` | Coding + vision |
-| **Qwopus** | `qwopus-9b`, `qwopus-27b`, `qwopus-27b-8bit` | 92 MHI on tool calling |
-| **DeepSeek** | `deepseek-r1-8b`, `-32b`, `deepseek-v4-flash` (2/4/8-bit) | R1 reasoning + V4 Flash 158B-A13B day-0 |
-| **Gemma** | `gemma-3n-e4b`, `gemma-4-26b`, `-31b`, `-31b-8bit`, `gemma3-1b`, `-12b`, `-27b` | Vision-capable (gemma-4) |
-| **Llama / Hermes** | `llama3-1b`, `-3b`, `llama-3.1-8b-8bit`, `hermes3-8b`, `hermes4-70b` | |
-| **GLM** | `glm4.5-air`, `glm4.7-9b` | |
-| **GPT-OSS** | `gpt-oss-20b` | Harmony native |
-| **MiniMax / Kimi** | `minimax-m2.5`, `minimax-m2.7`, `kimi-48b`, `kimi-k2.5` | |
-| **Mistral / Devstral** | `mistral-24b`, `devstral-24b`, `devstral-v2-24b`, `ministral-3b` | |
-| **Other** | `phi4-14b`, `smollm3-3b`, `nemotron-30b` / `-nano`, `bonsai-1.7b/4b/8b`, `granite4-tiny` | |
+| **Qwen3.5** | `qwen3.5-4b-4bit`, `-4b-8bit`, `-9b-4bit`, `-9b-8bit`, `-27b-4bit`, `-27b-8bit` ✨, `-35b-4bit`, `-35b-8bit`, `-122b-mxfp4`, `-122b-8bit` | DeltaNet hybrid; **27b-8bit DFlash-eligible** |
+| **Qwen3.6** | `qwen3.6-27b-4bit`, `-27b-8bit` ✨, `-27b-ud`, `-35b-4bit`, `-35b-6bit`, `-35b-8bit`, `-35b-dwq`, `-35b-ud` | 262K ctx, 256 MoE experts; **27b-8bit DFlash-eligible** |
+| **Qwen3** | `qwen3-0.6b-8bit`, `-4b-8bit`, `-8b-8bit`, `qwen3-coder-4bit`, `qwen3-coder-30b-4bit`, `qwen3-vl-4b-4bit`, `-8b-4bit`, `-30b-4bit` | Coding + vision |
+| **Qwopus** | `qwopus-9b-4bit`, `qwopus-27b-4bit`, `qwopus-27b-8bit` | 92 MHI on tool calling |
+| **DeepSeek** | `deepseek-r1-8b-4bit`, `-32b-4bit`, `deepseek-v4-flash-2bit`, `-4bit`, `-8bit` | R1 reasoning + V4 Flash 158B-A13B day-0 |
+| **Gemma** | `gemma-3n-e4b-4bit`, `gemma-4-12b-4bit`, `-12b-qat-4bit`, `-12b-qat-8bit`, `-26b-4bit`, `-26b-qat-4bit`, `-31b-4bit`, `-31b-8bit`, `-31b-qat-4bit`, `-31b-qat-8bit`, `gemma3-1b-4bit`, `-12b-4bit`, `-27b-4bit` | Vision-capable; QAT variants |
+| **Llama / Hermes** | `llama3-1b-4bit`, `-3b-4bit`, `llama-3.1-8b-8bit`, `hermes3-8b-4bit`, `hermes4-70b-4bit` | |
+| **GLM** | `glm4.5-air-4bit`, `glm4.7-9b-4bit` | |
+| **GPT-OSS** | `gpt-oss-20b-mxfp4-q8` | Harmony native |
+| **MiniMax / Kimi** | `minimax-m2.5-4bit`, `minimax-m2.7-mxfp4`, `kimi-48b-4bit`, `kimi-k2.5-3bit` | |
+| **Mistral / Devstral** | `mistral-24b-4bit`, `devstral-24b-4bit`, `devstral-v2-24b-4bit`, `ministral-3b-4bit` | |
+| **Other** | `phi-4-14b-4bit`, `phi-4-mini-4bit`, `smollm3-3b-4bit`, `nemotron-30b-4bit`, `bonsai-1.7b-unpacked`, `-4b-unpacked`, `-8b-unpacked`, `granite4-tiny-4bit` | |
 
 ✨ = DFlash speculative decoding supported (opt in with `--enable-dflash`). `rapid-mlx info <alias>` shows per-alias capabilities.
 
@@ -433,38 +470,38 @@ The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monit
 
 ### Copy-paste commands
 
-Pick the one that matches your Mac. Short aliases work — run `rapid-mlx models` to see all available models.
+Pick the one that matches your Mac. Run `rapid-mlx models` to see all available aliases.
 
 ```bash
 # 16 GB — lightweight, fast
-rapid-mlx serve qwen3.5-4b --port 8000
+rapid-mlx serve qwen3.5-4b-4bit --port 8000
 
 # 24 GB — best small model
-rapid-mlx serve qwen3.5-9b --port 8000
+rapid-mlx serve qwen3.5-9b-4bit --port 8000
 
 # 32 GB — solid coding model
-rapid-mlx serve qwen3.5-27b --port 8000
+rapid-mlx serve qwen3.5-27b-4bit --port 8000
 
 # 32 GB — Gemma 4 12B (vision-capable, 64 tok/s)
-rapid-mlx serve gemma-4-12b --port 8000
+rapid-mlx serve gemma-4-12b-4bit --port 8000
 
 # 32 GB — GPT-OSS 20B (harmony-native, 100% tool calling, 119 tok/s)
-rapid-mlx serve gpt-oss-20b --port 8000
+rapid-mlx serve gpt-oss-20b-mxfp4-q8 --port 8000
 
 # 32+ GB — Qwen 3.6 35B-A3B (256 experts, 262K context, 93 tok/s)
-rapid-mlx serve qwen3.6-35b --port 8000
+rapid-mlx serve qwen3.6-35b-4bit --port 8000
 
 # 48+ GB — sweet spot (Qwen3.5-35B-A3B 8bit, 80 tok/s)
-rapid-mlx serve qwen3.5-35b --prefill-step-size 8192 --port 8000  # faster first response
+rapid-mlx serve qwen3.5-35b-8bit --prefill-step-size 8192 --port 8000  # faster first response
 
 # 96+ GB — frontier (Qwen3.5-122B mxfp4)
-rapid-mlx serve qwen3.5-122b --prefill-step-size 8192 --port 8000
+rapid-mlx serve qwen3.5-122b-mxfp4 --prefill-step-size 8192 --port 8000
 
 # Coding agent — fast MoE, great for Claude Code / Cursor
-rapid-mlx serve qwen3-coder --prefill-step-size 8192 --port 8000  # MoE = only uses part of the model, so it's fast
+rapid-mlx serve qwen3-coder-4bit --prefill-step-size 8192 --port 8000  # MoE = only uses part of the model, so it's fast
 
 # Vision — image understanding (see note below)
-rapid-mlx serve qwen3-vl-4b --mllm --port 8000
+rapid-mlx serve qwen3-vl-4b-4bit --mllm --port 8000
 ```
 
 > **Vision deps:** Install into the same environment where rapid-mlx lives:
@@ -530,7 +567,7 @@ Reproduce the throughput table:
 
 ```bash
 python3.12 scripts/bench_readme_refresh.py \
-  --models qwen3.5-4b,qwen3.5-9b,qwen3.5-27b,gemma-4-12b,gpt-oss-20b,qwen3.6-35b,qwen3.5-35b \
+  --models qwen3.5-4b-4bit,qwen3.5-9b-4bit,qwen3.5-27b-4bit,gemma-4-12b-4bit,gpt-oss-20b-mxfp4-q8,qwen3.6-35b-4bit,qwen3.5-35b-8bit \
   --engines rapid-mlx,mlx-lm,ollama
 ```
 
@@ -800,7 +837,7 @@ Rapid-MLX **can** send anonymous usage data to help us prioritise the right mode
 ### What we collect (only if you opt in)
 
 - Subcommand names (`serve` / `chat` / `agents` / `bench` / `doctor`)
-- Model alias names (`qwen3.5-9b`) or canonical HF repo IDs (`mlx-community/...`) — local paths are redacted to `<local>`
+- Model alias names (`qwen3.5-9b-4bit`) or canonical HF repo IDs (`mlx-community/...`) — local paths are redacted to `<local>`
 - Bucketed counts: prompt/completion tokens, TTFT, tokens/sec — never exact values
 - Error categories + a hash fingerprint of the failure site (exception class name + per-frame `file:function:lineno` only — never the message text or absolute paths)
 - OS, arch, Apple chip name, RAM (rounded to GB), Python major.minor
@@ -828,8 +865,8 @@ rapid-mlx telemetry reset      # delete consent + client-id files (re-prompts on
 Either of these always wins, regardless of stored consent:
 
 ```bash
-RAPID_MLX_TELEMETRY=0 rapid-mlx serve qwen3.5-9b
-rapid-mlx --no-telemetry serve qwen3.5-9b
+RAPID_MLX_TELEMETRY=0 rapid-mlx serve qwen3.5-9b-4bit
+rapid-mlx --no-telemetry serve qwen3.5-9b-4bit
 ```
 
 There is intentionally **no env-var equivalent for force-on** — opting in must be an explicit one-time `rapid-mlx telemetry enable`. CI agents will never silently contribute.

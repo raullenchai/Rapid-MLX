@@ -11,10 +11,10 @@ config:
 
 models:
   recommended:
-    - "qwen3.5-9b"
-    - "qwen3.6-35b"
-    - "qwen3.5-4b"
-    - "deepseek-r1-8b"
+    - "qwen3.5-9b-4bit"
+    - "qwen3.6-35b-4bit"
+    - "qwen3.5-4b-4bit"
+    - "deepseek-r1-8b-4bit"
   parser_override: null
 
 streaming:

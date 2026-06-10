@@ -6,7 +6,7 @@ Bug: the Anthropic route's ``_resolved_sampling_kwargs`` helper forwarded
 NOT ``stop`` — so ``stop_sequences`` from the request flowed through
 ``anthropic_to_openai`` into ``openai_request.stop`` and then died at the
 route boundary. Engine ran uncapped, model emitted past the user's stop
-tokens. Surfaced by the iter8 onboarding sweep on gpt-oss-20b: same
+tokens. Surfaced by the iter8 onboarding sweep on gpt-oss-20b-mxfp4-q8: same
 prompt + ``stop_sequences:["STOPHERE"]`` returned full text including
 "STOPHERE", finish_reason=end_turn. Identical prompt via /v1/chat/
 completions with ``stop:["STOPHERE"]`` stopped correctly. Fix: include

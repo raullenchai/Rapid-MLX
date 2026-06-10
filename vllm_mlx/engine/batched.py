@@ -1199,7 +1199,7 @@ class BatchedEngine(BaseEngine):
         #
         # Hybrid-only gate: the boundary split routes through
         # ``BatchGenerator.insert_segments`` which on pure-Transformer models
-        # (e.g. gpt-oss-20b harmony) corrupts the harmony tool-call channel
+        # (e.g. gpt-oss-20b-mxfp4-q8 harmony) corrupts the harmony tool-call channel
         # state across multi-turn-with-tools and the agent loops forever.
         # Pure Transformers don't need the boundary save anyway — the prefix
         # cache already reuses via trim+supersequence. Only hybrid models
@@ -1234,7 +1234,7 @@ class BatchedEngine(BaseEngine):
 
         Pure Transformer models don't have this constraint — trim works
         — so they don't need the boundary save. Worse, the boundary
-        split routes through ``insert_segments`` which on gpt-oss-20b
+        split routes through ``insert_segments`` which on gpt-oss-20b-mxfp4-q8
         empirically corrupts harmony tool-call channel state across
         multi-turn-with-tools (pydantic_ai multi_tool 5/6 → loops on
         ``add(3,4)``). Gating the entire boundary path on this flag is
@@ -1518,7 +1518,7 @@ class BatchedEngine(BaseEngine):
             # returns a response missing the ``logprobs`` field entirely
             # because ``_extract_streaming_token_logprobs`` sees
             # ``chunk.logprobs is None`` for every routed chunk. Confirmed
-            # on gpt-oss-20b PyPI v0.6.66 during the 2026-05-23 onboarding
+            # on gpt-oss-20b-mxfp4-q8 PyPI v0.6.66 during the 2026-05-23 onboarding
             # sweep. PR #450 fixed the pre-existing AttributeError on the
             # non-routed path but couldn't surface this gap because its
             # tests use single-token GenerationOutput stubs that never go
@@ -1546,7 +1546,7 @@ class BatchedEngine(BaseEngine):
                     # TOOL_CALL it would override the accumulated body with
                     # just the end-marker token's text, dropping the body on
                     # the floor and breaking streaming tool calls for gemma4
-                    # and harmony — caught on gemma-4-26b post-v0.6.61.
+                    # and harmony — caught on gemma-4-26b-4bit post-v0.6.61.
                     if event.channel == Channel.TOOL_CALL:
                         event_text = event.text
                         # Tool-call channel aggregates many tokens; the

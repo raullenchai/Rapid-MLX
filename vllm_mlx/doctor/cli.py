@@ -20,7 +20,7 @@ from .runner import REPO_ROOT, CheckResult, DoctorRunner, Status
 # Default model used by the check tier.  Tier 3 (full) loops a wider list.
 # A real-capacity 8-bit model is required so eval failures can be cleanly
 # attributed to rapid-mlx bugs rather than small-model quant noise.
-DEFAULT_CHECK_MODEL = "qwen3.5-35b"
+DEFAULT_CHECK_MODEL = "qwen3.5-35b-8bit"
 
 # Model list for the full tier: real-capacity Qwen lines only. No 4B
 # (small models can't separate model errors from engine errors) and no
@@ -29,7 +29,7 @@ DEFAULT_CHECK_MODEL = "qwen3.5-35b"
 # refusal, multi-turn context drift; failures don't cleanly attribute
 # to rapid-mlx so it's noise here). Add Gemma back when a tighter
 # instruct variant ships.
-DEFAULT_FULL_MODELS = ["qwen3.5-35b", "qwen3.6-35b"]
+DEFAULT_FULL_MODELS = ["qwen3.5-35b-8bit", "qwen3.6-35b-4bit"]
 
 # Agent profiles to exercise per-model in the full tier.  None ⇒ all
 # loaded profiles.  Limit here if a particular profile is too slow to
@@ -180,7 +180,7 @@ def run_full_tier(models: list[str], update_baselines: bool = False):
             update_baselines=update_baselines,
             agent_profiles=profile_names,
             # boot_timeout_s=None → _suggested_boot_timeout picks 600s for
-            # the 27B+ models (qwen3.5-35b, gemma-4-26b) and 180s for
+            # the 27B+ models (qwen3.5-35b-8bit, gemma-4-26b-4bit) and 180s for
             # smaller ones, so the same logic applies regardless of which
             # tier called us.
         )
@@ -226,7 +226,7 @@ def _resolve_agent_profiles(explicit: list[str] | None) -> list[str]:
 # Earlier iterations tried to pick a tier-/alias-aware shorter budget for
 # the small-model case, but every heuristic missed at least one supported
 # large model (Qwen3-Coder lacks a 'NNb' hint in its alias, MiniMax M2.5
-# is huge but named 'minimax-m2.5', etc.).  The optimisation isn't worth
+# is huge but named 'minimax-m2.5-4bit', etc.).  The optimisation isn't worth
 # the false-fail risk.
 DEFAULT_BOOT_TIMEOUT_S = 600
 

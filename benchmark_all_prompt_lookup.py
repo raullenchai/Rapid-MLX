@@ -48,7 +48,7 @@ MODELS = [
         False,
     ),
     (
-        "gpt-oss-20b",
+        "gpt-oss-20b-mxfp4-q8",
         "/Users/raullenstudio/.lmstudio/models/mlx-community/gpt-oss-20b-MXFP4-Q8",
         False,
     ),

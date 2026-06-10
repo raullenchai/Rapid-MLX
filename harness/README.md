@@ -4,7 +4,7 @@ A four-tier "code health checkup" for Rapid-MLX:
 
 ```
 rapid-mlx doctor smoke       # ~2 min,  no model         — pre-commit
-rapid-mlx doctor check       # ~15 min, qwen3.5-35b      — pre-PR / big change
+rapid-mlx doctor check       # ~15 min, qwen3.5-35b-8bit      — pre-PR / big change
 rapid-mlx doctor full        # ~2-3 hr, 3 models         — pre-release / refactor
 rapid-mlx doctor benchmark   # overnight, all models     — periodic / promo material
 ```
@@ -27,7 +27,7 @@ it needs `tests/`, `harness/`, and `pyproject.toml`):
 # Pre-commit — no model required
 make smoke                            # or: rapid-mlx doctor smoke
 
-# Pre-PR — boots qwen3.5-35b, runs API + perf checks, diffs vs baseline.
+# Pre-PR — boots qwen3.5-35b-8bit, runs API + perf checks, diffs vs baseline.
 # 35B 8-bit is the smallest model we trust to ~never err on the eval
 # suite, so failures cleanly attribute to rapid-mlx bugs.
 HF_HUB_CACHE=... make check           # or: rapid-mlx doctor check
@@ -77,9 +77,9 @@ Designed to be invoked from a pre-commit hook or `make` target.
 | `cli_sanity` | `rapid-mlx --help / models / agents` actually run |
 | `pytest` | Full unit suite (~45s, ~2070 tests) excluding `tests/integrations/` and `test_event_loop.py` |
 
-### `check` (~15 min, qwen3.5-35b)
+### `check` (~15 min, qwen3.5-35b-8bit)
 
-Spins up a real server with `qwen3.5-35b` (Qwen3.5-35B-A3B-8bit — A3B
+Spins up a real server with `qwen3.5-35b-8bit` (Qwen3.5-35B-A3B-8bit — A3B
 MoE so decode is fast despite the 35B param count), runs API + perf
 checks, diffs against `harness/baselines/check-qwen3.5-35b.json`.
 
@@ -96,14 +96,14 @@ the old default and made bug triage ambiguous.
 | `autoresearch` | `scripts/autoresearch_bench.py --json` (13 perf metrics) |
 | `baseline_diff` | Compare metrics, flag regressions per `harness/thresholds.yaml` |
 
-Override the model with `--model qwen3.6-35b` (will need its own baseline).
+Override the model with `--model qwen3.6-35b-4bit` (will need its own baseline).
 
 ### `full` (~2-3 hr, 3 models × 11 agent profiles)
 
-Loops the check tier across `qwen3.5-35b` and `qwen3.6-35b`
-(real-capacity Qwen lines — both 8-bit, both go through the Hermes
-parser path that most users hit). For each model, also runs all 11
-agent profiles' auto-generated test plans.
+Loops the check tier across `qwen3.5-35b-8bit` (8-bit) and
+`qwen3.6-35b-4bit` (4-bit) — real-capacity Qwen lines that both go
+through the Hermes parser path that most users hit. For each model,
+also runs all 11 agent profiles' auto-generated test plans.
 
 > Gemma 4 was previously in the default list for orthogonal coverage
 > but was dropped after PR #208 validation showed it fails multiple
@@ -115,7 +115,7 @@ agent profiles' auto-generated test plans.
 Override the model list:
 
 ```bash
-rapid-mlx doctor full --models qwen3.5-35b,qwen3.6-35b
+rapid-mlx doctor full --models qwen3.5-35b-8bit,qwen3.6-35b-4bit
 ```
 
 ### `benchmark` (overnight, all local models)
@@ -128,7 +128,7 @@ scorecard markdown:
 HF_HUB_CACHE=... rapid-mlx doctor benchmark
 
 # Or be explicit (forces inclusion even if cache probe misses):
-rapid-mlx doctor benchmark --models qwen3.5-35b,qwen3.6-35b
+rapid-mlx doctor benchmark --models qwen3.5-35b-8bit,qwen3.6-35b-4bit
 ```
 
 Output:
@@ -165,7 +165,7 @@ Baseline file shape:
 {
   "captured_at": "2026-04-15T21:36:32",
   "rapid_mlx_version": "0.5.1",
-  "model": "qwen3.5-35b",
+  "model": "qwen3.5-35b-8bit",
   "metrics": {
     "decode_tps": 49.67,
     "cold_ttft_ms": 313.63,
@@ -198,7 +198,7 @@ git diff harness/baselines/
 
 # 3. If the change is justified, commit; otherwise revert + investigate
 git commit harness/baselines/check-qwen3.5-35b.json -m \
-  "chore(doctor): bump qwen3.5-35b decode_tps baseline (mlx 0.31 SDPA gains)"
+  "chore(doctor): bump qwen3.5-35b-8bit decode_tps baseline (mlx 0.31 SDPA gains)"
 ```
 
 ## Thresholds

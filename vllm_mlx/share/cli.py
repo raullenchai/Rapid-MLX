@@ -237,7 +237,7 @@ def _pick_port(preferred: int) -> int:
 def _resolve_served_model_name(port: int, api_key: str) -> str | None:
     """Read the model id rapid-mlx serve is exposing via /v1/models.
 
-    The CLI accepts a short alias (``qwen3.5-4b``) but the OpenAI
+    The CLI accepts a short alias (``qwen3.5-4b-4bit``) but the OpenAI
     endpoint only recognises the full HF model id
     (``mlx-community/Qwen3.5-4B-MLX-4bit``). Without this lookup the
     curl example we paste into the security banner fails on first
@@ -459,10 +459,10 @@ def share_command(args: argparse.Namespace) -> None:
     # alias resolution BEFORE dispatching to us — by the time we get
     # here ``args.model`` is the rewritten HF repo (e.g.
     # ``mlx-community/Qwen3.5-4B-MLX-4bit``) and the user-typed alias
-    # lives on ``args._original_alias`` (e.g. ``qwen3.5-4b``). The child
+    # lives on ``args._original_alias`` (e.g. ``qwen3.5-4b-4bit``). The child
     # ``serve`` subprocess re-runs alias resolution on whatever we pass
     # it. We want the child to land the same way ``rapid-mlx serve
-    # qwen3.5-4b`` does — including setting ``_model_alias`` on the
+    # qwen3.5-4b-4bit`` does — including setting ``_model_alias`` on the
     # server so the public ``/v1/models`` endpoint advertises (and
     # accepts) the short alias the user actually typed. So we forward
     # the original alias to the child when one is set; fall back to
@@ -767,7 +767,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "model",
-        help="Alias to serve (same names as `rapid-mlx serve`, e.g. qwen3.5-4b)",
+        help="Alias to serve (same names as `rapid-mlx serve`, e.g. qwen3.5-4b-4bit)",
     ).completer = alias_completer
     p.add_argument(
         "--port",

@@ -195,7 +195,7 @@ class TestSafeModelSlug:
 
     def test_simple_aliases_unchanged(self):
         # Common case: an alias with no special chars stays human-readable.
-        assert safe_model_slug("qwen3.5-4b") == "qwen3.5-4b"
+        assert safe_model_slug("qwen3.5-4b-4bit") == "qwen3.5-4b-4bit"
 
     def test_hf_path_round_trips_via_unquote(self):
         import urllib.parse

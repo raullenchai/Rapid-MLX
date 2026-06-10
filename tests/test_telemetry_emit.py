@@ -80,7 +80,7 @@ def test_request_no_op_when_disabled(fake_home, stub_queue):
 
     emit.request(
         endpoint="/v1/chat/completions",
-        model_alias="qwen3.5-9b",
+        model_alias="qwen3.5-9b-4bit",
         stream=True,
         tool_call_used=False,
         prompt_tokens=100,
@@ -147,7 +147,7 @@ def test_cli_kill_switch_overrides_opt_in(opted_in, stub_queue):
         emit.session_end(subcommand="serve", duration_seconds=42)
         emit.request(
             endpoint="/v1/chat/completions",
-            model_alias="qwen3.5-9b",
+            model_alias="qwen3.5-9b-4bit",
             stream=True,
             tool_call_used=False,
             prompt_tokens=100,
@@ -289,7 +289,7 @@ def test_request_buckets_not_raw_numbers(opted_in, stub_queue):
 
     emit.request(
         endpoint="/v1/chat/completions",
-        model_alias="qwen3.5-9b",
+        model_alias="qwen3.5-9b-4bit",
         stream=True,
         tool_call_used=False,
         prompt_tokens=137,
@@ -469,7 +469,7 @@ def test_request_endpoint_constrained_to_allowlist(opted_in, stub_queue):
     # Allowed endpoint round-trips verbatim (after strip).
     emit.request(
         endpoint="/v1/chat/completions",
-        model_alias="qwen3.5-9b",
+        model_alias="qwen3.5-9b-4bit",
         stream=True,
         tool_call_used=False,
         prompt_tokens=10,
@@ -483,7 +483,7 @@ def test_request_endpoint_constrained_to_allowlist(opted_in, stub_queue):
     # Query string + fragment stripped before allowlist match.
     emit.request(
         endpoint="/v1/chat/completions?api_key=sk-PROD-SECRET#anchor",
-        model_alias="qwen3.5-9b",
+        model_alias="qwen3.5-9b-4bit",
         stream=True,
         tool_call_used=False,
         prompt_tokens=10,
@@ -502,7 +502,7 @@ def test_request_endpoint_constrained_to_allowlist(opted_in, stub_queue):
     # string leaks into the payload.
     emit.request(
         endpoint="/internal/dump?path=/Users/alice/secrets.txt",
-        model_alias="qwen3.5-9b",
+        model_alias="qwen3.5-9b-4bit",
         stream=True,
         tool_call_used=False,
         prompt_tokens=10,
@@ -530,7 +530,7 @@ def test_request_endpoint_normalizes_full_url_to_path(opted_in, stub_queue):
 
     emit.request(
         endpoint="https://api.example.com/v1/chat/completions",
-        model_alias="qwen3.5-9b",
+        model_alias="qwen3.5-9b-4bit",
         stream=True,
         tool_call_used=False,
         prompt_tokens=10,
@@ -549,7 +549,7 @@ def test_request_endpoint_normalizes_full_url_to_path(opted_in, stub_queue):
     # Combined: full URL + query + fragment still resolves correctly.
     emit.request(
         endpoint="https://host/v1/chat/completions?key=sk-PROD-LEAK#frag",
-        model_alias="qwen3.5-9b",
+        model_alias="qwen3.5-9b-4bit",
         stream=True,
         tool_call_used=False,
         prompt_tokens=10,
@@ -661,7 +661,7 @@ def test_safe_does_not_swallow_signature_mismatch(opted_in, stub_queue):
     with pytest.raises(TypeError):
         emit.request(
             # endpoint missing
-            model_alias="qwen3.5-9b",
+            model_alias="qwen3.5-9b-4bit",
             stream=True,
             tool_call_used=False,
             prompt_tokens=10,
@@ -715,7 +715,7 @@ def test_flag_values_never_cross_telemetry_boundary(opted_in, stub_queue):
     prompt = "summarize this confidential email about Q3 numbers"
     argv = [
         "serve",
-        "qwen3.5-9b",
+        "qwen3.5-9b-4bit",
         "--api-key",
         secret,
         "--auth-header",

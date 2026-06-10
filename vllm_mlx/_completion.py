@@ -116,7 +116,7 @@ def alias_csv_completer(prefix: str = "", **_: Any) -> list[str]:
     """Comma-separated-list variant for ``doctor --models a,b,c``.
 
     The user-visible prefix at completion time contains everything
-    typed for this flag — e.g. ``qwen3.5-4b,gem`` when partway through
+    typed for this flag — e.g. ``qwen3.5-4b-4bit,gem`` when partway through
     the second entry. We split on the last comma, strip whitespace
     around the tail so ``--models a, gem<TAB>`` works the same as
     ``--models a,gem<TAB>`` (the runtime ``split + strip`` accepts

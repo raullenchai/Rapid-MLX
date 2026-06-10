@@ -8,10 +8,10 @@ Metrics: TTFT (cold/cached), decode tok/s, multi-turn latency, tool call latency
 
 Usage:
     # Start server with SimpleEngine (default)
-    rapid-mlx serve qwen3.5-4b --port 8000
+    rapid-mlx serve qwen3.5-4b-4bit --port 8000
 
     # Start server with BatchedEngine
-    rapid-mlx serve qwen3.5-4b --port 8001 --continuous-batching
+    rapid-mlx serve qwen3.5-4b-4bit --port 8001 --continuous-batching
 
     # Run benchmark
     python3 scripts/bench_engine_parity.py
@@ -91,7 +91,11 @@ def bench_ttft_cold(base_url: str, model: str) -> dict:
     ttft = (first_token_time - t0) if first_token_time else elapsed
     tps = total_tokens / (elapsed - ttft) if elapsed > ttft and total_tokens > 0 else 0
 
-    return {"ttft_ms": round(ttft * 1000, 1), "decode_tps": round(tps, 1), "tokens": total_tokens}
+    return {
+        "ttft_ms": round(ttft * 1000, 1),
+        "decode_tps": round(tps, 1),
+        "tokens": total_tokens,
+    }
 
 
 def bench_ttft_cached(base_url: str, model: str) -> dict:
@@ -135,13 +139,19 @@ def bench_ttft_cached(base_url: str, model: str) -> dict:
 
         elapsed = time.perf_counter() - t0
         ttft = (first_token_time - t0) if first_token_time else elapsed
-        tps = total_tokens / (elapsed - ttft) if elapsed > ttft and total_tokens > 0 else 0
+        tps = (
+            total_tokens / (elapsed - ttft)
+            if elapsed > ttft and total_tokens > 0
+            else 0
+        )
         results.append({"ttft_ms": round(ttft * 1000, 1), "decode_tps": round(tps, 1)})
 
     # First is cold, rest are cached
     return {
         "cold_ttft_ms": results[0]["ttft_ms"],
-        "cached_ttft_ms": round(sum(r["ttft_ms"] for r in results[1:]) / len(results[1:]), 1),
+        "cached_ttft_ms": round(
+            sum(r["ttft_ms"] for r in results[1:]) / len(results[1:]), 1
+        ),
         "avg_tps": round(sum(r["decode_tps"] for r in results) / len(results), 1),
     }
 
@@ -223,7 +233,12 @@ def bench_decode_long(base_url: str, model: str) -> dict:
         f"{base_url}/chat/completions",
         json={
             "model": model,
-            "messages": [{"role": "user", "content": "Write a detailed essay about the history of computing. Be thorough."}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Write a detailed essay about the history of computing. Be thorough.",
+                }
+            ],
             "max_tokens": 256,
             "stream": True,
         },
@@ -244,7 +259,11 @@ def bench_decode_long(base_url: str, model: str) -> dict:
     decode_time = elapsed - ttft
     tps = total_tokens / decode_time if decode_time > 0 and total_tokens > 0 else 0
 
-    return {"ttft_ms": round(ttft * 1000, 1), "decode_tps": round(tps, 1), "tokens": total_tokens}
+    return {
+        "ttft_ms": round(ttft * 1000, 1),
+        "decode_tps": round(tps, 1),
+        "tokens": total_tokens,
+    }
 
 
 def run_suite(name: str, base_url: str, model: str) -> dict:
@@ -258,11 +277,15 @@ def run_suite(name: str, base_url: str, model: str) -> dict:
 
     print("\n  [1/5] Cold TTFT...")
     results["cold"] = bench_ttft_cold(base_url, model)
-    print(f"        TTFT: {results['cold']['ttft_ms']}ms, {results['cold']['decode_tps']} tok/s")
+    print(
+        f"        TTFT: {results['cold']['ttft_ms']}ms, {results['cold']['decode_tps']} tok/s"
+    )
 
     print("  [2/5] Cached TTFT (3 turns, same system prompt)...")
     results["cached"] = bench_ttft_cached(base_url, model)
-    print(f"        Cold: {results['cached']['cold_ttft_ms']}ms, Cached: {results['cached']['cached_ttft_ms']}ms, {results['cached']['avg_tps']} tok/s")
+    print(
+        f"        Cold: {results['cached']['cold_ttft_ms']}ms, Cached: {results['cached']['cached_ttft_ms']}ms, {results['cached']['avg_tps']} tok/s"
+    )
 
     print("  [3/5] Multi-turn (4 turns)...")
     results["multi_turn"] = bench_multi_turn(base_url, model)
@@ -270,11 +293,15 @@ def run_suite(name: str, base_url: str, model: str) -> dict:
 
     print("  [4/5] Tool call (3 calls)...")
     results["tool_call"] = bench_tool_call(base_url, model)
-    print(f"        Avg: {results['tool_call']['avg_latency_ms']}ms, {results['tool_call']['success_rate']:.0%} success")
+    print(
+        f"        Avg: {results['tool_call']['avg_latency_ms']}ms, {results['tool_call']['success_rate']:.0%} success"
+    )
 
     print("  [5/5] Long decode (256 tokens)...")
     results["long_decode"] = bench_decode_long(base_url, model)
-    print(f"        {results['long_decode']['decode_tps']} tok/s, {results['long_decode']['tokens']} tokens")
+    print(
+        f"        {results['long_decode']['decode_tps']} tok/s, {results['long_decode']['tokens']} tokens"
+    )
 
     return results
 
@@ -288,9 +315,11 @@ def main():
             print(f"  {name} ({url}): OK")
         except Exception as e:
             print(f"  {name} ({url}): NOT AVAILABLE — {e}")
-            print(f"\nPlease start both servers:")
-            print(f"  Terminal 1: rapid-mlx serve qwen3.5-4b --port 8000")
-            print(f"  Terminal 2: rapid-mlx serve qwen3.5-4b --port 8001 --continuous-batching")
+            print("\nPlease start both servers:")
+            print("  Terminal 1: rapid-mlx serve qwen3.5-4b-4bit --port 8000")
+            print(
+                "  Terminal 2: rapid-mlx serve qwen3.5-4b-4bit --port 8001 --continuous-batching"
+            )
             sys.exit(1)
 
     model_simple = detect_model(SIMPLE_URL)
@@ -302,38 +331,90 @@ def main():
 
     # Compare
     print(f"\n{'=' * 60}")
-    print(f"  COMPARISON: BatchedEngine vs SimpleEngine")
+    print("  COMPARISON: BatchedEngine vs SimpleEngine")
     print(f"{'=' * 60}")
 
     comparisons = [
-        ("Cold TTFT", simple_results["cold"]["ttft_ms"], batched_results["cold"]["ttft_ms"], "ms", True),
-        ("Cold decode", simple_results["cold"]["decode_tps"], batched_results["cold"]["decode_tps"], "tok/s", False),
-        ("Cached TTFT", simple_results["cached"]["cached_ttft_ms"], batched_results["cached"]["cached_ttft_ms"], "ms", True),
-        ("Cached decode", simple_results["cached"]["avg_tps"], batched_results["cached"]["avg_tps"], "tok/s", False),
-        ("Multi-turn avg", simple_results["multi_turn"]["avg_turn_ms"], batched_results["multi_turn"]["avg_turn_ms"], "ms", True),
-        ("Tool call avg", simple_results["tool_call"]["avg_latency_ms"], batched_results["tool_call"]["avg_latency_ms"], "ms", True),
-        ("Long decode", simple_results["long_decode"]["decode_tps"], batched_results["long_decode"]["decode_tps"], "tok/s", False),
+        (
+            "Cold TTFT",
+            simple_results["cold"]["ttft_ms"],
+            batched_results["cold"]["ttft_ms"],
+            "ms",
+            True,
+        ),
+        (
+            "Cold decode",
+            simple_results["cold"]["decode_tps"],
+            batched_results["cold"]["decode_tps"],
+            "tok/s",
+            False,
+        ),
+        (
+            "Cached TTFT",
+            simple_results["cached"]["cached_ttft_ms"],
+            batched_results["cached"]["cached_ttft_ms"],
+            "ms",
+            True,
+        ),
+        (
+            "Cached decode",
+            simple_results["cached"]["avg_tps"],
+            batched_results["cached"]["avg_tps"],
+            "tok/s",
+            False,
+        ),
+        (
+            "Multi-turn avg",
+            simple_results["multi_turn"]["avg_turn_ms"],
+            batched_results["multi_turn"]["avg_turn_ms"],
+            "ms",
+            True,
+        ),
+        (
+            "Tool call avg",
+            simple_results["tool_call"]["avg_latency_ms"],
+            batched_results["tool_call"]["avg_latency_ms"],
+            "ms",
+            True,
+        ),
+        (
+            "Long decode",
+            simple_results["long_decode"]["decode_tps"],
+            batched_results["long_decode"]["decode_tps"],
+            "tok/s",
+            False,
+        ),
     ]
 
-    print(f"\n  {'Metric':<20s} {'Simple':>10s} {'Batched':>10s} {'Diff':>10s} {'Verdict':>10s}")
+    print(
+        f"\n  {'Metric':<20s} {'Simple':>10s} {'Batched':>10s} {'Diff':>10s} {'Verdict':>10s}"
+    )
     print(f"  {'─' * 62}")
 
     all_pass = True
     for name, simple_val, batched_val, unit, lower_is_better in comparisons:
         if lower_is_better:
-            diff_pct = ((batched_val - simple_val) / simple_val * 100) if simple_val > 0 else 0
+            diff_pct = (
+                ((batched_val - simple_val) / simple_val * 100) if simple_val > 0 else 0
+            )
             verdict = "OK" if diff_pct < 5 else "WARN" if diff_pct < 10 else "FAIL"
         else:
-            diff_pct = ((simple_val - batched_val) / simple_val * 100) if simple_val > 0 else 0
+            diff_pct = (
+                ((simple_val - batched_val) / simple_val * 100) if simple_val > 0 else 0
+            )
             verdict = "OK" if diff_pct < 5 else "WARN" if diff_pct < 10 else "FAIL"
 
         if verdict != "OK":
             all_pass = False
 
         sign = "+" if diff_pct > 0 else ""
-        print(f"  {name:<20s} {simple_val:>8.1f}{unit:>3s} {batched_val:>8.1f}{unit:>3s} {sign}{diff_pct:>+7.1f}% {verdict:>8s}")
+        print(
+            f"  {name:<20s} {simple_val:>8.1f}{unit:>3s} {batched_val:>8.1f}{unit:>3s} {sign}{diff_pct:>+7.1f}% {verdict:>8s}"
+        )
 
-    print(f"\n  Overall: {'PASS — BatchedEngine within 5%' if all_pass else 'REVIEW NEEDED'}")
+    print(
+        f"\n  Overall: {'PASS — BatchedEngine within 5%' if all_pass else 'REVIEW NEEDED'}"
+    )
 
     # Save results
     output = {
@@ -347,6 +428,7 @@ def main():
 
     out_path = "reports/engine_parity_benchmark.json"
     import os
+
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2)

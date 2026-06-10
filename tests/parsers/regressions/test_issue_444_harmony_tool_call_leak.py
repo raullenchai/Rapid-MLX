@@ -9,7 +9,7 @@ parser-level surface:
     raw body ``...to=functions.get_weather...{"city": "Tokyo"}...``
     leaks into ``delta.content``.
 
-  * #480 (2026-05-28, gpt-oss-20b, ``tool_choice="auto"``): raw body
+  * #480 (2026-05-28, gpt-oss-20b-mxfp4-q8, ``tool_choice="auto"``): raw body
     ``commentary to=functions.get_weather json{"city":"Paris"}``
     leaks into ``delta.content``. User-facing duplicate of #444 with
     a different prompt — covered here to ensure the fix applies
@@ -31,7 +31,7 @@ level streaming entry point is exercised here in isolation:
 
 Test cases sourced verbatim from the issue body's repro section.
 
-Scope caveat (post-live-verification on gpt-oss-20b 2026-06-04):
+Scope caveat (post-live-verification on gpt-oss-20b-mxfp4-q8 2026-06-04):
 this file exercises the ``HarmonyToolParser`` streaming entry point
 in isolation against the FULL markered text (`<|channel|>commentary
 to=functions.X<|message|>{body}<|call|>`). The parser-level fix
@@ -85,7 +85,7 @@ class _Case:
 
 
 # Verbatim from the repro in issue #444 (and adjacent harmony commentary
-# formats observed on gpt-oss-20b). Each case is the FULL model output
+# formats observed on gpt-oss-20b-mxfp4-q8). Each case is the FULL model output
 # from the ``<|channel|>commentary`` token through the closing ``<|call|>``,
 # i.e. what the model emits when invoking exactly one tool.
 TEST_CASES: list[_Case] = [

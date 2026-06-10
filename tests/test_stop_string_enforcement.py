@@ -8,7 +8,7 @@ mlx-lm's BatchGenerator only honours integer ``stop_tokens`` — so the
 scheduler has to scan the decoded output itself.
 
 This was missing on the text path (MLLMScheduler had it, Scheduler did
-not), which surfaced as 4 failing regression-suite tests on qwen3.5-4b:
+not), which surfaced as 4 failing regression-suite tests on qwen3.5-4b-4bit:
 tests 1 (newline), 2 (literal word), 4 (Unicode), 5 (streaming).
 
 These unit tests exercise ``Scheduler._process_batch_responses`` directly with

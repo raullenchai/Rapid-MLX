@@ -3,7 +3,7 @@
 ## Running LLM Benchmarks
 
 ```bash
-rapid-mlx bench qwen3.5-4b --num-prompts 5 --max-tokens 256
+rapid-mlx bench qwen3.5-4b-4bit --num-prompts 5 --max-tokens 256
 ```
 
 ## Results (M4 Max, 128GB)
@@ -271,13 +271,13 @@ The streaming detokenizer is **not currently viable** for per-request usage due 
 
 ```bash
 # Basic benchmark — short alias works
-rapid-mlx bench qwen3.5-4b
+rapid-mlx bench qwen3.5-4b-4bit
 
 # With more prompts
-rapid-mlx bench qwen3.5-4b --num-prompts 10
+rapid-mlx bench qwen3.5-4b-4bit --num-prompts 10
 
 # Save results
-rapid-mlx bench qwen3.5-4b | tee results.txt
+rapid-mlx bench qwen3.5-4b-4bit | tee results.txt
 
 # Continuous batching test
 python tests/test_continuous_batching.py

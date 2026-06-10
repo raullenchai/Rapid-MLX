@@ -55,7 +55,7 @@ class _FakeTokenizer:
         return "".join(self._id_to_text.get(i, f"<UNK:{i}>") for i in ids)
 
 
-# Harmony token IDs from openai/gpt-oss-20b (same constants the real
+# Harmony token IDs from openai/gpt-oss-20b-mxfp4-q8 (same constants the real
 # router reads). Keep in sync with tests/test_output_router.py.
 _HARMONY_VOCAB = {
     "<|return|>": 200002,

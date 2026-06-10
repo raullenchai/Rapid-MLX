@@ -10,7 +10,7 @@ Locks in three things that are easy to break:
 2. ``alias_completer`` returns aliases filtered by prefix (the actual
    contract argcomplete invokes per keystroke).
 3. ``alias_csv_completer`` correctly carries the comma-separated
-   prefix forward so ``--models qwen3.5-4b,gem<TAB>`` expands the
+   prefix forward so ``--models qwen3.5-4b-4bit,gem<TAB>`` expands the
    trailing token only.
 """
 
@@ -69,10 +69,10 @@ def test_alias_completer_filters_by_prefix() -> None:
     # membership catches a silent regression where the QAT entries get
     # dropped from aliases.json without the test failing.
     qat_aliases = {
-        "gemma-4-12b-qat",
+        "gemma-4-12b-qat-4bit",
         "gemma-4-12b-qat-8bit",
-        "gemma-4-26b-qat",
-        "gemma-4-31b-qat",
+        "gemma-4-26b-qat-4bit",
+        "gemma-4-31b-qat-4bit",
         "gemma-4-31b-qat-8bit",
     }
     missing = qat_aliases - set(result)
@@ -120,13 +120,13 @@ def test_alias_csv_completer_first_token() -> None:
 
 
 def test_alias_csv_completer_appends_to_existing_csv() -> None:
-    """``--models qwen3.5-4b,gem<TAB>`` should expand only the
+    """``--models qwen3.5-4b-4bit,gem<TAB>`` should expand only the
     trailing token but emit the full re-assembled value so the shell
-    inserts ``qwen3.5-4b,gemma-4-12b`` rather than dropping the head."""
-    result = alias_csv_completer("qwen3.5-4b,gemma-4-")
-    assert all(m.startswith("qwen3.5-4b,gemma-4-") for m in result), (
+    inserts ``qwen3.5-4b-4bit,gemma-4-12b-4bit`` rather than dropping the head."""
+    result = alias_csv_completer("qwen3.5-4b-4bit,gemma-4-")
+    assert all(m.startswith("qwen3.5-4b-4bit,gemma-4-") for m in result), (
         f"csv completer dropped the head before the comma: "
-        f"{[m for m in result if not m.startswith('qwen3.5-4b,')]}"
+        f"{[m for m in result if not m.startswith('qwen3.5-4b-4bit,')]}"
     )
     assert len(result) >= 5, "should match at least 5 gemma-4-* tokens"
 
@@ -135,10 +135,10 @@ def test_alias_csv_completer_multiple_commas() -> None:
     """``--models a,b,c<TAB>`` only completes ``c``; ``a,b,`` is
     carried through unchanged. Lock this in because rpartition vs
     partition is an easy-to-flip bug."""
-    result = alias_csv_completer("qwen3.5-4b,gemma-4-12b,qwen3.6-")
-    assert all(m.startswith("qwen3.5-4b,gemma-4-12b,qwen3.6-") for m in result), (
-        "csv completer must preserve all prior csv tokens"
-    )
+    result = alias_csv_completer("qwen3.5-4b-4bit,gemma-4-12b-4bit,qwen3.6-")
+    assert all(
+        m.startswith("qwen3.5-4b-4bit,gemma-4-12b-4bit,qwen3.6-") for m in result
+    ), "csv completer must preserve all prior csv tokens"
 
 
 def test_aliases_path_resolves_to_real_file() -> None:
@@ -156,8 +156,8 @@ def test_alias_csv_completer_handles_whitespace_after_comma() -> None:
     must match that contract so users who naturally type the
     human-friendly ``a, b, c`` shape get suggestions instead of an
     empty list."""
-    spaced = alias_csv_completer("qwen3.5-4b, gemma-4-")
-    tight = alias_csv_completer("qwen3.5-4b,gemma-4-")
+    spaced = alias_csv_completer("qwen3.5-4b-4bit, gemma-4-")
+    tight = alias_csv_completer("qwen3.5-4b-4bit,gemma-4-")
     assert len(spaced) == len(tight), (
         "csv completer must produce the same number of matches whether "
         "the user typed `a,b` or `a, b`"

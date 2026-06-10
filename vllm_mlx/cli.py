@@ -10,9 +10,9 @@ Commands:
     rapid-mlx chat <model>                 Interactive chat REPL
 
 Usage:
-    rapid-mlx serve qwen3.5-4b --port 8000
-    rapid-mlx bench qwen3.5-4b --num-prompts 10
-    rapid-mlx chat qwen3.5-4b
+    rapid-mlx serve qwen3.5-4b-4bit --port 8000
+    rapid-mlx bench qwen3.5-4b-4bit --num-prompts 10
+    rapid-mlx chat qwen3.5-4b-4bit
 """
 
 import argparse
@@ -1374,7 +1374,7 @@ def _print_cached_models() -> None:
         return
 
     # Reverse-map HF repo path → alias name so the alias column matches the
-    # user's mental model (``qwen3.5-4b`` not ``mlx-community/Qwen3.5-4B...``).
+    # user's mental model (``qwen3.5-4b-4bit`` not ``mlx-community/Qwen3.5-4B...``).
     profiles = list_profiles()
     hf_to_alias: dict[str, str] = {}
     for alias, p in profiles.items():
@@ -1450,11 +1450,11 @@ def models_command(args):
     print(f"  Available models ({len(profiles)} aliases)")
 
     # Widths sized to fit the longest values currently in aliases.json:
-    # alias 22 (qwen3.5-122b-mxfp4 etc.), tool 16 (qwen3_coder_xml + 1 pad),
-    # reasoning 12 (deepseek_r1 + 1 pad), spec 10 ("✗ hybrid"), tier 11,
-    # dflash 7 ("✓ ready"/"—").
+    # alias 24 (deepseek-v4-flash-8bit is 22 chars; +2 pad after explicit
+    # quant rename), tool 16 (qwen3_coder_xml + 1 pad), reasoning 12
+    # (deepseek_r1 + 1 pad), spec 10 ("✗ hybrid"), tier 11, dflash 7.
     cols = (
-        ("Alias", 22),
+        ("Alias", 24),
         ("Tools", 16),
         ("Reasoning", 12),
         ("Spec-Decode", 10),
@@ -1487,7 +1487,7 @@ def models_command(args):
         # registry column is pure declarative state.
         dflash = "✓" if p.supports_dflash else "—"
         row = (
-            f"  {alias:<22} {tools:<16} {reasoning:<12} "
+            f"  {alias:<24} {tools:<16} {reasoning:<12} "
             f"{spec:<10} {tier:<11} {dflash:<7}"
         )
         print(row)
@@ -1607,7 +1607,7 @@ def ps_command(_args):
         try:
             i = cmd.index("serve") + 1
             # Pre-PR this loop ``break``ed on the first positional, so a
-            # ``rapid-mlx serve qwen3.5-4b --port 8005`` ended with
+            # ``rapid-mlx serve qwen3.5-4b-4bit --port 8005`` ended with
             # port="8000" because the positional model token came before
             # ``--port``. Keep scanning for flags after we've captured the
             # model — argparse accepts them on either side.
@@ -1673,7 +1673,7 @@ def _spawn_chat_server(
 
     If ``served_name`` is given, it is passed via ``--served-model-name`` so
     the spawned server exposes the alias as the API model name (e.g. user
-    typed ``qwen3.5-4b`` → API requests use ``qwen3.5-4b`` rather than the
+    typed ``qwen3.5-4b-4bit`` → API requests use ``qwen3.5-4b-4bit`` rather than the
     expanded HF path).
     """
     import socket
@@ -1809,7 +1809,7 @@ def _has_short_pattern_dominating_suffix(
 
     - ``"BarleyBarleyBarley..."`` (no whitespace separator) — the entire
       suffix collapses to a single ``str.split()`` token whose count
-      never increments. Real qwen3.5-4b regression surfaced in the
+      never increments. Real qwen3.5-4b-4bit regression surfaced in the
       0.6.28 onboarding test.
     - Long-cycle phrase loops, e.g. a ~280-char clause that repeats
       verbatim until ``max_tokens``. Surfaced when asked "describe the
@@ -2051,7 +2051,7 @@ def _stream_chat_response(
     #    pattern. Catches the form ``"BarleyBarleyBarley..."`` (no
     #    whitespace separator), where ``piece.split()`` produces one
     #    giant token whose count never increments — this was a real
-    #    qwen3.5-4b regression in 0.6.28 (issue surfaced post-release).
+    #    qwen3.5-4b-4bit regression in 0.6.28 (issue surfaced post-release).
     REPEAT_LIMIT = 25
     repeat_last: str | None = None
     repeat_run = 0
@@ -2442,7 +2442,7 @@ def chat_command(args):
     # we can distinguish "user did not pass it" from "user passed 2048
     # explicitly". When ``--think`` is set and the user did not supply a
     # value, raise the default from 2048 to 4096 so the reasoning trace +
-    # final answer both fit (the round-1 finding: ``chat qwen3.5-4b
+    # final answer both fit (the round-1 finding: ``chat qwen3.5-4b-4bit
     # --think`` filled the 2048 budget with reasoning and emitted an
     # empty answer with ``finish_reason='length'``).
     user_passed_max_tokens = args.max_tokens is not None
@@ -2487,7 +2487,7 @@ def chat_command(args):
     #
     # Default thinking OFF in the REPL. Reasoning models (Qwen3.5/3.6, etc.)
     # otherwise emit raw chain-of-thought to stdout AND, on the default
-    # qwen3.5-4b model, degenerate into infinite repetition until max-tokens
+    # qwen3.5-4b-4bit model, degenerate into infinite repetition until max-tokens
     # truncates the response — producing zero usable output for a brand-new
     # user. ``--think`` opts back in for users who explicitly want to see
     # reasoning traces; ``--no-think`` is preserved as the legacy form.
@@ -3264,12 +3264,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  rapid-mlx chat                                      # interactive REPL (defaults to qwen3.5-4b)
-  rapid-mlx chat qwen3.5-9b --think                   # larger model, surface reasoning
-  rapid-mlx serve qwen3.5-9b --port 8000              # OpenAI-compatible server
+  rapid-mlx chat                                      # interactive REPL (defaults to qwen3.5-4b-4bit)
+  rapid-mlx chat qwen3.5-9b-4bit --think                   # larger model, surface reasoning
+  rapid-mlx serve qwen3.5-9b-4bit --port 8000              # OpenAI-compatible server
   rapid-mlx serve mlx-community/Qwen3.5-9B-4bit       # full HF repo also works
   rapid-mlx models                                    # list all aliases
-  rapid-mlx info qwen3.5-9b                           # show per-alias profile
+  rapid-mlx info qwen3.5-9b-4bit                           # show per-alias profile
 """,
     )
     parser.add_argument(
@@ -4092,13 +4092,13 @@ Examples:
         "pull", help="Download a model to the HuggingFace cache (no server)"
     )
     pull_parser.add_argument(
-        "model", help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name)"
+        "model", help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name)"
     ).completer = alias_completer
     rm_parser = subparsers.add_parser(
         "rm", help="Remove a cached model from the HuggingFace cache"
     )
     rm_parser.add_argument(
-        "model", help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name)"
+        "model", help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name)"
     ).completer = alias_completer
     subparsers.add_parser("ps", help="List running rapid-mlx servers")
 
@@ -4135,9 +4135,9 @@ Examples:
     chat_parser.add_argument(
         "model",
         nargs="?",
-        default="qwen3.5-4b",
-        help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name). "
-        "Defaults to qwen3.5-4b when omitted.",
+        default="qwen3.5-4b-4bit",
+        help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name). "
+        "Defaults to qwen3.5-4b-4bit when omitted.",
     ).completer = alias_completer
     chat_parser.add_argument(
         "--system",
@@ -4213,7 +4213,7 @@ Examples:
     )
     info_parser.add_argument(
         "model",
-        help="Model alias (e.g. qwen3.5-4b) or HF repo (e.g. mlx-community/SmolLM3-3B-4bit)",
+        help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (e.g. mlx-community/SmolLM3-3B-4bit)",
     ).completer = alias_completer
 
     # Agents command
@@ -4271,14 +4271,14 @@ Examples:
         "--model",
         type=str,
         default=None,
-        help="Model alias for check tier (default: qwen3.5-35b)",
+        help="Model alias for check tier (default: qwen3.5-35b-8bit)",
     ).completer = alias_completer
     doctor_parser.add_argument(
         "--models",
         type=str,
         default=None,
         help="Comma-separated model aliases for full / benchmark tiers "
-        "(full default: qwen3.5-35b,qwen3.6-35b; "
+        "(full default: qwen3.5-35b-8bit,qwen3.6-35b-4bit; "
         "benchmark default: auto-discovered from local cache)",
     ).completer = alias_csv_completer
     doctor_parser.add_argument(

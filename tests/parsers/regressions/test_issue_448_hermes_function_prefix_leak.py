@@ -2,7 +2,7 @@
 """Regression guard for #448 — hermes streaming leaks `<function` prefix.
 
 Reported 2026-05-23 on ``mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit``
-(aliased via ``qwen3-coder-30b`` to the hermes tool parser). Qwen3-Coder
+(aliased via ``qwen3-coder-30b-4bit`` to the hermes tool parser). Qwen3-Coder
 emits the legacy ``<function=name>{...}</function>`` wire format. The
 hermes non-stream regex handles both ``<tool_call>...`` and bare
 ``<function=...`` blocks, but the streaming branch only short-circuits

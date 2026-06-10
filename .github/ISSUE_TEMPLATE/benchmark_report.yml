@@ -17,7 +17,7 @@ body:
     id: model
     attributes:
       label: Model
-      placeholder: "e.g., qwen3.5-9b or mlx-community/Qwen3.5-9B-4bit"
+      placeholder: "e.g., qwen3.5-9b-4bit or mlx-community/Qwen3.5-9B-4bit"
     validations:
       required: true
   - type: textarea

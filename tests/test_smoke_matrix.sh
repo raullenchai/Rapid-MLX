@@ -72,7 +72,7 @@ print(text)
 # test 4 to verify the reasoning parser is actually splitting thinking
 # tokens into ``reasoning_content`` — combined length is unreliable because
 # some models compensate for disabled thinking by writing longer answers
-# in ``content`` (e.g. qwen3.5-4b on simple math drops thinking ratio
+# in ``content`` (e.g. qwen3.5-4b-4bit on simple math drops thinking ratio
 # below the previous 1.5x heuristic).
 stream_chat_split() {
     local body="$1"

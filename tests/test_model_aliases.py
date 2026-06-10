@@ -9,8 +9,8 @@ from vllm_mlx.model_aliases import list_aliases, resolve_model, suggest_similar
 
 
 def test_known_alias_resolves():
-    assert resolve_model("qwen3.5-9b") == "mlx-community/Qwen3.5-9B-4bit"
-    assert resolve_model("llama3-3b") == "mlx-community/Llama-3.2-3B-Instruct-4bit"
+    assert resolve_model("qwen3.5-9b-4bit") == "mlx-community/Qwen3.5-9B-4bit"
+    assert resolve_model("llama3-3b-4bit") == "mlx-community/Llama-3.2-3B-Instruct-4bit"
 
 
 def test_full_path_passes_through():
@@ -24,12 +24,12 @@ def test_unknown_name_passes_through():
 
 def test_local_path_takes_priority_over_alias(tmp_path):
     """A local directory matching an alias name should win."""
-    local_dir = tmp_path / "qwen3.5-9b"
+    local_dir = tmp_path / "qwen3.5-9b-4bit"
     local_dir.mkdir()
     old_cwd = os.getcwd()
     try:
         os.chdir(tmp_path)
-        assert resolve_model("qwen3.5-9b") == "qwen3.5-9b"
+        assert resolve_model("qwen3.5-9b-4bit") == "qwen3.5-9b-4bit"
     finally:
         os.chdir(old_cwd)
 
@@ -37,14 +37,14 @@ def test_local_path_takes_priority_over_alias(tmp_path):
 def test_list_aliases_nonempty():
     aliases = list_aliases()
     assert len(aliases) >= 15
-    assert "qwen3.5-9b" in aliases
+    assert "qwen3.5-9b-4bit" in aliases
 
 
 def test_hermes_alias_not_llama():
     """Hermes-3 should be under its own name, not llama3-8b."""
     aliases = list_aliases()
     assert "llama3-8b" not in aliases
-    assert "hermes3-8b" in aliases
+    assert "hermes3-8b-4bit" in aliases
 
 
 def test_suggest_similar_stays_within_family():
@@ -61,11 +61,11 @@ def test_suggest_similar_stays_within_family():
 
 
 def test_suggest_similar_correctly_typo_for_close_size():
-    """Typing ``qwen3.5-30b`` (typo for ``qwen3.5-35b``) should rank the
+    """Typing ``qwen3.5-30b`` (typo for ``qwen3.5-35b-8bit``) should rank the
     correct alias first."""
     suggestions = suggest_similar("qwen3.5-30b")
     assert suggestions, "expected at least one suggestion"
-    assert suggestions[0] == "qwen3.5-35b", suggestions
+    assert suggestions[0] == "qwen3.5-35b-8bit", suggestions
 
 
 def test_suggest_similar_empty_for_nonsense():
@@ -89,10 +89,10 @@ def test_suggest_similar_one_letter_no_match():
 
 def test_suggest_similar_matches_partial_family_token():
     """A bare family name like ``hermes`` should suggest aliases that
-    share that prefix (``hermes3-8b``), not return [] just because there's
+    share that prefix (``hermes3-8b-4bit``), not return [] just because there's
     no exact ``hermes-foo`` separator pattern."""
     suggestions = suggest_similar("hermes")
-    assert "hermes3-8b" in suggestions, suggestions
+    assert "hermes3-8b-4bit" in suggestions, suggestions
 
 
 # --- Letter-only fallback (separator-mismatched names) ----------------
@@ -101,8 +101,8 @@ def test_suggest_similar_matches_partial_family_token():
 def test_suggest_similar_letter_fallback_handles_separator_mismatch():
     """Real bug from the field: ``rapid-mlx chat gemma4-27b`` returned
     zero suggestions because the strict family parser sees ``gemma4`` and
-    no alias starts with ``gemma4`` (we have ``gemma-4-26b`` and
-    ``gemma3-27b``). The letter-only fallback must catch this — extract
+    no alias starts with ``gemma4`` (we have ``gemma-4-26b-4bit`` and
+    ``gemma3-27b-4bit``). The letter-only fallback must catch this — extract
     ``gemma`` and match the whole gemma family."""
     suggestions = suggest_similar("gemma4-27b")
     assert suggestions, "letter-only fallback must produce gemma family suggestions"
@@ -111,34 +111,17 @@ def test_suggest_similar_letter_fallback_handles_separator_mismatch():
         assert s.startswith("gemma"), s
 
 
-def test_suggest_similar_short_alias_does_not_shadow_sized_variants():
-    """When a short alias (e.g. ``gemma4``) exists AND the user types
-    a size-qualified name (``gemma4-26b``), the strict-family pass must
-    NOT short-circuit to just ``[gemma4]``. Otherwise users hunting
-    for the 26B variant get bait-and-switched onto the 12B default.
-    Fall through to the letter-only pass so size-specific aliases
-    surface."""
-    suggestions = suggest_similar("gemma4-26b")
-    assert suggestions, "size-qualified typo must produce suggestions"
-    # The 26B variant must be among the suggestions — that's what the
-    # user actually wanted.
-    assert "gemma-4-26b" in suggestions, suggestions
-    # Sanity: the bare ``gemma4`` short alias should NOT be the only
-    # suggestion (the whole point of this regression test).
-    assert suggestions != ["gemma4"], suggestions
-
-
 def test_suggest_similar_letter_fallback_collapsed_separator():
     """User collapses our hyphen — ``mistral24b`` should still suggest
-    ``mistral-24b``, not return []."""
-    assert "mistral-24b" in suggest_similar("mistral24b")
+    ``mistral-24b-4bit``, not return []."""
+    assert "mistral-24b-4bit" in suggest_similar("mistral24b")
 
 
 def test_suggest_similar_letter_fallback_skips_legit_looking_names():
     """When the input has no size/quant suffix tokens (i.e., looks
     structurally like a legit single-segment HF repo ID), suggest_similar
-    must return [] — not bait-and-switch ``gpt2`` to ``gpt-oss-20b`` or
-    ``qwen-coder`` to ``qwen3-coder``. The CLI layer's POPULAR_ALIASES
+    must return [] — not bait-and-switch ``gpt2`` to ``gpt-oss-20b-mxfp4-q8`` or
+    ``qwen-coder`` to ``qwen3-coder-4bit``. The CLI layer's POPULAR_ALIASES
     fallback handles those cases at presentation time."""
     # ``gpt2`` has been pinned by test_suggest_similar_lets_legitimate_hf_ids_through;
     # this case adds the partial-family equivalent.
@@ -152,7 +135,7 @@ def test_suggest_similar_letter_fallback_skips_legit_looking_names():
         ("Gemma4-27b", "gemma"),  # lowercased
         ("gemma_4-27b", "gemma"),  # stops at non-letter
         ("mistral24b", "mistral"),
-        ("qwen3.5-4b", "qwen"),  # stops at first digit
+        ("qwen3.5-4b-4bit", "qwen"),  # stops at first digit
         ("123abc", ""),  # leading non-letter → empty
         ("", ""),  # empty input
         ("ab", "ab"),  # short prefix (caller enforces ≥3 minimum)

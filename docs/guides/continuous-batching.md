@@ -7,7 +7,7 @@ for back-compat but is a no-op.
 ## Default Behaviour
 
 ```bash
-rapid-mlx serve qwen3.5-4b
+rapid-mlx serve qwen3.5-4b-4bit
 ```
 
 ## With Paged Cache
@@ -15,7 +15,7 @@ rapid-mlx serve qwen3.5-4b
 For memory-efficient prefix sharing:
 
 ```bash
-rapid-mlx serve qwen3.5-4b --use-paged-cache
+rapid-mlx serve qwen3.5-4b-4bit --use-paged-cache
 ```
 
 ## How It Works
@@ -164,7 +164,7 @@ python tests/test_prefix_cache.py
 ## Production Setup
 
 ```bash
-rapid-mlx serve qwen3.5-9b \
+rapid-mlx serve qwen3.5-9b-4bit \
   --use-paged-cache \
   --port 8000
 ```

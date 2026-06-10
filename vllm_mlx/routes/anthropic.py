@@ -530,7 +530,7 @@ async def _stream_anthropic_messages(
             # stripped at the token layer, so its state machine
             # never leaves the "Unknown channel, suppress" arm and
             # this loop emits no ``content_block_delta`` events. The
-            # symptom (v0.6.64 pr_validate on gpt-oss-20b: anthropic
+            # symptom (v0.6.64 pr_validate on gpt-oss-20b-mxfp4-q8: anthropic
             # stream test 4 returned 0 content chunks) is the
             # streaming counterpart of the non-streaming empty-
             # TextBlock bug fixed in

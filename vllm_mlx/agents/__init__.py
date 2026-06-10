@@ -4,7 +4,7 @@ Usage:
     from vllm_mlx.agents import get_profile, list_profiles
 
     profile = get_profile("hermes")
-    config = profile.render_config("http://localhost:8000/v1", "qwen3.5-9b")
+    config = profile.render_config("http://localhost:8000/v1", "qwen3.5-9b-4bit")
 """
 
 from __future__ import annotations

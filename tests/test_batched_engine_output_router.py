@@ -426,7 +426,7 @@ async def test_router_tool_call_body_preserved_single_token_flush(family):
     chunks reuse the scheduler's detokenized ``output.new_text`` would, if
     applied to TOOL_CALL events, override the accumulated body with just the
     end-marker token's text, silently dropping the call body. Caught
-    post-v0.6.61 on gemma-4-26b — non-stream extracted a valid tool call
+    post-v0.6.61 on gemma-4-26b-4bit — non-stream extracted a valid tool call
     from the same generation that streaming returned as bare content.
 
     Parametrized over every router-allowlist family that emits TOOL_CALL

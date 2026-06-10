@@ -35,7 +35,7 @@ def _generate_tool_id() -> str:
 # Terminator: ``<|call|>`` is the in-output token, but the engine stops
 # generation when it emits it (``<|call|>`` is part of the harmony EOS
 # set), so the token is consumed and never appears in ``output_text``.
-# Empirically (gpt-oss-20b via /v1/chat/completions, 2026-05-22) the
+# Empirically (gpt-oss-20b-mxfp4-q8 via /v1/chat/completions, 2026-05-22) the
 # commentary block ends with the JSON args and no terminator. Accept
 # end-of-string OR the next channel marker as alternative terminators
 # so a complete-but-unterminated tool call still parses. Same regression

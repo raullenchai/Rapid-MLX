@@ -27,7 +27,7 @@ from vllm_mlx.request import SamplingParams
 
 # A realistic payload — Qwen3.6 published coding-tuned sampling.
 QWEN36_CODING_PAYLOAD = {
-    "model": "qwen3.6-35b",
+    "model": "qwen3.6-35b-4bit",
     "messages": [{"role": "user", "content": "hi"}],
     "temperature": 0.6,
     "top_p": 0.95,
@@ -69,7 +69,7 @@ def test_chat_completion_request_defaults_to_none_when_unset():
     'client explicitly chose a value'. Mixing them would make us override
     SamplingParams defaults even when the client wanted defaults."""
     req = ChatCompletionRequest(
-        model="qwen3.5-4b",
+        model="qwen3.5-4b-4bit",
         messages=[{"role": "user", "content": "hi"}],
     )
 
@@ -83,7 +83,7 @@ def test_chat_completion_request_defaults_to_none_when_unset():
 def test_completion_request_preserves_extended_sampling_params():
     """Mirror of the chat-request test for /v1/completions."""
     payload = {
-        "model": "qwen3.6-35b",
+        "model": "qwen3.6-35b-4bit",
         "prompt": "hi",
         "temperature": 0.6,
         "top_p": 0.95,
@@ -155,7 +155,7 @@ def test_chat_kwargs_omits_extended_params_when_client_silent():
     NOT contain them — otherwise we'd override the engine's defaults with
     None and break the SamplingParams contract."""
     req = ChatCompletionRequest(
-        model="qwen3.5-4b",
+        model="qwen3.5-4b-4bit",
         messages=[{"role": "user", "content": "hi"}],
     )
     chat_kwargs = _build_chat_kwargs(req)
@@ -198,7 +198,7 @@ def test_completion_route_forwards_extended_params_to_engine():
             yield _FakeOutput()
 
     req = CompletionRequest(
-        model="qwen3.6-35b",
+        model="qwen3.6-35b-4bit",
         prompt="hi",
         temperature=0.6,
         top_p=0.95,
@@ -246,7 +246,7 @@ def test_completion_route_omits_extended_params_when_client_silent():
     """Mirror of the chat-route variant: legacy /v1/completions clients that
     don't set these fields must not see them leaked as None into engine
     kwargs (which would override SamplingParams defaults)."""
-    req = CompletionRequest(model="qwen3.5-4b", prompt="hi")
+    req = CompletionRequest(model="qwen3.5-4b-4bit", prompt="hi")
     extended_kwargs: dict = {}
     for name in (
         "top_k",

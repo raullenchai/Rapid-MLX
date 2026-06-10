@@ -9,7 +9,7 @@ a no-op for back-compat.
 ### Default
 
 ```bash
-rapid-mlx serve qwen3.5-4b --port 8000
+rapid-mlx serve qwen3.5-4b-4bit --port 8000
 ```
 
 Short aliases (see `rapid-mlx models`) work everywhere a model name is
@@ -20,7 +20,7 @@ accepted. Full HuggingFace repo IDs (`mlx-community/...`) work too.
 Memory-efficient caching for production / shared system prompts:
 
 ```bash
-rapid-mlx serve qwen3.5-9b --port 8000 --use-paged-cache
+rapid-mlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 ```
 
 ## Server Options

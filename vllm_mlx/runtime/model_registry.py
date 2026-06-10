@@ -7,11 +7,11 @@ Supports the multi-model pattern needed by modern AI agents:
 
 Usage:
     registry = ModelRegistry()
-    registry.add("qwen3.5-4b", engine, is_default=True)
-    registry.add("qwen3.5-27b", engine2)
+    registry.add("qwen3.5-4b-4bit", engine, is_default=True)
+    registry.add("qwen3.5-27b-4bit", engine2)
 
     # Request routing
-    engine = registry.get_engine("qwen3.5-27b")  # specific
+    engine = registry.get_engine("qwen3.5-27b-4bit")  # specific
     engine = registry.get_engine("default")       # default
     engine = registry.get_engine(None)             # default
 """

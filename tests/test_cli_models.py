@@ -41,20 +41,20 @@ def test_models_command_shows_capability_columns():
 
 
 def test_models_command_renders_hybrid_marker_for_qwen35():
-    """Hybrid models (e.g. qwen3.5-4b) must show '✗ hybrid' + tier 'n/a'.
+    """Hybrid models (e.g. qwen3.5-4b-4bit) must show '✗ hybrid' + tier 'n/a'.
 
     The point of the column is to spare users an `info` round-trip when
     deciding whether spec-decode/suffix-decode will help. Trust the gate.
     """
     out = _capture_models_output()
     profiles = list_profiles()
-    qwen35_4b = profiles.get("qwen3.5-4b")
-    assert qwen35_4b is not None, "qwen3.5-4b alias missing — fixture drift"
-    assert qwen35_4b.is_hybrid, "qwen3.5-4b should still be is_hybrid=True"
+    qwen35_4b = profiles.get("qwen3.5-4b-4bit")
+    assert qwen35_4b is not None, "qwen3.5-4b-4bit alias missing — fixture drift"
+    assert qwen35_4b.is_hybrid, "qwen3.5-4b-4bit should still be is_hybrid=True"
 
-    # Find the qwen3.5-4b row and confirm the hybrid markers.
-    matches = [line for line in out.splitlines() if "qwen3.5-4b " in line]
-    assert matches, "no row found for qwen3.5-4b"
+    # Find the qwen3.5-4b-4bit row and confirm the hybrid markers.
+    matches = [line for line in out.splitlines() if "qwen3.5-4b-4bit " in line]
+    assert matches, "no row found for qwen3.5-4b-4bit"
     row = matches[0]
     assert "✗ hybrid" in row, f"expected '✗ hybrid' marker in row: {row!r}"
     assert "n/a" in row, f"expected suffix tier 'n/a' in row: {row!r}"
@@ -67,15 +67,15 @@ def test_models_command_renders_parser_for_hermes3_8b():
     alias registry, (2) the suffix-tier cell shows the tier currently
     recorded in ``aliases.json``. Reading the expected tier from the
     registry (not hardcoding it) means a future bench re-sweep that
-    reclassifies hermes3-8b doesn't break this test, while a *display*
+    reclassifies hermes3-8b-4bit doesn't break this test, while a *display*
     regression (tier dropped from the row entirely) still does.
     """
     out = _capture_models_output()
-    matches = [line for line in out.splitlines() if "hermes3-8b " in line]
-    assert matches, "no row found for hermes3-8b"
+    matches = [line for line in out.splitlines() if "hermes3-8b-4bit " in line]
+    assert matches, "no row found for hermes3-8b-4bit"
     row = matches[0]
-    profile = list_profiles().get("hermes3-8b")
-    assert profile is not None, "hermes3-8b alias missing — fixture drift"
+    profile = list_profiles().get("hermes3-8b-4bit")
+    assert profile is not None, "hermes3-8b-4bit alias missing — fixture drift"
     assert (profile.tool_call_parser or "") in row, (
         f"expected tool parser {profile.tool_call_parser!r} in row: {row!r}"
     )
@@ -194,7 +194,7 @@ def test_models_default_view_unchanged(monkeypatch, capsys):
 
 def test_cached_view_renders_alias_for_known_repo(tmp_path, monkeypatch, capsys):
     """A cached HF repo whose path matches an alias should render under
-    the alias name (e.g. ``qwen3.5-4b``), not the raw HF path."""
+    the alias name (e.g. ``qwen3.5-4b-4bit``), not the raw HF path."""
     from vllm_mlx.model_aliases import list_profiles
 
     profiles = list_profiles()

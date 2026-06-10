@@ -95,11 +95,11 @@ def test_info_dflash_block_skipped_for_unknown_alias(capsys) -> None:
 
 
 def test_info_dflash_marks_4bit_alias_ineligible(capsys) -> None:
-    """The default ``qwen3.5-27b`` alias points at the 4-bit variant and
+    """The default ``qwen3.5-27b-4bit`` alias points at the 4-bit variant and
     must surface as ineligible with the right gate failing."""
     from vllm_mlx.cli import info_command
 
-    args = type("Args", (), {"model": "qwen3.5-27b"})()
+    args = type("Args", (), {"model": "qwen3.5-27b-4bit"})()
     info_command(args)
     captured = capsys.readouterr()
     assert "DFlash eligibility" in captured.out
@@ -153,10 +153,10 @@ def test_models_listing_renders_dflash_column(capsys) -> None:
 
     # A non-DFlash alias renders — in the DFlash column.
     ineligible_row = next(
-        (line for line in lines if "qwen3.5-4b " in line),
+        (line for line in lines if "qwen3.5-4b-4bit " in line),
         None,
     )
-    assert ineligible_row is not None, "qwen3.5-4b row missing"
+    assert ineligible_row is not None, "qwen3.5-4b-4bit row missing"
     assert "—" in ineligible_row, f"DFlash column should be —: {ineligible_row!r}"
 
 

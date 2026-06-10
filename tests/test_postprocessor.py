@@ -133,7 +133,7 @@ class TestStreamingPostProcessorChannelRouted:
         emitted events to the client but never updated the per-processor
         accumulators that ``_build_usage`` reads to compute the
         reasoning/content split. Confirmed by parallel onboarding agents
-        on gemma-4-26b and gpt-oss-20b.
+        on gemma-4-26b-4bit and gpt-oss-20b.
         """
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg)

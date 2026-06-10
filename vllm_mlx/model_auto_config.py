@@ -317,7 +317,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
 
     Two-stage lookup:
     1. **Alias profile** (single source of truth) — if ``model_path`` is a
-       known alias name (``qwen3.5-4b``) or maps to one's HF path
+       known alias name (``qwen3.5-4b-4bit``) or maps to one's HF path
        (``mlx-community/Qwen3.5-4B-MLX-4bit``), return that profile's
        config directly. This guarantees per-alias granularity for any
        optimization that varies by size/quant within a family.

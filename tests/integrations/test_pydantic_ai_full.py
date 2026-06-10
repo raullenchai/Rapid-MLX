@@ -102,7 +102,10 @@ except Exception as e:
 # === 5. Multi-turn conversation ===
 print("\n=== Test 5: Multi-turn ===")
 try:
-    agent = Agent(model)
+    # PydanticAI defaults max_tokens to ~1024; on verbose 4B-class models the
+    # second turn can spill past that. Raise the cap so the SDK contract test
+    # checks rapid-mlx behaviour, not PydanticAI's default ceiling.
+    agent = Agent(model, model_settings={"max_tokens": 2048})
     r1 = agent.run_sync("My name is Bob. Remember this.")
     r2 = agent.run_sync("What is my name?", message_history=r1.all_messages())
     assert "bob" in r2.output.lower(), r2.output
@@ -115,7 +118,10 @@ except Exception as e:
 # === 6. Multiple tools, sequential ===
 print("\n=== Test 6: Multiple tools ===")
 try:
-    agent = Agent(model)
+    # Sequential tool calls accumulate output across two tool-call round trips;
+    # PydanticAI's default max_tokens ceiling kicks in before the final answer
+    # on small models. Same fix as test 5.
+    agent = Agent(model, model_settings={"max_tokens": 2048})
 
     @agent.tool_plain
     def add(a: int, b: int) -> int:

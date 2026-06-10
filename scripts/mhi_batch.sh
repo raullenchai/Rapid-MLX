@@ -9,8 +9,8 @@ cd "$PROJECT_DIR"
 
 # Model definitions: name|path|tool_parser
 MODELS=(
-    "qwopus-27b|/Users/raullenstudio/.cache/huggingface/hub/models--Jackrong--MLX-Qwopus3.5-27B-v3-4bit/snapshots/d399209470abffa6b45678c53a910f869b18b2f2|hermes"
-    "deepseek-r1-32b|/Users/raullenstudio/.cache/huggingface/hub/models--mlx-community--DeepSeek-R1-Distill-Qwen-32B-4bit/snapshots/4e0d3848a0ad8f9fb54638891e4928f04fcca978|hermes"
+    "qwopus-27b-4bit|/Users/raullenstudio/.cache/huggingface/hub/models--Jackrong--MLX-Qwopus3.5-27B-v3-4bit/snapshots/d399209470abffa6b45678c53a910f869b18b2f2|hermes"
+    "deepseek-r1-32b-4bit|/Users/raullenstudio/.cache/huggingface/hub/models--mlx-community--DeepSeek-R1-Distill-Qwen-32B-4bit/snapshots/4e0d3848a0ad8f9fb54638891e4928f04fcca978|hermes"
     "llama-70b|/Volumes/Extreme SSD/Models/Llama-3.3-70B-Instruct-4bit|llama"
 )
 

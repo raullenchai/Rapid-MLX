@@ -58,7 +58,7 @@ rapid-mlx version
 rapid-mlx doctor
 
 # Smallest interactive smoke test (downloads ~2.5 GB on first run)
-rapid-mlx chat qwen3.5-4b
+rapid-mlx chat qwen3.5-4b-4bit
 ```
 
 ## Troubleshooting
@@ -81,7 +81,7 @@ huggingface-cli login
 
 Use a smaller quantized model:
 ```bash
-rapid-mlx serve qwen3.5-4b
+rapid-mlx serve qwen3.5-4b-4bit
 ```
 
 ### `brew install` fails with `Operation not permitted`

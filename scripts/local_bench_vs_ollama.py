@@ -96,7 +96,7 @@ def ollama_model_name(model: str) -> str:
     if ":" in model:
         return model
     known = {
-        "qwen3.5-4b": "qwen3:4b",
+        "qwen3.5-4b-4bit": "qwen3:4b",
         "qwen3.5-8b": "qwen3:8b",
         "qwen3.5-14b": "qwen3:14b",
         "qwen3.5-32b": "qwen3:32b",
@@ -106,7 +106,7 @@ def ollama_model_name(model: str) -> str:
         "phi4-4b": "phi4:4b",
         "phi4-mini": "phi4-mini:latest",
         "gemma3-4b": "gemma3:4b",
-        "gemma3-12b": "gemma3:12b",
+        "gemma3-12b-4bit": "gemma3:12b",
     }
     if model in known:
         return known[model]
@@ -683,7 +683,9 @@ def render_results(result: ComparisonResult) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> int:
     parser = argparse.ArgumentParser(description="Benchmark Rapid-MLX vs Ollama")
-    parser.add_argument("--model", default="qwen3.5-4b", help="Rapid-MLX model name")
+    parser.add_argument(
+        "--model", default="qwen3.5-4b-4bit", help="Rapid-MLX model name"
+    )
     parser.add_argument(
         "--ollama-model",
         default=None,

@@ -11,7 +11,7 @@
 #     scripts/run_dogfood_mvp.sh status
 #
 #   Env vars:
-#     MODEL            alias to serve (default: qwen3.5-35b)
+#     MODEL            alias to serve (default: qwen3.5-35b-8bit)
 #     PORT             local port (default: 8765)
 #     API_KEY          bearer token (default: random 24 hex bytes)
 #     RAPID_MLX_CMD    serve command (default: auto — editable `python3.12 -m
@@ -114,7 +114,7 @@ fi
 
 # Pick the serve command. Prefer the editable repo CLI when we're inside
 # vllm-mlx — the brew-installed `rapid-mlx` ships an older aliases.json
-# and won't see recent additions like `minimax-m2.7`.
+# and won't see recent additions like `minimax-m2.7-mxfp4`.
 if [ -z "${RAPID_MLX_CMD:-}" ]; then
   if [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/vllm_mlx/cli.py" ] \
        && python3.12 -c "import vllm_mlx" >/dev/null 2>&1; then
