@@ -1,6 +1,5 @@
+<img width="1600" height="800" alt="banner" src="https://github.com/user-attachments/assets/f3743bb7-7287-4b24-ac97-a7037974396f" />
 <p align="center">
-  <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/logo.png" alt="Rapid-MLX" width="200">
-</p>
 
 <h1 align="center">Rapid-MLX</h1>
 
