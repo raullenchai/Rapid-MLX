@@ -949,7 +949,7 @@ def serve_command(args):
 
     # Startup summary
     print()
-    print("  Rapid-MLX")
+    print("  🐆 Rapid-MLX")
     print("  ─────────")
     features = []
     if args.enable_auto_tool_choice:
@@ -3165,7 +3165,7 @@ def chat_command(args):
         )
 
     print(
-        f"  {BOLD}Chat{RESET} — "
+        f"  🐆 {BOLD}Chat{RESET} — "
         f"{DIM}type {RESET}{BOLD}/help{RESET}{DIM} for commands, "
         f"Ctrl-D to exit.{RESET}"
     )
