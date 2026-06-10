@@ -929,6 +929,28 @@ def test_banner_does_not_inline_key_in_curl_command():
     assert "Bearer SUPER_SECRET_KEY" not in out
 
 
+def test_banner_has_cheetah_brand_line():
+    """Cheetah brand mark sits above the warning box so the share output
+    leads with the friendly ``rapid-mlx`` identity before the harsh
+    security warning. Mirrors the cheetah glyph the desktop app's
+    AppIcon ships."""
+    from vllm_mlx.share import warning
+
+    out = warning.render(
+        "https://rapidserver.quicksilverpro.io/r/abc",
+        "deadbeef",
+        "mlx-community/Qwen3.5-4B",
+        "abc",
+        "https://chat.example.com",
+    )
+    assert "🐆" in out
+    # Brand line must appear BEFORE the warning box (the leading edge of
+    # the security warning is the top-left of the box).
+    cheetah_pos = out.index("🐆")
+    warning_pos = out.index("PUBLIC INTERNET")
+    assert cheetah_pos < warning_pos
+
+
 def test_banner_includes_one_click_chat_link():
     from vllm_mlx.share import warning
 
