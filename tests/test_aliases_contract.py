@@ -454,7 +454,6 @@ def test_audit_batch_reasoning_parser_wirings() -> None:
     profiles = list_profiles()
     expected = {
         "nemotron-30b-4bit": "qwen3",
-        "nemotron-30b-4bit": "qwen3",
         "kimi-k2.5-3bit": "qwen3",
         "hermes4-70b-4bit": "glm4",
     }
@@ -574,7 +573,9 @@ def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
     # gpt-oss-20b-mxfp4-q8 previously pointed at mlx-community/GPT-OSS-20B-4bit
     # which 404s; the canonical mlx-community release uses the
     # MXFP4-Q8 hybrid quantization.
-    assert profiles["gpt-oss-20b-mxfp4-q8"].hf_path != "mlx-community/GPT-OSS-20B-4bit", (
+    assert (
+        profiles["gpt-oss-20b-mxfp4-q8"].hf_path != "mlx-community/GPT-OSS-20B-4bit"
+    ), (
         "gpt-oss-20b-mxfp4-q8 must not regress to the 404 path; current canonical "
         "upload is mlx-community/gpt-oss-20b-MXFP4-Q8."
     )

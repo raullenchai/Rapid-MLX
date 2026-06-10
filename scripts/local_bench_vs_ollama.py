@@ -683,7 +683,9 @@ def render_results(result: ComparisonResult) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> int:
     parser = argparse.ArgumentParser(description="Benchmark Rapid-MLX vs Ollama")
-    parser.add_argument("--model", default="qwen3.5-4b-4bit", help="Rapid-MLX model name")
+    parser.add_argument(
+        "--model", default="qwen3.5-4b-4bit", help="Rapid-MLX model name"
+    )
     parser.add_argument(
         "--ollama-model",
         default=None,

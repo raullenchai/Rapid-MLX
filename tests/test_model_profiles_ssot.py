@@ -88,7 +88,6 @@ def test_orphan_aliases_now_covered() -> None:
         "bonsai-8b-unpacked",
         "ministral-3b-4bit",
         "nemotron-30b-4bit",
-        "nemotron-30b-4bit",
     ):
         profile = resolve_profile(orphan)
         assert profile is not None, f"{orphan} regressed to orphan"
@@ -339,43 +338,15 @@ def test_per_alias_schema_allows_independent_overrides() -> None:
 
 
 # ---- Reverse-lookup behaviour with shared hf_paths -----------------------
-
-
-def test_reverse_lookup_for_shared_hf_path_is_deterministic() -> None:
-    """Two aliases (``nemotron-30b-4bit`` and ``nemotron-30b-4bit``) point at the
-    same MLX repo. Reverse lookup by HF path should return the
-    JSON-insertion-order-first alias's profile, deterministically.
-
-    The contract is "any profile valid for this path", but we lock in
-    the order so a future re-shuffle of aliases.json is forced to
-    explicitly update this test (which is the right place to think
-    about who's the canonical alias).
-    """
-    profiles = list_profiles()
-    nemotron_30b = profiles["nemotron-30b-4bit"]
-    nemotron_nano = profiles["nemotron-30b-4bit"]
-    assert nemotron_30b.hf_path == nemotron_nano.hf_path
-
-    # nemotron-30b-4bit appears first in aliases.json, so reverse lookup
-    # by the shared HF path returns nemotron-30b-4bit's profile object.
-    via_path = resolve_profile(nemotron_30b.hf_path)
-    assert via_path is not None
-    assert via_path is nemotron_30b
-
-
-def test_reverse_lookup_handles_deepseek_v4_flash_duplicate() -> None:
-    """``deepseek-v4-flash-8bit`` and ``deepseek-v4-flash-8bit`` share
-    ``mlx-community/DeepSeek-V4-Flash-8bit`` — same regression guard
-    pattern as the nemotron pair, different family."""
-    profiles = list_profiles()
-    flash = profiles["deepseek-v4-flash-8bit"]
-    flash_8bit = profiles["deepseek-v4-flash-8bit"]
-    assert flash.hf_path == flash_8bit.hf_path
-    via_path = resolve_profile(flash.hf_path)
-    assert via_path is not None
-    # Both profiles agree on capability flags (same model), so either
-    # would be correct semantically. Pin the JSON order winner.
-    assert via_path is flash
+#
+# The original two tests in this section pinned the duplicate-hf_path
+# tie-break for ``(nemotron-30b, nemotron-nano)`` and
+# ``(deepseek-v4-flash, deepseek-v4-flash-8bit)``. After the explicit-quant
+# alias rename, those codename aliases are gone (see the PR description for
+# ``feat/explicit-alias-naming``) and aliases.json no longer has any pair
+# pointing at the same hf_path, so the tie-break is unreachable from the
+# current registry. The reverse-lookup *mechanism* is still exercised by
+# ``test_reverse_lookup_index_built_once_after_first_load`` below.
 
 
 def test_reverse_lookup_index_built_once_after_first_load() -> None:

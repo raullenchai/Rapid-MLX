@@ -1534,7 +1534,9 @@ def test_serve_accepts_no_think_as_alias_for_no_thinking():
     ``no_thinking=True`` destination as ``serve --no-thinking``."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--no-think"]),
+        patch.object(
+            sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--no-think"]
+        ),
         patch.object(cli, "serve_command", side_effect=captured.append),
     ):
         cli.main()
@@ -2247,7 +2249,9 @@ def test_serve_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
     """Same as the chat case — ``serve`` also got the hidden cross-alias
     and the same ambiguity must be reported, not silently resolved."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--no-thi"]),
+        patch.object(
+            sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--no-thi"]
+        ),
         pytest.raises(SystemExit),
     ):
         cli.main()

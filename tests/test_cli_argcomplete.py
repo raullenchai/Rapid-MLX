@@ -136,9 +136,9 @@ def test_alias_csv_completer_multiple_commas() -> None:
     carried through unchanged. Lock this in because rpartition vs
     partition is an easy-to-flip bug."""
     result = alias_csv_completer("qwen3.5-4b-4bit,gemma-4-12b-4bit,qwen3.6-")
-    assert all(m.startswith("qwen3.5-4b-4bit,gemma-4-12b-4bit,qwen3.6-") for m in result), (
-        "csv completer must preserve all prior csv tokens"
-    )
+    assert all(
+        m.startswith("qwen3.5-4b-4bit,gemma-4-12b-4bit,qwen3.6-") for m in result
+    ), "csv completer must preserve all prior csv tokens"
 
 
 def test_aliases_path_resolves_to_real_file() -> None:

@@ -25,18 +25,17 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
-import textwrap
 import time
 from datetime import datetime
-from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # OpenAI client helper
 # ---------------------------------------------------------------------------
 
+
 def get_client(base_url: str, api_key: str = "not-needed"):
     from openai import OpenAI
+
     return OpenAI(base_url=base_url, api_key=api_key)
 
 
@@ -51,14 +50,17 @@ def detect_model(client) -> str:
 
 TAU_TASK_IDS = [24, 10, 5, 17, 33, 14, 15, 20, 30, 4]
 
+
 def run_tau_bench(base_url: str, model: str, api_key: str = "not-needed") -> dict:
     """Run 10 curated TAU-bench retail tasks."""
     try:
-        from tau_bench.envs import get_env
         from tau_bench.agents.tool_calling_agent import ToolCallingAgent
-        from tau_bench.types import EnvRunResult
+        from tau_bench.envs import get_env
+        from tau_bench.types import EnvRunResult  # noqa: F401 — availability probe
     except ImportError:
-        return {"error": "tau-bench not installed. pip install tau-bench @ git+https://github.com/sierra-research/tau-bench.git"}
+        return {
+            "error": "tau-bench not installed. pip install tau-bench @ git+https://github.com/sierra-research/tau-bench.git"
+        }
 
     os.environ["OPENAI_API_KEY"] = api_key
     os.environ["OPENAI_API_BASE"] = base_url
@@ -102,12 +104,14 @@ def run_tau_bench(base_url: str, model: str, api_key: str = "not-needed") -> dic
 
         status = "PASS" if reward == 1.0 else "FAIL"
         print(f"  [TAU] Task {idx:3d}: {status} ({elapsed:.1f}s)")
-        results.append({
-            "task_id": idx,
-            "reward": reward,
-            "elapsed_s": round(elapsed, 1),
-            "error": error,
-        })
+        results.append(
+            {
+                "task_id": idx,
+                "reward": reward,
+                "elapsed_s": round(elapsed, 1),
+                "error": error,
+            }
+        )
 
     passed = sum(1 for r in results if r["reward"] == 1.0)
     score = passed / len(results)
@@ -125,8 +129,16 @@ def run_tau_bench(base_url: str, model: str, api_key: str = "not-needed") -> dic
 # ---------------------------------------------------------------------------
 
 HUMANEVAL_IDS = [
-    "HumanEval/0", "HumanEval/1", "HumanEval/2", "HumanEval/3", "HumanEval/4",
-    "HumanEval/5", "HumanEval/6", "HumanEval/7", "HumanEval/8", "HumanEval/9",
+    "HumanEval/0",
+    "HumanEval/1",
+    "HumanEval/2",
+    "HumanEval/3",
+    "HumanEval/4",
+    "HumanEval/5",
+    "HumanEval/6",
+    "HumanEval/7",
+    "HumanEval/8",
+    "HumanEval/9",
 ]
 
 
@@ -160,7 +172,14 @@ def run_humaneval(base_url: str, model: str, api_key: str = "not-needed") -> dic
             )
             completion = resp.choices[0].text or ""
         except Exception as e:
-            results.append({"task_id": task_id, "passed": False, "elapsed_s": round(time.time() - t0, 1), "error": str(e)})
+            results.append(
+                {
+                    "task_id": task_id,
+                    "passed": False,
+                    "elapsed_s": round(time.time() - t0, 1),
+                    "error": str(e),
+                }
+            )
             print(f"  [HumanEval] {task_id}: FAIL (API error)")
             continue
 
@@ -180,12 +199,14 @@ def run_humaneval(base_url: str, model: str, api_key: str = "not-needed") -> dic
 
         status = "PASS" if passed else "FAIL"
         print(f"  [HumanEval] {task_id}: {status} ({elapsed:.1f}s)")
-        results.append({
-            "task_id": task_id,
-            "passed": passed,
-            "elapsed_s": round(elapsed, 1),
-            "error": None,
-        })
+        results.append(
+            {
+                "task_id": task_id,
+                "passed": passed,
+                "elapsed_s": round(elapsed, 1),
+                "error": None,
+            }
+        )
 
     passed_count = sum(1 for r in results if r.get("passed"))
     score = passed_count / len(results)
@@ -264,7 +285,9 @@ def run_mmlu(base_url: str, model: str, api_key: str = "not-needed") -> dict:
         # Use the pre-formatted 5-shot prompt from tinyMMLU
         formatted = item.get("input_formatted", "")
         if not formatted:
-            choices_text = "\n".join(f"{chr(65+i)}. {c}" for i, c in enumerate(choices))
+            choices_text = "\n".join(
+                f"{chr(65 + i)}. {c}" for i, c in enumerate(choices)
+            )
             formatted = f"{question}\n{choices_text}\nAnswer:"
 
         t0 = time.time()
@@ -278,7 +301,14 @@ def run_mmlu(base_url: str, model: str, api_key: str = "not-needed") -> dict:
             )
             answer = resp.choices[0].text or ""
         except Exception as e:
-            results.append({"idx": idx, "correct": False, "elapsed_s": round(time.time() - t0, 1), "error": str(e)})
+            results.append(
+                {
+                    "idx": idx,
+                    "correct": False,
+                    "elapsed_s": round(time.time() - t0, 1),
+                    "error": str(e),
+                }
+            )
             print(f"  [MMLU] Q{idx} ({subject}): FAIL (API error)")
             continue
 
@@ -287,17 +317,21 @@ def run_mmlu(base_url: str, model: str, api_key: str = "not-needed") -> dict:
         correct = predicted == correct_letter
         elapsed = time.time() - t0
 
-        status = "PASS" if correct else f"FAIL (got {predicted}, expected {correct_letter})"
+        status = (
+            "PASS" if correct else f"FAIL (got {predicted}, expected {correct_letter})"
+        )
         print(f"  [MMLU] Q{idx} ({subject}): {status} ({elapsed:.1f}s)")
-        results.append({
-            "idx": idx,
-            "subject": subject,
-            "correct": correct,
-            "predicted": predicted,
-            "expected": correct_letter,
-            "elapsed_s": round(elapsed, 1),
-            "error": None,
-        })
+        results.append(
+            {
+                "idx": idx,
+                "subject": subject,
+                "correct": correct,
+                "predicted": predicted,
+                "expected": correct_letter,
+                "elapsed_s": round(elapsed, 1),
+                "error": None,
+            }
+        )
 
     correct_count = sum(1 for r in results if r.get("correct"))
     score = correct_count / len(results)
@@ -313,22 +347,23 @@ def run_mmlu(base_url: str, model: str, api_key: str = "not-needed") -> dict:
 def _extract_letter(text: str) -> str:
     """Extract A/B/C/D from model response."""
     import re
+
     text = text.strip()
     # Direct single letter
     if len(text) == 1 and text.upper() in "ABCD":
         return text.upper()
     # "The answer is B" / "Answer: B" / "correct answer is C"
-    m = re.search(r'(?:answer|option)\s*(?:is|:)\s*([A-Da-d])', text, re.IGNORECASE)
+    m = re.search(r"(?:answer|option)\s*(?:is|:)\s*([A-Da-d])", text, re.IGNORECASE)
     if m:
         return m.group(1).upper()
     # "B." or "B)" at start of line
-    m = re.search(r'^([A-Da-d])[.\):]', text, re.MULTILINE)
+    m = re.search(r"^([A-Da-d])[.\):]", text, re.MULTILINE)
     if m:
         return m.group(1).upper()
     # Last single letter A-D in the text (models often explain then conclude)
-    letters = re.findall(r'\b([A-Da-d])\b', text)
+    letters = re.findall(r"\b([A-Da-d])\b", text)
     # Filter to only A-D
-    valid = [l.upper() for l in letters if l.upper() in "ABCD"]
+    valid = [ch.upper() for ch in letters if ch.upper() in "ABCD"]
     if valid:
         return valid[-1]  # Take last mentioned letter
     return "?"
@@ -339,9 +374,9 @@ def _extract_letter(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 WEIGHTS = {
-    "tau_bench": 0.50,   # Agent tool use — highest signal for model×harness
-    "humaneval": 0.30,   # Code generation
-    "tinyMMLU": 0.20,    # Knowledge baseline
+    "tau_bench": 0.50,  # Agent tool use — highest signal for model×harness
+    "humaneval": 0.30,  # Code generation
+    "tinyMMLU": 0.20,  # Knowledge baseline
 }
 
 
@@ -358,14 +393,28 @@ def compute_mhi(suite_results: dict) -> float:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(description="MHI Eval — Model-Harness Index")
-    parser.add_argument("--base-url", default="http://localhost:8000/v1", help="OpenAI-compatible API base URL")
-    parser.add_argument("--model", default=None, help="Model name (auto-detected if not set)")
+    parser.add_argument(
+        "--base-url",
+        default="http://localhost:8000/v1",
+        help="OpenAI-compatible API base URL",
+    )
+    parser.add_argument(
+        "--model", default=None, help="Model name (auto-detected if not set)"
+    )
     parser.add_argument("--api-key", default="not-needed", help="API key")
-    parser.add_argument("--suite", default="all", choices=["all", "tau", "humaneval", "mmlu"], help="Which suite to run")
+    parser.add_argument(
+        "--suite",
+        default="all",
+        choices=["all", "tau", "humaneval", "mmlu"],
+        help="Which suite to run",
+    )
     parser.add_argument("--output", default=None, help="Output JSON path")
-    parser.add_argument("--label", default=None, help="Label for this run (e.g. 'qwopus27b+hermes')")
+    parser.add_argument(
+        "--label", default=None, help="Label for this run (e.g. 'qwopus27b+hermes')"
+    )
     args = parser.parse_args()
 
     # Detect model
@@ -386,13 +435,13 @@ def main():
                     break
         label = name[:50]
 
-    print(f"\n{'='*60}")
-    print(f"  MHI Eval — Model-Harness Index")
+    print(f"\n{'=' * 60}")
+    print("  MHI Eval — Model-Harness Index")
     print(f"  Model: {model}")
     print(f"  Label: {label}")
     print(f"  Base URL: {args.base_url}")
     print(f"  Suite: {args.suite}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     results = {}
     t_start = time.time()
@@ -421,7 +470,7 @@ def main():
     mhi_score = compute_mhi(results)
 
     # Summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  MHI Score: {mhi_score}")
     print(f"  Label: {label}")
     print(f"  Time: {total_time:.0f}s")
@@ -429,8 +478,10 @@ def main():
     for suite, weight in WEIGHTS.items():
         if suite in results and "score" in results[suite]:
             r = results[suite]
-            print(f"  {suite:12s}: {r['passed']}/{r['total']} ({r['score']:.0%}) × {weight:.0%} weight")
-    print(f"{'='*60}\n")
+            print(
+                f"  {suite:12s}: {r['passed']}/{r['total']} ({r['score']:.0%}) × {weight:.0%} weight"
+            )
+    print(f"{'=' * 60}\n")
 
     # Save results
     output = {
@@ -444,7 +495,10 @@ def main():
         "suites": results,
     }
 
-    out_path = args.output or f"reports/mhi/{label.replace('/', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    out_path = (
+        args.output
+        or f"reports/mhi/{label.replace('/', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2)

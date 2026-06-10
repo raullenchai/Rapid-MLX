@@ -108,7 +108,10 @@ MODELS: list[ModelSpec] = [
         "Ollama Gemma 3 12B (Gemma 4 not yet on llama.cpp)",
     ),
     ModelSpec(
-        "gpt-oss-20b-mxfp4-q8", "mlx-community/gpt-oss-20b-MXFP4-Q8", "gpt-oss:20b", "Same arch"
+        "gpt-oss-20b-mxfp4-q8",
+        "mlx-community/gpt-oss-20b-MXFP4-Q8",
+        "gpt-oss:20b",
+        "Same arch",
     ),
     ModelSpec(
         "qwen3.6-35b-4bit",
