@@ -85,10 +85,10 @@ fi
 # ── 2. Detect RAM → recommend model ──────────────────────────────────────────
 
 RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
-if   [ "$RAM_GB" -ge 96 ]; then RECOMMENDED_MODEL="qwen3.5-122b"; RAM_TIER="96+ GB"
-elif [ "$RAM_GB" -ge 48 ]; then RECOMMENDED_MODEL="qwen3.5-35b";  RAM_TIER="48-95 GB"
-elif [ "$RAM_GB" -ge 24 ]; then RECOMMENDED_MODEL="qwen3.5-9b";   RAM_TIER="24-47 GB"
-else                            RECOMMENDED_MODEL="qwen3.5-4b";   RAM_TIER="8-23 GB"
+if   [ "$RAM_GB" -ge 96 ]; then RECOMMENDED_MODEL="qwen3.5-122b-mxfp4"; RAM_TIER="96+ GB"
+elif [ "$RAM_GB" -ge 48 ]; then RECOMMENDED_MODEL="qwen3.5-35b-8bit";  RAM_TIER="48-95 GB"
+elif [ "$RAM_GB" -ge 24 ]; then RECOMMENDED_MODEL="qwen3.5-9b-4bit";   RAM_TIER="24-47 GB"
+else                            RECOMMENDED_MODEL="qwen3.5-4b-4bit";   RAM_TIER="8-23 GB"
 fi
 
 dim "macOS $(sw_vers -productVersion) · Apple Silicon · ${RAM_GB} GB RAM"
