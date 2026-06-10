@@ -103,12 +103,37 @@ class DiffusionEngine(BaseEngine):
         self._model: Any = None
         self._processor: Any = None
         self._loaded = False
+        self._load_error: BaseException | None = None
         # Per-engine lock — DiffusionGemma is single-batch only, so we
         # serialize the generator at the engine level rather than rely
         # on the route admission queue. Two concurrent
         # ``stream_diffusion_generate`` calls against the same model
         # corrupt each other's canvas state.
         self._generation_lock = threading.Lock()
+
+        # Persistent GPU worker thread: owns model loading AND every
+        # GPU op. Required because mlx's per-stream binding is
+        # thread-local — weights loaded on thread A can't be
+        # mx.eval'd from thread B without crashing with
+        # ``RuntimeError: There is no Stream(gpu, 0) in current
+        # thread``. mlx-vlm's own server uses the same pattern (one
+        # ``ResponseGenerator._thread`` that loads + runs in one
+        # place; see mlx_vlm/server/generation.py:894).
+        #
+        # Job protocol: callers push a ``(prompt, max_tokens, cfg,
+        # out_queue)`` tuple onto ``_jobs``; the worker either
+        # streams ``GenerationOutput`` chunks back via ``out_queue``
+        # (terminated by ``_STREAM_DONE``) or pushes the exception
+        # on failure. Push ``None`` to request shutdown.
+        self._jobs: queue.Queue[Any] = queue.Queue()
+        self._ready = threading.Event()
+        self._stop = False
+        self._worker = threading.Thread(
+            target=self._worker_loop,
+            name="rapid-mlx-diffusion-worker",
+            daemon=True,
+        )
+        self._worker.start()
 
     # ------------------------------------------------------------------
     # BaseEngine — required properties
@@ -136,49 +161,113 @@ class DiffusionEngine(BaseEngine):
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        await asyncio.to_thread(self._load_blocking)
+        # Block the asyncio loop while the worker initialises the
+        # model on its own thread. Load takes ~2-3 s on M3 Ultra, well
+        # under the lifespan startup budget.
+        await asyncio.to_thread(self._wait_until_ready)
 
     async def stop(self) -> None:
+        self._stop = True
+        # Sentinel jobs unblock the worker if it's parked on
+        # queue.get(). Push two: one for the loaded state, one in
+        # case the worker is mid-shutdown handshake.
+        self._jobs.put(None)
         # mlx-vlm loads weights into mx.array buffers backed by the
         # MTL allocator. Clearing references is enough for the next
         # serve cycle to repopulate — there is no explicit ``unload``
         # in mlx-vlm 0.6.3.
+        await asyncio.to_thread(self._worker.join, 5.0)
         self._model = None
         self._processor = None
         self._loaded = False
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
+            if self._load_error is not None:
+                raise self._load_error
             raise RuntimeError("DiffusionEngine not loaded — call start() first")
 
+    def _wait_until_ready(self, timeout: float | None = None) -> None:
+        """Block until the worker thread reports model-load done.
+
+        Surfaces the load exception if one occurred so the calling
+        ``await start()`` raises with the original cause.
+        """
+        if not self._ready.wait(timeout):
+            raise RuntimeError("Timed out waiting for DiffusionEngine model load")
+        if self._load_error is not None:
+            raise self._load_error
+
     def _load_blocking(self) -> None:
-        if self._loaded:
-            return
-        # Import inside the load path so a stale mlx-vlm (< 0.6.3)
-        # surfaces a clean error at server start rather than at module
-        # import — the error message can then name the alias and the
-        # remediation, which a generic ImportError can't.
+        """Public-named helper retained from the skeleton PR. Callers
+        in ``server.py`` invoke this synchronously at startup; with
+        the persistent worker pattern, we just delegate to
+        ``_wait_until_ready`` so the worker's own load (already in
+        flight) is the source of truth."""
+        self._wait_until_ready()
+
+    def _worker_loop(self) -> None:
+        """GPU worker — owns model load AND every diffusion call.
+
+        Step 1: load model. Once loaded, set ``_ready`` so
+        ``_wait_until_ready`` returns.
+        Step 2: pump jobs until ``_stop`` flips or sentinel arrives.
+        """
+        import mlx.core as mx
+
         try:
-            from mlx_vlm.generate.diffusion import diffusion_generation_family
+            from mlx_vlm.generate.diffusion import (
+                diffusion_generation_family,
+            )
             from mlx_vlm.utils import load
         except ImportError as e:
-            raise RuntimeError(
+            self._load_error = RuntimeError(
                 f"DiffusionEngine requires mlx-vlm >= 0.6.3 with the "
                 f"diffusion_gemma package. Install or upgrade: "
                 f"`pip install -U 'mlx-vlm>=0.6.3'`. Underlying error: {e}"
-            ) from e
-        logger.info(f"Loading DiffusionEngine model: {self._model_name}")
-        self._model, self._processor = load(self._model_name)
-        family = diffusion_generation_family(self._model)
-        if family != "block":
-            raise RuntimeError(
-                f"{self._model_name!r} is not a block-diffusion model "
-                f"(diffusion_generation_family returned {family!r}). "
-                "DiffusionEngine only supports DiffusionGemma-family "
-                "block-canvas checkpoints; use BatchedEngine for AR "
-                "models or open an issue for masked-diffusion support."
             )
-        self._loaded = True
+            self._ready.set()
+            return
+
+        try:
+            logger.info(f"Loading DiffusionEngine model: {self._model_name}")
+            model, processor = load(self._model_name)
+            family = diffusion_generation_family(model)
+            if family != "block":
+                raise RuntimeError(
+                    f"{self._model_name!r} is not a block-diffusion model "
+                    f"(diffusion_generation_family returned {family!r}). "
+                    "DiffusionEngine only supports DiffusionGemma-family "
+                    "block-canvas checkpoints."
+                )
+            self._model = model
+            self._processor = processor
+            self._loaded = True
+        except BaseException as e:  # noqa: BLE001 — propagate to caller
+            self._load_error = e
+            self._ready.set()
+            return
+
+        # Pre-bind the GPU stream on THIS thread so the diffusion
+        # generator's internal ``mx.eval`` calls have a valid default
+        # to dispatch to. Once set here, it persists for the lifetime
+        # of the worker — every job below inherits the same binding.
+        worker_stream = mx.default_stream(mx.default_device())
+        mx.set_default_stream(worker_stream)
+        self._ready.set()
+
+        # Job loop.
+        while not self._stop:
+            job = self._jobs.get()
+            if job is None:
+                return
+            prompt, max_tokens, cfg, out_q = job
+            try:
+                self._run_generator(prompt, max_tokens, cfg, out_q)
+            except BaseException as e:  # noqa: BLE001 — surface to caller
+                out_q.put(e)
+            finally:
+                out_q.put(_STREAM_DONE)
 
     # ------------------------------------------------------------------
     # BaseEngine — prompt / token helpers used by the route layer
@@ -289,61 +378,44 @@ class DiffusionEngine(BaseEngine):
 
         prompt = self.build_prompt(messages)
         loop = asyncio.get_running_loop()
-        # Asyncio queue is owned by the loop; the worker thread pushes
-        # via ``loop.call_soon_threadsafe`` so we don't cross thread
-        # boundaries directly on the asyncio.Queue.
-        q: asyncio.Queue[Any] = asyncio.Queue()
-
+        # Two queues bridge the persistent worker thread to the
+        # asyncio loop. ``thread_q`` is owned by the worker (sync
+        # ``queue.Queue.put`` is safe from any thread); ``aio_q`` is
+        # owned by the loop; the pump thread relays items via
+        # ``call_soon_threadsafe``.
         thread_q: queue.Queue[Any] = queue.Queue()
-
-        def worker() -> None:
-            try:
-                with self._generation_lock:
-                    self._run_generator(prompt, max_tokens, cfg, thread_q)
-            except BaseException as exc:  # noqa: BLE001 — surface to caller
-                thread_q.put(exc)
-            finally:
-                thread_q.put(_STREAM_DONE)
+        aio_q: asyncio.Queue[Any] = asyncio.Queue()
 
         def pump() -> None:
-            # Drain the synchronous queue.Queue into the asyncio.Queue
-            # on a second thread; this lets the worker push items
-            # without knowing about asyncio. ``call_soon_threadsafe``
-            # is the supported asyncio→thread bridge.
             while True:
                 item = thread_q.get()
-                loop.call_soon_threadsafe(q.put_nowait, item)
+                loop.call_soon_threadsafe(aio_q.put_nowait, item)
                 if item is _STREAM_DONE:
                     return
 
-        worker_thread = threading.Thread(
-            target=worker,
-            name="rapid-mlx-diffusion-worker",
-            daemon=True,
-        )
         pump_thread = threading.Thread(
             target=pump,
             name="rapid-mlx-diffusion-pump",
             daemon=True,
         )
-        worker_thread.start()
         pump_thread.start()
-        try:
-            while True:
-                item = await q.get()
-                if item is _STREAM_DONE:
-                    return
-                if isinstance(item, BaseException):
-                    raise item
-                yield item
-        finally:
-            # Wait for the worker to drain so a request abort doesn't
-            # leave the model state mid-block on the GPU for the next
-            # request. The worker holds the generation lock, so the
-            # next request would block on it anyway — but joining
-            # makes the timing predictable.
-            worker_thread.join(timeout=30.0)
-            pump_thread.join(timeout=1.0)
+        # The engine-level generation lock serializes concurrent
+        # requests (DiffusionGemma is batch-1 only). We acquire BEFORE
+        # submitting the job because the worker drains jobs FIFO and
+        # we want the lock to map 1:1 with worker activity, not the
+        # queue position.
+        with self._generation_lock:
+            self._jobs.put((prompt, max_tokens, cfg, thread_q))
+            try:
+                while True:
+                    item = await aio_q.get()
+                    if item is _STREAM_DONE:
+                        return
+                    if isinstance(item, BaseException):
+                        raise item
+                    yield item
+            finally:
+                pump_thread.join(timeout=1.0)
 
     async def generate(
         self,
@@ -395,9 +467,23 @@ class DiffusionEngine(BaseEngine):
         helper in ``server/generation.py:750-784`` — one SSE-friendly
         chunk per finished block.
         """
-        import mlx.core as mx
-        from mlx_vlm.generate.common import generation_stream, wired_limit
+        import mlx.core as mx  # noqa: F401 — kept for symmetry with mlx_vlm
         from mlx_vlm.generate.diffusion import stream_diffusion_generate
+
+        # NOTE: this method ALWAYS runs on the persistent worker
+        # thread (see ``_worker_loop``), so the model weights, the
+        # tokenizer-managed kv_cache, and the default GPU stream are
+        # all bound to the same thread. We intentionally do NOT wrap
+        # in mlx-vlm's ``wired_limit(model, [generation_stream])`` —
+        # on M3 Ultra with the 26B-A4B-it-4bit checkpoint, that wrap
+        # forces a single Metal command buffer past the per-buffer
+        # IOGPU timeout (~5 s for the cold-shader first denoising
+        # step) and crashes with ``[METAL] Command buffer execution
+        # failed: Caused GPU Timeout Error``. Direct mlx-vlm probe
+        # runs cleanly without wired_limit (0.9 s for 32 tokens).
+        # wired_limit is only a perf hint (asks the OS to keep model
+        # pages wired in physical RAM); dropping it costs at most an
+        # extra page fault on the very first request.
 
         tokenizer = self._processor.tokenizer
         eos_id = getattr(self._model.config, "eos_token_id", None)
@@ -427,55 +513,50 @@ class DiffusionEngine(BaseEngine):
         last_completion_tokens = 0
         last_token: int = 0
 
-        with wired_limit(self._model, [generation_stream]):
-            for result in stream_diffusion_generate(
-                self._model,
-                self._processor,
-                tokenizer,
-                input_ids,
-                None,  # pixel_values — text-only path
-                None,  # attention_mask — auto from input_ids
-                **kwargs,
-            ):
-                if getattr(result, "is_draft", False):
-                    # Mid-canvas denoising preview; ignore for SSE.
-                    continue
+        for result in stream_diffusion_generate(
+            self._model,
+            self._processor,
+            tokenizer,
+            input_ids,
+            None,  # pixel_values — text-only path
+            None,  # attention_mask — auto from input_ids
+            **kwargs,
+        ):
+            if getattr(result, "is_draft", False):
+                # Mid-canvas denoising preview; ignore for SSE.
+                continue
 
-                if getattr(result, "prompt_tokens", 0):
-                    last_prompt_tokens = result.prompt_tokens
-                if getattr(result, "generation_tokens", 0):
-                    last_completion_tokens = result.generation_tokens
-                last_token = int(getattr(result, "token", last_token) or last_token)
+            if getattr(result, "prompt_tokens", 0):
+                last_prompt_tokens = result.prompt_tokens
+            if getattr(result, "generation_tokens", 0):
+                last_completion_tokens = result.generation_tokens
+            last_token = int(getattr(result, "token", last_token) or last_token)
 
-                text_piece = result.text or ""
-                if text_piece:
-                    block_parts.append(text_piece)
+            text_piece = result.text or ""
+            if text_piece:
+                block_parts.append(text_piece)
 
-                block_complete = bool(
-                    getattr(result, "diffusion_block_complete", False)
-                )
-                finish_reason = getattr(result, "finish_reason", None)
+            block_complete = bool(getattr(result, "diffusion_block_complete", False))
+            finish_reason = getattr(result, "finish_reason", None)
 
-                if block_complete or finish_reason:
-                    joined = "".join(block_parts)
-                    block_parts.clear()
-                    if joined or finish_reason:
-                        out_q.put(
-                            GenerationOutput(
-                                text="",
-                                new_text=joined,
-                                tokens=[last_token],
-                                prompt_tokens=last_prompt_tokens,
-                                completion_tokens=last_completion_tokens,
-                                finish_reason=(
-                                    finish_reason if finish_reason else None
-                                ),
-                                finished=bool(finish_reason),
-                                channel="content",
-                            )
+            if block_complete or finish_reason:
+                joined = "".join(block_parts)
+                block_parts.clear()
+                if joined or finish_reason:
+                    out_q.put(
+                        GenerationOutput(
+                            text="",
+                            new_text=joined,
+                            tokens=[last_token],
+                            prompt_tokens=last_prompt_tokens,
+                            completion_tokens=last_completion_tokens,
+                            finish_reason=(finish_reason if finish_reason else None),
+                            finished=bool(finish_reason),
+                            channel="content",
                         )
-                    if finish_reason:
-                        return
+                    )
+                if finish_reason:
+                    return
 
         # Generator exited without an explicit finish_reason (rare —
         # treat as a hard stop). Flush any trailing buffer.
