@@ -8,10 +8,10 @@ Metrics: TTFT (cold/cached), decode tok/s, multi-turn latency, tool call latency
 
 Usage:
     # Start server with SimpleEngine (default)
-    rapid-mlx serve qwen3.5-4b --port 8000
+    rapid-mlx serve qwen3.5-4b-4bit --port 8000
 
     # Start server with BatchedEngine
-    rapid-mlx serve qwen3.5-4b --port 8001 --continuous-batching
+    rapid-mlx serve qwen3.5-4b-4bit --port 8001 --continuous-batching
 
     # Run benchmark
     python3 scripts/bench_engine_parity.py
@@ -289,8 +289,8 @@ def main():
         except Exception as e:
             print(f"  {name} ({url}): NOT AVAILABLE — {e}")
             print(f"\nPlease start both servers:")
-            print(f"  Terminal 1: rapid-mlx serve qwen3.5-4b --port 8000")
-            print(f"  Terminal 2: rapid-mlx serve qwen3.5-4b --port 8001 --continuous-batching")
+            print(f"  Terminal 1: rapid-mlx serve qwen3.5-4b-4bit --port 8000")
+            print(f"  Terminal 2: rapid-mlx serve qwen3.5-4b-4bit --port 8001 --continuous-batching")
             sys.exit(1)
 
     model_simple = detect_model(SIMPLE_URL)

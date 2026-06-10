@@ -191,7 +191,7 @@ class TestProfileTableCell:
         assert "0.78" in table
 
     def test_long_avoid_note_fits_box_when_max_width_set(self):
-        """Regression: long ``avoid`` notes (e.g. ``gemma-4-26b``) used
+        """Regression: long ``avoid`` notes (e.g. ``gemma-4-26b-4bit``) used
         to overflow the right ``│`` border. Truncation must keep the
         tier word + numeric speedup whole while shortening the trailing
         rationale to ``…)``."""
@@ -217,7 +217,7 @@ class TestProfileTableCell:
     def test_table_rows_all_same_width_for_long_avoid(self):
         """Box-frame alignment invariant: every bordered row must end at
         the same column. Pre-fix the ``Suffix tier`` row for an alias
-        like ``gemma-4-26b`` would render past the right ``│``."""
+        like ``gemma-4-26b-4bit`` would render past the right ``│``."""
         cfg = ModelConfig(
             suffix_decoding_tier="avoid",
             suffix_bench_speedup={"json_array": 0.20},

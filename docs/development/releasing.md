@@ -2,7 +2,7 @@
 
 This page documents the **end-to-end release flow** and the **safety nets** that catch the common failure modes.
 
-The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs added 30+ new model aliases (`granite4-tiny`, `smollm3-3b`, `deepseek-v4-flash`, `qwen3.6-*`, etc), but no version was bumped — leaving brew/PyPI users with a stale `rapid-mlx models` list. The safety nets below are designed to make that exact failure impossible to repeat without explicit human override.
+The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs added 30+ new model aliases (`granite4-tiny-4bit`, `smollm3-3b-4bit`, `deepseek-v4-flash-8bit`, `qwen3.6-*`, etc), but no version was bumped — leaving brew/PyPI users with a stale `rapid-mlx models` list. The safety nets below are designed to make that exact failure impossible to repeat without explicit human override.
 
 ## Quick reference
 
@@ -170,8 +170,8 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 ### M3 local — one command before pushing the bump commit
 
 ```bash
-make release-check-m3              # uses MODEL=qwen3.5-4b (default)
-MODEL=qwen3.6-27b make release-check-m3   # override
+make release-check-m3              # uses MODEL=qwen3.5-4b-4bit (default)
+MODEL=qwen3.6-27b-4bit make release-check-m3   # override
 ```
 
 Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `rapid-mlx serve` once on port 8000, then runs G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.

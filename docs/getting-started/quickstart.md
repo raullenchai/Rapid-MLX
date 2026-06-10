@@ -3,12 +3,12 @@
 ## Option 1: Interactive Chat (fastest first taste)
 
 The shortest path to talking to a model — `chat` spawns its own server,
-downloads the model on first run (~2.5 GB for the default `qwen3.5-4b`), and
+downloads the model on first run (~2.5 GB for the default `qwen3.5-4b-4bit`), and
 drops you into a REPL.
 
 ```bash
-rapid-mlx chat                  # defaults to qwen3.5-4b
-rapid-mlx chat qwen3.5-9b       # a larger model (5 GB)
+rapid-mlx chat                  # defaults to qwen3.5-4b-4bit
+rapid-mlx chat qwen3.5-9b-4bit       # a larger model (5 GB)
 rapid-mlx chat --think          # surface chain-of-thought reasoning
 ```
 
@@ -21,7 +21,7 @@ In-REPL: `/help`, `/reset`, `/save <path>`, `/model <alias>`, `/exit`. Type
 Start the server:
 
 ```bash
-rapid-mlx serve qwen3.5-4b --port 8000
+rapid-mlx serve qwen3.5-4b-4bit --port 8000
 ```
 
 Use with the OpenAI Python SDK:
@@ -61,7 +61,7 @@ For image / video understanding, use a VLM (requires the `[vision]` extra —
 `pip install 'rapid-mlx[vision]'`):
 
 ```bash
-rapid-mlx serve gemma-4-26b --mllm --port 8000
+rapid-mlx serve gemma-4-26b-4bit --mllm --port 8000
 ```
 
 ```python
@@ -85,7 +85,7 @@ chain-of-thought into a separate `reasoning_content` field, leaving `content`
 clean.
 
 ```bash
-rapid-mlx serve qwen3.5-9b --port 8000   # qwen3 reasoning parser auto-detected
+rapid-mlx serve qwen3.5-9b-4bit --port 8000   # qwen3 reasoning parser auto-detected
 ```
 
 ```python
@@ -103,7 +103,7 @@ Generate text embeddings for semantic search and RAG (install the
 `[embeddings]` extra first):
 
 ```bash
-rapid-mlx serve qwen3.5-4b --embedding-model mlx-community/multilingual-e5-small-mlx
+rapid-mlx serve qwen3.5-4b-4bit --embedding-model mlx-community/multilingual-e5-small-mlx
 ```
 
 ```python
@@ -119,13 +119,13 @@ Tool/function calling is on by default for supported model families (Qwen3.x,
 GLM-4.7, GPT-OSS, Llama, Mistral, etc.) — the right parser is auto-detected:
 
 ```bash
-rapid-mlx serve qwen3.5-9b --port 8000
+rapid-mlx serve qwen3.5-9b-4bit --port 8000
 ```
 
 If you need to pin the parser manually:
 
 ```bash
-rapid-mlx serve devstral-24b \
+rapid-mlx serve devstral-24b-4bit \
   --enable-auto-tool-choice --tool-call-parser hermes
 ```
 

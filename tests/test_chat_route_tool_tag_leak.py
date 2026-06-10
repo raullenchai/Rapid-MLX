@@ -133,7 +133,7 @@ class TestToolTagLeakRegression:
         _assert_no_leak(content)
 
     def test_parser_finds_nothing_preserves_existing_cleaned_text(self):
-        # Regression for the v0.6.64 gpt-oss-20b empty-TextBlock bug:
+        # Regression for the v0.6.64 gpt-oss-20b-mxfp4-q8 empty-TextBlock bug:
         # ``engine.generate()`` runs ``clean_output_text`` on harmony
         # output, which strips channel markup and returns just the
         # final-channel content ("4"). The non-streaming route then

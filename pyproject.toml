@@ -80,7 +80,7 @@ dependencies = [
 # Required for any model with vision input. Text-only models work without this.
 # 0.5.0+ also unlocks DFlash speculative decoding (see [dflash] extras).
 vision = [
-    "mlx-vlm>=0.6.1",  # 0.6.1: gemma4_unified architecture (gemma-4-12b/12b-8bit aliases require it). 0.5.0 baseline: gemma4 multi-image + tool-parser fixes, TurboQuant race-condition fix, continuous-batching guard. Also unlocks DFlash spec-decode hooks (see [dflash] extras).
+    "mlx-vlm>=0.6.1",  # 0.6.1: gemma4_unified architecture (gemma-4-12b-4bit/12b-8bit aliases require it). 0.5.0 baseline: gemma4 multi-image + tool-parser fixes, TurboQuant race-condition fix, continuous-batching guard. Also unlocks DFlash spec-decode hooks (see [dflash] extras).
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",

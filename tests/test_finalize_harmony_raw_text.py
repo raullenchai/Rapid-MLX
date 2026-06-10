@@ -32,7 +32,7 @@ from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
 from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from vllm_mlx.service.helpers import _finalize_content_and_reasoning
 
-# A realistic gpt-oss-20b harmony non-stream response: analysis channel
+# A realistic gpt-oss-20b-mxfp4-q8 harmony non-stream response: analysis channel
 # (CoT) followed by final channel (answer), terminated with <|return|>.
 _HARMONY_RAW = (
     "<|channel|>analysis<|message|>"

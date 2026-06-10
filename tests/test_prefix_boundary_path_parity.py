@@ -173,12 +173,12 @@ def test_single_message_zero_boundary_both_paths(monkeypatch):
 
 
 def test_non_hybrid_model_skips_boundary_both_paths(monkeypatch):
-    """Pure Transformer models (gpt-oss-20b, qwen3-coder, etc.) must NOT
+    """Pure Transformer models (gpt-oss-20b-mxfp4-q8, qwen3-coder-4bit, etc.) must NOT
     take the boundary-split path even if a multi-message conversation
     would otherwise produce ``prefix_boundary > 0``.
 
     Why: ``BatchGenerator.insert_segments`` empirically corrupts harmony
-    tool-call channel state across multi-turn-with-tools on gpt-oss-20b
+    tool-call channel state across multi-turn-with-tools on gpt-oss-20b-mxfp4-q8
     (pydantic_ai 6_multi_tool drops from 6/6 to 5/6 — agent loops on
     ``add(3,4)`` until ``request_limit`` exhausts). Pure Transformers
     don't need the boundary save anyway — trim+supersequence reuse

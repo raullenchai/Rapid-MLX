@@ -17,7 +17,7 @@ Usage:
     python3 scripts/mhi_eval.py --base-url http://localhost:8000/v1 --suite tau
 
     # Custom model name
-    python3 scripts/mhi_eval.py --base-url http://localhost:8000/v1 --model qwopus-27b
+    python3 scripts/mhi_eval.py --base-url http://localhost:8000/v1 --model qwopus-27b-4bit
 """
 
 import argparse

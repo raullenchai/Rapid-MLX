@@ -285,7 +285,7 @@ def test_harmony_router_sanity(case: _SanityCase, router):
         "an optional `` json`` constrain directive, then the body. The "
         "router falls into the default branch, transitions to CONTENT, "
         "and leaks ``commentary`` + recipient + body as content text. "
-        "Live verification on gpt-oss-20b (2026-06-04) revealed an "
+        "Live verification on gpt-oss-20b-mxfp4-q8 (2026-06-04) revealed an "
         "additional constraint not modeled by these BUG_CASES synthetic "
         "vocab: production ``commentary`` is TWO tokens — ``comment`` "
         "(12606) + ``ary`` (815) — so naive single-token channel-type "

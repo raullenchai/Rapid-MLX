@@ -263,8 +263,8 @@ class TestHarmonyReasoningParser:
     def test_extract_final_terminated_by_end_token(self, parser):
         """Final channel terminated by ``<|end|>`` (not ``<|return|>``).
 
-        Regression for the v0.6.64 gpt-oss-20b empty-TextBlock flake:
-        gpt-oss-20b emits ``<|end|>`` after the final channel for a
+        Regression for the v0.6.64 gpt-oss-20b-mxfp4-q8 empty-TextBlock flake:
+        gpt-oss-20b-mxfp4-q8 emits ``<|end|>`` after the final channel for a
         sizeable fraction of non-streaming responses, and the prior
         ``<|return|>``-only regex silently dropped that content. The
         streaming path already accepts both terminators; the
@@ -306,7 +306,7 @@ class TestHarmonyReasoningParser:
         DeepSeek round-2 follow-up: the ``<|return|>``-first preference
         only covers the case where the real terminator is
         ``<|return|>``. When the model emits ``<|end|>`` as the
-        message terminator (gpt-oss-20b's common case) AND the
+        message terminator (gpt-oss-20b-mxfp4-q8's common case) AND the
         answer contains a literal ``<|end|>``, the non-greedy
         fallback would still truncate. Greedy ``(.*)`` in
         ``_FINAL_PATTERN_END`` now consumes up to the LAST
@@ -696,7 +696,7 @@ class TestHarmonyToolDefinitionConverter:
 class TestHarmonyEnginePipeline:
     """End-to-end through the engine layer: clean_output_text → tool parser.
 
-    Reproduces the v0.6.64 bug where gpt-oss-20b's commentary-only tool
+    Reproduces the v0.6.64 bug where gpt-oss-20b-mxfp4-q8's commentary-only tool
     calls came back as plain text instead of structured ``tool_calls``.
     Root cause: ``_clean_gpt_oss_output`` in ``api/utils.py`` only matched
     a ``<|channel|>final<|message|>`` block; commentary-only output fell
@@ -712,7 +712,7 @@ class TestHarmonyEnginePipeline:
     """
 
     def test_commentary_only_output_extracts_tool_call(self):
-        """Real gpt-oss-20b output for a single tool call.
+        """Real gpt-oss-20b-mxfp4-q8 output for a single tool call.
 
         Captured verbatim from ``mlx-community/gpt-oss-20b-MXFP4-Q8`` via
         ``/v1/chat/completions`` with ``tools=[get_weather]`` (2026-05-22).
@@ -826,7 +826,7 @@ class TestHarmonyEdgeCases:
         """Commentary block without trailing ``<|call|>`` IS parsed now.
 
         Earlier behavior treated a missing ``<|call|>`` terminator as
-        "incomplete". Empirically (gpt-oss-20b via /v1/chat/completions,
+        "incomplete". Empirically (gpt-oss-20b-mxfp4-q8 via /v1/chat/completions,
         2026-05-22) ``<|call|>`` is part of the harmony stop-token set,
         so the engine consumes it and ``output_text`` ends with the
         JSON args alone. Refusing to parse meant zero tool calls

@@ -22,7 +22,7 @@ buffers.
 
 Usage:
     python3.12 scripts/bench_readme_refresh.py                     # full sweep
-    python3.12 scripts/bench_readme_refresh.py --models qwen3.5-4b # one model
+    python3.12 scripts/bench_readme_refresh.py --models qwen3.5-4b-4bit # one model
     python3.12 scripts/bench_readme_refresh.py --engines rapid-mlx,mlx-lm
 """
 
@@ -84,40 +84,40 @@ class ModelSpec:
 
 MODELS: list[ModelSpec] = [
     ModelSpec(
-        "qwen3.5-4b",
+        "qwen3.5-4b-4bit",
         "mlx-community/Qwen3.5-4B-MLX-4bit",
         "qwen3:4b",
         "Ollama Qwen3 (not Qwen3.5; DeltaNet arch unavailable on llama.cpp)",
     ),
     ModelSpec(
-        "qwen3.5-9b",
+        "qwen3.5-9b-4bit",
         "mlx-community/Qwen3.5-9B-4bit",
         "qwen3:8b",
         "Ollama Qwen3 8B (not Qwen3.5 9B; closest available)",
     ),
     ModelSpec(
-        "qwen3.5-27b",
+        "qwen3.5-27b-4bit",
         "mlx-community/Qwen3.5-27B-4bit",
         "qwen3:32b",
         "Ollama Qwen3 32B Q4_K_M (closest dense 27-32B; Qwen3.5 DeltaNet not on llama.cpp; Unsloth Qwen3.6-27B GGUF fails to load in Ollama 0.24)",
     ),
     ModelSpec(
-        "gemma-4-12b",
+        "gemma-4-12b-4bit",
         "mlx-community/gemma-4-12B-it-4bit",
         "gemma3:12b",
         "Ollama Gemma 3 12B (Gemma 4 not yet on llama.cpp)",
     ),
     ModelSpec(
-        "gpt-oss-20b", "mlx-community/gpt-oss-20b-MXFP4-Q8", "gpt-oss:20b", "Same arch"
+        "gpt-oss-20b-mxfp4-q8", "mlx-community/gpt-oss-20b-MXFP4-Q8", "gpt-oss:20b", "Same arch"
     ),
     ModelSpec(
-        "qwen3.6-35b",
+        "qwen3.6-35b-4bit",
         "mlx-community/Qwen3.6-35B-A3B-4bit",
         "qwen3:30b-a3b",
         "Ollama Qwen3 30B-A3B (not Qwen3.6; closest MoE A3B)",
     ),
     ModelSpec(
-        "qwen3.5-35b",
+        "qwen3.5-35b-8bit",
         "mlx-community/Qwen3.5-35B-A3B-8bit",
         "qwen3:30b-a3b",
         "Ollama Qwen3 30B-A3B 4bit (not Qwen3.5-35B 8bit; closest MoE)",

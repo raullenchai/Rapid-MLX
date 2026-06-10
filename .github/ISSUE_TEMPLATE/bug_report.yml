@@ -44,7 +44,7 @@ body:
     id: model
     attributes:
       label: Model
-      placeholder: "e.g. qwen3.5-4b or mlx-community/Qwen3.5-4B-MLX-4bit"
+      placeholder: "e.g. qwen3.5-4b-4bit or mlx-community/Qwen3.5-4B-MLX-4bit"
     validations:
       required: true
   - type: input
@@ -52,7 +52,7 @@ body:
     attributes:
       label: Full serve command
       description: Every flag matters — `--tool-call-parser`, `--reasoning-parser`, `--enable-prefix-cache`, etc.
-      placeholder: "rapid-mlx serve qwen3.5-4b --enable-auto-tool-choice --tool-call-parser qwen3 ..."
+      placeholder: "rapid-mlx serve qwen3.5-4b-4bit --enable-auto-tool-choice --tool-call-parser qwen3 ..."
     validations:
       required: true
   - type: dropdown

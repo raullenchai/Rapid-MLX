@@ -8,7 +8,7 @@ fix required the router to understand harmony's tool-call protocol:
 ``commentary`` + ``to=functions.<name>`` + optional
 ``<|constrain|>json`` + body + ``<|call|>``. PR #514 confirmed
 ``commentary`` is multi-token (``comment``+``ary``) on production
-gpt-oss-20b, which the custom token-ID-match state machine could
+gpt-oss-20b-mxfp4-q8, which the custom token-ID-match state machine could
 never identify.
 
 PR #515 lands the SOTA fix: delegate harmony state tracking to
@@ -80,7 +80,7 @@ def router(encoding):
 def _encode(encoding, text: str) -> list[int]:
     """Wrap encode with allowed_special=all so structural markers
     (``<|channel|>`` etc.) round-trip as single token IDs the way
-    a real gpt-oss-20b would emit them.
+    a real gpt-oss-20b-mxfp4-q8 would emit them.
     """
     return encoding.encode(text, allowed_special="all")
 
@@ -699,7 +699,7 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
         "my-not-gpt-oss-20b",
         "notgpt-oss-fake",
         "some-user/gpt-oss-remapped",
-        "evil-org/gpt-oss-20b",
+        "evil-org/gpt-oss-20b-mxfp4-q8",
         "anonymous/gpt-oss",
     )
     for name in rejected_names:
@@ -713,15 +713,15 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
         )
 
     accepted_names = (
-        "openai/gpt-oss-20b",
+        "openai/gpt-oss-20b-mxfp4-q8",
         "mlx-community/gpt-oss-20b-MXFP4-Q8",
         "unsloth/gpt-oss-20b-MLX-8bit",
-        "gpt-oss-20b",
+        "gpt-oss-20b-mxfp4-q8",
         "gpt-oss",
-        "/models/gpt-oss-20b",
-        "~/lmstudio-models/gpt-oss-20b",
+        "/models/gpt-oss-20b-mxfp4-q8",
+        "~/lmstudio-models/gpt-oss-20b-mxfp4-q8",
         "./gpt-oss-20b-quantized",
-        "../models/gpt-oss-20b",
+        "../models/gpt-oss-20b-mxfp4-q8",
     )
     for name in accepted_names:
 

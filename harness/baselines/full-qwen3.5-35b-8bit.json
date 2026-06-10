@@ -1,7 +1,7 @@
 {
   "captured_at": "2026-05-05T06:16:05",
   "rapid_mlx_version": "0.6.10",
-  "model": "qwen3.5-35b",
+  "model": "qwen3.5-35b-8bit",
   "metrics": {
     "cold_ttft_ms": 123.91637498512864,
     "cold_tps": 69.78493344229089,

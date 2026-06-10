@@ -702,7 +702,7 @@ class StreamingPostProcessor:
         # to the client but leave both accumulators empty — _build_usage
         # then sees ``reasoning_text=None`` and omits the field entirely,
         # creating stream/non-stream usage shape drift. Verified on
-        # gemma-4-26b + gpt-oss-20b during the v0.6.66 onboarding sweep.
+        # gemma-4-26b-4bit + gpt-oss-20b-mxfp4-q8 during the v0.6.66 onboarding sweep.
         if content:
             self.accumulated_text += content
         if reasoning:
@@ -982,7 +982,7 @@ class StreamingPostProcessor:
         # Previously gated on ``has_pending_tool_call`` — but that gate
         # uses the SAME canonical-wrapper check as the streaming parser, so
         # by construction it can never catch what the streaming parser
-        # missed. The 2026-05-20 ≥20B onboarding sweep caught gemma-4-26b
+        # missed. The 2026-05-20 ≥20B onboarding sweep caught gemma-4-26b-4bit
         # producing structured tool_calls in non-stream mode that the
         # streaming parser dropped on the floor; the only difference between
         # the two modes was this gate. See knowledge/guided_generation_gaps_2026-05-20.md

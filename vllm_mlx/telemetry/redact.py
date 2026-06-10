@@ -103,7 +103,7 @@ _HF_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 def normalize_model_path(path: str) -> str:
     """Pass through ``org/name`` repo IDs; redact local paths to ``"<local>"``.
 
-    A local ``./qwen3.5-9b`` checkout that resolve_model() prefers over
+    A local ``./qwen3.5-9b-4bit`` checkout that resolve_model() prefers over
     the alias would otherwise leak the user's home-directory layout via
     the model name.
     """
@@ -128,7 +128,7 @@ def normalize_model_path(path: str) -> str:
         if _HF_REPO_RE.match(path):
             return path
         return "<local>"
-    # Bare alias names (``qwen3.5-9b``) are public + harmless.
+    # Bare alias names (``qwen3.5-9b-4bit``) are public + harmless.
     return path
 
 

@@ -26,7 +26,7 @@ _ANALYSIS_PATTERN = re.compile(
 )
 
 # Final channel content. Harmony spec uses ``<|return|>`` to terminate the
-# final channel, but gpt-oss-20b emits ``<|end|>`` in practice for a sizeable
+# final channel, but gpt-oss-20b-mxfp4-q8 emits ``<|end|>`` in practice for a sizeable
 # fraction of non-streaming responses (observed in v0.6.64 pr_validate runs:
 # anthropic_sdk 0/5, langchain 2/6, pydantic_ai 1/6 on
 # ``mlx-community/gpt-oss-20b-MXFP4-Q8`` — every non-streaming test landed

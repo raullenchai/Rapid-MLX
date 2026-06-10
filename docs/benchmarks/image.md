@@ -8,7 +8,7 @@ scripts under `scripts/` (not packaged with `pip install rapid-mlx`) — clone
 the repo if you want to reproduce them.
 
 ```bash
-rapid-mlx serve gemma-4-26b --mllm --port 8000   # then exercise the VLM via /v1/chat/completions
+rapid-mlx serve gemma-4-26b-4bit --mllm --port 8000   # then exercise the VLM via /v1/chat/completions
 ```
 
 ## Results - Qwen3-VL-8B-Instruct-4bit (M4 Max, 128GB)

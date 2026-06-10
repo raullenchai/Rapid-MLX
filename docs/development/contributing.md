@@ -73,7 +73,7 @@ ruff format --check .
 
 ```bash
 # LLM benchmark — short alias works
-rapid-mlx bench qwen3.5-4b
+rapid-mlx bench qwen3.5-4b-4bit
 
 # Or by full HF repo
 rapid-mlx bench mlx-community/Qwen3.5-9B-4bit
@@ -109,7 +109,7 @@ See [Architecture](architecture.md) for details on the codebase structure.
 If you have access to different Apple Silicon chips (M1, M2, M3, M4), benchmark results are valuable:
 
 ```bash
-rapid-mlx bench qwen3.5-4b | tee results_m4.txt
+rapid-mlx bench qwen3.5-4b-4bit | tee results_m4.txt
 ```
 
 ## Questions?

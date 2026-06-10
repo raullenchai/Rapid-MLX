@@ -83,12 +83,12 @@ def test_orphan_aliases_now_covered() -> None:
     """Pin the 6 specific aliases that were orphans before this PR to
     catch a regression where someone deletes their profile."""
     for orphan in (
-        "bonsai-1.7b",
-        "bonsai-4b",
-        "bonsai-8b",
-        "ministral-3b",
-        "nemotron-30b",
-        "nemotron-nano",
+        "bonsai-1.7b-unpacked",
+        "bonsai-4b-unpacked",
+        "bonsai-8b-unpacked",
+        "ministral-3b-4bit",
+        "nemotron-30b-4bit",
+        "nemotron-30b-4bit",
     ):
         profile = resolve_profile(orphan)
         assert profile is not None, f"{orphan} regressed to orphan"
@@ -108,14 +108,14 @@ def test_list_aliases_returns_legacy_string_view() -> None:
     aliases = list_aliases()
     assert len(aliases) >= 65
     assert all(isinstance(p, str) for p in aliases.values())
-    assert aliases["qwen3.5-4b"] == "mlx-community/Qwen3.5-4B-MLX-4bit"
+    assert aliases["qwen3.5-4b-4bit"] == "mlx-community/Qwen3.5-4B-MLX-4bit"
     assert aliases["qwen3-0.6b-8bit"] == "mlx-community/Qwen3-0.6B-8bit"
 
 
 def test_list_profiles_returns_rich_dataclass_view() -> None:
     profiles = list_profiles()
     assert len(profiles) >= 65
-    p = profiles["qwen3.5-4b"]
+    p = profiles["qwen3.5-4b-4bit"]
     assert isinstance(p, AliasProfile)
     assert p.hf_path == "mlx-community/Qwen3.5-4B-MLX-4bit"
     assert p.tool_call_parser == "hermes"
@@ -138,7 +138,7 @@ def test_list_profiles_returns_rich_dataclass_view() -> None:
 
 def test_resolve_model_unchanged_for_callers() -> None:
     """Existing callers of ``resolve_model`` must keep getting a string."""
-    assert resolve_model("qwen3.5-4b") == "mlx-community/Qwen3.5-4B-MLX-4bit"
+    assert resolve_model("qwen3.5-4b-4bit") == "mlx-community/Qwen3.5-4B-MLX-4bit"
     assert (
         resolve_model("mlx-community/Qwen3.5-4B-MLX-4bit")
         == "mlx-community/Qwen3.5-4B-MLX-4bit"
@@ -150,7 +150,7 @@ def test_resolve_model_unchanged_for_callers() -> None:
 
 
 def test_resolve_profile_by_alias_name() -> None:
-    p = resolve_profile("qwen3.5-4b")
+    p = resolve_profile("qwen3.5-4b-4bit")
     assert p is not None
     assert p.tool_call_parser == "hermes"
 
@@ -173,11 +173,11 @@ def test_resolve_profile_returns_none_for_unknown() -> None:
 
 
 def test_detect_model_config_prefers_alias_profile_over_regex() -> None:
-    """``qwen3.5-4b`` (alias) and the matching qwen3.5 regex pattern
+    """``qwen3.5-4b-4bit`` (alias) and the matching qwen3.5 regex pattern
     happen to agree today, but the alias path is the one we contract on
     — pin a known field that exists on the alias profile so a future
     regex change can't silently take over."""
-    cfg = detect_model_config("qwen3.5-4b")
+    cfg = detect_model_config("qwen3.5-4b-4bit")
     assert cfg is not None
     assert cfg.tool_call_parser == "hermes"
     assert cfg.is_hybrid is True
@@ -212,7 +212,7 @@ def test_detect_model_config_alias_wins_over_regex_when_they_disagree() -> None:
     import vllm_mlx.model_aliases as ma
     from vllm_mlx.model_aliases import AliasProfile
 
-    real = ma._aliases["qwen3.5-4b"]
+    real = ma._aliases["qwen3.5-4b-4bit"]
     forged = AliasProfile(
         hf_path=real.hf_path,
         tool_call_parser="ALIAS_WINS",  # the regex would say "hermes"
@@ -220,8 +220,8 @@ def test_detect_model_config_alias_wins_over_regex_when_they_disagree() -> None:
         is_hybrid=real.is_hybrid,
         supports_spec_decode=real.supports_spec_decode,
     )
-    with patch.dict(ma._aliases, {"qwen3.5-4b": forged}):
-        cfg = detect_model_config("qwen3.5-4b")
+    with patch.dict(ma._aliases, {"qwen3.5-4b-4bit": forged}):
+        cfg = detect_model_config("qwen3.5-4b-4bit")
     assert cfg is not None
     assert cfg.tool_call_parser == "ALIAS_WINS", (
         "regex shadowed the alias profile — alias-first lookup is broken"
@@ -329,20 +329,20 @@ def test_per_alias_schema_allows_independent_overrides() -> None:
     even if they map to the same family. This is what we couldn't do
     before, and it's the architectural reason for the refactor."""
     profiles = list_profiles()
-    p1 = profiles["qwen3.5-4b"]
+    p1 = profiles["qwen3.5-4b-4bit"]
     # Object identity check would be wrong; equality on a value-typed
     # dataclass is what we actually want — separate AliasProfile
     # instances per alias means we can mutate one without touching the
     # other. (Mutation isn't supported because the dataclass is frozen,
     # but a re-load with edited JSON would work.)
-    assert p1 is not profiles["qwen3.5-9b"]
+    assert p1 is not profiles["qwen3.5-9b-4bit"]
 
 
 # ---- Reverse-lookup behaviour with shared hf_paths -----------------------
 
 
 def test_reverse_lookup_for_shared_hf_path_is_deterministic() -> None:
-    """Two aliases (``nemotron-30b`` and ``nemotron-nano``) point at the
+    """Two aliases (``nemotron-30b-4bit`` and ``nemotron-30b-4bit``) point at the
     same MLX repo. Reverse lookup by HF path should return the
     JSON-insertion-order-first alias's profile, deterministically.
 
@@ -352,23 +352,23 @@ def test_reverse_lookup_for_shared_hf_path_is_deterministic() -> None:
     about who's the canonical alias).
     """
     profiles = list_profiles()
-    nemotron_30b = profiles["nemotron-30b"]
-    nemotron_nano = profiles["nemotron-nano"]
+    nemotron_30b = profiles["nemotron-30b-4bit"]
+    nemotron_nano = profiles["nemotron-30b-4bit"]
     assert nemotron_30b.hf_path == nemotron_nano.hf_path
 
-    # nemotron-30b appears first in aliases.json, so reverse lookup
-    # by the shared HF path returns nemotron-30b's profile object.
+    # nemotron-30b-4bit appears first in aliases.json, so reverse lookup
+    # by the shared HF path returns nemotron-30b-4bit's profile object.
     via_path = resolve_profile(nemotron_30b.hf_path)
     assert via_path is not None
     assert via_path is nemotron_30b
 
 
 def test_reverse_lookup_handles_deepseek_v4_flash_duplicate() -> None:
-    """``deepseek-v4-flash`` and ``deepseek-v4-flash-8bit`` share
+    """``deepseek-v4-flash-8bit`` and ``deepseek-v4-flash-8bit`` share
     ``mlx-community/DeepSeek-V4-Flash-8bit`` — same regression guard
     pattern as the nemotron pair, different family."""
     profiles = list_profiles()
-    flash = profiles["deepseek-v4-flash"]
+    flash = profiles["deepseek-v4-flash-8bit"]
     flash_8bit = profiles["deepseek-v4-flash-8bit"]
     assert flash.hf_path == flash_8bit.hf_path
     via_path = resolve_profile(flash.hf_path)

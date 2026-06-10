@@ -3,7 +3,7 @@
 
 Persona-3 ("Ollama switcher") feedback (2026-05): running
 
-    rapid-mlx chat qwen3-coder
+    rapid-mlx chat qwen3-coder-4bit
 
 against an alias that wasn't yet cached silently kicked off a 41.8 GB
 download with no ``[Y/n]`` prompt. The download itself ran fine, but

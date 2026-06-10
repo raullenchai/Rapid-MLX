@@ -63,37 +63,37 @@ rapid-mlx serve <model> [options]
 
 ```bash
 # Default — continuous batching is on by default; short aliases work
-rapid-mlx serve qwen3.5-4b
+rapid-mlx serve qwen3.5-4b-4bit
 
 # A larger general-purpose model (5 GB)
-rapid-mlx serve qwen3.5-9b --port 8000
+rapid-mlx serve qwen3.5-9b-4bit --port 8000
 
 # Paged KV cache (memory-efficient prefix sharing)
-rapid-mlx serve qwen3.5-9b --use-paged-cache --port 8000
+rapid-mlx serve qwen3.5-9b-4bit --use-paged-cache --port 8000
 
 # With MCP tools
-rapid-mlx serve qwen3.5-9b --mcp-config mcp.json
+rapid-mlx serve qwen3.5-9b-4bit --mcp-config mcp.json
 
 # Multimodal (vision) model — requires the [vision] extra
-rapid-mlx serve gemma-4-26b --mllm
+rapid-mlx serve gemma-4-26b-4bit --mllm
 
 # Reasoning model — parser is auto-detected, but you can pin it
-rapid-mlx serve qwen3.5-9b --reasoning-parser qwen3
+rapid-mlx serve qwen3.5-9b-4bit --reasoning-parser qwen3
 
 # DeepSeek reasoning model
-rapid-mlx serve deepseek-r1-8b --reasoning-parser deepseek_r1
+rapid-mlx serve deepseek-r1-8b-4bit --reasoning-parser deepseek_r1
 
 # Tool calling with Mistral/Devstral
-rapid-mlx serve devstral-24b --enable-auto-tool-choice --tool-call-parser hermes
+rapid-mlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser hermes
 
 # DFlash speculative decoding (single-user, single supported alias)
 rapid-mlx serve qwen3.5-27b-8bit --enable-dflash --port 8000
 
 # API key authentication
-rapid-mlx serve qwen3.5-9b --api-key your-secret-key
+rapid-mlx serve qwen3.5-9b-4bit --api-key your-secret-key
 
 # Production setup with security options
-rapid-mlx serve qwen3.5-9b \
+rapid-mlx serve qwen3.5-9b-4bit \
   --api-key your-secret-key \
   --rate-limit 60 \
   --timeout 120
@@ -137,7 +137,7 @@ rapid-mlx bench <model> [options]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `<model>` | Model alias (e.g. `qwen3.5-4b`) or HF repo (positional) | *(required)* |
+| `<model>` | Model alias (e.g. `qwen3.5-4b-4bit`) or HF repo (positional) | *(required)* |
 | `--num-prompts` | Number of prompts | 5 |
 | `--max-tokens` | Max tokens per prompt | 256 |
 | `--enable-prefix-cache` / `--disable-prefix-cache` | Toggle prefix caching | enabled |
@@ -150,7 +150,7 @@ Run `rapid-mlx bench --help` for the full list (memory limits, batch sizes, etc.
 
 ```bash
 # Quick LLM benchmark using a short alias
-rapid-mlx bench qwen3.5-4b
+rapid-mlx bench qwen3.5-4b-4bit
 
 # Bench a vision-language model by full HF repo
 rapid-mlx bench mlx-community/Qwen3-VL-8B-Instruct-4bit
@@ -172,7 +172,7 @@ rapid-mlx chat [model] [options]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `model` | Model alias or HF repo (positional, optional) | `qwen3.5-4b` |
+| `model` | Model alias or HF repo (positional, optional) | `qwen3.5-4b-4bit` |
 | `--system` | System prompt prepended to the conversation | *(none)* |
 | `--think` / `--no-think` | Enable / disable reasoning output in the REPL | off |
 | `--max-tokens` | Max tokens per assistant response | 2048 |
@@ -189,18 +189,18 @@ rapid-mlx chat [model] [options]
 ### Examples
 
 ```bash
-# Fastest path — defaults to qwen3.5-4b, spawns its own server
+# Fastest path — defaults to qwen3.5-4b-4bit, spawns its own server
 rapid-mlx chat
 
 # A reasoning model with thinking surfaced
-rapid-mlx chat qwen3.5-9b --think
+rapid-mlx chat qwen3.5-9b-4bit --think
 
 # Attach to a server you're already running on :8000
-rapid-mlx serve qwen3.5-27b --port 8000 &
+rapid-mlx serve qwen3.5-27b-4bit --port 8000 &
 rapid-mlx chat --port 8000
 
 # Pin a system prompt
-rapid-mlx chat qwen3.5-4b --system "You are a terse, friendly Mac shell tutor."
+rapid-mlx chat qwen3.5-4b-4bit --system "You are a terse, friendly Mac shell tutor."
 ```
 
 In-REPL slash commands: `/help`, `/reset` (alias `/clear`), `/model <alias>`,

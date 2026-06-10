@@ -8,7 +8,7 @@ README-ready Markdown to reports/benchmarks/ollama-comparison/.
 
 Manual usage:
     python scripts/bench_vs_ollama.py
-    python scripts/bench_vs_ollama.py --model-pair qwen3.5-4b=qwen3.5:4b --runs 1
+    python scripts/bench_vs_ollama.py --model-pair qwen3.5-4b-4bit=qwen3.5:4b --runs 1
     python scripts/bench_vs_ollama.py --no-pull --no-download --runs 1
 """
 
@@ -93,8 +93,8 @@ class ParsedStream:
 
 def default_model_pairs() -> list[ModelPair]:
     return [
-        ModelPair("qwen3.5-4b", "qwen3.5:4b"),
-        ModelPair("qwen3.5-9b", "qwen3.5:9b"),
+        ModelPair("qwen3.5-4b-4bit", "qwen3.5:4b"),
+        ModelPair("qwen3.5-9b-4bit", "qwen3.5:9b"),
     ]
 
 

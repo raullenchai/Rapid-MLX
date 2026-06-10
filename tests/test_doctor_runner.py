@@ -221,7 +221,7 @@ class TestReportRendering:
 
 class TestDefaultBootTimeout:
     """Single generous default beats heuristics that miss models like
-    'qwen3-coder' (80B, no param-count hint in alias)."""
+    'qwen3-coder-4bit' (80B, no param-count hint in alias)."""
 
     def test_default_is_generous(self):
         from vllm_mlx.doctor.cli import DEFAULT_BOOT_TIMEOUT_S

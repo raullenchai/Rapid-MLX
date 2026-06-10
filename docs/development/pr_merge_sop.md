@@ -158,7 +158,7 @@ Skip rule:
 - **Touch inference code** → run, even if it takes ~10 min:
 
   ```bash
-  # make check runs against the default model (qwen3.5-4b) — ~10 min
+  # make check runs against the default model (qwen3.5-4b-4bit) — ~10 min
   make check
   # make full runs across multiple models (~1-2 hr) — only when changes affect generation correctness
   make full
@@ -166,7 +166,7 @@ Skip rule:
   python3 -m vllm_mlx.cli doctor check --model <alias>
   ```
 
-The bar is **0 regressions vs the per-model baseline in `harness/baselines/`** *for models that have committed baselines* (currently `qwen3.5-35b` and `qwen3.6-35b`). For models without baselines, document the chosen ad-hoc reference (e.g., "compared against output on commit X", "manual eyeball vs main"). Pre-existing fails (Test 10 streaming usage, `<|im_end|>` leak, thinking-toggle on qwen3.5-4b) are documented; new fails block merge.
+The bar is **0 regressions vs the per-model baseline in `harness/baselines/`** *for models that have committed baselines* (currently `qwen3.5-35b-8bit` and `qwen3.6-35b-4bit`). For models without baselines, document the chosen ad-hoc reference (e.g., "compared against output on commit X", "manual eyeball vs main"). Pre-existing fails (Test 10 streaming usage, `<|im_end|>` leak, thinking-toggle on qwen3.5-4b-4bit) are documented; new fails block merge.
 
 ## Step 9 — Anthropic-compat round-trip (gated on parser/router PRs)
 
@@ -174,11 +174,11 @@ If the diff touches `vllm_mlx/parsers/`, `vllm_mlx/reasoning/`, `vllm_mlx/routes
 
 ```bash
 # in one shell:
-rapid-mlx serve qwen3.5-4b
+rapid-mlx serve qwen3.5-4b-4bit
 # in another:
 curl -s http://localhost:8000/anthropic/v1/messages \
   -H 'content-type: application/json' \
-  -d '{"model":"qwen3.5-4b","max_tokens":64,"messages":[{"role":"user","content":"say hi"}]}'
+  -d '{"model":"qwen3.5-4b-4bit","max_tokens":64,"messages":[{"role":"user","content":"say hi"}]}'
 ```
 
 Output must be a non-empty Anthropic-shaped response, no `!!!!!!` token-id-0 corruption, no streaming-think misroute. The `/anthropic` surface shares router-level code with `/v1/chat/completions` but diverges at the streaming-think router; multiple historical regressions (#288, #289) shipped with green OpenAI-compat smoke and broken `/anthropic`.

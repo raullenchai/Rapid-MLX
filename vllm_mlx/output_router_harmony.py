@@ -73,7 +73,7 @@ _RECIPIENT_SHAPE = re.compile(r"^functions\.[A-Za-z0-9_\-]{1,64}$")
 
 # HuggingFace hub cache snapshot dir pattern. Path components have the
 # form ``models--<owner>--<name>`` so ``/.../models--openai--gpt-oss-20b
-# /snapshots/<sha>/`` resolves to the identity ``openai/gpt-oss-20b``
+# /snapshots/<sha>/`` resolves to the identity ``openai/gpt-oss-20b-mxfp4-q8``
 # (the basename is the snapshot SHA, which on its own gives no hint
 # that this is a gpt-oss tokenizer). Codex round-14 BLOCKING — the
 # previous basename-only check rejected this path shape and the gate
@@ -99,7 +99,7 @@ _HF_CACHE_MODEL_DIR_RE = re.compile(r"models--([^-/\\]+(?:-[^-/\\]+)*)--([^/\\]+
 #   * round-12: anchored basename still let arbitrary owners through
 #     (``some-user/gpt-oss-remapped``) → restrict to known owners.
 #   * round-13: pure remote-id-prefix matching rejected legitimate
-#     LOCAL paths (``/models/gpt-oss-20b``, ``~/.cache/.../gpt-oss-20b``)
+#     LOCAL paths (``/models/gpt-oss-20b-mxfp4-q8``, ``~/.cache/.../gpt-oss-20b-mxfp4-q8``)
 #     and made production fall back to the leaking legacy router.
 #   * round-14: HF cache snapshot dir ``models--openai--gpt-oss-20b
 #     /snapshots/<sha>`` has SHA basename → recognise the ``models--
@@ -177,7 +177,7 @@ def _is_known_harmony_identity(name_or_path: str) -> bool:
 # and corrupts content / tool-call arguments (codex round-1 BLOCKING).
 # Pick short strings that exercise common body-vocab regions: plain
 # English, JSON-shaped text, and the smoking-gun multi-token word
-# ``commentary`` from PR #514 (``comment``+``ary`` on gpt-oss-20b).
+# ``commentary`` from PR #514 (``comment``+``ary`` on gpt-oss-20b-mxfp4-q8).
 _BODY_VOCAB_PROBES = (
     "Hello world",
     'functions.get_weather {"a":1}',

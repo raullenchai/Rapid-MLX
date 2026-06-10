@@ -133,7 +133,7 @@ def _clean_gpt_oss_output(text: str) -> str:
     """
     # Tool-call structure must survive to the harmony tool parser:
     # if the model emitted ``<|channel|>commentary to=functions.X...<|call|>``
-    # (which gpt-oss-20b does for every tool invocation), the parser needs
+    # (which gpt-oss-20b-mxfp4-q8 does for every tool invocation), the parser needs
     # those structural tokens intact to extract the call. Stripping them
     # here drops the args into plain text and the parser returns 0 calls.
     # Same regression class as PR #436 but for the tool parser. Final

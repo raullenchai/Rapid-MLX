@@ -436,27 +436,27 @@ def test_negative_control_dflash_missing_drafter_is_caught() -> None:
 
 def test_audit_batch_reasoning_parser_wirings() -> None:
     """Pin the Model Onboarding SOP audit fixes for reasoning_parser
-    on nemotron / kimi-k2.5 / hermes4 aliases. Each was previously
+    on nemotron / kimi-k2.5-3bit / hermes4 aliases. Each was previously
     ``null`` despite the model emitting ``<think>``/``</think>``
     blocks — without the parser, those blocks leak into
     ``message.content``.
 
     Parser choice rationale:
-    - nemotron-30b/nano + kimi-k2.5 use a Qwen3-style template that
+    - nemotron-30b-4bit/nano + kimi-k2.5-3bit use a Qwen3-style template that
       INJECTS ``<think>`` into the prompt (gated by ``enable_thinking``
       / ``thinking`` flag). ``qwen3`` parser's ``finalize_streaming``
       correction handles the "no </think> ever appeared → emit as
       content" case correctly.
-    - hermes4-70b: the chat template does NOT inject ``<think>``;
+    - hermes4-70b-4bit: the chat template does NOT inject ``<think>``;
       the model decides autonomously. Same contract as GLM-4 → reuse
       ``glm4`` parser (no-tags-yet → content semantics).
     """
     profiles = list_profiles()
     expected = {
-        "nemotron-30b": "qwen3",
-        "nemotron-nano": "qwen3",
-        "kimi-k2.5": "qwen3",
-        "hermes4-70b": "glm4",
+        "nemotron-30b-4bit": "qwen3",
+        "nemotron-30b-4bit": "qwen3",
+        "kimi-k2.5-3bit": "qwen3",
+        "hermes4-70b-4bit": "glm4",
     }
     for alias, parser in expected.items():
         assert alias in profiles, f"{alias} missing from aliases.json"
@@ -482,7 +482,7 @@ def test_bonsai_family_wires_glm4_reasoning_parser() -> None:
     zero behavioural downside for non-thinking turns.
     """
     profiles = list_profiles()
-    for alias in ("bonsai-1.7b", "bonsai-4b", "bonsai-8b"):
+    for alias in ("bonsai-1.7b-unpacked", "bonsai-4b-unpacked", "bonsai-8b-unpacked"):
         assert alias in profiles, f"{alias} missing from aliases.json"
         assert profiles[alias].reasoning_parser == "glm4", (
             f"{alias}: reasoning_parser must be 'glm4' per audit. "
@@ -499,7 +499,7 @@ def test_audit_batch_bonsai_tool_call_parser_wired() -> None:
     https://huggingface.co/prism-ml/Bonsai-1.7B-unpacked.
     """
     profiles = list_profiles()
-    for alias in ("bonsai-1.7b", "bonsai-4b", "bonsai-8b"):
+    for alias in ("bonsai-1.7b-unpacked", "bonsai-4b-unpacked", "bonsai-8b-unpacked"):
         assert alias in profiles, f"{alias} missing from aliases.json"
         assert profiles[alias].tool_call_parser == "hermes", (
             f"{alias}: tool_call_parser must be 'hermes' per audit. "
@@ -519,7 +519,7 @@ def test_deepseek_v4_flash_family_wires_deepseek_r1_reasoning_parser() -> None:
     """
     profiles = list_profiles()
     family = [
-        "deepseek-v4-flash",
+        "deepseek-v4-flash-8bit",
         "deepseek-v4-flash-2bit",
         "deepseek-v4-flash-4bit",
         "deepseek-v4-flash-8bit",
@@ -545,44 +545,44 @@ def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
     change" commit doesn't quietly restore the broken path.
     """
     profiles = list_profiles()
-    # qwen3-vl-4b: stale ``-MLX-`` suffix not used by upstream uploads
-    assert "MLX-4bit" not in profiles["qwen3-vl-4b"].hf_path, (
-        "qwen3-vl-4b previously pointed at "
+    # qwen3-vl-4b-4bit: stale ``-MLX-`` suffix not used by upstream uploads
+    assert "MLX-4bit" not in profiles["qwen3-vl-4b-4bit"].hf_path, (
+        "qwen3-vl-4b-4bit previously pointed at "
         "mlx-community/Qwen3-VL-4B-Instruct-MLX-4bit which 404s; the "
         "current upload is Qwen3-VL-4B-Instruct-4bit (no '-MLX-' suffix)."
     )
-    # devstral-24b: ``2503`` snapshot was never re-uploaded as MLX-4bit;
+    # devstral-24b-4bit: ``2503`` snapshot was never re-uploaded as MLX-4bit;
     # 2505/2507 are the canonical Devstral-Small v1 releases.
-    assert "2503" not in profiles["devstral-24b"].hf_path, (
-        "devstral-24b previously pointed at Devstral-Small-2503-MLX-4bit "
+    assert "2503" not in profiles["devstral-24b-4bit"].hf_path, (
+        "devstral-24b-4bit previously pointed at Devstral-Small-2503-MLX-4bit "
         "which 404s. Use the 2507 (or 2505) MLX 4-bit upload."
     )
-    # glm4.5-air: ``-0111-`` date suffix was a community-only tag that
+    # glm4.5-air-4bit: ``-0111-`` date suffix was a community-only tag that
     # got rolled into the default release.
-    assert "0111" not in profiles["glm4.5-air"].hf_path, (
-        "glm4.5-air previously pointed at GLM-4.5-Air-0111-4bit which "
+    assert "0111" not in profiles["glm4.5-air-4bit"].hf_path, (
+        "glm4.5-air-4bit previously pointed at GLM-4.5-Air-0111-4bit which "
         "404s. The current canonical upload is GLM-4.5-Air-4bit."
     )
-    # glm4.7-9b previously pointed at the full GLM-4.7 (355B MoE,
+    # glm4.7-9b-4bit previously pointed at the full GLM-4.7 (355B MoE,
     # ~185 GB at 4-bit) — the alias name implies a 9B model. The
     # correct upload is the Flash variant (~16 GB).
-    assert "Flash" in profiles["glm4.7-9b"].hf_path, (
-        "glm4.7-9b must point at the GLM-4.7-Flash upload, not the full "
+    assert "Flash" in profiles["glm4.7-9b-4bit"].hf_path, (
+        "glm4.7-9b-4bit must point at the GLM-4.7-Flash upload, not the full "
         "GLM-4.7 (355B MoE) which is ~12x larger and won't fit on most "
         "user disks."
     )
-    # gpt-oss-20b previously pointed at mlx-community/GPT-OSS-20B-4bit
+    # gpt-oss-20b-mxfp4-q8 previously pointed at mlx-community/GPT-OSS-20B-4bit
     # which 404s; the canonical mlx-community release uses the
     # MXFP4-Q8 hybrid quantization.
-    assert profiles["gpt-oss-20b"].hf_path != "mlx-community/GPT-OSS-20B-4bit", (
-        "gpt-oss-20b must not regress to the 404 path; current canonical "
+    assert profiles["gpt-oss-20b-mxfp4-q8"].hf_path != "mlx-community/GPT-OSS-20B-4bit", (
+        "gpt-oss-20b-mxfp4-q8 must not regress to the 404 path; current canonical "
         "upload is mlx-community/gpt-oss-20b-MXFP4-Q8."
     )
-    # kimi-48b previously pointed at mlx-community/Kimi-K2-Instruct-Q4_0-MLX
+    # kimi-48b-4bit previously pointed at mlx-community/Kimi-K2-Instruct-Q4_0-MLX
     # (404). The replacement Kimi-K2-Instruct-4bit is large
     # (~540 GB) but is the actual mlx-community Kimi K2 Instruct release.
-    assert "Q4_0" not in profiles["kimi-48b"].hf_path, (
-        "kimi-48b must not regress to the Q4_0 path which 404s."
+    assert "Q4_0" not in profiles["kimi-48b-4bit"].hf_path, (
+        "kimi-48b-4bit must not regress to the Q4_0 path which 404s."
     )
 
 
@@ -603,46 +603,46 @@ _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     # Devstral 1.x — Mistral code-tuned model card example uses 0.15
     # for interactive coding (see model card on huggingface.co/mistralai).
     # Devstral 2.x ships the same empty stub; same pattern applies.
-    "devstral-24b": {"temperature": 0.15},
-    "devstral-v2-24b": {"temperature": 0.15},
+    "devstral-24b-4bit": {"temperature": 0.15},
+    "devstral-v2-24b-4bit": {"temperature": 0.15},
     # Gemma 3 family — Google's Gemma docs recommend
     # (temperature=1.0, top_p=0.95, top_k=64) for the chat-tuned models.
     # All of gemma-3-1b / gemma-3-12b / gemma-3-27b ship an empty stub
     # locally (`_from_model_config: true` plus eos/pad tokens only).
-    "gemma3-1b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma3-12b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma3-27b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma3-1b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma3-12b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma3-27b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # gemma-3n-E4B ships top_p=0.95 and top_k=64 upstream but no
     # temperature. We bake in the full triple anyway (matches the
     # rest of the Gemma family) so a future mlx-community re-quant
     # that drops generation_config.json doesn't silently regress to
     # the framework fallback (0.7 / 0.9).
-    "gemma-3n-e4b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-3n-e4b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # Gemma 4 — official Google sampling guidance hasn't been
     # published yet at the time of writing; we extrapolate from the
     # Gemma 3 family card. Revisit when an official Gemma 4 doc lands.
-    "gemma-4-12b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-12b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma-4-12b-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-26b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-31b": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-26b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-31b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma-4-31b-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # Gemma 4 QAT variants — same sampling as PTQ siblings. QAT changes
     # weight distribution (training with simulated quantization) not the
     # decoding distribution, so Google's chat sampling guidance applies
     # unchanged.
-    "gemma-4-12b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-12b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma-4-12b-qat-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-26b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-31b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-26b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-4-31b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma-4-31b-qat-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # GLM-4.5-Air — THUDM publishes two recommendations: temperature=0.6
     # for *thinking* mode, ~1.0 for non-thinking. The alias has
     # reasoning_parser=glm4 → thinking IS the default response path,
     # so 0.6 is the right pick. (Users who want non-thinking can pass
     # temperature explicitly per-request.)
-    "glm4.5-air": {"temperature": 0.6, "top_p": 0.95},
+    "glm4.5-air-4bit": {"temperature": 0.6, "top_p": 0.95},
     # GLM-4.7-Flash ships temperature=1.0 upstream; we add only top_p.
-    "glm4.7-9b": {"top_p": 0.95},
+    "glm4.7-9b-4bit": {"top_p": 0.95},
 }
 
 

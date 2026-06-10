@@ -103,7 +103,7 @@ def test_check_rejects_4bit_main_model() -> None:
         dflash_draft_model="z-lab/Qwen3.5-27B-DFlash",
     )
     with pytest.raises(DFlashUnavailable, match="4-bit"):
-        check(p, alias="qwen3.5-27b")
+        check(p, alias="qwen3.5-27b-4bit")
 
 
 def test_check_message_lists_eligible_aliases() -> None:
@@ -133,7 +133,7 @@ def test_report_collects_all_failures() -> None:
         is_moe=True,
         # supports_dflash=False (default) → 3 reasons total
     )
-    r = report(bad, alias="qwen3.6-35b")
+    r = report(bad, alias="qwen3.6-35b-4bit")
     assert len(r.reasons) == 3, f"expected 3 reasons, got: {r.reasons}"
     joined = " ".join(r.reasons)
     assert "MoE" in joined
@@ -168,20 +168,20 @@ def test_qwen3_5_27b_8bit_alias_passes_check() -> None:
 
 
 def test_default_qwen3_5_27b_alias_fails_check_with_4bit_reason() -> None:
-    """The default ``qwen3.5-27b`` alias points at the 4-bit variant —
+    """The default ``qwen3.5-27b-4bit`` alias points at the 4-bit variant —
     eligibility must reject it with a clear 4-bit hint, not the
     generic 'not enabled' message (since supports_dflash=False).
     Confirms users get the right pointer when they pick the wrong
     quantization."""
     from vllm_mlx.model_aliases import resolve_profile
 
-    profile = resolve_profile("qwen3.5-27b")
+    profile = resolve_profile("qwen3.5-27b-4bit")
     assert profile is not None
     # Match-string: capture both reasons (4-bit + not-opted-in). The
     # bare ``raises`` would pass even if the gate silently degraded to
     # the generic message, defeating the point of this regression test.
     with pytest.raises(DFlashUnavailable) as excinfo:
-        check(profile, alias="qwen3.5-27b")
+        check(profile, alias="qwen3.5-27b-4bit")
     msg = str(excinfo.value)
     assert "4-bit" in msg, (
         f"4-bit hint missing from DFlashUnavailable message; got:\n{msg}"

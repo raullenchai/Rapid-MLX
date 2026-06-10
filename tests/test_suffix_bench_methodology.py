@@ -53,7 +53,7 @@ class TestClassifyRun:
 
     def test_decode_time_floor_rejects_short_window(self):
         # 80 tokens generated in 0.04s → 2000 tok/s. This is the exact
-        # failure mode that burned smollm3-3b's code_edit run in v2 —
+        # failure mode that burned smollm3-3b-4bit's code_edit run in v2 —
         # technically >32 tokens (the old guard) but still meaningless.
         wr = bench._classify_run(completion_tokens=80, decode_time=0.04, total_time=0.6)
         assert wr.tps is None

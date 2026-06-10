@@ -541,7 +541,7 @@ class TestGuidedArrayOfObjectsSchema:
 
 class TestPsCommandPortParsing:
     """``rapid-mlx ps`` used to break on the first positional argument,
-    so ``serve qwen3.5-4b --port 8005`` showed port=8000 (the default).
+    so ``serve qwen3.5-4b-4bit --port 8005`` showed port=8000 (the default).
     Verify the parser keeps scanning for flags after capturing the
     positional model."""
 
@@ -575,28 +575,28 @@ class TestPsCommandPortParsing:
 
     def test_port_after_positional_model(self):
         model, port = self._parse_serve(
-            ["rapid-mlx", "serve", "qwen3.5-4b", "--port", "8005"]
+            ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--port", "8005"]
         )
-        assert model == "qwen3.5-4b"
+        assert model == "qwen3.5-4b-4bit"
         assert port == "8005"
 
     def test_port_before_positional_model(self):
         model, port = self._parse_serve(
-            ["rapid-mlx", "serve", "--port", "8005", "qwen3.5-4b"]
+            ["rapid-mlx", "serve", "--port", "8005", "qwen3.5-4b-4bit"]
         )
-        assert model == "qwen3.5-4b"
+        assert model == "qwen3.5-4b-4bit"
         assert port == "8005"
 
     def test_port_equals_form(self):
         model, port = self._parse_serve(
-            ["rapid-mlx", "serve", "qwen3.5-4b", "--port=9000"]
+            ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--port=9000"]
         )
-        assert model == "qwen3.5-4b"
+        assert model == "qwen3.5-4b-4bit"
         assert port == "9000"
 
     def test_no_port_uses_default(self):
-        model, port = self._parse_serve(["rapid-mlx", "serve", "qwen3.5-4b"])
-        assert model == "qwen3.5-4b"
+        model, port = self._parse_serve(["rapid-mlx", "serve", "qwen3.5-4b-4bit"])
+        assert model == "qwen3.5-4b-4bit"
         assert port == "8000"
 
 

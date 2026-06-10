@@ -14,7 +14,7 @@ pip install -e .
 pip install pytest ruff        # dev tools for testing and linting
 
 # Start a dev server
-rapid-mlx serve qwen3.5-4b --port 8000
+rapid-mlx serve qwen3.5-4b-4bit --port 8000
 ```
 
 **Requirements:** Python 3.11+, macOS with Apple Silicon (M1/M2/M3/M4).
@@ -132,7 +132,7 @@ The easiest contribution — no model download needed!
 }
 ```
 
-That's it. Find the MLX model on [HuggingFace mlx-community](https://huggingface.co/mlx-community) and add the mapping. Convention: `<family>-<size>` in lowercase (e.g., `qwen3.5-9b`, `gemma-4-26b`).
+That's it. Find the MLX model on [HuggingFace mlx-community](https://huggingface.co/mlx-community) and add the mapping. Convention: `<family>-<size>` in lowercase (e.g., `qwen3.5-9b-4bit`, `gemma-4-26b-4bit`).
 
 ## How to Add Parser Auto-Detection
 

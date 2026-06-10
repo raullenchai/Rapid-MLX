@@ -186,7 +186,7 @@ def _stringify_structured(entry: object) -> str:
         "Issue #468 (router-level portion) — compound analysis + "
         "commentary sequence leaks the commentary block as CONTENT "
         "text. Same family-wide gap as #455. Live verification on "
-        "gpt-oss-20b (2026-06-04) confirmed the symptom AND surfaced "
+        "gpt-oss-20b-mxfp4-q8 (2026-06-04) confirmed the symptom AND surfaced "
         "the deeper constraint that breaks naive single-token fixes: "
         "production ``commentary`` is two tokens (``comment``+``ary``). "
         "Eventual fix must lookahead-decode the channel-type word or "

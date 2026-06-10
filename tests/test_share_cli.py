@@ -40,7 +40,7 @@ def _isolated_state_dir(tmp_path, monkeypatch):
 
 def _make_args(**overrides):
     defaults = dict(
-        model="qwen3.5-4b",
+        model="qwen3.5-4b-4bit",
         port=18765,  # explicit so the env-var fallback path isn't exercised
         thinking=False,  # default: forward --no-thinking to serve
         cors_origins=None,  # None → CLI default allowlist
@@ -124,7 +124,7 @@ def test_share_command_happy_path(capsys):
         patch.object(share_cli.ws_tunnel, "wait_for_public_url", return_value=True),
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
     ):
@@ -227,9 +227,9 @@ def test_register_adds_share_to_subparsers():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
     share_cli.register(subparsers)
-    args = parser.parse_args(["share", "qwen3.5-4b"])
+    args = parser.parse_args(["share", "qwen3.5-4b-4bit"])
     assert args.command == "share"
-    assert args.model == "qwen3.5-4b"
+    assert args.model == "qwen3.5-4b-4bit"
 
 
 def test_share_command_rejects_garbage_port_env(monkeypatch):
@@ -277,7 +277,7 @@ def test_spawn_serve_passes_loopback_host():
     access at ``http://<lan-ip>:<port>``."""
     with patch("subprocess.Popen") as mock_popen:
         share_cli._spawn_serve(
-            alias="qwen3.5-4b",
+            alias="qwen3.5-4b-4bit",
             port=18765,
             api_key="K",
             log_path=MagicMock(),
@@ -293,7 +293,7 @@ def test_spawn_serve_passes_api_key_via_env_not_argv():
     appear in argv where ``ps`` / shell history would leak it."""
     with patch("subprocess.Popen") as mock_popen:
         share_cli._spawn_serve(
-            alias="qwen3.5-4b",
+            alias="qwen3.5-4b-4bit",
             port=18765,
             api_key="SECRET_KEY_HERE",
             log_path=MagicMock(),
@@ -466,7 +466,7 @@ def test_share_command_exits_nonzero_when_serve_crashes(capsys):
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", return_value=None),
         pytest.raises(SystemExit) as exc_info,
@@ -496,7 +496,7 @@ def test_share_command_exits_nonzero_when_serve_exits_cleanly(capsys):
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", return_value=None),
         pytest.raises(SystemExit) as exc_info,
@@ -533,7 +533,7 @@ def test_share_command_exits_when_tunnel_drops_post_banner(capsys):
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", side_effect=fake_sleep),
         pytest.raises(SystemExit) as exc_info,
@@ -558,7 +558,7 @@ def test_share_command_ctrl_c_keeps_exit_zero(capsys):
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
     ):
@@ -591,7 +591,7 @@ def test_share_command_sigterm_runs_cleanup():
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", side_effect=raise_sigterm_handler_once),
     ):
@@ -617,7 +617,7 @@ def test_register_share_cors_origins_accepts_multiple_values():
     args = parser.parse_args(
         [
             "share",
-            "qwen3.5-4b",
+            "qwen3.5-4b-4bit",
             "--cors-origins",
             "https://a.com",
             "https://b.com",
@@ -647,7 +647,7 @@ def test_share_command_forwards_multiple_cors_origins_to_child(capsys):
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
     ):
@@ -694,7 +694,7 @@ def _drive_share_capture(args, *, extra_patches=()):
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
     ]
@@ -804,7 +804,7 @@ def test_share_command_forwards_original_alias_to_child(capsys):
         spawn_argv.append(alias)
         return serve_proc
 
-    args = _make_args(model="qwen3.5-4b")
+    args = _make_args(model="qwen3.5-4b-4bit")
     # Simulate argparse having rewritten the alias.
     args._original_alias = "Qwen3.5-4B"
 
@@ -817,7 +817,7 @@ def test_share_command_forwards_original_alias_to_child(capsys):
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
     ):
@@ -845,12 +845,12 @@ def test_share_command_falls_back_to_args_model_when_no_original_alias(capsys):
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
     ):
-        share_cli.share_command(_make_args(model="qwen3.5-4b"))
-    assert spawn_argv == ["qwen3.5-4b"]
+        share_cli.share_command(_make_args(model="qwen3.5-4b-4bit"))
+    assert spawn_argv == ["qwen3.5-4b-4bit"]
 
 
 # ─────────────────────────── download-gate behavior ─────────────────────────
@@ -873,7 +873,7 @@ def test_share_command_runs_download_gate_for_uncached_hf_repo():
 
 
 def test_share_command_skips_download_gate_for_local_alias():
-    """Aliases without ``/`` (e.g. ``qwen3.5-4b``) are NOT HF repo ids —
+    """Aliases without ``/`` (e.g. ``qwen3.5-4b-4bit``) are NOT HF repo ids —
     the gate short-circuits before any HF API call. Verified by
     asserting ``is_repo_cached`` was never called."""
     with (
@@ -881,7 +881,7 @@ def test_share_command_skips_download_gate_for_local_alias():
         patch("vllm_mlx._download_gate.is_repo_cached") as cached,
         pytest.raises(SystemExit),
     ):
-        share_cli.share_command(_make_args(model="qwen3.5-4b"))
+        share_cli.share_command(_make_args(model="qwen3.5-4b-4bit"))
     cached.assert_not_called()
 
 
@@ -1104,7 +1104,7 @@ def test_register_share_chat_frontend_default_is_none():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
     share_cli.register(subparsers)
-    args = parser.parse_args(["share", "qwen3.5-4b"])
+    args = parser.parse_args(["share", "qwen3.5-4b-4bit"])
     assert args.chat_frontend is None
 
 
@@ -1113,7 +1113,7 @@ def test_register_share_chat_frontend_accepts_value():
     subparsers = parser.add_subparsers(dest="command")
     share_cli.register(subparsers)
     args = parser.parse_args(
-        ["share", "qwen3.5-4b", "--chat-frontend", "https://my-fork.example"]
+        ["share", "qwen3.5-4b-4bit", "--chat-frontend", "https://my-fork.example"]
     )
     assert args.chat_frontend == "https://my-fork.example"
 
@@ -1150,7 +1150,7 @@ def test_share_command_forwards_chat_frontend_to_banner(capsys):
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
     ):
@@ -1179,7 +1179,7 @@ def test_share_command_omits_chat_line_when_frontend_disabled(capsys):
         patch.object(share_cli, "_pick_port", return_value=18765),
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(
-            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b"
+            share_cli, "_resolve_served_model_name", return_value="qwen3.5-4b-4bit"
         ),
         patch("time.sleep", side_effect=_ctrl_c_in_monitor_loop()),
     ):

@@ -4,7 +4,7 @@
 Companion to ``tests/test_chat_streaming_guided.py``. PR #422 pinned these
 invariants on the guided helper (``stream_chat_completion_guided``) but
 the regular ``stream_chat_completion`` path retained two spec violations
-that the 2026-05-20 ≥20B onboarding sweep caught on qwen3.5-35b
+that the 2026-05-20 ≥20B onboarding sweep caught on qwen3.5-35b-8bit
 (see knowledge/guided_generation_gaps_2026-05-20.md, "Bug B"):
 
 1. **``created`` drift** — content chunks share one timestamp but the
@@ -130,7 +130,7 @@ def test_non_guided_streaming_pins_single_created_timestamp(monkeypatch):
     without ``created=...`` and inherited the default factory's fresh
     ``time.time()`` per construction. On slow MoE models the gap
     between first content chunk and finish chunk was 5-7s (Agent A7,
-    qwen3.5-35b, 2026-05-20 sweep).
+    qwen3.5-35b-8bit, 2026-05-20 sweep).
 
     Patches ``time.time`` to advance one second per call so the bug is
     deterministically observable in a unit test (real wall-clock under
@@ -264,7 +264,7 @@ class _GapStreamParser(ToolParser):
     call (returns plain content), but the non-stream ``extract_tool_calls``
     catches it via a fallback pattern.
 
-    Mirrors the gemma-4-26b case from the 2026-05-20 sweep where
+    Mirrors the gemma-4-26b-4bit case from the 2026-05-20 sweep where
     streaming dropped a tool call that the non-stream parser handled.
     """
 

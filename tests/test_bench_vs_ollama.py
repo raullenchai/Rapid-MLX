@@ -29,8 +29,8 @@ def test_default_model_pairs():
     pairs = bench.default_model_pairs()
 
     assert pairs == [
-        bench.ModelPair("qwen3.5-4b", "qwen3.5:4b"),
-        bench.ModelPair("qwen3.5-9b", "qwen3.5:9b"),
+        bench.ModelPair("qwen3.5-4b-4bit", "qwen3.5:4b"),
+        bench.ModelPair("qwen3.5-9b-4bit", "qwen3.5:9b"),
     ]
 
 
@@ -46,7 +46,7 @@ def test_parse_model_pair_rejects_missing_separator():
     bench = load_bench_module()
 
     with pytest.raises(ValueError, match="RAPID=OLLAMA"):
-        bench.parse_model_pair("qwen3.5-9b")
+        bench.parse_model_pair("qwen3.5-9b-4bit")
 
 
 def test_parse_args_replaces_default_model_pairs():
@@ -285,13 +285,13 @@ def test_build_rapid_mlx_payload_is_deterministic_no_thinking():
     bench = load_bench_module()
 
     payload = bench.build_rapid_mlx_payload(
-        model="qwen3.5-9b",
+        model="qwen3.5-9b-4bit",
         messages=[{"role": "user", "content": "hi"}],
         max_tokens=32,
         stream=True,
     )
 
-    assert payload["model"] == "qwen3.5-9b"
+    assert payload["model"] == "qwen3.5-9b-4bit"
     assert payload["temperature"] == 0
     assert payload["enable_thinking"] is False
     assert payload["stream"] is True
@@ -414,7 +414,7 @@ def test_render_markdown_includes_model_table_and_speedups():
         },
         "model_pairs": [
             {
-                "rapid_mlx_model": "qwen3.5-9b",
+                "rapid_mlx_model": "qwen3.5-9b-4bit",
                 "ollama_model": "qwen3.5:9b",
                 "rapid-mlx": {
                     "summary": {
@@ -437,7 +437,7 @@ def test_render_markdown_includes_model_table_and_speedups():
     markdown = bench.render_markdown(result)
 
     assert "# Rapid-MLX vs Ollama Benchmark" in markdown
-    assert "qwen3.5-9b vs qwen3.5:9b" in markdown
+    assert "qwen3.5-9b-4bit vs qwen3.5:9b" in markdown
     assert "| Decode tok/s | 120.0 | 40.0 | 3.00x |" in markdown
     assert "| TTFT | 100.0 ms | 250.0 ms | 2.50x |" in markdown
     assert "- Rapid-MLX: `rapid-mlx 0.2.0`" in markdown
@@ -454,7 +454,7 @@ def test_render_markdown_surfaces_engine_errors():
         "config": {"runs": 1, "concurrency": [1]},
         "model_pairs": [
             {
-                "rapid_mlx_model": "qwen3.5-9b",
+                "rapid_mlx_model": "qwen3.5-9b-4bit",
                 "ollama_model": "qwen3.5:9b",
                 "rapid-mlx": {"error": "boom"},
                 "ollama": {"summary": {"stream": {"decode_tok_s": 40.0}}},
@@ -474,7 +474,7 @@ def test_render_markdown_surfaces_workload_errors():
         "config": {"runs": 1, "concurrency": [1]},
         "model_pairs": [
             {
-                "rapid_mlx_model": "qwen3.5-9b",
+                "rapid_mlx_model": "qwen3.5-9b-4bit",
                 "ollama_model": "qwen3.5:9b",
                 "rapid-mlx": {
                     "errors": [
@@ -515,7 +515,7 @@ def test_render_markdown_tolerates_none_engine_payloads():
         "config": {"runs": 1, "concurrency": [1]},
         "model_pairs": [
             {
-                "rapid_mlx_model": "qwen3.5-9b",
+                "rapid_mlx_model": "qwen3.5-9b-4bit",
                 "ollama_model": "qwen3.5:9b",
                 "rapid-mlx": None,
                 "ollama": {"error": "ollama down"},
@@ -560,13 +560,13 @@ def test_build_rapid_mlx_command_includes_explicit_benchmark_settings():
     bench = load_bench_module()
 
     cmd = bench.build_rapid_mlx_command(
-        "qwen3.5-9b", 9123, ["--prefill-step-size", "4096"]
+        "qwen3.5-9b-4bit", 9123, ["--prefill-step-size", "4096"]
     )
 
     assert cmd == [
         "rapid-mlx",
         "serve",
-        "qwen3.5-9b",
+        "qwen3.5-9b-4bit",
         "--host",
         "127.0.0.1",
         "--port",
@@ -642,9 +642,9 @@ def test_build_engine_success_result_shape():
 
     result = bench.build_engine_success_result(
         engine="rapid-mlx",
-        model="qwen3.5-9b",
+        model="qwen3.5-9b-4bit",
         port=9123,
-        command=["rapid-mlx", "serve", "qwen3.5-9b"],
+        command=["rapid-mlx", "serve", "qwen3.5-9b-4bit"],
         raw_runs={"stream": [{"ttft_ms": 100.0}]},
         summary={"stream": {"ttft_ms": 100.0}},
         errors=[],
@@ -653,13 +653,13 @@ def test_build_engine_success_result_shape():
     )
 
     assert result["engine"] == "rapid-mlx"
-    assert result["model"] == "qwen3.5-9b"
+    assert result["model"] == "qwen3.5-9b-4bit"
     assert result["port"] == 9123
-    assert result["command"] == ["rapid-mlx", "serve", "qwen3.5-9b"]
+    assert result["command"] == ["rapid-mlx", "serve", "qwen3.5-9b-4bit"]
     assert result["server"]["url"] == "http://127.0.0.1:9123"
     assert result["runtime"]["prepared"] is True
     assert result["metadata"]["engine"] == "rapid-mlx"
-    assert result["metadata"]["model"] == "qwen3.5-9b"
+    assert result["metadata"]["model"] == "qwen3.5-9b-4bit"
     assert result["raw_runs"]["stream"] == [{"ttft_ms": 100.0}]
     assert result["summary"]["stream"] == {"ttft_ms": 100.0}
     assert result["errors"] == []
