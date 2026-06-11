@@ -126,13 +126,33 @@ class DiffusionEngine(BaseEngine):
     the route layer, not here.
     """
 
-    def __init__(self, model_name: str, max_tokens: int = 4096) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        max_tokens: int = 4096,
+        scheduler_config: Any = None,
+    ) -> None:
         self._model_name = model_name
         self._max_tokens = max_tokens
+        self._scheduler_config = scheduler_config
         self._model: Any = None
         self._processor: Any = None
         self._loaded = False
         self._load_error: BaseException | None = None
+        # Admission control mirrors BatchedEngine.check_admission —
+        # reservations counter under a lock, BackpressureError raised
+        # when the configured ``max_concurrent_requests`` is reached.
+        # The diffusion lane is batch-1 only at the GPU layer, but we
+        # still let operators tune the cap because queued requests
+        # waiting on ``_generation_lock`` are valid load to admit (the
+        # asyncio lock serializes cooperatively without burning the
+        # event loop). codex round 2 [P2]: routes/chat.py's
+        # ``_check_admission_or_503`` was silently no-op'ing for this
+        # lane because the methods did not exist; concurrent local
+        # requests piled up behind the generation lock instead of
+        # returning the documented 503/Retry-After at the cap.
+        self._admission_lock = threading.Lock()
+        self._admission_reservations = 0
         # Per-engine lock — DiffusionGemma is single-batch only, so we
         # serialize the generator at the engine level rather than rely
         # on the route admission queue. Two concurrent
@@ -220,6 +240,47 @@ class DiffusionEngine(BaseEngine):
         self._model = None
         self._processor = None
         self._loaded = False
+
+    # ------------------------------------------------------------------
+    # BaseEngine — admission control
+    # ------------------------------------------------------------------
+
+    def check_admission(self) -> None:
+        """Atomic admission gate; reserves a slot on success or raises
+        ``BackpressureError`` at the cap. Mirrors
+        ``BatchedEngine.check_admission`` so ``routes/chat.py``'s
+        ``_check_admission_or_503`` returns a clean 503 + Retry-After
+        for the diffusion lane instead of silently no-op'ing (codex
+        round 2 [P2]).
+
+        Cap source: the ``SchedulerConfig.max_concurrent_requests``
+        passed at engine construction (server.load_model wires it
+        through). When no config is provided (test stubs,
+        programmatic callers), the dataclass default applies.
+        """
+        from ..scheduler import BackpressureError, SchedulerConfig
+
+        sc = self._scheduler_config
+        if sc is None:
+            sc = SchedulerConfig()
+        cap = getattr(sc, "max_concurrent_requests", None)
+        if cap is None or cap <= 0:
+            return
+        with self._admission_lock:
+            if self._admission_reservations >= cap:
+                raise BackpressureError(
+                    f"max_concurrent_requests={cap} reached "
+                    f"(currently {self._admission_reservations} in-flight)"
+                )
+            self._admission_reservations += 1
+
+    def release_admission_reservation(self) -> None:
+        """Release a slot reserved by ``check_admission``. Idempotent
+        below zero so a stray double release does not corrupt the
+        cap accounting (matches BatchedEngine behavior)."""
+        with self._admission_lock:
+            if self._admission_reservations > 0:
+                self._admission_reservations -= 1
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
@@ -465,9 +526,21 @@ class DiffusionEngine(BaseEngine):
             # ``stop`` knob — single string or list). mlx-vlm's
             # ``stream_diffusion_generate`` does not honor stop
             # strings natively, so we post-process the block-emitted
-            # text: keep a small lookback buffer (= max-stop-length-1
-            # chars) so a stop string that straddles two block chunks
-            # is still detected.
+            # text. The hold-back contract is:
+            #
+            #   * Keep ``tail_len = max(stop_len) - 1`` characters
+            #     buffered. Anything in the buffer might still grow
+            #     into a stop match on the next chunk, so it cannot
+            #     yet be safely emitted to the client.
+            #   * On a stop match, yield ``combined[:cut]`` with
+            #     finish_reason="stop" and stop reading further.
+            #   * On a terminal chunk (finish_reason from the
+            #     generator) with no stop match, flush the buffer.
+            #
+            # codex round 2 [P2]: the previous version updated ``tail``
+            # but still ``yield``ed the full chunk, leaking the leading
+            # bytes of a boundary-straddling stop sequence to the
+            # client. The hold-back is the only correct fix.
             stop_list = _normalize_stops(kwargs.get("stop"))
             tail_len = (max(len(s) for s in stop_list) - 1) if stop_list else 0
             tail = ""
@@ -484,29 +557,53 @@ class DiffusionEngine(BaseEngine):
                         continue
                     combined = tail + item.new_text
                     cut = _earliest_stop_index(combined, stop_list)
-                    if cut < 0:
-                        # No match. Update lookback and pass through.
-                        tail = combined[-tail_len:] if tail_len else ""
-                        yield item
+                    if cut >= 0:
+                        # Stop match. Truncate the buffer + this chunk
+                        # at ``cut`` and terminate the stream cleanly.
+                        truncated = combined[:cut]
+                        yield GenerationOutput(
+                            text=truncated,
+                            new_text=truncated,
+                            tokens=item.tokens,
+                            prompt_tokens=item.prompt_tokens,
+                            completion_tokens=item.completion_tokens,
+                            finish_reason="stop",
+                            finished=True,
+                        )
+                        return
+                    is_terminal = item.finish_reason is not None
+                    if is_terminal:
+                        # Last chunk — no future text can complete a
+                        # stop, so the buffered tail is safe to flush.
+                        yield GenerationOutput(
+                            text=combined,
+                            new_text=combined,
+                            tokens=item.tokens,
+                            prompt_tokens=item.prompt_tokens,
+                            completion_tokens=item.completion_tokens,
+                            finish_reason=item.finish_reason,
+                            finished=item.finished,
+                        )
+                        tail = ""
                         continue
-                    # Match in this chunk. ``cut`` is into ``combined``;
-                    # translate to a cut on ``item.new_text``. The text
-                    # we'll emit is everything up to the stop; the
-                    # block chunk is replaced with a truncated copy
-                    # carrying finish_reason="stop", which collapses
-                    # the rest of the stream cleanly.
-                    new_text_cut = max(0, cut - len(tail))
-                    truncated = item.new_text[:new_text_cut]
-                    yield GenerationOutput(
-                        text=truncated,
-                        new_text=truncated,
-                        tokens=item.tokens,
-                        prompt_tokens=item.prompt_tokens,
-                        completion_tokens=item.completion_tokens,
-                        finish_reason="stop",
-                        finished=True,
-                    )
-                    return
+                    # Intermediate chunk — emit only the prefix that
+                    # CANNOT participate in a stop on the next chunk.
+                    if len(combined) > tail_len:
+                        safe = combined[:-tail_len]
+                        tail = combined[-tail_len:]
+                    else:
+                        safe = ""
+                        tail = combined
+                    if safe:
+                        yield GenerationOutput(
+                            text=safe,
+                            new_text=safe,
+                            tokens=item.tokens,
+                            prompt_tokens=item.prompt_tokens,
+                            completion_tokens=item.completion_tokens,
+                            finish_reason=None,
+                            finished=False,
+                        )
             finally:
                 pump_thread.join(timeout=1.0)
 

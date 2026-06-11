@@ -707,7 +707,11 @@ def load_model(
             f"Loading model with DiffusionEngine "
             f"(modality=text-diffusion): {model_name}"
         )
-        _engine = DiffusionEngine(model_name=model_name, max_tokens=max_tokens)
+        _engine = DiffusionEngine(
+            model_name=model_name,
+            max_tokens=max_tokens,
+            scheduler_config=scheduler_config,
+        )
         # Eager load — server lifespan's startup_event runs ``await
         # _engine.start()`` like it does for BatchedEngine, but the
         # diffusion engine has additional sanity checks at load time

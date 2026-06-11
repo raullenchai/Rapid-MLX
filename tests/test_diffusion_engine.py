@@ -490,6 +490,9 @@ class TestStopSequenceHandling:
     async def test_stop_truncates_within_a_single_chunk(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The visible joined output must be "Hello, " — anything past
+        # the stop is excluded. Per-chunk shape varies with the
+        # lookback buffer but the JOINED contract is what callers see.
         yields = [
             FakeGenerationResult(text="Hello, ", diffusion_block_complete=True),
             FakeGenerationResult(
@@ -509,17 +512,23 @@ class TestStopSequenceHandling:
             stop=["world"],
         ):
             collected.append(out)
-        assert [c.new_text for c in collected] == ["Hello, ", ""]
+        joined = "".join(c.new_text for c in collected)
+        assert joined == "Hello, "
+        assert "world" not in joined
         assert collected[-1].finish_reason == "stop"
         assert collected[-1].finished is True
 
     @pytest.mark.asyncio
-    async def test_stop_straddling_block_boundary(
+    async def test_stop_straddling_block_boundary_no_leak(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Stop string ``</end>`` is split across two block chunks —
-        # ``</`` ends chunk 1, ``end>`` starts chunk 2. The lookback
-        # buffer in stream_chat must catch this.
+        # codex round 2 [P2]: a stop string straddling two block
+        # boundaries must not leak its leading bytes to the client.
+        # Stop ``</end>`` is split across chunks "Answer: 42</" and
+        # "end> trailing.". The joined visible output must end at the
+        # boundary BEFORE ``</`` started — the previous version
+        # emitted the full first chunk before the second arrived and
+        # leaked ``</`` to the client.
         yields = [
             FakeGenerationResult(text="Answer: 42</", diffusion_block_complete=True),
             FakeGenerationResult(text="end> trailing.", diffusion_block_complete=True),
@@ -537,9 +546,10 @@ class TestStopSequenceHandling:
             stop=["</end>"],
         ):
             collected.append(out)
-        # First chunk emits clean, second chunk is truncated AT the
-        # boundary character that completed the stop match.
-        assert [c.new_text for c in collected] == ["Answer: 42</", ""]
+        joined = "".join(c.new_text for c in collected)
+        assert joined == "Answer: 42"
+        assert "</" not in joined  # no leak of the stop's leading bytes
+        assert "</end>" not in joined
         assert collected[-1].finish_reason == "stop"
 
     @pytest.mark.asyncio
@@ -653,6 +663,66 @@ class TestConcurrentRequests:
 
         engine = DiffusionEngine(model_name="x/y")
         assert isinstance(engine._generation_lock, _aio.Lock)
+
+
+class TestAdmissionControl:
+    """Codex round 2 [P2]: routes/chat.py's ``_check_admission_or_503``
+    was silently no-op'ing for the diffusion lane because the engine
+    did not implement ``check_admission`` / ``release_admission_
+    reservation``. Concurrent local requests piled up behind
+    ``_generation_lock`` instead of returning the documented 503 +
+    Retry-After at the configured cap."""
+
+    def test_check_admission_no_op_without_scheduler_config_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Default SchedulerConfig has a max_concurrent_requests
+        # default; under it, check_admission should reserve a slot
+        # and NOT raise.
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        engine.check_admission()  # No raise.
+        assert engine._admission_reservations == 1
+        engine.release_admission_reservation()
+        assert engine._admission_reservations == 0
+
+    def test_check_admission_raises_at_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With cap=2, the 3rd reservation must raise BackpressureError.
+        # The route layer catches that and emits 503 + Retry-After.
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+
+        engine = DiffusionEngine(
+            model_name="x/y",
+            scheduler_config=SchedulerConfig(max_concurrent_requests=2),
+        )
+        engine._load_blocking()
+        engine.check_admission()
+        engine.check_admission()
+        with pytest.raises(BackpressureError, match="max_concurrent_requests=2"):
+            engine.check_admission()
+        # Releasing one lets the next call succeed.
+        engine.release_admission_reservation()
+        engine.check_admission()  # No raise.
+
+    def test_release_idempotent_below_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A stray double-release must not corrupt the counter into
+        # negative territory (would silently raise the cap forever).
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine.release_admission_reservation()  # extra release at 0
+        engine.release_admission_reservation()
+        assert engine._admission_reservations == 0
 
 
 class TestAliasIntegration:
