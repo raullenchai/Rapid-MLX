@@ -72,12 +72,22 @@ DEFAULT_CODEX_PATH = "/opt/homebrew/bin/codex"
 # explicitly so the promise is mechanically enforced.
 CODEX_MODEL = "gpt-5.5"
 
-# Same byte budget as the previous DeepSeek step. Past ~120KB the
-# signal-to-noise of any LLM review drops sharply — the model starts
-# skimming. Truncation always happens at a file boundary; partially-
-# cut files would produce false "missing brace" / "undefined symbol"
-# findings.
-MAX_DIFF_BYTES = 120_000
+# Diff byte budget for the codex review prompt. Truncation always
+# happens at a file boundary; partially-cut files would produce
+# false "missing brace" / "undefined symbol" findings.
+#
+# Previously 120_000. Bumped to 200_000 on PR #551 — a 143 KB PR
+# whose entire runtime (vllm_mlx/runtime/diffusion_lane.py, ~1100
+# new lines + tests) and dispatcher (vllm_mlx/server.py) were the
+# specific files getting omitted, leaving codex with only the
+# adjacent test/config/alias files. That produced "alias is live
+# but engine wiring cannot be reviewed" meta-BLOCKING findings on
+# every round, none of which were code defects. gpt-5/gpt-5.5 ship
+# with 200K+ token input windows; 200 KB of UTF-8 diff fits
+# comfortably even with the reviewer prompt header. If a future PR
+# is large enough to need more, prefer splitting it over bumping
+# this further — past ~200KB the model's signal-to-noise drops.
+MAX_DIFF_BYTES = 200_000
 
 # Wall-clock cap on the codex subprocess. gpt-5.5 reviews a typical
 # diff in 20–90s; complex multi-commit diffs (e.g. PR #504's 73 KB
