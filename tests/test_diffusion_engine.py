@@ -2558,3 +2558,195 @@ class TestR10Regressions:
         )
 
         await engine.stop()
+
+
+class TestChannelHeaderStrip:
+    """DiffusionGemma chat template wraps responses in
+    ``<|channel>NAME\\n…<channel|>`` blocks. The angle-bracket tokens
+    are special and get stripped by mlx-vlm's detokenizer (via
+    ``skip_special_token_ids = all_special_ids`` — the standard
+    construction we share with ``mlx_vlm/server/generation.py``), but
+    the literal channel NAME (``thought`` / ``final``) and its newline
+    leak through as the first visible text.
+
+    These tests pin the strip behaviour on the first emitted block per
+    request, plus the helper-function contract.
+    """
+
+    def test_helper_strips_thought_prefix(self) -> None:
+        from vllm_mlx.runtime.diffusion_lane import _strip_leading_channel_header
+
+        assert _strip_leading_channel_header("thought\nHello world") == "Hello world"
+
+    def test_helper_strips_final_prefix(self) -> None:
+        from vllm_mlx.runtime.diffusion_lane import _strip_leading_channel_header
+
+        assert (
+            _strip_leading_channel_header("final\nThe answer is 42.")
+            == "The answer is 42."
+        )
+
+    def test_helper_no_op_on_plain_text(self) -> None:
+        from vllm_mlx.runtime.diffusion_lane import _strip_leading_channel_header
+
+        assert _strip_leading_channel_header("Hello, world!\n") == "Hello, world!\n"
+
+    def test_helper_does_not_strip_mid_text(self) -> None:
+        # ``thought\n`` mid-string is legitimate prose, not a leaked
+        # channel header — the strip must only fire at position 0.
+        from vllm_mlx.runtime.diffusion_lane import _strip_leading_channel_header
+
+        text = "Here is my thought\nLet's continue."
+        assert _strip_leading_channel_header(text) == text
+
+    def test_helper_does_not_strip_without_newline(self) -> None:
+        # The channel-header pattern requires a trailing ``\n``. A bare
+        # ``thought`` at the start of legitimate content (e.g. an essay
+        # titled ``thought experiments``) must pass through unchanged.
+        from vllm_mlx.runtime.diffusion_lane import _strip_leading_channel_header
+
+        text = "thought experiments are fun."
+        assert _strip_leading_channel_header(text) == text
+
+    @pytest.mark.asyncio
+    async def test_engine_strips_thought_channel_header_on_first_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Simulate DiffusionGemma's leak shape: first block emits
+        # ``thought\n<actual content>`` because the tokenizer stripped
+        # ``<|channel>`` (id 100) and ``<channel|>`` (id 101) but left
+        # the literal channel name behind. The engine must remove the
+        # ``thought\n`` prefix from the first delivered block.
+        yields = [
+            FakeGenerationResult(
+                text="thought\n**Reasoning:**\n",
+                token=1,
+                diffusion_block_complete=True,
+            ),
+            FakeGenerationResult(
+                text="They both weigh exactly 1 kg.",
+                token=2,
+                diffusion_block_complete=True,
+            ),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        outs: list[Any] = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "Show your reasoning"}],
+            max_tokens=128,
+        ):
+            outs.append(out)
+        # First emitted block had its ``thought\n`` prefix stripped.
+        first_text = outs[0].new_text
+        assert not first_text.startswith("thought\n"), (
+            f"first block still leaks ``thought\\n`` prefix: {first_text!r}"
+        )
+        assert first_text.startswith("**Reasoning:**"), (
+            f"strip removed too much; expected ``**Reasoning:**`` prefix, "
+            f"got {first_text!r}"
+        )
+        # Subsequent block is untouched — sanity-check second block
+        # text was delivered intact even though it follows a stripped one.
+        assert any("They both weigh exactly 1 kg." in o.new_text for o in outs)
+
+    @pytest.mark.asyncio
+    async def test_engine_strips_final_channel_header_on_first_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same path, ``final`` channel name (the model's other declared
+        # channel per its tokenizer_config.json x-regex template).
+        yields = [
+            FakeGenerationResult(
+                text="final\nThe capital of France is Paris.",
+                token=1,
+                diffusion_block_complete=True,
+            ),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        outs: list[Any] = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "What is the capital of France?"}],
+            max_tokens=64,
+        ):
+            outs.append(out)
+        first_text = outs[0].new_text
+        assert first_text.startswith("The capital of France is Paris."), (
+            f"``final\\n`` prefix not stripped: {first_text!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_engine_does_not_strip_thought_from_second_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mid-stream ``thought\n`` is legitimate text in many genres
+        # (essays, code comments, lyrics). After the first block is
+        # delivered, the strip MUST NOT fire on later blocks.
+        yields = [
+            FakeGenerationResult(
+                text="Here is some prose. ",
+                token=1,
+                diffusion_block_complete=True,
+            ),
+            FakeGenerationResult(
+                text="thought\nThis is a continuation, not a channel header.",
+                token=2,
+                diffusion_block_complete=True,
+            ),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        outs: list[Any] = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "tell me prose"}], max_tokens=64
+        ):
+            outs.append(out)
+        # The second block's literal ``thought\n`` must be preserved
+        # because the leading-strip already fired on block 1.
+        non_finish = [o for o in outs if not o.finished and o.new_text]
+        assert len(non_finish) >= 2
+        assert "thought\nThis is a continuation" in non_finish[1].new_text, (
+            f"second block was wrongly stripped: {non_finish[1].new_text!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_engine_strips_channel_header_on_short_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Edge case: entire response fits in one block that exits via
+        # the trailing-finish path (no ``diffusion_block_complete`` ever
+        # set; the worker's generator just returns). The strip must
+        # still fire there.
+        yields = [
+            FakeGenerationResult(text="thought\nYes.", token=1),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        outs: list[Any] = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "answer yes or no"}], max_tokens=16
+        ):
+            outs.append(out)
+        # The trailing-finish path emits the buffered text as a single
+        # terminal chunk; verify the strip applied there too.
+        combined = "".join(o.new_text for o in outs)
+        assert "thought\n" not in combined, (
+            f"channel header not stripped on trailing-finish path: {combined!r}"
+        )
+        assert "Yes." in combined

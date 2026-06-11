@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import re
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -49,6 +50,42 @@ logger = logging.getLogger(__name__)
 # Bumped when the wire format we expose to ``routes/chat.py`` changes
 # (e.g. block-vs-token deltas, finish_reason semantics).
 DIFFUSION_LANE_VERSION = "0.1-wired"
+
+
+# DiffusionGemma's chat template wraps the assistant response in
+# ``<|channel>NAME\n…<channel|>`` blocks. ``<|channel>`` (id 100) and
+# ``<channel|>`` (id 101) are TRUE special tokens, so passing them
+# through mlx-vlm's detokenizer with ``skip_special_token_ids`` set
+# (which we do — same construction as ``mlx_vlm/server/generation.py``)
+# decodes them as empty strings. That strips the angle-bracket markers
+# but leaves the channel NAME — literally ``thought`` or ``final``
+# followed by a newline — as plain text at the boundary, leaking into
+# the first SSE chunk the client sees.
+#
+# Empirically (15-prompt quality probe on diffusiongemma-26B-A4B-it-4bit,
+# 2026-06-11) the leak fires when a prompt asks the model to show its
+# reasoning — the model emits the ``thought`` channel header and writes
+# the entire response inside it without ever opening a ``final`` channel.
+# Older one-shot cases also leaked the prefix on translation tasks.
+#
+# This regex strips a leading ``thought\n`` or ``final\n`` channel
+# header from the FIRST non-empty block emitted per request. Mid-stream
+# channel switches (model alternates ``thought`` → ``final`` in one
+# response) are rare in this model and would require a stateful
+# parser; the leading-strip handles every case observed in v0.7.1.
+_LEAKED_CHANNEL_HEADER_RE = re.compile(r"^(?:thought|final)\n")
+
+
+def _strip_leading_channel_header(text: str) -> str:
+    """Remove a leading ``thought\\n`` / ``final\\n`` channel header.
+
+    Returns ``text`` unchanged when no header is present, so this is a
+    no-op for the vast majority of blocks. Idempotent on already-clean
+    input.
+    """
+
+    return _LEAKED_CHANNEL_HEADER_RE.sub("", text, count=1)
+
 
 # Sentinel pushed onto the streaming queue to signal end of generation.
 # Plain string to keep the queue homogeneous-ish; the consumer checks
@@ -1157,6 +1194,12 @@ class DiffusionEngine(BaseEngine):
         last_prompt_tokens = 0
         last_completion_tokens = 0
         last_token: int = 0
+        # Per-request flag: the leaked-channel-header strip only fires
+        # on the FIRST non-empty block we emit (see
+        # ``_LEAKED_CHANNEL_HEADER_RE`` for the rationale). Once we've
+        # emitted any block we trust the downstream text to be the
+        # model's actual content.
+        first_block_emitted = False
 
         # Cancel-check #2 — last opportunity before the first
         # ``next()`` on stream_diffusion_generate triggers the
@@ -1209,7 +1252,16 @@ class DiffusionEngine(BaseEngine):
             if block_complete or finish_reason:
                 joined = "".join(block_parts)
                 block_parts.clear()
+                if not first_block_emitted and joined:
+                    # Strip a leaked Gemma diffusion channel header.
+                    # No-op for plain content; saves the chat client
+                    # from seeing ``thought\n`` as the model's first
+                    # words on prompts that triggered the thought
+                    # channel.
+                    joined = _strip_leading_channel_header(joined)
                 if joined or finish_reason:
+                    if joined:
+                        first_block_emitted = True
                     out_q.put(
                         GenerationOutput(
                             text="",
@@ -1236,10 +1288,18 @@ class DiffusionEngine(BaseEngine):
         # don't push a stale terminal chunk into a queue the
         # stream_chat finally is already draining.
         if not cancel_event.is_set():
+            trailing = "".join(block_parts)
+            if not first_block_emitted and trailing:
+                # Edge case: the entire response was short enough to fit
+                # in a single block that never set ``diffusion_block_complete``
+                # before the generator's natural exit (no finish_reason
+                # branch fired). Apply the same channel-header strip
+                # so a short ``thought\n…`` response isn't leaked here.
+                trailing = _strip_leading_channel_header(trailing)
             out_q.put(
                 GenerationOutput(
                     text="",
-                    new_text="".join(block_parts),
+                    new_text=trailing,
                     tokens=[last_token],
                     prompt_tokens=last_prompt_tokens,
                     completion_tokens=last_completion_tokens,
