@@ -135,6 +135,14 @@ def _engine_supports_channel_routed_tool_calls(engine) -> bool:
     format allowlist), so a positive answer here means the actual
     engine path WILL produce structured tool_call deltas.
     """
+    # Engine-level capability bit — if an engine explicitly declares
+    # it has no tool-call surface (DiffusionEngine), the tokenizer
+    # probe is moot. Without this, DiffusionGemma's tokenizer would
+    # trip the Gemma 4 allowlist even though DiffusionEngine never
+    # runs OutputRouter — letting tool_choice="required" finish with
+    # plain text and no 422 (codex round 9 [P2] on PR #551).
+    if not getattr(engine, "supports_tool_calls", True):
+        return False
     try:
         from ..engine.batched import _OUTPUT_ROUTER_ALLOWLIST
         from ..output_router import OutputRouter

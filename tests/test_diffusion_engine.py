@@ -1005,6 +1005,40 @@ class TestConcurrentRequests:
         assert encode_calls == [], "Tokenizer hit despite pre-cancel"
         assert invoked == [], "Generator dispatched despite pre-cancel"
 
+    def test_supports_tool_calls_attribute_is_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Codex round 9 [P2]: DiffusionEngine MUST declare
+        # supports_tool_calls = False so the route's
+        # _engine_supports_channel_routed_tool_calls probe doesn't
+        # let tool_choice="required" stream=true requests slip
+        # through (DiffusionGemma's tokenizer would otherwise trip
+        # the Gemma 4 channel-routed allowlist even though the
+        # engine path never runs OutputRouter).
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        assert engine.supports_tool_calls is False
+        assert DiffusionEngine.supports_tool_calls is False
+
+    def test_route_probe_rejects_engine_when_supports_tool_calls_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # End-to-end pin: the probe function in routes/chat.py must
+        # short-circuit to False for any engine whose
+        # supports_tool_calls attribute is False, regardless of
+        # tokenizer shape.
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.routes.chat import (
+            _engine_supports_channel_routed_tool_calls,
+        )
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        assert _engine_supports_channel_routed_tool_calls(engine) is False
+
     @pytest.mark.asyncio
     async def test_post_lock_stuck_check_rejects_in_flight_request(
         self, monkeypatch: pytest.MonkeyPatch

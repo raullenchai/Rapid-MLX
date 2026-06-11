@@ -132,6 +132,17 @@ class DiffusionEngine(BaseEngine):
     the route layer, not here.
     """
 
+    # Engine-level capability bit consulted by ``routes/chat.py``'s
+    # ``_engine_supports_channel_routed_tool_calls`` probe. The
+    # DiffusionGemma generator emits a free-form denoised canvas with
+    # no tool-call channel — even though its tokenizer would trip the
+    # Gemma 4 channel-routed allowlist, the actual engine path never
+    # runs OutputRouter and always emits ``channel="content"``. Without
+    # this bit, ``tool_choice="required"`` would silently slip past
+    # the streaming-required gate and finish with plain text instead
+    # of 422'ing upfront (codex round 9 [P2]).
+    supports_tool_calls: bool = False
+
     def __init__(
         self,
         model_name: str,
@@ -604,9 +615,20 @@ class DiffusionEngine(BaseEngine):
             # admission BEFORE a sibling tripped the drain timeout
             # would otherwise queue work to a wedged worker once it
             # acquired the lock. Re-check here so it errors out
-            # cleanly instead (codex round 8 [P2]). Raised as
-            # ``BackpressureError`` so routes/chat.py emits the same
-            # 503 + Retry-After as a fresh admission denial.
+            # cleanly instead (codex round 8 [P2]).
+            #
+            # NOTE on streaming-503 contract (codex round 9 [P2]):
+            # The route's ``stream_chat_completion`` yields the
+            # ``role`` SSE chunk BEFORE entering ``engine.stream_chat``.
+            # So for the in-flight race (request waiting on the lock
+            # when stuck flips), this raise lands inside the streaming
+            # generator and the route surfaces it as an SSE error on
+            # HTTP 200 — not a clean 503. The PRIMARY contract this
+            # gate enforces is "do not enqueue work to a wedged
+            # worker"; the streaming-protocol equivalent of the 503
+            # is the SSE error chunk, and clients should treat it as
+            # equivalent. ``check_admission`` continues to deliver the
+            # clean 503 for the NORMAL admission path.
             if self._worker_stuck:
                 from ..scheduler import BackpressureError
 
