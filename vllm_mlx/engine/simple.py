@@ -1010,6 +1010,14 @@ class SimpleEngine(BaseEngine):
         if tools and not self._is_mllm:
             return await aggregate_stream_chat()
 
+        # Request-local logits processors (response_format / constrained JSON)
+        # need token-boundary progress and cancellation.  The blocking
+        # model.chat() call below only returns after the whole completion, so a
+        # slow constrained decode can look like a no-progress non-stream wedge
+        # and hold the serialized generation lock until max_tokens/timeout.
+        if kwargs.get("logits_processors") and not self._is_mllm:
+            return await aggregate_stream_chat()
+
         # Text-only requests on MLLM models should always aggregate the
         # streaming path for non-streaming chat. This keeps one execution seam
         # and avoids mlx_vlm non-stream thread/stream ownership mismatches.

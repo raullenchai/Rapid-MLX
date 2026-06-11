@@ -1471,6 +1471,62 @@ class TestSimpleEngineConcurrency:
         assert output.finish_reason == "stop"
 
     @pytest.mark.anyio
+    async def test_llm_nonstream_with_logits_processors_uses_stream_path(self):
+        """Constrained non-stream chat must not call the blocking chat API.
+
+        ``response_format`` is implemented by request-local logits processors.
+        If a non-stream request goes through the blocking model.chat() path,
+        the server cannot observe token progress or cancel at token boundaries
+        when a client/proxy disconnects.  Aggregating stream_chat keeps the
+        constrained and unconstrained chat paths on the same cancellable stream
+        implementation.
+        """
+        from types import SimpleNamespace
+
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        captured_stream_kwargs = {}
+
+        class FakeTokenizer:
+            bos_token = None
+
+            def apply_chat_template(self, messages, **kwargs):
+                return "<|im_start|>user\nhello"
+
+            def encode(self, text, **kwargs):
+                return [1, 2, 3]
+
+        class FakeModel:
+            tokenizer = FakeTokenizer()
+
+            def chat(self, **kwargs):
+                raise AssertionError("blocking chat path should not be used")
+
+            def stream_generate(self, **kwargs):
+                captured_stream_kwargs.update(kwargs)
+                yield SimpleNamespace(
+                    text="{}",
+                    finish_reason="stop",
+                    finished=True,
+                    prompt_tokens=3,
+                )
+
+        engine = SimpleEngine("test-model", force_mllm=False, mtp=False)
+        engine._loaded = True
+        engine._model = FakeModel()
+        sentinel_processor = object()
+
+        output = await engine.chat(
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=16,
+            logits_processors=[sentinel_processor],
+        )
+
+        assert output.text == "{}"
+        assert output.finish_reason == "stop"
+        assert captured_stream_kwargs["logits_processors"] == [sentinel_processor]
+
+    @pytest.mark.anyio
     async def test_requests_complete_in_order(self, mock_model):
         """Test that concurrent requests complete (may be in any order due to lock)."""
         from vllm_mlx.engine.simple import SimpleEngine
