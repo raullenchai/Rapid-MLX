@@ -92,6 +92,8 @@ MATRIX_EXEMPT: dict[str, str] = {
     "functionary": "TODO: add Functionary-medium model to golden_models",
     "xlam": "TODO: add xLAM model to golden_models",
     "seed_oss": "TODO: add Seed-OSS model to golden_models",
+    "lfm": "TODO: add Liquid LFM2.5 model to golden_models",
+    "liquid": "alias of lfm",
 }
 
 

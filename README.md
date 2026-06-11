@@ -554,6 +554,7 @@ Parsers are **auto-detected from the model name** — you don't need to specify 
 | Mistral / Devstral | `hermes` | *(none)* | Hermes-compatible |
 | Gemma | `hermes` | *(none)* | Hermes-compatible |
 | Phi-3/4 | `hermes` | *(none)* | Hermes-compatible |
+| LFM 2.x | `lfm` | *(none)* | Native tool format |
 
 All 17 parsers include automatic recovery — if a quantized model outputs broken tool calls as text, they're auto-converted back to structured format.
 
