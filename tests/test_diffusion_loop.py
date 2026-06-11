@@ -356,9 +356,13 @@ def test_rejects_pixel_values():
 
 def test_accepts_explicit_zero_temperature():
     """``temperature=0.0`` → greedy argmax path inside ``_sample_canvas``.
-    Generator is constructed without error. (Iteration calls model()
-    which is None and crashes; that's fine — the test only verifies the
-    upfront guard logic doesn't reject the legal value.)"""
+    Codex round 2 [P1]: generator BODIES don't execute until iteration,
+    so the previous version was a false-green — a future regression that
+    added an upfront ``raise ValueError("temperature must be > 0")`` would
+    silently pass. Drive the generator with ``next()`` so the body runs.
+    ``model=None`` crashes downstream with some other error class once we
+    reach the forward pass — that's fine; what matters is that the upfront
+    validation does NOT reject the legal ``temperature=0.0`` value."""
     fake_input_ids = mx.array([[1, 2, 3]])
     gen = rapid_stream_diffusion_generate(
         model=None,
@@ -367,7 +371,14 @@ def test_accepts_explicit_zero_temperature():
         input_ids=fake_input_ids,
         temperature=0.0,
     )
-    assert gen is not None
+    with pytest.raises(Exception) as exc_info:
+        next(gen)
+    # Body executed and crashed downstream (model=None); the upfront
+    # validation did NOT raise ``ValueError`` against the legal value.
+    assert not (
+        isinstance(exc_info.value, ValueError)
+        and "temperature" in str(exc_info.value).lower()
+    ), f"Upfront validation rejected legal temperature=0.0: {exc_info.value}"
 
 
 def test_rejects_zero_or_negative_prefill_step_size():
@@ -404,7 +415,10 @@ def test_accepts_nonzero_temperature():
     """``temperature>0`` is now legal: per-step argmax switches to
     ``mx.random.categorical`` inside ``_sample_canvas`` to match
     mlx-vlm's sampling semantics. Chat clients defaulting to
-    ``temperature=0.7`` must reach the rapid path."""
+    ``temperature=0.7`` must reach the rapid path. Codex round 2 [P1]:
+    same false-green class as ``test_accepts_explicit_zero_temperature``
+    — drive ``next()`` so the generator body runs and we can assert the
+    upfront guard does NOT reject ``temperature=0.7``."""
     fake_input_ids = mx.array([[1, 2, 3]])
     gen = rapid_stream_diffusion_generate(
         model=None,
@@ -413,7 +427,12 @@ def test_accepts_nonzero_temperature():
         input_ids=fake_input_ids,
         temperature=0.7,
     )
-    assert gen is not None
+    with pytest.raises(Exception) as exc_info:
+        next(gen)
+    assert not (
+        isinstance(exc_info.value, ValueError)
+        and "temperature" in str(exc_info.value).lower()
+    ), f"Upfront validation rejected legal temperature=0.7: {exc_info.value}"
 
 
 # =============================================================================

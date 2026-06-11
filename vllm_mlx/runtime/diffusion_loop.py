@@ -303,9 +303,15 @@ def _extract_eos_ids(
         if isinstance(value, int):
             ids.add(int(value))
 
-    gc = getattr(model_config, "generation_config", None)
-    if isinstance(gc, dict):
-        _add(gc.get("eos_token_id"))
+    # codex round 2 [P1]: ``generation_config`` is a dict on some loaders
+    # and a typed config object on others (HF ``GenerationConfig``-style).
+    # ``_config_dict`` normalizes both shapes so we never silently drop the
+    # chat terminator when the loader hands us an attribute-bearing object.
+    gc_dict = _config_dict(getattr(model_config, "generation_config", None))
+    _add(gc_dict.get("eos_token_id"))
+    _add(
+        getattr(getattr(model_config, "generation_config", None), "eos_token_id", None)
+    )
     _add(getattr(model_config, "eos_token_id", None))
     for src in (tokenizer, processor):
         if src is None:

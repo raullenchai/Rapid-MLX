@@ -213,11 +213,18 @@ class DiffusionEngine(BaseEngine):
         # HF paths (``mlx-community/diffusiongemma-26B-A4B-it-4bit``) —
         # the reverse-index built by ``model_aliases._load`` covers both.
         # ``None`` only when the user pointed at an HF path that no
-        # alias references, in which case we fall back to the
-        # AliasProfile defaults (rapid backend + fixed_steps=8 +
-        # sc_every=1) by constructing a throwaway profile below.
+        # alias references. In that case fall back to upstream ``mlx-vlm``
+        # — the rapid loop is hand-tuned for DiffusionGemma 26B-A4B-4bit
+        # specifically (sampler choice, denoising-step budget, EOS surfaces)
+        # and may crash or misgenerate on an unknown diffusion family. The
+        # mlx-vlm backend is the conservative, well-tested default; opting
+        # into rapid is something an operator does explicitly via an alias
+        # entry. codex round 2 [P1].
         self._profile: AliasProfile = resolve_profile(model_name) or AliasProfile(
-            hf_path=model_name, modality="text-diffusion", supports_spec_decode=False
+            hf_path=model_name,
+            modality="text-diffusion",
+            supports_spec_decode=False,
+            diffusion_backend="mlx-vlm",
         )
         # Admission control mirrors BatchedEngine.check_admission —
         # reservations counter under a lock, BackpressureError raised

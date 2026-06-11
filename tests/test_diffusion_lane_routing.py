@@ -151,13 +151,15 @@ def _install_backend_spies(monkeypatch: pytest.MonkeyPatch) -> dict[str, bool]:
 async def test_default_alias_uses_rapid_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Default profile (no JSON overrides) → diffusion_backend='rapid'
-    → rapid path. This is the production path most users hit."""
+    """The shipped ``diffusion-gemma-26b`` alias resolves to
+    ``diffusion_backend='rapid'`` → rapid path. This is the production
+    path most users hit. (Bare unresolvable HF paths now fall back to
+    mlx-vlm — see ``test_profile_falls_back_for_unknown_hf_path``.)"""
     spy = _install_backend_spies(monkeypatch)
 
     from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-    engine = DiffusionEngine(model_name="x/y")
+    engine = DiffusionEngine(model_name="diffusion-gemma-26b")
     engine._load_blocking()
     assert engine._profile.diffusion_backend == "rapid"
 
@@ -229,7 +231,10 @@ async def test_temperature_does_not_gate_rapid(
 
     from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-    engine = DiffusionEngine(model_name="x/y")
+    # Use the real ``diffusion-gemma-26b`` alias so the resolved
+    # profile carries ``diffusion_backend='rapid'``. (Bare unresolvable
+    # HF paths now fall back to mlx-vlm — see Finding 1 in codex round 2.)
+    engine = DiffusionEngine(model_name="diffusion-gemma-26b")
     engine._load_blocking()
     async for _ in engine.stream_chat(
         [{"role": "user", "content": "hi"}], max_tokens=8, temperature=0.7
@@ -261,17 +266,17 @@ def test_profile_falls_back_for_unknown_hf_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Bare HF paths that no alias references get a throwaway profile
-    with safe diffusion defaults so the engine still has knobs to
-    pass into the rapid loop."""
+    that points at upstream ``mlx-vlm``. The rapid loop is hand-tuned
+    for DiffusionGemma specifically — unknown diffusion families take
+    the conservative upstream path until an operator adds an alias
+    entry that opts them into rapid. codex round 2 [P1]."""
     _install_backend_spies(monkeypatch)
     from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
     engine = DiffusionEngine(model_name="some-org/no-such-alias")
     assert engine._profile is not None
     assert engine._profile.modality == "text-diffusion"
-    assert engine._profile.diffusion_backend == "rapid"  # default
-    assert engine._profile.diffusion_fixed_steps == 8  # empirical optimum
-    assert engine._profile.diffusion_sc_every == 1  # default
+    assert engine._profile.diffusion_backend == "mlx-vlm"  # safe fallback
 
 
 @pytest.mark.asyncio
