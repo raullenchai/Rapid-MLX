@@ -606,6 +606,103 @@ class TestStopSequenceHandling:
         assert [c.new_text for c in collected] == ["part1 ", "part2"]
         assert collected[-1].finish_reason == "stop"
 
+    @pytest.mark.asyncio
+    async def test_single_char_stop_streams_without_buffering(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex round 3 [P2]: for one-character stops like ``"\n"`` or
+        # ``"}"``, ``tail_len`` is 0 — Python's ``s[:-0]`` is ``""``,
+        # so the previous code buffered every chunk and TTFT collapsed
+        # until the terminal chunk arrived. The special-case must
+        # stream each chunk live and still truncate cleanly when the
+        # stop character appears.
+        yields = [
+            FakeGenerationResult(text="line1", diffusion_block_complete=True),
+            FakeGenerationResult(text="\nafter newline", diffusion_block_complete=True),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "x"}],
+            max_tokens=64,
+            stop=["\n"],
+        ):
+            collected.append(out)
+        joined = "".join(c.new_text for c in collected)
+        assert joined == "line1"
+        # First chunk streamed live (NOT buffered) — exactly the
+        # "no-buffering" property the round-3 fix is pinning.
+        assert collected[0].new_text == "line1"
+        assert collected[0].finish_reason is None
+        assert collected[-1].finish_reason == "stop"
+
+    @pytest.mark.asyncio
+    async def test_early_stop_cancels_worker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex round 3 [P2]: when stream_chat returns early on a stop
+        # match, the persistent worker must observe the cancel signal
+        # and stop reading mlx-vlm's generator. Without this it would
+        # keep generating up to ``max_tokens`` and monopolize the
+        # single GPU worker thread until the next request can land.
+        # We model this with an infinite mlx-vlm stream and assert the
+        # consumption count is bounded.
+        consumed = {"n": 0}
+
+        def infinite_yields() -> Iterator[FakeGenerationResult]:
+            while True:
+                consumed["n"] += 1
+                yield FakeGenerationResult(
+                    text=f"chunk{consumed['n']} STOP rest",
+                    diffusion_block_complete=True,
+                )
+
+        # Install a custom mock that uses the live counter instead of
+        # the pre-baked list ``_install_mlx_vlm_mock`` expects.
+        _install_mlx_vlm_mock(monkeypatch)
+
+        def _stream_infinite(*_a: Any, **_k: Any) -> Iterator[FakeGenerationResult]:
+            yield from infinite_yields()
+
+        sys.modules["mlx_vlm.generate.diffusion"].stream_diffusion_generate = (  # type: ignore[attr-defined]
+            _stream_infinite
+        )
+
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "x"}],
+            max_tokens=10_000,
+            stop=["STOP"],
+        ):
+            collected.append(out)
+        # Stop landed in the very first chunk so output ends cleanly.
+        joined = "".join(c.new_text for c in collected)
+        assert joined == "chunk1 "
+        assert collected[-1].finish_reason == "stop"
+        # Worker MUST have observed cancellation and stopped iterating.
+        # The mock is pure-Python so it spins fast; what matters is
+        # the worker is no longer ADVANCING ``consumed`` after we
+        # wait for it to settle — i.e., cancellation actually fired,
+        # not "the loop runs forever and we just measure a snapshot."
+        import time as _time
+
+        _time.sleep(0.3)
+        n_settled = consumed["n"]
+        _time.sleep(0.5)
+        assert consumed["n"] == n_settled, (
+            f"Worker still iterating after cancel: "
+            f"{n_settled} → {consumed['n']}"
+        )
+
 
 class TestConcurrentRequests:
     """Codex round 1 [P1]: a sync ``threading.Lock`` held across

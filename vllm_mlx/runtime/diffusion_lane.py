@@ -362,9 +362,9 @@ class DiffusionEngine(BaseEngine):
             job = self._jobs.get()
             if job is None:
                 return
-            prompt, max_tokens, cfg, out_q = job
+            prompt, max_tokens, cfg, out_q, cancel_event = job
             try:
-                self._run_generator(prompt, max_tokens, cfg, out_q)
+                self._run_generator(prompt, max_tokens, cfg, out_q, cancel_event)
             except BaseException as e:  # noqa: BLE001 — surface to caller
                 out_q.put(e)
             finally:
@@ -520,8 +520,16 @@ class DiffusionEngine(BaseEngine):
         # submitting the job because the worker drains jobs FIFO and
         # we want the lock to map 1:1 with worker activity, not the
         # queue position.
+        # Cancellation handle — set by the stream_chat finally clause
+        # so the persistent worker stops reading mlx-vlm's generator
+        # when the caller disconnects or we truncate on an early stop.
+        # Without this, the worker keeps generating up to ``max_tokens``
+        # AFTER stream_chat has returned, monopolizing the single GPU
+        # worker thread until the next queued request can land (codex
+        # round 3 [P2]).
+        cancel_event = threading.Event()
         async with self._generation_lock:
-            self._jobs.put((prompt, max_tokens, cfg, thread_q))
+            self._jobs.put((prompt, max_tokens, cfg, thread_q, cancel_event))
             # Caller-supplied stop sequences (OpenAI /v1/completions
             # ``stop`` knob — single string or list). mlx-vlm's
             # ``stream_diffusion_generate`` does not honor stop
@@ -532,6 +540,14 @@ class DiffusionEngine(BaseEngine):
             #     buffered. Anything in the buffer might still grow
             #     into a stop match on the next chunk, so it cannot
             #     yet be safely emitted to the client.
+            #   * Single-character stops degenerate ``tail_len`` to
+            #     0; in that case no lookback is needed (the match
+            #     lands fully inside the current chunk every time),
+            #     so we skip buffering and emit the chunk live. codex
+            #     round 3 [P2]: without this special-case, common
+            #     stops like ``"\n"`` or ``"}"`` buffered every block
+            #     until the terminal chunk arrived, dragging streaming
+            #     TTFT off a cliff.
             #   * On a stop match, yield ``combined[:cut]`` with
             #     finish_reason="stop" and stop reading further.
             #   * On a terminal chunk (finish_reason from the
@@ -561,6 +577,10 @@ class DiffusionEngine(BaseEngine):
                         # Stop match. Truncate the buffer + this chunk
                         # at ``cut`` and terminate the stream cleanly.
                         truncated = combined[:cut]
+                        # Signal the worker to drop the rest of the
+                        # generator so the GPU isn't burning cycles
+                        # past the truncation point.
+                        cancel_event.set()
                         yield GenerationOutput(
                             text=truncated,
                             new_text=truncated,
@@ -586,9 +606,14 @@ class DiffusionEngine(BaseEngine):
                         )
                         tail = ""
                         continue
-                    # Intermediate chunk — emit only the prefix that
-                    # CANNOT participate in a stop on the next chunk.
-                    if len(combined) > tail_len:
+                    # Intermediate chunk — emit the safe prefix and
+                    # buffer the lookback. ``tail_len == 0`` (single-
+                    # character stops) needs the special-case below
+                    # because Python's ``s[:-0]`` evaluates to ``""``.
+                    if tail_len == 0:
+                        safe = combined
+                        tail = ""
+                    elif len(combined) > tail_len:
                         safe = combined[:-tail_len]
                         tail = combined[-tail_len:]
                     else:
@@ -605,7 +630,22 @@ class DiffusionEngine(BaseEngine):
                             finished=False,
                         )
             finally:
-                pump_thread.join(timeout=1.0)
+                # Always cancel the worker job — covers the early-stop
+                # path, caller disconnect (asyncio CancelledError), and
+                # exceptions raised mid-stream. Idempotent under repeat
+                # ``set()`` calls.
+                cancel_event.set()
+                # Drain the queues so the worker's _STREAM_DONE / late
+                # ERROR doesn't outlive this request and pollute the
+                # next one's iteration. ``thread_q`` is sync (the pump
+                # forwards into ``aio_q``); pump_thread is the bridge
+                # — join lets it observe _STREAM_DONE and exit cleanly.
+                pump_thread.join(timeout=2.0)
+                while not aio_q.empty():
+                    try:
+                        aio_q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
 
     async def generate(
         self,
@@ -652,6 +692,7 @@ class DiffusionEngine(BaseEngine):
         max_tokens: int,
         cfg: DiffusionGenerationConfig,
         out_q: queue.Queue,
+        cancel_event: threading.Event,
     ) -> None:
         """Run mlx-vlm's diffusion generator on the current thread and
         push collapsed-per-block ``GenerationOutput`` instances onto
@@ -714,6 +755,15 @@ class DiffusionEngine(BaseEngine):
             None,  # attention_mask — auto from input_ids
             **kwargs,
         ):
+            # Cancellation point — stream_chat sets this on an early
+            # stop-sequence match or on disconnect so the worker
+            # doesn't keep burning GPU up to ``max_tokens`` after the
+            # caller has stopped consuming output. codex round 3 [P2]:
+            # without this, a stop in the first block left the worker
+            # generating hundreds of tokens before it could pick up
+            # the next queued request.
+            if cancel_event.is_set():
+                break
             if getattr(result, "is_draft", False):
                 # Mid-canvas denoising preview; ignore for SSE.
                 continue
