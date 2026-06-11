@@ -90,10 +90,24 @@ class DiffusionGenerationConfig:
     """Sampling / decoding knobs for the diffusion lane.
 
     Holds the subset of mlx-vlm's diffusion-generator parameters that
-    we surface through ``/v1/chat/completions``. The route layer
-    translates from the OpenAI schema → this dataclass at the dispatch
-    boundary so the engine never sees ``ChatCompletionRequest``
+    the engine forwards to ``stream_diffusion_generate``. The route
+    layer translates the OpenAI schema → this dataclass at the
+    dispatch boundary so the engine never sees ``ChatCompletionRequest``
     directly.
+
+    API surface (v0): ``temperature`` is the only knob threaded from
+    /v1/* requests today. ``diffusion_steps``, ``diffusion_sampler``,
+    and ``prefill_step_size`` are NOT declared on the OpenAI
+    request models so they cannot be overridden per-request via
+    /v1/chat/completions or /v1/completions — Pydantic silently drops
+    extra fields. mlx-vlm's own defaults (entropy-bound sampler,
+    48 denoise steps for DiffusionGemma) are used instead. The
+    kwargs are still honoured for direct programmatic callers
+    (``engine.stream_chat(..., diffusion_steps=24)``) and for the
+    operator-tuned ``prefill_step_size`` which flows from
+    SchedulerConfig at engine construction. A future PR can declare
+    them on the request models if user-facing tuning is needed
+    (codex round 10 [P2]).
     """
 
     # Per-block denoising steps. ``None`` → use the model's own

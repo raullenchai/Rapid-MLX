@@ -788,12 +788,29 @@ async def _create_chat_completion_impl(
     # to the truly-unenforceable case (no parser); round-10 codex BLOCKING
     # #1 widened "enforceable" to include channel-routed capability so
     # harmony/gemma4 streaming requests aren't blocked by the gate.
+    # Engine-level veto — even with ``--tool-call-parser`` set, an
+    # engine that has explicitly opted out of tool-call surfaces
+    # (``supports_tool_calls=False``) cannot emit structured tool
+    # calls because its generator never produces them in the first
+    # place. The text parser would only match against the engine's
+    # actual ``channel="content"`` output, which has no tool call
+    # markers, so streaming would finish with plain text and the
+    # contract would silently break. Reject upfront with the same
+    # 422 the parser-less path uses (codex round 10 [P2] on PR #551).
+    _engine_opts_out_of_tools = (
+        getattr(engine, "supports_tool_calls", True) is False
+    )
     if (
         request.stream
         and tc == "required"
         and request.tools
-        and not cfg.tool_call_parser
-        and not _engine_supports_channel_routed_tool_calls(engine)
+        and (
+            _engine_opts_out_of_tools
+            or (
+                not cfg.tool_call_parser
+                and not _engine_supports_channel_routed_tool_calls(engine)
+            )
+        )
     ):
         raise HTTPException(
             status_code=422,

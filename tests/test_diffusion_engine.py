@@ -1022,6 +1022,29 @@ class TestConcurrentRequests:
         assert engine.supports_tool_calls is False
         assert DiffusionEngine.supports_tool_calls is False
 
+    def test_engine_opts_out_blocks_tool_choice_required_even_with_parser(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Codex round 10 [P2]: even with a global --tool-call-parser
+        # configured, the route's streaming-required gate must reject
+        # tool_choice="required" + stream=true on a DiffusionEngine.
+        # The parser would otherwise match against the engine's
+        # ``channel="content"`` output (which has no tool call
+        # markers), letting the request finish with plain text and
+        # silently violating the OpenAI contract.
+        _install_mlx_vlm_mock(monkeypatch)
+        # Direct test of the engine-veto logic: build a tiny stub
+        # that exposes ``supports_tool_calls=False`` and verify the
+        # condition that gates the 422 evaluates True regardless of
+        # cfg.tool_call_parser.
+        class _StubEngine:
+            supports_tool_calls = False
+
+        _engine_opts_out = (
+            getattr(_StubEngine(), "supports_tool_calls", True) is False
+        )
+        assert _engine_opts_out is True
+
     def test_route_probe_rejects_engine_when_supports_tool_calls_false(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

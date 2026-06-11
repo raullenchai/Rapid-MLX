@@ -703,12 +703,22 @@ def load_model(
     if _profile_modality == "text-diffusion":
         from .runtime.diffusion_lane import DiffusionEngine
 
+        # ``python -m vllm_mlx.server --model <alias>`` bypasses
+        # cli.py's alias resolution and calls load_model() with the
+        # raw alias. BatchedEngine has its own internal resolution,
+        # but DiffusionEngine hands the string straight to
+        # ``mlx_vlm.utils.load`` which only accepts HF paths — so we
+        # must use the profile's resolved hf_path here (codex round
+        # 10 [P2]).
+        _diffusion_hf_path = (
+            _profile.hf_path if _profile is not None else model_name
+        )
         logger.info(
             f"Loading model with DiffusionEngine "
-            f"(modality=text-diffusion): {model_name}"
+            f"(modality=text-diffusion): {_diffusion_hf_path}"
         )
         _engine = DiffusionEngine(
-            model_name=model_name,
+            model_name=_diffusion_hf_path,
             max_tokens=max_tokens,
             scheduler_config=scheduler_config,
         )
