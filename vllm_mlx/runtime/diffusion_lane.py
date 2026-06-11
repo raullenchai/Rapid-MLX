@@ -384,13 +384,28 @@ class DiffusionEngine(BaseEngine):
             job = self._jobs.get()
             if job is None:
                 return
-            prompt, max_tokens, cfg, out_q, cancel_event = job
+            prompt, max_tokens, cfg, out_q, cancel_event, done_event = job
             try:
+                # Fast-skip jobs that were cancelled BEFORE we picked
+                # them up. Without this, a request whose coroutine was
+                # cancelled while still queued behind a slower job
+                # would still cost a full prefill + first-block of GPU
+                # the moment we got around to it (codex round 6 [P2]).
+                if cancel_event.is_set():
+                    continue
                 self._run_generator(prompt, max_tokens, cfg, out_q, cancel_event)
             except BaseException as e:  # noqa: BLE001 — surface to caller
                 out_q.put(e)
             finally:
                 out_q.put(_STREAM_DONE)
+                # ``done_event`` lets the request-side coroutine know
+                # the worker has fully released this job's resources
+                # so it can release the engine-level generation lock.
+                # codex round 6 [P2]: without this, releasing the lock
+                # on the consumer's exit (before the worker observed
+                # cancel_event mid-block) head-of-line-blocked the
+                # next queued request behind abandoned GPU work.
+                done_event.set()
 
     # ------------------------------------------------------------------
     # BaseEngine — prompt / token helpers used by the route layer
@@ -550,6 +565,14 @@ class DiffusionEngine(BaseEngine):
         # worker thread until the next queued request can land (codex
         # round 3 [P2]).
         cancel_event = threading.Event()
+        # ``done_event`` is paired with ``cancel_event`` for the
+        # life of a single job: the worker thread sets it after
+        # ``_run_generator`` returns (or is fast-skipped). The
+        # request-side finally awaits it before releasing the engine
+        # lock, so a queued sibling request can't acquire the lock
+        # while the worker is still burning GPU on this job (codex
+        # round 6 [P2]).
+        done_event = threading.Event()
         # The engine-level generation lock serializes concurrent
         # requests (DiffusionGemma is batch-1 only). codex round 4
         # [P2]: per-request resources (queues + pump thread) are now
@@ -579,7 +602,9 @@ class DiffusionEngine(BaseEngine):
                 daemon=True,
             )
             pump_thread.start()
-            self._jobs.put((prompt, max_tokens, cfg, thread_q, cancel_event))
+            self._jobs.put(
+                (prompt, max_tokens, cfg, thread_q, cancel_event, done_event)
+            )
             # Caller-supplied stop sequences (OpenAI /v1/completions
             # ``stop`` knob — single string or list). mlx-vlm's
             # ``stream_diffusion_generate`` does not honor stop
@@ -685,6 +710,17 @@ class DiffusionEngine(BaseEngine):
                 # exceptions raised mid-stream. Idempotent under repeat
                 # ``set()`` calls.
                 cancel_event.set()
+                # Wait for the worker to fully release this job before
+                # we drop the engine lock, else a queued sibling
+                # request acquires the lock while the worker is still
+                # burning GPU on this job — head-of-line blocking
+                # (codex round 6 [P2]). The per-step cancel check
+                # inside ``_run_generator`` fires every diffusion
+                # block (~50-200 ms), so this normally waits one
+                # block at most. The 30 s ceiling is a defence-in-
+                # depth so a stuck worker can never wedge the lock
+                # forever.
+                await asyncio.to_thread(done_event.wait, 30.0)
                 # Unconditional pump terminator. The worker's own
                 # _STREAM_DONE arrives eventually, but if cancellation
                 # happens before the worker has produced any output

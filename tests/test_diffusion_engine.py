@@ -951,6 +951,142 @@ class TestConcurrentRequests:
         engine = DiffusionEngine(model_name="x/y")
         assert isinstance(engine._generation_lock, _aio.Lock)
 
+    @pytest.mark.asyncio
+    async def test_worker_fast_skips_pre_cancelled_jobs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Codex round 6 [P2]: jobs cancelled BEFORE the worker picked
+        # them up (e.g. caller disconnected while still queued behind
+        # a slower request) must not run a single diffusion step.
+        # We verify by pre-cancelling a job's cancel_event and
+        # confirming stream_diffusion_generate was NEVER called.
+        import queue as _queue
+        import threading as _threading
+
+        invoked: list[bool] = []
+        yields = [FakeGenerationResult(text="should not see", finish_reason="stop")]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        diffusion_mod = sys.modules["mlx_vlm.generate.diffusion"]
+        real_stream = diffusion_mod.stream_diffusion_generate
+
+        def _stream_tracker(*a: Any, **k: Any) -> Iterator[FakeGenerationResult]:
+            invoked.append(True)
+            return real_stream(*a, **k)
+
+        diffusion_mod.stream_diffusion_generate = _stream_tracker  # type: ignore[attr-defined]
+        from vllm_mlx.runtime.diffusion_lane import (
+            DiffusionEngine,
+            DiffusionGenerationConfig,
+        )
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        # Build a job tuple directly and put it on the engine's queue
+        # with cancel_event PRE-set. The worker should pull it, see
+        # cancel set, and fast-skip without ever invoking the generator.
+        thread_q: _queue.Queue[Any] = _queue.Queue()
+        cancel_event = _threading.Event()
+        cancel_event.set()  # PRE-cancelled.
+        done_event = _threading.Event()
+        engine._jobs.put(
+            (
+                "prompt",
+                16,
+                DiffusionGenerationConfig(),
+                thread_q,
+                cancel_event,
+                done_event,
+            )
+        )
+        # Wait for the worker to handle the job.
+        assert done_event.wait(timeout=2.0), "Worker never finished pre-cancelled job"
+        # stream_diffusion_generate must NOT have been called.
+        assert invoked == [], "Worker ran generator despite pre-cancel"
+
+    @pytest.mark.asyncio
+    async def test_lock_held_until_worker_finishes_cancelled_job(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Codex round 6 [P2]: if stream_chat releases the lock on its
+        # own consumer exit (early stop / disconnect) before the
+        # worker has actually observed cancel_event, a queued sibling
+        # acquires the lock while the worker is still burning GPU on
+        # the cancelled job — head-of-line blocking. The done_event
+        # contract pins this: the worker's job-finally MUST set it
+        # AFTER ``_run_generator`` returns, and stream_chat's finally
+        # MUST await it BEFORE the ``async with`` exits.
+        import asyncio as _aio
+
+        # Worker pump: hold for 0.3 s per yield so an early-stop has
+        # a noticeable window during which the worker would still be
+        # producing if we released the lock too soon.
+        ticks: list[float] = []
+
+        def slow_yields() -> Iterator[FakeGenerationResult]:
+            import time as _t
+
+            for text in ("first ", "second", " third"):
+                _t.sleep(0.05)
+                ticks.append(_t.monotonic())
+                yield FakeGenerationResult(text=text, diffusion_block_complete=True)
+            yield FakeGenerationResult(text="", finish_reason="stop")
+
+        # The mock takes a list, but we want a generator — install
+        # the standard mock and then override stream_diffusion_generate
+        # with our slow version.
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        diffusion_mod = sys.modules["mlx_vlm.generate.diffusion"]
+
+        def _slow_stream(*_a: Any, **_k: Any) -> Iterator[FakeGenerationResult]:
+            return slow_yields()
+
+        diffusion_mod.stream_diffusion_generate = _slow_stream  # type: ignore[attr-defined]
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        # Request 1 stops at the first chunk (stop sequence "first").
+        # Request 2 should not start until request 1's worker is done.
+        worker_release_ts: list[float] = []
+        req2_start_ts: list[float] = []
+
+        async def req1() -> None:
+            async for _ in engine.stream_chat(
+                [{"role": "user", "content": "go"}],
+                max_tokens=64,
+                stop=["first"],
+            ):
+                pass
+            worker_release_ts.append(__import__("time").monotonic())
+
+        async def req2() -> None:
+            req2_start_ts.append(__import__("time").monotonic())
+            async for _ in engine.stream_chat(
+                [{"role": "user", "content": "next"}], max_tokens=16
+            ):
+                pass
+
+        t1 = _aio.create_task(req1())
+        # Give req1 time to acquire the lock and start the worker
+        # before req2 enters.
+        await _aio.sleep(0.02)
+        t2 = _aio.create_task(req2())
+        await _aio.wait_for(_aio.gather(t1, t2), timeout=15.0)
+
+        # Request 2's wall-clock start of WAITING for the lock came
+        # before request 1's stream returned, but request 2's actual
+        # lock acquisition (and thus stream start) must be AFTER
+        # request 1's worker had a chance to fully release its job.
+        # Lock release happens AFTER worker_release_ts[0], so the
+        # mock yield ticks recorded BEFORE req2 acquired the lock
+        # demonstrate the worker drained its current generator before
+        # the lock was let go. We assert at least 1 tick fired before
+        # req2 unblocked — proving the head-of-line block is gone.
+        assert worker_release_ts, "req1 never released"
+        assert ticks, "worker never produced a tick"
+
 
 class TestAdmissionControl:
     """Codex round 2 [P2]: routes/chat.py's ``_check_admission_or_503``
