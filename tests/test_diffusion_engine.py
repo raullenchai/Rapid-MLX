@@ -13,6 +13,7 @@ expected and real surface is loud at unit-test time.
 from __future__ import annotations
 
 import sys
+import threading
 import types
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -699,9 +700,108 @@ class TestStopSequenceHandling:
         n_settled = consumed["n"]
         _time.sleep(0.5)
         assert consumed["n"] == n_settled, (
-            f"Worker still iterating after cancel: "
-            f"{n_settled} → {consumed['n']}"
+            f"Worker still iterating after cancel: {n_settled} → {consumed['n']}"
         )
+
+
+class TestTerminationEdgeCases:
+    """Codex round 4 [P2] x 2: pump-thread leak on lock-cancel, and a
+    missing finish chunk when the diffusion generator ends exactly on
+    a block boundary (block_parts already cleared)."""
+
+    @pytest.mark.asyncio
+    async def test_generator_exit_at_block_boundary_still_emits_finish(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Generator yields one block-complete chunk and then exhausts
+        # WITHOUT an explicit finish_reason. Without the round-4 fix
+        # the worker's tail-flush guard ``if block_parts`` skipped
+        # emitting a terminal chunk (block_parts had been cleared on
+        # the previous block_complete), and stream_chat closed with
+        # no finish_reason — routes shipped only [DONE] and clients
+        # got no usage / terminal marker.
+        yields = [
+            FakeGenerationResult(text="all done.", diffusion_block_complete=True),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "hi"}], max_tokens=16
+        ):
+            collected.append(out)
+        # At least one chunk must carry finish_reason="stop" and
+        # finished=True so the route layer can emit the terminal SSE
+        # event with usage.
+        assert any(c.finish_reason == "stop" and c.finished for c in collected)
+        # Visible text is unchanged.
+        joined = "".join(c.new_text for c in collected)
+        assert joined == "all done."
+
+    @pytest.mark.asyncio
+    async def test_pump_thread_does_not_leak_on_lock_cancel(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # codex round 4 [P2]: if a queued request is cancelled while
+        # waiting on _generation_lock, the pump thread must NOT have
+        # been started — otherwise it would block on thread_q.get()
+        # forever (no job ever runs to push _STREAM_DONE). We model
+        # this by holding the lock with a long-running request, then
+        # cancelling a second request while it's queued.
+        import asyncio as _aio
+
+        yields = [
+            FakeGenerationResult(text="slow", diffusion_block_complete=True),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        # Manually acquire the engine lock so the next request is
+        # queued, then cancel it before releasing.
+        await engine._generation_lock.acquire()
+
+        baseline_threads = {
+            t.name for t in threading.enumerate() if "diffusion-pump" in t.name
+        }
+
+        async def queued_request() -> None:
+            async for _ in engine.stream_chat(
+                [{"role": "user", "content": "go"}], max_tokens=16
+            ):
+                pass
+
+        task = _aio.create_task(queued_request())
+        # Give the task a moment to enter stream_chat and reach the
+        # lock-acquire await.
+        await _aio.sleep(0.1)
+        task.cancel()
+        try:
+            await task
+        except _aio.CancelledError:
+            pass
+        engine._generation_lock.release()
+
+        # No new pump threads should be alive — the cancelled
+        # request must not have started one.
+        import time as _time
+
+        _time.sleep(0.2)
+        alive_pumps = {
+            t.name
+            for t in threading.enumerate()
+            if "diffusion-pump" in t.name and t.is_alive()
+        }
+        new_pumps = alive_pumps - baseline_threads
+        assert not new_pumps, f"Leaked pump threads: {new_pumps}"
 
 
 class TestConcurrentRequests:

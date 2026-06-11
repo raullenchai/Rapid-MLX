@@ -494,32 +494,6 @@ class DiffusionEngine(BaseEngine):
 
         prompt = self.build_prompt(messages)
         loop = asyncio.get_running_loop()
-        # Two queues bridge the persistent worker thread to the
-        # asyncio loop. ``thread_q`` is owned by the worker (sync
-        # ``queue.Queue.put`` is safe from any thread); ``aio_q`` is
-        # owned by the loop; the pump thread relays items via
-        # ``call_soon_threadsafe``.
-        thread_q: queue.Queue[Any] = queue.Queue()
-        aio_q: asyncio.Queue[Any] = asyncio.Queue()
-
-        def pump() -> None:
-            while True:
-                item = thread_q.get()
-                loop.call_soon_threadsafe(aio_q.put_nowait, item)
-                if item is _STREAM_DONE:
-                    return
-
-        pump_thread = threading.Thread(
-            target=pump,
-            name="rapid-mlx-diffusion-pump",
-            daemon=True,
-        )
-        pump_thread.start()
-        # The engine-level generation lock serializes concurrent
-        # requests (DiffusionGemma is batch-1 only). We acquire BEFORE
-        # submitting the job because the worker drains jobs FIFO and
-        # we want the lock to map 1:1 with worker activity, not the
-        # queue position.
         # Cancellation handle — set by the stream_chat finally clause
         # so the persistent worker stops reading mlx-vlm's generator
         # when the caller disconnects or we truncate on an early stop.
@@ -528,7 +502,35 @@ class DiffusionEngine(BaseEngine):
         # worker thread until the next queued request can land (codex
         # round 3 [P2]).
         cancel_event = threading.Event()
+        # The engine-level generation lock serializes concurrent
+        # requests (DiffusionGemma is batch-1 only). codex round 4
+        # [P2]: per-request resources (queues + pump thread) are now
+        # set up INSIDE the lock — if a queued request gets cancelled
+        # while waiting on the lock, no pump thread was ever started,
+        # so the cancelled coroutine cannot leak a daemon thread
+        # blocked on ``thread_q.get()`` forever.
         async with self._generation_lock:
+            # Two queues bridge the persistent worker thread to the
+            # asyncio loop. ``thread_q`` is owned by the worker (sync
+            # ``queue.Queue.put`` is safe from any thread); ``aio_q``
+            # is owned by the loop; the pump thread relays items via
+            # ``call_soon_threadsafe``.
+            thread_q: queue.Queue[Any] = queue.Queue()
+            aio_q: asyncio.Queue[Any] = asyncio.Queue()
+
+            def pump() -> None:
+                while True:
+                    item = thread_q.get()
+                    loop.call_soon_threadsafe(aio_q.put_nowait, item)
+                    if item is _STREAM_DONE:
+                        return
+
+            pump_thread = threading.Thread(
+                target=pump,
+                name="rapid-mlx-diffusion-pump",
+                daemon=True,
+            )
+            pump_thread.start()
             self._jobs.put((prompt, max_tokens, cfg, thread_q, cancel_event))
             # Caller-supplied stop sequences (OpenAI /v1/completions
             # ``stop`` knob — single string or list). mlx-vlm's
@@ -635,11 +637,15 @@ class DiffusionEngine(BaseEngine):
                 # exceptions raised mid-stream. Idempotent under repeat
                 # ``set()`` calls.
                 cancel_event.set()
-                # Drain the queues so the worker's _STREAM_DONE / late
-                # ERROR doesn't outlive this request and pollute the
-                # next one's iteration. ``thread_q`` is sync (the pump
-                # forwards into ``aio_q``); pump_thread is the bridge
-                # — join lets it observe _STREAM_DONE and exit cleanly.
+                # Unconditional pump terminator. The worker's own
+                # _STREAM_DONE arrives eventually, but if cancellation
+                # happens before the worker has produced any output
+                # (e.g. mid-disconnect after the lock acquired), the
+                # pump would otherwise block on ``thread_q.get()``
+                # forever. Pushing our own sentinel guarantees pump
+                # observes one even when the worker is slow / never
+                # ran.
+                thread_q.put(_STREAM_DONE)
                 pump_thread.join(timeout=2.0)
                 while not aio_q.empty():
                     try:
@@ -800,9 +806,17 @@ class DiffusionEngine(BaseEngine):
                 if finish_reason:
                     return
 
-        # Generator exited without an explicit finish_reason (rare —
-        # treat as a hard stop). Flush any trailing buffer.
-        if block_parts:
+        # Generator exited without an explicit finish_reason — treat
+        # as a hard stop. We ALWAYS emit a finish chunk here even when
+        # ``block_parts`` is empty (output ended exactly on a block
+        # boundary). Otherwise the routes finish the stream with only
+        # ``[DONE]`` and the client gets no terminal finish_reason /
+        # usage; the stop-sequence holdback in stream_chat would also
+        # never see a terminal item to flush its buffered tail (codex
+        # round 4 [P2]). Skip when the worker was cancelled so we
+        # don't push a stale terminal chunk into a queue the
+        # stream_chat finally is already draining.
+        if not cancel_event.is_set():
             out_q.put(
                 GenerationOutput(
                     text="",
