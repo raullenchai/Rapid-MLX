@@ -413,22 +413,29 @@ def rapid_stream_diffusion_generate(
     sampler_config = _config_dict(generation_config.get("sampler_config"))
     entropy_bound = float(sampler_config.get("entropy_bound", 0.1))
 
-    # Resolve denoising-step budget. ``fixed_steps`` caps the budget
-    # (a CEILING, not a floor) — adaptive early-stop via
+    # Resolve denoising-step budget — codex round 3 [P1] precedence:
+    # explicit ``max_denoising_steps`` from the caller wins over the
+    # alias default ``fixed_steps``, otherwise ``fixed_steps`` wins
+    # over the generation_config default. Without this, an alias
+    # default ``fixed_steps=8`` silently swallows a per-request
+    # ``max_denoising_steps=32`` override and the existing knob has
+    # no observable effect on the rapid backend.
+    #
+    # Whichever wins, it is a CEILING — adaptive early-stop via
     # ``_stable_and_confident`` always runs on top so EOS-bound short
     # outputs (JSON, code) stop at ~6 steps even when ceiling is 8.
     # This is the round-3 fix for the structured-json regression
     # surfaced on PR #555: the v1/v2 mutual-exclusive logic forced 8
     # steps on prompts that converge at 6, paying 33% extra compute.
-    if fixed_steps is not None:
+    if max_denoising_steps is not None:
+        denoise_budget = int(max_denoising_steps)
+    elif fixed_steps is not None:
         denoise_budget = int(fixed_steps)
     else:
-        if max_denoising_steps is None:
-            max_denoising_steps = int(
-                generation_config.get("max_denoising_steps")
-                or _DEFAULT_MAX_DENOISING_STEPS,
-            )
-        denoise_budget = int(max_denoising_steps)
+        denoise_budget = int(
+            generation_config.get("max_denoising_steps")
+            or _DEFAULT_MAX_DENOISING_STEPS,
+        )
     adaptive_stop = True
 
     # Temperature schedule (linear ramp during denoising). Upstream
@@ -695,12 +702,31 @@ def rapid_stream_diffusion_generate(
                     )
                 self_conditioning_embeddings = next_sc
 
-        current_canvas = argmax_canvas
+        # codex round 3 [P1]: pick the correct readout canvas per sampler.
+        # entropy-bound uses the last argmax (lowest schedule_temperature
+        # at step==1 → sharpest argmax). confidence-threshold accumulates
+        # the actually-revealed tokens into ``draft_canvas`` across steps;
+        # using ``argmax_canvas`` there would discard the temperature-
+        # sampled tokens chosen on the confidence early-exit path
+        # (line ~672 sets ``accepted_canvas = draft_canvas`` then breaks,
+        # but the post-loop assignment used to clobber that with the
+        # last argmax — silently flipping ``temperature > 0`` back to
+        # deterministic on that exit path).
+        if diffusion_sampler == "confidence-threshold":
+            current_canvas = draft_canvas
+        else:
+            current_canvas = argmax_canvas
         mx.eval(current_canvas)
 
-        # Emit canvas tokens one by one — stop on EOS or max_tokens.
+        # Emit canvas tokens — stop on EOS or max_tokens.
+        # codex round 3 [P1]: collect the kept ids and call
+        # ``tokenizer.decode(ids)`` ONCE per canvas. Per-token decode +
+        # concat corrupts output on tokenizers where byte pieces or
+        # merge-dependent tokens only round-trip correctly as a sequence
+        # (BPE byte-fallback, SentencePiece sub-word merges). Mirrors
+        # upstream's incremental detokenizer pattern at the canvas grain.
         canvas_tokens = [int(t) for t in current_canvas[0].tolist()]
-        emitted_text_pieces: list[str] = []
+        ids_to_decode: list[int] = []
         canvas_stop = False
         for tok in canvas_tokens:
             if len(generated) >= max_tokens:
@@ -714,7 +740,7 @@ def rapid_stream_diffusion_generate(
             generated.append(tok)
             last_token = tok
             if tok not in skip_ids:
-                emitted_text_pieces.append(tokenizer.decode([tok]))
+                ids_to_decode.append(tok)
 
         # Edge case: canvas exactly filled the remaining budget. The
         # for-loop above only stamps ``finish_reason='length'`` when the
@@ -726,7 +752,7 @@ def rapid_stream_diffusion_generate(
             finish_reason = "length"
             canvas_stop = True
 
-        block_text = "".join(emitted_text_pieces)
+        block_text = tokenizer.decode(ids_to_decode) if ids_to_decode else ""
         yield RapidDiffusionResult(
             text=block_text,
             token=last_token,

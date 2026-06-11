@@ -1254,9 +1254,13 @@ class DiffusionEngine(BaseEngine):
             # ``prefill_step_size``, ``diffusion_threshold`` via the
             # accept-and-honor signature (codex r2). It reads its own
             # per-alias knobs from the profile:
-            #   - ``fixed_steps``: ``None`` → adaptive stop via
-            #     ``_stable_and_confident`` (default); int → fixed budget,
-            #     disables adaptive stop (operator opt-in).
+            #   - ``fixed_steps``: when set, a CEILING on the denoising
+            #     budget; adaptive early-stop via ``_stable_and_confident``
+            #     STILL fires inside the ceiling. ``None`` → adaptive-only
+            #     (alias opt-in by setting ``"diffusion_fixed_steps": null``
+            #     in JSON). codex round 3 [NIT]: prior comment claimed int
+            #     disabled adaptive stop, which was the v1/v2 behavior the
+            #     hybrid mode replaced (see diffusion_loop.py round-3 fix).
             #   - ``sc_every``: confidence-threshold-path SC cadence.
             if self._profile.diffusion_fixed_steps is not None:
                 kwargs["fixed_steps"] = int(self._profile.diffusion_fixed_steps)

@@ -440,29 +440,146 @@ def test_accepts_nonzero_temperature():
 # =============================================================================
 
 
-def test_fixed_steps_and_adaptive_stop_are_not_mutually_exclusive():
-    """Round-3 fix: PR #555 v2 logic treated ``fixed_steps != None`` as
-    "disable adaptive stop", which forced 8 steps on structured-json
-    prompts that converged at 6 (the canvas was stable but we kept
-    re-running the same forward pass). Without this test, a future
-    refactor could re-introduce the mutual-exclusive code path and
-    silently bring back the ~25% regression on EOS-bound short outputs.
+class _StableLogitsFakeModel:
+    """Minimal fake model: every per-step forward returns peaky logits
+    where token ``5`` dominates. argmax_canvas is the same on every
+    step from step 1, so ``_stable_and_confident`` MUST fire on step 2
+    (history has 1 entry from step 1, current matches). Counts forward
+    calls so the test can assert the loop exited well before consuming
+    the ``fixed_steps`` ceiling.
 
-    We can't easily probe the internal ``adaptive_stop`` flag without
-    leaking implementation detail, so this test pins the OBSERVABLE
-    contract via the function docstring: ``fixed_steps`` is described
-    as a CEILING, and the live PR #555 bench (commit on this branch)
-    confirms structured-json runs 41.2 tok/s (rapid) vs 37.1 tok/s
-    (mlx-vlm) — only possible if adaptive stop is firing inside the
-    cap. If somebody flips this back to mutually-exclusive, this
-    docstring-pin assertion makes the regression visible at review."""
+    Codex round 3 [P1]: this replaces the prior docstring-pin assertion
+    which would have silently passed if production code re-introduced
+    the v1/v2 mutually-exclusive ``adaptive_stop = (fixed_steps is None)``
+    logic. With the fake model, that regression makes ``forward_calls``
+    jump from ~2 to the full ceiling and the test fails loud.
+    """
+
+    class _TC:
+        vocab_size = 16
+
+    class _C:
+        text_config: Any
+        canvas_length = 4
+        generation_config: dict[str, Any] = {
+            # diffusion_stopping_config with low thresholds so
+            # _stable_and_confident fires aggressively on peaky logits.
+            "diffusion_stopping_config": {
+                "stability_threshold": 1,
+                "confidence_threshold": 0.5,
+            },
+            "sampler_config": {"entropy_bound": 1.0},
+        }
+        eos_token_id = None
+
+    class _ET:
+        # Regular (non-quantized) weight — _soft_embedding_weight returns
+        # the .weight attribute directly. (vocab=16, dim=4)
+        weight: mx.array
+
+    class _Decoder:
+        embed_scale = 1.0
+        embed_tokens: Any
+
+        @staticmethod
+        def _make_decoder_masks(canvas_ids, kv_cache, decoder_attention_mask):
+            # The loop only forwards this opaquely into model() as
+            # ``decoder_attention_mask`` — our fake ignores it.
+            return None
+
+    class _Inner:
+        decoder: Any
+
+        @staticmethod
+        def encoder(input_ids, attention_mask=None, cache=None):
+            return None, cache or []
+
+    def __init__(self) -> None:
+        self.forward_calls = 0
+        # Peaky logits — one-hot at token 5 with a huge spike so entropy
+        # is ~0. Broadcast to (batch=1, canvas_length=4, vocab=16).
+        spike = mx.where(
+            mx.arange(16) == 5,
+            mx.array(1000.0),
+            mx.array(0.0),
+        )
+        self._logits = mx.broadcast_to(spike[None, None, :], (1, 4, 16))
+        # Build the nested config/embed_tokens/decoder shape the loop
+        # reads. Done in __init__ so the fake has stable per-instance
+        # state (rather than class-level mutable defaults).
+        tc = self._TC()
+        cfg = self._C()
+        cfg.text_config = tc
+        et = self._ET()
+        et.weight = mx.zeros((16, 4))
+        dec = self._Decoder()
+        dec.embed_tokens = et
+        inner = self._Inner()
+        inner.decoder = dec
+        self.config = cfg
+        self.model = inner
+
+    def make_cache(self) -> list:
+        class _Cache:
+            state = mx.zeros((1,))
+
+        return [_Cache()]
+
+    def __call__(self, cache=None, canvas_ids=None, **kw):
+        self.forward_calls += 1
+
+        class _R:
+            pass
+
+        r = _R()
+        r.logits = self._logits
+        return r
+
+
+class _FakeTokenizerForLoopTest:
+    all_special_ids: list[int] = []
+    eos_token_id = None
+
+    def decode(self, ids):  # type: ignore[no-untyped-def]
+        return "".join(chr(0x41 + (int(i) % 26)) for i in ids)
+
+
+def test_fixed_steps_and_adaptive_stop_are_not_mutually_exclusive():
+    """Codex round 3 [P1]: pin that adaptive early-stop fires INSIDE a
+    large ``fixed_steps`` ceiling. With a fake model whose canvas
+    stabilizes on step 1 (peaky logits → argmax is deterministic and
+    identical every step), ``_stable_and_confident`` MUST fire on step 2
+    of the denoising loop, regardless of how large ``fixed_steps`` is.
+
+    If a future refactor re-introduces the v1/v2 mutually-exclusive
+    behavior (``adaptive_stop = fixed_steps is None``), ``forward_calls``
+    will balloon from ~2 to the full ceiling and this test fails loud.
+    This is the structured-json regression the round-3 hybrid mode
+    closed."""
     from vllm_mlx.runtime.diffusion_loop import rapid_stream_diffusion_generate
 
-    doc = rapid_stream_diffusion_generate.__doc__ or ""
-    # The docstring MUST advertise fixed_steps as a ceiling — this
-    # is the user-visible contract the AliasProfile default depends on.
-    assert "ceiling, not a floor" in doc.lower() or "caps" in doc.lower(), (
-        "rapid_stream_diffusion_generate docstring must describe "
-        "fixed_steps as a budget cap (not a mutually-exclusive override) "
-        "so future contributors don't re-introduce the v2 perf regression"
+    model = _StableLogitsFakeModel()
+    tok = _FakeTokenizerForLoopTest()
+    input_ids = mx.array([[1, 2, 3]])
+
+    # ``fixed_steps=64`` is the ceiling; if adaptive stop is disabled
+    # the loop will burn all 64 forward passes per canvas. With it on,
+    # the stable-logits fake exits at step 2.
+    gen = rapid_stream_diffusion_generate(
+        model=model,
+        processor=None,
+        tokenizer=tok,
+        input_ids=input_ids,
+        fixed_steps=64,
+        max_tokens=4,  # one canvas-worth — single denoising pass
+        temperature=0.0,
+    )
+    # Drain the generator so the loop runs to completion.
+    list(gen)
+
+    assert model.forward_calls < 10, (
+        f"adaptive_stop should have fired ~step 2 of the ``fixed_steps=64`` "
+        f"ceiling on stable peaky logits, but the loop made "
+        f"{model.forward_calls} forward calls — the v1/v2 mutually-exclusive "
+        f"regression (``adaptive_stop = fixed_steps is None``) is back."
     )
