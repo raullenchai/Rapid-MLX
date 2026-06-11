@@ -904,16 +904,42 @@ class TestConcurrentRequests:
     async def test_two_concurrent_requests_serialize_without_deadlock(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Both requests produce a single block + stop. The second one
-        # must wait for the first to release the lock — total wall is
-        # 2x the per-request cost, but neither should hang.
-        yields = [
-            FakeGenerationResult(text="A1", diffusion_block_complete=True),
-            FakeGenerationResult(text="", finish_reason="stop"),
-            FakeGenerationResult(text="B1", diffusion_block_complete=True),
-            FakeGenerationResult(text="", finish_reason="stop"),
-        ]
-        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        # Codex round 1 [P1] + pr_validate r12 BLOCKING #2: this test
+        # originally only asserted both requests returned two chunks,
+        # which would stay green even if serialization were removed
+        # entirely (the fake stream is replayed independently per
+        # call). The strengthened version uses an entry/exit-counted
+        # fake generator and asserts the in-flight count never exceeds
+        # 1 — proving the engine-level _generation_lock actually
+        # serialized the two concurrent calls.
+        import asyncio as _aio
+        import threading as _threading
+        import time as _time
+
+        # Track concurrent in-flight generator entries.
+        in_flight = 0
+        max_in_flight = 0
+        in_flight_lock = _threading.Lock()
+
+        def _counted_stream(*_a: Any, **_k: Any) -> Iterator[FakeGenerationResult]:
+            nonlocal in_flight, max_in_flight
+            with in_flight_lock:
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+            try:
+                # Hold each generator alive long enough that a missing
+                # lock would let the second one overlap.
+                _time.sleep(0.05)
+                yield FakeGenerationResult(text="x", diffusion_block_complete=True)
+                _time.sleep(0.05)
+                yield FakeGenerationResult(text="", finish_reason="stop")
+            finally:
+                with in_flight_lock:
+                    in_flight -= 1
+
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        diffusion_mod = sys.modules["mlx_vlm.generate.diffusion"]
+        diffusion_mod.stream_diffusion_generate = _counted_stream  # type: ignore[attr-defined]
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
@@ -927,15 +953,19 @@ class TestConcurrentRequests:
                 chunks.append(out.new_text)
             return chunks
 
-        import asyncio as _aio
-
         results = await _aio.wait_for(
             _aio.gather(drain(), drain()),
             timeout=10.0,
         )
-        # Both requests completed. Mock yields four items total, so
-        # the two requests together drain them in submission order.
+        # Both requests completed without deadlock.
         assert all(len(r) == 2 for r in results), results
+        # The strict serialization invariant: at no point did the
+        # engine have two concurrent diffusion generators running.
+        # If serialization regresses, max_in_flight would hit 2.
+        assert max_in_flight == 1, (
+            f"engine ran {max_in_flight} concurrent generators; "
+            "_generation_lock failed to serialize"
+        )
 
     def test_generation_lock_is_asyncio_lock(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1147,27 +1177,73 @@ class TestConcurrentRequests:
     async def test_post_lock_stuck_check_rejects_in_flight_request(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Codex round 8 [P2]: a request that passed admission BEFORE
-        # the engine was marked stuck (e.g. another request tripped
-        # the 30 s drain timeout while this one was waiting on the
-        # lock) must NOT enqueue work to the wedged worker. The
-        # post-lock unhealthy gate raises BackpressureError so the
-        # client gets a clean 503 instead of hanging behind GPU work
-        # that will never make progress.
+        # Codex round 8 [P2] + pr_validate r12 BLOCKING #1: a request
+        # that passed admission BEFORE the engine was marked stuck
+        # (e.g. another request tripped the 30 s drain timeout while
+        # this one was waiting on the lock) must NOT enqueue work to
+        # the wedged worker.
+        #
+        # The previous version of this test flipped ``_worker_stuck``
+        # BEFORE calling stream_chat, so a pre-lock admission check
+        # would satisfy it. The strengthened version mirrors the
+        # actual production race:
+        #   1. Test pre-acquires the engine's _generation_lock.
+        #   2. The request enters stream_chat and BLOCKS on the lock.
+        #   3. While it's blocked, we flip ``_worker_stuck``.
+        #   4. We release the lock; the request acquires it and the
+        #      post-lock gate MUST raise.
+        # This way a regression that moved the check pre-lock would
+        # break: at the moment we entered stream_chat, the flag was
+        # still False.
+        import asyncio as _aio
+
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
         from vllm_mlx.scheduler import BackpressureError
 
         _install_mlx_vlm_mock(monkeypatch)
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
-        # Flip stuck BEFORE the request enters stream_chat so the
-        # post-lock gate is the only thing that can refuse it.
+
+        # Hold the lock so the request blocks waiting for it.
+        await engine._generation_lock.acquire()
+        assert engine._worker_stuck is False, (
+            "_worker_stuck must be False at the moment the request "
+            "enters stream_chat — otherwise this test degenerates "
+            "into the pre-lock check it's trying to disprove"
+        )
+
+        captured: dict[str, BaseException] = {}
+
+        async def queued_request() -> None:
+            try:
+                async for _ in engine.stream_chat(
+                    [{"role": "user", "content": "go"}], max_tokens=16
+                ):
+                    pass
+            except BaseException as e:  # noqa: BLE001 — capture for assertion
+                captured["err"] = e
+
+        task = _aio.create_task(queued_request())
+        # Give the task time to enter stream_chat and reach the
+        # ``async with self._generation_lock:`` await.
+        await _aio.sleep(0.05)
+        assert not task.done(), "request should be blocked on the lock"
+
+        # Now flip the stuck flag — proving the check fires AFTER
+        # the lock was acquired, not as a pre-lock gate.
         engine._worker_stuck = True
-        with pytest.raises(BackpressureError, match="unhealthy"):
-            async for _ in engine.stream_chat(
-                [{"role": "user", "content": "go"}], max_tokens=16
-            ):
-                pass
+
+        # Release the lock; the request acquires it, post-lock gate
+        # fires, BackpressureError raised.
+        engine._generation_lock.release()
+        await _aio.wait_for(task, timeout=2.0)
+
+        err = captured.get("err")
+        assert err is not None, "request completed without raising"
+        assert isinstance(err, BackpressureError), (
+            f"expected BackpressureError, got {type(err).__name__}: {err}"
+        )
+        assert "unhealthy" in str(err).lower()
 
     @pytest.mark.asyncio
     async def test_worker_stuck_marks_admission_unhealthy(

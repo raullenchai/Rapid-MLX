@@ -797,7 +797,13 @@ async def _create_chat_completion_impl(
     # markers, so streaming would finish with plain text and the
     # contract would silently break. Reject upfront with the same
     # 422 the parser-less path uses (codex round 10 [P2] on PR #551).
-    _engine_opts_out_of_tools = getattr(engine, "supports_tool_calls", True) is False
+    # Use the same falsey predicate (``not getattr(...)``) as
+    # ``_engine_supports_channel_routed_tool_calls`` so the two
+    # checks treat None / 0 / False uniformly as "engine has opted
+    # out" — pr_validate codex r12 NIT. Default True (existing
+    # engines) preserves prior behaviour for everything that hasn't
+    # opted out.
+    _engine_opts_out_of_tools = not getattr(engine, "supports_tool_calls", True)
     if (
         request.stream
         and tc == "required"
