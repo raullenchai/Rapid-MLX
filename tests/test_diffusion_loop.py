@@ -531,6 +531,139 @@ def test_stop_string_validation_rejects_non_string_list():
         )
 
 
+def test_stop_string_validation_rejects_non_string_list_element():
+    """codex round 8 [P1]: ``stop=[123]`` MUST raise — previously
+    ``[s for s in stop if isinstance(s, str) and s]`` silently dropped
+    the non-string element and the resulting empty list made the
+    caller's stop request a no-op. Raise loud rather than coerce."""
+    fake_input_ids = mx.array([[1, 2, 3]])
+    with pytest.raises(ValueError, match="stop list elements must be strings"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                stop=[123],  # type: ignore[list-item]
+            )
+        )
+    # Mixed list: even one bad element → raise (don't silently filter).
+    with pytest.raises(ValueError, match="stop list elements must be strings"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                stop=["</answer>", 42, "</done>"],  # type: ignore[list-item]
+            )
+        )
+
+
+def test_stop_string_wins_over_length_when_earlier():
+    """codex round 8 [P1]: when a canvas decodes to text that BOTH
+    contains a stop string AND hits the max_tokens cap on the same
+    canvas, the earlier cut must win. Previously the ``if not
+    canvas_stop`` guard let length-from-max_tokens win unconditionally,
+    leaving the stop string un-trimmed in the emitted text."""
+
+    class _StopTok:
+        all_special_ids: list[int] = []
+        eos_token_id = None
+
+        def decode(self, ids):  # type: ignore[no-untyped-def]
+            # Each token 5 → "STOPHERE"; canvas of [5,5,5,5] decodes to
+            # "STOPHERESTOPHERESTOPHERESTOPHERE" — stop at index 0.
+            return "".join("STOPHERE" if int(i) == 5 else "?" for i in ids)
+
+    model = _StableLogitsFakeModel()
+    tok = _StopTok()
+    input_ids = mx.array([[1, 2, 3]])
+
+    # max_tokens=4 matches canvas_length exactly, so the length cap fires
+    # on the same canvas as the stop match. Without the r8 fix, length
+    # wins and "STOPHERESTOPHERESTOPHERESTOPHERE" leaks out unfiltered.
+    last = None
+    full_text = ""
+    for r in rapid_stream_diffusion_generate(
+        model=model,
+        processor=None,
+        tokenizer=tok,
+        input_ids=input_ids,
+        fixed_steps=8,
+        max_tokens=4,
+        temperature=0.0,
+        stop=["STOPHERE"],
+    ):
+        full_text += r.text
+        last = r
+    assert last is not None
+    assert last.finish_reason == "stop", (
+        f"stop should win over length when earlier; got {last.finish_reason!r}"
+    )
+    assert "STOPHERE" not in full_text, (
+        f"stop string leaked into emitted text (got {full_text!r})"
+    )
+
+
+def test_stop_string_cross_canvas_holdback():
+    """codex round 8 [P1]: a stop string that straddles a canvas
+    boundary must still be enforced — we hold back ``max_stop_len - 1``
+    chars from each non-terminal canvas so the next canvas can complete
+    the match. Without the holdback, the first canvas's tail leaks
+    verbatim and the consumer sees the stop string un-trimmed."""
+
+    class _AlternatingTok:
+        """Decode canvas N: first call returns ``"AAAA"``, every
+        subsequent call returns ``"BBBB"``. The stop string ``"AB"``
+        straddles the canvas boundary at position 3-4 of the full
+        emitted prefix."""
+
+        all_special_ids: list[int] = []
+        eos_token_id = None
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def decode(self, ids):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return "AAAA" if self.calls == 1 else "BBBB"
+
+    model = _StableLogitsFakeModel()
+    tok = _AlternatingTok()
+    input_ids = mx.array([[1, 2, 3]])
+
+    full_text = ""
+    last = None
+    for r in rapid_stream_diffusion_generate(
+        model=model,
+        processor=None,
+        tokenizer=tok,
+        input_ids=input_ids,
+        fixed_steps=8,
+        max_tokens=8,
+        temperature=0.0,
+        stop=["AB"],
+    ):
+        full_text += r.text
+        last = r
+
+    assert last is not None
+    assert last.finish_reason == "stop", (
+        f"cross-canvas stop should terminate with finish_reason='stop'; "
+        f"got {last.finish_reason!r}"
+    )
+    # Full emit should cut at position 3 ("AAA"), NOT leak the 'A' that
+    # would have shipped with canvas 1 absent the holdback.
+    assert full_text == "AAA", (
+        f"cross-canvas stop should cut at position 3 (got {full_text!r}); "
+        "an 'AAAA' or longer prefix means the holdback didn't fire."
+    )
+    assert "AB" not in full_text, (
+        f"stop string 'AB' leaked into emitted text (got {full_text!r})"
+    )
+
+
 def test_stop_string_none_and_empty_are_noop():
     """``stop=None``, ``stop=""``, ``stop=[]``, ``stop=["", ""]`` must
     all behave as "no stop strings" — exercise the entry validation

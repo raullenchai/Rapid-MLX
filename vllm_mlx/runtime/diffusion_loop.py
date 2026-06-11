@@ -433,20 +433,31 @@ def rapid_stream_diffusion_generate(
         )
     if sc_every <= 0:
         raise ValueError("sc_every must be a positive integer.")
-    # codex round 7 [P1]: normalize stop into a non-empty list of strings.
-    # Mirror ``vllm_mlx/runtime/diffusion_lane.py:_normalize_stops`` —
-    # empty strings would match everywhere, drop them silently. None or
-    # empty list disables stop-string handling (token-id EOS still applies).
+    # codex round 7 [P1] + round 8 [P1]: normalize stop into a list of
+    # non-empty strings. Empty strings (``""``) match everywhere so we
+    # drop them. ANY non-string element (``stop=[123]``) is a programmer
+    # bug — raise loud rather than silently coerce to an empty list,
+    # which would make a misconfigured caller's stop request a no-op.
     if stop is None:
         stop_list: list[str] = []
     elif isinstance(stop, str):
         stop_list = [stop] if stop else []
     elif isinstance(stop, list):
-        stop_list = [s for s in stop if isinstance(s, str) and s]
+        for s in stop:
+            if not isinstance(s, str):
+                raise ValueError(
+                    f"stop list elements must be strings (got {type(s).__name__})."
+                )
+        stop_list = [s for s in stop if s]
     else:
         raise ValueError(
             f"stop must be None, str, or list[str] (got {type(stop).__name__})."
         )
+    # Pre-compute the holdback tail size — the longest stop string minus
+    # one char is the max that could overlap a canvas boundary and start
+    # a stop match on the next canvas.
+    _max_stop_len = max((len(s) for s in stop_list), default=0)
+    _stop_holdback_chars = max(0, _max_stop_len - 1)
     if diffusion_sampler not in ("entropy-bound", "confidence-threshold"):
         raise ValueError(
             f"Unsupported diffusion sampler: {diffusion_sampler!r}.",
@@ -598,6 +609,11 @@ def rapid_stream_diffusion_generate(
     # cross-canvas stops still match — at long generation lengths this
     # is at most a few KB of memory, negligible vs the canvas tensors.
     emitted_text: str = ""
+    # codex round 8 [P1]: hold back ``max(len(stop)) - 1`` chars from the
+    # tail of each canvas so a stop string that straddles a canvas
+    # boundary still gets matched on the NEXT canvas before any text
+    # leaks to the consumer. Flushed verbatim on the terminal canvas.
+    holdback: str = ""
     finish_reason: str | None = None
     last_token: int | None = None
     is_prefill_done = True  # we just did the initial prefill
@@ -854,31 +870,45 @@ def rapid_stream_diffusion_generate(
 
         block_text = tokenizer.decode(ids_to_decode) if ids_to_decode else ""
 
-        # codex round 7 [P1]: request-level stop-string enforcement.
-        # Check ``emitted_text + block_text`` for the earliest stop
-        # match — covers stops that span a canvas boundary (lookback =
-        # entire emitted prefix). When found, truncate ``block_text`` at
-        # the cut point and stamp ``finish_reason="stop"``.
-        if stop_list and not canvas_stop:
-            combined = emitted_text + block_text
+        # codex round 7 [P1] + round 8 [P1] + [P1]: request-level
+        # stop-string enforcement with a cross-canvas holdback.
+        #
+        # (a) The check runs unconditionally — even if ``canvas_stop`` is
+        #     already True from EOS / max_tokens — because a stop string
+        #     can land EARLIER in the decoded block than the length
+        #     boundary. The earlier cut wins; ``finish_reason`` flips to
+        #     ``"stop"`` when stop is earlier or equal.
+        # (b) ``holdback`` carries up to ``_stop_holdback_chars`` from the
+        #     tail of the previous canvas. We prepend it here so a stop
+        #     string that started in canvas N-1 and finishes in canvas N
+        #     still matches (covers the cross-boundary leak case).
+        # (c) On non-terminal canvases we re-stash the new tail into
+        #     ``holdback`` and only emit ``combined[:-tail]``. On the
+        #     terminal canvas (``canvas_stop=True`` from EOS / length /
+        #     stop) we flush everything — no leak.
+        combined = holdback + block_text
+        holdback = ""
+        if stop_list:
             earliest = -1
             for s in stop_list:
                 idx = combined.find(s)
                 if idx != -1 and (earliest == -1 or idx < earliest):
                     earliest = idx
             if earliest >= 0:
-                cut_in_block = earliest - len(emitted_text)
-                # Boundary case: stop straddles the previous canvas. The
-                # previous canvas already shipped; defensive truncate
-                # this canvas to "" and rely on the caller (typically
-                # ``diffusion_lane.py``) to truncate the already-emitted
-                # text via its own _earliest_stop_index buffer. For
-                # direct callers the practical effect is that
-                # ``max_stop_len - 1`` chars may have leaked past the
-                # boundary — documented in the rapid loop contract.
-                block_text = block_text[: max(0, cut_in_block)]
+                combined = combined[:earliest]
                 finish_reason = "stop"
                 canvas_stop = True
+
+        if canvas_stop or _stop_holdback_chars == 0:
+            block_text = combined
+        else:
+            tail = _stop_holdback_chars
+            if len(combined) > tail:
+                block_text = combined[:-tail]
+                holdback = combined[-tail:]
+            else:
+                block_text = ""
+                holdback = combined
 
         emitted_text += block_text
 
