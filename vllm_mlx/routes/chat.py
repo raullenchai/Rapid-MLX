@@ -822,8 +822,16 @@ async def _create_chat_completion_impl(
     # ambiguous client UX. Reject upfront for opted-out engines no
     # matter the stream flag (codex pr_validate r6 BLOCKING #1 +
     # r8 NIT #2 on PR #551).
-    _forced_tool_choice = tc == "required" or (
-        isinstance(tc, dict) and tc.get("type") == "function"
+    _forced_tool_choice = (
+        tc == "required"
+        # Legacy literal — some pre-2024 OpenAI SDKs sent the bare
+        # string ``"function"`` to mean "force any function call"
+        # before the dict form was added. Codex pr_validate r9 NIT
+        # #1 flagged the original predicate omitted this shape so
+        # opted-out engines would still run a full generation
+        # before failing.
+        or tc == "function"
+        or (isinstance(tc, dict) and tc.get("type") == "function")
     )
     if _forced_tool_choice and request.tools and _engine_opts_out_of_tools:
         raise HTTPException(

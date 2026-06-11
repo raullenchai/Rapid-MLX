@@ -1313,6 +1313,76 @@ class TestConcurrentRequests:
         body = resp.text.lower()
         assert "tool_choice" in body and "forces" in body
 
+    def test_engine_opts_out_blocks_legacy_function_literal_tool_choice(
+        self,
+    ) -> None:
+        # codex pr_validate r9 NIT #1: the pre-fix predicate matched
+        # ``tc == "required"`` and the dict-shape named-function
+        # form but skipped the LEGACY bare-string ``"function"``
+        # literal that some pre-2024 OpenAI SDKs emit to mean "force
+        # any function call". An opted-out engine couldn't satisfy
+        # it either, but the upfront veto missed it.
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes.chat import router as chat_router
+
+        class _DiffusionEngineStub:
+            supports_tool_calls = False
+            preserve_native_tool_format = False
+            is_mllm = False
+            supports_guided_generation = False
+            tokenizer = None
+
+            def build_prompt(self, messages, tools=None, enable_thinking=None):
+                return "PROMPT"
+
+            async def chat(self, messages, **kwargs):
+                raise RuntimeError(
+                    "engine.chat() executed despite supports_tool_calls="
+                    'False and a legacy tool_choice="function" literal; '
+                    "legacy-literal veto regressed"
+                )
+
+            async def stream_chat(self, messages, **kwargs):
+                yield GenerationOutput(text="x", finished=True)
+
+        cfg = reset_config()
+        cfg.engine = _DiffusionEngineStub()
+        cfg.model_name = "diffusion-gemma-26b"
+        cfg.model_registry = None
+        cfg.no_thinking = True
+        cfg.tool_call_parser = "hermes"
+
+        app = FastAPI()
+        app.include_router(chat_router)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "diffusion-gemma-26b",
+                "stream": False,
+                "messages": [{"role": "user", "content": "weather?"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "tool_choice": "function",  # <-- the legacy literal
+                "max_tokens": 32,
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        body = resp.text.lower()
+        assert "tool_choice" in body and "forces" in body
+
     def test_engine_opts_out_blocks_tool_choice_required_non_stream_too(
         self,
     ) -> None:
