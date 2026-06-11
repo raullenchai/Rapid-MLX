@@ -416,6 +416,17 @@ def rapid_stream_diffusion_generate(
     # caller still gets through.
     _require_positive_int("fixed_steps", fixed_steps)
     _require_positive_int("max_denoising_steps", max_denoising_steps)
+    # codex round 6 [P1]: ``sc_every`` gates ``cur_step % max(sc_every, 1)``
+    # mid-loop. A float raises ``TypeError`` 32 steps into generation
+    # (worst-failure-mode-money-can-buy); ``0`` or negative gets silently
+    # coerced to ``1`` by the ``max(...)`` guard, defeating the operator's
+    # intent. Mirror the same strict validation as the budget knobs.
+    if sc_every is None or isinstance(sc_every, bool) or not isinstance(sc_every, int):
+        raise ValueError(
+            f"sc_every must be a positive integer (got {type(sc_every).__name__})."
+        )
+    if sc_every <= 0:
+        raise ValueError("sc_every must be a positive integer.")
     if diffusion_sampler not in ("entropy-bound", "confidence-threshold"):
         raise ValueError(
             f"Unsupported diffusion sampler: {diffusion_sampler!r}.",
@@ -435,6 +446,23 @@ def rapid_stream_diffusion_generate(
             f"(got batch_size={batch_size}); the diffusion lane "
             "never batches today."
         )
+    # codex round 6 [P1]: ``decoder_attention_mask`` only covers
+    # ``prompt + current_canvas`` lengths, but the per-iteration
+    # encoder re-prefill grows the KV cache by each prior canvas. On
+    # padded inputs the mask would diverge from cache length on
+    # canvas 2+, so attention silently looks at the wrong slots. The
+    # diffusion lane never feeds padded inputs today (B=1, no padding),
+    # but a programmatic caller passing a mask with False slots would
+    # hit this. Reject loud here — BEFORE ``model.config`` so a unit
+    # test can exercise this guard with ``model=None``.
+    if attention_mask is not None:
+        am = attention_mask.astype(mx.bool_)
+        if not bool(mx.all(am).item()):
+            raise ValueError(
+                "rapid_stream_diffusion_generate does not support padded "
+                "inputs across multi-canvas generation; pass an attention "
+                "mask with all True or omit it."
+            )
 
     config = model.config
     text_config = config.text_config
@@ -508,12 +536,14 @@ def rapid_stream_diffusion_generate(
     embed_scale = decoder.embed_scale
 
     # Attention mask defaults to "all real tokens" — matches upstream.
+    # Padded inputs are rejected at entry above (codex round 6 [P1]),
+    # so we only need the all-ones default here for the unpadded path.
     if attention_mask is None:
         attention_mask = mx.ones((batch_size, prompt_length), dtype=mx.bool_)
     else:
         attention_mask = attention_mask.astype(mx.bool_)
-    has_padding = not bool(mx.all(attention_mask).item())
-    decoder_attention_mask = attention_mask if has_padding else None
+    has_padding = False
+    decoder_attention_mask = None
 
     # Prefill — chunked if the operator opted in and the prompt is long
     # enough to benefit. Mirrors ``_diffusion_prefill_cache``.

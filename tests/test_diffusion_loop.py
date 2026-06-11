@@ -3,7 +3,8 @@
 
 Covers the math helpers + EOS extraction + greedy-only / vision guards.
 Does NOT load DiffusionGemma — those live in
-``test_diffusion_gemma_parity.py`` behind ``@pytest.mark.gpu_heavy``.
+``test_diffusion_gemma_parity.py`` behind ``@pytest.mark.slow`` (run
+with ``pytest --run-slow``).
 """
 
 from __future__ import annotations
@@ -464,6 +465,49 @@ def test_strict_int_validation_rejects_float_and_bool():
                     tokenizer=None,
                     input_ids=fake_input_ids,
                     **knob_kwargs,  # type: ignore[arg-type]
+                )
+            )
+
+
+def test_rejects_padded_inputs():
+    """Codex round 6 [P1]: the per-canvas re-prefill grows the KV cache
+    by ``current_canvas`` each iteration, but ``decoder_attention_mask``
+    was only built from ``prompt + current_canvas`` lengths. On padded
+    inputs the mask would diverge from cache length on canvas 2+, so
+    attention silently looks at the wrong slots. The lane never pads
+    today (B=1, no padding), so reject at entry until a multi-canvas
+    + padding implementation lands."""
+    fake_input_ids = mx.array([[1, 2, 3, 4]])
+    # Mask with at least one False slot → has_padding = True → reject.
+    padded_mask = mx.array([[True, True, False, False]])
+    with pytest.raises(ValueError, match="padded inputs"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                attention_mask=padded_mask,
+            )
+        )
+
+
+def test_rejects_invalid_sc_every():
+    """Codex round 6 [P1]: ``sc_every`` gates
+    ``cur_step % max(sc_every, 1)`` mid-loop. A float raises
+    ``TypeError`` 32 steps into generation; ``0``/negative silently
+    coerce to ``1`` via the ``max(...)`` guard. Mirror the same strict
+    validation as the budget knobs."""
+    fake_input_ids = mx.array([[1, 2, 3]])
+    for bad_val in (None, 1.5, True, 0, -1):
+        with pytest.raises(ValueError, match="sc_every must be"):
+            next(
+                rapid_stream_diffusion_generate(
+                    model=None,
+                    processor=None,
+                    tokenizer=None,
+                    input_ids=fake_input_ids,
+                    sc_every=bad_val,  # type: ignore[arg-type]
                 )
             )
 
