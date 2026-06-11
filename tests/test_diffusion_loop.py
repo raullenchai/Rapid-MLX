@@ -33,9 +33,14 @@ def test_result_dataclass_is_frozen():
     """The lane reads via ``getattr(result, …, default)``; mutation here
     would break the implicit immutability assumption at
     ``diffusion_lane.py:1241``."""
-    r = RapidDiffusionResult(text="x", token=1, prompt_tokens=2,
-                             generation_tokens=3, diffusion_block_complete=True,
-                             finish_reason=None)
+    r = RapidDiffusionResult(
+        text="x",
+        token=1,
+        prompt_tokens=2,
+        generation_tokens=3,
+        diffusion_block_complete=True,
+        finish_reason=None,
+    )
     with pytest.raises(Exception):
         r.text = "mutated"  # type: ignore[misc]
 
@@ -44,9 +49,14 @@ def test_result_getattr_defaults_match_mlx_vlm_shape():
     """The lane uses ``getattr(result, 'is_draft', False)`` etc.; verify
     our dataclass returns the same defaults the upstream
     ``GenerationResult`` would surface."""
-    r = RapidDiffusionResult(text="hi", token=42, prompt_tokens=10,
-                             generation_tokens=1, diffusion_block_complete=True,
-                             finish_reason=None)
+    r = RapidDiffusionResult(
+        text="hi",
+        token=42,
+        prompt_tokens=10,
+        generation_tokens=1,
+        diffusion_block_complete=True,
+        finish_reason=None,
+    )
     assert getattr(r, "is_draft", "MISSING") is False
     assert getattr(r, "prompt_tokens", 0) == 10
     assert getattr(r, "generation_tokens", 0) == 1
@@ -61,8 +71,9 @@ def test_result_getattr_defaults_match_mlx_vlm_shape():
 
 
 def test_initialize_canvas_shape_and_dtype():
-    canvas = _initialize_canvas(batch_size=1, canvas_length=64,
-                                vocab_size=1000, dtype=mx.int32)
+    canvas = _initialize_canvas(
+        batch_size=1, canvas_length=64, vocab_size=1000, dtype=mx.int32
+    )
     assert canvas.shape == (1, 64)
     assert canvas.dtype == mx.int32
 
@@ -155,11 +166,15 @@ def test_sample_canvas_greedy_at_temp_zero():
     """``temperature=0`` → deterministic argmax. One-hot logits land on
     the corresponding token id every time."""
     # Build logits where each [B, L] position has a unique max
-    logits = mx.array([[
-        [-100.0, 5.0, -100.0, -100.0],  # → 1
-        [-100.0, -100.0, 7.0, -100.0],  # → 2
-        [3.0, -100.0, -100.0, -100.0],  # → 0
-    ]])  # shape [1, 3, 4]
+    logits = mx.array(
+        [
+            [
+                [-100.0, 5.0, -100.0, -100.0],  # → 1
+                [-100.0, -100.0, 7.0, -100.0],  # → 2
+                [3.0, -100.0, -100.0, -100.0],  # → 0
+            ]
+        ]
+    )  # shape [1, 3, 4]
     out = _sample_canvas(logits, mx.int32, temperature=0.0)
     assert out.shape == (1, 3)
     assert out.tolist() == [[1, 2, 0]]
@@ -235,8 +250,7 @@ def test_extract_eos_unions_int_and_list():
     ``generation_config.eos_token_id`` (list incl. <end_of_turn>).
     Missing this union silently turns <end_of_turn> into normal text
     and the model rambles past the natural stop."""
-    cfg = _StubConfig(generation_config={"eos_token_id": [106]},
-                      eos_token_id=1)
+    cfg = _StubConfig(generation_config={"eos_token_id": [106]}, eos_token_id=1)
     tok = _StubTokenizer()
     assert _extract_eos_ids(cfg, tok) == {1, 106}
 
@@ -254,6 +268,71 @@ def test_extract_eos_handles_missing_generation_config():
     assert _extract_eos_ids(cfg, tok) == {42}
 
 
+class _StubFullTok:
+    """Tokenizer/processor surface covering all 4 EOS shapes
+    ``Scheduler._get_stop_tokens`` reads."""
+
+    def __init__(self, eos=None, eos_plural=None, wrapper_set=None, rapid_extras=None):
+        if eos is not None:
+            self.eos_token_id = eos
+        if eos_plural is not None:
+            self.eos_token_ids = eos_plural
+        if wrapper_set is not None:
+            self._eos_token_ids = wrapper_set
+        if rapid_extras is not None:
+            self._rapid_extra_eos_token_ids = rapid_extras
+
+
+def test_extract_eos_unions_all_tokenizer_surfaces():
+    """Codex r1 P1: my original ``_extract_eos_ids`` read only
+    ``tokenizer.eos_token_id`` and silently missed three other surfaces
+    (``eos_token_ids`` plural, mlx-lm ``_eos_token_ids`` set,
+    ``_rapid_extra_eos_token_ids`` stash). For models whose chat
+    terminator only lands on one of those (Gemma 3 VL processors,
+    augmented HF tokenizers), the rapid loop would generate up to
+    ``max_tokens`` instead of stopping at the natural turn boundary."""
+    cfg = _StubConfig()
+    tok = _StubFullTok(
+        eos=1,
+        eos_plural=[2, 3],
+        wrapper_set={4, 5},
+        rapid_extras={6},
+    )
+    assert _extract_eos_ids(cfg, tok) == {1, 2, 3, 4, 5, 6}
+
+
+def test_extract_eos_reads_processor_surface_when_tokenizer_bare():
+    """mlx-vlm processors carry EOS on ``processor.tokenizer`` AND on
+    ``processor`` itself depending on the loader. The rapid loop must
+    union both — otherwise rapid would miss the EOS that mlx-vlm's
+    own augmenter stashed on the processor (most common shape for
+    DiffusionGemma's HF tokenizer wrapper)."""
+    cfg = _StubConfig()
+    tok = _StubFullTok()  # bare — nothing
+    proc = _StubFullTok(rapid_extras={106})  # the augmented stash
+    assert _extract_eos_ids(cfg, tok, proc) == {106}
+
+
+def test_extract_eos_handles_tuple_and_set_shapes():
+    """``eos_token_ids`` can be a list, set, or tuple depending on the
+    tokenizer flavor — all three must work."""
+    cfg = _StubConfig()
+    tok = _StubFullTok(eos_plural=(7, 8))
+    assert _extract_eos_ids(cfg, tok) == {7, 8}
+    tok = _StubFullTok(wrapper_set={9, 10, 11})
+    assert _extract_eos_ids(cfg, tok) == {9, 10, 11}
+
+
+def test_extract_eos_skips_none_and_non_int_entries():
+    """``getattr`` defaults must not blow up on ``None``, and bogus
+    string entries in a list must be silently skipped (defensive —
+    HF generation configs sometimes carry mixed lists during loader
+    upgrades)."""
+    cfg = _StubConfig(generation_config={"eos_token_id": [1, "bogus", 2]})
+    tok = _StubFullTok()
+    assert _extract_eos_ids(cfg, tok) == {1, 2}
+
+
 # =============================================================================
 # Guards — vision input + non-zero temperature
 # =============================================================================
@@ -264,11 +343,15 @@ def test_rejects_pixel_values():
     routes pixels and silently ignoring would hide a routing bug."""
     fake_input_ids = mx.array([[1, 2, 3]])
     with pytest.raises(ValueError, match="text-only"):
-        next(rapid_stream_diffusion_generate(
-            model=None, processor=None, tokenizer=None,
-            input_ids=fake_input_ids,
-            pixel_values=mx.zeros((1, 3, 224, 224)),
-        ))
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                pixel_values=mx.zeros((1, 3, 224, 224)),
+            )
+        )
 
 
 def test_accepts_explicit_zero_temperature():
@@ -278,11 +361,43 @@ def test_accepts_explicit_zero_temperature():
     upfront guard logic doesn't reject the legal value.)"""
     fake_input_ids = mx.array([[1, 2, 3]])
     gen = rapid_stream_diffusion_generate(
-        model=None, processor=None, tokenizer=None,
+        model=None,
+        processor=None,
+        tokenizer=None,
         input_ids=fake_input_ids,
         temperature=0.0,
     )
     assert gen is not None
+
+
+def test_rejects_zero_or_negative_prefill_step_size():
+    """Codex r1 P0 fix: ``prefill_step_size`` is honored now. A
+    non-positive value is a caller-side bug (operator typo in
+    ``--prefill-step-size`` or SchedulerConfig); silently treating it
+    as ``None`` would mask the misconfig. Mirror upstream's loud
+    raise at mlx-vlm diffusion.py:655. Validation runs BEFORE any
+    model state is touched so this test can pass ``model=None``."""
+    fake_input_ids = mx.array([[1, 2, 3]])
+    with pytest.raises(ValueError, match="prefill_step_size must be"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                prefill_step_size=0,
+            )
+        )
+    with pytest.raises(ValueError, match="prefill_step_size must be"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                prefill_step_size=-1,
+            )
+        )
 
 
 def test_accepts_nonzero_temperature():
@@ -292,7 +407,9 @@ def test_accepts_nonzero_temperature():
     ``temperature=0.7`` must reach the rapid path."""
     fake_input_ids = mx.array([[1, 2, 3]])
     gen = rapid_stream_diffusion_generate(
-        model=None, processor=None, tokenizer=None,
+        model=None,
+        processor=None,
+        tokenizer=None,
         input_ids=fake_input_ids,
         temperature=0.7,
     )

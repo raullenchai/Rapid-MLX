@@ -176,14 +176,19 @@ def _install_mlx_vlm_mock(
     # in ``test_diffusion_lane_routing.py``.
     import vllm_mlx.runtime.diffusion_loop as _loop_mod
 
-    def _rapid_stub(model, processor, tokenizer, input_ids,
-                    pixel_values, attention_mask, **kw):
+    def _rapid_stub(
+        model, processor, tokenizer, input_ids, pixel_values, attention_mask, **kw
+    ):
         current = sys.modules["mlx_vlm.generate.diffusion"].stream_diffusion_generate
-        return current(model, processor, tokenizer, input_ids,
-                       pixel_values, attention_mask, **{
-                           k: v for k, v in kw.items()
-                           if k not in {"fixed_steps", "sc_every"}
-                       })
+        return current(
+            model,
+            processor,
+            tokenizer,
+            input_ids,
+            pixel_values,
+            attention_mask,
+            **{k: v for k, v in kw.items() if k not in {"fixed_steps", "sc_every"}},
+        )
 
     monkeypatch.setattr(_loop_mod, "rapid_stream_diffusion_generate", _rapid_stub)
 

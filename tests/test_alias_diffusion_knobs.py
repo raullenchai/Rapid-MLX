@@ -7,9 +7,14 @@ Three knobs added with the in-house diffusion loop (see
 - ``diffusion_backend``: ``"rapid"`` (default, in-house) | ``"mlx-vlm"``
   (escape hatch). Routing decision — typo silently swaps generation
   loops, so the loader must reject unknown values.
-- ``diffusion_fixed_steps`` (default 8): number of denoising passes per
-  canvas in the rapid backend. Must be a positive JSON int — silently
-  truncating ``8.5`` would hide a hand-edit typo.
+- ``diffusion_fixed_steps`` (default ``None``): number of denoising
+  passes per canvas in the rapid backend. ``None`` enables adaptive
+  early-stop via ``_stable_and_confident`` (mlx-vlm parity); int
+  caps the per-canvas budget and disables adaptive stop (operator
+  opt-in for either deterministic step counts or the ~1.7× longform
+  perf win that ``fixed_steps=8`` provides at the cost of some short-
+  prompt quality drift). When set, must be a positive JSON int —
+  silently truncating ``8.5`` would hide a hand-edit typo.
 - ``diffusion_sc_every`` (default 1): self-conditioning matmul cadence.
   Empirical: only ``1`` keeps quality on DiffusionGemma 26B-A4B 4-bit;
   ``>=2`` collapses output to ``"the the the…"`` (see quality eval
@@ -38,7 +43,7 @@ def test_defaults_match_diffusion_gemma_empirical_optimum():
     default away from these, the diff is review-visible."""
     prof = AliasProfile(hf_path="x/y")
     assert prof.diffusion_backend == "rapid"
-    assert prof.diffusion_fixed_steps == 8
+    assert prof.diffusion_fixed_steps is None  # adaptive stop
     assert prof.diffusion_sc_every == 1
 
 
@@ -49,7 +54,7 @@ def test_text_alias_inherits_defaults_silently():
     assert qwen is not None
     assert qwen.modality == "text"
     assert qwen.diffusion_backend == "rapid"
-    assert qwen.diffusion_fixed_steps == 8
+    assert qwen.diffusion_fixed_steps is None
     assert qwen.diffusion_sc_every == 1
 
 
@@ -60,8 +65,24 @@ def test_diffusion_gemma_alias_picks_up_defaults():
     assert diff is not None
     assert diff.modality == "text-diffusion"
     assert diff.diffusion_backend == "rapid"
-    assert diff.diffusion_fixed_steps == 8
+    assert diff.diffusion_fixed_steps is None  # adaptive stop
     assert diff.diffusion_sc_every == 1
+
+
+def test_fixed_steps_explicit_int_is_honored():
+    """Operators can opt into a fixed step budget for the longform
+    perf win or deterministic step accounting. The loader must accept
+    an int and the same strict-positive-int validation must apply."""
+    prof = _coerce(
+        "x",
+        {
+            "hf_path": "a/b",
+            "modality": "text-diffusion",
+            "supports_spec_decode": False,
+            "diffusion_fixed_steps": 8,
+        },
+    )
+    assert prof.diffusion_fixed_steps == 8
 
 
 # =============================================================================
@@ -72,46 +93,63 @@ def test_diffusion_gemma_alias_picks_up_defaults():
 def test_backend_typo_fails_loud():
     """Routing decision — typo silently swaps loops. Fail at load."""
     with pytest.raises(ValueError, match="diffusion_backend must be one of"):
-        _coerce("x", {
-            "hf_path": "a/b",
-            "modality": "text-diffusion",
-            "supports_spec_decode": False,
-            "diffusion_backend": "rappid",
-        })
+        _coerce(
+            "x",
+            {
+                "hf_path": "a/b",
+                "modality": "text-diffusion",
+                "supports_spec_decode": False,
+                "diffusion_backend": "rappid",
+            },
+        )
 
 
 def test_fixed_steps_must_be_positive_int():
-    with pytest.raises(ValueError, match="diffusion_fixed_steps must be a JSON integer"):
-        _coerce("x", {
-            "hf_path": "a/b",
-            "modality": "text-diffusion",
-            "supports_spec_decode": False,
-            "diffusion_fixed_steps": 8.5,
-        })
+    with pytest.raises(
+        ValueError, match="diffusion_fixed_steps must be a JSON integer"
+    ):
+        _coerce(
+            "x",
+            {
+                "hf_path": "a/b",
+                "modality": "text-diffusion",
+                "supports_spec_decode": False,
+                "diffusion_fixed_steps": 8.5,
+            },
+        )
     with pytest.raises(ValueError, match="diffusion_fixed_steps must be >= 1"):
-        _coerce("x", {
-            "hf_path": "a/b",
-            "modality": "text-diffusion",
-            "supports_spec_decode": False,
-            "diffusion_fixed_steps": 0,
-        })
+        _coerce(
+            "x",
+            {
+                "hf_path": "a/b",
+                "modality": "text-diffusion",
+                "supports_spec_decode": False,
+                "diffusion_fixed_steps": 0,
+            },
+        )
 
 
 def test_sc_every_must_be_positive_int():
     with pytest.raises(ValueError, match="diffusion_sc_every must be a JSON integer"):
-        _coerce("x", {
-            "hf_path": "a/b",
-            "modality": "text-diffusion",
-            "supports_spec_decode": False,
-            "diffusion_sc_every": True,  # bool subclass of int — rejected
-        })
+        _coerce(
+            "x",
+            {
+                "hf_path": "a/b",
+                "modality": "text-diffusion",
+                "supports_spec_decode": False,
+                "diffusion_sc_every": True,  # bool subclass of int — rejected
+            },
+        )
     with pytest.raises(ValueError, match="diffusion_sc_every must be >= 1"):
-        _coerce("x", {
-            "hf_path": "a/b",
-            "modality": "text-diffusion",
-            "supports_spec_decode": False,
-            "diffusion_sc_every": -1,
-        })
+        _coerce(
+            "x",
+            {
+                "hf_path": "a/b",
+                "modality": "text-diffusion",
+                "supports_spec_decode": False,
+                "diffusion_sc_every": -1,
+            },
+        )
 
 
 # =============================================================================
@@ -129,23 +167,29 @@ def test_diffusion_field_on_text_alias_fails_loud():
         ("diffusion_sc_every", 1),
     ]:
         with pytest.raises(ValueError, match=f"{field} is only meaningful when"):
-            _coerce("x", {
-                "hf_path": "a/b",
-                "modality": "text",
-                **{field: val},
-            })
+            _coerce(
+                "x",
+                {
+                    "hf_path": "a/b",
+                    "modality": "text",
+                    **{field: val},
+                },
+            )
 
 
 def test_diffusion_field_accepted_on_text_diffusion_alias():
     """Same fields, modality=text-diffusion → must accept."""
-    prof = _coerce("x", {
-        "hf_path": "a/b",
-        "modality": "text-diffusion",
-        "supports_spec_decode": False,
-        "diffusion_backend": "mlx-vlm",
-        "diffusion_fixed_steps": 16,
-        "diffusion_sc_every": 1,
-    })
+    prof = _coerce(
+        "x",
+        {
+            "hf_path": "a/b",
+            "modality": "text-diffusion",
+            "supports_spec_decode": False,
+            "diffusion_backend": "mlx-vlm",
+            "diffusion_fixed_steps": 16,
+            "diffusion_sc_every": 1,
+        },
+    )
     assert prof.diffusion_backend == "mlx-vlm"
     assert prof.diffusion_fixed_steps == 16
     assert prof.diffusion_sc_every == 1
@@ -160,12 +204,15 @@ def test_unknown_diffusion_key_still_rejected():
     """The closed-key gate at _ALLOWED_PROFILE_KEYS protects against a
     contributor typoing a NEW field. Verify a plausible typo is caught."""
     with pytest.raises(ValueError, match="unknown key"):
-        _coerce("x", {
-            "hf_path": "a/b",
-            "modality": "text-diffusion",
-            "supports_spec_decode": False,
-            "diffusion_step_count": 8,  # typo — should be diffusion_fixed_steps
-        })
+        _coerce(
+            "x",
+            {
+                "hf_path": "a/b",
+                "modality": "text-diffusion",
+                "supports_spec_decode": False,
+                "diffusion_step_count": 8,  # typo — should be diffusion_fixed_steps
+            },
+        )
 
 
 # =============================================================================
@@ -180,5 +227,7 @@ def test_all_existing_aliases_still_load():
     assert len(profs) >= 50  # rough sanity bound; real count is 73 at 2026-06-11
     for name, prof in profs.items():
         assert prof.diffusion_backend in ("rapid", "mlx-vlm"), name
-        assert prof.diffusion_fixed_steps >= 1, name
+        # fixed_steps is either None (adaptive) or a positive int.
+        if prof.diffusion_fixed_steps is not None:
+            assert prof.diffusion_fixed_steps >= 1, name
         assert prof.diffusion_sc_every >= 1, name

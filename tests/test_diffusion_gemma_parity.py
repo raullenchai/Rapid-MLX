@@ -65,14 +65,22 @@ def loaded_model():
 
     # Warmup once so the first measured generation isn't cold-shaded.
     from vllm_mlx.runtime.diffusion_loop import rapid_stream_diffusion_generate
+
     warm_chat = tokenizer.apply_chat_template(
         [{"role": "user", "content": "hi"}],
-        add_generation_prompt=True, tokenize=False,
+        add_generation_prompt=True,
+        tokenize=False,
     )
     warm_ids = mx.array([tokenizer.encode(warm_chat)])
     for _ in rapid_stream_diffusion_generate(
-        model, processor, tokenizer, warm_ids,
-        max_tokens=8, fixed_steps=4, sc_every=1, temperature=0.0,
+        model,
+        processor,
+        tokenizer,
+        warm_ids,
+        max_tokens=8,
+        fixed_steps=4,
+        sc_every=1,
+        temperature=0.0,
     ):
         pass
 
@@ -85,13 +93,16 @@ def loaded_model():
     ids=[p[0] for p in CANONICAL_PROMPTS],
 )
 def test_rapid_backend_keyword_quality(
-    loaded_model, prompt_id: str, prompt: str,
-    max_tokens: int, expected_keywords: list[str],
+    loaded_model,
+    prompt_id: str,
+    prompt: str,
+    max_tokens: int,
+    expected_keywords: list[str],
 ) -> None:
-    """Rapid backend at ``fixed_steps=8, sc_every=1, temperature=0`` must
-    contain every expected keyword in the decoded output. This is the
-    same gate the hand-graded quality eval uses (see
-    ``research/diffusion-gemma/quality/eval-20260611-1001.md``)."""
+    """Rapid backend at adaptive-stop (``fixed_steps=None``, default for
+    the AliasProfile) + ``sc_every=1`` + ``temperature=0`` must contain
+    every expected keyword in the decoded output. Same gate as the
+    hand-graded quality eval (``research/diffusion-gemma/quality/``)."""
     import mlx.core as mx
 
     from vllm_mlx.runtime.diffusion_loop import rapid_stream_diffusion_generate
@@ -99,15 +110,21 @@ def test_rapid_backend_keyword_quality(
     model, processor, tokenizer = loaded_model
     chat = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt}],
-        add_generation_prompt=True, tokenize=False,
+        add_generation_prompt=True,
+        tokenize=False,
     )
     input_ids = mx.array([tokenizer.encode(chat)])
 
     pieces: list[str] = []
     terminated = False
     for r in rapid_stream_diffusion_generate(
-        model, processor, tokenizer, input_ids,
-        max_tokens=max_tokens, fixed_steps=8, sc_every=1, temperature=0.0,
+        model,
+        processor,
+        tokenizer,
+        input_ids,
+        max_tokens=max_tokens,
+        sc_every=1,
+        temperature=0.0,
     ):
         if r.text:
             pieces.append(r.text)
@@ -124,14 +141,39 @@ def test_rapid_backend_keyword_quality(
         f"Output head: {text[:200]!r}"
     )
 
+    # Structured-JSON quality gate: PR #555 round 1 surfaced a bug
+    # where the canvas-overwrite-every-step algorithm produced broken
+    # JSON like ``{\n  title": ...`` (missing opening quote on the
+    # first key). Keyword-matching missed it because ``"title"`` was
+    # still present further along. Vendoring the upstream progressive-
+    # reveal acceptance mask fixed it; this assertion pins the fix.
+    if prompt_id == "structured-json":
+        import json
+        import re
+
+        # The model often wraps in markdown fences ("```json … ```")
+        # or prefixes with prose despite "no markdown"; extract the
+        # outermost {…} block.
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        assert match, f"{prompt_id}: no JSON object found in output: {text!r}"
+        try:
+            json.loads(match.group(0))
+        except json.JSONDecodeError as exc:
+            raise AssertionError(
+                f"{prompt_id}: rapid output is not valid JSON ({exc}). "
+                f"Extracted: {match.group(0)!r}"
+            ) from exc
+
 
 def test_rapid_backend_throughput_floor(loaded_model) -> None:
-    """Rapid backend on the canonical long-form prompt must do at
-    least 80 tok/s on M3 Ultra. The hand-measured number is ~127 tok/s
-    (see quality eval 2026-06-11); 80 is the regression floor — if
-    we drop below this, somebody changed something that broke the
-    fast path (e.g. removed precise=True softmax, lost dequantize
-    optimization, made a fixed_steps default change)."""
+    """Rapid backend on the canonical long-form prompt at adaptive-stop
+    (default ``fixed_steps=None``) must do at least 60 tok/s on M3
+    Ultra. Hand-measured: ~90-100 tok/s adaptive, ~135 tok/s with
+    ``fixed_steps=8`` (operator opt-in). 60 is the regression floor —
+    drops below this signal a real algorithm regression (lost
+    precise=True softmax, broken dequantize fast path, bad SC cadence).
+    Concurrent GPU contention (e.g. a parallel bench run) can also drag
+    this down; treat 60-80 as "investigate", not "definitely a bug"."""
     import time
 
     import mlx.core as mx
@@ -142,15 +184,21 @@ def test_rapid_backend_throughput_floor(loaded_model) -> None:
     prompt = CANONICAL_PROMPTS[0][1]  # longform-coherence
     chat = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt}],
-        add_generation_prompt=True, tokenize=False,
+        add_generation_prompt=True,
+        tokenize=False,
     )
     input_ids = mx.array([tokenizer.encode(chat)])
 
     t0 = time.perf_counter()
     last = None
     for r in rapid_stream_diffusion_generate(
-        model, processor, tokenizer, input_ids,
-        max_tokens=256, fixed_steps=8, sc_every=1, temperature=0.0,
+        model,
+        processor,
+        tokenizer,
+        input_ids,
+        max_tokens=256,
+        sc_every=1,
+        temperature=0.0,
     ):
         last = r
     e2e = time.perf_counter() - t0
@@ -161,7 +209,8 @@ def test_rapid_backend_throughput_floor(loaded_model) -> None:
         "for max_tokens=256 — early stop hides a bug if no EOS was hit"
     )
     tps = last.generation_tokens / e2e
-    assert tps >= 80.0, (
+    assert tps >= 60.0, (
         f"rapid backend throughput regressed: {tps:.1f} tok/s "
-        f"(floor: 80 tok/s, hand-measured: ~127 tok/s on M3 Ultra)"
+        f"(floor: 60 tok/s, hand-measured: ~90-100 tok/s adaptive "
+        f"on M3 Ultra)"
     )

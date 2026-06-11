@@ -216,10 +216,8 @@ class DiffusionEngine(BaseEngine):
         # alias references, in which case we fall back to the
         # AliasProfile defaults (rapid backend + fixed_steps=8 +
         # sc_every=1) by constructing a throwaway profile below.
-        self._profile: AliasProfile = (
-            resolve_profile(model_name)
-            or AliasProfile(hf_path=model_name, modality="text-diffusion",
-                            supports_spec_decode=False)
+        self._profile: AliasProfile = resolve_profile(model_name) or AliasProfile(
+            hf_path=model_name, modality="text-diffusion", supports_spec_decode=False
         )
         # Admission control mirrors BatchedEngine.check_admission —
         # reservations counter under a lock, BackpressureError raised
@@ -1245,13 +1243,16 @@ class DiffusionEngine(BaseEngine):
             # in via --prefill-step-size / SchedulerConfig (codex r5).
             kwargs["prefill_step_size"] = int(cfg.prefill_step_size)
         if use_rapid:
-            # Rapid loop ignores the mlx-vlm-flavored knobs
-            # (``diffusion_sampler``, ``max_denoising_steps``,
-            # ``prefill_step_size``) — see ``diffusion_loop.py``'s
-            # accept-and-ignore docstring. It DOES honor
-            # ``temperature`` (raises on >0; we already gated that
-            # above) and reads its own knobs from the profile:
-            kwargs["fixed_steps"] = int(self._profile.diffusion_fixed_steps)
+            # Rapid honors ``diffusion_sampler``, ``max_denoising_steps``,
+            # ``prefill_step_size``, ``diffusion_threshold`` via the
+            # accept-and-honor signature (codex r2). It reads its own
+            # per-alias knobs from the profile:
+            #   - ``fixed_steps``: ``None`` → adaptive stop via
+            #     ``_stable_and_confident`` (default); int → fixed budget,
+            #     disables adaptive stop (operator opt-in).
+            #   - ``sc_every``: confidence-threshold-path SC cadence.
+            if self._profile.diffusion_fixed_steps is not None:
+                kwargs["fixed_steps"] = int(self._profile.diffusion_fixed_steps)
             kwargs["sc_every"] = int(self._profile.diffusion_sc_every)
 
         block_parts: list[str] = []

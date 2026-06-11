@@ -151,7 +151,17 @@ class AliasProfile:
     # to set them on a non-``text-diffusion`` modality — a typo there is
     # a routing decision, not a stray field.
     diffusion_backend: DiffusionBackend = "rapid"
-    diffusion_fixed_steps: int = 8
+    # ``None`` enables the vendored adaptive-stop predicate
+    # (_stable_and_confident) which mirrors mlx-vlm; runs as many
+    # denoising steps as the canvas needs to converge. Setting an int
+    # caps the per-canvas step budget AND disables adaptive stop —
+    # operator opt-in for "I want deterministic step counts" or "I want
+    # the long-form perf win at the cost of some short-prompt quality
+    # drift". Empirical optimum on DiffusionGemma:
+    #   - adaptive (None): mlx-vlm-grade quality, ~parity speed
+    #   - fixed_steps=8:   ~1.7x speedup on longform fill-to-max_tokens,
+    #                       on-par on EOS-bound short outputs
+    diffusion_fixed_steps: int | None = None
     diffusion_sc_every: int = 1
 
 
@@ -352,7 +362,11 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     # there would be invisible at request time. Better to fail loud at
     # load. Defaults still apply silently to existing text aliases (no
     # JSON change required) because the AR lane never reads them.
-    _DIFFUSION_KEYS = ("diffusion_backend", "diffusion_fixed_steps", "diffusion_sc_every")
+    _DIFFUSION_KEYS = (
+        "diffusion_backend",
+        "diffusion_fixed_steps",
+        "diffusion_sc_every",
+    )
     if modality != "text-diffusion":
         for k in _DIFFUSION_KEYS:
             if k in value:
@@ -378,12 +392,18 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 f"got {type(raw).__name__}={raw!r}"
             )
         if raw < 1:
-            raise ValueError(
-                f"alias {alias!r}: {key} must be >= 1, got {raw}"
-            )
+            raise ValueError(f"alias {alias!r}: {key} must be >= 1, got {raw}")
         return raw
 
-    diffusion_fixed_steps = _strict_positive_int("diffusion_fixed_steps", 8)
+    raw_fixed_steps = value.get("diffusion_fixed_steps", None)
+    if raw_fixed_steps is None:
+        diffusion_fixed_steps: int | None = None
+    else:
+        # Re-use the strict validator path for non-None values.
+        diffusion_fixed_steps = _strict_positive_int(
+            "diffusion_fixed_steps",
+            raw_fixed_steps,
+        )
     diffusion_sc_every = _strict_positive_int("diffusion_sc_every", 1)
 
     return AliasProfile(
