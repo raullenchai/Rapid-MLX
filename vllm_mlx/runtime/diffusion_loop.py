@@ -393,31 +393,53 @@ def rapid_stream_diffusion_generate(
         raise ValueError(
             "rapid_stream_diffusion_generate is text-only; pixel_values must be None"
         )
-    if prefill_step_size is not None and int(prefill_step_size) <= 0:
-        raise ValueError("prefill_step_size must be a positive integer.")
+
+    # codex round 5 [NIT]: strict positive-int validation. ``int(...)``
+    # silently truncates ``1.5`` → 1, and ``bool`` is an ``int`` subclass
+    # so ``True`` would slip past a naive ``isinstance(x, int)`` check.
+    # AliasProfile's ``_coerce`` enforces non-bool JSON int on the load
+    # surface; mirror that here so the runtime entry is consistent.
+    def _require_positive_int(name: str, val: Any) -> None:
+        if val is None:
+            return
+        if isinstance(val, bool) or not isinstance(val, int):
+            raise ValueError(f"{name} must be an integer (got {type(val).__name__}).")
+        if val <= 0:
+            raise ValueError(f"{name} must be a positive integer.")
+
+    _require_positive_int("prefill_step_size", prefill_step_size)
     # codex round 4 [P1]: ``denoise_budget`` resolves from these two
     # caller knobs; ``<= 0`` would skip the for-loop and yield the
     # random ``_initialize_canvas`` output verbatim as "model output".
     # The AliasProfile loader already enforces ``>= 1`` on the JSON
     # surface (test_fixed_steps_must_be_positive_int) but a programmatic
-    # caller still gets through. Reject at entry to mirror the
-    # ``prefill_step_size`` validation directly above.
-    if fixed_steps is not None and int(fixed_steps) <= 0:
-        raise ValueError("fixed_steps must be a positive integer.")
-    if max_denoising_steps is not None and int(max_denoising_steps) <= 0:
-        raise ValueError("max_denoising_steps must be a positive integer.")
+    # caller still gets through.
+    _require_positive_int("fixed_steps", fixed_steps)
+    _require_positive_int("max_denoising_steps", max_denoising_steps)
     if diffusion_sampler not in ("entropy-bound", "confidence-threshold"):
         raise ValueError(
             f"Unsupported diffusion sampler: {diffusion_sampler!r}.",
         )
     if not 0.0 <= diffusion_threshold <= 1.0:
         raise ValueError("diffusion_threshold must be between 0 and 1.")
+    # codex round 5 [NIT]: the canvas decode step only reads
+    # ``current_canvas[0]``, silently dropping outputs for B > 1. The
+    # lane only ever feeds us B=1 today, but a programmatic caller
+    # batching two prompts would get one back. Reject loud rather than
+    # under-deliver — done BEFORE touching ``model.config`` so the test
+    # can pass ``model=None`` and exercise this guard in isolation.
+    batch_size, prompt_length = input_ids.shape
+    if batch_size != 1:
+        raise ValueError(
+            f"rapid_stream_diffusion_generate is B=1 only "
+            f"(got batch_size={batch_size}); the diffusion lane "
+            "never batches today."
+        )
 
     config = model.config
     text_config = config.text_config
     model_canvas_length = int(config.canvas_length)
     vocab_size = int(text_config.vocab_size)
-    batch_size, prompt_length = input_ids.shape
     prompt_tokens = int(input_ids.size)
 
     generation_config = _config_dict(getattr(config, "generation_config", None))
@@ -723,8 +745,20 @@ def rapid_stream_diffusion_generate(
         # but the post-loop assignment used to clobber that with the
         # last argmax — silently flipping ``temperature > 0`` back to
         # deterministic on that exit path).
+        #
+        # codex round 5 [P1]: the confidence-threshold path additionally
+        # needs to backfill unrevealed positions from ``argmax_canvas``.
+        # The ``cur_step == 1`` early break at line ~591 fires BEFORE
+        # the per-step confidence-threshold acceptance pass that would
+        # have run ``force_all=True`` and locked the remaining positions
+        # in. Without the backfill, ``draft_canvas`` still carries the
+        # random ids that ``_initialize_canvas`` planted, and those
+        # leak into the decoded output. entropy-bound is safe because it
+        # reads ``argmax_canvas`` directly. (Default sampler is
+        # entropy-bound; this bug only manifested when an operator
+        # explicitly switched to confidence-threshold.)
         if diffusion_sampler == "confidence-threshold":
-            current_canvas = draft_canvas
+            current_canvas = mx.where(draft_reveal_mask, draft_canvas, argmax_canvas)
         else:
             current_canvas = argmax_canvas
         mx.eval(current_canvas)

@@ -99,10 +99,16 @@ def test_rapid_backend_keyword_quality(
     max_tokens: int,
     expected_keywords: list[str],
 ) -> None:
-    """Rapid backend at adaptive-stop (``fixed_steps=None``, default for
-    the AliasProfile) + ``sc_every=1`` + ``temperature=0`` must contain
-    every expected keyword in the decoded output. Same gate as the
-    hand-graded quality eval (``research/diffusion-gemma/quality/``)."""
+    """Rapid backend at production config — ``fixed_steps=8`` (the
+    AliasProfile default that ``diffusion_lane.py:_run_mlxvlm_generator``
+    forwards) + ``sc_every=1`` + ``temperature=0`` — must contain every
+    expected keyword in the decoded output. Same gate as the hand-graded
+    quality eval (``research/diffusion-gemma/quality/``).
+
+    Codex round 5 [P1]: prior version omitted ``fixed_steps`` and tested
+    the adaptive-only path, leaving the production ceiling path
+    untested. Pin both the user-visible quality contract AND the
+    production config simultaneously."""
     import mlx.core as mx
 
     from vllm_mlx.runtime.diffusion_loop import rapid_stream_diffusion_generate
@@ -125,6 +131,7 @@ def test_rapid_backend_keyword_quality(
         max_tokens=max_tokens,
         sc_every=1,
         temperature=0.0,
+        fixed_steps=8,  # production default; AliasProfile.diffusion_fixed_steps
     ):
         if r.text:
             pieces.append(r.text)
@@ -166,14 +173,16 @@ def test_rapid_backend_keyword_quality(
 
 
 def test_rapid_backend_throughput_floor(loaded_model) -> None:
-    """Rapid backend on the canonical long-form prompt at adaptive-stop
-    (default ``fixed_steps=None``) must do at least 60 tok/s on M3
-    Ultra. Hand-measured: ~90-100 tok/s adaptive, ~135 tok/s with
-    ``fixed_steps=8`` (operator opt-in). 60 is the regression floor —
-    drops below this signal a real algorithm regression (lost
-    precise=True softmax, broken dequantize fast path, bad SC cadence).
-    Concurrent GPU contention (e.g. a parallel bench run) can also drag
-    this down; treat 60-80 as "investigate", not "definitely a bug"."""
+    """Rapid backend on the canonical long-form prompt at PRODUCTION
+    config (``fixed_steps=8``, the AliasProfile default the lane
+    forwards) must do at least 90 tok/s on M3 Ultra. Hand-measured
+    median: ~126 tok/s on the 2026-06-11 PR #555 bench. 90 is the
+    regression floor — 30% slack absorbs GPU contention (parallel bench
+    runs, background load). Drops below 90 signal a real algorithm
+    regression (lost precise=True softmax, broken dequantize fast path,
+    bad SC cadence). Codex round 5 [P1]: prior version omitted
+    ``fixed_steps=8`` so it benchmarked adaptive-only mode instead of
+    the production path the lane actually takes."""
     import time
 
     import mlx.core as mx
@@ -199,6 +208,7 @@ def test_rapid_backend_throughput_floor(loaded_model) -> None:
         max_tokens=256,
         sc_every=1,
         temperature=0.0,
+        fixed_steps=8,  # production default
     ):
         last = r
     e2e = time.perf_counter() - t0
@@ -209,8 +219,8 @@ def test_rapid_backend_throughput_floor(loaded_model) -> None:
         "for max_tokens=256 — early stop hides a bug if no EOS was hit"
     )
     tps = last.generation_tokens / e2e
-    assert tps >= 60.0, (
+    assert tps >= 90.0, (
         f"rapid backend throughput regressed: {tps:.1f} tok/s "
-        f"(floor: 60 tok/s, hand-measured: ~90-100 tok/s adaptive "
-        f"on M3 Ultra)"
+        f"(floor: 90 tok/s, hand-measured: ~126 tok/s production "
+        f"fixed_steps=8 on M3 Ultra)"
     )

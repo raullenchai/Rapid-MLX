@@ -442,6 +442,49 @@ def test_rejects_zero_or_negative_fixed_steps():
         )
 
 
+def test_strict_int_validation_rejects_float_and_bool():
+    """Codex round 5 [NIT]: ``int(x)`` silently truncates ``1.5`` and
+    accepts ``True`` (bool is an int subclass). Strict validation mirrors
+    ``model_aliases._coerce`` so the runtime entry refuses what the JSON
+    loader refuses."""
+    fake_input_ids = mx.array([[1, 2, 3]])
+    for knob_name, knob_kwargs in [
+        ("fixed_steps", {"fixed_steps": 1.5}),
+        ("fixed_steps", {"fixed_steps": True}),
+        ("max_denoising_steps", {"max_denoising_steps": 1.5}),
+        ("max_denoising_steps", {"max_denoising_steps": True}),
+        ("prefill_step_size", {"prefill_step_size": 1.5}),
+        ("prefill_step_size", {"prefill_step_size": False}),
+    ]:
+        with pytest.raises(ValueError, match=f"{knob_name} must be"):
+            next(
+                rapid_stream_diffusion_generate(
+                    model=None,
+                    processor=None,
+                    tokenizer=None,
+                    input_ids=fake_input_ids,
+                    **knob_kwargs,  # type: ignore[arg-type]
+                )
+            )
+
+
+def test_rejects_batch_size_greater_than_one():
+    """Codex round 5 [NIT]: the canvas decode step reads
+    ``current_canvas[0]`` only — B>1 inputs would silently drop all but
+    the first row's output. Reject at entry until per-row streaming
+    is implemented."""
+    fake_input_ids_b2 = mx.array([[1, 2, 3], [4, 5, 6]])
+    with pytest.raises(ValueError, match="B=1 only"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids_b2,
+            )
+        )
+
+
 def test_rejects_zero_or_negative_max_denoising_steps():
     """Codex round 4 [P1]: see ``test_rejects_zero_or_negative_fixed_steps``
     — same bug class on the ``max_denoising_steps`` knob, which is the
