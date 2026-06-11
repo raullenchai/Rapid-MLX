@@ -1068,6 +1068,109 @@ class TestSimpleEngineConcurrency:
         }
 
     @pytest.mark.anyio
+    async def test_stream_chat_system_cache_copies_arrays_cache_state(self):
+        """Hybrid cache snapshots must not alias ``ArraysCache.state`` lists."""
+        import mlx.core as mx
+
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        def apply_chat_template_side_effect(messages, **kwargs):
+            user_content = ""
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    user_content = m.get("content") or ""
+                    break
+            return (
+                "<|im_start|>system\nYou are helpful.<|im_end|>\n"
+                f"<|im_start|>user\n{user_content}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )
+
+        tokenizer = MagicMock()
+        tokenizer.apply_chat_template.side_effect = apply_chat_template_side_effect
+        tokenizer.bos_token = None
+        tokenizer.encode = MagicMock(side_effect=[list(range(10)), list(range(5))])
+
+        model = MagicMock()
+        model.tokenizer = tokenizer
+
+        class MutableListCache:
+            def __init__(self):
+                self.cache = [None]
+
+            @property
+            def state(self):
+                return self.cache
+
+            @state.setter
+            def state(self, value):
+                self.cache = value
+
+            @property
+            def nbytes(self):
+                return sum(c.nbytes for c in self.cache if c is not None)
+
+        cache_entry = MutableListCache()
+
+        def fake_model(tokens, cache):
+            cache[0].cache[0] = mx.array([[1, 2, 3]])
+            return MagicMock()
+
+        model.model = fake_model
+
+        def fake_stream_generate(model_arg, tokenizer_arg, prompt, **kwargs):
+            # Simulate suffix/decode state advancing after the system-prefix
+            # snapshot has been stored. The saved snapshot must not follow this
+            # mutable list change.
+            prompt_cache = kwargs["prompt_cache"]
+            prompt_cache[0].cache[0] = mx.array([[9, 9, 9]])
+            yield SimpleNamespace(text="ok", token=7, finish_reason="stop")
+
+        with patch("vllm_mlx.engine.simple.is_mllm_model", return_value=False):
+            engine = SimpleEngine("test-model")
+            engine._model = model
+            engine._loaded = True
+            engine._supports_system_kv_cache = True
+
+            with (
+                patch("mlx_lm.stream_generate", side_effect=fake_stream_generate),
+                patch(
+                    "mlx_lm.models.cache.make_prompt_cache",
+                    return_value=[cache_entry],
+                ),
+                patch("mlx_lm.sample_utils.make_sampler"),
+            ):
+                chunks = [
+                    c
+                    async for c in engine.stream_chat(
+                        messages=[
+                            {"role": "system", "content": "You are helpful."},
+                            {"role": "user", "content": "hello"},
+                        ],
+                    )
+                ]
+
+        assert chunks[-1].text == "ok"
+        assert engine._system_kv_cache
+        saved_snapshot, saved_token_count = next(iter(engine._system_kv_cache.values()))
+        assert saved_token_count == 5
+        saved = saved_snapshot[0][0]
+        assert saved.tolist() == [[1, 2, 3]]
+        assert cache_entry.cache[0].tolist() == [[9, 9, 9]]
+
+    def test_system_cache_probe_allows_arrays_cache_and_rejects_rotating(self):
+        """Hybrid ArraysCache is snapshot-safe; rotating cache still is not."""
+        from mlx_lm.models.cache import ArraysCache, KVCache, RotatingKVCache
+
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        assert SimpleEngine._cache_class_is_system_snapshot_safe(KVCache())
+        assert SimpleEngine._cache_class_is_system_snapshot_safe(ArraysCache(size=2))
+        assert not SimpleEngine._cache_class_is_system_snapshot_safe(
+            RotatingKVCache(max_size=128)
+        )
+
+    @pytest.mark.anyio
     async def test_stream_chat_uses_gate_time_snapshot_under_concurrent_mutation(
         self,
     ):
@@ -1822,6 +1925,69 @@ class TestSimpleEngineConcurrency:
             user_processor,
             penalty_processor,
         ]
+
+    @pytest.mark.anyio
+    async def test_stream_generate_text_skips_system_cache_when_text_model_not_safe(
+        self,
+    ):
+        """MLLM TextModel routing must not snapshot hybrid ArraysCache state."""
+        from types import SimpleNamespace
+
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        tokenizer = MagicMock()
+        tokenizer.apply_chat_template.return_value = (
+            "<|im_start|>system\nYou are helpful.<|im_end|>\n"
+            "<|im_start|>user\nhello<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        )
+        tokenizer.bos_token = None
+        tokenizer.eos_token_id = 42
+        tokenizer.encode = MagicMock(
+            side_effect=[
+                list(range(10)),  # full prompt
+                list(range(5)),  # system prefix
+            ]
+        )
+
+        captured_prompts = []
+
+        def fake_stream_generate(model, tokenizer, prompt, **kwargs):
+            captured_prompts.append(prompt)
+            yield SimpleNamespace(text="Hello", finish_reason="stop")
+
+        def fail_if_manual_cache_path_runs(*args, **kwargs):
+            raise AssertionError("manual system-cache path must be skipped")
+
+        engine = SimpleEngine("test-model", force_mllm=True, mtp=False)
+        engine._loaded = True
+        engine._text_model = MagicMock()
+        engine._text_model.mtp = None
+        engine._text_tokenizer = tokenizer
+        engine._supports_system_kv_cache = False
+
+        with (
+            patch("mlx_lm.stream_generate", side_effect=fake_stream_generate),
+            patch(
+                "mlx_lm.models.cache.make_prompt_cache",
+                side_effect=fail_if_manual_cache_path_runs,
+            ),
+        ):
+            outputs = [
+                chunk
+                async for chunk in engine._stream_generate_text(
+                    messages=[
+                        {"role": "system", "content": "You are helpful."},
+                        {"role": "user", "content": "hello"},
+                    ],
+                    max_tokens=16,
+                    temperature=0.3,
+                    top_p=0.8,
+                )
+            ]
+
+        assert outputs[-1].text == "Hello"
+        assert captured_prompts == [tokenizer.apply_chat_template.return_value]
 
     @pytest.mark.anyio
     async def test_stream_generate_text_disables_mtp_when_logits_processors_active(

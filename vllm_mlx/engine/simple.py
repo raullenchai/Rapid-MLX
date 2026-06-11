@@ -248,12 +248,87 @@ class SimpleEngine(BaseEngine):
             "stores": 0,
             "evictions": 0,
         }
-        # True only when the model's prompt cache is composed entirely of
-        # plain ``KVCache`` entries. Sliding-window models (gemma3_text,
-        # olmo3, recurrent_gemma) return ``RotatingKVCache`` whose ``.state``
-        # aliases buffers ``update_and_fetch`` mutates in place — snapshot
-        # restore would silently desynchronize. Probed once in ``start()``.
+        # True only when the model's prompt cache can be snapshotted and
+        # restored for the manual system-prefix cache branch. Plain KV caches
+        # and hybrid ``ArraysCache`` entries are safe when their state
+        # containers are copied at snapshot/restore boundaries. Sliding-window
+        # cache classes such as ``RotatingKVCache`` remain disabled because
+        # their extra cursor metadata is not captured by ``.state`` alone.
         self._supports_system_kv_cache: bool = False
+
+    @staticmethod
+    def _clone_cache_state(value: Any) -> Any:
+        """Copy cache state containers without duplicating immutable MLX arrays."""
+        if isinstance(value, tuple):
+            return tuple(SimpleEngine._clone_cache_state(v) for v in value)
+        if isinstance(value, list):
+            return [SimpleEngine._clone_cache_state(v) for v in value]
+        return value
+
+    @classmethod
+    def _snapshot_prompt_cache(cls, prompt_cache: list[Any]) -> list[Any]:
+        """Capture cache states without aliasing mutable state containers."""
+        return [cls._clone_cache_state(c.state) for c in prompt_cache]
+
+    @classmethod
+    def _restore_prompt_cache(
+        cls, prompt_cache: list[Any], snapshot: list[Any]
+    ) -> None:
+        """Restore cache states without letting decode mutate the saved snapshot."""
+        for i, saved_state in enumerate(snapshot):
+            prompt_cache[i].state = cls._clone_cache_state(saved_state)
+
+    @staticmethod
+    def _iter_cache_state_arrays(value: Any):
+        if isinstance(value, (tuple, list)):
+            for item in value:
+                yield from SimpleEngine._iter_cache_state_arrays(item)
+        elif hasattr(value, "shape") and hasattr(value, "dtype"):
+            yield value
+
+    @classmethod
+    def _eval_cache_snapshot(cls, snapshot: list[Any]) -> None:
+        arrays = list(cls._iter_cache_state_arrays(snapshot))
+        if arrays:
+            mx.eval(arrays)
+
+    @staticmethod
+    def _cache_class_is_system_snapshot_safe(cache_entry: Any) -> bool:
+        try:
+            from mlx_lm.models.cache import ArraysCache, KVCache
+
+            return isinstance(cache_entry, (KVCache, ArraysCache))
+        except Exception:
+            cache_type = type(cache_entry).__name__
+            return cache_type in {"KVCache", "ArraysCache"}
+
+    @classmethod
+    def _probe_system_kv_cache_support(cls, model: Any, route: str) -> bool:
+        try:
+            from mlx_lm.models.cache import make_prompt_cache
+
+            probe_cache = make_prompt_cache(model)
+            supported = bool(probe_cache) and all(
+                cls._cache_class_is_system_snapshot_safe(c) for c in probe_cache
+            )
+            if not supported:
+                cache_types = sorted({type(c).__name__ for c in probe_cache})
+                logger.info(
+                    "System KV cache snapshot disabled (%s): model returned "
+                    "unsupported cache entries (%s); requests will use the "
+                    "uncached path",
+                    route,
+                    cache_types,
+                )
+            return supported
+        except Exception as e:
+            logger.debug(
+                "System KV cache support probe failed (%s, %s); "
+                "disabling snapshot path",
+                route,
+                e,
+            )
+            return False
 
     @property
     def model_name(self) -> str:
@@ -381,34 +456,14 @@ class SimpleEngine(BaseEngine):
                 )
 
             # Probe whether this model's prompt cache is snapshot-safe for the
-            # stream_chat system-prefix cache branch. Sliding-window models
-            # (gemma3_text, olmo3, recurrent_gemma) return RotatingKVCache
-            # entries whose ``.state`` aliases in-place-mutated buffers.
-            # Only relevant for the LLM path; MLLM never enters the cache
-            # branch.
+            # stream_chat system-prefix cache branch. This is also refreshed
+            # below for MLLM text routing after the parallel TextModel exists.
             if not self._is_mllm and self._model is not None:
-                try:
-                    from mlx_lm.models.cache import KVCache, make_prompt_cache
-
-                    probe_cache = make_prompt_cache(self._model.model)
-                    self._supports_system_kv_cache = bool(probe_cache) and all(
-                        isinstance(c, KVCache) for c in probe_cache
-                    )
-                    if not self._supports_system_kv_cache:
-                        cache_types = sorted({type(c).__name__ for c in probe_cache})
-                        logger.info(
-                            "System KV cache snapshot disabled: model returned "
-                            "non-KVCache entries (%s); stream_chat will use the "
-                            "uncached path",
-                            cache_types,
-                        )
-                except Exception as e:
-                    logger.debug(
-                        "System KV cache support probe failed (%s); "
-                        "disabling snapshot path",
-                        e,
-                    )
-                    self._supports_system_kv_cache = False
+                backing_model = getattr(self._model, "model", self._model)
+                self._supports_system_kv_cache = self._probe_system_kv_cache_support(
+                    backing_model,
+                    "stream_chat",
+                )
 
             # Build parallel mlx_lm TextModel for text-only routing.
             # Even when MTP is disabled, text-only requests should not be trapped
@@ -423,6 +478,12 @@ class SimpleEngine(BaseEngine):
 
                     if self._text_model is not None:
                         self._text_tokenizer = self._model.get_tokenizer()
+                        self._supports_system_kv_cache = (
+                            self._probe_system_kv_cache_support(
+                                self._text_model,
+                                "mllm_text",
+                            )
+                        )
 
                         # Apply Qwen3.5 eos_token fix (matches MLXLanguageModel.load)
                         if "qwen3" in self._model_name.lower():
@@ -1523,9 +1584,10 @@ class SimpleEngine(BaseEngine):
                     # Restore from the closure-local reference captured at the
                     # gate, never from ``self._system_kv_cache`` directly:
                     # a concurrent MISS could have evicted the entry between
-                    # the gate check and this point.
-                    for i, saved_state in enumerate(hit_snapshot):
-                        bc[i].state = saved_state
+                    # the gate check and this point. Restore clones mutable
+                    # state containers so decode cannot mutate the saved LRU
+                    # snapshot by reference.
+                    self._restore_prompt_cache(bc, hit_snapshot)
                     # Bump LRU position. Safe to mutate here because the
                     # worker is serialized under ``_generation_lock``.
                     if system_hash in self._system_kv_cache:
@@ -1537,12 +1599,12 @@ class SimpleEngine(BaseEngine):
                     step = self._prefill_step_size
                     while sys_arr.size > step:
                         model(sys_arr[:step][None], cache=bc)
-                        mx.eval([c.state for c in bc])
+                        self._eval_cache_snapshot([c.state for c in bc])
                         sys_arr = sys_arr[step:]
                         mx.clear_cache()
                     if sys_arr.size > 0:
                         model(sys_arr[None], cache=bc)
-                        mx.eval([c.state for c in bc])
+                        self._eval_cache_snapshot([c.state for c in bc])
 
                     # Free intermediate prefill activations before snapshotting.
                     # Intentionally stricter than the MLLM path, which does not
@@ -1551,8 +1613,8 @@ class SimpleEngine(BaseEngine):
                     # the KV state, not residual activations from prefill.
                     mx.clear_cache()
 
-                    snapshot = [c.state for c in bc]
-                    mx.eval([s for pair in snapshot for s in pair])
+                    snapshot = self._snapshot_prompt_cache(bc)
+                    self._eval_cache_snapshot(snapshot)
                     self._system_kv_cache[system_hash] = (snapshot, system_token_count)
                     self._system_kv_cache.move_to_end(system_hash)
                     evicted_count = 0
@@ -1986,18 +2048,21 @@ class SimpleEngine(BaseEngine):
         system_tokens = None
         suffix_tokens = None
         full_tokens_list = None
+        cache_blocking_controls = []
+        if not self._supports_system_kv_cache:
+            cache_blocking_controls.append("non_kv_cache_class")
+        if cache_blocking_controls:
+            logger.info(
+                "System KV cache SKIP (text route): request or engine has "
+                "controls/features the cache branch cannot honor (%s); using "
+                "uncached path",
+                cache_blocking_controls,
+            )
 
         # Extract system messages for caching
         has_system = any(m.get("role") == "system" for m in messages)
 
-        # Snapshot-safety: only enter the system-KV cache branch when start()'s
-        # probe verified the derived TextModel returns KVCache entries (and not
-        # RotatingKVCache, which aliases buffers mutated in place).
-        if (
-            has_system
-            and self._text_model is not None
-            and self._supports_system_kv_cache
-        ):
+        if has_system and self._text_model is not None and not cache_blocking_controls:
             # Find system prefix boundary in full prompt text.
             # ChatML format: system section ends where first non-system message begins.
             # Works with tools (rendered inside system section by Qwen templates).
@@ -2056,8 +2121,10 @@ class SimpleEngine(BaseEngine):
                             backbone_cache = make_prompt_cache(
                                 text_model, max_kv_size=_max_kv_size or None
                             )
-                            for i, saved_state in enumerate(system_kv_snapshot):
-                                backbone_cache[i].state = saved_state
+                            SimpleEngine._restore_prompt_cache(
+                                backbone_cache,
+                                system_kv_snapshot,
+                            )
 
                             prompt_to_send = mx.array(suffix_tokens)
                             return backbone_cache, prompt_to_send
@@ -2237,16 +2304,18 @@ class SimpleEngine(BaseEngine):
                 step = self._prefill_step_size
                 while sys_arr.size > step:
                     model(sys_arr[:step][None], cache=mc)
-                    mx.eval([c.state for c in mc])
+                    self._eval_cache_snapshot([c.state for c in mc])
                     sys_arr = sys_arr[step:]
                     mx.clear_cache()
                 if sys_arr.size > 0:
                     model(sys_arr[None], cache=mc)
-                    mx.eval([c.state for c in mc])
+                    self._eval_cache_snapshot([c.state for c in mc])
 
-                # Snapshot backbone cache (immutable mx.arrays, safe to reuse)
-                snapshot = [c.state for c in mc]
-                mx.eval([s for pair in snapshot for s in pair])
+                # Snapshot backbone cache. Cache arrays are treated as immutable;
+                # mutable state containers are copied so hybrid ArraysCache
+                # entries cannot alias the saved system-prefix state.
+                snapshot = self._snapshot_prompt_cache(mc)
+                self._eval_cache_snapshot(snapshot)
 
                 self._system_kv_cache[system_hash] = (snapshot, system_token_count)
                 self._system_kv_cache.move_to_end(system_hash)
