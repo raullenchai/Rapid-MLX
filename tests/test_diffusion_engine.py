@@ -1236,6 +1236,83 @@ class TestConcurrentRequests:
         body = resp.text.lower()
         assert "tool" in body and "required" in body
 
+    def test_engine_opts_out_blocks_named_function_tool_choice(
+        self,
+    ) -> None:
+        # codex pr_validate r8 NIT #2: the opted-out engine veto
+        # previously only fired for ``tool_choice="required"``,
+        # leaving the named-function shape
+        # (``{"type":"function","function":{"name":"foo"}}``)
+        # unprotected. That form is ALSO a forced contract — the
+        # caller demands a specific tool be called — and an
+        # engine that has opted out cannot satisfy it either.
+        # Without this gate, named tool_choice on a diffusion
+        # engine would run a full generation, return plain text,
+        # and surface as a confusing post-parse 422.
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes.chat import router as chat_router
+
+        class _DiffusionEngineStub:
+            supports_tool_calls = False
+            preserve_native_tool_format = False
+            is_mllm = False
+            supports_guided_generation = False
+            tokenizer = None
+
+            def build_prompt(self, messages, tools=None, enable_thinking=None):
+                return "PROMPT"
+
+            async def chat(self, messages, **kwargs):
+                raise RuntimeError(
+                    "engine.chat() executed despite supports_tool_calls="
+                    "False and a forced named tool_choice; named-tool veto "
+                    "regressed"
+                )
+
+            async def stream_chat(self, messages, **kwargs):
+                yield GenerationOutput(text="x", finished=True)
+
+        cfg = reset_config()
+        cfg.engine = _DiffusionEngineStub()
+        cfg.model_name = "diffusion-gemma-26b"
+        cfg.model_registry = None
+        cfg.no_thinking = True
+        cfg.tool_call_parser = "hermes"
+
+        app = FastAPI()
+        app.include_router(chat_router)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "diffusion-gemma-26b",
+                "stream": False,
+                "messages": [{"role": "user", "content": "weather?"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "tool_choice": {
+                    "type": "function",
+                    "function": {"name": "get_weather"},
+                },
+                "max_tokens": 32,
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        body = resp.text.lower()
+        assert "tool_choice" in body and "forces" in body
+
     def test_engine_opts_out_blocks_tool_choice_required_non_stream_too(
         self,
     ) -> None:
@@ -2006,6 +2083,155 @@ class TestStopRace:
         # orphaned worker can finish its mx.eval without exploding.
         assert engine._model is original_model
         assert engine._processor is original_processor
+
+    @pytest.mark.asyncio
+    async def test_stop_drains_queue_so_restart_does_not_pick_stale_sentinel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex pr_validate r8 BLOCKING #2: ``stop()`` always pushes
+        # a ``None`` sentinel. If a previous ``stop()`` had pushed
+        # but the worker exited on its ``while not self._stop``
+        # check WITHOUT consuming the sentinel, the stale ``None``
+        # sits in ``_jobs``. The next ``_load_blocking()`` would
+        # spawn a fresh worker that immediately pulls the stale
+        # sentinel and returns at ``if job is None: return`` — the
+        # engine reports ``_loaded = True`` but the worker is dead.
+        # Pre-fix code did not drain the queue.
+        import time as _time
+
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        # Simulate "stale sentinel from a previous shutdown": push
+        # a ``None`` directly while the worker is parked, then call
+        # stop(). The first None unblocks the worker (clean exit);
+        # the second None (pushed by stop() itself) would be the
+        # stale one — stop() MUST drain it.
+        engine._jobs.put(None)
+        await engine.stop()
+        # The queue MUST be empty so restart can't pick anything up.
+        assert engine._jobs.empty(), (
+            f"stop() left {engine._jobs.qsize()} stale item(s) in _jobs; "
+            "next restart's worker would consume one and exit immediately"
+        )
+
+        # Restart and prove the new worker survives past its first
+        # _jobs.get() — i.e. it's BLOCKED on the empty queue, not
+        # dead from a stale None.
+        engine._load_blocking()
+        assert engine._loaded is True
+        new_worker = engine._worker
+        assert new_worker is not None and new_worker.is_alive() is True
+        # Give it a moment so a "dead on first iteration" worker
+        # has time to actually die before we re-check.
+        _time.sleep(0.1)
+        assert new_worker.is_alive() is True, (
+            "fresh worker died on first iteration — a stale sentinel "
+            "must have leaked through stop()'s queue drain"
+        )
+
+        # Cleanup.
+        await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_resets_poison_state_for_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex pr_validate r8 NIT #1: ``stop()`` previously left
+        # ``_load_error``, ``_worker_stuck``, and admission
+        # reservations intact, so a poisoned engine stayed poisoned
+        # across the restart — admission would 503 forever despite
+        # a healthy fresh worker, and a cached ``_load_error`` from
+        # a transient mlx-vlm import failure would be re-raised by
+        # ``_ensure_loaded`` even after a successful reload.
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        # Inject poison state.
+        engine._load_error = RuntimeError("simulated stale failure")
+        engine._worker_stuck = True
+        with engine._admission_lock:
+            engine._admission_reservations = 7
+
+        await engine.stop()
+        # All poison flags MUST be cleared on the clean-stop path.
+        assert engine._load_error is None
+        assert engine._worker_stuck is False
+        assert engine._admission_reservations == 0
+
+
+class TestMaxTokensClamp:
+    """codex pr_validate r8 BLOCKING #1: ``DiffusionEngine``'s
+    constructor accepted a ``max_tokens`` server cap (default 32768)
+    but never consulted it on the request path. Per-request
+    ``max_tokens`` went straight to mlx-vlm with no upper bound, so
+    a misbehaving client could request 1 M tokens and burn GPU
+    time the operator never authorised. Fix: clamp in
+    ``_stream_prompt_raw`` against ``self._max_tokens`` before
+    enqueuing the job.
+    """
+
+    @pytest.mark.asyncio
+    async def test_request_max_tokens_clamped_against_constructor_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Engine cap = 64. Request = 10000. The job submitted to
+        # the worker MUST carry the clamped value (64), not the
+        # request's 10000.
+        captured_max_tokens: list[int] = []
+
+        def _stream(*_a: Any, **kwargs: Any) -> Iterator[FakeGenerationResult]:
+            captured_max_tokens.append(kwargs.get("max_tokens"))
+            yield FakeGenerationResult(text="ok", finish_reason="stop")
+
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        diff_mod = sys.modules["mlx_vlm.generate.diffusion"]
+        diff_mod.stream_diffusion_generate = _stream  # type: ignore[attr-defined]
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y", max_tokens=64)
+        engine._load_blocking()
+        async for _ in engine.stream_chat(
+            [{"role": "user", "content": "hi"}], max_tokens=10000
+        ):
+            pass
+        assert captured_max_tokens, "stream_diffusion_generate never called"
+        assert captured_max_tokens[0] == 64, (
+            f"expected clamped max_tokens=64 (engine cap); got "
+            f"{captured_max_tokens[0]} — the request value leaked "
+            "past the server-side cap"
+        )
+
+    @pytest.mark.asyncio
+    async def test_request_max_tokens_below_cap_is_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # When the request is below the cap, the engine MUST forward
+        # the request value verbatim — clamping with min() must not
+        # also lower legitimate-sized requests.
+        captured_max_tokens: list[int] = []
+
+        def _stream(*_a: Any, **kwargs: Any) -> Iterator[FakeGenerationResult]:
+            captured_max_tokens.append(kwargs.get("max_tokens"))
+            yield FakeGenerationResult(text="ok", finish_reason="stop")
+
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        diff_mod = sys.modules["mlx_vlm.generate.diffusion"]
+        diff_mod.stream_diffusion_generate = _stream  # type: ignore[attr-defined]
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y", max_tokens=4096)
+        engine._load_blocking()
+        async for _ in engine.stream_chat(
+            [{"role": "user", "content": "hi"}], max_tokens=256
+        ):
+            pass
+        assert captured_max_tokens[0] == 256
 
 
 class TestTokenIdZeroNotSwallowed:

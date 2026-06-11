@@ -804,25 +804,40 @@ async def _create_chat_completion_impl(
     # engines) preserves prior behaviour for everything that hasn't
     # opted out.
     _engine_opts_out_of_tools = not getattr(engine, "supports_tool_calls", True)
-    # Engine-level veto applies REGARDLESS of stream / non-stream.
+    # Engine-level veto applies REGARDLESS of stream / non-stream
+    # AND for every forced tool-choice shape (codex pr_validate r8
+    # NIT #2). The OpenAI ``tool_choice`` API has two forced
+    # variants beyond ``"required"``:
+    #   - the named-function form ``{"type":"function",
+    #     "function":{"name":"foo"}}`` — caller demands a specific
+    #     tool gets called
+    #   - and the deprecated ``"function"`` literal string (some
+    #     legacy SDKs still send it)
+    # All three are contracts an opted-out engine cannot satisfy
+    # because the generator never produces structured tool_calls.
     # Pre-pr_validate r6, this check was nested inside the
-    # ``request.stream`` branch below, so a non-streaming
-    # ``tool_choice="required"`` request still ran a full diffusion
-    # generation before failing in the post-parse gate at line ~1101.
-    # That is wasted GPU + ambiguous client UX. Reject upfront for
-    # opted-out engines no matter the stream flag (codex pr_validate
-    # r6 BLOCKING #1 on PR #551).
-    if tc == "required" and request.tools and _engine_opts_out_of_tools:
+    # ``request.stream`` branch below, so a non-streaming forced
+    # request still ran a full diffusion generation before failing
+    # in the post-parse gate at line ~1101. That is wasted GPU +
+    # ambiguous client UX. Reject upfront for opted-out engines no
+    # matter the stream flag (codex pr_validate r6 BLOCKING #1 +
+    # r8 NIT #2 on PR #551).
+    _forced_tool_choice = tc == "required" or (
+        isinstance(tc, dict) and tc.get("type") == "function"
+    )
+    if _forced_tool_choice and request.tools and _engine_opts_out_of_tools:
         raise HTTPException(
             status_code=422,
             detail=(
-                'tool_choice="required" cannot be satisfied: the active '
-                "engine has explicitly opted out of tool-call surfaces "
+                "tool_choice forces a tool call, but the active engine "
+                "has explicitly opted out of tool-call surfaces "
                 "(supports_tool_calls=False). The generator never emits "
-                "structured tool_calls, so the OpenAI 'tool_call guaranteed' "
-                "contract is unenforceable. Drop tool_choice (or set it to "
-                '"auto"/"none"), retry against an engine that supports '
-                "tool calls, or remove the ``tools`` array from the request."
+                "structured tool_calls, so any forced choice — "
+                '``"required"`` or a named ``{"type":"function","function":'
+                '{"name":...}}`` — is unenforceable. Drop tool_choice (or '
+                'set it to ``"auto"``/``"none"``), retry against an engine '
+                "that supports tool calls, or remove the ``tools`` array "
+                "from the request."
             ),
         )
     if (

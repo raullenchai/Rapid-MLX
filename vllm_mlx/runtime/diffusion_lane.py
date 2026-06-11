@@ -353,6 +353,23 @@ class DiffusionEngine(BaseEngine):
         # restart isn't on the current dispatch path, but contract
         # callers (the test suite, and any future operator-triggered
         # reload route) deserve a working restart.
+        #
+        # codex pr_validate r8 BLOCKING #2: we MUST also drain the
+        # job queue here. ``stop()`` always pushes a ``None``
+        # sentinel, and if the worker happened to exit on its
+        # ``while not self._stop`` check (e.g. between jobs) BEFORE
+        # consuming the sentinel, the stale ``None`` sits in
+        # ``_jobs``. On the next ``_load_blocking()`` the fresh
+        # worker picks it up on its very first iteration and
+        # returns at line ~496 (``if job is None: return``), so the
+        # engine reports loaded but the worker is dead.
+        # ``Queue.queue.clear()`` is the only API for unconditional
+        # purge — ``get_nowait`` would also work but loops.
+        # codex r8 NIT #1: reset ALL request-scoped poison flags
+        # (``_load_error``, ``_worker_stuck``, admission counter).
+        # A transient load failure or stuck-worker episode would
+        # otherwise keep the restarted engine permanently 503-ing
+        # at admission or raising the cached load_error.
         self._model = None
         self._processor = None
         self._loaded = False
@@ -360,6 +377,12 @@ class DiffusionEngine(BaseEngine):
         self._ready = threading.Event()
         self._stop = False
         self._active_cancel = None
+        self._load_error = None
+        self._worker_stuck = False
+        with self._admission_lock:
+            self._admission_reservations = 0
+        with self._jobs.mutex:
+            self._jobs.queue.clear()
 
     # ------------------------------------------------------------------
     # BaseEngine — admission control
@@ -679,6 +702,19 @@ class DiffusionEngine(BaseEngine):
         BEFORE invoking this helper — ``prompt`` is fed verbatim to
         mlx-vlm's tokenizer (codex round 5 [P2]).
         """
+        # codex pr_validate r8 BLOCKING #1: server.load_model
+        # constructs DiffusionEngine with a server-level
+        # ``max_tokens`` cap (default 32768; comes from
+        # ``--max-model-len`` upstream). Pre-fix code never
+        # consulted it — every request's ``max_tokens`` went
+        # straight to mlx-vlm with no upper bound, so a
+        # misbehaving client could request 1 M tokens and burn
+        # GPU time the operator never authorised. Clamp here
+        # against ``self._max_tokens``; non-positive caps are
+        # treated as "no cap" so test stubs that don't set one
+        # behave like the old path.
+        if self._max_tokens > 0:
+            max_tokens = min(max_tokens, self._max_tokens)
         # Pull the operator-configured prefill chunk size from the
         # scheduler config so long-context requests honor it. mlx-vlm
         # only enables its chunked-prefill path when the kwarg is
