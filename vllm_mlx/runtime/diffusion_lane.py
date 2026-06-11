@@ -227,12 +227,15 @@ class DiffusionEngine(BaseEngine):
         self._jobs: queue.Queue[Any] = queue.Queue()
         self._ready = threading.Event()
         self._stop = False
-        self._worker = threading.Thread(
-            target=self._worker_loop,
-            name="rapid-mlx-diffusion-worker",
-            daemon=True,
-        )
-        self._worker.start()
+        # codex round 11 [P2]: the worker is NOT started in __init__
+        # any more. Plain construction must not kick off an
+        # mlx-vlm load — that breaks contract tests that instantiate
+        # the engine without ever calling start(), and would crash
+        # under CI environments without usable Metal. The worker is
+        # started on the first call to start() / _load_blocking() /
+        # check_admission, gated by _start_worker_once.
+        self._worker: threading.Thread | None = None
+        self._worker_start_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # BaseEngine — required properties
@@ -259,10 +262,24 @@ class DiffusionEngine(BaseEngine):
     # BaseEngine — lifecycle
     # ------------------------------------------------------------------
 
+    def _start_worker_once(self) -> None:
+        """Spin up the worker thread on demand. Idempotent under
+        concurrent callers (the lock guards the start invariant)."""
+        with self._worker_start_lock:
+            if self._worker is not None:
+                return
+            self._worker = threading.Thread(
+                target=self._worker_loop,
+                name="rapid-mlx-diffusion-worker",
+                daemon=True,
+            )
+            self._worker.start()
+
     async def start(self) -> None:
         # Block the asyncio loop while the worker initialises the
         # model on its own thread. Load takes ~2-3 s on M3 Ultra, well
         # under the lifespan startup budget.
+        self._start_worker_once()
         await asyncio.to_thread(self._wait_until_ready)
 
     async def stop(self) -> None:
@@ -275,7 +292,8 @@ class DiffusionEngine(BaseEngine):
         # MTL allocator. Clearing references is enough for the next
         # serve cycle to repopulate — there is no explicit ``unload``
         # in mlx-vlm 0.6.3.
-        await asyncio.to_thread(self._worker.join, 5.0)
+        if self._worker is not None:
+            await asyncio.to_thread(self._worker.join, 5.0)
         self._model = None
         self._processor = None
         self._loaded = False
@@ -351,10 +369,11 @@ class DiffusionEngine(BaseEngine):
 
     def _load_blocking(self) -> None:
         """Public-named helper retained from the skeleton PR. Callers
-        in ``server.py`` invoke this synchronously at startup; with
-        the persistent worker pattern, we just delegate to
-        ``_wait_until_ready`` so the worker's own load (already in
-        flight) is the source of truth."""
+        in ``server.py`` invoke this synchronously at startup; the
+        persistent worker is started here (the constructor no longer
+        does that — codex round 11 [P2]) and we then wait for its
+        ready signal."""
+        self._start_worker_once()
         self._wait_until_ready()
 
     def _worker_loop(self) -> None:

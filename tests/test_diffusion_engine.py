@@ -1005,6 +1005,28 @@ class TestConcurrentRequests:
         assert encode_calls == [], "Tokenizer hit despite pre-cancel"
         assert invoked == [], "Generator dispatched despite pre-cancel"
 
+    def test_init_does_not_start_worker_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Codex round 11 [P2]: plain construction must NOT start the
+        # worker thread, otherwise a contract test that instantiates
+        # the engine with a bogus model would race against the
+        # background loader's import + load. Lazy start is gated on
+        # the first explicit call to start() / _load_blocking().
+        # We verify with a deliberately bad model_name so that if
+        # the worker DID start, _load_error would surface; instead
+        # construction must complete cleanly and the worker stays
+        # None.
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        # No mlx-vlm mock — we want to prove that init doesn't
+        # trigger the worker (which would import mlx_vlm + load).
+        engine = DiffusionEngine(model_name="mlx-community/whatever-bogus")
+        assert engine._worker is None, "Worker started in __init__"
+        assert engine._load_error is None, (
+            "Load attempted in __init__ (load_error set)"
+        )
+
     def test_supports_tool_calls_attribute_is_false(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
