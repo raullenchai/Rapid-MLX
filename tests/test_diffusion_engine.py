@@ -165,6 +165,28 @@ def _install_mlx_vlm_mock(
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate.diffusion", mlx_vlm_diffusion)
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate.common", mlx_vlm_common)
 
+    # Since the AliasProfile default for ``diffusion-gemma``-shape aliases
+    # is ``diffusion_backend="rapid"``, ``_run_mlxvlm_generator`` lazy-imports
+    # ``vllm_mlx.runtime.diffusion_loop.rapid_stream_diffusion_generate`` and
+    # calls IT, not the upstream ``stream_diffusion_generate`` stubbed
+    # above. Stub the rapid entry-point to delegate to the SAME stream
+    # so existing tests (which expect ``_stream``'s yields to appear in
+    # the SSE output) keep working regardless of which backend the lane
+    # picked. Routing tests that care about WHICH backend was called live
+    # in ``test_diffusion_lane_routing.py``.
+    import vllm_mlx.runtime.diffusion_loop as _loop_mod
+
+    def _rapid_stub(model, processor, tokenizer, input_ids,
+                    pixel_values, attention_mask, **kw):
+        current = sys.modules["mlx_vlm.generate.diffusion"].stream_diffusion_generate
+        return current(model, processor, tokenizer, input_ids,
+                       pixel_values, attention_mask, **{
+                           k: v for k, v in kw.items()
+                           if k not in {"fixed_steps", "sc_every"}
+                       })
+
+    monkeypatch.setattr(_loop_mod, "rapid_stream_diffusion_generate", _rapid_stub)
+
 
 # ----------------------------------------------------------------------
 # Tests

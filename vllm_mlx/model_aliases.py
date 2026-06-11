@@ -28,6 +28,15 @@ from typing import Literal
 # routes/models.py so the surface-level UX (info, ls, chat) doesn't
 # silently expose LLM-only columns on a non-LLM alias.
 Modality = Literal["text", "text-diffusion", "vision", "image-gen"]
+
+# Generation backend for ``text-diffusion`` aliases. ``"rapid"`` runs the
+# in-house loop at ``runtime/diffusion_loop.py`` (deterministic
+# fixed-steps, ~3× upstream throughput, default); ``"mlx-vlm"`` falls
+# through to upstream ``stream_diffusion_generate`` (escape hatch for
+# A/B + bisection). New diffusion backends append here, then update the
+# dispatch table in ``runtime/diffusion_lane.py``.
+DiffusionBackend = Literal["rapid", "mlx-vlm"]
+_VALID_DIFFUSION_BACKENDS: frozenset[str] = frozenset({"rapid", "mlx-vlm"})
 # Implemented lanes — what ``load_model`` can actually dispatch to today.
 # ``vision`` and ``image-gen`` are RESERVED in the type alias so that
 # routing code can pattern-match on them once their dispatch paths land,
@@ -132,6 +141,18 @@ class AliasProfile:
     # modality slot and broke construction without raising. Keep new
     # fields at the tail.
     modality: Modality = "text"
+    # Diffusion-only knobs. All three default to the empirical optimum
+    # measured for DiffusionGemma 26B-A4B 4-bit on M3 Ultra (see quality
+    # eval ``research/diffusion-gemma/quality/eval-20260611-1001.md`` —
+    # ``fixed_steps=8`` + ``sc_every=1`` shipped at 127 tok/s with
+    # coherence on par with upstream's 71-95 tok/s ``max_denoising_steps=16``).
+    # The defaults are NO-OPS for non-diffusion aliases (the AR runtime
+    # never reads them), but ``_coerce`` rejects JSON entries that try
+    # to set them on a non-``text-diffusion`` modality — a typo there is
+    # a routing decision, not a stray field.
+    diffusion_backend: DiffusionBackend = "rapid"
+    diffusion_fixed_steps: int = 8
+    diffusion_sc_every: int = 1
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
@@ -175,6 +196,9 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "supports_dflash",
             "dflash_draft_model",
             "recommended_sampling",
+            "diffusion_backend",
+            "diffusion_fixed_steps",
+            "diffusion_sc_every",
         }
     )
     unknown_keys = set(value.keys()) - _ALLOWED_PROFILE_KEYS
@@ -323,6 +347,45 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 f"modality={modality!r} (DFlash is AR-only)"
             )
 
+    # Diffusion-only knobs. Reject any text-modality alias that tries to
+    # set them — the AR runtime ignores the field silently, so a typo
+    # there would be invisible at request time. Better to fail loud at
+    # load. Defaults still apply silently to existing text aliases (no
+    # JSON change required) because the AR lane never reads them.
+    _DIFFUSION_KEYS = ("diffusion_backend", "diffusion_fixed_steps", "diffusion_sc_every")
+    if modality != "text-diffusion":
+        for k in _DIFFUSION_KEYS:
+            if k in value:
+                raise ValueError(
+                    f"alias {alias!r}: {k} is only meaningful when "
+                    f"modality='text-diffusion', got modality={modality!r}"
+                )
+    raw_backend = value.get("diffusion_backend", "rapid")
+    if raw_backend not in _VALID_DIFFUSION_BACKENDS:
+        raise ValueError(
+            f"alias {alias!r}: diffusion_backend must be one of "
+            f"{sorted(_VALID_DIFFUSION_BACKENDS)}, got {raw_backend!r}"
+        )
+    diffusion_backend: DiffusionBackend = raw_backend  # type: ignore[assignment]
+
+    def _strict_positive_int(key: str, default: int) -> int:
+        raw = value.get(key, default)
+        # Reject bool (subclass of int) and floats — silently truncating
+        # ``fixed_steps=8.5`` would hide a hand-edit typo.
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValueError(
+                f"alias {alias!r}: {key} must be a JSON integer, "
+                f"got {type(raw).__name__}={raw!r}"
+            )
+        if raw < 1:
+            raise ValueError(
+                f"alias {alias!r}: {key} must be >= 1, got {raw}"
+            )
+        return raw
+
+    diffusion_fixed_steps = _strict_positive_int("diffusion_fixed_steps", 8)
+    diffusion_sc_every = _strict_positive_int("diffusion_sc_every", 1)
+
     return AliasProfile(
         hf_path=hf_path,
         modality=modality,
@@ -337,6 +400,9 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         supports_dflash=supports_dflash,
         dflash_draft_model=dflash_draft_model,
         recommended_sampling=recommended_sampling,
+        diffusion_backend=diffusion_backend,
+        diffusion_fixed_steps=diffusion_fixed_steps,
+        diffusion_sc_every=diffusion_sc_every,
     )
 
 
