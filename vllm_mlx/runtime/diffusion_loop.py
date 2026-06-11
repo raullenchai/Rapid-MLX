@@ -347,6 +347,12 @@ def rapid_stream_diffusion_generate(
     # rapid-mlx knobs (forwarded by AliasProfile via diffusion_lane.py)
     fixed_steps: int | None = None,
     sc_every: int = 1,
+    # Request-level stop strings. codex round 7 [P1]: previously only
+    # ``eos_ids`` token-id matches stopped the loop, so a caller passing
+    # ``stop=["</answer>"]`` would receive text past their requested
+    # boundary. We now check ``emitted_text + new_block_text`` for the
+    # earliest stop match per canvas and truncate.
+    stop: list[str] | None = None,
     # Accept-and-honor knobs that mirror upstream's signature so the
     # lane can hand the same kwargs to either backend. Empty defaults
     # match mlx-vlm's behavior.
@@ -427,6 +433,20 @@ def rapid_stream_diffusion_generate(
         )
     if sc_every <= 0:
         raise ValueError("sc_every must be a positive integer.")
+    # codex round 7 [P1]: normalize stop into a non-empty list of strings.
+    # Mirror ``vllm_mlx/runtime/diffusion_lane.py:_normalize_stops`` —
+    # empty strings would match everywhere, drop them silently. None or
+    # empty list disables stop-string handling (token-id EOS still applies).
+    if stop is None:
+        stop_list: list[str] = []
+    elif isinstance(stop, str):
+        stop_list = [stop] if stop else []
+    elif isinstance(stop, list):
+        stop_list = [s for s in stop if isinstance(s, str) and s]
+    else:
+        raise ValueError(
+            f"stop must be None, str, or list[str] (got {type(stop).__name__})."
+        )
     if diffusion_sampler not in ("entropy-bound", "confidence-threshold"):
         raise ValueError(
             f"Unsupported diffusion sampler: {diffusion_sampler!r}.",
@@ -573,6 +593,11 @@ def rapid_stream_diffusion_generate(
         mx.eval([c.state for c in kv_cache])
 
     generated: list[int] = []
+    # codex round 7 [P1]: emitted-text accumulator drives stop-string
+    # detection. We keep the full string (not just a tail buffer) so
+    # cross-canvas stops still match — at long generation lengths this
+    # is at most a few KB of memory, negligible vs the canvas tensors.
+    emitted_text: str = ""
     finish_reason: str | None = None
     last_token: int | None = None
     is_prefill_done = True  # we just did the initial prefill
@@ -828,6 +853,35 @@ def rapid_stream_diffusion_generate(
             canvas_stop = True
 
         block_text = tokenizer.decode(ids_to_decode) if ids_to_decode else ""
+
+        # codex round 7 [P1]: request-level stop-string enforcement.
+        # Check ``emitted_text + block_text`` for the earliest stop
+        # match — covers stops that span a canvas boundary (lookback =
+        # entire emitted prefix). When found, truncate ``block_text`` at
+        # the cut point and stamp ``finish_reason="stop"``.
+        if stop_list and not canvas_stop:
+            combined = emitted_text + block_text
+            earliest = -1
+            for s in stop_list:
+                idx = combined.find(s)
+                if idx != -1 and (earliest == -1 or idx < earliest):
+                    earliest = idx
+            if earliest >= 0:
+                cut_in_block = earliest - len(emitted_text)
+                # Boundary case: stop straddles the previous canvas. The
+                # previous canvas already shipped; defensive truncate
+                # this canvas to "" and rely on the caller (typically
+                # ``diffusion_lane.py``) to truncate the already-emitted
+                # text via its own _earliest_stop_index buffer. For
+                # direct callers the practical effect is that
+                # ``max_stop_len - 1`` chars may have leaked past the
+                # boundary — documented in the rapid loop contract.
+                block_text = block_text[: max(0, cut_in_block)]
+                finish_reason = "stop"
+                canvas_stop = True
+
+        emitted_text += block_text
+
         yield RapidDiffusionResult(
             text=block_text,
             token=last_token,

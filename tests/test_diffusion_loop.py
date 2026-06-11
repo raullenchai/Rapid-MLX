@@ -469,6 +469,91 @@ def test_strict_int_validation_rejects_float_and_bool():
             )
 
 
+def test_stop_string_truncates_block_text():
+    """Codex round 7 [P1]: rapid backend must honor request-level
+    string stops. Use the fake-model framework from
+    ``test_fixed_steps_and_adaptive_stop_are_not_mutually_exclusive``
+    — stable peaky logits make the canvas predictable; we override
+    the tokenizer to decode token ``5`` as the string ``"STOPHERE"``
+    so the entire canvas decodes to ``"STOPHEREE...STOPHEREE"``.
+    With ``stop=["STOPHERE"]`` the very first canvas should yield
+    ``""`` (cut at position 0) and ``finish_reason="stop"``."""
+
+    class _StopTok:
+        all_special_ids: list[int] = []
+        eos_token_id = None
+
+        def decode(self, ids):  # type: ignore[no-untyped-def]
+            # Each token 5 → "STOPHERE"; any other id → "?"
+            return "".join("STOPHERE" if int(i) == 5 else "?" for i in ids)
+
+    model = _StableLogitsFakeModel()
+    tok = _StopTok()
+    input_ids = mx.array([[1, 2, 3]])
+
+    last = None
+    for r in rapid_stream_diffusion_generate(
+        model=model,
+        processor=None,
+        tokenizer=tok,
+        input_ids=input_ids,
+        fixed_steps=8,
+        max_tokens=8,
+        temperature=0.0,
+        stop=["STOPHERE"],
+    ):
+        last = r
+    assert last is not None
+    assert last.finish_reason == "stop", (
+        f"stop string should have terminated; got finish_reason={last.finish_reason!r}"
+    )
+    # The first canvas's block_text starts with "STOPHERE..." so the
+    # cut is at index 0; emitted text should be empty.
+    assert last.text == "", (
+        f"text should be truncated at the stop position (got {last.text!r})"
+    )
+
+
+def test_stop_string_validation_rejects_non_string_list():
+    """codex round 7 [P1]: invalid ``stop`` shape must fail loud, not
+    silently no-op. Mirror the lane's ``_normalize_stops`` permissive
+    contract (str / list[str] / None) but raise on other types."""
+    fake_input_ids = mx.array([[1, 2, 3]])
+    with pytest.raises(ValueError, match="stop must be"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                stop=42,  # type: ignore[arg-type]
+            )
+        )
+
+
+def test_stop_string_none_and_empty_are_noop():
+    """``stop=None``, ``stop=""``, ``stop=[]``, ``stop=["", ""]`` must
+    all behave as "no stop strings" — exercise the entry validation
+    drops empty strings silently like the lane does."""
+    fake_input_ids = mx.array([[1, 2, 3]])
+    for empty_stop in (None, "", [], ["", ""]):
+        # Should validate cleanly; downstream model=None crash is
+        # expected and verifies entry validation passed.
+        gen = rapid_stream_diffusion_generate(
+            model=None,
+            processor=None,
+            tokenizer=None,
+            input_ids=fake_input_ids,
+            stop=empty_stop,  # type: ignore[arg-type]
+        )
+        with pytest.raises(Exception) as exc_info:
+            next(gen)
+        # The downstream crash must NOT be a stop-related ValueError.
+        assert not (
+            isinstance(exc_info.value, ValueError) and "stop" in str(exc_info.value)
+        ), f"empty-stop variant {empty_stop!r} rejected at entry: {exc_info.value}"
+
+
 def test_rejects_padded_inputs():
     """Codex round 6 [P1]: the per-canvas re-prefill grows the KV cache
     by ``current_canvas`` each iteration, but ``decoder_attention_mask``
