@@ -600,6 +600,20 @@ class DiffusionEngine(BaseEngine):
         # so the cancelled coroutine cannot leak a daemon thread
         # blocked on ``thread_q.get()`` forever.
         async with self._generation_lock:
+            # Post-lock unhealthy gate — a request that passed
+            # admission BEFORE a sibling tripped the drain timeout
+            # would otherwise queue work to a wedged worker once it
+            # acquired the lock. Re-check here so it errors out
+            # cleanly instead (codex round 8 [P2]). Raised as
+            # ``BackpressureError`` so routes/chat.py emits the same
+            # 503 + Retry-After as a fresh admission denial.
+            if self._worker_stuck:
+                from ..scheduler import BackpressureError
+
+                raise BackpressureError(
+                    "DiffusionEngine worker is unhealthy — restart the "
+                    "server to recover."
+                )
             # Two queues bridge the persistent worker thread to the
             # asyncio loop. ``thread_q`` is owned by the worker (sync
             # ``queue.Queue.put`` is safe from any thread); ``aio_q``

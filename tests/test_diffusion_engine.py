@@ -1006,6 +1006,32 @@ class TestConcurrentRequests:
         assert invoked == [], "Generator dispatched despite pre-cancel"
 
     @pytest.mark.asyncio
+    async def test_post_lock_stuck_check_rejects_in_flight_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Codex round 8 [P2]: a request that passed admission BEFORE
+        # the engine was marked stuck (e.g. another request tripped
+        # the 30 s drain timeout while this one was waiting on the
+        # lock) must NOT enqueue work to the wedged worker. The
+        # post-lock unhealthy gate raises BackpressureError so the
+        # client gets a clean 503 instead of hanging behind GPU work
+        # that will never make progress.
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from vllm_mlx.scheduler import BackpressureError
+
+        _install_mlx_vlm_mock(monkeypatch)
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        # Flip stuck BEFORE the request enters stream_chat so the
+        # post-lock gate is the only thing that can refuse it.
+        engine._worker_stuck = True
+        with pytest.raises(BackpressureError, match="unhealthy"):
+            async for _ in engine.stream_chat(
+                [{"role": "user", "content": "go"}], max_tokens=16
+            ):
+                pass
+
+    @pytest.mark.asyncio
     async def test_worker_stuck_marks_admission_unhealthy(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
