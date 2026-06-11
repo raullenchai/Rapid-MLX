@@ -109,6 +109,19 @@ MATRIX_EXEMPT: dict[str, str] = {
     "ui_tars": "TODO: add UI-TARS-1.5-7B-4bit to golden_models once the VLM matrix supports mlx-vlm-backed Computer-Use models",
     "ui-tars": "alias of ui_tars (kebab-case spelling)",
     "uitars": "alias of ui_tars (no-separator spelling)",
+    "lfm": (
+        "TODO: add a Liquid LFM2.5 model (e.g. mlx-community/"
+        "LFM2.5-1.2B-Instruct-4bit) to golden_models once a CI slot is "
+        "free (#85). Wire format is verified end-to-end another way in the "
+        "meantime: the LFM2.5-1.2B model loads + generates on the engine "
+        'and emits the pythonic-bracket call — [get_weather(location="Paris")] '
+        "— that LfmToolParser handles (special-token wrappers "
+        "<|tool_call_start|>/<|tool_call_end|> are stripped upstream). "
+        "Class + streaming-parity coverage lives in "
+        "tests/test_lfm_tool_parser.py and "
+        "tests/test_tool_call_streaming_parity.py."
+    ),
+    "liquid": "alias of lfm",
 }
 
 

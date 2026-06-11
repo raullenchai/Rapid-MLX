@@ -130,6 +130,10 @@ class ModelConfig:
 # Model family patterns → optimal config.
 # Order matters: first match wins. More specific patterns go first.
 _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
+    # NOTE: Liquid LFM routing intentionally lives ONLY in aliases.json
+    # (the lfm2*/lfm2.5* entries carry ``tool_call_parser="lfm"``), per
+    # the "do NOT add new regex entries here" migration rule above. New
+    # LFM variants should be added to aliases.json, not this table.
     # DeepSeek V4 / V4-Flash — sparse MoE with sliding-window attention
     # (RotatingKVCache). Pure-attention so spec decode is safe; tool
     # parser inherits the standard DeepSeek format. Upstream chat

@@ -20,6 +20,7 @@ from vllm_mlx.tool_parsers import (
     HarmonyToolParser,
     HermesToolParser,
     KimiToolParser,
+    LfmToolParser,
     LlamaToolParser,
     MistralToolParser,
     NemotronToolParser,
@@ -60,6 +61,7 @@ class TestNativeToolFormatCapability:
             NemotronToolParser,
             xLAMToolParser,
             AutoToolParser,
+            LfmToolParser,
         ]
         for parser_cls in non_native_parsers:
             assert parser_cls.SUPPORTS_NATIVE_TOOL_FORMAT is False, (
@@ -90,7 +92,7 @@ class TestNativeToolFormatCapability:
             )
 
         # No native support
-        for name in ["qwen", "nemotron", "xlam", "auto"]:
+        for name in ["qwen", "nemotron", "xlam", "auto", "lfm", "liquid"]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             assert parser_cls.supports_native_format() is False, (
                 f"Parser '{name}' should not support native format"

@@ -63,6 +63,7 @@ from .harmony_tool_parser import HarmonyToolParser
 from .hermes_tool_parser import HermesToolParser
 from .hy_v3_tool_parser import HyV3ToolParser
 from .kimi_tool_parser import KimiToolParser
+from .lfm_tool_parser import LfmToolParser
 from .llama_tool_parser import LlamaToolParser
 from .minimax_tool_parser import MiniMaxToolParser
 from .mistral_tool_parser import MistralToolParser
@@ -86,6 +87,7 @@ __all__ = [
     "HermesToolParser",
     "DeepSeekToolParser",
     "KimiToolParser",
+    "LfmToolParser",
     "GraniteToolParser",
     "NemotronToolParser",
     "xLAMToolParser",

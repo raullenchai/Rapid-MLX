@@ -215,6 +215,17 @@ PARITY_FIXTURES: list = [
         "Thought: Click search.\nAction: click(point='<point>200 300</point>')",
         [("computer", {"action": "click", "point": [200, 300]})],
     ),
+    # lfm — pythonic bracket calls (Liquid LFM2.x). Parity here depends on
+    # finalize()'s plausible-markup pre-check recognizing ``[name(`` —
+    # ``[f(x="y")]`` contains none of the ``<`` / ``{`` / ``[Calling``
+    # markers the pre-check originally looked for, so the streaming path
+    # silently skipped extraction while non-stream succeeded.
+    (
+        "lfm",
+        "pythonic_bracket",
+        'Checking. [get_current_weather(location="Paris", unit="celsius")]',
+        [("get_current_weather", {"location": "Paris", "unit": "celsius"})],
+    ),
 ]
 
 
@@ -268,6 +279,7 @@ _PARITY_COVERAGE_EXEMPT: dict[str, str] = {
     "hy3": "alias of hy_v3",
     "ui-tars": "alias of ui_tars (kebab-case spelling)",
     "uitars": "alias of ui_tars (no-separator spelling)",
+    "liquid": "alias of lfm",
     "auto": "router, not a wire-format parser",
     "generic": "router, not a wire-format parser",
 }
