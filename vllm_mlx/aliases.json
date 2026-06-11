@@ -877,5 +877,20 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown"
+  },
+  "lfm2-24b-a2b-4bit": {
+    "hf_path": "lmstudio-community/LFM2-24B-A2B-MLX-4bit",
+    "tool_call_parser": "lfm",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "supports_spec_decode": false,
+    "is_moe": true
+  },
+  "lfm2.5-1b-4bit": {
+    "hf_path": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+    "tool_call_parser": "lfm",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "supports_spec_decode": false
   }
 }
