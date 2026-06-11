@@ -82,6 +82,7 @@ jobs:
             tests/test_request.py \
             tests/test_anthropic_models.py \
             tests/test_anthropic_adapter.py \
+            tests/test_dependency_floors.py \
             tests/test_harmony_parsers.py \
             tests/test_endpoint_model_policies.py \
             tests/test_gemma4_openai_format.py \
