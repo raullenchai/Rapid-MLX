@@ -207,16 +207,51 @@ class TestPromptAndTokenAccounting:
         assert "Hello there" in rendered
         assert rendered.endswith("model\n")
 
-    def test_build_prompt_rejects_tools(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_build_prompt_silently_drops_tools_with_warning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # OpenAI-compatible frontends (Big-AGI, BCG, etc.) attach a
+        # built-in tools list to every chat request even when the user
+        # has not invoked a tool. We dropped the hard-reject so the
+        # very first chat doesn't 500; the warning lets the operator
+        # observe the drop in serve logs.
         _install_mlx_vlm_mock(monkeypatch)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
-        with pytest.raises(RuntimeError, match="does not support tool calls"):
-            engine.build_prompt(
-                [{"role": "user", "content": "hi"}], tools=[{"name": "foo"}]
+        with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
+            rendered = engine.build_prompt(
+                [{"role": "user", "content": "Hello there"}],
+                tools=[{"name": "foo"}, {"name": "bar"}, {"name": "baz"}],
             )
+        # Prompt still rendered cleanly — chat surface keeps working.
+        assert "Hello there" in rendered
+        assert rendered.endswith("model\n")
+        # Exactly one warning, with the tool count and a clear message.
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1, [r.message for r in warnings]
+        assert "dropped 3 tool" in warnings[0].getMessage()
+
+    def test_build_prompt_no_warning_when_tools_absent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # tools=None and tools=[] are the bare-chat case — no warning
+        # should fire (otherwise every plain message spams serve logs).
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
+            engine.build_prompt([{"role": "user", "content": "hi"}])
+            engine.build_prompt([{"role": "user", "content": "hi"}], tools=None)
+            engine.build_prompt([{"role": "user", "content": "hi"}], tools=[])
+        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
     def test_estimate_new_tokens_returns_conservative_pair(
         self, monkeypatch: pytest.MonkeyPatch
@@ -308,19 +343,75 @@ class TestStreamChatBlockCollapse:
         assert collected[-1].finish_reason == "stop"
 
     @pytest.mark.asyncio
-    async def test_stream_chat_rejects_tools(
-        self, monkeypatch: pytest.MonkeyPatch
+    async def test_stream_chat_with_tools_completes_normally(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _install_mlx_vlm_mock(monkeypatch)
+        # Direct stream_chat invocation with a tools payload must not
+        # crash — drops them and streams text. The warning is logged
+        # by build_prompt, which routes/chat.py:691 calls upfront for
+        # every request; stream_chat itself stays silent to avoid
+        # double-warning when the route layer is in front. This test
+        # pins "stream survives tools" — see
+        # test_route_layer_warning_fires_exactly_once for the
+        # warning-side contract.
+        yields = [
+            FakeGenerationResult(text="Hello ", diffusion_block_complete=True),
+            FakeGenerationResult(text="world.", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
-        with pytest.raises(RuntimeError, match="does not support tool calls"):
-            async for _ in engine.stream_chat(
-                [{"role": "user", "content": "hi"}], tools=[{"name": "f"}]
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            tools=[{"name": "web_search"}],
+            max_tokens=16,
+        ):
+            collected.append(out)
+        # Stream completes normally with the model's text output.
+        assert [c.new_text for c in collected] == ["Hello ", "world."]
+        assert collected[-1].finish_reason == "stop"
+
+    @pytest.mark.asyncio
+    async def test_route_layer_warning_fires_exactly_once(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Mimics the routes/chat.py contract: build_prompt is called
+        # once with the full tools list (line 691 in chat.py — the
+        # eager template validation), then stream_chat runs the
+        # generation. The single drop-warning must fire on the
+        # build_prompt call; stream_chat re-uses build_prompt(messages)
+        # internally with tools=None so we do NOT double-log.
+        yields = [
+            FakeGenerationResult(text="ok.", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
+            engine.build_prompt(
+                [{"role": "user", "content": "hi"}],
+                tools=[{"name": "web_search"}, {"name": "weather"}],
+            )
+            collected = []
+            async for out in engine.stream_chat(
+                [{"role": "user", "content": "hi"}],
+                tools=[{"name": "web_search"}, {"name": "weather"}],
+                max_tokens=16,
             ):
-                pass
+                collected.append(out)
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1, [r.getMessage() for r in warnings]
+        assert "dropped 2 tool" in warnings[0].getMessage()
+        # And the stream still produced its output.
+        assert collected[-1].new_text == "ok."
 
     @pytest.mark.asyncio
     async def test_stream_chat_rejects_vision(

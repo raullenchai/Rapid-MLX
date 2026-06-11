@@ -281,15 +281,28 @@ class DiffusionEngine(BaseEngine):
     ) -> str:
         self._ensure_loaded()
         if tools:
-            # Tool calls aren't part of DiffusionGemma's surface — the
-            # generator emits a free-form denoised canvas with no
-            # function-call grammar. Reject early with a clear message
-            # rather than silently dropping ``tools`` and confusing the
-            # caller.
-            raise RuntimeError(
-                "DiffusionEngine does not support tool calls. Use an "
-                "AR alias (e.g. qwen3.5-27b) for function-calling "
-                "workloads."
+            # DiffusionGemma's generator emits a free-form denoised
+            # canvas — no function-call grammar, no tool-name decoding
+            # path. Early versions raised here, but Big-AGI (and other
+            # OpenAI-compatible frontends) attach their built-in tools
+            # to every chat request even when the user didn't intend a
+            # tool invocation, which turned the very first message into
+            # an opaque 500. The OpenAI contract treats a model that
+            # never emits tool calls as still serviceable for plain
+            # chat, so we follow that shape: drop the tools list and
+            # log a warning so the operator can see it happen.
+            #
+            # ``tool_choice="required"`` is a stricter contract — the
+            # caller is asserting "you MUST emit a tool call" and
+            # cannot be satisfied. routes/chat.py post-parses the
+            # generated text and 422s when ``required`` was set and no
+            # tool_calls came back, so the contract violation surfaces
+            # to the client without us needing to special-case it
+            # here.
+            logger.warning(
+                "DiffusionEngine dropped %d tool(s) — model has no "
+                "function-call grammar; chat continues without them.",
+                len(tools),
             )
         # ``apply_chat_template`` returns either a string or a list of
         # token IDs depending on tokenize=. We want the rendered text
@@ -362,8 +375,10 @@ class DiffusionEngine(BaseEngine):
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
         self._ensure_loaded()
-        if tools:
-            raise RuntimeError("DiffusionEngine does not support tool calls.")
+        # ``tools`` is silently dropped in ``build_prompt`` with a
+        # warning log — see the matching block there for the rationale.
+        # The check is intentionally NOT duplicated here so the warning
+        # fires exactly once per request.
         if images or videos:
             raise RuntimeError(
                 "DiffusionEngine v0 is text-only. Vision inputs "
