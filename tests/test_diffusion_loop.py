@@ -411,6 +411,65 @@ def test_rejects_zero_or_negative_prefill_step_size():
         )
 
 
+def test_rejects_zero_or_negative_fixed_steps():
+    """Codex round 4 [P1]: programmatic callers (not just JSON loaders)
+    can pass ``fixed_steps=0``. Without entry validation,
+    ``denoise_budget`` resolves to ``0``, the for-loop body never runs,
+    and ``_initialize_canvas`` random ids are emitted as model output.
+    AliasProfile's loader already enforces ``>= 1`` on the JSON surface
+    (``test_fixed_steps_must_be_positive_int``); this test pins the
+    same contract on the runtime entry."""
+    fake_input_ids = mx.array([[1, 2, 3]])
+    with pytest.raises(ValueError, match="fixed_steps must be"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                fixed_steps=0,
+            )
+        )
+    with pytest.raises(ValueError, match="fixed_steps must be"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                fixed_steps=-3,
+            )
+        )
+
+
+def test_rejects_zero_or_negative_max_denoising_steps():
+    """Codex round 4 [P1]: see ``test_rejects_zero_or_negative_fixed_steps``
+    — same bug class on the ``max_denoising_steps`` knob, which is the
+    accept-and-honor mirror of mlx-vlm's upstream signature. Per-request
+    overrides also need entry validation."""
+    fake_input_ids = mx.array([[1, 2, 3]])
+    with pytest.raises(ValueError, match="max_denoising_steps must be"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                max_denoising_steps=0,
+            )
+        )
+    with pytest.raises(ValueError, match="max_denoising_steps must be"):
+        next(
+            rapid_stream_diffusion_generate(
+                model=None,
+                processor=None,
+                tokenizer=None,
+                input_ids=fake_input_ids,
+                max_denoising_steps=-2,
+            )
+        )
+
+
 def test_accepts_nonzero_temperature():
     """``temperature>0`` is now legal: per-step argmax switches to
     ``mx.random.categorical`` inside ``_sample_canvas`` to match

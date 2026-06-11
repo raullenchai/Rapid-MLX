@@ -395,6 +395,17 @@ def rapid_stream_diffusion_generate(
         )
     if prefill_step_size is not None and int(prefill_step_size) <= 0:
         raise ValueError("prefill_step_size must be a positive integer.")
+    # codex round 4 [P1]: ``denoise_budget`` resolves from these two
+    # caller knobs; ``<= 0`` would skip the for-loop and yield the
+    # random ``_initialize_canvas`` output verbatim as "model output".
+    # The AliasProfile loader already enforces ``>= 1`` on the JSON
+    # surface (test_fixed_steps_must_be_positive_int) but a programmatic
+    # caller still gets through. Reject at entry to mirror the
+    # ``prefill_step_size`` validation directly above.
+    if fixed_steps is not None and int(fixed_steps) <= 0:
+        raise ValueError("fixed_steps must be a positive integer.")
+    if max_denoising_steps is not None and int(max_denoising_steps) <= 0:
+        raise ValueError("max_denoising_steps must be a positive integer.")
     if diffusion_sampler not in ("entropy-bound", "confidence-threshold"):
         raise ValueError(
             f"Unsupported diffusion sampler: {diffusion_sampler!r}.",
