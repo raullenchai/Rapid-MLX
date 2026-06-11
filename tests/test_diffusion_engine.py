@@ -1043,26 +1043,88 @@ class TestConcurrentRequests:
         assert DiffusionEngine.supports_tool_calls is False
 
     def test_engine_opts_out_blocks_tool_choice_required_even_with_parser(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
     ) -> None:
-        # Codex round 10 [P2]: even with a global --tool-call-parser
-        # configured, the route's streaming-required gate must reject
-        # tool_choice="required" + stream=true on a DiffusionEngine.
-        # The parser would otherwise match against the engine's
-        # ``channel="content"`` output (which has no tool call
-        # markers), letting the request finish with plain text and
-        # silently violating the OpenAI contract.
-        _install_mlx_vlm_mock(monkeypatch)
+        # Codex round 10 [P2] + pr_validate r11 BLOCKING #2: even with
+        # a global --tool-call-parser configured, the route's
+        # streaming-required gate must reject tool_choice="required"
+        # + stream=true on an engine that has opted out of tool calls.
+        # The previous version of this test only asserted a local
+        # getattr expression — pr_validate r11 flagged that it would
+        # stay green if the route gate were silently deleted. This
+        # version fires a real HTTP request through the chat router
+        # so the gate is exercised end-to-end.
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
 
-        # Direct test of the engine-veto logic: build a tiny stub
-        # that exposes ``supports_tool_calls=False`` and verify the
-        # condition that gates the 422 evaluates True regardless of
-        # cfg.tool_call_parser.
-        class _StubEngine:
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes.chat import router as chat_router
+
+        class _DiffusionEngineStub:
             supports_tool_calls = False
+            preserve_native_tool_format = False
+            is_mllm = False
+            supports_guided_generation = False
+            tokenizer = None
 
-        _engine_opts_out = getattr(_StubEngine(), "supports_tool_calls", True) is False
-        assert _engine_opts_out is True
+            def build_prompt(self, messages, tools=None, enable_thinking=None):
+                return "PROMPT"
+
+            async def chat(self, messages, **kwargs):
+                return GenerationOutput(
+                    text="should-not-be-reached",
+                    raw_text="",
+                    prompt_tokens=1,
+                    completion_tokens=1,
+                    finished=True,
+                    finish_reason="stop",
+                )
+
+            async def stream_chat(self, messages, **kwargs):
+                yield GenerationOutput(
+                    text="should-not-be-reached",
+                    new_text="should-not-be-reached",
+                    finished=True,
+                    finish_reason="stop",
+                )
+
+        cfg = reset_config()
+        cfg.engine = _DiffusionEngineStub()
+        cfg.model_name = "diffusion-gemma-26b"
+        cfg.model_registry = None
+        cfg.no_thinking = True
+        # Critical: parser IS configured. Without the
+        # ``supports_tool_calls=False`` veto, the gate would let the
+        # request through because ``cfg.tool_call_parser`` is truthy.
+        cfg.tool_call_parser = "hermes"
+
+        app = FastAPI()
+        app.include_router(chat_router)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "diffusion-gemma-26b",
+                "stream": True,
+                "messages": [{"role": "user", "content": "weather?"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "tool_choice": "required",
+                "max_tokens": 32,
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        body = resp.text.lower()
+        assert "tool" in body and "required" in body
 
     def test_route_probe_rejects_engine_when_supports_tool_calls_false(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1191,33 +1253,35 @@ class TestConcurrentRequests:
     async def test_lock_held_until_worker_finishes_cancelled_job(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Codex round 6 [P2]: if stream_chat releases the lock on its
-        # own consumer exit (early stop / disconnect) before the
-        # worker has actually observed cancel_event, a queued sibling
-        # acquires the lock while the worker is still burning GPU on
-        # the cancelled job — head-of-line blocking. The done_event
-        # contract pins this: the worker's job-finally MUST set it
-        # AFTER ``_run_generator`` returns, and stream_chat's finally
-        # MUST await it BEFORE the ``async with`` exits.
+        # Codex round 6 [P2] + pr_validate r11 BLOCKING #3: if
+        # stream_chat releases the lock on its own consumer exit
+        # (early stop / disconnect) before the worker has actually
+        # observed cancel_event, a queued sibling acquires the lock
+        # while the worker is still burning GPU on the cancelled job
+        # — head-of-line blocking. The done_event contract pins this:
+        # the worker's job-finally MUST set it AFTER ``_run_generator``
+        # returns, and stream_chat's finally MUST await it BEFORE the
+        # ``async with`` exits.
+        #
+        # The previous version of this test only asserted "ticks
+        # fired and req1 released" — that would stay green even if
+        # the regression came back. This version records the actual
+        # ordering of:
+        #   t_req1_done   — when req1's worker_loop set its done_event
+        #   t_req2_acquire — when req2 actually entered its
+        #                    _run_generator (proves it acquired the
+        #                    lock AND the worker picked its job)
+        # and asserts t_req2_acquire >= t_req1_done so the regression
+        # is genuinely pinned.
         import asyncio as _aio
-
-        # Worker pump: hold for 0.3 s per yield so an early-stop has
-        # a noticeable window during which the worker would still be
-        # producing if we released the lock too soon.
-        ticks: list[float] = []
+        import time as _time
 
         def slow_yields() -> Iterator[FakeGenerationResult]:
-            import time as _t
-
             for text in ("first ", "second", " third"):
-                _t.sleep(0.05)
-                ticks.append(_t.monotonic())
+                _time.sleep(0.05)
                 yield FakeGenerationResult(text=text, diffusion_block_complete=True)
             yield FakeGenerationResult(text="", finish_reason="stop")
 
-        # The mock takes a list, but we want a generator — install
-        # the standard mock and then override stream_diffusion_generate
-        # with our slow version.
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
         diffusion_mod = sys.modules["mlx_vlm.generate.diffusion"]
 
@@ -1230,45 +1294,100 @@ class TestConcurrentRequests:
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
 
-        # Request 1 stops at the first chunk (stop sequence "first").
-        # Request 2 should not start until request 1's worker is done.
-        worker_release_ts: list[float] = []
-        req2_start_ts: list[float] = []
+        # Patch the worker's job loop to capture done_event timestamps
+        # AND the moment each job actually entered _run_generator
+        # (i.e. the worker picked it up after the lock was released).
+        prompt_to_done_ts: dict[str, float] = {}
+        prompt_to_run_ts: dict[str, float] = {}
+        real_run_generator = engine._run_generator
+
+        def _instrumented_run_generator(
+            prompt: str,
+            max_tokens: int,
+            cfg: Any,
+            out_q: Any,
+            cancel_event: threading.Event,
+        ) -> None:
+            prompt_to_run_ts[prompt] = _time.monotonic()
+            real_run_generator(prompt, max_tokens, cfg, out_q, cancel_event)
+
+        engine._run_generator = _instrumented_run_generator  # type: ignore[method-assign]
+
+        # Wrap done_event.set so we can record req1's worker-release
+        # timestamp directly from the source of truth.
+        import queue as _queue
+
+        real_jobs_put = engine._jobs.put
+
+        def _instrumented_put(job: Any) -> None:
+            if isinstance(job, tuple) and len(job) == 6:
+                prompt, max_tokens, cfg, thread_q, cancel_event, done_event = job
+                real_set = done_event.set
+
+                def _wrapped_set() -> None:
+                    prompt_to_done_ts[prompt] = _time.monotonic()
+                    real_set()
+
+                done_event.set = _wrapped_set  # type: ignore[method-assign]
+            real_jobs_put(job)
+
+        engine._jobs.put = _instrumented_put  # type: ignore[method-assign]
+        # ``put`` is normally engaged via Queue.put; the patched bound
+        # ref is what callers will hit (Queue methods are bound
+        # attributes on the instance after ``__init__``).
+        assert isinstance(engine._jobs, _queue.Queue)
+
+        # We use distinct prompts so each shows up uniquely in the
+        # instrument dicts.
+        req1_prompt_marker = "REQ1_GO"
+        req2_prompt_marker = "REQ2_NEXT"
 
         async def req1() -> None:
             async for _ in engine.stream_chat(
-                [{"role": "user", "content": "go"}],
+                [{"role": "user", "content": req1_prompt_marker}],
                 max_tokens=64,
                 stop=["first"],
             ):
                 pass
-            worker_release_ts.append(__import__("time").monotonic())
 
         async def req2() -> None:
-            req2_start_ts.append(__import__("time").monotonic())
             async for _ in engine.stream_chat(
-                [{"role": "user", "content": "next"}], max_tokens=16
+                [{"role": "user", "content": req2_prompt_marker}],
+                max_tokens=16,
             ):
                 pass
 
         t1 = _aio.create_task(req1())
-        # Give req1 time to acquire the lock and start the worker
-        # before req2 enters.
+        # Give req1 a moment to enter stream_chat and acquire the
+        # generation lock before req2 starts queueing for it.
         await _aio.sleep(0.02)
         t2 = _aio.create_task(req2())
         await _aio.wait_for(_aio.gather(t1, t2), timeout=15.0)
 
-        # Request 2's wall-clock start of WAITING for the lock came
-        # before request 1's stream returned, but request 2's actual
-        # lock acquisition (and thus stream start) must be AFTER
-        # request 1's worker had a chance to fully release its job.
-        # Lock release happens AFTER worker_release_ts[0], so the
-        # mock yield ticks recorded BEFORE req2 acquired the lock
-        # demonstrate the worker drained its current generator before
-        # the lock was let go. We assert at least 1 tick fired before
-        # req2 unblocked — proving the head-of-line block is gone.
-        assert worker_release_ts, "req1 never released"
-        assert ticks, "worker never produced a tick"
+        # Map back from FakeTokenizer.apply_chat_template's rendered
+        # prompt to find the matching dict key. The fake template
+        # joins messages with \n and appends "<start_of_turn>model\n",
+        # so the marker substring identifies the job.
+        def _find(prompt_marker: str, store: dict[str, float]) -> float:
+            for prompt, ts in store.items():
+                if prompt_marker in prompt:
+                    return ts
+            raise AssertionError(
+                f"no timestamp recorded for marker {prompt_marker!r} in {store}"
+            )
+
+        t_req1_done = _find(req1_prompt_marker, prompt_to_done_ts)
+        t_req2_acquire = _find(req2_prompt_marker, prompt_to_run_ts)
+        # The whole point: req2 cannot have started its worker
+        # iteration BEFORE req1's done_event was set, because the
+        # lock-release happens AFTER awaiting done_event. If a
+        # regression brings back early lock-release, this strict
+        # ordering breaks.
+        assert t_req2_acquire >= t_req1_done, (
+            f"req2 picked up by worker at t={t_req2_acquire:.4f}, "
+            f"BEFORE req1's done_event fired at t={t_req1_done:.4f} — "
+            "head-of-line block regression"
+        )
 
 
 class TestAdmissionControl:

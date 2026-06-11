@@ -72,13 +72,6 @@ class AliasProfile:
     """
 
     hf_path: str
-    # Inference modality. Default ``"text"`` covers every legacy LLM
-    # alias and keeps the auto-regressive scheduler/runtime path
-    # unchanged. Non-text modalities branch into dedicated lanes:
-    # ``"text-diffusion"`` → ``runtime/diffusion_lane.py`` (block
-    # denoising, no spec-decode, no DFlash); ``"vision"`` /
-    # ``"image-gen"`` reserved for upcoming integrations.
-    modality: Modality = "text"
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
     is_hybrid: bool = False
@@ -117,6 +110,23 @@ class AliasProfile:
     # ``frequency_penalty``. ``None`` means "no curated value" → fall
     # through to ``generation_config.json``.
     recommended_sampling: tuple[tuple[str, float], ...] | None = None
+    # Inference modality. Default ``"text"`` covers every legacy LLM
+    # alias and keeps the auto-regressive scheduler/runtime path
+    # unchanged. Non-text modalities branch into dedicated lanes:
+    # ``"text-diffusion"`` → ``runtime/diffusion_lane.py`` (block
+    # denoising, no spec-decode, no DFlash); ``"vision"`` /
+    # ``"image-gen"`` reserved for upcoming integrations.
+    #
+    # NOTE on positional ABI: this field is intentionally appended at
+    # the END of the dataclass instead of after ``hf_path`` so that
+    # existing callers using positional construction
+    # (``AliasProfile(hf_path, tool_call_parser, ...)``) continue to
+    # bind their positional args to the same fields they always did.
+    # pr_validate codex round 11 [BLOCKING #1]: inserting ``modality``
+    # at position 1 silently routed the parser positional into the
+    # modality slot and broke construction without raising. Keep new
+    # fields at the tail.
+    modality: Modality = "text"
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
