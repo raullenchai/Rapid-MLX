@@ -347,11 +347,13 @@ def rapid_stream_diffusion_generate(
     # rapid-mlx knobs (forwarded by AliasProfile via diffusion_lane.py)
     fixed_steps: int | None = None,
     sc_every: int = 1,
-    # Request-level stop strings. codex round 7 [P1]: previously only
-    # ``eos_ids`` token-id matches stopped the loop, so a caller passing
-    # ``stop=["</answer>"]`` would receive text past their requested
-    # boundary. We now check ``emitted_text + new_block_text`` for the
-    # earliest stop match per canvas and truncate.
+    # Request-level stop strings. codex round 7 [P1] + round 8 [P1]:
+    # previously only ``eos_ids`` token-id matches stopped the loop, so
+    # a caller passing ``stop=["</answer>"]`` would receive text past
+    # their requested boundary. We now prepend a per-canvas holdback of
+    # ``max(len(stop)) - 1`` chars and search ``holdback + new_block``
+    # for the earliest stop match — cross-canvas stops match without
+    # leak.
     stop: list[str] | None = None,
     # Accept-and-honor knobs that mirror upstream's signature so the
     # lane can hand the same kwargs to either backend. Empty defaults
@@ -604,11 +606,6 @@ def rapid_stream_diffusion_generate(
         mx.eval([c.state for c in kv_cache])
 
     generated: list[int] = []
-    # codex round 7 [P1]: emitted-text accumulator drives stop-string
-    # detection. We keep the full string (not just a tail buffer) so
-    # cross-canvas stops still match — at long generation lengths this
-    # is at most a few KB of memory, negligible vs the canvas tensors.
-    emitted_text: str = ""
     # codex round 8 [P1]: hold back ``max(len(stop)) - 1`` chars from the
     # tail of each canvas so a stop string that straddles a canvas
     # boundary still gets matched on the NEXT canvas before any text
@@ -909,8 +906,6 @@ def rapid_stream_diffusion_generate(
             else:
                 block_text = ""
                 holdback = combined
-
-        emitted_text += block_text
 
         yield RapidDiffusionResult(
             text=block_text,
