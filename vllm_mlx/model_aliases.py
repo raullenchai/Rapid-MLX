@@ -151,17 +151,24 @@ class AliasProfile:
     # to set them on a non-``text-diffusion`` modality — a typo there is
     # a routing decision, not a stray field.
     diffusion_backend: DiffusionBackend = "rapid"
-    # ``None`` enables the vendored adaptive-stop predicate
-    # (_stable_and_confident) which mirrors mlx-vlm; runs as many
-    # denoising steps as the canvas needs to converge. Setting an int
-    # caps the per-canvas step budget AND disables adaptive stop —
-    # operator opt-in for "I want deterministic step counts" or "I want
-    # the long-form perf win at the cost of some short-prompt quality
-    # drift". Empirical optimum on DiffusionGemma:
-    #   - adaptive (None): mlx-vlm-grade quality, ~parity speed
-    #   - fixed_steps=8:   ~1.7x speedup on longform fill-to-max_tokens,
-    #                       on-par on EOS-bound short outputs
-    diffusion_fixed_steps: int | None = None
+    # Empirical optimum on DiffusionGemma 26B-A4B 4-bit from the
+    # hand-graded quality eval (see ``research/diffusion-gemma/quality/``)
+    # AND the PR #555 live bench:
+    #   - ``8`` (default): 1.76x speedup on longform fill-to-max_tokens
+    #     vs mlx-vlm, 1.09x on code, on-par on JSON. Quality byte-
+    #     comparable on all 3 canonical prompts (valid JSON, working
+    #     code, coherent prose).
+    #   - ``None``: enables the vendored ``_stable_and_confident``
+    #     adaptive-stop predicate. Tracks mlx-vlm's algorithm 1:1 —
+    #     slightly slower than ``8`` on long-form, mlx-vlm-parity
+    #     elsewhere. Opt-in for operators who want bit-for-bit step
+    #     counts to match upstream (e.g. for spec-decode draft-budget
+    #     accounting or reproducibility experiments).
+    # We default to ``8`` because the entire value-add of the rapid
+    # backend over the ``"mlx-vlm"`` backend is the perf delta; an
+    # adaptive default would just re-implement upstream in our tree
+    # at upstream's speed.
+    diffusion_fixed_steps: int | None = 8
     diffusion_sc_every: int = 1
 
 
@@ -395,15 +402,20 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             raise ValueError(f"alias {alias!r}: {key} must be >= 1, got {raw}")
         return raw
 
-    raw_fixed_steps = value.get("diffusion_fixed_steps", None)
-    if raw_fixed_steps is None:
-        diffusion_fixed_steps: int | None = None
+    # JSON ``"diffusion_fixed_steps": null`` opts into adaptive mode;
+    # missing key inherits the AliasProfile default (``8``); any int
+    # value runs through the strict positive-int validator.
+    if "diffusion_fixed_steps" in value:
+        raw_fixed_steps = value["diffusion_fixed_steps"]
+        if raw_fixed_steps is None:
+            diffusion_fixed_steps: int | None = None
+        else:
+            diffusion_fixed_steps = _strict_positive_int(
+                "diffusion_fixed_steps",
+                raw_fixed_steps,
+            )
     else:
-        # Re-use the strict validator path for non-None values.
-        diffusion_fixed_steps = _strict_positive_int(
-            "diffusion_fixed_steps",
-            raw_fixed_steps,
-        )
+        diffusion_fixed_steps = 8  # mirrors the dataclass default
     diffusion_sc_every = _strict_positive_int("diffusion_sc_every", 1)
 
     return AliasProfile(

@@ -7,14 +7,16 @@ Three knobs added with the in-house diffusion loop (see
 - ``diffusion_backend``: ``"rapid"`` (default, in-house) | ``"mlx-vlm"``
   (escape hatch). Routing decision — typo silently swaps generation
   loops, so the loader must reject unknown values.
-- ``diffusion_fixed_steps`` (default ``None``): number of denoising
-  passes per canvas in the rapid backend. ``None`` enables adaptive
-  early-stop via ``_stable_and_confident`` (mlx-vlm parity); int
-  caps the per-canvas budget and disables adaptive stop (operator
-  opt-in for either deterministic step counts or the ~1.7× longform
-  perf win that ``fixed_steps=8`` provides at the cost of some short-
-  prompt quality drift). When set, must be a positive JSON int —
-  silently truncating ``8.5`` would hide a hand-edit typo.
+- ``diffusion_fixed_steps`` (default ``8``): number of denoising
+  passes per canvas in the rapid backend. ``8`` is the empirical
+  optimum on DiffusionGemma 26B-A4B 4-bit — 1.76x speedup on long-
+  form vs mlx-vlm at byte-comparable quality (valid JSON, working
+  code, coherent prose). Setting ``null`` in JSON opts into the
+  ``_stable_and_confident`` adaptive-stop predicate for bit-for-bit
+  step-count parity with upstream (slightly slower, useful for
+  spec-decode draft-budget accounting). Any int value must be a
+  positive JSON int — silently truncating ``8.5`` would hide a
+  hand-edit typo.
 - ``diffusion_sc_every`` (default 1): self-conditioning matmul cadence.
   Empirical: only ``1`` keeps quality on DiffusionGemma 26B-A4B 4-bit;
   ``>=2`` collapses output to ``"the the the…"`` (see quality eval
@@ -43,7 +45,7 @@ def test_defaults_match_diffusion_gemma_empirical_optimum():
     default away from these, the diff is review-visible."""
     prof = AliasProfile(hf_path="x/y")
     assert prof.diffusion_backend == "rapid"
-    assert prof.diffusion_fixed_steps is None  # adaptive stop
+    assert prof.diffusion_fixed_steps == 8  # empirical optimum
     assert prof.diffusion_sc_every == 1
 
 
@@ -54,7 +56,7 @@ def test_text_alias_inherits_defaults_silently():
     assert qwen is not None
     assert qwen.modality == "text"
     assert qwen.diffusion_backend == "rapid"
-    assert qwen.diffusion_fixed_steps is None
+    assert qwen.diffusion_fixed_steps == 8
     assert qwen.diffusion_sc_every == 1
 
 
@@ -65,24 +67,41 @@ def test_diffusion_gemma_alias_picks_up_defaults():
     assert diff is not None
     assert diff.modality == "text-diffusion"
     assert diff.diffusion_backend == "rapid"
-    assert diff.diffusion_fixed_steps is None  # adaptive stop
+    assert diff.diffusion_fixed_steps == 8  # empirical optimum
     assert diff.diffusion_sc_every == 1
 
 
-def test_fixed_steps_explicit_int_is_honored():
-    """Operators can opt into a fixed step budget for the longform
-    perf win or deterministic step accounting. The loader must accept
-    an int and the same strict-positive-int validation must apply."""
+def test_fixed_steps_explicit_null_opts_into_adaptive_mode():
+    """Operators can opt into the vendored ``_stable_and_confident``
+    adaptive-stop predicate by setting ``"diffusion_fixed_steps": null``
+    in the alias JSON. The loader must propagate ``None`` to the
+    AliasProfile (which the lane translates into "omit the kwarg" so
+    the rapid loop's signature default enables adaptive)."""
     prof = _coerce(
         "x",
         {
             "hf_path": "a/b",
             "modality": "text-diffusion",
             "supports_spec_decode": False,
-            "diffusion_fixed_steps": 8,
+            "diffusion_fixed_steps": None,
         },
     )
-    assert prof.diffusion_fixed_steps == 8
+    assert prof.diffusion_fixed_steps is None
+
+
+def test_fixed_steps_explicit_int_overrides_default():
+    """Explicit ints override the ``8`` default. ``16`` is plausible
+    if a future diffusion model converges slower than DiffusionGemma."""
+    prof = _coerce(
+        "x",
+        {
+            "hf_path": "a/b",
+            "modality": "text-diffusion",
+            "supports_spec_decode": False,
+            "diffusion_fixed_steps": 16,
+        },
+    )
+    assert prof.diffusion_fixed_steps == 16
 
 
 # =============================================================================

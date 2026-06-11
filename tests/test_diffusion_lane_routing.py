@@ -168,16 +168,13 @@ async def test_default_alias_uses_rapid_backend(
 
     assert spy["rapid"] is True, "rapid backend should have fired"
     assert spy["mlx_vlm"] is False, "mlx-vlm should NOT have been called"
-    # Profile knobs threaded through. Default profile has
-    # ``diffusion_fixed_steps=None`` → ``fixed_steps`` is OMITTED
-    # entirely (lane only forwards when non-None) so the rapid loop's
-    # own ``fixed_steps=None`` default enables adaptive stop.
-    # ``sc_every`` is always forwarded.
+    # Default profile is ``diffusion_fixed_steps=8`` — the empirical
+    # optimum that delivers the 1.76x longform speedup over mlx-vlm.
+    # Lane forwards ``fixed_steps=8`` AND ``sc_every=1`` so the rapid
+    # loop runs with deterministic step counts (disabling the
+    # adaptive-stop predicate).
     rapid_kw = spy["_kwargs"]["rapid"]  # type: ignore[index]
-    assert "fixed_steps" not in rapid_kw, (
-        "default profile uses adaptive stop; fixed_steps must NOT be "
-        f"forwarded, got {rapid_kw.get('fixed_steps')!r}"
-    )
+    assert rapid_kw["fixed_steps"] == 8
     assert rapid_kw["sc_every"] == 1
 
 
@@ -256,7 +253,7 @@ def test_profile_resolves_for_known_alias_name(monkeypatch: pytest.MonkeyPatch) 
     engine = DiffusionEngine(model_name="diffusion-gemma-26b")
     assert engine._profile.modality == "text-diffusion"
     assert engine._profile.diffusion_backend == "rapid"
-    assert engine._profile.diffusion_fixed_steps is None  # adaptive stop
+    assert engine._profile.diffusion_fixed_steps == 8  # empirical optimum
     assert engine._profile.diffusion_sc_every == 1
 
 
@@ -273,17 +270,18 @@ def test_profile_falls_back_for_unknown_hf_path(
     assert engine._profile is not None
     assert engine._profile.modality == "text-diffusion"
     assert engine._profile.diffusion_backend == "rapid"  # default
-    assert engine._profile.diffusion_fixed_steps is None  # adaptive stop
+    assert engine._profile.diffusion_fixed_steps == 8  # empirical optimum
     assert engine._profile.diffusion_sc_every == 1  # default
 
 
 @pytest.mark.asyncio
-async def test_alias_with_explicit_fixed_steps_forwards_int(
+async def test_alias_with_null_fixed_steps_opts_into_adaptive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Operators can opt into a fixed step budget; when set, the lane
-    MUST forward ``fixed_steps=<int>`` so the rapid loop honors it and
-    disables adaptive stop."""
+    """Setting ``"diffusion_fixed_steps": null`` in the alias JSON
+    opts into adaptive-stop. The lane MUST OMIT ``fixed_steps`` from
+    the kwargs so the rapid loop's signature default (``None``)
+    enables the ``_stable_and_confident`` predicate."""
     spy = _install_backend_spies(monkeypatch)
     from vllm_mlx.model_aliases import AliasProfile
     from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
@@ -293,7 +291,7 @@ async def test_alias_with_explicit_fixed_steps_forwards_int(
         hf_path="x/y",
         modality="text-diffusion",
         supports_spec_decode=False,
-        diffusion_fixed_steps=8,
+        diffusion_fixed_steps=None,
     )
     engine._load_blocking()
     async for _ in engine.stream_chat(
@@ -302,4 +300,6 @@ async def test_alias_with_explicit_fixed_steps_forwards_int(
     ):
         pass
     rapid_kw = spy["_kwargs"]["rapid"]  # type: ignore[index]
-    assert rapid_kw["fixed_steps"] == 8
+    assert "fixed_steps" not in rapid_kw, (
+        f"null fixed_steps must NOT be forwarded; got {rapid_kw.get('fixed_steps')!r}"
+    )
