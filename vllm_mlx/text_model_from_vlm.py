@@ -143,6 +143,14 @@ def build_text_model(vlm_model: Any, model_path: str | Path) -> Any | None:
         else:
             logger.info("TextModel built without MTP")
 
+        # Put the derived TextModel in eval mode. mlx_lm.load / mlx_vlm.load both
+        # eval() their models (this is also what LM Studio's mlx-engine does), but
+        # this freshly-constructed TextModel defaults to training=True. Hybrid
+        # layers (Qwen3.5/3.6 gated-delta) select their compute path with
+        # `use_kernel = not self.training`, so in training mode prefill/decode fall
+        # to the slow Python recurrence instead of the Metal kernel.
+        text_model.train(False)
+
         return text_model
 
     except ImportError as e:
