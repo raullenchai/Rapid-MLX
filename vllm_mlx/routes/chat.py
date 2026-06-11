@@ -797,9 +797,7 @@ async def _create_chat_completion_impl(
     # markers, so streaming would finish with plain text and the
     # contract would silently break. Reject upfront with the same
     # 422 the parser-less path uses (codex round 10 [P2] on PR #551).
-    _engine_opts_out_of_tools = (
-        getattr(engine, "supports_tool_calls", True) is False
-    )
+    _engine_opts_out_of_tools = getattr(engine, "supports_tool_calls", True) is False
     if (
         request.stream
         and tc == "required"

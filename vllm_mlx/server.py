@@ -710,9 +710,7 @@ def load_model(
         # ``mlx_vlm.utils.load`` which only accepts HF paths — so we
         # must use the profile's resolved hf_path here (codex round
         # 10 [P2]).
-        _diffusion_hf_path = (
-            _profile.hf_path if _profile is not None else model_name
-        )
+        _diffusion_hf_path = _profile.hf_path if _profile is not None else model_name
         logger.info(
             f"Loading model with DiffusionEngine "
             f"(modality=text-diffusion): {_diffusion_hf_path}"

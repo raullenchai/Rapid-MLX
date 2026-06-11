@@ -1023,9 +1023,7 @@ class TestConcurrentRequests:
         # trigger the worker (which would import mlx_vlm + load).
         engine = DiffusionEngine(model_name="mlx-community/whatever-bogus")
         assert engine._worker is None, "Worker started in __init__"
-        assert engine._load_error is None, (
-            "Load attempted in __init__ (load_error set)"
-        )
+        assert engine._load_error is None, "Load attempted in __init__ (load_error set)"
 
     def test_supports_tool_calls_attribute_is_false(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1055,6 +1053,7 @@ class TestConcurrentRequests:
         # markers), letting the request finish with plain text and
         # silently violating the OpenAI contract.
         _install_mlx_vlm_mock(monkeypatch)
+
         # Direct test of the engine-veto logic: build a tiny stub
         # that exposes ``supports_tool_calls=False`` and verify the
         # condition that gates the 422 evaluates True regardless of
@@ -1062,9 +1061,7 @@ class TestConcurrentRequests:
         class _StubEngine:
             supports_tool_calls = False
 
-        _engine_opts_out = (
-            getattr(_StubEngine(), "supports_tool_calls", True) is False
-        )
+        _engine_opts_out = getattr(_StubEngine(), "supports_tool_calls", True) is False
         assert _engine_opts_out is True
 
     def test_route_probe_rejects_engine_when_supports_tool_calls_false(
