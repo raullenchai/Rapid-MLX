@@ -1180,6 +1180,83 @@ class TestConcurrentRequests:
         body = resp.text.lower()
         assert "tool" in body and "required" in body
 
+    def test_engine_opts_out_blocks_tool_choice_required_non_stream_too(
+        self,
+    ) -> None:
+        # codex pr_validate r6 BLOCKING #1: the previous engine-level
+        # veto was nested inside the ``request.stream`` branch, so
+        # ``tool_choice="required"`` non-stream requests still ran a
+        # full diffusion generation and only failed in the
+        # post-parse 422 gate at line ~1101. This test pins the
+        # upfront rejection for the non-stream flow — the request
+        # MUST 422 BEFORE the engine.chat() call would have been made
+        # (verified by the ``raise RuntimeError`` stub: if the chat
+        # method ever executed, the test would explode).
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes.chat import router as chat_router
+
+        class _DiffusionEngineStub:
+            supports_tool_calls = False
+            preserve_native_tool_format = False
+            is_mllm = False
+            supports_guided_generation = False
+            tokenizer = None
+
+            def build_prompt(self, messages, tools=None, enable_thinking=None):
+                return "PROMPT"
+
+            async def chat(self, messages, **kwargs):
+                # Reaching here means the upfront veto did NOT fire —
+                # the request would have consumed GPU before failing.
+                raise RuntimeError(
+                    "engine.chat() executed despite "
+                    "supports_tool_calls=False and tool_choice=required; "
+                    "the non-stream veto regressed"
+                )
+
+            async def stream_chat(self, messages, **kwargs):
+                yield GenerationOutput(text="should-not-be-reached", finished=True)
+
+        cfg = reset_config()
+        cfg.engine = _DiffusionEngineStub()
+        cfg.model_name = "diffusion-gemma-26b"
+        cfg.model_registry = None
+        cfg.no_thinking = True
+        cfg.tool_call_parser = "hermes"
+
+        app = FastAPI()
+        app.include_router(chat_router)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "diffusion-gemma-26b",
+                "stream": False,  # <-- the regression point
+                "messages": [{"role": "user", "content": "weather?"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "tool_choice": "required",
+                "max_tokens": 32,
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        body = resp.text.lower()
+        # The new error mentions the opt-out reason, not the streaming
+        # parser language.
+        assert "opted out" in body or "supports_tool_calls" in body, body
+
     def test_route_probe_rejects_engine_when_supports_tool_calls_false(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1723,9 +1800,10 @@ class TestStopRace:
         # ``stop()`` must NOT null _model / _processor while the
         # worker thread is mid-eval. Pre-fix code joined for 5 s
         # then cleared unconditionally; post-fix code joins 30 s
-        # and skips the clear if the worker is still alive.
-        import time as _time
-
+        # and skips the clear if the worker is still alive. On
+        # clean shutdown the worker bookkeeping is also reset so
+        # a subsequent ``_load_blocking`` can restart cleanly
+        # (codex pr_validate r6 NIT).
         _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
@@ -1736,23 +1814,62 @@ class TestStopRace:
         original_processor = engine._processor
         assert original_model is not None
         assert original_processor is not None
+        worker_before = engine._worker
+        assert worker_before is not None
 
         # Worker is parked on queue.get(); stop() pushes sentinel
         # and the worker exits its loop. After join returns, the
-        # model refs MUST be cleared (no in-flight job to protect).
+        # model refs MUST be cleared (no in-flight job to protect)
+        # AND the worker bookkeeping MUST be reset so a subsequent
+        # restart spawns a fresh worker.
         await engine.stop()
         assert engine._loaded is False
         assert engine._model is None
         assert engine._processor is None
+        assert engine._worker is None, (
+            "stop() must reset _worker to None on clean shutdown so "
+            "_start_worker_once is willing to spawn a fresh worker; "
+            "codex pr_validate r6 NIT"
+        )
+        assert engine._stop is False, "stop() must clear _stop for restart"
+        assert engine._active_cancel is None
 
-        # And the worker thread is no longer alive.
+    @pytest.mark.asyncio
+    async def test_engine_can_restart_after_clean_stop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex pr_validate r6 NIT: after a clean ``stop()``,
+        # ``_load_blocking()`` MUST be able to spin up a fresh
+        # worker. Pre-fix code left ``_worker`` non-None so
+        # ``_start_worker_once`` no-op'd and the engine remained
+        # permanently un-loaded after a lifecycle restart.
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        worker_first = engine._worker
+        assert worker_first is not None
+        assert engine._loaded is True
+
+        await engine.stop()
+        assert engine._loaded is False
+        assert engine._worker is None
+
+        # Second load must succeed and produce a NEW worker thread —
+        # not the dead one from before.
+        engine._load_blocking()
+        assert engine._loaded is True
         assert engine._worker is not None
-        # Give the OS scheduler a beat to mark the thread dead.
-        for _ in range(50):
-            if not engine._worker.is_alive():
-                break
-            _time.sleep(0.02)
-        assert engine._worker.is_alive() is False
+        assert engine._worker is not worker_first, (
+            "expected a fresh worker thread after restart; got the "
+            "same (dead) instance — _start_worker_once likely no-op'd"
+        )
+        # Sanity: the fresh worker is actually alive.
+        assert engine._worker.is_alive() is True
+
+        # Cleanup so the test doesn't leak a daemon thread.
+        await engine.stop()
 
     @pytest.mark.asyncio
     async def test_stop_defers_model_clear_when_worker_wedged(
@@ -1806,10 +1923,22 @@ class TestTokenIdZeroNotSwallowed:
     async def test_token_id_zero_is_recorded_verbatim(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Stream a chunk whose token id is exactly 0. The
-        # GenerationOutput must report tokens=[0], not whatever the
-        # uninitialized previous value happened to be.
+        # Stream a sequence where the FIRST block sets a non-zero
+        # previous token, then the second block sends ``token=0``.
+        # The pre-fix code (``getattr(...) or last_token``) would
+        # have reused 42 instead of recording 0 — pr_validate r6
+        # codex BLOCKING #2: the earlier version of this test only
+        # had a token=0 chunk and ``last_token`` was initialised to
+        # 0, so the broken code would have stayed green. By priming
+        # the previous token with 42 first, a regression to the
+        # truthy-fallback pattern would now report tokens=[42] on
+        # the second block and fail the assertion.
         yields = [
+            FakeGenerationResult(
+                text="first",
+                token=42,  # <-- primes last_token to non-zero
+                diffusion_block_complete=True,
+            ),
             FakeGenerationResult(
                 text="zero",
                 token=0,  # <-- the regression point
@@ -1827,14 +1956,17 @@ class TestTokenIdZeroNotSwallowed:
             [{"role": "user", "content": "hi"}], max_tokens=16
         ):
             outs.append(out)
-        # The block-complete chunk must carry the actual token id 0
-        # in its tokens field — the pre-fix code would have replaced
-        # it with the engine's initial ``last_token`` (also 0 here
-        # by coincidence, but the SEMANTIC is "report what the model
-        # said, not what we last cached").
         non_finish = [o for o in outs if not o.finished]
-        assert non_finish, outs
-        assert non_finish[0].tokens == [0], (
-            f"expected tokens=[0] (verbatim from result.token=0); "
-            f"got tokens={non_finish[0].tokens}"
+        assert len(non_finish) == 2, outs
+        # First block records 42 (sanity check on the priming step).
+        assert non_finish[0].tokens == [42], (
+            f"first block: expected tokens=[42]; got {non_finish[0].tokens}"
+        )
+        # Second block MUST record 0 verbatim — if the
+        # ``or last_token`` regression returned, this would be [42].
+        assert non_finish[1].tokens == [0], (
+            f"second block: expected tokens=[0] (verbatim from "
+            f"result.token=0); got tokens={non_finish[1].tokens} — "
+            "the ``or last_token`` truthy-fallback regression would "
+            "have leaked the previous token through here"
         )

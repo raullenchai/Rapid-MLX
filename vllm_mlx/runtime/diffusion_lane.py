@@ -328,10 +328,26 @@ class DiffusionEngine(BaseEngine):
                     "worker drain to avoid clearing under live "
                     "mx.eval."
                 )
+                # NOTE: do NOT reset ``_worker`` / ``_ready`` / ``_stop``
+                # here — an orphaned worker still owns the GPU stream.
+                # Restarts in this state would race on shared state.
                 return
+        # codex pr_validate r6 NIT: a clean shutdown MUST reset the
+        # worker bookkeeping so a subsequent ``start()`` /
+        # ``_load_blocking()`` can spin up a fresh worker. Without
+        # this reset, ``_start_worker_once`` saw ``_worker is not
+        # None`` and refused to spawn — restart silently no-op'd
+        # while the engine remained ``_loaded = False``. Lifespan
+        # restart isn't on the current dispatch path, but contract
+        # callers (the test suite, and any future operator-triggered
+        # reload route) deserve a working restart.
         self._model = None
         self._processor = None
         self._loaded = False
+        self._worker = None
+        self._ready = threading.Event()
+        self._stop = False
+        self._active_cancel = None
 
     # ------------------------------------------------------------------
     # BaseEngine — admission control

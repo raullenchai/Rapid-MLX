@@ -804,17 +804,33 @@ async def _create_chat_completion_impl(
     # engines) preserves prior behaviour for everything that hasn't
     # opted out.
     _engine_opts_out_of_tools = not getattr(engine, "supports_tool_calls", True)
+    # Engine-level veto applies REGARDLESS of stream / non-stream.
+    # Pre-pr_validate r6, this check was nested inside the
+    # ``request.stream`` branch below, so a non-streaming
+    # ``tool_choice="required"`` request still ran a full diffusion
+    # generation before failing in the post-parse gate at line ~1101.
+    # That is wasted GPU + ambiguous client UX. Reject upfront for
+    # opted-out engines no matter the stream flag (codex pr_validate
+    # r6 BLOCKING #1 on PR #551).
+    if tc == "required" and request.tools and _engine_opts_out_of_tools:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                'tool_choice="required" cannot be satisfied: the active '
+                "engine has explicitly opted out of tool-call surfaces "
+                "(supports_tool_calls=False). The generator never emits "
+                "structured tool_calls, so the OpenAI 'tool_call guaranteed' "
+                "contract is unenforceable. Drop tool_choice (or set it to "
+                '"auto"/"none"), retry against an engine that supports '
+                "tool calls, or remove the ``tools`` array from the request."
+            ),
+        )
     if (
         request.stream
         and tc == "required"
         and request.tools
-        and (
-            _engine_opts_out_of_tools
-            or (
-                not cfg.tool_call_parser
-                and not _engine_supports_channel_routed_tool_calls(engine)
-            )
-        )
+        and not cfg.tool_call_parser
+        and not _engine_supports_channel_routed_tool_calls(engine)
     ):
         raise HTTPException(
             status_code=422,
