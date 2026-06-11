@@ -951,6 +951,87 @@ class TestConcurrentRequests:
         engine = DiffusionEngine(model_name="x/y")
         assert isinstance(engine._generation_lock, _aio.Lock)
 
+    def test_run_generator_cancel_check_at_top_skips_tokenization(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Codex round 7 [P2]: even after the worker-loop fast-skip,
+        # cancel may flip BEFORE ``_run_generator`` tokenizes. Without
+        # the top-of-function cancel-check, we'd materialize input_ids
+        # + dispatch prefill before the per-iteration check fires.
+        # We verify by setting cancel before invoking _run_generator
+        # directly and asserting the tokenizer.encode was never called.
+        import queue as _queue
+        import threading as _threading
+
+        encode_calls: list[str] = []
+        invoked: list[bool] = []
+        yields = [FakeGenerationResult(text="x", finish_reason="stop")]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        diffusion_mod = sys.modules["mlx_vlm.generate.diffusion"]
+
+        def _tracker(*a: Any, **k: Any) -> Iterator[FakeGenerationResult]:
+            invoked.append(True)
+            yield from yields
+
+        diffusion_mod.stream_diffusion_generate = _tracker  # type: ignore[attr-defined]
+        from vllm_mlx.runtime.diffusion_lane import (
+            DiffusionEngine,
+            DiffusionGenerationConfig,
+        )
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        # Wrap tokenizer.encode so we can detect whether it was hit.
+        real_encode = engine._processor.tokenizer.encode
+
+        def _tracking_encode(text: str) -> list[int]:
+            encode_calls.append(text)
+            return real_encode(text)
+
+        engine._processor.tokenizer.encode = _tracking_encode  # type: ignore[method-assign]
+
+        cancel_event = _threading.Event()
+        cancel_event.set()
+        thread_q: _queue.Queue[Any] = _queue.Queue()
+        engine._run_generator(
+            "prompt",
+            16,
+            DiffusionGenerationConfig(),
+            thread_q,
+            cancel_event,
+        )
+        # Top-of-function cancel-check must short-circuit before
+        # encode runs.
+        assert encode_calls == [], "Tokenizer hit despite pre-cancel"
+        assert invoked == [], "Generator dispatched despite pre-cancel"
+
+    @pytest.mark.asyncio
+    async def test_worker_stuck_marks_admission_unhealthy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Codex round 7 [P2]: when the done_event drain ceiling fires,
+        # the engine must refuse subsequent admissions — otherwise the
+        # next request rides onto a worker still burning GPU on the
+        # abandoned job. We simulate by setting _worker_stuck directly
+        # and verifying check_admission raises immediately.
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from vllm_mlx.scheduler import BackpressureError, SchedulerConfig
+
+        _install_mlx_vlm_mock(monkeypatch)
+        engine = DiffusionEngine(
+            model_name="x/y",
+            scheduler_config=SchedulerConfig(max_concurrent_requests=2),
+        )
+        engine._load_blocking()
+        # Healthy path — capacity available.
+        engine.check_admission()
+        engine.release_admission_reservation()
+        # Flip stuck and verify check_admission refuses even at zero
+        # in-flight reservations.
+        engine._worker_stuck = True
+        with pytest.raises(BackpressureError, match="marked unhealthy"):
+            engine.check_admission()
+
     @pytest.mark.asyncio
     async def test_worker_fast_skips_pre_cancelled_jobs(
         self, monkeypatch: pytest.MonkeyPatch

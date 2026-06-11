@@ -159,6 +159,14 @@ class DiffusionEngine(BaseEngine):
         # returning the documented 503/Retry-After at the cap.
         self._admission_lock = threading.Lock()
         self._admission_reservations = 0
+        # ``_worker_stuck`` is flipped when ``_stream_prompt_raw``'s
+        # ``done_event.wait`` ceiling fires — i.e. the worker did not
+        # observe cancel within the 30 s drain window. Once set, every
+        # subsequent ``check_admission`` raises so the operator's
+        # health-check + restart catches the wedge instead of routing
+        # new requests onto an engine whose GPU is still consuming the
+        # abandoned job (codex round 7 [P2]).
+        self._worker_stuck: bool = False
         # Per-engine lock — DiffusionGemma is single-batch only, so we
         # serialize the generator at the engine level rather than rely
         # on the route admission queue. Two concurrent
@@ -266,6 +274,17 @@ class DiffusionEngine(BaseEngine):
         """
         from ..scheduler import BackpressureError, SchedulerConfig
 
+        # Stuck-worker short-circuit — once the drain ceiling has been
+        # hit, refuse new work until the engine is restarted. Routing
+        # requests onto a wedged engine would let them queue behind
+        # GPU work that the lock was meant to exclude (codex round 7
+        # [P2]).
+        if self._worker_stuck:
+            raise BackpressureError(
+                "DiffusionEngine worker did not drain a cancelled job "
+                "within the 30 s ceiling — engine marked unhealthy. "
+                "Restart the server to recover."
+            )
         sc = self._scheduler_config
         if sc is None:
             sc = SchedulerConfig()
@@ -719,8 +738,21 @@ class DiffusionEngine(BaseEngine):
                 # block (~50-200 ms), so this normally waits one
                 # block at most. The 30 s ceiling is a defence-in-
                 # depth so a stuck worker can never wedge the lock
-                # forever.
-                await asyncio.to_thread(done_event.wait, 30.0)
+                # forever. If the ceiling DOES fire, we mark the
+                # engine as ``_worker_stuck`` so subsequent
+                # ``check_admission`` calls fail fast and the operator
+                # learns the engine is unhealthy — otherwise we'd
+                # silently release the lock onto a worker that's
+                # still burning GPU on the abandoned job (codex round
+                # 7 [P2]).
+                drained = await asyncio.to_thread(done_event.wait, 30.0)
+                if not drained:
+                    self._worker_stuck = True
+                    logger.error(
+                        "DiffusionEngine worker did not drain cancelled job "
+                        "within 30 s — engine marked unhealthy. Further "
+                        "admissions will fail until restart."
+                    )
                 # Unconditional pump terminator. The worker's own
                 # _STREAM_DONE arrives eventually, but if cancellation
                 # happens before the worker has produced any output
@@ -831,6 +863,15 @@ class DiffusionEngine(BaseEngine):
         # pages wired in physical RAM); dropping it costs at most an
         # extra page fault on the very first request.
 
+        # Cancel-check #1 — covers the race where the request was
+        # cancelled between the worker-loop fast-skip gate
+        # (``_worker_loop`` line ~394) and us getting here. Without
+        # this, we'd still tokenize + materialize input_ids + dispatch
+        # the first diffusion block before the per-iteration check at
+        # the bottom kicks in (codex round 7 [P2]).
+        if cancel_event.is_set():
+            return
+
         tokenizer = self._processor.tokenizer
         eos_id = getattr(self._model.config, "eos_token_id", None)
         if eos_id is not None and hasattr(tokenizer, "stopping_criteria"):
@@ -863,6 +904,13 @@ class DiffusionEngine(BaseEngine):
         last_prompt_tokens = 0
         last_completion_tokens = 0
         last_token: int = 0
+
+        # Cancel-check #2 — last opportunity before the first
+        # ``next()`` on stream_diffusion_generate triggers the
+        # expensive prefill. Race window is small (tokenize +
+        # input_ids construction) but real (codex round 7 [P2]).
+        if cancel_event.is_set():
+            return
 
         for result in stream_diffusion_generate(
             self._model,
