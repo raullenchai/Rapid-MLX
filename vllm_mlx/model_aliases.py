@@ -28,9 +28,14 @@ from typing import Literal
 # routes/models.py so the surface-level UX (info, ls, chat) doesn't
 # silently expose LLM-only columns on a non-LLM alias.
 Modality = Literal["text", "text-diffusion", "vision", "image-gen"]
-_VALID_MODALITIES: frozenset[str] = frozenset(
-    {"text", "text-diffusion", "vision", "image-gen"}
-)
+# Implemented lanes — what ``load_model`` can actually dispatch to today.
+# ``vision`` and ``image-gen`` are RESERVED in the type alias so that
+# routing code can pattern-match on them once their dispatch paths land,
+# but loading an alias that declares one MUST fail loud right now —
+# otherwise an aliases.json typo would pass schema validation and crash
+# at request time with an unrouted lane (pr_validate codex r13 NIT).
+_VALID_MODALITIES: frozenset[str] = frozenset({"text", "text-diffusion"})
+_RESERVED_MODALITIES: frozenset[str] = frozenset({"vision", "image-gen"})
 
 # Canonical enum for ``suffix_decoding_tier``. Kept here so the contract
 # test (tests/test_aliases_contract.py) and any future loader / CLI
@@ -279,7 +284,22 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"got {type(raw_sampling).__name__}"
         )
     raw_modality = value.get("modality", "text")
-    if not isinstance(raw_modality, str) or raw_modality not in _VALID_MODALITIES:
+    if not isinstance(raw_modality, str):
+        raise ValueError(
+            f"alias {alias!r}: modality must be one of "
+            f"{sorted(_VALID_MODALITIES)}, got {raw_modality!r}"
+        )
+    if raw_modality in _RESERVED_MODALITIES:
+        # Type alias keeps these for forward compat, but loading
+        # fails loud until their dispatch lands (pr_validate codex
+        # r13 NIT).
+        raise ValueError(
+            f"alias {alias!r}: modality={raw_modality!r} is reserved but "
+            "not yet implemented — there is no dispatch path for it. "
+            f"Use one of {sorted(_VALID_MODALITIES)} or wait for the "
+            "matching engine to land."
+        )
+    if raw_modality not in _VALID_MODALITIES:
         raise ValueError(
             f"alias {alias!r}: modality must be one of "
             f"{sorted(_VALID_MODALITIES)}, got {raw_modality!r}"

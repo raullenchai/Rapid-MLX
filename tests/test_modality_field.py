@@ -20,7 +20,12 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.model_aliases import _VALID_MODALITIES, AliasProfile, _coerce
+from vllm_mlx.model_aliases import (
+    _RESERVED_MODALITIES,
+    _VALID_MODALITIES,
+    AliasProfile,
+    _coerce,
+)
 
 
 class TestModalityDefault:
@@ -74,14 +79,36 @@ class TestModalityValidation:
             )
 
     def test_valid_modality_set_pinned(self) -> None:
-        # If you add a value here you MUST also update the Literal in
-        # model_aliases.py AND the dispatch tables in cli.py /
-        # routes/models.py. Failing this assertion is the trigger to
-        # do that work.
-        assert (
-            frozenset({"text", "text-diffusion", "vision", "image-gen"})
-            == _VALID_MODALITIES
-        )
+        # Implemented lanes — these have working dispatch in
+        # ``load_model``. If you add a value here you MUST also
+        # update the Literal in model_aliases.py AND the dispatch
+        # tables in cli.py / routes/models.py. Failing this assertion
+        # is the trigger to do that work.
+        assert frozenset({"text", "text-diffusion"}) == _VALID_MODALITIES
+
+    def test_reserved_modality_set_pinned(self) -> None:
+        # Reserved lanes — declared in the type alias so routing
+        # code can pattern-match once the engine lands, but loading
+        # an alias that declares one MUST fail loud right now
+        # (pr_validate codex r13 NIT). When you implement one of
+        # these, move it from _RESERVED_MODALITIES into
+        # _VALID_MODALITIES and update this test.
+        assert frozenset({"vision", "image-gen"}) == _RESERVED_MODALITIES
+
+    def test_reserved_modality_rejected_at_load(self) -> None:
+        # Loading an alias whose modality is reserved-but-not-routed
+        # must fail with a clear "not yet implemented" message.
+        for reserved in ("vision", "image-gen"):
+            with pytest.raises(ValueError, match="not yet implemented"):
+                _coerce(
+                    "bad",
+                    {
+                        "hf_path": "x/y",
+                        "modality": reserved,
+                        "supports_spec_decode": False,
+                        "supports_dflash": False,
+                    },
+                )
 
 
 class TestNonTextLaneRejectsARGates:

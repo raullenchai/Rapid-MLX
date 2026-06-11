@@ -1526,6 +1526,63 @@ class TestAdmissionControl:
         assert engine._admission_reservations == 0
 
 
+class TestMlxVlmImportContract:
+    """pr_validate codex r13 BLOCKING: every test above this point
+    replaces ``mlx_vlm.generate.diffusion`` with a synthetic module
+    via monkeypatch, so those tests would silently still pass if a
+    future mlx-vlm release renamed or removed the symbols the
+    runtime imports. These tests deliberately do NOT install the
+    mock — they bind against the installed mlx-vlm package's real
+    surface, so any upstream rename trips the test suite at the
+    next ``pip install -e .`` cycle.
+
+    These tests skip cleanly if mlx-vlm is not installed (CI lanes
+    without Metal). With mlx-vlm == 0.6.3 they MUST find the
+    runtime-imported symbols at the documented paths.
+    """
+
+    def test_load_symbol_exists_in_installed_mlx_vlm(self) -> None:
+        pytest.importorskip("mlx_vlm")
+        from mlx_vlm.utils import load
+
+        # Callable check is enough — signature varies across upstream
+        # versions but rapid-mlx only invokes with the HF-path arg.
+        assert callable(load)
+
+    def test_diffusion_generation_family_exists_in_installed_mlx_vlm(self) -> None:
+        pytest.importorskip("mlx_vlm")
+        from mlx_vlm.generate.diffusion import diffusion_generation_family
+
+        assert callable(diffusion_generation_family)
+
+    def test_stream_diffusion_generate_exists_in_installed_mlx_vlm(self) -> None:
+        pytest.importorskip("mlx_vlm")
+        from mlx_vlm.generate.diffusion import stream_diffusion_generate
+
+        # Generator factory — callable, not the iterator type.
+        assert callable(stream_diffusion_generate)
+
+    def test_runtime_imports_match_installed_surface(self) -> None:
+        # Pin the exact import paths that diffusion_lane.py uses at
+        # request time. A future mlx-vlm release that moves these
+        # symbols (e.g. into a different submodule) would break the
+        # production path; this test would break first.
+        pytest.importorskip("mlx_vlm")
+        import importlib
+
+        # Match diffusion_lane.py:_worker_loop imports verbatim.
+        importlib.import_module("mlx_vlm.utils")
+        importlib.import_module("mlx_vlm.generate.diffusion")
+
+        # And the per-request imports inside _run_generator.
+        gen_diff = importlib.import_module("mlx_vlm.generate.diffusion")
+        for symbol in ("diffusion_generation_family", "stream_diffusion_generate"):
+            assert hasattr(gen_diff, symbol), (
+                f"mlx_vlm.generate.diffusion.{symbol} missing — "
+                "diffusion_lane.py would fail at request time"
+            )
+
+
 class TestAliasIntegration:
     def test_diffusion_gemma_alias_resolves_to_text_diffusion_modality(
         self,
