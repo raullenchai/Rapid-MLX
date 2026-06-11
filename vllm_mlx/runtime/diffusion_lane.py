@@ -108,6 +108,12 @@ class DiffusionGenerationConfig:
     # at the entropy-bound sampler. Surface the knob anyway so callers
     # can switch when mlx-vlm extends it.
     diffusion_sampler: str = "entropy-bound"
+    # Long-context chunked-prefill size (mlx-vlm
+    # ``prefill_step_size``). ``None`` → run the prefill as one
+    # monolithic forward pass (mlx-vlm default). Set on long-context
+    # workloads to bound peak Metal allocation per step — without it
+    # the diffusion lane OOMs on 30k+ prompts (codex round 5 [P2]).
+    prefill_step_size: int | None = None
 
 
 class DiffusionEngine(BaseEngine):
@@ -313,19 +319,28 @@ class DiffusionEngine(BaseEngine):
         Step 1: load model. Once loaded, set ``_ready`` so
         ``_wait_until_ready`` returns.
         Step 2: pump jobs until ``_stop`` flips or sentinel arrives.
-        """
-        import mlx.core as mx
 
+        Every failure path BEFORE ``self._ready.set()`` MUST surface
+        through ``self._load_error`` and then ``self._ready.set()`` —
+        otherwise ``_load_blocking()`` / ``start()`` waits forever
+        (codex round 5 [P2]). The original code only caught
+        ``ImportError`` on the upstream module imports; a Metal
+        runtime error during ``import mlx.core`` or a non-Import
+        exception from ``mlx_vlm.generate.diffusion`` would silently
+        kill the worker before any startup signal.
+        """
         try:
+            import mlx.core as mx
             from mlx_vlm.generate.diffusion import (
                 diffusion_generation_family,
             )
             from mlx_vlm.utils import load
-        except ImportError as e:
+        except BaseException as e:  # noqa: BLE001 — propagate to caller
             self._load_error = RuntimeError(
-                f"DiffusionEngine requires mlx-vlm >= 0.6.3 with the "
-                f"diffusion_gemma package. Install or upgrade: "
-                f"`pip install -U 'mlx-vlm>=0.6.3'`. Underlying error: {e}"
+                "DiffusionEngine failed to import its mlx / mlx-vlm "
+                "dependencies. Install or upgrade: "
+                "`pip install -U 'mlx-vlm>=0.6.3'`. "
+                f"Underlying error: {e}"
             )
             self._ready.set()
             return
@@ -353,8 +368,15 @@ class DiffusionEngine(BaseEngine):
         # generator's internal ``mx.eval`` calls have a valid default
         # to dispatch to. Once set here, it persists for the lifetime
         # of the worker — every job below inherits the same binding.
-        worker_stream = mx.default_stream(mx.default_device())
-        mx.set_default_stream(worker_stream)
+        # Any failure here also has to flip ``_ready`` so the lifespan
+        # startup doesn't deadlock on a partially-loaded worker.
+        try:
+            worker_stream = mx.default_stream(mx.default_device())
+            mx.set_default_stream(worker_stream)
+        except BaseException as e:  # noqa: BLE001 — propagate to caller
+            self._load_error = e
+            self._ready.set()
+            return
         self._ready.set()
 
         # Job loop.
@@ -486,13 +508,39 @@ class DiffusionEngine(BaseEngine):
                 "(images/videos) will be wired in a follow-up; for now "
                 "drop them from the request."
             )
+        prompt = self.build_prompt(messages)
+        async for chunk in self._stream_prompt_raw(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            **kwargs,
+        ):
+            yield chunk
+
+    async def _stream_prompt_raw(
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        **kwargs,
+    ) -> AsyncIterator[GenerationOutput]:
+        """Shared queue / cancel / stop-sequence plumbing for chat and
+        completions. Caller is responsible for any chat-template wrap
+        BEFORE invoking this helper — ``prompt`` is fed verbatim to
+        mlx-vlm's tokenizer (codex round 5 [P2]).
+        """
+        # Pull the operator-configured prefill chunk size from the
+        # scheduler config so long-context requests honor it. mlx-vlm
+        # only enables its chunked-prefill path when the kwarg is
+        # non-None.
+        _sc = self._scheduler_config
+        _prefill_step_size = getattr(_sc, "prefill_step_size", None) if _sc else None
         cfg = DiffusionGenerationConfig(
             diffusion_steps=kwargs.get("diffusion_steps"),
             temperature=temperature,
             diffusion_sampler=kwargs.get("diffusion_sampler", "entropy-bound"),
+            prefill_step_size=_prefill_step_size,
         )
-
-        prompt = self.build_prompt(messages)
         loop = asyncio.get_running_loop()
         # Cancellation handle — set by the stream_chat finally clause
         # so the persistent worker stops reading mlx-vlm's generator
@@ -662,12 +710,28 @@ class DiffusionEngine(BaseEngine):
         stop: list[str] | None = None,
         **kwargs,
     ) -> GenerationOutput:
-        return await self.chat(
-            [{"role": "user", "content": prompt}],
+        # Buffered raw-prompt completion (/v1/completions non-stream).
+        # See ``stream_generate`` for why we bypass the chat template.
+        text_parts: list[str] = []
+        last: GenerationOutput | None = None
+        async for chunk in self.stream_generate(
+            prompt,
             max_tokens=max_tokens,
             temperature=temperature,
             stop=stop,
             **kwargs,
+        ):
+            text_parts.append(chunk.new_text)
+            last = chunk
+        if last is None:
+            return GenerationOutput(text="", finish_reason="stop")
+        return GenerationOutput(
+            text="".join(text_parts),
+            tokens=last.tokens,
+            prompt_tokens=last.prompt_tokens,
+            completion_tokens=last.completion_tokens,
+            finish_reason=last.finish_reason or "stop",
+            finished=True,
         )
 
     async def stream_generate(
@@ -679,8 +743,15 @@ class DiffusionEngine(BaseEngine):
         stop: list[str] | None = None,
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
-        async for chunk in self.stream_chat(
-            [{"role": "user", "content": prompt}],
+        # /v1/completions sends RAW prompts — applying the chat
+        # template here would prepend ``<start_of_turn>user`` etc.
+        # and the client asking to continue "Once upon" would get a
+        # response to a chat message rather than a continuation
+        # (codex round 5 [P2]). Tokenize directly and call the
+        # internal raw-prompt path.
+        self._ensure_loaded()
+        async for chunk in self._stream_prompt_raw(
+            prompt,
             max_tokens=max_tokens,
             temperature=temperature,
             stop=stop,
@@ -746,6 +817,11 @@ class DiffusionEngine(BaseEngine):
         }
         if cfg.diffusion_steps is not None:
             kwargs["max_denoising_steps"] = int(cfg.diffusion_steps)
+        if cfg.prefill_step_size is not None:
+            # mlx-vlm only enables its chunked-prefill path when this
+            # kwarg is non-None — forward only when the operator opted
+            # in via --prefill-step-size / SchedulerConfig (codex r5).
+            kwargs["prefill_step_size"] = int(cfg.prefill_step_size)
 
         block_parts: list[str] = []
         last_prompt_tokens = 0

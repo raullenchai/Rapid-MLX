@@ -481,6 +481,96 @@ class TestStreamChatBlockCollapse:
         assert {0, 1, 2} == kwargs["skip_special_token_ids"]
 
 
+class TestRawCompletionPath:
+    """Codex round 5 [P2]: /v1/completions sends RAW prompts. The
+    ``stream_generate`` / ``generate`` path must feed those bytes
+    verbatim to the tokenizer; wrapping them in the Gemma chat
+    template would prepend ``<start_of_turn>user`` and answer a
+    fictitious chat turn instead of continuing the raw text."""
+
+    @pytest.mark.asyncio
+    async def test_stream_generate_does_not_apply_chat_template(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The fake tokenizer's apply_chat_template appends
+        # "\n<start_of_turn>model\n" — if stream_generate accidentally
+        # wraps the raw prompt, the encoded token sequence will be
+        # ~21 bytes longer than the prompt itself. We pin the exact
+        # length to catch any future regression.
+        yields = [FakeGenerationResult(text="rest", finish_reason="stop")]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        raw = "Once upon"
+        async for _ in engine.stream_generate(raw, max_tokens=8):
+            pass
+        captured = sys.modules["mlx_vlm.generate.diffusion"].__captured__["last"]  # type: ignore[attr-defined]
+        ids = captured["input_ids"]
+        # input_ids shape is [1, N] — N must equal len(raw), not the
+        # chat-template-wrapped length.
+        # FakeTokenizer.encode is ``ord(c) % 256`` — encoding the raw
+        # prompt yields exactly len(raw) tokens. If the chat template
+        # had been wrapped, the shape would be len(raw) + len(
+        # "\n<start_of_turn>model\n") = 9 + 21 = 30, NOT 9. Shape is
+        # safe to query off the worker thread's stream (it's metadata,
+        # not a materialized read), whereas ``.tolist()`` would need
+        # the GPU stream binding we deliberately don't share.
+        assert ids.shape == (1, len(raw))
+
+    @pytest.mark.asyncio
+    async def test_generate_buffers_completions_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Non-stream completion path must collapse stream chunks into
+        # one GenerationOutput AND still bypass the chat template.
+        yields = [
+            FakeGenerationResult(text=" of ", diffusion_block_complete=True),
+            FakeGenerationResult(text="time.", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        out = await engine.generate("the rest", max_tokens=16)
+        assert out.text == " of time."
+        assert out.finish_reason == "stop"
+        assert out.finished is True
+        captured = sys.modules["mlx_vlm.generate.diffusion"].__captured__["last"]  # type: ignore[attr-defined]
+        ids = captured["input_ids"]
+        assert ids.shape == (1, len("the rest"))
+
+    @pytest.mark.asyncio
+    async def test_stream_generate_honors_stop_sequences(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stop handling on the raw-prompt path must work the same as
+        # the chat path — the shared helper is the only correct way
+        # to guarantee that. Without delegation, ``stop`` would silently
+        # no-op on /v1/completions.
+        yields = [
+            FakeGenerationResult(text="abc STOP tail", diffusion_block_complete=True),
+            FakeGenerationResult(text="more", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        collected = []
+        async for chunk in engine.stream_generate(
+            "prefix", max_tokens=64, stop=["STOP"]
+        ):
+            collected.append(chunk)
+        # First emitted chunk truncates at STOP and ends the stream.
+        assert collected[0].new_text == "abc "
+        assert collected[0].finish_reason == "stop"
+        assert collected[0].finished is True
+        assert len(collected) == 1
+
+
 class TestStopSequenceHandling:
     """Codex round 1 [P2]: ``stop`` was previously dropped on the
     floor. The chat surface now post-processes block-chunk text and
