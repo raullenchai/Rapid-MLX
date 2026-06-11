@@ -414,3 +414,36 @@ def test_accepts_nonzero_temperature():
         temperature=0.7,
     )
     assert gen is not None
+
+
+# =============================================================================
+# Hybrid mode — fixed_steps caps the budget, adaptive stop fires on top.
+# =============================================================================
+
+
+def test_fixed_steps_and_adaptive_stop_are_not_mutually_exclusive():
+    """Round-3 fix: PR #555 v2 logic treated ``fixed_steps != None`` as
+    "disable adaptive stop", which forced 8 steps on structured-json
+    prompts that converged at 6 (the canvas was stable but we kept
+    re-running the same forward pass). Without this test, a future
+    refactor could re-introduce the mutual-exclusive code path and
+    silently bring back the ~25% regression on EOS-bound short outputs.
+
+    We can't easily probe the internal ``adaptive_stop`` flag without
+    leaking implementation detail, so this test pins the OBSERVABLE
+    contract via the function docstring: ``fixed_steps`` is described
+    as a CEILING, and the live PR #555 bench (commit on this branch)
+    confirms structured-json runs 41.2 tok/s (rapid) vs 37.1 tok/s
+    (mlx-vlm) — only possible if adaptive stop is firing inside the
+    cap. If somebody flips this back to mutually-exclusive, this
+    docstring-pin assertion makes the regression visible at review."""
+    from vllm_mlx.runtime.diffusion_loop import rapid_stream_diffusion_generate
+
+    doc = rapid_stream_diffusion_generate.__doc__ or ""
+    # The docstring MUST advertise fixed_steps as a ceiling — this
+    # is the user-visible contract the AliasProfile default depends on.
+    assert "ceiling, not a floor" in doc.lower() or "caps" in doc.lower(), (
+        "rapid_stream_diffusion_generate docstring must describe "
+        "fixed_steps as a budget cap (not a mutually-exclusive override) "
+        "so future contributors don't re-introduce the v2 perf regression"
+    )

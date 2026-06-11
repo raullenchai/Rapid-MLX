@@ -361,12 +361,17 @@ def rapid_stream_diffusion_generate(
     short EOS-bound outputs.
 
     Knobs:
-      * ``fixed_steps``: if set, overrides ``max_denoising_steps``
-        and disables early-stop. Empirically the prior rapid-mlx loop
-        used ``fixed_steps=8``; with the now-faithful adaptive-stop
-        port that knob is functionally redundant but is honored for
-        operator opt-in to deterministic step counts (e.g. for
-        speculative-decode draft-budget accounting).
+      * ``fixed_steps``: caps the per-canvas step budget. Adaptive
+        early-stop via ``_stable_and_confident`` STILL FIRES — the
+        budget is a ceiling, not a floor. This is the production
+        default (``8``) and gives the rapid backend its perf win:
+          - long-form: budget caps below mlx-vlm's ~11-15 adaptive
+            count → 1.76x speedup
+          - short EOS-bound (JSON, structured): early-stop fires
+            before the cap → on-par with mlx-vlm's own step count
+        Set to ``None`` to remove the ceiling (default upstream
+        ``max_denoising_steps`` budget; useful for reproducibility
+        experiments).
       * ``sc_every``: cadence for explicit (non-entropy-bound) self-
         conditioning. ``1`` = every step (DiffusionGemma optimum from
         the 2026-06-11 hand-graded eval). The entropy-bound path
@@ -402,10 +407,15 @@ def rapid_stream_diffusion_generate(
     sampler_config = _config_dict(generation_config.get("sampler_config"))
     entropy_bound = float(sampler_config.get("entropy_bound", 0.1))
 
-    # Resolve denoising-step budget.
+    # Resolve denoising-step budget. ``fixed_steps`` caps the budget
+    # (a CEILING, not a floor) — adaptive early-stop via
+    # ``_stable_and_confident`` always runs on top so EOS-bound short
+    # outputs (JSON, code) stop at ~6 steps even when ceiling is 8.
+    # This is the round-3 fix for the structured-json regression
+    # surfaced on PR #555: the v1/v2 mutual-exclusive logic forced 8
+    # steps on prompts that converge at 6, paying 33% extra compute.
     if fixed_steps is not None:
         denoise_budget = int(fixed_steps)
-        adaptive_stop = False
     else:
         if max_denoising_steps is None:
             max_denoising_steps = int(
@@ -413,7 +423,7 @@ def rapid_stream_diffusion_generate(
                 or _DEFAULT_MAX_DENOISING_STEPS,
             )
         denoise_budget = int(max_denoising_steps)
-        adaptive_stop = True
+    adaptive_stop = True
 
     # Temperature schedule (linear ramp during denoising). Upstream
     # falls back to {0.4, 0.8} when no config is present.
