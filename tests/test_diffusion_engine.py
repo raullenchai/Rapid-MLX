@@ -480,6 +480,181 @@ class TestStreamChatBlockCollapse:
         assert {0, 1, 2} == kwargs["skip_special_token_ids"]
 
 
+class TestStopSequenceHandling:
+    """Codex round 1 [P2]: ``stop`` was previously dropped on the
+    floor. The chat surface now post-processes block-chunk text and
+    truncates at the first stop match across the lookback window so
+    boundary-straddling matches are caught too."""
+
+    @pytest.mark.asyncio
+    async def test_stop_truncates_within_a_single_chunk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        yields = [
+            FakeGenerationResult(text="Hello, ", diffusion_block_complete=True),
+            FakeGenerationResult(
+                text="world! And more.", diffusion_block_complete=True
+            ),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            max_tokens=64,
+            stop=["world"],
+        ):
+            collected.append(out)
+        assert [c.new_text for c in collected] == ["Hello, ", ""]
+        assert collected[-1].finish_reason == "stop"
+        assert collected[-1].finished is True
+
+    @pytest.mark.asyncio
+    async def test_stop_straddling_block_boundary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stop string ``</end>`` is split across two block chunks —
+        # ``</`` ends chunk 1, ``end>`` starts chunk 2. The lookback
+        # buffer in stream_chat must catch this.
+        yields = [
+            FakeGenerationResult(text="Answer: 42</", diffusion_block_complete=True),
+            FakeGenerationResult(text="end> trailing.", diffusion_block_complete=True),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "x"}],
+            max_tokens=64,
+            stop=["</end>"],
+        ):
+            collected.append(out)
+        # First chunk emits clean, second chunk is truncated AT the
+        # boundary character that completed the stop match.
+        assert [c.new_text for c in collected] == ["Answer: 42</", ""]
+        assert collected[-1].finish_reason == "stop"
+
+    @pytest.mark.asyncio
+    async def test_stop_accepts_string_list_and_picks_earliest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # OpenAI ``stop`` may be a string or list. Two stops, both
+        # present in the chunk: the one with the LOWER INDEX in the
+        # text wins (matches OpenAI behavior — order in the input
+        # list is irrelevant; earliest match in the model output is
+        # what truncates).
+        yields = [
+            FakeGenerationResult(
+                text="hello [A] middle [B] tail", diffusion_block_complete=True
+            ),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "x"}],
+            max_tokens=64,
+            # [B] appears LATER in the text but is FIRST in the stop
+            # list — order in the list must not change the outcome.
+            stop=["[B]", "[A]"],
+        ):
+            collected.append(out)
+        assert collected[0].new_text == "hello "
+        assert collected[0].finish_reason == "stop"
+
+    @pytest.mark.asyncio
+    async def test_stop_none_means_passthrough(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Bare-chat case: stop=None or stop=[] → no post-processing.
+        yields = [
+            FakeGenerationResult(text="part1 ", diffusion_block_complete=True),
+            FakeGenerationResult(text="part2", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "x"}], max_tokens=64, stop=None
+        ):
+            collected.append(out)
+        assert [c.new_text for c in collected] == ["part1 ", "part2"]
+        assert collected[-1].finish_reason == "stop"
+
+
+class TestConcurrentRequests:
+    """Codex round 1 [P1]: a sync ``threading.Lock`` held across
+    ``await aio_q.get()`` deadlocked the event loop when a second
+    request arrived. Switching to ``asyncio.Lock`` lets the loop
+    advance the first request to completion while the second waits."""
+
+    @pytest.mark.asyncio
+    async def test_two_concurrent_requests_serialize_without_deadlock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Both requests produce a single block + stop. The second one
+        # must wait for the first to release the lock — total wall is
+        # 2x the per-request cost, but neither should hang.
+        yields = [
+            FakeGenerationResult(text="A1", diffusion_block_complete=True),
+            FakeGenerationResult(text="", finish_reason="stop"),
+            FakeGenerationResult(text="B1", diffusion_block_complete=True),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        async def drain() -> list[str]:
+            chunks: list[str] = []
+            async for out in engine.stream_chat(
+                [{"role": "user", "content": "go"}], max_tokens=16
+            ):
+                chunks.append(out.new_text)
+            return chunks
+
+        import asyncio as _aio
+
+        results = await _aio.wait_for(
+            _aio.gather(drain(), drain()),
+            timeout=10.0,
+        )
+        # Both requests completed. Mock yields four items total, so
+        # the two requests together drain them in submission order.
+        assert all(len(r) == 2 for r in results), results
+
+    def test_generation_lock_is_asyncio_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Source-level pin: the lock type matters for correctness
+        # under the async generator model. A regression to threading.
+        # Lock would silently reintroduce the deadlock.
+        import asyncio as _aio
+
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        assert isinstance(engine._generation_lock, _aio.Lock)
+
+
 class TestAliasIntegration:
     def test_diffusion_gemma_alias_resolves_to_text_diffusion_modality(
         self,

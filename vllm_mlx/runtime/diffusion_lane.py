@@ -56,6 +56,35 @@ DIFFUSION_LANE_VERSION = "0.1-wired"
 _STREAM_DONE = object()
 
 
+def _normalize_stops(value: Any) -> list[str]:
+    """Accept the OpenAI ``stop`` shape: ``None``, a string, or a list
+    of strings. Return a non-empty-string list; empty input → ``[]``.
+
+    Empty strings would match everywhere — silently dropped.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [s for s in value if isinstance(s, str) and s]
+    return []
+
+
+def _earliest_stop_index(text: str, stops: list[str]) -> int:
+    """Return the earliest index at which ANY stop sequence begins in
+    ``text``, or -1 if none match. O(len(text) * len(stops)) which is
+    fine for the small input shapes we see (chunk lengths < 4 KB,
+    stop lists <= 4 entries).
+    """
+    best = -1
+    for s in stops:
+        idx = text.find(s)
+        if idx != -1 and (best == -1 or idx < best):
+            best = idx
+    return best
+
+
 @dataclass(frozen=True)
 class DiffusionGenerationConfig:
     """Sampling / decoding knobs for the diffusion lane.
@@ -109,7 +138,18 @@ class DiffusionEngine(BaseEngine):
         # on the route admission queue. Two concurrent
         # ``stream_diffusion_generate`` calls against the same model
         # corrupt each other's canvas state.
-        self._generation_lock = threading.Lock()
+        #
+        # ``asyncio.Lock`` (NOT ``threading.Lock``): ``stream_chat`` is
+        # an async generator that ``await``s between block-complete
+        # chunks. A ``threading.Lock`` acquired on the event-loop
+        # thread by a second concurrent request would block that
+        # thread until the first request released — but the first
+        # request can't release because the event loop it needs to
+        # advance is the very thread now blocked on ``acquire()``.
+        # That is a textbook async deadlock. The asyncio lock yields
+        # the loop instead, so the first request can finish draining
+        # its queue and release.
+        self._generation_lock = asyncio.Lock()
 
         # Persistent GPU worker thread: owns model loading AND every
         # GPU op. Required because mlx's per-stream binding is
@@ -419,8 +459,18 @@ class DiffusionEngine(BaseEngine):
         # submitting the job because the worker drains jobs FIFO and
         # we want the lock to map 1:1 with worker activity, not the
         # queue position.
-        with self._generation_lock:
+        async with self._generation_lock:
             self._jobs.put((prompt, max_tokens, cfg, thread_q))
+            # Caller-supplied stop sequences (OpenAI /v1/completions
+            # ``stop`` knob — single string or list). mlx-vlm's
+            # ``stream_diffusion_generate`` does not honor stop
+            # strings natively, so we post-process the block-emitted
+            # text: keep a small lookback buffer (= max-stop-length-1
+            # chars) so a stop string that straddles two block chunks
+            # is still detected.
+            stop_list = _normalize_stops(kwargs.get("stop"))
+            tail_len = (max(len(s) for s in stop_list) - 1) if stop_list else 0
+            tail = ""
             try:
                 while True:
                     item = await aio_q.get()
@@ -428,7 +478,35 @@ class DiffusionEngine(BaseEngine):
                         return
                     if isinstance(item, BaseException):
                         raise item
-                    yield item
+                    # No stop list → fast path, unchanged.
+                    if not stop_list:
+                        yield item
+                        continue
+                    combined = tail + item.new_text
+                    cut = _earliest_stop_index(combined, stop_list)
+                    if cut < 0:
+                        # No match. Update lookback and pass through.
+                        tail = combined[-tail_len:] if tail_len else ""
+                        yield item
+                        continue
+                    # Match in this chunk. ``cut`` is into ``combined``;
+                    # translate to a cut on ``item.new_text``. The text
+                    # we'll emit is everything up to the stop; the
+                    # block chunk is replaced with a truncated copy
+                    # carrying finish_reason="stop", which collapses
+                    # the rest of the stream cleanly.
+                    new_text_cut = max(0, cut - len(tail))
+                    truncated = item.new_text[:new_text_cut]
+                    yield GenerationOutput(
+                        text=truncated,
+                        new_text=truncated,
+                        tokens=item.tokens,
+                        prompt_tokens=item.prompt_tokens,
+                        completion_tokens=item.completion_tokens,
+                        finish_reason="stop",
+                        finished=True,
+                    )
+                    return
             finally:
                 pump_thread.join(timeout=1.0)
 
@@ -438,13 +516,14 @@ class DiffusionEngine(BaseEngine):
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.9,  # noqa: ARG002
-        stop: list[str] | None = None,  # noqa: ARG002 — block diffusion ignores
+        stop: list[str] | None = None,
         **kwargs,
     ) -> GenerationOutput:
         return await self.chat(
             [{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
             temperature=temperature,
+            stop=stop,
             **kwargs,
         )
 
@@ -454,13 +533,14 @@ class DiffusionEngine(BaseEngine):
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.9,  # noqa: ARG002
-        stop: list[str] | None = None,  # noqa: ARG002
+        stop: list[str] | None = None,
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
         async for chunk in self.stream_chat(
             [{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
             temperature=temperature,
+            stop=stop,
             **kwargs,
         ):
             yield chunk
