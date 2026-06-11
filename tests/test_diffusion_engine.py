@@ -594,6 +594,62 @@ class TestRawCompletionPath:
         assert collected[0].finished is True
         assert len(collected) == 1
 
+    @pytest.mark.asyncio
+    async def test_stream_generate_accepts_single_string_stop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex pr_validate r7 BLOCKING #2: ``stop`` previously had
+        # type ``list[str] | None`` and a static type-checker (or
+        # strict-validation wrapper) would have rejected the OpenAI
+        # single-string shape. ``_normalize_stops`` already handled
+        # it internally, so the runtime worked — but the type
+        # boundary lied. This test pins that the string form ALSO
+        # truncates correctly end-to-end so a future re-tightening
+        # of the signature trips here.
+        yields = [
+            FakeGenerationResult(text="abc STOP tail", diffusion_block_complete=True),
+            FakeGenerationResult(text="more", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        collected = []
+        async for chunk in engine.stream_generate(
+            "prefix",
+            max_tokens=64,
+            stop="STOP",  # <-- the regression point (string, not list)
+        ):
+            collected.append(chunk)
+        assert collected[0].new_text == "abc "
+        assert collected[0].finish_reason == "stop"
+        assert collected[0].finished is True
+        assert len(collected) == 1
+
+    @pytest.mark.asyncio
+    async def test_generate_accepts_single_string_stop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mirror of the stream_generate string-stop test for the
+        # buffered ``generate`` path. ``generate`` delegates to
+        # ``stream_generate`` so the type tightening cascades — but
+        # an end-to-end pin guarantees the buffered surface honours
+        # the OpenAI single-string shape too.
+        yields = [
+            FakeGenerationResult(text="abc STOP tail", diffusion_block_complete=True),
+            FakeGenerationResult(text="more", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        out = await engine.generate("prefix", max_tokens=64, stop="STOP")
+        assert out.text == "abc "
+        assert out.finish_reason == "stop"
+        assert out.finished is True
+
 
 class TestStopSequenceHandling:
     """Codex round 1 [P2]: ``stop`` was previously dropped on the
@@ -1682,6 +1738,48 @@ class TestMlxVlmImportContract:
                 f"mlx_vlm.generate.diffusion.{symbol} missing — "
                 "diffusion_lane.py would fail at request time"
             )
+
+    def test_stopping_criteria_reset_accepts_scalar_eos_id(self) -> None:
+        # codex pr_validate r7 BLOCKING #3 (FALSE positive): codex
+        # flagged ``tokenizer.stopping_criteria.reset(eos_id)`` as
+        # passing a scalar where mlx-vlm allegedly wanted a list.
+        # The mlx-vlm contract (utils.py:1921 in 0.6.3 install) is:
+        #
+        #     def reset(self, eos_token_ids: List[int] = None):
+        #         ...
+        #         if isinstance(eos_token_ids, int):
+        #             eos_token_ids = [eos_token_ids]
+        #
+        # i.e. the upstream method explicitly normalises scalar →
+        # list, and mlx-vlm's own server (server/generation.py:1412,
+        # :1461; generate/dispatch.py:1332) calls it with a scalar.
+        # We follow that pattern exactly. This test pins the
+        # upstream contract so a future mlx-vlm release that drops
+        # the scalar normalisation would trip here BEFORE the
+        # production path crashes on a real DiffusionGemma request.
+        pytest.importorskip("mlx_vlm")
+        from mlx_vlm.utils import StoppingCriteria
+
+        # Build a fake tokenizer just enough for StoppingCriteria's
+        # init contract. We're not exercising encoding — only the
+        # scalar-tolerance of reset().
+        class _StubTok:
+            eos_token_ids = [3]
+
+            def encode(self, text: str, add_special_tokens: bool = False):
+                return [0]
+
+        sc = StoppingCriteria(eos_token_ids=[7], tokenizer=_StubTok())
+        # The exact call shape diffusion_lane.py:1007 uses.
+        sc.reset(42)
+        # After the scalar → list normalisation, the new list MUST
+        # contain only the value we passed.
+        assert sc.eos_token_ids == [42], (
+            f"mlx-vlm StoppingCriteria.reset(scalar) no longer "
+            f"normalises to a single-item list; eos_token_ids="
+            f"{sc.eos_token_ids}. diffusion_lane.py:1007 needs to "
+            "update to match the new contract."
+        )
 
 
 class TestAliasIntegration:

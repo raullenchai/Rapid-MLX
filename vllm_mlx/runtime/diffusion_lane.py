@@ -232,8 +232,20 @@ class DiffusionEngine(BaseEngine):
         # mlx-vlm load — that breaks contract tests that instantiate
         # the engine without ever calling start(), and would crash
         # under CI environments without usable Metal. The worker is
-        # started on the first call to start() / _load_blocking() /
-        # check_admission, gated by _start_worker_once.
+        # started on the first call to start() / _load_blocking(),
+        # gated by _start_worker_once. check_admission() does NOT
+        # start the worker — admission only ever runs AFTER
+        # server.load_model() has synchronously called
+        # _load_blocking() (server.py routes admission via the
+        # routes layer, which runs after lifespan startup).
+        # codex pr_validate r7 BLOCKING #1: an earlier version of
+        # this comment listed check_admission() as a lazy-start
+        # trigger; that was aspirational, not implemented. The
+        # current order is enforced by server.load_model:
+        #   load_model() → DiffusionEngine(...) → _load_blocking()
+        #   → start() (via lifespan) → routes accept requests
+        #   → check_admission()
+        # so admission can rely on the worker being up.
         self._worker: threading.Thread | None = None
         self._worker_start_lock = threading.Lock()
         # The worker installs this each time it pulls a job from
@@ -904,7 +916,7 @@ class DiffusionEngine(BaseEngine):
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.9,  # noqa: ARG002
-        stop: list[str] | None = None,
+        stop: str | list[str] | None = None,
         **kwargs,
     ) -> GenerationOutput:
         # Buffered raw-prompt completion (/v1/completions non-stream).
@@ -937,7 +949,7 @@ class DiffusionEngine(BaseEngine):
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.9,  # noqa: ARG002
-        stop: list[str] | None = None,
+        stop: str | list[str] | None = None,
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
         # /v1/completions sends RAW prompts — applying the chat
