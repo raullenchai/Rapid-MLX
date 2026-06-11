@@ -100,6 +100,8 @@ MATRIX_EXEMPT: dict[str, str] = {
     "ui_tars": "TODO: add UI-TARS-1.5-7B-4bit to golden_models once the VLM matrix supports mlx-vlm-backed Computer-Use models",
     "ui-tars": "alias of ui_tars (kebab-case spelling)",
     "uitars": "alias of ui_tars (no-separator spelling)",
+    "lfm": "TODO: add Liquid LFM2.5 model to golden_models",
+    "liquid": "alias of lfm",
 }
 
 

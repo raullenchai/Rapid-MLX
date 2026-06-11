@@ -16,6 +16,7 @@ from .abstract_tool_parser import (
     ToolParser,
     ToolParserManager,
 )
+from .lfm_tool_parser import LFM_CALL_START, parse_lfm_tool_calls
 
 
 def generate_tool_id() -> str:
@@ -34,7 +35,8 @@ class AutoToolParser(ToolParser):
     3. Qwen/Hermes XML: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
     4. Llama: <function=name>{"arg": "value"}</function>
     5. Nemotron: <tool_call><function=name>...</function></tool_call>
-    6. Raw JSON: {"name": "...", "arguments": {...}}
+    6. LFM pythonic: [func_name(arg="value")]
+    7. Raw JSON: {"name": "...", "arguments": {...}}
 
     This is the default parser when no specific parser is selected.
     """
@@ -53,6 +55,26 @@ class AutoToolParser(ToolParser):
     NEMOTRON_PARAM_PATTERN = re.compile(
         r"<parameter=([^>]+)>\s*(.*?)\s*</parameter>", re.DOTALL
     )
+
+    def __init__(self, tokenizer=None):
+        super().__init__(tokenizer)
+        # Guard against re-emitting the same tool calls when a later
+        # delta contains another end marker (e.g. a ``]`` in trailing
+        # prose) — re-running ``extract_tool_calls`` produces the same
+        # call with a fresh id at the same index, which OpenAI-delta
+        # clients concatenate into corrupt arguments.
+        self._streaming_tools_emitted = False
+        # Length of ``current_text`` already emitted as content. When a
+        # marker appears, content is held (None) for the rest of the
+        # stream; if no tool call ever completes, ``flush_held_content``
+        # releases everything past this boundary so prose that merely
+        # looked like markup isn't silently dropped.
+        self._content_emitted_len = 0
+
+    def reset(self) -> None:
+        super().reset()
+        self._streaming_tools_emitted = False
+        self._content_emitted_len = 0
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -210,7 +232,14 @@ class AutoToolParser(ToolParser):
         if llama_matches:
             cleaned_text = self.LLAMA_PATTERN.sub("", cleaned_text).strip()
 
-        # 6. Fallback: Try raw JSON
+        # 6. Try LFM bracket pythonic calls format
+        if not tool_calls and LFM_CALL_START.search(cleaned_text):
+            lfm_tool_calls, lfm_cleaned = parse_lfm_tool_calls(cleaned_text)
+            if lfm_tool_calls:
+                tool_calls.extend(lfm_tool_calls)
+                cleaned_text = lfm_cleaned
+
+        # 7. Fallback: Try raw JSON
         if not tool_calls:
             raw_calls = self._parse_raw_json_tool_calls(cleaned_text)
             if raw_calls:
@@ -333,16 +362,25 @@ class AutoToolParser(ToolParser):
             "<function=",
         ]
 
-        has_marker = any(m in current_text for m in markers)
+        has_marker = any(m in current_text for m in markers) or bool(
+            LFM_CALL_START.search(current_text)
+        )
 
         if not has_marker:
+            self._content_emitted_len = len(current_text)
             return {"content": delta_text}
 
-        # Check for completion markers
-        end_markers = ["</tool_call>", "</function>", ")]"]
-        if any(m in delta_text for m in end_markers):
+        # Check for completion markers. A bare ``]`` (rather than ``)]``)
+        # covers LFM pythonic calls whose closing ``)`` and ``]`` arrive
+        # in separate deltas; extraction below only fires if a complete
+        # call actually parses, so the looser trigger is safe.
+        end_markers = ["</tool_call>", "</function>", "]"]
+        if not self._streaming_tools_emitted and any(
+            m in delta_text for m in end_markers
+        ):
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
+                self._streaming_tools_emitted = True
                 return {
                     "tool_calls": [
                         {
@@ -359,3 +397,11 @@ class AutoToolParser(ToolParser):
                 }
 
         return None
+
+    def flush_held_content(self, full_text: str) -> str:
+        """Release content held behind a marker that never became a tool call.
+
+        The postprocessor only calls this when no tool calls fired, so
+        everything past the last emitted boundary is ordinary content.
+        """
+        return full_text[self._content_emitted_len :]
