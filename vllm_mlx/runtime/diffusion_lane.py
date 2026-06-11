@@ -236,6 +236,17 @@ class DiffusionEngine(BaseEngine):
         # check_admission, gated by _start_worker_once.
         self._worker: threading.Thread | None = None
         self._worker_start_lock = threading.Lock()
+        # The worker installs this each time it pulls a job from
+        # the queue and clears it in the matching ``finally``. ``stop()``
+        # reads it to signal cancellation on an in-flight job — without
+        # this, ``stop()`` pushes a sentinel that sits behind the active
+        # generator until ``max_tokens`` finishes (codex pr_validate r5
+        # BLOCKING). Plain attribute (not a property): the worker thread
+        # and the asyncio thread both touch it under the discipline
+        # ``worker writes None→event→None``, ``stop`` reads-and-uses; a
+        # racy concurrent read returning a stale event is harmless (we
+        # just signal an already-finished cancel_event).
+        self._active_cancel: threading.Event | None = None
 
     # ------------------------------------------------------------------
     # BaseEngine — required properties
@@ -284,16 +295,40 @@ class DiffusionEngine(BaseEngine):
 
     async def stop(self) -> None:
         self._stop = True
-        # Sentinel jobs unblock the worker if it's parked on
-        # queue.get(). Push two: one for the loaded state, one in
-        # case the worker is mid-shutdown handshake.
+        # codex pr_validate r5 BLOCKING: a sentinel alone does NOT
+        # unblock an in-flight ``_run_generator`` — it sits behind
+        # the active job in the queue. Signal the live cancel event
+        # FIRST so the worker breaks out of mlx-vlm's
+        # ``stream_diffusion_generate`` at the next per-chunk
+        # cancel-check, then push the sentinel for the parked-on-
+        # queue.get() case. The handle is published by the worker's
+        # job-pull block; a None read here just means no job is
+        # active right now (also fine).
+        active = self._active_cancel
+        if active is not None:
+            active.set()
         self._jobs.put(None)
         # mlx-vlm loads weights into mx.array buffers backed by the
         # MTL allocator. Clearing references is enough for the next
         # serve cycle to repopulate — there is no explicit ``unload``
-        # in mlx-vlm 0.6.3.
+        # in mlx-vlm 0.6.3. We MUST wait for the worker to actually
+        # exit before nulling ``_model`` / ``_processor`` — clearing
+        # while the worker is still inside an mx.eval can crash the
+        # GPU op mid-iteration (codex pr_validate r5 BLOCKING). The
+        # 30s ceiling matches ``_stream_prompt_raw``'s drain budget
+        # so a wedged worker doesn't block lifespan shutdown forever;
+        # if it expires, leave the model refs intact so GC reclaims
+        # them after the (orphaned) worker eventually returns.
         if self._worker is not None:
-            await asyncio.to_thread(self._worker.join, 5.0)
+            await asyncio.to_thread(self._worker.join, 30.0)
+            if self._worker.is_alive():
+                logger.warning(
+                    "DiffusionEngine.stop(): worker did not exit "
+                    "within 30s; leaving model refs to GC after "
+                    "worker drain to avoid clearing under live "
+                    "mx.eval."
+                )
+                return
         self._model = None
         self._processor = None
         self._loaded = False
@@ -448,6 +483,12 @@ class DiffusionEngine(BaseEngine):
             if job is None:
                 return
             prompt, max_tokens, cfg, out_q, cancel_event, done_event = job
+            # Publish the in-flight cancel handle BEFORE we start
+            # consuming GPU so ``stop()`` (called from the lifespan
+            # shutdown coroutine) can signal cancellation immediately
+            # instead of pushing a sentinel that sits behind a
+            # multi-block diffusion run (codex pr_validate r5 BLOCKING).
+            self._active_cancel = cancel_event
             try:
                 # Fast-skip jobs that were cancelled BEFORE we picked
                 # them up. Without this, a request whose coroutine was
@@ -460,6 +501,7 @@ class DiffusionEngine(BaseEngine):
             except BaseException as e:  # noqa: BLE001 — surface to caller
                 out_q.put(e)
             finally:
+                self._active_cancel = None
                 out_q.put(_STREAM_DONE)
                 # ``done_event`` lets the request-side coroutine know
                 # the worker has fully released this job's resources
@@ -578,15 +620,17 @@ class DiffusionEngine(BaseEngine):
         self._ensure_loaded()
         # ``tools`` is silently dropped in ``build_prompt`` with a
         # warning log — see the matching block there for the rationale.
-        # The check is intentionally NOT duplicated here so the warning
-        # fires exactly once per request.
+        # We forward ``tools`` so the warning actually fires (codex
+        # pr_validate r5 NIT — previously ``build_prompt(messages)``
+        # passed an empty tools arg, so direct engine callers got
+        # neither the drop nor the visible warning).
         if images or videos:
             raise RuntimeError(
                 "DiffusionEngine v0 is text-only. Vision inputs "
                 "(images/videos) will be wired in a follow-up; for now "
                 "drop them from the request."
             )
-        prompt = self.build_prompt(messages)
+        prompt = self.build_prompt(messages, tools=tools)
         async for chunk in self._stream_prompt_raw(
             prompt,
             max_tokens=max_tokens,
@@ -1007,7 +1051,13 @@ class DiffusionEngine(BaseEngine):
                 last_prompt_tokens = result.prompt_tokens
             if getattr(result, "generation_tokens", 0):
                 last_completion_tokens = result.generation_tokens
-            last_token = int(getattr(result, "token", last_token) or last_token)
+            # codex pr_validate r5 NIT: ``... or last_token`` silently
+            # swallows token id 0 (Gemma's <pad>, plus countless other
+            # tokenizers' sentinel tokens) — keep the previous token id
+            # only when the result truly omits the field.
+            _tok = getattr(result, "token", None)
+            if _tok is not None:
+                last_token = int(_tok)
 
             text_piece = result.text or ""
             if text_piece:

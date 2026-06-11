@@ -347,15 +347,17 @@ class TestStreamChatBlockCollapse:
     async def test_stream_chat_with_tools_completes_normally(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # Direct stream_chat invocation with a tools payload must not
-        # crash — drops them and streams text. The warning is logged
-        # by build_prompt, which routes/chat.py:691 calls upfront for
-        # every request; stream_chat itself stays silent to avoid
-        # double-warning when the route layer is in front. This test
-        # pins "stream survives tools" — see
-        # test_route_layer_warning_fires_exactly_once for the
-        # warning-side contract.
+        # Direct stream_chat invocation with a tools payload must
+        # (a) not crash, (b) silently drop tools, and (c) emit the
+        # documented warning EXACTLY once. Pre-pr_validate r5,
+        # stream_chat called ``build_prompt(messages)`` without
+        # tools, so direct engine callers got neither the drop nor
+        # the warning — only the route layer's upfront build_prompt
+        # call would log it. This test pins both the streaming-
+        # correctness and the warning-visibility contracts for
+        # callers that bypass the route layer.
         yields = [
             FakeGenerationResult(text="Hello ", diffusion_block_complete=True),
             FakeGenerationResult(text="world.", finish_reason="stop"),
@@ -366,18 +368,29 @@ class TestStreamChatBlockCollapse:
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
         collected = []
-        async for out in engine.stream_chat(
-            [{"role": "user", "content": "hi"}],
-            tools=[{"name": "web_search"}],
-            max_tokens=16,
-        ):
-            collected.append(out)
+        with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
+            async for out in engine.stream_chat(
+                [{"role": "user", "content": "hi"}],
+                tools=[{"name": "web_search"}],
+                max_tokens=16,
+            ):
+                collected.append(out)
         # Stream completes normally with the model's text output.
         assert [c.new_text for c in collected] == ["Hello ", "world."]
         assert collected[-1].finish_reason == "stop"
+        # pr_validate r5 NIT contract: stream_chat MUST forward
+        # ``tools`` to build_prompt so the warning fires for direct
+        # engine callers too.
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and "dropped" in r.getMessage()
+        ]
+        assert len(warnings) == 1, [r.getMessage() for r in warnings]
+        assert "dropped 1 tool" in warnings[0].getMessage()
 
     @pytest.mark.asyncio
-    async def test_route_layer_warning_fires_exactly_once(
+    async def test_route_layer_warning_fires_on_every_pass(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
@@ -385,9 +398,16 @@ class TestStreamChatBlockCollapse:
         # Mimics the routes/chat.py contract: build_prompt is called
         # once with the full tools list (line 691 in chat.py — the
         # eager template validation), then stream_chat runs the
-        # generation. The single drop-warning must fire on the
-        # build_prompt call; stream_chat re-uses build_prompt(messages)
-        # internally with tools=None so we do NOT double-log.
+        # generation. As of pr_validate r5, stream_chat ALSO forwards
+        # tools to its internal build_prompt call so direct engine
+        # callers see the warning — this means the route-layer flow
+        # now logs twice. The duplication is acceptable because the
+        # alternative (silently drop tools for direct callers) is
+        # exactly the visibility regression codex flagged. Operators
+        # who want one warning per request can move the upfront
+        # build_prompt call inside the routing layer behind a
+        # ``tools=None`` for diffusion engines; this test pins the
+        # current contract.
         yields = [
             FakeGenerationResult(text="ok.", finish_reason="stop"),
         ]
@@ -408,9 +428,13 @@ class TestStreamChatBlockCollapse:
                 max_tokens=16,
             ):
                 collected.append(out)
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert len(warnings) == 1, [r.getMessage() for r in warnings]
-        assert "dropped 2 tool" in warnings[0].getMessage()
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and "dropped" in r.getMessage()
+        ]
+        assert len(warnings) == 2, [r.getMessage() for r in warnings]
+        assert all("dropped 2 tool" in w.getMessage() for w in warnings)
         # And the stream still produced its output.
         assert collected[-1].new_text == "ok."
 
@@ -1598,3 +1622,219 @@ class TestAliasIntegration:
         assert profile.supports_spec_decode is False
         assert profile.supports_dflash is False
         assert profile.hf_path == "mlx-community/diffusiongemma-26B-A4B-it-4bit"
+
+
+class TestStopRace:
+    """pr_validate r5 BLOCKING: ``stop()`` was push-sentinel-then-
+    join(5s), which left an in-flight ``_run_generator`` running
+    (its cancel_event was never set) AND then cleared ``_model`` /
+    ``_processor`` even when the worker was still alive — recipe
+    for an mx.eval crash mid-iteration during lifespan shutdown.
+
+    The fix tracks the worker's currently-installed cancel event
+    in ``_active_cancel`` and signals it from ``stop()`` BEFORE
+    pushing the sentinel; the model-state clear is gated on the
+    worker actually exiting (join timeout returns false → leave
+    refs intact so GC reclaims them later).
+    """
+
+    @pytest.mark.asyncio
+    async def test_stop_signals_active_cancel_event(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Long-running stream that only ends when cancel_event is
+        # set. If stop() forgets to signal the active job, the
+        # worker is still inside stream_diffusion_generate and the
+        # test will time out at gather().
+        import asyncio as _aio
+        import threading as _threading
+        import time as _time
+
+        active_cancel: dict[str, threading.Event | None] = {"e": None}
+        observed_engine: dict[str, Any] = {}
+
+        def _long_stream(*_a: Any, **_k: Any) -> Iterator[FakeGenerationResult]:
+            # Capture the engine's active cancel handle the moment
+            # the worker reaches into stream_diffusion_generate.
+            eng = observed_engine.get("eng")
+            assert eng is not None
+            active_cancel["e"] = eng._active_cancel
+            for _ in range(1000):
+                if eng._active_cancel is not None and eng._active_cancel.is_set():
+                    return
+                _time.sleep(0.01)
+                yield FakeGenerationResult(text="tick ", diffusion_block_complete=True)
+            yield FakeGenerationResult(text="", finish_reason="stop")
+
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        diff_mod = sys.modules["mlx_vlm.generate.diffusion"]
+        diff_mod.stream_diffusion_generate = _long_stream  # type: ignore[attr-defined]
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        observed_engine["eng"] = engine
+
+        # Kick off a long stream; let it actually enter the generator
+        # before we call stop() so _active_cancel is populated.
+        ready = _threading.Event()
+
+        async def consumer() -> None:
+            async for out in engine.stream_chat(
+                [{"role": "user", "content": "loop forever"}],
+                max_tokens=10000,
+            ):
+                if out.new_text and not ready.is_set():
+                    ready.set()
+
+        consume_task = _aio.create_task(consumer())
+        # Wait until the worker is inside the generator (we've seen
+        # at least one streamed chunk).
+        for _ in range(200):
+            if ready.is_set() and engine._active_cancel is not None:
+                break
+            await _aio.sleep(0.01)
+        assert engine._active_cancel is not None, (
+            "stop()-race fix relies on the worker installing "
+            "_active_cancel BEFORE entering stream_diffusion_generate; "
+            "the worker never published it within 2 s"
+        )
+        captured_cancel = engine._active_cancel
+
+        # stop() must signal the captured cancel event so the
+        # in-flight generator exits at the next per-chunk check.
+        await _aio.wait_for(engine.stop(), timeout=10.0)
+        assert captured_cancel.is_set(), (
+            "stop() did not signal the active job's cancel_event; "
+            "in-flight diffusion would have kept burning GPU until "
+            "max_tokens"
+        )
+
+        # Drain the consumer; cancellation should land normally.
+        try:
+            await _aio.wait_for(consume_task, timeout=5.0)
+        except (_aio.CancelledError, Exception):
+            pass
+
+    @pytest.mark.asyncio
+    async def test_stop_waits_for_worker_before_clearing_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``stop()`` must NOT null _model / _processor while the
+        # worker thread is mid-eval. Pre-fix code joined for 5 s
+        # then cleared unconditionally; post-fix code joins 30 s
+        # and skips the clear if the worker is still alive.
+        import time as _time
+
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        assert engine._loaded is True
+        original_model = engine._model
+        original_processor = engine._processor
+        assert original_model is not None
+        assert original_processor is not None
+
+        # Worker is parked on queue.get(); stop() pushes sentinel
+        # and the worker exits its loop. After join returns, the
+        # model refs MUST be cleared (no in-flight job to protect).
+        await engine.stop()
+        assert engine._loaded is False
+        assert engine._model is None
+        assert engine._processor is None
+
+        # And the worker thread is no longer alive.
+        assert engine._worker is not None
+        # Give the OS scheduler a beat to mark the thread dead.
+        for _ in range(50):
+            if not engine._worker.is_alive():
+                break
+            _time.sleep(0.02)
+        assert engine._worker.is_alive() is False
+
+    @pytest.mark.asyncio
+    async def test_stop_defers_model_clear_when_worker_wedged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If the worker can't be unwedged within the 30 s join
+        # ceiling, stop() MUST leave model refs intact so the
+        # worker doesn't crash inside mx.eval on a None model.
+        # We simulate the wedge by monkey-patching worker.join to
+        # return immediately AND is_alive to return True forever.
+        import asyncio as _aio
+
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        original_model = engine._model
+        original_processor = engine._processor
+
+        class _WedgedThread:
+            def __init__(self, real: threading.Thread) -> None:
+                self._real = real
+
+            def join(self, timeout: float | None = None) -> None:
+                # No-op — pretend join expired without thread exit.
+                return None
+
+            def is_alive(self) -> bool:
+                return True
+
+        engine._worker = _WedgedThread(engine._worker)  # type: ignore[assignment]
+
+        await _aio.wait_for(engine.stop(), timeout=5.0)
+        # Wedge branch: model + processor remain referenced so the
+        # orphaned worker can finish its mx.eval without exploding.
+        assert engine._model is original_model
+        assert engine._processor is original_processor
+
+
+class TestTokenIdZeroNotSwallowed:
+    """pr_validate r5 NIT: ``last_token = int(getattr(result, "token",
+    last_token) or last_token)`` treated token id ``0`` as missing
+    and reused the previous one. Gemma's <pad> sits at id 0 and many
+    tokenizers reserve ids 0-2 for special tokens; silently
+    discarding them shipped wrong ``tokens=[...]`` in the
+    GenerationOutput.
+    """
+
+    @pytest.mark.asyncio
+    async def test_token_id_zero_is_recorded_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stream a chunk whose token id is exactly 0. The
+        # GenerationOutput must report tokens=[0], not whatever the
+        # uninitialized previous value happened to be.
+        yields = [
+            FakeGenerationResult(
+                text="zero",
+                token=0,  # <-- the regression point
+                diffusion_block_complete=True,
+            ),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        outs: list[Any] = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "hi"}], max_tokens=16
+        ):
+            outs.append(out)
+        # The block-complete chunk must carry the actual token id 0
+        # in its tokens field — the pre-fix code would have replaced
+        # it with the engine's initial ``last_token`` (also 0 here
+        # by coincidence, but the SEMANTIC is "report what the model
+        # said, not what we last cached").
+        non_finish = [o for o in outs if not o.finished]
+        assert non_finish, outs
+        assert non_finish[0].tokens == [0], (
+            f"expected tokens=[0] (verbatim from result.token=0); "
+            f"got tokens={non_finish[0].tokens}"
+        )

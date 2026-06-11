@@ -188,3 +188,37 @@ class TestAliasProfileDataclassShape:
         # contract is: AliasProfile(hf_path="x") is a text-lane LLM.
         profile = AliasProfile(hf_path="x/y")
         assert profile.modality == "text"
+
+
+class TestHfPathReverseLookupRoutesDiffusionLane:
+    """pr_validate r5 codex BLOCKING #1 claimed that ``python -m
+    vllm_mlx.server --model <hf-path>`` would route the diffusion
+    checkpoint into the AR ``BatchedEngine`` because ``_profile is
+    None`` for the raw HF path. That claim is FALSE — ``resolve_profile``
+    consults the ``_hf_to_alias`` reverse index (model_aliases.py:400)
+    so an HF path that matches a registered alias resolves to the
+    same profile as the alias name. This test pins that safety net
+    so a future refactor that drops the reverse index would NOT
+    silently regress the modality dispatch.
+    """
+
+    def test_diffusion_hf_path_resolves_to_text_diffusion_modality(self) -> None:
+        from vllm_mlx.model_aliases import resolve_profile
+
+        # The exact HF path codex called out in pr_validate r5 BLOCKING #1.
+        profile = resolve_profile("mlx-community/diffusiongemma-26B-A4B-it-4bit")
+        assert profile is not None, (
+            "resolve_profile must reverse-look an HF path that matches "
+            "a registered alias — codex r5 BLOCKING #1 false-positive "
+            "would have routed this to BatchedEngine"
+        )
+        assert profile.modality == "text-diffusion"
+
+    def test_unregistered_hf_path_falls_through_to_none(self) -> None:
+        # Sanity: HF paths that AREN'T in aliases.json still return
+        # None, which makes server.py default to the text lane —
+        # that's the documented behavior for unknown models.
+        from vllm_mlx.model_aliases import resolve_profile
+
+        profile = resolve_profile("nobody/this-model-does-not-exist-123")
+        assert profile is None
