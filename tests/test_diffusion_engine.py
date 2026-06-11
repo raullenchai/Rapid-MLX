@@ -2364,3 +2364,197 @@ class TestTokenIdZeroNotSwallowed:
             "the ``or last_token`` truthy-fallback regression would "
             "have leaked the previous token through here"
         )
+
+
+class TestR10Regressions:
+    """codex pr_validate r10 BLOCKING fixes.
+
+    BLOCKING #1: dead-worker reset in ``_start_worker_once``.
+    BLOCKING #2: skip ``cancel_event.set()`` + use 2 s ``done_event``
+                 budget on clean ``_STREAM_DONE`` path.
+    BLOCKING #3: pump-thread setup failure must drain the pump via
+                 a ``_STREAM_DONE`` sentinel + join, so a daemon
+                 thread does not leak parked on ``thread_q.get()``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_start_worker_once_resets_state_when_worker_dead(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex pr_validate r10 BLOCKING #1: if the first worker died
+        # during load (mlx-vlm import failure, Metal unavailable,
+        # block-family mismatch — paths where ``_worker_loop`` sets
+        # ``_load_error`` and returns without ever entering the job
+        # loop), the non-None ``_worker`` reference prevented any
+        # subsequent ``start()`` / ``_load_blocking()`` from spawning
+        # a fresh worker, leaving the engine permanently stuck on the
+        # original load error. Verify the dead-worker branch detects
+        # this state and resets the bookkeeping (worker / ready /
+        # load_error / loaded / stop flags).
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+
+        # Inject a "worker that died during load": run a no-op thread
+        # to completion, then plant it on ``_worker`` together with a
+        # stale ``_load_error`` to simulate the failed-load state.
+        dead = threading.Thread(target=lambda: None, daemon=True)
+        dead.start()
+        dead.join(timeout=1.0)
+        assert dead.is_alive() is False
+        engine._worker = dead
+        engine._load_error = RuntimeError("simulated stale load failure")
+        engine._loaded = False
+        engine._ready.set()  # poison: a stale ready event from prior load
+
+        # Pre-fix: ``_start_worker_once`` would see ``_worker is not
+        # None`` and refuse to spawn. Post-fix: dead worker is
+        # detected, all reset state cleared, fresh worker spawned.
+        engine._start_worker_once()
+
+        assert engine._worker is not dead, (
+            "expected fresh worker after dead-worker reset; got the "
+            "same dead instance — BLOCKING #1 fix regressed"
+        )
+        assert engine._worker is not None
+        assert engine._worker.is_alive() is True, (
+            "fresh worker is not running — _start_worker_once spawned "
+            "but the thread terminated immediately"
+        )
+        assert engine._stop is False
+
+        # Wait for the FRESH worker's load cycle to complete, then
+        # verify the engine is healthy — load-error cleared and
+        # ``_loaded`` flipped to True (proves the reset actually
+        # unblocked a real reload, not just spawned a dead worker).
+        import asyncio as _aio
+
+        await _aio.to_thread(engine._wait_until_ready)
+        assert engine._loaded is True, (
+            "fresh worker did not flip _loaded to True — the dead-"
+            "worker reset cleared bookkeeping but the new load did "
+            "not actually run"
+        )
+        assert engine._load_error is None, (
+            "dead-worker reset must clear stale _load_error so a "
+            "successful re-load isn't drowned out by the cached error"
+        )
+
+        # Clean up so the daemon thread doesn't outlive the test.
+        await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_clean_stream_does_not_burn_30s_done_event_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex pr_validate r10 BLOCKING #2: previously the finally
+        # block in ``_stream_prompt_raw`` ALWAYS invoked
+        # ``cancel_event.set()`` followed by ``done_event.wait(30.0)``
+        # — both wasteful on the clean ``_STREAM_DONE`` path because
+        # the worker had already returned. Worse, on a genuinely slow
+        # OS-scheduling moment the 30 s ceiling could hang the
+        # response. Pin two invariants:
+        #   * clean stream end-to-end < 5 s on the fake stream (any
+        #     value near 30 s means the wait-budget split regressed),
+        #   * engine is NOT marked unhealthy after a clean stream
+        #     (a fall-through to the cancellation drain path would
+        #     flip ``_worker_stuck`` to True).
+        yields = [
+            FakeGenerationResult(text="hi", token=1, diffusion_block_complete=True),
+            FakeGenerationResult(text="", finish_reason="stop"),
+        ]
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        import time as _time
+
+        start = _time.monotonic()
+        async for _ in engine.stream_chat(
+            [{"role": "user", "content": "hi"}], max_tokens=16
+        ):
+            pass
+        elapsed = _time.monotonic() - start
+
+        assert elapsed < 5.0, (
+            f"clean stream took {elapsed:.2f}s — expected <5s. The "
+            "30s ``done_event.wait`` budget was meant only for the "
+            "cancellation path; running it on every clean stream "
+            "means BLOCKING #2's ``stream_done_observed`` guard "
+            "regressed."
+        )
+        assert engine._worker_stuck is False, (
+            "engine was poisoned by ``_worker_stuck = True`` on the "
+            "clean ``_STREAM_DONE`` path — BLOCKING #2 fix regressed; "
+            "only the cancellation drain timeout should mark unhealthy"
+        )
+        await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_pump_thread_drained_when_jobs_put_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex pr_validate r10 BLOCKING #3: if ``self._jobs.put``
+        # raises AFTER ``pump_thread.start()`` succeeded, the pump
+        # thread is left blocked on ``thread_q.get()`` forever — a
+        # daemon-thread leak. The fix wraps both calls in a
+        # try/except that pushes ``_STREAM_DONE`` on the pump's queue
+        # so it observes the sentinel and exits cleanly.
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        # Capture every pump thread that gets started so we can
+        # verify it eventually exits.
+        captured_pumps: list[threading.Thread] = []
+        original_start = threading.Thread.start
+
+        def _capture_start(self_t: threading.Thread) -> None:
+            if self_t.name == "rapid-mlx-diffusion-pump":
+                captured_pumps.append(self_t)
+            original_start(self_t)
+
+        monkeypatch.setattr(threading.Thread, "start", _capture_start)
+
+        # Force ``_jobs.put`` to raise on the FIRST stream attempt
+        # (the worker is already loaded so its queue.put during
+        # startup is not affected). Fall through to the real put on
+        # subsequent calls so cleanup ``stop()`` can still enqueue
+        # its sentinel.
+        original_put = engine._jobs.put
+        put_call_count = [0]
+
+        def _failing_put(*a: Any, **k: Any) -> None:
+            put_call_count[0] += 1
+            if put_call_count[0] == 1:
+                raise RuntimeError("simulated _jobs.put failure")
+            return original_put(*a, **k)
+
+        monkeypatch.setattr(engine._jobs, "put", _failing_put)
+
+        # The failure must propagate to the caller AS-IS (no silent
+        # swallow), and the pump thread must drain on the way out.
+        with pytest.raises(RuntimeError, match="simulated _jobs.put failure"):
+            async for _ in engine.stream_chat(
+                [{"role": "user", "content": "hi"}], max_tokens=16
+            ):
+                pass
+
+        assert len(captured_pumps) == 1, (
+            "expected exactly one pump thread to start during the "
+            f"failed stream; saw {len(captured_pumps)}"
+        )
+        captured_pumps[0].join(timeout=5.0)
+        assert captured_pumps[0].is_alive() is False, (
+            "pump thread leaked after ``_jobs.put`` raised — the "
+            "setup-failure except block must push ``_STREAM_DONE`` "
+            "on ``thread_q`` so the pump exits its ``get()`` loop. "
+            "BLOCKING #3 fix regressed."
+        )
+
+        await engine.stop()

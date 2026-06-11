@@ -287,8 +287,29 @@ class DiffusionEngine(BaseEngine):
 
     def _start_worker_once(self) -> None:
         """Spin up the worker thread on demand. Idempotent under
-        concurrent callers (the lock guards the start invariant)."""
+        concurrent callers (the lock guards the start invariant).
+
+        codex pr_validate r10 BLOCKING #1: a worker that died during
+        the load sequence (mlx-vlm import failure, Metal device
+        unavailable, block-family mismatch — all paths inside
+        ``_worker_loop`` that set ``_load_error`` and return without
+        ever reaching the job loop) left ``_worker`` non-None and
+        dead. Subsequent ``start()`` / ``_load_blocking()`` calls
+        saw a non-None worker and refused to spawn a replacement,
+        so the engine was permanently stuck reporting the original
+        load error. Detect dead workers here and reset the
+        bookkeeping (including the ready / load_error pair) so a
+        retry can actually attempt a fresh load.
+        """
         with self._worker_start_lock:
+            if self._worker is not None and not self._worker.is_alive():
+                # Dead worker (failed load or already-exited shutdown).
+                # Reset the load-cycle state so a retry can succeed.
+                self._worker = None
+                self._ready = threading.Event()
+                self._load_error = None
+                self._loaded = False
+                self._stop = False
             if self._worker is not None:
                 return
             self._worker = threading.Thread(
@@ -797,10 +818,31 @@ class DiffusionEngine(BaseEngine):
                 name="rapid-mlx-diffusion-pump",
                 daemon=True,
             )
-            pump_thread.start()
-            self._jobs.put(
-                (prompt, max_tokens, cfg, thread_q, cancel_event, done_event)
-            )
+            # codex pr_validate r10 BLOCKING #3: ``pump_thread.start()``
+            # could in principle raise (rare — only out-of-thread-
+            # resources exhaustion), and ``self._jobs.put`` could in
+            # principle raise (queue.Queue.put has no maxsize so it
+            # won't block, but a bug in the queue object itself could
+            # still raise). If either raises BETWEEN ``pump_thread
+            # .start()`` succeeding and the worker getting its job,
+            # the pump thread is left blocked on ``thread_q.get()``
+            # forever — a daemon-thread leak. Push the sentinel
+            # ourselves on the setup-failure path so the pump always
+            # exits cleanly; the daemon flag handles process-exit
+            # cleanup anyway, but explicit drain matches the rest of
+            # the lifecycle and lets the unit test pin it.
+            _pump_started = False
+            try:
+                pump_thread.start()
+                _pump_started = True
+                self._jobs.put(
+                    (prompt, max_tokens, cfg, thread_q, cancel_event, done_event)
+                )
+            except BaseException:
+                if _pump_started:
+                    thread_q.put(_STREAM_DONE)
+                    pump_thread.join(timeout=2.0)
+                raise
             # Caller-supplied stop sequences (OpenAI /v1/completions
             # ``stop`` knob — single string or list). mlx-vlm's
             # ``stream_diffusion_generate`` does not honor stop
@@ -831,10 +873,23 @@ class DiffusionEngine(BaseEngine):
             stop_list = _normalize_stops(kwargs.get("stop"))
             tail_len = (max(len(s) for s in stop_list) - 1) if stop_list else 0
             tail = ""
+            # codex pr_validate r10 BLOCKING #2: track whether we
+            # observed ``_STREAM_DONE`` (worker cleanly drained) vs
+            # exited early. The finally block uses this to skip the
+            # redundant ``cancel_event.set()`` on the happy path —
+            # the worker has already returned, so signalling cancel
+            # is misleading semantically and the codex finding said
+            # it suggested a 30 s shutdown delay (the actual delay
+            # is milliseconds because ``done_event`` is already set
+            # by the time we see ``_STREAM_DONE`` consumed from the
+            # pump, but we still skip the unnecessary set() for
+            # cleanliness).
+            stream_done_observed = False
             try:
                 while True:
                     item = await aio_q.get()
                     if item is _STREAM_DONE:
+                        stream_done_observed = True
                         return
                     if isinstance(item, BaseException):
                         raise item
@@ -901,11 +956,19 @@ class DiffusionEngine(BaseEngine):
                             finished=False,
                         )
             finally:
-                # Always cancel the worker job — covers the early-stop
-                # path, caller disconnect (asyncio CancelledError), and
-                # exceptions raised mid-stream. Idempotent under repeat
-                # ``set()`` calls.
-                cancel_event.set()
+                # Only cancel the worker job on EARLY exit (caller
+                # disconnect, raised exception, stop-sequence
+                # truncate). The clean ``_STREAM_DONE`` path means
+                # the worker has already returned — signalling
+                # cancel there is misleading and noisy (codex
+                # pr_validate r10 BLOCKING #2). The early-stop
+                # truncation path inside the loop already sets
+                # ``cancel_event`` directly, so this guard preserves
+                # both paths' correctness. Idempotent under repeat
+                # ``set()`` calls — safe even when the inner truncate
+                # path beat us to it.
+                if not stream_done_observed:
+                    cancel_event.set()
                 # Wait for the worker to fully release this job before
                 # we drop the engine lock, else a queued sibling
                 # request acquires the lock while the worker is still
@@ -915,15 +978,28 @@ class DiffusionEngine(BaseEngine):
                 # block (~50-200 ms), so this normally waits one
                 # block at most. The 30 s ceiling is a defence-in-
                 # depth so a stuck worker can never wedge the lock
-                # forever. If the ceiling DOES fire, we mark the
-                # engine as ``_worker_stuck`` so subsequent
-                # ``check_admission`` calls fail fast and the operator
-                # learns the engine is unhealthy — otherwise we'd
-                # silently release the lock onto a worker that's
-                # still burning GPU on the abandoned job (codex round
-                # 7 [P2]).
-                drained = await asyncio.to_thread(done_event.wait, 30.0)
-                if not drained:
+                # forever. If the ceiling DOES fire (only possible
+                # on cancellation), we mark the engine as
+                # ``_worker_stuck`` so subsequent ``check_admission``
+                # calls fail fast and the operator learns the engine
+                # is unhealthy (codex round 7 [P2]).
+                #
+                # On the clean ``_STREAM_DONE`` path we already
+                # KNOW the worker is mid-finally (it's the path
+                # that produced our sentinel). Use a 2-second wait
+                # there — long enough to ride out OS scheduling
+                # noise between worker's ``out_q.put(_STREAM_DONE)``
+                # and ``done_event.set()``, but tight enough that a
+                # genuinely wedged worker is caught quickly.
+                _wait_budget = 2.0 if stream_done_observed else 30.0
+                drained = await asyncio.to_thread(done_event.wait, _wait_budget)
+                if not drained and not stream_done_observed:
+                    # Only treat a missed drain as "engine stuck" on
+                    # the cancellation path. A missed drain after
+                    # ``_STREAM_DONE`` was already observed indicates
+                    # the worker is still mid-cleanup (unusual but
+                    # benign — it WILL set done_event eventually);
+                    # don't poison the engine for that.
                     self._worker_stuck = True
                     logger.error(
                         "DiffusionEngine worker did not drain cancelled job "
