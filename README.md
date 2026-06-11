@@ -462,6 +462,7 @@ Decoded examples:
 | **MiniMax / Kimi** | `minimax-m2.5-4bit`, `minimax-m2.7-mxfp4`, `kimi-48b-4bit`, `kimi-k2.5-3bit` | |
 | **Mistral / Devstral** | `mistral-24b-4bit`, `devstral-24b-4bit`, `devstral-v2-24b-4bit`, `ministral-3b-4bit` | |
 | **Other** | `phi-4-14b-4bit`, `phi-4-mini-4bit`, `smollm3-3b-4bit`, `nemotron-30b-4bit`, `bonsai-1.7b-unpacked`, `-4b-unpacked`, `-8b-unpacked`, `granite4-tiny-4bit` | |
+| 🆕 **Text-Diffusion** | `diffusion-gemma-26b` | Non-autoregressive (block denoising); same `/v1/chat/completions` API |
 
 ✨ = DFlash speculative decoding supported (opt in with `--enable-dflash`). `rapid-mlx info <alias>` shows per-alias capabilities.
 
@@ -501,12 +502,36 @@ rapid-mlx serve qwen3-coder-4bit --prefill-step-size 8192 --port 8000  # MoE = o
 
 # Vision — image understanding (see note below)
 rapid-mlx serve qwen3-vl-4b-4bit --mllm --port 8000
+
+# 🆕 Text-diffusion — DiffusionGemma 26B-A4B (block denoising, not autoregressive)
+rapid-mlx serve diffusion-gemma-26b --port 8000  # needs [vision] extras for mlx-vlm 0.6.3+
 ```
 
 > **Vision deps:** Install into the same environment where rapid-mlx lives:
 > - `install.sh` users: `~/.rapid-mlx/bin/pip install 'rapid-mlx[vision]'`
 > - `pip` users: `pip install 'rapid-mlx[vision]'` (in the same venv)
 > - `brew` users: `$(brew --prefix)/opt/rapid-mlx/libexec/bin/pip install 'rapid-mlx[vision]'`
+
+### 🆕 Text-Diffusion (DiffusionGemma 26B-A4B)
+
+DiffusionGemma is a **non-autoregressive** language model — instead of emitting one token at a time, it denoises whole blocks of tokens in parallel via a diffusion process. Rapid-MLX wraps it behind the standard OpenAI Chat Completions API, so any client (chat UIs, agent harnesses, your own scripts) talks to it the same way it talks to Qwen / Gemma / GPT-OSS.
+
+```bash
+pip install 'rapid-mlx[vision]'       # mlx-vlm 0.6.3+ provides the diffusion runtime
+rapid-mlx serve diffusion-gemma-26b --port 8000
+```
+
+**B=1 single-user benchmark** (M3 Ultra 256 GB, mlx-community/diffusiongemma-26B-A4B-it-4bit, median of 3 runs + 1 warmup):
+
+| `max_tokens` | TTFT | E2E | Aggregate tok/s |
+|---:|---:|---:|---:|
+| 64 | 1.47s | 1.47s | 43 |
+| 256 | 6.00s | 6.00s | 43 |
+| 1024 | 5.71s | 19.58s | 37 |
+
+> Diffusion models emit tokens in **whole denoising blocks**, so the conventional `decode_tok/s = tokens / (e2e − ttft)` metric isn't meaningful here (ttft ≈ e2e for short outputs). The table reports **aggregate** throughput — `tokens / total_wall_time` — i.e. how many tokens actually land in the chat window per second. Throughput climbs with output length because the per-step denoising cost amortizes across more emitted tokens.
+
+Reproduce the table: `python3.12 scripts/bench_diffusion_gemma.py --port 8000`.
 
 <details>
 <summary><strong>Parser auto-detection & manual overrides</strong></summary>
