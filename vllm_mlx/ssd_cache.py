@@ -409,7 +409,7 @@ SERIALIZER_SUPPORT_MATRIX = {
     "RotatingKVCache": "supported",  # Serialized as KVCache (keys/values/offset)
     "ArraysCache": "supported",
     "MambaCache": "supported",  # Legacy name for ArraysCache
-    "_QuantizedCacheWrapper": "not_supported_spill_dequantized",
+    "_QuantizedCacheWrapper": "supported_via_dequant_on_spill",
 }
 
 
@@ -728,6 +728,87 @@ class SSDCacheTier:
 
         Returns True if enqueued, False if queue is full (entry dropped).
         """
+        # Dequantize on the CALLER's thread, which owns the MLX GPU stream.
+        # mx.dequantize is a GPU compute op; running it on the writer thread
+        # aborts the process ("no Stream(gpu,N) in current thread"). Materialize
+        # with mx.eval so the writer thread only does a host-side copy. The layer
+        # serializers handle plain KVCache/ArraysCache only; any layer whose
+        # .keys/.values are a tuple/list of arrays (packed, scales, biases)
+        # — either our `_QuantizedCacheWrapper` or mlx-lm's native
+        # `QuantizedKVCache` produced when --kv-cache-quantization is on — must
+        # be reduced to a single dense array per attribute before queueing.
+        import mlx.core as mx
+        from .memory_cache import _QuantizedCacheWrapper, _dequantize_cache
+
+        def _is_quantized_layer(layer):
+            if isinstance(layer, _QuantizedCacheWrapper):
+                return True
+            keys = getattr(layer, "keys", None)
+            return isinstance(keys, (tuple, list))
+
+        if any(_is_quantized_layer(layer) for layer in cache):
+            try:
+                from mlx_lm.models.cache import QuantizedKVCache
+            except ImportError:
+                QuantizedKVCache = ()  # never matches isinstance below
+
+            converted: list = []
+            for layer in cache:
+                if isinstance(layer, _QuantizedCacheWrapper):
+                    # Existing path: wrapper → orig_type with dequantized keys.
+                    converted.extend(_dequantize_cache([layer]))
+                elif isinstance(layer, QuantizedKVCache) or (
+                    hasattr(layer, "keys") and isinstance(layer.keys, (tuple, list))
+                ):
+                    # Native mlx-lm QuantizedKVCache: keys/values are
+                    # (packed, scales, biases) tuples. Dequantize in place
+                    # into a fresh KVCache-shaped duck-type for the serializer.
+                    from mlx_lm.models.cache import KVCache as _KVCache
+
+                    bits = getattr(layer, "bits", 8)
+                    group_size = getattr(layer, "group_size", 64)
+                    kv = _KVCache.__new__(_KVCache)
+                    kv.keys = mx.dequantize(
+                        *layer.keys, group_size=group_size, bits=bits
+                    )
+                    kv.values = mx.dequantize(
+                        *layer.values, group_size=group_size, bits=bits
+                    )
+                    kv.offset = getattr(layer, "offset", kv.keys.shape[-2])
+                    if (
+                        kv.keys is not None
+                        and hasattr(kv.keys, "shape")
+                        and len(kv.keys.shape) >= 3
+                        and kv.offset < kv.keys.shape[-2]
+                    ):
+                        kv.keys = kv.keys[..., : kv.offset, :]
+                        kv.values = kv.values[..., : kv.offset, :]
+                    converted.append(kv)
+                else:
+                    converted.append(layer)
+            cache = converted
+            # Numpy's PEP 3118 buffer protocol doesn't understand bfloat16 —
+            # it sees the bf16 array as format "B" (uint8) but the buffer items
+            # are 2 bytes, so np.array() raises a RuntimeError mismatch. Cast
+            # to float16 here on the CALLER's stream: KV values sit well within
+            # the fp16 ±65504 range, fp16 has MORE mantissa bits than bf16, and
+            # the byte size is identical. Then force eval so the writer thread
+            # sees materialized host buffers.
+            for layer in cache:
+                k = getattr(layer, "keys", None)
+                v = getattr(layer, "values", None)
+                if k is None or v is None or isinstance(k, (tuple, list)):
+                    continue
+                if str(getattr(k, "dtype", "")).endswith("bfloat16"):
+                    layer.keys = k.astype(mx.float16)
+                    layer.values = v.astype(mx.float16)
+                mx.eval(layer.keys, layer.values)
+            logger.info(
+                "[ssd_cache] dequantized %d layers before spill (%d tokens)",
+                len(cache),
+                len(tokens),
+            )
+
         try:
             layer_snapshots: list[tuple[LayerSerializer, dict[str, Any]]] = []
             for layer in cache:

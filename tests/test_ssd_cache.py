@@ -897,7 +897,7 @@ class TestMemoryCacheSSDCheck:
 
     def test_check_ssd_returns_candidate_on_miss(self, tmp_path):
         model = MagicMock()
-        config = MemoryCacheConfig(max_memory_mb=1, max_entries=2)
+        config = MemoryCacheConfig(max_memory_mb=1, max_entries=2, min_prefix_tokens=1)
         cache = MemoryAwarePrefixCache(model, config)
 
         ssd_config = SSDCacheConfig(cache_dir=str(tmp_path / "check_ssd_test"))
@@ -931,7 +931,7 @@ class TestMemoryCacheSSDCheck:
 
     def test_check_ssd_returns_none_without_tier(self):
         model = MagicMock()
-        config = MemoryCacheConfig(max_memory_mb=1)
+        config = MemoryCacheConfig(max_memory_mb=1, min_prefix_tokens=1)
         cache = MemoryAwarePrefixCache(model, config)
 
         candidate = cache.check_ssd([1, 2, 3])
