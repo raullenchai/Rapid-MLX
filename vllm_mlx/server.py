@@ -325,10 +325,17 @@ async def lifespan(app: FastAPI):
     if _engine is not None and hasattr(_engine, "load_cache_from_disk"):
         _load_prefix_cache_from_disk()
 
-    # Initialize MCP if config provided (VLLM_MLX_MCP_CONFIG is the
-    # deprecated pre-rename alias, still honored for back-compat)
-    mcp_config = os.environ.get("RAPID_MLX_MCP_CONFIG") or os.environ.get(
-        "VLLM_MLX_MCP_CONFIG"
+    # Initialize MCP if config provided. VLLM_MLX_MCP_CONFIG is the
+    # deprecated pre-rename alias. Prefer the first var that points to an
+    # existing file so a stale new var doesn't shadow a working legacy one
+    # (mirrors load_mcp_config's existence-aware fallback); fall back to the
+    # first that is merely set so a genuinely-missing path still surfaces an
+    # error rather than being silently ignored.
+    mcp_env_vars = ("RAPID_MLX_MCP_CONFIG", "VLLM_MLX_MCP_CONFIG")
+    mcp_candidates = [v for v in (os.environ.get(k) for k in mcp_env_vars) if v]
+    mcp_config = next(
+        (p for p in mcp_candidates if os.path.exists(os.path.expanduser(p))),
+        mcp_candidates[0] if mcp_candidates else None,
     )
     if mcp_config:
         await init_mcp(mcp_config)

@@ -2,7 +2,7 @@
 """Tests for prefix-cache directory sanitization (issue #194).
 
 The model name flows from ``--model`` / ``--served-model-name`` (arbitrary
-user input) into a filesystem path under ``~/.cache/vllm-mlx/prefix_cache/``.
+user input) into a filesystem path under ``~/.cache/rapid-mlx/prefix_cache/``.
 A name containing ``..`` previously resolved to a path *outside* the
 prefix-cache root, which is a defense-in-depth gap even if HF repo names
 don't permit ``..``.
@@ -34,7 +34,7 @@ def _resolve(name: str) -> str:
 
 def _root() -> str:
     return os.path.realpath(
-        os.path.join(os.path.expanduser("~"), ".cache", "vllm-mlx", "prefix_cache")
+        os.path.join(os.path.expanduser("~"), ".cache", "rapid-mlx", "prefix_cache")
     )
 
 
