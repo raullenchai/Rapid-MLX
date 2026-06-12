@@ -42,6 +42,7 @@ from ..service.helpers import (
     _resolve_max_tokens,
     _resolve_temperature,
     _resolve_top_p,
+    _validate_model_name,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     get_engine,
@@ -114,6 +115,8 @@ async def create_anthropic_message(
     body = await request.json()
     anthropic_request = AnthropicRequest(**body)
 
+    if not (anthropic_request.model or "").startswith(("claude-", "gpt-")):
+        _validate_model_name(anthropic_request.model)
     engine = get_engine(anthropic_request.model)
 
     # Pre-flight admission gate (C4) — see routes/chat.py for rationale.
@@ -143,6 +146,14 @@ async def create_anthropic_message(
             f"tools={n_tools}"
         )
         logger.debug(f"[REQUEST] last user message preview: {last_user_preview!r}")
+
+        cfg_for_log = get_config()
+        if anthropic_request.model and cfg_for_log.model_name and anthropic_request.model != cfg_for_log.model_name:
+            logger.info(
+                "Anthropic /v1/messages: request model=%r served by loaded engine=%r",
+                anthropic_request.model,
+                cfg_for_log.model_name,
+            )
 
         # Convert Anthropic request -> OpenAI request
         openai_request = anthropic_to_openai(anthropic_request)

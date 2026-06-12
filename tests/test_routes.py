@@ -193,9 +193,9 @@ class TestHealthRoutes:
             self._restore_config(orig)
 
     def test_head_root_returns_200(self):
-        """HEAD / is the Claude Code connectivity probe. FastAPI auto-generates
-        it from GET / — this test pins the contract so a future refactor that
-        moves GET / to `router` (auth-gated) doesn't silently break the probe."""
+        """HEAD / is explicitly registered on probe_router (no auth) alongside GET /.
+        This test pins the contract so a future refactor that moves the route or
+        changes its methods doesn't silently break the Claude Code connectivity probe."""
         orig = self._patch_config(engine=None, mcp_manager=None, model_name=None)
         try:
             app = self._make_app()

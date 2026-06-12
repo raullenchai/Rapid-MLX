@@ -23,15 +23,15 @@ router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 @probe_router.api_route("/", methods=["GET", "HEAD"])
 async def root():
-	"""Root path — returns a minimal alive response.
+    """Root path — returns a minimal alive response.
 
-	Claude Code (and other Anthropic SDK clients) send ``HEAD /`` as a
-	connectivity probe before attempting any API call. Without a handler
-	here FastAPI returns 404, which the client interprets as "server
-	unreachable" and aborts. This endpoint lives on ``probe_router``
-	(no-auth) so the probe succeeds regardless of ``--api-key``.
-	"""
-	return {"status": "ok"}
+    Claude Code (and other Anthropic SDK clients) send ``HEAD /`` as a
+    connectivity probe before attempting any API call. Without a handler
+    here FastAPI returns 404, which the client interprets as "server
+    unreachable" and aborts. This endpoint lives on ``probe_router``
+    (no-auth) so the probe succeeds regardless of ``--api-key``.
+    """
+    return {"status": "ok"}
 
 
 @probe_router.get("/health")
