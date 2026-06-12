@@ -205,8 +205,13 @@ class TestHfPathReverseLookupRoutesDiffusionLane:
     def test_diffusion_hf_path_resolves_to_text_diffusion_modality(self) -> None:
         from vllm_mlx.model_aliases import resolve_profile
 
-        # The exact HF path codex called out in pr_validate r5 BLOCKING #1.
-        profile = resolve_profile("mlx-community/diffusiongemma-26B-A4B-it-4bit")
+        # The currently-registered HF path for ``diffusion-gemma-26b``.
+        # PR #558 swapped the alias from the 4bit checkpoint to the 8bit
+        # one for quality reasons; this test reads the alias's own
+        # ``hf_path`` so future swaps don't break the reverse-lookup pin.
+        diffusion_alias_profile = resolve_profile("diffusion-gemma-26b")
+        assert diffusion_alias_profile is not None
+        profile = resolve_profile(diffusion_alias_profile.hf_path)
         assert profile is not None, (
             "resolve_profile must reverse-look an HF path that matches "
             "a registered alias — codex r5 BLOCKING #1 false-positive "
