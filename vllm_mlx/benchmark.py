@@ -45,9 +45,12 @@ try:
     import cv2
 except ImportError:
     cv2 = None  # Only needed for video benchmarks
+try:
+    from PIL import Image
+except ImportError:
+    Image = None  # Only needed for image benchmarks; ships with rapid-mlx[vision]
 import numpy as np
 import requests
-from PIL import Image
 from tabulate import tabulate
 
 try:
@@ -676,8 +679,15 @@ class MLLMBenchmarkResult:
     mlx_memory_gb: float = 0.0
 
 
-def download_test_image(url: str, timeout: int = 30) -> Image.Image:
+def download_test_image(url: str, timeout: int = 30) -> "Image.Image":
     """Download image from URL and return PIL Image."""
+    if Image is None:
+        raise ImportError(
+            "Image benchmarks require Pillow, which is included in the "
+            "optional vision dependencies.\n"
+            "Install with:\n"
+            "    pip install 'rapid-mlx[vision]'"
+        )
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     }
@@ -686,12 +696,12 @@ def download_test_image(url: str, timeout: int = 30) -> Image.Image:
     return Image.open(io.BytesIO(response.content))
 
 
-def resize_image(img: Image.Image, width: int, height: int) -> Image.Image:
+def resize_image(img: "Image.Image", width: int, height: int) -> "Image.Image":
     """Resize image to specified dimensions."""
     return img.resize((width, height), Image.Resampling.LANCZOS)
 
 
-def image_to_base64(img: Image.Image, format: str = "JPEG") -> str:
+def image_to_base64(img: "Image.Image", format: str = "JPEG") -> str:
     """Convert PIL Image to base64 data URL."""
     if img.mode == "RGBA":
         background = Image.new("RGB", img.size, (255, 255, 255))
@@ -711,7 +721,7 @@ def benchmark_mllm_resolution(
     model,
     processor,
     config,
-    base_image: Image.Image,
+    base_image: "Image.Image",
     width: int,
     height: int,
     max_tokens: int = 256,
