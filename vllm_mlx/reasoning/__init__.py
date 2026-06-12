@@ -80,6 +80,7 @@ def _register_builtin_parsers():
     from .glm4_parser import Glm4ReasoningParser
     from .gpt_oss_parser import GptOssReasoningParser
     from .harmony_parser import HarmonyReasoningParser
+    from .mistral_parser import MistralReasoningParser
     from .qwen3_parser import Qwen3ReasoningParser
 
     register_parser("qwen3", Qwen3ReasoningParser)
@@ -88,6 +89,7 @@ def _register_builtin_parsers():
     register_parser("harmony", HarmonyReasoningParser)
     register_parser("gemma4", Gemma4ReasoningParser)
     register_parser("glm4", Glm4ReasoningParser)
+    register_parser("mistral", MistralReasoningParser)
 
 
 # Register built-in parsers on module load
