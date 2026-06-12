@@ -2,6 +2,8 @@
 """Authentication and rate limiting middleware."""
 
 import hashlib
+import hmac
+import ipaddress
 import logging
 import secrets
 import threading
@@ -18,6 +20,8 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 _auth_warning_logged: bool = False
+
+_RATE_LIMIT_HMAC_KEY = secrets.token_bytes(32)
 
 
 class RateLimiter:
@@ -88,16 +92,41 @@ def _extract_bearer_token(authorization: str | None) -> str | None:
     return token
 
 
+def _bucket_id(raw: str) -> str:
+    """HMAC-SHA256 with a per-process random key.
+
+    The HMAC key prevents an attacker who knows the SHA-256 of a secret
+    from mapping it back to the secret via a rainbow table of candidate
+    values.  Each process restart also rotates the key, so even if a
+    hash leaks across the wire it becomes useless after the process
+    exits.
+    """
+    return hmac.new(_RATE_LIMIT_HMAC_KEY, raw.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def _subnet_bucket(host: str) -> str:
+    """Group IPv4 hosts into /24 and IPv6 hosts into /64 subnets."""
+    try:
+        addr = ipaddress.ip_address(host)
+        if isinstance(addr, ipaddress.IPv4Address):
+            network = ipaddress.ip_network(f"{addr}/24", strict=False)
+        else:
+            network = ipaddress.ip_network(f"{addr}/64", strict=False)
+        return str(network.network_address)
+    except ValueError:
+        return host
+
+
 def _rate_limit_client_id(request: Request) -> str:
     """Resolve the default client id for rate limiting."""
     authorization = request.headers.get("Authorization")
     if authorization:
         bearer_key = _extract_bearer_token(authorization)
         raw = bearer_key or authorization
-        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+        return _bucket_id(raw)
 
     if request.client and request.client.host:
-        return request.client.host.rsplit(".", 1)[0]
+        return _subnet_bucket(request.client.host)
     return "unknown"
 
 
@@ -105,14 +134,14 @@ def _anthropic_rate_limit_client_id(request: Request) -> str:
     """Resolve a stable client id for Anthropic-compatible API-key headers."""
     bearer_key = _extract_bearer_token(request.headers.get("Authorization"))
     if bearer_key:
-        return hashlib.sha256(bearer_key.encode()).hexdigest()[:16]
+        return _bucket_id(bearer_key)
 
     x_api_key = request.headers.get("x-api-key")
     if x_api_key:
-        return hashlib.sha256(x_api_key.encode()).hexdigest()[:16]
+        return _bucket_id(x_api_key)
 
     if request.client and request.client.host:
-        return request.client.host.rsplit(".", 1)[0]
+        return _subnet_bucket(request.client.host)
     return "unknown"
 
 
