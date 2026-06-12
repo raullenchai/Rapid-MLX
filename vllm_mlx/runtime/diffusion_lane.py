@@ -94,6 +94,33 @@ def _strip_leading_channel_header(text: str) -> str:
 _STREAM_DONE = object()
 
 
+# Tool-call parsers DiffusionEngine can surface. Each entry maps the
+# parser name (as it appears in ``AliasProfile.tool_call_parser``) to
+# the inline wire markers that must NOT be filtered by mlx-vlm's
+# ``skip_special_token_ids`` set — otherwise the parser never sees the
+# call invocations and the request degrades to plain prose.
+#
+# The map is the SSOT for both:
+#   - ``supports_tool_calls`` gating in ``__init__``
+#   - ``build_prompt`` gating on whether to forward ``tools=`` to the
+#     chat template (only when the active parser is known to handle
+#     them — diffusion models without a parser would otherwise hit a
+#     ``TypeError`` on tokenizers whose ``apply_chat_template`` doesn't
+#     accept the kwarg)
+#   - the ``_build_skip_special_token_ids`` carve-out below
+_GEMMA4_WIRE_MARKERS: tuple[str, ...] = (
+    "<|tool_call>",
+    "<tool_call|>",
+    '<|"|>',
+    "<|tool>",
+    "<tool|>",
+)
+_TOOL_PARSER_MARKERS: dict[str, tuple[str, ...]] = {
+    "gemma4": _GEMMA4_WIRE_MARKERS,
+}
+_SUPPORTED_TOOL_CALL_PARSERS: frozenset[str] = frozenset(_TOOL_PARSER_MARKERS)
+
+
 def _normalize_stops(value: Any) -> list[str]:
     """Accept the OpenAI ``stop`` shape: ``None``, a string, or a list
     of strings. Return a non-empty-string list; empty input → ``[]``.
@@ -184,16 +211,18 @@ class DiffusionEngine(BaseEngine):
     the route layer, not here.
     """
 
-    # DiffusionGemma emits tool calls as inline wire markers
-    # (``<|tool_call>call:NAME{...}<tool_call|>``) in a free-form
-    # canvas — NOT through an OutputRouter channel. ``routes/chat.py``
-    # extracts them post-generation via the alias's
-    # ``tool_call_parser="gemma4"`` (text-parser path), so this bit
-    # must be True for that path to activate. The complementary
-    # ``_engine_supports_channel_routed_tool_calls`` probe in chat.py
-    # still returns False for this engine because the channel-routed
-    # surface (Harmony / OutputRouter) is genuinely absent.
-    supports_tool_calls: bool = True
+    # ``supports_tool_calls`` is an *instance* attribute set in
+    # ``__init__`` based on the resolved alias profile — only aliases
+    # whose ``tool_call_parser`` is set to a parser this engine can
+    # surface (currently just ``"gemma4"``) opt in. Aliases without a
+    # parser (e.g. a hypothetical future diffusion text model whose
+    # template lacks tool-call markers) keep ``supports_tool_calls =
+    # False`` so the route's ``_engine_opts_out_of_tools`` gate
+    # 422s ``tool_choice="required"`` upfront instead of running a
+    # full canvas generation that will never surface ``tool_calls``.
+    # Class-level default is False so callers without a profile
+    # (programmatic, no alias entry) stay on the conservative side.
+    supports_tool_calls: bool = False
 
     def __init__(
         self,
@@ -217,6 +246,15 @@ class DiffusionEngine(BaseEngine):
         # only for HF paths not referenced by any alias entry, in
         # which case the engine falls back to the no-tool default.
         self._profile = resolve_profile(model_name)
+        # Instance-level capability gate (codex r1 BLOCKING #2). Only
+        # opt in to tool calling when the resolved profile names a
+        # parser this engine can surface. Aliases without a parser
+        # (and bare HF paths with no matching alias) stay False so
+        # the route's ``_engine_opts_out_of_tools`` gate fires.
+        self.supports_tool_calls = bool(
+            self._profile is not None
+            and self._profile.tool_call_parser in _SUPPORTED_TOOL_CALL_PARSERS
+        )
         # Admission control mirrors BatchedEngine.check_admission —
         # reservations counter under a lock, BackpressureError raised
         # when the configured ``max_concurrent_requests`` is reached.
@@ -646,11 +684,64 @@ class DiffusionEngine(BaseEngine):
             "tokenize": False,
             "add_generation_prompt": True,
         }
-        if tools:
+        # Only forward ``tools`` to the chat template when the active
+        # alias declares a tool parser this engine can actually surface
+        # (codex r1 BLOCKING #1). Tokenizers whose ``apply_chat_template``
+        # doesn't accept a ``tools=`` kwarg would otherwise raise
+        # ``TypeError`` and turn a Big-AGI / BCG chat request that
+        # incidentally attached a ``tools`` list into a 500.
+        if tools and self.supports_tool_calls:
             template_kwargs["tools"] = tools
         return self._processor.tokenizer.apply_chat_template(
-            messages, **template_kwargs,
+            messages,
+            **template_kwargs,
         )
+
+    def _build_skip_special_token_ids(self, tokenizer: Any) -> set[int]:
+        """Construct the ``skip_special_token_ids`` set mlx-vlm uses
+        to strip special tokens from the detokenized canvas.
+
+        Starts from ``tokenizer.all_special_ids`` (the conservative
+        default — strip everything the tokenizer flagged as special).
+        When the active alias declares a tool-call parser this engine
+        knows how to surface (see ``_TOOL_PARSER_MARKERS``), drops the
+        parser's wire markers from the skip set so they survive
+        detokenization and reach the post-generation parser in
+        ``routes/chat.py``. Without this, the markers would land in
+        ``all_special_ids``, mlx-vlm would strip them, the parser
+        would see plain prose, and the tool request would silently
+        degrade.
+
+        Carve-out is strictly subtractive — only ids the tokenizer
+        encodes a marker into as a single token AND that are already
+        in the skip set get removed. Tokenizers that decompose a
+        marker into multiple ids (e.g. a future model whose template
+        spells ``<|tool_call>`` as a 3-token sequence) keep their
+        existing skip behaviour because the parser still sees the
+        literal characters via cross-token detokenization.
+
+        Pure helper — no I/O, no side effects beyond constructing
+        the return set. Exposed at instance scope so unit tests can
+        exercise the carve-out without standing up a worker thread
+        or invoking the mlx-vlm diffusion generator.
+        """
+        skip_ids: set[int] = set()
+        special = getattr(tokenizer, "all_special_ids", None) or []
+        for sid in special:
+            skip_ids.add(int(sid))
+        if self._profile is None:
+            return skip_ids
+        parser = self._profile.tool_call_parser
+        if not parser or parser not in _TOOL_PARSER_MARKERS:
+            return skip_ids
+        for token in _TOOL_PARSER_MARKERS[parser]:
+            try:
+                token_ids = tokenizer.encode(token, add_special_tokens=False)
+            except TypeError:
+                token_ids = tokenizer.encode(token)
+            if len(token_ids) == 1 and int(token_ids[0]) in skip_ids:
+                skip_ids.discard(int(token_ids[0]))
+        return skip_ids
 
     def estimate_new_tokens(self, prompt: str) -> tuple[int, int]:
         self._ensure_loaded()
@@ -1157,35 +1248,7 @@ class DiffusionEngine(BaseEngine):
         ids = tokenizer.encode(prompt)
         input_ids = mx.array(ids)[None]
 
-        skip_ids: set[int] = set()
-        special = getattr(tokenizer, "all_special_ids", None) or []
-        for sid in special:
-            skip_ids.add(int(sid))
-
-        # When the alias declares the ``gemma4`` text-parser path, the
-        # canvas must surface the tool-call wire markers verbatim —
-        # ``<|tool_call>call:NAME{...}<tool_call|>`` and the inner
-        # string-quote marker ``<|"|>`` — so routes/chat.py can extract
-        # ``tool_calls`` post-generation. These tokens otherwise land in
-        # ``all_special_ids`` and get filtered by mlx-vlm's detokenizer,
-        # which strips the call invisible and reduces the tool request
-        # to plain prose. Drop them from the skip set.
-        if self._profile is not None and self._profile.tool_call_parser == "gemma4":
-            for token in (
-                "<|tool_call>",
-                "<tool_call|>",
-                '<|"|>',
-                "<|tool>",
-                "<tool|>",
-            ):
-                try:
-                    token_ids = tokenizer.encode(
-                        token, add_special_tokens=False,
-                    )
-                except TypeError:
-                    token_ids = tokenizer.encode(token)
-                if len(token_ids) == 1 and int(token_ids[0]) in skip_ids:
-                    skip_ids.discard(int(token_ids[0]))
+        skip_ids = self._build_skip_special_token_ids(tokenizer)
 
         kwargs: dict[str, Any] = {
             "max_tokens": max_tokens,

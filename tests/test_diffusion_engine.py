@@ -67,7 +67,9 @@ class FakeTokenizer:
         # prompt fingerprint inside the test.
         rendered = "\n".join(m.get("content", "") for m in messages)
         if tools:
-            rendered = "TOOLS=" + ",".join(t.get("name", "?") for t in tools) + "\n" + rendered
+            rendered = (
+                "TOOLS=" + ",".join(t.get("name", "?") for t in tools) + "\n" + rendered
+            )
         FakeTokenizer.last_tools = tools
         if add_generation_prompt:
             rendered += "\n<start_of_turn>model\n"
@@ -214,26 +216,24 @@ class TestPromptAndTokenAccounting:
         assert "Hello there" in rendered
         assert rendered.endswith("model\n")
 
-    def test_build_prompt_forwards_tools_to_template(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
+    def test_build_prompt_forwards_tools_when_alias_declares_parser(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Tools are now forwarded to ``apply_chat_template`` so the
-        # Gemma 4 chat template renders the function declarations into
-        # the prompt. routes/chat.py then runs the gemma4 text parser
-        # against the canvas output to recover structured ``tool_calls``.
+        # When the alias declares a supported tool parser (gemma4),
+        # ``tools`` are forwarded to ``apply_chat_template`` so the
+        # template renders the function declarations into the prompt.
+        # routes/chat.py then runs the gemma4 text parser against the
+        # canvas output to recover structured ``tool_calls``.
         _install_mlx_vlm_mock(monkeypatch)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-        engine = DiffusionEngine(model_name="x/y")
+        engine = DiffusionEngine(model_name="diffusion-gemma-26b")
         engine._load_blocking()
         FakeTokenizer.last_tools = None
-        with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
-            rendered = engine.build_prompt(
-                [{"role": "user", "content": "Hello there"}],
-                tools=[{"name": "foo"}, {"name": "bar"}, {"name": "baz"}],
-            )
+        rendered = engine.build_prompt(
+            [{"role": "user", "content": "Hello there"}],
+            tools=[{"name": "foo"}, {"name": "bar"}, {"name": "baz"}],
+        )
         assert "Hello there" in rendered
         assert rendered.endswith("model\n")
         # ``tools`` reached the underlying chat template (FakeTokenizer
@@ -242,8 +242,31 @@ class TestPromptAndTokenAccounting:
         assert FakeTokenizer.last_tools is not None
         assert [t["name"] for t in FakeTokenizer.last_tools] == ["foo", "bar", "baz"]
         assert "TOOLS=foo,bar,baz" in rendered
-        # No "dropped tools" warning — the v0.7.1 fallback is gone.
-        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+    def test_build_prompt_drops_tools_when_alias_has_no_parser(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex r1 BLOCKING #1 negative control: a bare HF path with
+        # no matching alias (and therefore no resolved tool parser)
+        # MUST NOT forward ``tools`` to ``apply_chat_template``.
+        # Tokenizers whose template doesn't accept the kwarg would
+        # otherwise raise ``TypeError`` and turn a frontend's
+        # incidentally-attached tools list into a 500.
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="some/random-hf-path")
+        engine._load_blocking()
+        assert engine.supports_tool_calls is False
+        FakeTokenizer.last_tools = None
+        rendered = engine.build_prompt(
+            [{"role": "user", "content": "Hello there"}],
+            tools=[{"name": "foo"}],
+        )
+        assert "Hello there" in rendered
+        # Tools never reached the chat template.
+        assert FakeTokenizer.last_tools is None
+        assert "TOOLS=" not in rendered
 
     def test_build_prompt_no_warning_when_tools_absent(
         self,
@@ -356,7 +379,6 @@ class TestStreamChatBlockCollapse:
     async def test_stream_chat_forwards_tools_to_template(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # Direct stream_chat invocation with a tools payload must
         # (a) not crash, (b) forward ``tools`` through build_prompt
@@ -373,17 +395,18 @@ class TestStreamChatBlockCollapse:
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-        engine = DiffusionEngine(model_name="x/y")
+        # diffusion-gemma-26b alias declares ``tool_call_parser="gemma4"``
+        # → engine.supports_tool_calls is True → tools are forwarded.
+        engine = DiffusionEngine(model_name="diffusion-gemma-26b")
         engine._load_blocking()
         FakeTokenizer.last_tools = None
         collected = []
-        with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
-            async for out in engine.stream_chat(
-                [{"role": "user", "content": "hi"}],
-                tools=[{"name": "web_search"}],
-                max_tokens=16,
-            ):
-                collected.append(out)
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            tools=[{"name": "web_search"}],
+            max_tokens=16,
+        ):
+            collected.append(out)
         # Stream completes normally with the model's text output.
         assert [c.new_text for c in collected] == ["Hello ", "world."]
         assert collected[-1].finish_reason == "stop"
@@ -392,68 +415,54 @@ class TestStreamChatBlockCollapse:
         # callers that bypass routes/chat.py.
         assert FakeTokenizer.last_tools is not None
         assert [t["name"] for t in FakeTokenizer.last_tools] == ["web_search"]
-        # No "dropped tools" warning — the v0.7.1 fallback is gone.
-        assert [
-            r
-            for r in caplog.records
-            if r.levelname == "WARNING" and "dropped" in r.getMessage()
-        ] == []
 
     @pytest.mark.asyncio
-    async def test_route_layer_warning_fires_on_every_pass(
+    async def test_route_layer_forwards_tools_on_every_pass(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # Mimics the routes/chat.py contract: build_prompt is called
         # once eagerly with the full tools list to validate the
         # template, then stream_chat runs the generation (which
         # internally re-renders via build_prompt). Both passes MUST
         # forward ``tools`` to ``apply_chat_template`` so the model
-        # sees the function declarations on both renders. No "dropped
-        # tools" warning fires — that fallback is gone.
+        # sees the function declarations on both renders.
         yields = [
             FakeGenerationResult(text="ok.", finish_reason="stop"),
         ]
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-        engine = DiffusionEngine(model_name="x/y")
+        # Tool-enabled alias.
+        engine = DiffusionEngine(model_name="diffusion-gemma-26b")
         engine._load_blocking()
         FakeTokenizer.last_tools = None
-        with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
-            rendered_eager = engine.build_prompt(
-                [{"role": "user", "content": "hi"}],
-                tools=[{"name": "web_search"}, {"name": "weather"}],
-            )
-            # Eager pass forwarded the tools to the template.
-            assert FakeTokenizer.last_tools is not None
-            assert [t["name"] for t in FakeTokenizer.last_tools] == [
-                "web_search",
-                "weather",
-            ]
-            assert "TOOLS=web_search,weather" in rendered_eager
-            # Now reset and run stream_chat — it should also forward.
-            FakeTokenizer.last_tools = None
-            collected = []
-            async for out in engine.stream_chat(
-                [{"role": "user", "content": "hi"}],
-                tools=[{"name": "web_search"}, {"name": "weather"}],
-                max_tokens=16,
-            ):
-                collected.append(out)
+        rendered_eager = engine.build_prompt(
+            [{"role": "user", "content": "hi"}],
+            tools=[{"name": "web_search"}, {"name": "weather"}],
+        )
+        # Eager pass forwarded the tools to the template.
+        assert FakeTokenizer.last_tools is not None
+        assert [t["name"] for t in FakeTokenizer.last_tools] == [
+            "web_search",
+            "weather",
+        ]
+        assert "TOOLS=web_search,weather" in rendered_eager
+        # Now reset and run stream_chat — it should also forward.
+        FakeTokenizer.last_tools = None
+        collected = []
+        async for out in engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            tools=[{"name": "web_search"}, {"name": "weather"}],
+            max_tokens=16,
+        ):
+            collected.append(out)
         # stream_chat's internal build_prompt forwarded tools too.
         assert FakeTokenizer.last_tools is not None
         assert [t["name"] for t in FakeTokenizer.last_tools] == [
             "web_search",
             "weather",
         ]
-        # No "dropped tools" warning on either pass.
-        assert [
-            r
-            for r in caplog.records
-            if r.levelname == "WARNING" and "dropped" in r.getMessage()
-        ] == []
         # And the stream still produced its output.
         assert collected[-1].new_text == "ok."
 
@@ -1154,25 +1163,120 @@ class TestConcurrentRequests:
         assert engine._worker is None, "Worker started in __init__"
         assert engine._load_error is None, "Load attempted in __init__ (load_error set)"
 
-    def test_supports_tool_calls_attribute_is_true(
+    def test_supports_tool_calls_is_instance_level_gated_on_alias_parser(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # DiffusionGemma emits tool calls as inline wire markers
-        # (``<|tool_call>call:NAME{...}<tool_call|>``) on the same
-        # canvas as plain content — NOT through an OutputRouter
-        # channel. routes/chat.py recovers them post-generation via
-        # the alias's ``tool_call_parser="gemma4"`` text parser, which
-        # only fires when ``supports_tool_calls=True``. The
-        # complementary channel-routed probe in chat.py
-        # (``_engine_supports_channel_routed_tool_calls``) still
-        # returns False because the engine never runs OutputRouter,
-        # so streaming-required-mode tool_choice still 422s upfront.
+        # codex r1 BLOCKING #2: ``supports_tool_calls`` MUST be an
+        # instance attribute gated on the resolved alias profile, not
+        # a class-wide True. Without a known tool parser, the engine
+        # cannot surface ``tool_calls`` no matter what the request
+        # asked for — flipping the class default to True would let
+        # ``tool_choice="required"`` slip past the route's
+        # ``_engine_opts_out_of_tools`` gate and run a full canvas
+        # generation that always ends in a plain-text fallback.
         _install_mlx_vlm_mock(monkeypatch)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-        engine = DiffusionEngine(model_name="x/y")
-        assert engine.supports_tool_calls is True
-        assert DiffusionEngine.supports_tool_calls is True
+        # Class default is conservative — bare HF paths with no alias
+        # entry land here.
+        assert DiffusionEngine.supports_tool_calls is False
+
+        # Bare HF path that no alias references → still False (no
+        # profile to consult).
+        bare = DiffusionEngine(model_name="some/random-hf-path")
+        assert bare.supports_tool_calls is False
+
+        # Alias whose profile sets ``tool_call_parser="gemma4"`` opts
+        # the instance into True. The diffusion-gemma-26b alias is
+        # configured this way in aliases.json.
+        gemma = DiffusionEngine(model_name="diffusion-gemma-26b")
+        assert gemma.supports_tool_calls is True
+
+    def test_build_skip_special_token_ids_carves_out_gemma4_wire_markers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex r1 BLOCKING #3: the skip_ids carve-out is the load-
+        # bearing piece of the tool-call wire — if a gemma4-aliased
+        # engine ever stops dropping the five marker ids from
+        # ``skip_special_token_ids``, mlx-vlm's detokenizer strips
+        # the call invocations and the parser sees plain prose.
+        # Stand up a tokenizer that (a) returns five distinct marker
+        # ids from ``all_special_ids`` and (b) encodes each wire
+        # marker as a single token; assert the helper drops exactly
+        # those five ids and leaves the other special ids intact.
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        # Five marker ids the helper must remove + three unrelated
+        # special ids it must preserve.
+        marker_ids = {
+            46: "<|tool>",
+            47: "<tool|>",
+            48: "<|tool_call>",
+            49: "<tool_call|>",
+            52: '<|"|>',
+        }
+        unrelated_special_ids = {0, 1, 2}
+
+        class _ToolAwareTokenizer:
+            all_special_ids = list(unrelated_special_ids | set(marker_ids))
+
+            def encode(
+                self,
+                text: str,
+                add_special_tokens: bool = True,
+            ) -> list[int]:
+                # Look the text up in the marker table; tokens not in
+                # the table get hashed to a non-special id so the
+                # helper's len(token_ids)==1 guard still applies.
+                for sid, marker in marker_ids.items():
+                    if text == marker:
+                        return [sid]
+                return [hash(text) % 1000 + 1000]
+
+        gemma = DiffusionEngine(model_name="diffusion-gemma-26b")
+        assert gemma.supports_tool_calls is True
+
+        skip_ids = gemma._build_skip_special_token_ids(_ToolAwareTokenizer())
+        # The unrelated special ids stay in the skip set (still
+        # filtered from detokenize output).
+        assert unrelated_special_ids.issubset(skip_ids)
+        # All five wire marker ids are dropped (so detokenizer
+        # surfaces them and the parser can extract tool_calls).
+        for sid in marker_ids:
+            assert sid not in skip_ids, (
+                f"marker id {sid} ({marker_ids[sid]!r}) was not carved out"
+            )
+
+    def test_build_skip_special_token_ids_keeps_markers_without_parser(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Negative control for codex r1 BLOCKING #3: a bare HF path
+        # whose alias has no tool parser MUST keep the markers in
+        # the skip set — there's no downstream parser to receive
+        # them, and surfacing raw ``<|tool_call>`` tokens to plain
+        # chat clients would corrupt the conversation transcript.
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        marker_ids = {46, 47, 48, 49, 52}
+        unrelated_special_ids = {0, 1, 2}
+
+        class _BareTokenizer:
+            all_special_ids = list(unrelated_special_ids | marker_ids)
+
+            def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+                return [hash(text) % 1000 + 1000]
+
+        # Bare HF path → no profile → supports_tool_calls False →
+        # helper does NOT carve out anything.
+        bare = DiffusionEngine(model_name="some/no-alias-hf-path")
+        assert bare.supports_tool_calls is False
+
+        skip_ids = bare._build_skip_special_token_ids(_BareTokenizer())
+        # All special ids (including the marker ids) stay skipped.
+        assert marker_ids.issubset(skip_ids)
+        assert unrelated_special_ids.issubset(skip_ids)
 
     def test_engine_opts_out_blocks_tool_choice_required_even_with_parser(
         self,
