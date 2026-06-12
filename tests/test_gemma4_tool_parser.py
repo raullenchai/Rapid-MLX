@@ -185,3 +185,102 @@ def test_streaming_passthrough_when_no_markup():
     parser.reset()
     r = parser.extract_tool_calls_streaming("", "Hello world", "Hello world")
     assert r == {"content": "Hello world"}
+
+
+# ---------------------------------------------------------------------------
+# Stripped-wire-form regression (PR #558)
+# ---------------------------------------------------------------------------
+#
+# HuggingFace's ``tokenizer.decode(skip_special_tokens=True)`` (the default
+# the mlx-vlm streaming detokenizer uses) silently strips the outer
+# ``<|tool_call>``/``<tool_call|>`` ids (48/49) at decode time, even when
+# rapid-mlx keeps them in ``skip_special_token_ids``. Empirically the
+# diffusion-gemma-26b-4bit share probe on 2026-06-11 emitted only the
+# stripped body ``call:NAME{...}`` (the inner ``<|"|>`` quote markers
+# survive because they're emitted as raw BPE bytes, not as special ids).
+#
+# Before PR #558 the parser required the outer wrappers and silently
+# treated the stripped body as natural-language content — the model's
+# tool call leaked into the chat surface as plain text.
+
+
+def test_extract_stripped_form_bare_numeric():
+    """Stripped form without outer wrappers — production reality."""
+    parser = Gemma4ToolParser()
+    out = "call:add{a:432,b:1}"
+    res = parser.extract_tool_calls(out)
+    assert res.tools_called is True
+    assert len(res.tool_calls) == 1
+    tc = res.tool_calls[0]
+    assert tc["name"] == "add"
+    assert json.loads(tc["arguments"]) == {"a": 432, "b": 1}
+    assert res.content is None
+
+
+def test_extract_stripped_form_quoted_string():
+    """Inner quote markers survive HF decode (raw BPE bytes), outer don't."""
+    parser = Gemma4ToolParser()
+    out = 'call:get_weather{location:<|"|>Palo Alto<|"|>}'
+    res = parser.extract_tool_calls(out)
+    assert res.tools_called is True
+    args = json.loads(res.tool_calls[0]["arguments"])
+    assert args == {"location": "Palo Alto"}
+    assert res.content is None
+
+
+def test_extract_stripped_form_calculator_user_report():
+    """Exact failure mode from the vnsh.dev share probe report."""
+    parser = Gemma4ToolParser()
+    out = "call:calculator{expression:432+1}"
+    res = parser.extract_tool_calls(out)
+    assert res.tools_called is True
+    assert res.tool_calls[0]["name"] == "calculator"
+    args = json.loads(res.tool_calls[0]["arguments"])
+    assert args == {"expression": "432+1"}
+    assert res.content is None
+
+
+def test_streaming_stripped_form_suppresses_then_emits():
+    parser = Gemma4ToolParser()
+    parser.reset()
+    full = "call:add{a:3,b:4}"
+
+    # Split AFTER the opener ``{`` so the body-opener regex fires.
+    # Splitting before ``{`` is indistinguishable from natural prose
+    # ("I will call you later") and intentionally falls through as
+    # content — covered separately by
+    # ``test_streaming_stripped_form_natural_text_passes_through``.
+    open_idx = full.index("{") + 1
+    delta1 = full[:open_idx]
+    delta2 = full[open_idx:]
+
+    r1 = parser.extract_tool_calls_streaming("", delta1, delta1)
+    # Opener seen, closer not yet → suppress.
+    assert r1 is None
+
+    r2 = parser.extract_tool_calls_streaming(delta1, full, delta2)
+    assert r2 is not None
+    assert "tool_calls" in r2
+    assert len(r2["tool_calls"]) == 1
+    tc = r2["tool_calls"][0]
+    assert tc["function"]["name"] == "add"
+    assert json.loads(tc["function"]["arguments"]) == {"a": 3, "b": 4}
+
+
+def test_streaming_stripped_form_natural_text_passes_through():
+    """``call:foo{`` is the only false-positive shape — make sure prose
+    that happens to mention ``call`` or ``:`` does not get suppressed."""
+    parser = Gemma4ToolParser()
+    parser.reset()
+    text = "I will call you later: see you then."
+    r = parser.extract_tool_calls_streaming("", text, text)
+    assert r == {"content": text}
+
+
+def test_has_pending_recognises_stripped_opener():
+    parser = Gemma4ToolParser()
+    assert parser.has_pending_tool_call("call:foo{x:1}") is True
+    assert parser.has_pending_tool_call("call:foo{") is True
+    # No opener — must not trigger
+    assert parser.has_pending_tool_call("hello world") is False
+    assert parser.has_pending_tool_call("call me later") is False

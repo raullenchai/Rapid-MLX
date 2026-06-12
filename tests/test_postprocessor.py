@@ -581,6 +581,113 @@ class TestStreamingPostProcessorToolCalls:
         assert [e for e in events if e.type == "content"] == []
 
 
+class TestStreamingPostProcessorGemma4StrippedForm:
+    """Tests for the gemma4 stripped-wire-form fast-path regression
+    (PR #558 — DiffusionGemma share probe 2026-06-11).
+
+    These tests use the REAL ``Gemma4ToolParser`` (no mock) so they
+    exercise the actual contract between ``StreamingPostProcessor`` and
+    the parser. The pristine wire form ``<|tool_call>...<tool_call|>``
+    is stripped to ``call:NAME{...}`` by HF's
+    ``tokenizer.decode(skip_special_tokens=True)``; before this fix, the
+    postprocessor's ``"<" not in content and "[" not in content``
+    fast-path bypassed the parser entirely and the raw body leaked as
+    ``delta.content`` on the SSE stream — exactly the failure reported
+    by the user.
+    """
+
+    def _make_pp_with_real_parser(self):
+        from vllm_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
+
+        parser = Gemma4ToolParser()
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=parser,
+        )
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
+        pp.reset()
+        return pp, parser
+
+    def test_stripped_form_one_shot_does_not_leak_content(self):
+        """Whole stripped body arrives in one delta — emit only tool_call,
+        suppress content."""
+        pp, _parser = self._make_pp_with_real_parser()
+
+        events = pp.process_chunk(
+            _make_output("call:calculator{expression:432+1}", finished=True)
+        )
+
+        tool_events = [e for e in events if e.type == "tool_call"]
+        content_events = [e for e in events if e.type == "content"]
+
+        assert len(tool_events) == 1, (
+            f"expected exactly one tool_call event, got: {events!r}"
+        )
+        tc = tool_events[0].tool_calls[0]
+        assert tc["function"]["name"] == "calculator"
+        assert json.loads(tc["function"]["arguments"]) == {"expression": "432+1"}
+
+        # The regression: BEFORE the fix, the parser was never invoked
+        # because neither ``<`` nor ``[`` appeared in the delta, so the
+        # body fell through to the fast-path return on line 1122 as
+        # ``{"content": "call:calculator{expression:432+1}"}`` and the
+        # route serialised that into ``delta.content``. With the fix,
+        # ``has_pending_tool_call`` on the gemma4 parser detects the
+        # ``call:\w+\{`` opener, ``tool_markup_possible`` flips True,
+        # and the streaming parser path runs to completion.
+        assert content_events == [], (
+            f"raw wire body leaked as content: {content_events!r}"
+        )
+
+    def test_stripped_form_chunked_suppresses_after_opener_lands(self):
+        """Once the opener ``call:NAME{`` is fully visible in accumulated
+        text, all subsequent chunks are suppressed until the closing
+        ``}`` arrives. The opener regex ``call:\\w+\\{`` requires the
+        ``{`` — partial prefixes like ``call:cal`` are indistinguishable
+        from natural prose (``I will call: foo``) and stream as content
+        until the ``{`` lands. This is a known streaming limitation
+        documented in ``gemma4_tool_parser.GEMMA4_TOOL_PATTERN``;
+        empirically the diffusion lane emits whole blocks at once so
+        the partial-prefix window doesn't appear in production.
+        """
+        pp, _parser = self._make_pp_with_real_parser()
+
+        # Deltas chosen so the FIRST chunk already contains the
+        # ``{`` opener — this is the boundary the test pins.
+        opener_chunk = "call:calculator{"
+        events = pp.process_chunk(_make_output(opener_chunk))
+        # Opener present, body not yet closed → suppress.
+        assert [e for e in events if e.type == "content"] == []
+
+        # Subsequent chunks inside the body must stay suppressed.
+        for d in ["expression:432+", "1"]:
+            events = pp.process_chunk(_make_output(d))
+            assert [e for e in events if e.type == "content"] == [], (
+                f"chunk {d!r} leaked content after opener: {events!r}"
+            )
+
+        # Closing delta — completes the body, expect a tool_call event.
+        events = pp.process_chunk(_make_output("}", finished=True))
+        tool_events = [e for e in events if e.type == "tool_call"]
+        content_events = [e for e in events if e.type == "content"]
+        assert len(tool_events) == 1
+        tc = tool_events[0].tool_calls[0]
+        assert tc["function"]["name"] == "calculator"
+        assert json.loads(tc["function"]["arguments"]) == {"expression": "432+1"}
+        assert content_events == []
+
+    def test_natural_text_with_call_keyword_passes_through(self):
+        """Prose that mentions ``call`` but isn't a wire-form opener must
+        not be suppressed. The opener regex requires ``call:\\w+\\{`` — a
+        bare ``I will call you later`` lacks the colon-NAME-{ shape."""
+        pp, _parser = self._make_pp_with_real_parser()
+
+        events = pp.process_chunk(_make_output("I will call you later."))
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 1
+        assert "call you later" in content_events[0].content
+
+
 class TestStreamingPostProcessorNemotron:
     """Tests for Nemotron thinking prefix."""
 

@@ -18,9 +18,27 @@ from .abstract_tool_parser import (
     ToolParserManager,
 )
 
-# Match: <|tool_call>call:name{...}<tool_call|>
+# Match the gemma4 tool-call wire form. The model trains on
+#   <|tool_call>call:name{...}<tool_call|>
+# but those outer markers are special tokens that HuggingFace's
+# ``tokenizer.decode(..., skip_special_tokens=True)`` (the default
+# the mlx-vlm / mlx-lm streaming detokenizer invokes) silently strips
+# at decode time even when we kept them in ``skip_special_token_ids``.
+# Empirically (PR #558 share probe 2026-06-11 on DiffusionGemma 4-bit):
+#   prompt:  weather in palo alto
+#   output:  call:weather{location:<|"|>Palo Alto<|"|>}
+# i.e. the model emits id=48/49 for the outer wrappers (gets stripped),
+# but emits the inner ``<|"|>`` (id=52) as raw BPE bytes that survive
+# the same decode call. So in practice we see only the inner body.
+#
+# Make the outer wrappers OPTIONAL so the parser recognises both the
+# pristine wire form AND the post-decode stripped form. The body
+# ``call:NAME{...}`` is itself a learned wire token unique to tool
+# calling — Gemma 4 does not emit ``call:NAME{...}`` in natural prose,
+# so allowing the wrappers to be absent does not introduce false
+# positives on regular chat turns.
 GEMMA4_TOOL_PATTERN = re.compile(
-    r"<\|tool_call>call:(\w+)\{(.*?)\}<tool_call\|>", re.DOTALL
+    r"(?:<\|tool_call>)?call:(\w+)\{(.*?)\}(?:<tool_call\|>)?", re.DOTALL
 )
 
 # Match a quoted-string value: <|"|>...<|"|>
@@ -94,8 +112,18 @@ class Gemma4ToolParser(ToolParser):
         self._emitted_tool_count = 0
 
     def has_pending_tool_call(self, text: str) -> bool:
-        """Gemma 4 uses <|tool_call> (with pipe), not <tool_call>."""
-        return "<|tool_call>" in text or self.has_text_format_tool_call(text)
+        """A tool call is in flight as soon as we see the body opener
+        ``call:NAME{`` — works for both the pristine wire form
+        (``<|tool_call>call:NAME{...}<tool_call|>``) AND the
+        post-HF-decode stripped form (``call:NAME{...}``). See the
+        comment above ``GEMMA4_TOOL_PATTERN`` for why the wrappers can
+        be absent.
+        """
+        if "<|tool_call>" in text:
+            return True
+        if re.search(r"call:\w+\{", text):
+            return True
+        return self.has_text_format_tool_call(text)
 
     def extract_tool_calls(
         self, model_output: str, request: Any = None
@@ -138,11 +166,21 @@ class Gemma4ToolParser(ToolParser):
         delta_token_ids: Sequence = (),
         request: dict[str, Any] | None = None,
     ) -> dict | None:
-        # Check if we're inside a tool call
-        if "<|tool_call>" in current_text:
-            # Count completed tool calls so far
-            completed = current_text.count("<tool_call|>")
-            open_count = current_text.count("<|tool_call>")
+        # Check if we're inside a tool call. Either the pristine wire
+        # form (``<|tool_call>...<tool_call|>``) or the post-HF-decode
+        # stripped form (``call:NAME{...}``) triggers parsing — see the
+        # comment above ``GEMMA4_TOOL_PATTERN`` for the empirical
+        # justification.
+        if "<|tool_call>" in current_text or re.search(r"call:\w+\{", current_text):
+            # ``GEMMA4_TOOL_PATTERN`` matches completed bodies (it
+            # requires the closing ``}`` and optionally the
+            # ``<tool_call|>`` trailer). Count those as completed; if
+            # the body opener appears more often than completed bodies,
+            # we're still mid-stream and should suppress emission.
+            completed_matches = list(GEMMA4_TOOL_PATTERN.finditer(current_text))
+            completed = len(completed_matches)
+            opener_re = re.compile(r"call:\w+\{")
+            open_count = len(list(opener_re.finditer(current_text)))
 
             # Still accumulating an incomplete tool call
             if completed < open_count:

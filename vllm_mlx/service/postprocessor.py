@@ -1118,8 +1118,35 @@ class StreamingPostProcessor:
         Returns {"content": "..."} for normal content pass-through.
         """
         if not self.tool_markup_possible and "<" not in content and "[" not in content:
-            self.tool_accumulated_text += content
-            return {"content": content}
+            # The hardcoded ``<``/``[`` heuristic catches every parser
+            # whose wire markers open with one of those chars. The
+            # gemma4 stripped wire form is the exception: on
+            # DiffusionGemma, HF's ``tokenizer.decode(skip_special_
+            # tokens=True)`` removes the ``<|tool_call>``/``<tool_call|>``
+            # outer wrappers, so what reaches the postprocessor is the
+            # bare body ``call:NAME{...}`` — no ``<``, no ``[``. Without
+            # the parser-level fallback below, those deltas would slip
+            # straight through this fast-path as plain ``content`` and
+            # leak ``call:calculator{expression:432+1}``-style raw wire
+            # text to the SSE client (regression reported via vnsh.dev
+            # share probe 2026-06-11, PR #558).
+            candidate = self.tool_accumulated_text + content
+            pending = False
+            if self.tool_parser is not None:
+                _check = getattr(self.tool_parser, "has_pending_tool_call", None)
+                if callable(_check):
+                    try:
+                        pending = bool(_check(candidate))
+                    except Exception:
+                        pending = False
+            if not pending:
+                self.tool_accumulated_text += content
+                return {"content": content}
+            # Parser sees in-flight markup with non-``<``/``[`` opener
+            # (the gemma4 stripped form). Fall through to the full
+            # streaming path so it can suppress / emit structured
+            # tool_calls instead of leaking the body as content.
+            self.tool_markup_possible = True
 
         if not self.tool_markup_possible:
             self.tool_markup_possible = True
