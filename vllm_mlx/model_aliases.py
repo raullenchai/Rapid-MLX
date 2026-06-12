@@ -140,15 +140,20 @@ class AliasProfile:
     # one release window so v0.7.2 programmatic callers that read
     # ``profile.diffusion_backend`` etc. don't ``AttributeError``
     # (pr_validate r5 BLOCKING #2 — codex flagged the dataclass-vs-loader
-    # asymmetry). Defaults match v0.7.2's concrete values (``"rapid"``,
-    # ``8``, ``1``) rather than ``None`` so programmatic readers that
-    # value-check during the deprecation window see the same constants
-    # as v0.7.2 (pr_validate r6 NIT). ``_coerce`` overrides them from
-    # the JSON if the operator set custom values, so customized v0.7.2
-    # aliases.json files preserve their tuned knobs through the
-    # window (pr_validate r6 BLOCKING). All three will be removed in
-    # v0.8.0 alongside the matching entry in ``_DEPRECATED_PROFILE_KEYS``.
-    diffusion_backend: str = "rapid"
+    # asymmetry).
+    #
+    # ``diffusion_backend`` default is ``"mlx-vlm"`` not ``"rapid"``
+    # (pr_validate r7 BLOCKING #2). v0.7.2 had ``"rapid"`` to flag the
+    # in-house loop; after the revert, every diffusion request flows
+    # to mlx-vlm regardless of this value — keeping ``"rapid"`` would
+    # be a programmatic-reader lie about routing. ``_coerce`` still
+    # threads any operator-overridden value through, so customized
+    # v0.7.2 aliases.json files preserve their tuned strings during
+    # the window (pr_validate r6 BLOCKING).
+    #
+    # All three will be removed in v0.8.0 alongside the matching entry
+    # in ``_DEPRECATED_PROFILE_KEYS``.
+    diffusion_backend: str = "mlx-vlm"
     diffusion_fixed_steps: int = 8
     diffusion_sc_every: int = 1
 
@@ -400,7 +405,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         # explicit forward, the dataclass would fall back to the field
         # defaults and a customized config would silently revert
         # (pr_validate r6 BLOCKING).
-        diffusion_backend=value.get("diffusion_backend", "rapid"),
+        diffusion_backend=value.get("diffusion_backend", "mlx-vlm"),
         diffusion_fixed_steps=value.get("diffusion_fixed_steps", 8),
         diffusion_sc_every=value.get("diffusion_sc_every", 1),
     )

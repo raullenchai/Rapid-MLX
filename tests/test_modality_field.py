@@ -219,6 +219,28 @@ class TestHfPathReverseLookupRoutesDiffusionLane:
         )
         assert profile.modality == "text-diffusion"
 
+    def test_diffusion_4bit_compat_alias_reverse_lookup(self) -> None:
+        """pr_validate r7 NIT #2 — the 4-bit compatibility alias was
+        added so operators who pinned against the v0.7.1 4-bit hf_path
+        don't get silently retargeted to 8-bit. Pin the reverse-lookup
+        explicitly so a future maintainer who removes the 4-bit alias
+        breaks this test instead of silently breaking v0.7.1 deployments.
+        """
+        from vllm_mlx.model_aliases import resolve_profile
+
+        compat_profile = resolve_profile("diffusion-gemma-26b-4bit")
+        assert compat_profile is not None, (
+            "diffusion-gemma-26b-4bit must remain a registered alias "
+            "during the v0.7.3 → v0.8.0 window — see PR #558 rationale"
+        )
+        assert compat_profile.hf_path == "mlx-community/diffusiongemma-26B-A4B-it-4bit"
+        # Reverse: HF path → alias profile, must keep diffusion modality
+        # and parser so it routes into DiffusionEngine not BatchedEngine.
+        profile = resolve_profile("mlx-community/diffusiongemma-26B-A4B-it-4bit")
+        assert profile is not None
+        assert profile.modality == "text-diffusion"
+        assert profile.tool_call_parser == "gemma4"
+
     def test_unregistered_hf_path_falls_through_to_none(self) -> None:
         # Sanity: HF paths that AREN'T in aliases.json still return
         # None, which makes server.py default to the text lane —
