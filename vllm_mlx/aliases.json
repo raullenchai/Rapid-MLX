@@ -772,5 +772,16 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown"
+  },
+  "diffusion-gemma-26b-4bit": {
+    "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-4bit",
+    "modality": "text-diffusion",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser": null,
+    "is_hybrid": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
   }
 }

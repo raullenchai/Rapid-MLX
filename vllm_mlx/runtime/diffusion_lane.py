@@ -702,6 +702,21 @@ class DiffusionEngine(BaseEngine):
         # incidentally attached a ``tools`` list into a 500.
         if tools and self.supports_tool_calls:
             template_kwargs["tools"] = tools
+        elif tools and not self.supports_tool_calls:
+            # Frontends attach ``tools`` opportunistically (Big-AGI,
+            # BCG, raw OpenAI clients) without knowing whether the
+            # active model surfaces parsed calls. Pre-r5 we silently
+            # dropped the array — operators only learned about it when
+            # the model produced a plain-prose answer to what looked
+            # like a tool request. Log a one-line WARNING so the drop
+            # is at least visible in ``rapid-mlx logs``.
+            logger.warning(
+                "DiffusionEngine: dropping %d tool(s) from chat template — "
+                "the active model has no tool-call parser registered. "
+                "Set ``tool_call_parser`` on the alias if you intend to "
+                "surface tool calls.",
+                len(tools),
+            )
         return self._processor.tokenizer.apply_chat_template(
             messages,
             **template_kwargs,

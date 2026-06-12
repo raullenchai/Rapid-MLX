@@ -132,6 +132,19 @@ class AliasProfile:
     # modality slot and broke construction without raising. Keep new
     # fields at the tail.
     modality: Modality = "text"
+    # ---- Deprecated as of v0.7.3 (PR #555 in-house diffusion loop
+    # reverted) -------------------------------------------------------
+    # These fields are no longer load-bearing — diffusion lane now
+    # passes through to mlx-vlm ``stream_diffusion_generate`` directly,
+    # so the knobs have no consumer. They remain on the dataclass for
+    # one release window so v0.7.2 programmatic callers that read
+    # ``profile.diffusion_backend`` etc. don't ``AttributeError``
+    # (pr_validate r5 BLOCKING #2 — codex flagged the dataclass-vs-loader
+    # asymmetry). Will be removed in v0.8.0 alongside the matching
+    # entry in ``_DEPRECATED_PROFILE_KEYS``.
+    diffusion_backend: str | None = None
+    diffusion_fixed_steps: int | None = None
+    diffusion_sc_every: int | None = None
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
@@ -175,6 +188,14 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "supports_dflash",
             "dflash_draft_model",
             "recommended_sampling",
+            # Deprecated v0.7.2 PR #555 diffusion knobs — kept in the
+            # allowed set so they construct an ``AliasProfile`` with
+            # the deprecated no-op fields populated. Warning is emitted
+            # by the deprecation handler below; the fields will be
+            # dropped from both the dataclass and this set in v0.8.0.
+            "diffusion_backend",
+            "diffusion_fixed_steps",
+            "diffusion_sc_every",
         }
     )
     # Deprecated keys shipped on the v0.7.2 ``AliasProfile`` (PR #555
@@ -198,13 +219,14 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             _log.warning(
                 "alias %r: key %r is deprecated as of v0.7.3 (PR #555 "
                 "in-house diffusion loop was reverted; the knob is no "
-                "longer load-bearing). The value will be ignored. "
+                "longer load-bearing). The value is accepted for one "
+                "release window and stored on AliasProfile as a no-op "
+                "field so programmatic readers don't AttributeError. "
                 "Remove the key from your aliases.json to silence this "
                 "warning; the key will be hard-rejected in v0.8.0.",
                 alias,
                 k,
             )
-        value = {k: v for k, v in value.items() if k not in deprecated_present}
     unknown_keys = set(value.keys()) - _ALLOWED_PROFILE_KEYS
     if unknown_keys:
         raise ValueError(
