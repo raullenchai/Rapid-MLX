@@ -43,7 +43,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..engine.base import BaseEngine, GenerationOutput
-from ..model_aliases import AliasProfile, resolve_profile
 
 logger = logging.getLogger(__name__)
 
@@ -208,24 +207,6 @@ class DiffusionEngine(BaseEngine):
         self._processor: Any = None
         self._loaded = False
         self._load_error: BaseException | None = None
-        # Resolve the AliasProfile once at construction. ``resolve_profile``
-        # works for both alias names (``diffusion-gemma-26b``) and bare
-        # HF paths (``mlx-community/diffusiongemma-26B-A4B-it-4bit``) —
-        # the reverse-index built by ``model_aliases._load`` covers both.
-        # ``None`` only when the user pointed at an HF path that no
-        # alias references. In that case fall back to upstream ``mlx-vlm``
-        # — the rapid loop is hand-tuned for DiffusionGemma 26B-A4B-4bit
-        # specifically (sampler choice, denoising-step budget, EOS surfaces)
-        # and may crash or misgenerate on an unknown diffusion family. The
-        # mlx-vlm backend is the conservative, well-tested default; opting
-        # into rapid is something an operator does explicitly via an alias
-        # entry. codex round 2 [P1].
-        self._profile: AliasProfile = resolve_profile(model_name) or AliasProfile(
-            hf_path=model_name,
-            modality="text-diffusion",
-            supports_spec_decode=False,
-            diffusion_backend="mlx-vlm",
-        )
         # Admission control mirrors BatchedEngine.check_admission —
         # reservations counter under a lock, BackpressureError raised
         # when the configured ``max_concurrent_requests`` is reached.
@@ -1157,47 +1138,6 @@ class DiffusionEngine(BaseEngine):
         import mlx.core as mx  # noqa: F401 — kept for symmetry with mlx_vlm
         from mlx_vlm.generate.diffusion import stream_diffusion_generate
 
-        # Backend selection lives entirely on the AliasProfile (the
-        # SSOT for every per-model routing decision; see
-        # ``test_no_out_of_band_routing.py`` for why env-var routing is
-        # forbidden). ``profile.diffusion_backend`` defaults to
-        # ``"rapid"`` so DiffusionGemma takes the in-house loop
-        # (``runtime/diffusion_loop.py``) out of the box; setting
-        # ``"diffusion_backend": "mlx-vlm"`` in ``aliases.json`` falls
-        # through to upstream ``stream_diffusion_generate`` verbatim,
-        # making the change a zero-risk additive feature on the
-        # mlx-vlm path.
-        #
-        # Emergency rollback: edit ``aliases.json`` to flip the value,
-        # restart the server. ~30s round-trip for a kill switch is
-        # acceptable; the alternative (an env var) would create an
-        # out-of-band routing channel that bypasses CLI/alias review.
-        #
-        # ``temperature`` is NOT a gate — the rapid loop honors the
-        # same greedy/sampled semantics as mlx-vlm's
-        # ``_diffusion_sample_canvas`` (see ``diffusion_loop.py``
-        # ``_sample_canvas``). Chat clients defaulting to
-        # ``temperature=0.7`` (``service/helpers.py``
-        # ``_FALLBACK_TEMPERATURE``) reach the rapid path too, so the
-        # perf win lands for users who don't explicitly request greedy.
-        use_rapid = self._profile.diffusion_backend == "rapid"
-        if use_rapid:
-            from .diffusion_loop import rapid_stream_diffusion_generate
-
-            _diffusion_gen_fn = rapid_stream_diffusion_generate
-            logger.debug(
-                "diffusion_lane: rapid backend "
-                f"(fixed_steps={self._profile.diffusion_fixed_steps}, "
-                f"sc_every={self._profile.diffusion_sc_every}, "
-                f"temperature={cfg.temperature})"
-            )
-        else:
-            _diffusion_gen_fn = stream_diffusion_generate
-            logger.debug(
-                "diffusion_lane: mlx-vlm backend "
-                f"(profile_backend={self._profile.diffusion_backend})"
-            )
-
         # NOTE: this method ALWAYS runs on the persistent worker
         # thread (see ``_worker_loop``), so the model weights, the
         # tokenizer-managed kv_cache, and the default GPU stream are
@@ -1249,22 +1189,6 @@ class DiffusionEngine(BaseEngine):
             # kwarg is non-None — forward only when the operator opted
             # in via --prefill-step-size / SchedulerConfig (codex r5).
             kwargs["prefill_step_size"] = int(cfg.prefill_step_size)
-        if use_rapid:
-            # Rapid honors ``diffusion_sampler``, ``max_denoising_steps``,
-            # ``prefill_step_size``, ``diffusion_threshold`` via the
-            # accept-and-honor signature (codex r2). It reads its own
-            # per-alias knobs from the profile:
-            #   - ``fixed_steps``: when set, a CEILING on the denoising
-            #     budget; adaptive early-stop via ``_stable_and_confident``
-            #     STILL fires inside the ceiling. ``None`` → adaptive-only
-            #     (alias opt-in by setting ``"diffusion_fixed_steps": null``
-            #     in JSON). codex round 3 [NIT]: prior comment claimed int
-            #     disabled adaptive stop, which was the v1/v2 behavior the
-            #     hybrid mode replaced (see diffusion_loop.py round-3 fix).
-            #   - ``sc_every``: confidence-threshold-path SC cadence.
-            if self._profile.diffusion_fixed_steps is not None:
-                kwargs["fixed_steps"] = int(self._profile.diffusion_fixed_steps)
-            kwargs["sc_every"] = int(self._profile.diffusion_sc_every)
 
         block_parts: list[str] = []
         last_prompt_tokens = 0
@@ -1284,7 +1208,7 @@ class DiffusionEngine(BaseEngine):
         if cancel_event.is_set():
             return
 
-        for result in _diffusion_gen_fn(
+        for result in stream_diffusion_generate(
             self._model,
             self._processor,
             tokenizer,

@@ -55,9 +55,6 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "supports_dflash",
         "dflash_draft_model",
         "recommended_sampling",
-        "diffusion_backend",
-        "diffusion_fixed_steps",
-        "diffusion_sc_every",
     }
 )
 
