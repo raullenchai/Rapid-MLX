@@ -180,6 +180,47 @@ class TestHealthRoutes:
         finally:
             self._restore_config(orig)
 
+    def test_get_root_returns_200(self):
+        """GET / must return 200 so FastAPI auto-generates HEAD / → 200."""
+        orig = self._patch_config(engine=None, mcp_manager=None, model_name=None)
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+            r = client.get("/")
+            assert r.status_code == 200
+            assert r.json()["status"] == "ok"
+        finally:
+            self._restore_config(orig)
+
+    def test_head_root_returns_200(self):
+        """HEAD / is explicitly registered on probe_router (no auth) alongside GET /.
+        This test pins the contract so a future refactor that moves the route or
+        changes its methods doesn't silently break the Claude Code connectivity probe."""
+        orig = self._patch_config(engine=None, mcp_manager=None, model_name=None)
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+            r = client.head("/")
+            assert r.status_code == 200
+        finally:
+            self._restore_config(orig)
+
+    def test_head_root_bypasses_api_key(self):
+        """HEAD / must return 200 even when --api-key is configured."""
+        orig = self._patch_config(
+            api_key="test-secret",
+            engine=None,
+            mcp_manager=None,
+            model_name=None,
+        )
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+            r = client.head("/")
+            assert r.status_code == 200
+        finally:
+            self._restore_config(orig)
+
     @pytest.mark.parametrize(
         ("method", "path"),
         [

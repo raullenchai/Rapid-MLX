@@ -64,6 +64,41 @@ class TestValidateModelName:
         # Should not raise.
         _validate_model_name(None)
 
+    def test_mismatch_still_raises_404_via_openai_route(self, patched_config, monkeypatch):
+        """The OpenAI chat route must still reject unknown model names with 404.
+        This confirms that removing _validate_model_name from the Anthropic
+        route did NOT affect the OpenAI route."""
+        from vllm_mlx.routes import chat as chat_route
+
+        engine = MagicMock()
+        engine.is_mllm = False
+        patched_config(
+            engine=engine,
+            model_name="loaded-model",
+            model_alias=None,
+            model_path=None,
+            model_registry=None,
+            tool_call_parser=None,
+            reasoning_parser=None,
+            ready=True,
+            api_key=None,
+        )
+        monkeypatch.setattr(chat_route, "get_engine", lambda *_a, **_kw: engine)
+
+        app = FastAPI()
+        app.include_router(chat_route.router)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        r = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "wrong-model",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert r.status_code == 404
+        assert "wrong-model" in r.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Chat completion validation block — top_p, max_tokens cap, logit_bias
