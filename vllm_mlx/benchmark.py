@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Performance Benchmark for vllm-mlx.
+Performance Benchmark for rapid-mlx.
 
 Measures key performance metrics for LLM and MLLM (Multimodal Language Model) inference:
 - Time to First Token (TTFT)
@@ -471,7 +471,7 @@ def run_benchmark(
     test_prompts = (prompts * ((num_prompts // len(prompts)) + 1))[:num_prompts]
 
     print(f"\n{'=' * 60}")
-    print("vllm-mlx Performance Benchmark")
+    print("Rapid-MLX Performance Benchmark")
     print(f"{'=' * 60}")
 
     # Hardware info table
@@ -857,7 +857,7 @@ def run_mllm_benchmark(
         ]
 
     print(f"\n{'=' * 70}")
-    print("vllm-mlx MLLM Performance Benchmark")
+    print("Rapid-MLX MLLM Performance Benchmark")
     print(f"{'=' * 70}")
 
     # Info table
@@ -1233,7 +1233,7 @@ def run_video_benchmark(
         ]
 
     print(f"\n{'=' * 70}")
-    print("vllm-mlx Video Performance Benchmark")
+    print("Rapid-MLX Video Performance Benchmark")
     print(f"{'=' * 70}")
 
     # Info table
@@ -1463,25 +1463,25 @@ def print_summary(summary: BenchmarkSummary):
 def main():
     """Run the benchmark."""
     parser = argparse.ArgumentParser(
-        description="vllm-mlx Performance Benchmark (LLM, MLLM Image & Video)",
+        description="Rapid-MLX Performance Benchmark (LLM, MLLM Image & Video)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     # LLM benchmark
-    vllm-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit
-    vllm-mlx-bench --model mlx-community/Llama-3.2-3B-Instruct-4bit --prompts 10
+    rapid-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit
+    rapid-mlx-bench --model mlx-community/Llama-3.2-3B-Instruct-4bit --prompts 10
 
     # MLLM image benchmark (auto-detected)
-    vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit
-    vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --quick
+    rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit
+    rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --quick
 
     # MLLM video benchmark
-    vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video
-    vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video --quick
-    vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video --video-url https://example.com/video.mp4
+    rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video
+    rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video --quick
+    rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video --video-url https://example.com/video.mp4
 
     # Force MLLM mode
-    vllm-mlx-bench --model custom-vision-model --mllm
+    rapid-mlx-bench --model custom-vision-model --mllm
         """,
     )
     parser.add_argument(

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Mistral tool call parser for vllm-mlx.
+Mistral tool call parser for rapid-mlx.
 
 Handles Mistral's tool calling format:
 - Format: [TOOL_CALLS] [{"name": "func", "arguments": {...}}]

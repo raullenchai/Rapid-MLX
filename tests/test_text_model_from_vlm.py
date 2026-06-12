@@ -84,7 +84,7 @@ def test_text_model_mtp_forward():
 
 @pytest.mark.skipif(not VLM_MTP_MODEL.exists(), reason="VLM+MTP model not on disk")
 def test_text_model_return_hidden():
-    """TextModel supports return_hidden=True (required by mtp_generate_step)."""
+    """TextModel supports return_hidden=True (required by the MTP decode path)."""
     import mlx.core as mx
     import runtime_patches
 

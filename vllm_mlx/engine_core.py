@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Engine Core for vllm-mlx continuous batching.
+Engine Core for rapid-mlx continuous batching.
 
 This module provides the EngineCore class that coordinates:
 - Model loading and management
@@ -117,7 +117,7 @@ class EngineConfig:
 
 class EngineCore:
     """
-    Core engine for vllm-mlx inference with continuous batching.
+    Core engine for rapid-mlx inference with continuous batching.
 
     This engine runs the generation loop and manages request lifecycle.
     It provides both sync and async interfaces for request handling.

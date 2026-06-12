@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Audio support for vllm-mlx using mlx-audio.
+Audio support for rapid-mlx using mlx-audio.
 
 Provides:
 - STT (Speech-to-Text): Whisper, Parakeet

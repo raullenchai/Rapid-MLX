@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Engine abstraction for vllm-mlx inference.
+Engine abstraction for rapid-mlx inference.
 
 BatchedEngine is the sole engine — continuous batching for all workloads.
 """

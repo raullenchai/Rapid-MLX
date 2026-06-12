@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Request management for vllm-mlx continuous batching.
+Request management for rapid-mlx continuous batching.
 
 This module provides Request and RequestStatus classes adapted from vLLM's
 request management system, simplified for MLX backend.

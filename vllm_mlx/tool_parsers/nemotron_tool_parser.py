@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Nemotron tool call parser for vllm-mlx.
+Nemotron tool call parser for rapid-mlx.
 
 Handles NVIDIA Nemotron models' tool calling format:
 - <tool_call><function=name><parameter=p>v</parameter></function></tool_call>

@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "0.7.3"
+version = "0.7.4"
 description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, 2-4x faster than Ollama."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
-    {name = "vllm-mlx contributors"}
+    {name = "Rapid-MLX contributors"}
 ]
-keywords = ["llm", "mlx", "apple-silicon", "vllm", "inference", "transformers"]
+keywords = ["llm", "mlx", "apple-silicon", "inference", "transformers"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -163,6 +163,10 @@ mlx = "vllm_mlx.plugin:mlx_platform_plugin"
 
 [project.scripts]
 rapid-mlx = "vllm_mlx.cli:main"
+rapid-mlx-chat = "vllm_mlx.gradio_app:main"
+rapid-mlx-bench = "vllm_mlx.benchmark:main"
+# Deprecated pre-rename aliases — kept so existing users' scripts/muscle
+# memory keep working. Prefer the rapid-mlx* commands above.
 vllm-mlx = "vllm_mlx.cli:main"
 vllm-mlx-chat = "vllm_mlx.gradio_app:main"
 vllm-mlx-bench = "vllm_mlx.benchmark:main"

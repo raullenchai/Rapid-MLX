@@ -17,7 +17,7 @@ GLM-4.6V additionally wraps content in
 ``<|begin_of_box|>...<|end_of_box|>`` container markers; we strip them
 so the user-facing content stays clean.
 
-Adapted from upstream waybarrios/vllm-mlx#295 (``Glm4ReasoningParser``).
+Adapted from upstream waybarrios/rapid-mlx#295 (``Glm4ReasoningParser``).
 Upstream uses a ``_phase`` enum state machine; our base class uses a
 ``_saw_any_tag`` flag (see ``think_parser.py``). The behavioural
 divergence is the same — only the override surface differs.

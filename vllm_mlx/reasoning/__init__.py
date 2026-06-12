@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Reasoning parser module for vllm-mlx.
+Reasoning parser module for rapid-mlx.
 
 This module provides parsers for extracting reasoning/thinking content from
 model outputs. Supports models like Qwen3, DeepSeek-R1, etc. that use special

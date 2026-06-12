@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Functionary tool call parser for vllm-mlx.
+Functionary tool call parser for rapid-mlx.
 
 Handles MeetKai Functionary models' tool calling format.
 Similar to OpenAI function calling with JSON arguments.

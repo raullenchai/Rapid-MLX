@@ -260,7 +260,7 @@ Everything else is automated. The `pr_validate` scorecard comment is the single 
 
 - **"Tests pass on my branch" ≠ "no regression"** — always confirm pre-existing flakes on clean main, never assume.
 - **Bench data unreliability** — `scripts/bench_suffix_decoding_integrated.py` needs the reliability gates from PR #284 (decode-time floor, TPS ceiling). Older bench data without `raw_runs` field is suspect.
-- **Cache contamination** — disk-persisted prefix cache (`~/.cache/vllm-mlx/prefix_cache/`) can replay cached generations and pin TPS to bogus values. Bench tools must pass `--disable-prefix-cache`.
+- **Cache contamination** — disk-persisted prefix cache (`~/.cache/rapid-mlx/prefix_cache/`) can replay cached generations and pin TPS to bogus values. Bench tools must pass `--disable-prefix-cache`.
 - **Hybrid models** (`is_hybrid=True`: Qwen3.5/3.6, Qwopus, Nemotron, Granite4) cannot use spec-decode / suffix-decode. Trust the gate.
 - **Background processes block GPU** — orphaned `rapid-mlx serve` from prior sessions can hang pytest. `pkill -f "vllm_mlx.cli serve"` before benches.
 - **Auto-deploy blast radius** — merging to main with version bump = instant PyPI + Homebrew release. External PR review must include the Step 7 supply-chain audit before merge.

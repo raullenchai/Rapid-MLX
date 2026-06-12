@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Abstract tool parser base class and manager for vllm-mlx.
+Abstract tool parser base class and manager for rapid-mlx.
 
 Inspired by vLLM's tool parser architecture but simplified for MLX backend.
 """

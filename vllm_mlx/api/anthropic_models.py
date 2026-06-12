@@ -4,7 +4,7 @@ Pydantic models for Anthropic Messages API.
 
 These models define the request and response schemas for the
 Anthropic-compatible /v1/messages endpoint, enabling clients like
-Claude Code to communicate with vllm-mlx.
+Claude Code to communicate with rapid-mlx.
 """
 
 import uuid

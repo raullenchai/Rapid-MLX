@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-DeepSeek V3.1 tool call parser for vllm-mlx.
+DeepSeek V3.1 tool call parser for rapid-mlx.
 
 Ported from vLLM upstream (vllm/tool_parsers/deepseekv31_tool_parser.py).
 

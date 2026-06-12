@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-GLM-4.7 tool call parser for vllm-mlx.
+GLM-4.7 tool call parser for rapid-mlx.
 
 Handles GLM-4.7-Flash style tool calling format.
 Based on vLLM's glm47_moe_tool_parser.py

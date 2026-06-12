@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Speculative decoding utilities for vllm-mlx.
+Speculative decoding utilities for rapid-mlx.
 """
 
 from .prompt_lookup import PromptLookupDecoder

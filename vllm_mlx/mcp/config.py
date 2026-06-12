@@ -17,14 +17,22 @@ logger = logging.getLogger(__name__)
 # Intentionally excludes ./mcp.json and ./mcp.yaml: an attacker who can plant
 # a file in a victim's CWD (shared dirs, /tmp, downloaded archives) could
 # inject arbitrary MCP server commands/args. Use --mcp-config <path> or the
-# VLLM_MLX_MCP_CONFIG env var for explicit project-local configs.
+# RAPID_MLX_MCP_CONFIG env var for explicit project-local configs.
+#
+# The ~/.config/vllm-mlx/ entries are the pre-rename location (Rapid-MLX was
+# formerly vllm-mlx). They are kept as a back-compat fallback so existing user
+# configs keep working; new installs should use ~/.config/rapid-mlx/.
 CONFIG_SEARCH_PATHS = [
+    "~/.config/rapid-mlx/mcp.json",
+    "~/.config/rapid-mlx/mcp.yaml",
     "~/.config/vllm-mlx/mcp.json",
     "~/.config/vllm-mlx/mcp.yaml",
 ]
 
-# Environment variable for config path
-CONFIG_ENV_VAR = "VLLM_MLX_MCP_CONFIG"
+# Environment variable for config path. VLLM_MLX_MCP_CONFIG is the deprecated
+# pre-rename alias, still honored for back-compat.
+CONFIG_ENV_VAR = "RAPID_MLX_MCP_CONFIG"
+CONFIG_ENV_VAR_LEGACY = "VLLM_MLX_MCP_CONFIG"
 
 
 def load_mcp_config(path: str | Path | None = None) -> MCPConfig:
@@ -33,8 +41,10 @@ def load_mcp_config(path: str | Path | None = None) -> MCPConfig:
 
     Search order:
     1. Explicit path argument
-    2. VLLM_MLX_MCP_CONFIG environment variable
-    3. ~/.config/vllm-mlx/mcp.json or mcp.yaml
+    2. RAPID_MLX_MCP_CONFIG environment variable (or the deprecated
+       VLLM_MLX_MCP_CONFIG alias)
+    3. ~/.config/rapid-mlx/mcp.json or mcp.yaml (falling back to the
+       pre-rename ~/.config/vllm-mlx/ location)
 
     CWD discovery (./mcp.json, ./mcp.yaml) is intentionally NOT searched —
     see CONFIG_SEARCH_PATHS for rationale.
@@ -88,13 +98,14 @@ def _find_config_file(
             return path
         raise FileNotFoundError(f"MCP config file not found: {explicit_path}")
 
-    # 2. Environment variable
-    env_path = os.environ.get(CONFIG_ENV_VAR)
-    if env_path:
-        path = Path(env_path).expanduser()
-        if path.exists():
-            return path
-        logger.warning(f"MCP config from {CONFIG_ENV_VAR} not found: {env_path}")
+    # 2. Environment variable (with deprecated pre-rename alias)
+    for env_var in (CONFIG_ENV_VAR, CONFIG_ENV_VAR_LEGACY):
+        env_path = os.environ.get(env_var)
+        if env_path:
+            path = Path(env_path).expanduser()
+            if path.exists():
+                return path
+            logger.warning(f"MCP config from {env_var} not found: {env_path}")
 
     # 3. Search paths
     for search_path in CONFIG_SEARCH_PATHS:

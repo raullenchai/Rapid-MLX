@@ -1608,7 +1608,7 @@ class MLXMultimodalLM:
         if cache_hit and cache_entry and cache_entry.kv_cache:
             # NOTE: mlx-vlm's generate_step() has its own multimodal KV cache with prefix matching
             # (MULTIMODAL_KV_CACHE_ENABLED in mlx_vlm/utils.py). Let it handle caching.
-            # We only use vllm-mlx's cache for text-only requests (no images).
+            # We only use rapid-mlx's cache for text-only requests (no images).
             if all_images:
                 # Pass cached KV state so mlx-vlm's generate can reuse it
                 # (skip_prompt_processing stays False — vision encoder must run)

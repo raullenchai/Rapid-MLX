@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Qwen tool call parser for vllm-mlx.
+Qwen tool call parser for rapid-mlx.
 
 Handles Qwen's tool calling formats:
 - XML style: <tool_call>{"name": "func", "arguments": {...}}</tool_call>

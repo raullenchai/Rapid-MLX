@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Llama tool call parser for vllm-mlx.
+Llama tool call parser for rapid-mlx.
 
 Handles Llama's tool calling format:
 - XML style: <function=name>{"arg": "value"}</function>

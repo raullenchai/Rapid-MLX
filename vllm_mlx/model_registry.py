@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Model Registry for vllm-mlx.
+Model Registry for rapid-mlx.
 
 Tracks which models are in use by which engines to prevent
 BatchKVCache conflicts when multiple engines share a model.

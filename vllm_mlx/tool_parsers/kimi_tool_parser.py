@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Kimi/Moonshot tool call parser for vllm-mlx.
+Kimi/Moonshot tool call parser for rapid-mlx.
 
 Handles Kimi K2 and related models' tool calling format:
 - <|tool_calls_section_begin|>...<|tool_calls_section_end|>

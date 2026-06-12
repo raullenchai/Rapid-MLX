@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Base engine interface for vllm-mlx inference.
+Base engine interface for rapid-mlx inference.
 """
 
 from abc import ABC, abstractmethod

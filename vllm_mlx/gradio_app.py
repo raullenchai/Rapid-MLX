@@ -1,19 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Gradio Chatbot Interface for vllm-mlx.
+Gradio Chatbot Interface for rapid-mlx.
 
-A multimodal chat interface that connects to the vllm-mlx server
+A multimodal chat interface that connects to the rapid-mlx server
 and supports text, images, and video files.
 
 Usage:
     # First start the server with a multimodal model:
-    vllm-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+    rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 
     # Then run this app:
-    vllm-mlx-chat
+    rapid-mlx-chat
 
     # Or with custom settings:
-    vllm-mlx-chat --server-url http://localhost:8000 --port 7860
+    rapid-mlx-chat --server-url http://localhost:8000 --port 7860
 """
 
 import argparse
@@ -29,7 +29,7 @@ except ImportError:
         "Error: gradio is required for the chat UI.\n"
         "Install it with: pip install 'rapid-mlx[chat]'\n"
         "\n"
-        "The vllm-mlx-chat command requires the [chat] extra which\n"
+        "The rapid-mlx-chat command requires the [chat] extra which\n"
         "includes gradio and pytz. It is not installed by default to\n"
         "keep the base package small."
     )
@@ -120,7 +120,7 @@ def create_chat_function(server_url: str, max_tokens: int, temperature: float):
     Create the chat function for Gradio ChatInterface.
 
     Args:
-        server_url: URL of the vllm-mlx server
+        server_url: URL of the rapid-mlx server
         max_tokens: Maximum tokens to generate
         temperature: Sampling temperature
 
@@ -249,7 +249,7 @@ def create_chat_function(server_url: str, max_tokens: int, temperature: float):
             return result["choices"][0]["message"]["content"]
 
         except requests.exceptions.ConnectionError:
-            return "Error: Cannot connect to server. Make sure vllm-mlx is running."
+            return "Error: Cannot connect to server. Make sure rapid-mlx is running."
         except requests.exceptions.Timeout:
             return "Error: Timeout - server took too long to respond."
         except Exception as e:
@@ -261,28 +261,28 @@ def create_chat_function(server_url: str, max_tokens: int, temperature: float):
 def main():
     """Run the Gradio app."""
     parser = argparse.ArgumentParser(
-        description="Gradio Multimodal Chat Interface for vllm-mlx",
+        description="Gradio Multimodal Chat Interface for rapid-mlx",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     # Start with default settings
-    vllm-mlx-chat
+    rapid-mlx-chat
 
     # Connect to a different server
-    vllm-mlx-chat --server-url http://localhost:9000
+    rapid-mlx-chat --server-url http://localhost:9000
 
     # Create a public share link
-    vllm-mlx-chat --share
+    rapid-mlx-chat --share
 
-Note: Make sure the vllm-mlx server is running with a multimodal model:
-    vllm-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+Note: Make sure the rapid-mlx server is running with a multimodal model:
+    rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
         """,
     )
     parser.add_argument(
         "--server-url",
         type=str,
         default="http://localhost:8000",
-        help="URL of the vllm-mlx server (default: http://localhost:8000)",
+        help="URL of the rapid-mlx server (default: http://localhost:8000)",
     )
     parser.add_argument(
         "--port",
@@ -314,7 +314,7 @@ Note: Make sure the vllm-mlx server is running with a multimodal model:
     )
     args = parser.parse_args()
 
-    print(f"Connecting to vllm-mlx server at: {args.server_url}")
+    print(f"Connecting to rapid-mlx server at: {args.server_url}")
     print(f"Starting Gradio interface on port: {args.port}")
 
     if args.text_only:
@@ -354,7 +354,9 @@ Note: Make sure the vllm-mlx server is running with a multimodal model:
                 result = response.json()
                 return result["choices"][0]["message"]["content"]
             except requests.exceptions.ConnectionError:
-                return "Error: Cannot connect to server. Make sure vllm-mlx is running."
+                return (
+                    "Error: Cannot connect to server. Make sure rapid-mlx is running."
+                )
             except requests.exceptions.Timeout:
                 return "Error: Timeout - server took too long to respond."
             except Exception as e:
@@ -362,7 +364,7 @@ Note: Make sure the vllm-mlx server is running with a multimodal model:
 
         demo = gr.ChatInterface(
             fn=text_chat,
-            title="vllm-mlx Text Chat",
+            title="Rapid-MLX Text Chat",
             description="Fast text-only chat with LLM models on Apple Silicon.",
             examples=[
                 "Hello, who are you?",
@@ -383,7 +385,7 @@ Note: Make sure the vllm-mlx server is running with a multimodal model:
         # Create ChatInterface with multimodal support
         demo = gr.ChatInterface(
             fn=chat_fn,
-            title="vllm-mlx Multimodal Chat",
+            title="Rapid-MLX Multimodal Chat",
             description="Chat with vision-language models on Apple Silicon. Upload images or videos!",
             multimodal=True,
             textbox=gr.MultimodalTextbox(

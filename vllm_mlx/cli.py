@@ -801,7 +801,7 @@ def serve_command(args):
     # Store MCP config path for FastAPI startup
     if args.mcp_config:
         print(f"MCP config: {args.mcp_config}")
-        os.environ["VLLM_MLX_MCP_CONFIG"] = args.mcp_config
+        os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
     # Pre-load embedding model if specified
     if args.embedding_model:

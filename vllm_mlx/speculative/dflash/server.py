@@ -113,7 +113,7 @@ def _build_app(
     multi-model deployment would still share that worker; one model
     can't run while another's generator is mid-step.
     """
-    app = FastAPI(title="rapid-mlx (DFlash)")
+    app = FastAPI(title="Rapid-MLX (DFlash)")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,

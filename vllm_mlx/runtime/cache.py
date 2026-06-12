@@ -75,6 +75,10 @@ def get_cache_dir() -> str:
     # tens-of-models-per-user scale we'd ever see in practice.
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
     leaf = f"{safe_name}--{digest}"
+    # ~/.cache/rapid-mlx/ (was ~/.cache/vllm-mlx/ pre-rename). The cache is
+    # best-effort and silently rebuilds, so the moved location just costs a
+    # one-time recompute; any stale ~/.cache/vllm-mlx/ dir is inert and safe
+    # to delete.
     return os.path.join(
-        os.path.expanduser("~"), ".cache", "vllm-mlx", "prefix_cache", leaf
+        os.path.expanduser("~"), ".cache", "rapid-mlx", "prefix_cache", leaf
     )

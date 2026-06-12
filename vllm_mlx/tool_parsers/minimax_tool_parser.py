@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-MiniMax tool call parser for vllm-mlx.
+MiniMax tool call parser for rapid-mlx.
 
 Parses the MiniMax-M2 native XML tool call format:
 <minimax:tool_call>

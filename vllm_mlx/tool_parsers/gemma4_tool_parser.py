@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Gemma 4 tool call parser for vllm-mlx.
+Gemma 4 tool call parser for rapid-mlx.
 
 Handles Gemma 4's native tool calling format:
   <|tool_call>call:FUNC_NAME{key:<|"|>value<|"|>,...}<tool_call|>

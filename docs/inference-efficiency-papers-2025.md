@@ -31,7 +31,7 @@ Low-relevance papers (multi-GPU-only, CUDA-specific, MPC-focused, etc.) have bee
 
 ## Priority Implementation List (Top 20)
 
-Ranked by: (1) Apple Silicon relevance = High, (2) expected impact on vllm-mlx, (3) implementation feasibility (training-free, Python/MLX-friendly, single-device).
+Ranked by: (1) Apple Silicon relevance = High, (2) expected impact on rapid-mlx, (3) implementation feasibility (training-free, Python/MLX-friendly, single-device).
 
 | Rank | Paper | Conference | Technique | Expected Gain | Effort | Status |
 |------|-------|------------|-----------|---------------|--------|--------|

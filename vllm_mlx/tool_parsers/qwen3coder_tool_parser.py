@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Qwen3-Coder XML tool call parser for vllm-mlx.
+Qwen3-Coder XML tool call parser for rapid-mlx.
 
 Ported from vLLM upstream (vllm/tool_parsers/qwen3coder_tool_parser.py).
 

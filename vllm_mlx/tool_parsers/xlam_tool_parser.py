@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-xLAM tool call parser for vllm-mlx.
+xLAM tool call parser for rapid-mlx.
 
 Handles Salesforce xLAM models' tool calling format which supports:
 - JSON arrays of tool calls

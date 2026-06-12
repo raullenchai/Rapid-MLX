@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Auto-detecting tool call parser for vllm-mlx.
+Auto-detecting tool call parser for rapid-mlx.
 
 Automatically detects and parses tool calls from various model formats.
 """

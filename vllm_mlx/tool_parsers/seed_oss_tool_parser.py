@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Seed-OSS tool call parser for vllm-mlx.
+Seed-OSS tool call parser for rapid-mlx.
 
 Ported from vLLM upstream (vllm/tool_parsers/seed_oss_tool_parser.py).
 

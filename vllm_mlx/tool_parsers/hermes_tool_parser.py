@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Hermes/Nous tool call parser for vllm-mlx.
+Hermes/Nous tool call parser for rapid-mlx.
 
 Handles Hermes-style tool calling format used by NousResearch models.
 """

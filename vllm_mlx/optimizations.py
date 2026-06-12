@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Hardware detection and system information for vllm-mlx.
+Hardware detection and system information for rapid-mlx.
 
 This module provides:
 - Hardware detection for Apple Silicon (M1, M2, M3, M4 series)

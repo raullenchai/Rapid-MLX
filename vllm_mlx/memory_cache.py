@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Memory-aware prefix cache for vllm-mlx.
+Memory-aware prefix cache for rapid-mlx.
 
 This module provides a prefix cache implementation that tracks memory usage
 and evicts entries based on memory pressure rather than entry count.

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Unified OpenAI-compatible API server for vllm-mlx.
+Unified OpenAI-compatible API server for rapid-mlx.
 
 This module provides a FastAPI server that exposes an OpenAI-compatible
 API for LLM and MLLM (Multimodal Language Model) inference using MLX on Apple Silicon.
@@ -325,8 +325,11 @@ async def lifespan(app: FastAPI):
     if _engine is not None and hasattr(_engine, "load_cache_from_disk"):
         _load_prefix_cache_from_disk()
 
-    # Initialize MCP if config provided
-    mcp_config = os.environ.get("VLLM_MLX_MCP_CONFIG")
+    # Initialize MCP if config provided (VLLM_MLX_MCP_CONFIG is the
+    # deprecated pre-rename alias, still honored for back-compat)
+    mcp_config = os.environ.get("RAPID_MLX_MCP_CONFIG") or os.environ.get(
+        "VLLM_MLX_MCP_CONFIG"
+    )
     if mcp_config:
         await init_mcp(mcp_config)
 
@@ -1251,7 +1254,7 @@ Examples:
 
     # Set MCP config for lifespan
     if args.mcp_config:
-        os.environ["VLLM_MLX_MCP_CONFIG"] = args.mcp_config
+        os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
     # Auto-detect parser config from model name when not explicitly set.
     # SOP §10: honor --no-tool-call-parser / --no-reasoning-parser opt-

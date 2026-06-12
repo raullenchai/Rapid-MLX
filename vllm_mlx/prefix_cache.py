@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Prefix Cache Manager for vllm-mlx.
+Prefix Cache Manager for rapid-mlx.
 
 Wraps mlx-lm's LRUPromptCache to provide prefix caching functionality,
 allowing reuse of computed KV cache for common prompt prefixes.
@@ -68,10 +68,10 @@ class PrefixCacheStats:
 
 class PrefixCacheManager:
     """
-    Manages prefix caching for vllm-mlx using a trie-based LRU cache.
+    Manages prefix caching for rapid-mlx using a trie-based LRU cache.
 
     This implementation is inspired by mlx-lm's LRUPromptCache but adapted
-    for vllm-mlx's batching architecture.
+    for rapid-mlx's batching architecture.
 
     The cache stores KV states keyed by token sequences, allowing:
     - Exact match: Full prompt found in cache

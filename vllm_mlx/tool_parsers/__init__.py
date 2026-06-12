@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Tool call parsers for vllm-mlx.
+Tool call parsers for rapid-mlx.
 
 This module provides tool call parsing functionality for various model formats.
 Inspired by vLLM's tool parser architecture but simplified for MLX backend.

@@ -51,7 +51,7 @@ class ReasoningParser(ABC):
         Initialize parser with optional tokenizer.
 
         Args:
-            tokenizer: Optional tokenizer for token-based parsing. For vllm-mlx,
+            tokenizer: Optional tokenizer for token-based parsing. For rapid-mlx,
                       text-based parsing is sufficient, so this is optional.
         """
         self.tokenizer = tokenizer

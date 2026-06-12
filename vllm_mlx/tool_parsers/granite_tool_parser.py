@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Granite tool call parser for vllm-mlx.
+Granite tool call parser for rapid-mlx.
 
 Handles IBM Granite models' tool calling format:
 - <|tool_call|> or <tool_call> followed by JSON array
