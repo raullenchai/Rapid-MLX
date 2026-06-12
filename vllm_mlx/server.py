@@ -334,7 +334,7 @@ async def lifespan(app: FastAPI):
     mcp_env_vars = ("RAPID_MLX_MCP_CONFIG", "VLLM_MLX_MCP_CONFIG")
     mcp_candidates = [v for v in (os.environ.get(k) for k in mcp_env_vars) if v]
     mcp_config = next(
-        (p for p in mcp_candidates if os.path.exists(os.path.expanduser(p))),
+        (p for p in mcp_candidates if os.path.isfile(os.path.expanduser(p))),
         mcp_candidates[0] if mcp_candidates else None,
     )
     if mcp_config:

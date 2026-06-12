@@ -86,6 +86,18 @@ def test_stale_new_env_var_falls_through_to_working_legacy(monkeypatch, tmp_path
     assert mcp_config._find_config_file() == old
 
 
+def test_directory_env_var_falls_through_to_working_legacy(monkeypatch, tmp_path):
+    """An env var pointing at a *directory* (e.g. the config dir itself) must
+    not be treated as a valid config file — it would raise IsADirectoryError
+    in read_text(). It should fall through to the legacy file."""
+    a_dir = tmp_path / "rapid-mlx"
+    a_dir.mkdir()
+    old = _write_cfg(tmp_path / "old.json")
+    monkeypatch.setenv("RAPID_MLX_MCP_CONFIG", str(a_dir))
+    monkeypatch.setenv("VLLM_MLX_MCP_CONFIG", str(old))
+    assert mcp_config._find_config_file() == old
+
+
 def test_no_config_anywhere_returns_none(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     assert mcp_config._find_config_file() is None

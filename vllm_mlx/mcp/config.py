@@ -98,12 +98,15 @@ def _find_config_file(
             return path
         raise FileNotFoundError(f"MCP config file not found: {explicit_path}")
 
-    # 2. Environment variable (with deprecated pre-rename alias)
+    # 2. Environment variable (with deprecated pre-rename alias). Require a
+    # real file, not just an existing path: a directory value (e.g. the
+    # config *dir*) must fall through to the next var rather than be returned
+    # and then blow up with IsADirectoryError in read_text().
     for env_var in (CONFIG_ENV_VAR, CONFIG_ENV_VAR_LEGACY):
         env_path = os.environ.get(env_var)
         if env_path:
             path = Path(env_path).expanduser()
-            if path.exists():
+            if path.is_file():
                 return path
             logger.warning(f"MCP config from {env_var} not found: {env_path}")
 
