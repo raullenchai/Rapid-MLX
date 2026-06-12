@@ -838,6 +838,7 @@ class DiffusionEngine(BaseEngine):
         tools: list[dict] | None = None,
         images: list[str] | None = None,
         videos: list[str] | None = None,
+        is_streaming: bool = False,
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
         self._ensure_loaded()
@@ -854,11 +855,30 @@ class DiffusionEngine(BaseEngine):
                 "drop them from the request."
             )
         prompt = self.build_prompt(messages, tools=tools)
+        # ``has_tools`` controls the wire-marker carve-out in
+        # ``_build_skip_special_token_ids``: when True, mlx-vlm's
+        # detokenizer leaves ``<|tool_call>`` family markers in the
+        # output so ``routes/chat.py``'s post-parse step can extract
+        # ``tool_calls``. Gating this on ``not is_streaming`` is the
+        # fix for pr_validate r8 BLOCKING #2: in SSE mode the route
+        # forwards each chunk as a delta WITHOUT running the parser,
+        # so leaving markers in would mean a streaming client sees
+        # raw ``<|tool_call>`` wire text in ``delta.content``. By
+        # disabling the carve-out for streaming, mlx-vlm strips
+        # markers normally; the model still receives the tool
+        # declarations via the chat template, so any call-emission
+        # is degraded-to-prose rather than corrupted. Non-stream
+        # callers (`_create_chat_completion_impl`) buffer the whole
+        # canvas and then parse — they need the markers, so they
+        # leave ``is_streaming=False``.
+        has_tools = (
+            bool(tools) and self.supports_tool_calls and not is_streaming
+        )
         async for chunk in self._stream_prompt_raw(
             prompt,
             max_tokens=max_tokens,
             temperature=temperature,
-            has_tools=bool(tools) and self.supports_tool_calls,
+            has_tools=has_tools,
             **kwargs,
         ):
             yield chunk

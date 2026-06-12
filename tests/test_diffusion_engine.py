@@ -1302,6 +1302,79 @@ class TestConcurrentRequests:
         )
         assert skip_ids == skip_ids_explicit
 
+    @pytest.mark.asyncio
+    async def test_stream_chat_suppresses_carveout_when_is_streaming_true(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pr_validate r8 BLOCKING #2 — the SSE path forwards each
+        chunk as ``delta.content`` without running the tool parser,
+        so leaving the gemma4 wire markers in (carve-out active)
+        would surface raw ``<|tool_call>`` text to the client.
+        Stream callers pass ``is_streaming=True`` to disable the
+        carve-out; non-stream buffering callers (default
+        ``is_streaming=False``) keep markers so the post-canvas
+        parser can extract structured ``tool_calls``.
+        """
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import (
+            DiffusionEngine,
+            DiffusionGenerationConfig,
+        )
+
+        gemma = DiffusionEngine(model_name="diffusion-gemma-26b-4bit")
+        assert gemma.supports_tool_calls is True
+
+        captured: list[DiffusionGenerationConfig] = []
+
+        async def _capture_raw(*args, **kwargs):  # noqa: ARG001
+            # Stash the cfg the engine built so we can assert on its
+            # ``has_tools`` flag — this is the bit that gates the
+            # downstream ``_build_skip_special_token_ids`` carve-out.
+            captured.append(
+                DiffusionGenerationConfig(
+                    diffusion_steps=None,
+                    temperature=0.0,
+                    has_tools=kwargs.get("has_tools", False),
+                )
+            )
+            if False:  # never yields — we only need the cfg snapshot
+                yield None
+
+        monkeypatch.setattr(gemma, "_stream_prompt_raw", _capture_raw)
+        # Also stub build_prompt so we don't need a real tokenizer
+        # roundtrip; the cfg is what we care about.
+        monkeypatch.setattr(gemma, "build_prompt", lambda *a, **kw: "prompt")
+        # Bypass the load-state guard — the mock doesn't run a real
+        # start() and we're only testing the cfg construction path.
+        monkeypatch.setattr(gemma, "_ensure_loaded", lambda: None)
+
+        # Stream path — has_tools must be False even though tools are
+        # attached and the engine supports them.
+        async for _ in gemma.stream_chat(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "f", "parameters": {}}}],
+            is_streaming=True,
+        ):
+            pass
+        assert captured, "engine never built a cfg"
+        assert captured[-1].has_tools is False, (
+            "is_streaming=True must suppress the marker carve-out — "
+            "leaving has_tools True would leak raw <|tool_call> text "
+            "into SSE delta.content"
+        )
+
+        # Non-stream buffering path — has_tools must be True so the
+        # post-canvas parser receives the markers.
+        captured.clear()
+        async for _ in gemma.stream_chat(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "f", "parameters": {}}}],
+            is_streaming=False,
+        ):
+            pass
+        assert captured, "engine never built a cfg on non-stream path"
+        assert captured[-1].has_tools is True
+
     def test_build_skip_special_token_ids_keeps_markers_without_parser(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

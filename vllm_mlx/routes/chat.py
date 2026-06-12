@@ -1366,8 +1366,20 @@ async def stream_chat_completion(
         # silently drop the tool call (#v0.6.63 onboarding sweep finding #3).
         buffered_finish: tuple | None = None
 
-        # Stream content — PostProcessor handles reasoning/tool/sanitize
-        async for output in engine.stream_chat(messages=messages, **kwargs):
+        # Stream content — PostProcessor handles reasoning/tool/sanitize.
+        # ``is_streaming=True`` is consumed by DiffusionEngine to disable
+        # the gemma4 wire-marker carve-out in ``skip_special_token_ids``:
+        # this path forwards each chunk as an SSE delta without running
+        # the tool parser, so any markers left in by the carve-out would
+        # surface as raw ``<|tool_call>`` wire text in ``delta.content``
+        # to the client (pr_validate #558 r8 BLOCKING #2). Engines whose
+        # ``stream_chat`` doesn't know the kwarg swallow it via the
+        # ``**kwargs`` tail on ``BaseEngine.stream_chat`` — no behavior
+        # change for BatchedEngine which uses its own special-token
+        # handling.
+        async for output in engine.stream_chat(
+            messages=messages, is_streaming=True, **kwargs
+        ):
             if hasattr(output, "prompt_tokens") and output.prompt_tokens:
                 prompt_tokens = output.prompt_tokens
             if hasattr(output, "completion_tokens") and output.completion_tokens:
