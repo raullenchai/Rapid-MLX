@@ -394,7 +394,7 @@
   },
   "gemma3-12b-4bit": {
     "hf_path": "mlx-community/gemma-3-12b-it-qat-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
@@ -646,7 +646,7 @@
   },
   "gemma-3n-e4b-4bit": {
     "hf_path": "mlx-community/gemma-3n-E4B-it-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
@@ -658,7 +658,7 @@
   },
   "gemma3-1b-4bit": {
     "hf_path": "mlx-community/gemma-3-1b-it-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
@@ -676,7 +676,7 @@
   },
   "gemma3-27b-4bit": {
     "hf_path": "mlx-community/gemma-3-27b-it-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,

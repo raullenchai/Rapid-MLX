@@ -507,6 +507,43 @@ def test_audit_batch_bonsai_tool_call_parser_wired() -> None:
         )
 
 
+def test_gemma3_family_disables_tool_call_parser() -> None:
+    """Gemma 3 / 3n base instruction models were NOT trained for tool
+    calling — their chat templates don't emit ``<tool_call>...`` blocks
+    and the model has no notion of structured function invocation.
+
+    Pre-fix: every Gemma 3 alias inherited ``tool_call_parser="hermes"``
+    from the README's "all Gemma → hermes" shortcut. When a chat surface
+    passed ``tools=[...]``, the model:
+      1. saw tools embedded in the prompt (via ``apply_chat_template``)
+      2. couldn't emit hermes XML markup (never trained for it)
+      3. fell back to plain-text content, often hallucinating about the
+         tool's subject domain (user-reported: "palo alto天气如何" →
+         monologue about "Palo Alto Networks firewall" instead of
+         firing the weather tool)
+
+    Gemma **4** is different — explicitly trained for tools with the
+    ``call:func{...}`` wire format and stays wired to ``gemma4`` parser.
+    This pin guards the Gemma 3 family from a future "let's wire a
+    parser for completeness" regression. If you ever flip these off
+    ``null``, also verify the upstream model card actually claims
+    function-calling support.
+    """
+    profiles = list_profiles()
+    for alias in (
+        "gemma-3n-e4b-4bit",
+        "gemma3-1b-4bit",
+        "gemma3-12b-4bit",
+        "gemma3-27b-4bit",
+    ):
+        assert alias in profiles, f"{alias} missing from aliases.json"
+        assert profiles[alias].tool_call_parser is None, (
+            f"{alias}: tool_call_parser must be None — Gemma 3 family "
+            f"was not trained for tool calling. Got "
+            f"{profiles[alias].tool_call_parser!r}."
+        )
+
+
 def test_deepseek_v4_flash_family_wires_deepseek_r1_reasoning_parser() -> None:
     """The DeepSeek-V4-Flash chat template emits ``<think>...</think>``
     blocks (gated by ``thinking_mode``). Without ``reasoning_parser`` set,
