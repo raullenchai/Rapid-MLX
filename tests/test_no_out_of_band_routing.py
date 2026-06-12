@@ -158,6 +158,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # bearer key in argv (visible to ``ps`` for any local user).
         # Pure auth-config knob; routing decisions never read it.
         "RAPID_MLX_API_KEY",
+        # Path to the MCP server config file (formerly VLLM_MLX_MCP_CONFIG).
+        # Plumbs ``--mcp-config`` from the CLI to the FastAPI lifespan and is
+        # consumed only by ``vllm_mlx/mcp/config.py`` to discover MCP tool
+        # servers. It selects external tool endpoints, never which model /
+        # parser / tier the engine routes a request to.
+        "RAPID_MLX_MCP_CONFIG",
     }
 )
 
