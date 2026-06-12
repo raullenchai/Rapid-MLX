@@ -62,8 +62,8 @@ These clients have been verified through automated integration tests
 | Client | Type | Setup | Status | Notes |
 |--------|------|-------|--------|-------|
 | [Aider](https://aider.chat) | CLI | `OPENAI_API_BASE=http://localhost:8000/v1 aider --model openai/default` | Verified | Architect mode, edit-and-commit |
-| [OpenCode](https://github.com/sst/opencode) | TUI | `rapid-mlx agents opencode --setup` | Verified | Claude Code-like terminal UX |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | CLI | `ANTHROPIC_BASE_URL=http://localhost:8000 claude` | Verified | Uses Anthropic `/v1/messages` |
+| [OpenCode](https://github.com/sst/opencode) | TUI | `rapid-mlx agents opencode --setup` | Compatible | Claude Code-like terminal UX |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | CLI | `ANTHROPIC_BASE_URL=http://localhost:8000 claude` | Compatible | Uses Anthropic `/v1/messages` |
 | [Cursor](https://cursor.com) | IDE | Settings > Models > OpenAI Base URL: `http://localhost:8000/v1` | Compatible | Agent/composer mode uses tool calling |
 | [Continue.dev](https://continue.dev) | IDE Extension | `~/.continue/config.yaml` `apiBase: http://localhost:8000/v1` | Compatible | VS Code / JetBrains |
 | [pi](https://shittycodingagent.ai) | TUI | `OPENAI_BASE_URL=http://localhost:8000/v1` | Community-reported | Works with Qwen3.5/Qwen3.6 models |
@@ -77,188 +77,28 @@ These clients have been verified through automated integration tests
 
 ## Clients to Test
 
-The following clients are reported to support OpenAI-compatible APIs
-but have not yet been verified by the Rapid-MLX team. Community
-contributions welcome -- see [Testing Methodology](#testing-methodology).
+The following clients support OpenAI-compatible APIs but have not yet been
+verified against Rapid-MLX. If you have Apple Silicon and can test one,
+see [Testing Methodology](#testing-methodology).
 
-| Client | Type | Endpoint Type | Configuration Hints | Reported Status |
-|--------|------|---------------|---------------------|-----------------|
-| [CrewAI](https://crewai.com) | Framework | OpenAI | Set `OPENAI_API_BASE=http://localhost:8000/v1` | Untested |
-| [AutoGen](https://microsoft.github.io/autogen/) | Framework | OpenAI | `base_url="http://localhost:8000/v1"` in `llm_config` | Untested |
-| [LlamaIndex](https://llamaindex.ai) | Framework | OpenAI | `OpenAI(api_base="http://localhost:8000/v1")` | Untested |
-| [Cline](https://github.com/cline/cline) | IDE Extension | OpenAI Compatible | Provider: OpenAI Compatible, Base URL: `http://localhost:8000/v1` | Configuration issues reported ([#47](https://github.com/raullenchai/Rapid-MLX/issues/47#issuecomment-4378465919)) |
-| [Open Interpreter](https://openinterpreter.com) | CLI | OpenAI | `OPENAI_API_BASE=http://localhost:8000/v1 interpreter` | Untested |
-| [Dify](https://dify.ai) | Platform | OpenAI-compatible | Add custom OpenAI provider at `http://localhost:8000/v1` | Untested |
-| [n8n AI Nodes](https://n8n.io) | Automation | OpenAI | Node config: Base URL `http://localhost:8000/v1` | Untested |
-| [Bolt.new (local)](https://github.com/stackblitz/bolt.new) | Web | Anthropic | Set `ANTHROPIC_BASE_URL=http://localhost:8000` | Untested |
-| [codex](https://github.com/openai/codex) | CLI | OpenAI | `rapid-mlx agents codex --setup` or `OPENAI_BASE_URL=http://localhost:8000/v1` | Agent profile exists |
-| [Goose](https://block.github.io/goose/) | CLI | OpenAI | `rapid-mlx agents goose --setup` | Agent profile exists |
-| [OpenHands](https://github.com/All-Hands-AI/OpenHands) | Web/Docker | OpenAI | `rapid-mlx agents openhands --setup` | Agent profile exists |
-| [OpenClaude](https://github.com/raullenchai/Rapid-MLX/tree/main) | CLI | Anthropic | `rapid-mlx agents openclaude --setup` | Agent profile exists |
-| [Tabby](https://tabby.tabbyml.com) | IDE | OpenAI | `TABBY_OPENAI_API_BASE=http://localhost:8000/v1` | Untested |
-| [Windsurf](https://codeium.com/windsurf) | IDE | OpenAI-compatible | Settings > OpenAI Base URL | Untested |
-| [Zed](https://zed.dev) | IDE | OpenAI-compatible | `assistant.openai_api_url: "http://localhost:8000/v1"` in settings | Untested |
+- **CrewAI** (Framework) — `OPENAI_API_BASE=http://localhost:8000/v1`
+- **AutoGen** (Framework) — `base_url="http://localhost:8000/v1"` in `llm_config`
+- **LlamaIndex** (Framework) — `OpenAI(api_base="http://localhost:8000/v1")`
+- **Cline** (IDE Extension) — Provider: OpenAI Compatible, Base URL: `http://localhost:8000/v1` ([known issues](https://github.com/raullenchai/Rapid-MLX/issues/47#issuecomment-4410012225))
+- **Open Interpreter** (CLI) — `OPENAI_API_BASE=http://localhost:8000/v1 interpreter`
+- **Dify** (Platform) — Add custom OpenAI provider at `http://localhost:8000/v1`
+- **n8n AI Nodes** (Automation) — Node config: Base URL `http://localhost:8000/v1`
+- **Bolt.new** (Web) — `ANTHROPIC_BASE_URL=http://localhost:8000`
+- **Tabby** (IDE) — `TABBY_OPENAI_API_BASE=http://localhost:8000/v1`
+- **Windsurf** (IDE) — Settings > OpenAI Base URL
+- **Zed** (IDE) — `assistant.openai_api_url: "http://localhost:8000/v1"` in settings
 
-Clients with a `rapid-mlx agents` profile (`codex`, `goose`, `openhands`,
-`openclaude`) have pre-built configuration but automated integration tests
-are not yet in `tests/integrations/`.
+Clients with a `rapid-mlx agents` profile (pre-built config, no automated tests yet):
 
-## Detailed Setup Examples
-
-### CrewAI
-
-```python
-import os
-from crewai import Agent, Task, Crew
-from crewai.llm import LLM
-
-os.environ["OPENAI_API_KEY"] = "not-needed"
-
-llm = LLM(
-    model="openai/default",
-    base_url="http://localhost:8000/v1",
-    api_key="not-needed"
-)
-
-researcher = Agent(
-    role="Researcher",
-    goal="Research the topic thoroughly",
-    backstory="Expert researcher",
-    llm=llm,
-)
-
-task = Task(
-    description="Explain how local LLM inference works on Apple Silicon.",
-    expected_output="A paragraph of explanation.",
-    agent=researcher,
-)
-
-crew = Crew(agents=[researcher], tasks=[task])
-print(crew.kickoff())
-```
-
-Test: verify streaming responses, tool calling, and multi-agent
-workflows.
-
-### AutoGen
-
-```python
-import os
-from autogen import ConversableAgent
-
-os.environ["OPENAI_API_KEY"] = "not-needed"
-
-llm_config = {
-    "config_list": [{
-        "model": "default",
-        "api_key": "not-needed",
-        "base_url": "http://localhost:8000/v1",
-    }]
-}
-
-agent = ConversableAgent(
-    name="assistant",
-    llm_config=llm_config,
-    system_message="You are a helpful assistant.",
-)
-
-reply = agent.generate_reply(
-    messages=[{"role": "user", "content": "Hello!"}]
-)
-print(reply)
-```
-
-Test: verify multi-agent conversations, code execution, and tool
-use. AutoGen's `base_url` support varies by version --
-`openai>=1.0`-compatible versions work best.
-
-### LlamaIndex
-
-```python
-from llama_index.llms.openai import OpenAI
-
-llm = OpenAI(
-    model="default",
-    api_key="not-needed",
-    api_base="http://localhost:8000/v1",
-)
-
-response = llm.complete("Explain what MLX is.")
-print(response)
-```
-
-For embeddings with LlamaIndex and Rapid-MLX:
-
-```bash
-rapid-mlx serve qwen3.5-4b-4bit \
-    --embedding-model mlx-community/multilingual-e5-small-mlx
-```
-
-```python
-from llama_index.embeddings.openai import OpenAIEmbedding
-
-embed_model = OpenAIEmbedding(
-    model="mlx-community/multilingual-e5-small-mlx",
-    api_key="not-needed",
-    api_base="http://localhost:8000/v1",
-)
-```
-
-### Cline (VS Code Extension)
-
-1. Start the server:
-   ```bash
-   rapid-mlx serve qwen3.5-4b-4bit --port 8000
-   ```
-
-2. In Cline settings:
-   - **API Provider**: `OpenAI Compatible`
-   - **Base URL**: `http://localhost:8000/v1`
-   - **API Key**: `not-needed`
-   - **Model ID**: enter the model name shown in `rapid-mlx models` (e.g. `qwen3.5-4b`)
-
-   If the model list fails to load, set **Model ID** to `default`.
-
-3. Verify connectivity by sending "Hello" in Cline's chat. If the
-   request reaches the server you will see an `INFO` log line in the
-   `rapid-mlx serve` terminal.
-
-**Known issue** ([#47](https://github.com/raullenchai/Rapid-MLX/issues/47#issuecomment-4378465919)): One community member reported no response
-from the server when using Cline. This is likely a configuration
-mismatch. Double-check:
-- The server is running and reachable at `curl http://localhost:8000/health`
-- The Base URL ends with `/v1`
-- The Model ID matches the loaded model or is `default`
-
-### Dify
-
-1. Start the Rapid-MLX server:
-   ```bash
-   rapid-mlx serve qwen3.5-4b-4bit --port 8000
-   ```
-
-2. In Dify, go to Settings > Model Provider > OpenAI-API-compatible:
-   - **Model Name**: `default`
-   - **API Endpoint URL**: `http://localhost:8000/v1/chat/completions`
-   - **API Key**: `not-needed`
-
-3. If you need embeddings, add a separate Text Embedding provider:
-   - **API Endpoint URL**: `http://localhost:8000/v1/embeddings`
-
-Test: create a simple chat app and verify streaming and
-conversation history work.
-
-### n8n AI Nodes
-
-1. Start the Rapid-MLX server.
-2. In n8n, add an OpenAI Chat Model node.
-3. Configure the node:
-   - **Base URL**: `http://localhost:8000/v1`
-   - **API Key**: `not-needed`
-   - **Model**: `default`
-
-Test: create a simple workflow with an AI node and verify it
-produces output.
+- **codex** (CLI) — `rapid-mlx agents codex --setup`
+- **Goose** (CLI) — `rapid-mlx agents goose --setup`
+- **OpenHands** (Web/Docker) — `rapid-mlx agents openhands --setup`
+- **OpenClaude** (CLI) — `rapid-mlx agents openclaude --setup`
 
 ## Testing Methodology
 
