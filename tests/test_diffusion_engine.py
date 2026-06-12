@@ -227,7 +227,7 @@ class TestPromptAndTokenAccounting:
         _install_mlx_vlm_mock(monkeypatch)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-        engine = DiffusionEngine(model_name="diffusion-gemma-26b")
+        engine = DiffusionEngine(model_name="diffusion-gemma-26b-4bit")
         engine._load_blocking()
         FakeTokenizer.last_tools = None
         rendered = engine.build_prompt(
@@ -395,9 +395,9 @@ class TestStreamChatBlockCollapse:
         _install_mlx_vlm_mock(monkeypatch, stream_yields=yields)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-        # diffusion-gemma-26b alias declares ``tool_call_parser="gemma4"``
+        # diffusion-gemma-26b-4bit alias declares ``tool_call_parser="gemma4"``
         # → engine.supports_tool_calls is True → tools are forwarded.
-        engine = DiffusionEngine(model_name="diffusion-gemma-26b")
+        engine = DiffusionEngine(model_name="diffusion-gemma-26b-4bit")
         engine._load_blocking()
         FakeTokenizer.last_tools = None
         collected = []
@@ -434,7 +434,7 @@ class TestStreamChatBlockCollapse:
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
         # Tool-enabled alias.
-        engine = DiffusionEngine(model_name="diffusion-gemma-26b")
+        engine = DiffusionEngine(model_name="diffusion-gemma-26b-4bit")
         engine._load_blocking()
         FakeTokenizer.last_tools = None
         rendered_eager = engine.build_prompt(
@@ -1187,9 +1187,9 @@ class TestConcurrentRequests:
         assert bare.supports_tool_calls is False
 
         # Alias whose profile sets ``tool_call_parser="gemma4"`` opts
-        # the instance into True. The diffusion-gemma-26b alias is
+        # the instance into True. The diffusion-gemma-26b-4bit alias is
         # configured this way in aliases.json.
-        gemma = DiffusionEngine(model_name="diffusion-gemma-26b")
+        gemma = DiffusionEngine(model_name="diffusion-gemma-26b-4bit")
         assert gemma.supports_tool_calls is True
 
     def test_build_skip_special_token_ids_carves_out_gemma4_wire_markers(
@@ -1234,7 +1234,7 @@ class TestConcurrentRequests:
                         return [sid]
                 return [hash(text) % 1000 + 1000]
 
-        gemma = DiffusionEngine(model_name="diffusion-gemma-26b")
+        gemma = DiffusionEngine(model_name="diffusion-gemma-26b-4bit")
         assert gemma.supports_tool_calls is True
 
         # codex r2 BLOCKING #1: helper takes ``has_tools=True``
@@ -1287,7 +1287,7 @@ class TestConcurrentRequests:
                         return [sid]
                 return [hash(text) % 1000 + 1000]
 
-        gemma = DiffusionEngine(model_name="diffusion-gemma-26b")
+        gemma = DiffusionEngine(model_name="diffusion-gemma-26b-4bit")
         assert gemma.supports_tool_calls is True
 
         # ``has_tools`` defaults to False — non-tool requests take
@@ -1413,7 +1413,7 @@ class TestConcurrentRequests:
 
         cfg = reset_config()
         cfg.engine = _DiffusionEngineStub()
-        cfg.model_name = "diffusion-gemma-26b"
+        cfg.model_name = "diffusion-gemma-26b-4bit"
         cfg.model_registry = None
         cfg.no_thinking = True
         # Critical: parser IS configured. Without the
@@ -1428,7 +1428,7 @@ class TestConcurrentRequests:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "model": "diffusion-gemma-26b",
+                "model": "diffusion-gemma-26b-4bit",
                 "stream": True,
                 "messages": [{"role": "user", "content": "weather?"}],
                 "tools": [
@@ -1490,7 +1490,7 @@ class TestConcurrentRequests:
 
         cfg = reset_config()
         cfg.engine = _DiffusionEngineStub()
-        cfg.model_name = "diffusion-gemma-26b"
+        cfg.model_name = "diffusion-gemma-26b-4bit"
         cfg.model_registry = None
         cfg.no_thinking = True
         cfg.tool_call_parser = "hermes"
@@ -1502,7 +1502,7 @@ class TestConcurrentRequests:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "model": "diffusion-gemma-26b",
+                "model": "diffusion-gemma-26b-4bit",
                 "stream": False,
                 "messages": [{"role": "user", "content": "weather?"}],
                 "tools": [
@@ -1563,7 +1563,7 @@ class TestConcurrentRequests:
 
         cfg = reset_config()
         cfg.engine = _DiffusionEngineStub()
-        cfg.model_name = "diffusion-gemma-26b"
+        cfg.model_name = "diffusion-gemma-26b-4bit"
         cfg.model_registry = None
         cfg.no_thinking = True
         cfg.tool_call_parser = "hermes"
@@ -1575,7 +1575,7 @@ class TestConcurrentRequests:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "model": "diffusion-gemma-26b",
+                "model": "diffusion-gemma-26b-4bit",
                 "stream": False,
                 "messages": [{"role": "user", "content": "weather?"}],
                 "tools": [
@@ -1638,7 +1638,7 @@ class TestConcurrentRequests:
 
         cfg = reset_config()
         cfg.engine = _DiffusionEngineStub()
-        cfg.model_name = "diffusion-gemma-26b"
+        cfg.model_name = "diffusion-gemma-26b-4bit"
         cfg.model_registry = None
         cfg.no_thinking = True
         cfg.tool_call_parser = "hermes"
@@ -1650,7 +1650,7 @@ class TestConcurrentRequests:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "model": "diffusion-gemma-26b",
+                "model": "diffusion-gemma-26b-4bit",
                 "stream": False,  # <-- the regression point
                 "messages": [{"role": "user", "content": "weather?"}],
                 "tools": [
@@ -2150,12 +2150,12 @@ class TestAliasIntegration:
         # before the server boot does.
         from vllm_mlx.model_aliases import resolve_profile
 
-        profile = resolve_profile("diffusion-gemma-26b")
+        profile = resolve_profile("diffusion-gemma-26b-4bit")
         assert profile is not None
         assert profile.modality == "text-diffusion"
         assert profile.supports_spec_decode is False
         assert profile.supports_dflash is False
-        assert profile.hf_path == "mlx-community/diffusiongemma-26B-A4B-it-8bit"
+        assert profile.hf_path == "mlx-community/diffusiongemma-26B-A4B-it-4bit"
         assert profile.tool_call_parser == "gemma4"
 
 

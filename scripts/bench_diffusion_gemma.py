@@ -38,8 +38,8 @@ Median of 3 measured runs (1 warmup discarded).
 Usage::
 
     # Assumes a rapid-mlx server is already running on port 18761 with
-    # diffusion-gemma-26b loaded. Spawn separately::
-    #     rapid-mlx serve diffusion-gemma-26b --port 18761
+    # diffusion-gemma-26b-4bit loaded. Spawn separately::
+    #     rapid-mlx serve diffusion-gemma-26b-4bit --port 18761
     python3.12 scripts/bench_diffusion_gemma.py
     python3.12 scripts/bench_diffusion_gemma.py --port 8765 --runs 5
 """

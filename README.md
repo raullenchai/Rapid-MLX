@@ -462,7 +462,7 @@ Decoded examples:
 | **MiniMax / Kimi** | `minimax-m2.5-4bit`, `minimax-m2.7-mxfp4`, `kimi-48b-4bit`, `kimi-k2.5-3bit` | |
 | **Mistral / Devstral** | `mistral-24b-4bit`, `devstral-24b-4bit`, `devstral-v2-24b-4bit`, `ministral-3b-4bit` | |
 | **Other** | `phi-4-14b-4bit`, `phi-4-mini-4bit`, `smollm3-3b-4bit`, `nemotron-30b-4bit`, `bonsai-1.7b-unpacked`, `-4b-unpacked`, `-8b-unpacked`, `granite4-tiny-4bit` | |
-| 🆕 **Text-Diffusion** | `diffusion-gemma-26b` | Non-autoregressive (block denoising); same `/v1/chat/completions` API |
+| 🆕 **Text-Diffusion** | `diffusion-gemma-26b-4bit`, `diffusion-gemma-26b-8bit` | Non-autoregressive (block denoising); same `/v1/chat/completions` API |
 
 ✨ = DFlash speculative decoding supported (opt in with `--enable-dflash`). `rapid-mlx info <alias>` shows per-alias capabilities.
 
@@ -504,7 +504,7 @@ rapid-mlx serve qwen3-coder-4bit --prefill-step-size 8192 --port 8000  # MoE = o
 rapid-mlx serve qwen3-vl-4b-4bit --mllm --port 8000
 
 # 🆕 Text-diffusion — DiffusionGemma 26B-A4B (block denoising, not autoregressive)
-rapid-mlx serve diffusion-gemma-26b --port 8000  # needs [vision] extras for mlx-vlm 0.6.3+
+rapid-mlx serve diffusion-gemma-26b-4bit --port 8000  # needs [vision] extras for mlx-vlm 0.6.3+
 ```
 
 > **Vision deps:** Install into the same environment where rapid-mlx lives:
@@ -518,7 +518,7 @@ DiffusionGemma is a **non-autoregressive** language model — instead of emittin
 
 ```bash
 pip install 'rapid-mlx[vision]'       # mlx-vlm 0.6.3+ provides the diffusion runtime
-rapid-mlx serve diffusion-gemma-26b --port 8000
+rapid-mlx serve diffusion-gemma-26b-4bit --port 8000
 ```
 
 **B=1 single-user benchmark** (M3 Ultra 256 GB, mlx-community/diffusiongemma-26B-A4B-it-4bit, median of 3 runs + 1 warmup):

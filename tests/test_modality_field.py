@@ -49,7 +49,7 @@ class TestModalityDefault:
 
     def test_text_diffusion_accepted(self) -> None:
         profile = _coerce(
-            "diffusion-gemma-26b",
+            "diffusion-gemma-26b-4bit",
             {
                 "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-4bit",
                 "modality": "text-diffusion",
@@ -202,15 +202,14 @@ class TestHfPathReverseLookupRoutesDiffusionLane:
     silently regress the modality dispatch.
     """
 
-    def test_diffusion_hf_path_resolves_to_text_diffusion_modality(self) -> None:
+    def test_diffusion_4bit_hf_path_resolves_to_text_diffusion_modality(self) -> None:
         from vllm_mlx.model_aliases import resolve_profile
 
-        # The currently-registered HF path for ``diffusion-gemma-26b``.
-        # PR #558 swapped the alias from the 4bit checkpoint to the 8bit
-        # one for quality reasons; this test reads the alias's own
-        # ``hf_path`` so future swaps don't break the reverse-lookup pin.
-        diffusion_alias_profile = resolve_profile("diffusion-gemma-26b")
+        diffusion_alias_profile = resolve_profile("diffusion-gemma-26b-4bit")
         assert diffusion_alias_profile is not None
+        assert diffusion_alias_profile.hf_path == (
+            "mlx-community/diffusiongemma-26B-A4B-it-4bit"
+        )
         profile = resolve_profile(diffusion_alias_profile.hf_path)
         assert profile is not None, (
             "resolve_profile must reverse-look an HF path that matches "
@@ -218,28 +217,33 @@ class TestHfPathReverseLookupRoutesDiffusionLane:
             "would have routed this to BatchedEngine"
         )
         assert profile.modality == "text-diffusion"
+        assert profile.tool_call_parser == "gemma4"
 
-    def test_diffusion_4bit_compat_alias_reverse_lookup(self) -> None:
-        """pr_validate r7 NIT #2 — the 4-bit compatibility alias was
-        added so operators who pinned against the v0.7.1 4-bit hf_path
-        don't get silently retargeted to 8-bit. Pin the reverse-lookup
-        explicitly so a future maintainer who removes the 4-bit alias
-        breaks this test instead of silently breaking v0.7.1 deployments.
-        """
+    def test_diffusion_8bit_hf_path_resolves_to_text_diffusion_modality(self) -> None:
         from vllm_mlx.model_aliases import resolve_profile
 
-        compat_profile = resolve_profile("diffusion-gemma-26b-4bit")
-        assert compat_profile is not None, (
-            "diffusion-gemma-26b-4bit must remain a registered alias "
-            "during the v0.7.3 → v0.8.0 window — see PR #558 rationale"
+        diffusion_alias_profile = resolve_profile("diffusion-gemma-26b-8bit")
+        assert diffusion_alias_profile is not None
+        assert diffusion_alias_profile.hf_path == (
+            "mlx-community/diffusiongemma-26B-A4B-it-8bit"
         )
-        assert compat_profile.hf_path == "mlx-community/diffusiongemma-26B-A4B-it-4bit"
-        # Reverse: HF path → alias profile, must keep diffusion modality
-        # and parser so it routes into DiffusionEngine not BatchedEngine.
-        profile = resolve_profile("mlx-community/diffusiongemma-26B-A4B-it-4bit")
+        profile = resolve_profile(diffusion_alias_profile.hf_path)
         assert profile is not None
         assert profile.modality == "text-diffusion"
         assert profile.tool_call_parser == "gemma4"
+
+    def test_diffusion_bare_alias_is_unregistered(self) -> None:
+        """The unqualified ``diffusion-gemma-26b`` alias was removed in
+        PR #558 — every diffusion alias must carry an explicit
+        ``-Nbit`` quantization suffix to match the rest of
+        ``aliases.json`` (see qwen3.5/qwen3.6/deepseek-v4-flash). Pin
+        the removal so a future maintainer who adds it back has to
+        either bring a written-down reason or delete this test
+        deliberately.
+        """
+        from vllm_mlx.model_aliases import resolve_profile
+
+        assert resolve_profile("diffusion-gemma-26b") is None
 
     def test_unregistered_hf_path_falls_through_to_none(self) -> None:
         # Sanity: HF paths that AREN'T in aliases.json still return

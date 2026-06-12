@@ -762,8 +762,8 @@
     "supports_spec_decode": true,
     "suffix_decoding_tier": "unknown"
   },
-  "diffusion-gemma-26b": {
-    "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-8bit",
+  "diffusion-gemma-26b-4bit": {
+    "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-4bit",
     "modality": "text-diffusion",
     "tool_call_parser": "gemma4",
     "reasoning_parser": null,
@@ -773,8 +773,8 @@
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown"
   },
-  "diffusion-gemma-26b-4bit": {
-    "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-4bit",
+  "diffusion-gemma-26b-8bit": {
+    "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-8bit",
     "modality": "text-diffusion",
     "tool_call_parser": "gemma4",
     "reasoning_parser": null,
