@@ -614,12 +614,6 @@ _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     "gemma3-1b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma3-12b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma3-27b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    # gemma-3n-E4B ships top_p=0.95 and top_k=64 upstream but no
-    # temperature. We bake in the full triple anyway (matches the
-    # rest of the Gemma family) so a future mlx-community re-quant
-    # that drops generation_config.json doesn't silently regress to
-    # the framework fallback (0.7 / 0.9).
-    "gemma-3n-e4b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # Gemma 4 — official Google sampling guidance hasn't been
     # published yet at the time of writing; we extrapolate from the
     # Gemma 3 family card. Revisit when an official Gemma 4 doc lands.
