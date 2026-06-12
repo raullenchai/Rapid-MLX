@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Authentication and rate limiting middleware."""
 
+import hashlib
 import logging
 import secrets
 import threading
@@ -92,22 +93,27 @@ def _rate_limit_client_id(request: Request) -> str:
     authorization = request.headers.get("Authorization")
     if authorization:
         bearer_key = _extract_bearer_token(authorization)
-        return bearer_key or authorization
+        raw = bearer_key or authorization
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
-    return request.client.host if request.client else "unknown"
+    if request.client and request.client.host:
+        return request.client.host.rsplit(".", 1)[0]
+    return "unknown"
 
 
 def _anthropic_rate_limit_client_id(request: Request) -> str:
     """Resolve a stable client id for Anthropic-compatible API-key headers."""
     bearer_key = _extract_bearer_token(request.headers.get("Authorization"))
     if bearer_key:
-        return bearer_key
+        return hashlib.sha256(bearer_key.encode()).hexdigest()[:16]
 
     x_api_key = request.headers.get("x-api-key")
     if x_api_key:
-        return x_api_key
+        return hashlib.sha256(x_api_key.encode()).hexdigest()[:16]
 
-    return request.client.host if request.client else "unknown"
+    if request.client and request.client.host:
+        return request.client.host.rsplit(".", 1)[0]
+    return "unknown"
 
 
 async def check_rate_limit(request: Request):
