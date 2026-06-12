@@ -871,9 +871,7 @@ class DiffusionEngine(BaseEngine):
         # callers (`_create_chat_completion_impl`) buffer the whole
         # canvas and then parse — they need the markers, so they
         # leave ``is_streaming=False``.
-        has_tools = (
-            bool(tools) and self.supports_tool_calls and not is_streaming
-        )
+        has_tools = bool(tools) and self.supports_tool_calls and not is_streaming
         async for chunk in self._stream_prompt_raw(
             prompt,
             max_tokens=max_tokens,
