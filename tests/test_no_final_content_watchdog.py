@@ -15,21 +15,35 @@ def _load_thinking_processor():
         pass
 
     fake_mx = types.SimpleNamespace(array=_FakeArray)
+    saved_mlx = sys.modules.get("mlx")
+    saved_mlx_core = sys.modules.get("mlx.core")
     sys.modules.setdefault("mlx", types.ModuleType("mlx"))
     sys.modules["mlx.core"] = fake_mx
 
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "vllm_mlx/constrained/thinking_processor.py"
-    )
-    loader = importlib.machinery.SourceFileLoader(
-        "thinking_processor_under_test", str(path)
-    )
-    spec = importlib.util.spec_from_loader("thinking_processor_under_test", loader)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+    try:
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "vllm_mlx/constrained/thinking_processor.py"
+        )
+        loader = importlib.machinery.SourceFileLoader(
+            "thinking_processor_under_test", str(path)
+        )
+        spec = importlib.util.spec_from_loader("thinking_processor_under_test", loader)
+        assert spec is not None
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+    finally:
+        # Leaving the fake in sys.modules breaks any later test whose
+        # production code imports mlx.core lazily (prefix/ssd cache tests).
+        if saved_mlx is None:
+            sys.modules.pop("mlx", None)
+        else:
+            sys.modules["mlx"] = saved_mlx
+        if saved_mlx_core is None:
+            sys.modules.pop("mlx.core", None)
+        else:
+            sys.modules["mlx.core"] = saved_mlx_core
 
 
 def test_no_final_content_watchdog_forces_transition_before_budget():
