@@ -42,7 +42,6 @@ from ..service.helpers import (
     _resolve_max_tokens,
     _resolve_temperature,
     _resolve_top_p,
-    _validate_model_name,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     get_engine,
@@ -115,7 +114,6 @@ async def create_anthropic_message(
     body = await request.json()
     anthropic_request = AnthropicRequest(**body)
 
-    _validate_model_name(anthropic_request.model)
     engine = get_engine(anthropic_request.model)
 
     # Pre-flight admission gate (C4) — see routes/chat.py for rationale.

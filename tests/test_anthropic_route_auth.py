@@ -233,6 +233,57 @@ def test_anthropic_messages_accepts_valid_bearer_api_key(anthropic_client):
     assert len(engine.calls) == 1
 
 
+def test_anthropic_messages_accepts_claude_model_name(anthropic_client):
+    """Claude Code sends its real model name (e.g. 'claude-opus-4-5') in the
+    request body. The Anthropic endpoint must route this to the loaded
+    engine instead of 404-ing on the name mismatch.
+
+    The model name in the response should reflect the *loaded* model, not the
+    client-supplied claude name.
+    """
+    client = anthropic_client.client
+
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "claude-opus-4-5",
+            "max_tokens": 4,
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        headers={"x-api-key": "test-secret"},
+    )
+
+    assert response.status_code == 200
+    # The response must carry the loaded model name, not the claude alias.
+    assert response.json()["model"] == "test-model"
+
+
+def test_anthropic_messages_accepts_any_claude_variant(anthropic_client):
+    """All claude-* variants (claude-3-haiku-20240307, claude-sonnet-4-5,
+    claude-3-5-sonnet-20241022, etc.) must pass through to the loaded engine."""
+    client = anthropic_client.client
+
+    for model_name in [
+        "claude-3-haiku-20240307",
+        "claude-sonnet-4-5",
+        "claude-opus-4-5",
+        "claude-3-5-sonnet-20241022",
+    ]:
+        response = client.post(
+            "/v1/messages",
+            json={
+                "model": model_name,
+                "max_tokens": 4,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers={"x-api-key": "test-secret"},
+        )
+        assert response.status_code == 200, (
+            f"Expected 200 for model={model_name!r}, got {response.status_code}: "
+            f"{response.text}"
+        )
+
+
 def test_anthropic_messages_rejects_mixed_invalid_credentials(anthropic_client):
     client = anthropic_client.client
     engine = anthropic_client.engine
