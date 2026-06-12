@@ -660,18 +660,6 @@
     },
     "is_moe": true
   },
-  "gemma-3n-e4b-4bit": {
-    "hf_path": "mlx-community/gemma-3n-E4B-it-4bit",
-    "tool_call_parser": "hermes",
-    "reasoning_parser": null,
-    "is_hybrid": false,
-    "supports_spec_decode": true,
-    "recommended_sampling": {
-      "temperature": 1.0,
-      "top_p": 0.95,
-      "top_k": 64
-    }
-  },
   "gemma3-1b-4bit": {
     "hf_path": "mlx-community/gemma-3-1b-it-4bit",
     "tool_call_parser": "hermes",
