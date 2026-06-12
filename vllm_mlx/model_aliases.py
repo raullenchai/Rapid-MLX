@@ -177,6 +177,34 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "recommended_sampling",
         }
     )
+    # Deprecated keys shipped on the v0.7.2 ``AliasProfile`` (PR #555
+    # in-house diffusion loop). v0.7.3 reverted the loop, so these
+    # are no longer load-bearing, but an operator who customized
+    # ``aliases.json`` against v0.7.2 — or is mid-upgrade with a
+    # v0.7.2 install on PyPI before yank propagates — would hit
+    # ``unknown key`` on startup if we hard-reject. Accept-and-warn
+    # for one release window (v0.7.3 → v0.8.0), then strip before
+    # constructing ``AliasProfile`` so the dataclass __init__ doesn't
+    # see the unrecognised kwargs (codex r2 BLOCKING #2).
+    _DEPRECATED_PROFILE_KEYS: frozenset[str] = frozenset(
+        {"diffusion_backend", "diffusion_fixed_steps", "diffusion_sc_every"}
+    )
+    deprecated_present = set(value.keys()) & _DEPRECATED_PROFILE_KEYS
+    if deprecated_present:
+        import logging as _logging  # local import: avoid module-import cost on hot paths
+
+        _log = _logging.getLogger(__name__)
+        for k in sorted(deprecated_present):
+            _log.warning(
+                "alias %r: key %r is deprecated as of v0.7.3 (PR #555 "
+                "in-house diffusion loop was reverted; the knob is no "
+                "longer load-bearing). The value will be ignored. "
+                "Remove the key from your aliases.json to silence this "
+                "warning; the key will be hard-rejected in v0.8.0.",
+                alias,
+                k,
+            )
+        value = {k: v for k, v in value.items() if k not in deprecated_present}
     unknown_keys = set(value.keys()) - _ALLOWED_PROFILE_KEYS
     if unknown_keys:
         raise ValueError(

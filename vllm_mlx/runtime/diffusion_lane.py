@@ -193,6 +193,16 @@ class DiffusionGenerationConfig:
     # workloads to bound peak Metal allocation per step — without it
     # the diffusion lane OOMs on 30k+ prompts (codex round 5 [P2]).
     prefill_step_size: int | None = None
+    # True when the originating request included a ``tools`` array
+    # AND the engine reports ``supports_tool_calls=True``. Gates the
+    # per-request tool-call marker carve-out in
+    # ``_build_skip_special_token_ids`` so plain non-tool chats
+    # continue to filter every entry of ``all_special_ids`` —
+    # otherwise a model that spontaneously sampled a ``<|tool_call>``
+    # token (rare with temp=0.0 but possible at higher temperatures)
+    # would leak the raw marker into the client's content stream
+    # without any parser to interpret it (codex r2 BLOCKING #1).
+    has_tools: bool = False
 
 
 class DiffusionEngine(BaseEngine):
@@ -697,20 +707,30 @@ class DiffusionEngine(BaseEngine):
             **template_kwargs,
         )
 
-    def _build_skip_special_token_ids(self, tokenizer: Any) -> set[int]:
+    def _build_skip_special_token_ids(
+        self, tokenizer: Any, *, has_tools: bool = False
+    ) -> set[int]:
         """Construct the ``skip_special_token_ids`` set mlx-vlm uses
         to strip special tokens from the detokenized canvas.
 
         Starts from ``tokenizer.all_special_ids`` (the conservative
         default — strip everything the tokenizer flagged as special).
-        When the active alias declares a tool-call parser this engine
-        knows how to surface (see ``_TOOL_PARSER_MARKERS``), drops the
-        parser's wire markers from the skip set so they survive
+        When the alias declares a tool-call parser this engine knows
+        how to surface (see ``_TOOL_PARSER_MARKERS``) AND the active
+        request actually attached tools (``has_tools=True``), drops
+        the parser's wire markers from the skip set so they survive
         detokenization and reach the post-generation parser in
-        ``routes/chat.py``. Without this, the markers would land in
-        ``all_special_ids``, mlx-vlm would strip them, the parser
-        would see plain prose, and the tool request would silently
-        degrade.
+        ``routes/chat.py``. Without the carve-out, mlx-vlm would
+        strip the markers, the parser would see plain prose, and the
+        tool request would silently degrade.
+
+        ``has_tools=False`` (the default) keeps the markers in the
+        skip set. This is the path plain non-tool chats take: the
+        parser never runs on the response (routes/chat.py only
+        invokes it when ``request.tools`` is set), so any
+        spontaneously-emitted marker token would otherwise leak raw
+        wire-format characters into the client's content stream
+        (codex r2 BLOCKING #1).
 
         Carve-out is strictly subtractive — only ids the tokenizer
         encodes a marker into as a single token AND that are already
@@ -729,6 +749,8 @@ class DiffusionEngine(BaseEngine):
         special = getattr(tokenizer, "all_special_ids", None) or []
         for sid in special:
             skip_ids.add(int(sid))
+        if not has_tools:
+            return skip_ids
         if self._profile is None:
             return skip_ids
         parser = self._profile.tool_call_parser
@@ -821,6 +843,7 @@ class DiffusionEngine(BaseEngine):
             prompt,
             max_tokens=max_tokens,
             temperature=temperature,
+            has_tools=bool(tools) and self.supports_tool_calls,
             **kwargs,
         ):
             yield chunk
@@ -830,6 +853,8 @@ class DiffusionEngine(BaseEngine):
         prompt: str,
         max_tokens: int,
         temperature: float,
+        *,
+        has_tools: bool = False,
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
         """Shared queue / cancel / stop-sequence plumbing for chat and
@@ -856,11 +881,18 @@ class DiffusionEngine(BaseEngine):
         # non-None.
         _sc = self._scheduler_config
         _prefill_step_size = getattr(_sc, "prefill_step_size", None) if _sc else None
+        # ``has_tools`` flows into the per-request skip_ids carve-out
+        # (codex r2 BLOCKING #1). Only flip True when the caller
+        # actually attached a tools array AND the engine reports it
+        # can surface them — both halves matter, because some
+        # frontends attach an empty list as the "I don't want tools"
+        # signal and we don't want to perturb skip_ids for those.
         cfg = DiffusionGenerationConfig(
             diffusion_steps=kwargs.get("diffusion_steps"),
             temperature=temperature,
             diffusion_sampler=kwargs.get("diffusion_sampler", "entropy-bound"),
             prefill_step_size=_prefill_step_size,
+            has_tools=has_tools,
         )
         loop = asyncio.get_running_loop()
         # Cancellation handle — set by the stream_chat finally clause
@@ -1248,7 +1280,15 @@ class DiffusionEngine(BaseEngine):
         ids = tokenizer.encode(prompt)
         input_ids = mx.array(ids)[None]
 
-        skip_ids = self._build_skip_special_token_ids(tokenizer)
+        # ``cfg.has_tools`` was set by ``stream_chat`` based on
+        # whether the originating request actually attached a tools
+        # array — gates the per-request tool-marker carve-out so
+        # plain chat requests keep filtering the markers (codex r2
+        # BLOCKING #1).
+        skip_ids = self._build_skip_special_token_ids(
+            tokenizer,
+            has_tools=cfg.has_tools,
+        )
 
         kwargs: dict[str, Any] = {
             "max_tokens": max_tokens,

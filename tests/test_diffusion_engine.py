@@ -1237,7 +1237,14 @@ class TestConcurrentRequests:
         gemma = DiffusionEngine(model_name="diffusion-gemma-26b")
         assert gemma.supports_tool_calls is True
 
-        skip_ids = gemma._build_skip_special_token_ids(_ToolAwareTokenizer())
+        # codex r2 BLOCKING #1: helper takes ``has_tools=True``
+        # (request actually attached a tools array) — the carve-out
+        # only fires under that flag. ``has_tools=False`` keeps the
+        # markers in the skip set; see the dedicated test below.
+        skip_ids = gemma._build_skip_special_token_ids(
+            _ToolAwareTokenizer(),
+            has_tools=True,
+        )
         # The unrelated special ids stay in the skip set (still
         # filtered from detokenize output).
         assert unrelated_special_ids.issubset(skip_ids)
@@ -1248,6 +1255,53 @@ class TestConcurrentRequests:
                 f"marker id {sid} ({marker_ids[sid]!r}) was not carved out"
             )
 
+    def test_build_skip_special_token_ids_keeps_markers_without_request_tools(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex r2 BLOCKING #1: even on a gemma4-aliased engine, plain
+        # non-tool chat requests MUST NOT carve the markers out of the
+        # skip set. ``routes/chat.py`` only invokes the gemma4 text
+        # parser when ``request.tools`` is set (line ~595), so a model
+        # that spontaneously emits a ``<|tool_call>`` token in a plain
+        # chat response would otherwise leak the raw wire characters
+        # into the client's content stream without any parser to
+        # interpret them.
+        _install_mlx_vlm_mock(monkeypatch)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        marker_ids = {
+            46: "<|tool>",
+            47: "<tool|>",
+            48: "<|tool_call>",
+            49: "<tool_call|>",
+            52: '<|"|>',
+        }
+        unrelated_special_ids = {0, 1, 2}
+
+        class _ToolAwareTokenizer:
+            all_special_ids = list(unrelated_special_ids | set(marker_ids))
+
+            def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+                for sid, marker in marker_ids.items():
+                    if text == marker:
+                        return [sid]
+                return [hash(text) % 1000 + 1000]
+
+        gemma = DiffusionEngine(model_name="diffusion-gemma-26b")
+        assert gemma.supports_tool_calls is True
+
+        # ``has_tools`` defaults to False — non-tool requests take
+        # this branch. Markers stay in the skip set.
+        skip_ids = gemma._build_skip_special_token_ids(_ToolAwareTokenizer())
+        assert set(marker_ids).issubset(skip_ids)
+        assert unrelated_special_ids.issubset(skip_ids)
+        # Explicit False (request-side gate) is the same as default.
+        skip_ids_explicit = gemma._build_skip_special_token_ids(
+            _ToolAwareTokenizer(),
+            has_tools=False,
+        )
+        assert skip_ids == skip_ids_explicit
+
     def test_build_skip_special_token_ids_keeps_markers_without_parser(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1256,26 +1310,58 @@ class TestConcurrentRequests:
         # the skip set — there's no downstream parser to receive
         # them, and surfacing raw ``<|tool_call>`` tokens to plain
         # chat clients would corrupt the conversation transcript.
+        #
+        # codex r2 BLOCKING #4 hardening: the tokenizer mirrors the
+        # positive case's marker mapping (encode resolves each wire
+        # marker string back to its single-token id) so this
+        # assertion would actually catch a regression where the parser
+        # gate was accidentally removed. Without the mapping, the
+        # helper's encode-then-check-single-id guard would never fire
+        # and a broken implementation could pass anyway.
         _install_mlx_vlm_mock(monkeypatch)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
-        marker_ids = {46, 47, 48, 49, 52}
+        marker_ids = {
+            46: "<|tool>",
+            47: "<tool|>",
+            48: "<|tool_call>",
+            49: "<tool_call|>",
+            52: '<|"|>',
+        }
         unrelated_special_ids = {0, 1, 2}
 
         class _BareTokenizer:
-            all_special_ids = list(unrelated_special_ids | marker_ids)
+            all_special_ids = list(unrelated_special_ids | set(marker_ids))
 
             def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+                # Mirror the positive case: marker strings resolve to
+                # their single-token id; everything else hashes to a
+                # non-special id.
+                for sid, marker in marker_ids.items():
+                    if text == marker:
+                        return [sid]
                 return [hash(text) % 1000 + 1000]
 
         # Bare HF path → no profile → supports_tool_calls False →
-        # helper does NOT carve out anything.
+        # helper does NOT carve out anything regardless of tokenizer
+        # cooperativeness.
         bare = DiffusionEngine(model_name="some/no-alias-hf-path")
         assert bare.supports_tool_calls is False
 
-        skip_ids = bare._build_skip_special_token_ids(_BareTokenizer())
-        # All special ids (including the marker ids) stay skipped.
-        assert marker_ids.issubset(skip_ids)
+        # Strong assertion: even passing ``has_tools=True`` (simulating
+        # an upstream that forgot to gate on the engine's
+        # ``supports_tool_calls`` flag) must NOT carve markers out of
+        # a parser-less profile. The bare HF path has no parser, so
+        # there's no downstream consumer of the raw markers; surfacing
+        # them would only damage the conversation transcript.
+        skip_ids = bare._build_skip_special_token_ids(
+            _BareTokenizer(),
+            has_tools=True,
+        )
+        # All special ids (including the marker ids) stay skipped —
+        # confirmed even when the tokenizer encode roundtrip would
+        # have let the carve-out fire under a broken implementation.
+        assert set(marker_ids).issubset(skip_ids)
         assert unrelated_special_ids.issubset(skip_ids)
 
     def test_engine_opts_out_blocks_tool_choice_required_even_with_parser(
