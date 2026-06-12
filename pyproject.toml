@@ -36,7 +36,8 @@ dependencies = [
     "tokenizers>=0.19.0",
     "huggingface-hub>=0.23.0",
     "numpy>=1.24.0",
-    "pillow>=10.0.0",
+    # pillow is opt-in via [vision] extras — only the MLLM paths (mllm.py,
+    # benchmark.py image mode) touch PIL, and mlx-vlm requires it anyway.
     "tqdm>=4.66.0",
     "pyyaml>=6.0",
     "requests>=2.28.0",
@@ -84,6 +85,9 @@ vision = [
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
+    # vllm_mlx imports PIL directly on vision paths (mllm.py, benchmark.py
+    # image mode); mlx-vlm requires it too — listed for explicitness.
+    "pillow>=10.0.0",
 ]
 # DFlash speculative decoding for Qwen3.5/3.6 dense 8-bit models
 # (issue #264). Adds ~1-4 GB at runtime (drafter weights) and depends on
@@ -111,6 +115,7 @@ all = [
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
+    "pillow>=10.0.0",
     # chat
     "gradio>=4.0.0",
     "pytz>=2024.1",
