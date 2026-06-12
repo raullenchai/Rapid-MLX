@@ -763,9 +763,9 @@
     "suffix_decoding_tier": "unknown"
   },
   "diffusion-gemma-26b": {
-    "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-4bit",
+    "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-8bit",
     "modality": "text-diffusion",
-    "tool_call_parser": null,
+    "tool_call_parser": "gemma4",
     "reasoning_parser": null,
     "is_hybrid": true,
     "is_moe": true,

@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..engine.base import BaseEngine, GenerationOutput
+from ..model_aliases import resolve_profile
 
 logger = logging.getLogger(__name__)
 
@@ -183,16 +184,16 @@ class DiffusionEngine(BaseEngine):
     the route layer, not here.
     """
 
-    # Engine-level capability bit consulted by ``routes/chat.py``'s
-    # ``_engine_supports_channel_routed_tool_calls`` probe. The
-    # DiffusionGemma generator emits a free-form denoised canvas with
-    # no tool-call channel — even though its tokenizer would trip the
-    # Gemma 4 channel-routed allowlist, the actual engine path never
-    # runs OutputRouter and always emits ``channel="content"``. Without
-    # this bit, ``tool_choice="required"`` would silently slip past
-    # the streaming-required gate and finish with plain text instead
-    # of 422'ing upfront (codex round 9 [P2]).
-    supports_tool_calls: bool = False
+    # DiffusionGemma emits tool calls as inline wire markers
+    # (``<|tool_call>call:NAME{...}<tool_call|>``) in a free-form
+    # canvas — NOT through an OutputRouter channel. ``routes/chat.py``
+    # extracts them post-generation via the alias's
+    # ``tool_call_parser="gemma4"`` (text-parser path), so this bit
+    # must be True for that path to activate. The complementary
+    # ``_engine_supports_channel_routed_tool_calls`` probe in chat.py
+    # still returns False for this engine because the channel-routed
+    # surface (Harmony / OutputRouter) is genuinely absent.
+    supports_tool_calls: bool = True
 
     def __init__(
         self,
@@ -207,6 +208,15 @@ class DiffusionEngine(BaseEngine):
         self._processor: Any = None
         self._loaded = False
         self._load_error: BaseException | None = None
+        # Resolve alias profile so the engine can branch on per-alias
+        # routing knobs (e.g. ``tool_call_parser="gemma4"`` opts the
+        # detokenize path into preserving tool-call wire markers so
+        # routes/chat.py can extract structured ``tool_calls`` from
+        # the canvas text). ``resolve_profile`` accepts both alias
+        # names and bare HF paths via its reverse-index; returns None
+        # only for HF paths not referenced by any alias entry, in
+        # which case the engine falls back to the no-tool default.
+        self._profile = resolve_profile(model_name)
         # Admission control mirrors BatchedEngine.check_admission —
         # reservations counter under a lock, BackpressureError raised
         # when the configured ``max_concurrent_requests`` is reached.
@@ -632,38 +642,14 @@ class DiffusionEngine(BaseEngine):
         enable_thinking: bool | None = None,
     ) -> str:
         self._ensure_loaded()
+        template_kwargs: dict[str, Any] = {
+            "tokenize": False,
+            "add_generation_prompt": True,
+        }
         if tools:
-            # DiffusionGemma's generator emits a free-form denoised
-            # canvas — no function-call grammar, no tool-name decoding
-            # path. Early versions raised here, but Big-AGI (and other
-            # OpenAI-compatible frontends) attach their built-in tools
-            # to every chat request even when the user didn't intend a
-            # tool invocation, which turned the very first message into
-            # an opaque 500. The OpenAI contract treats a model that
-            # never emits tool calls as still serviceable for plain
-            # chat, so we follow that shape: drop the tools list and
-            # log a warning so the operator can see it happen.
-            #
-            # ``tool_choice="required"`` is a stricter contract — the
-            # caller is asserting "you MUST emit a tool call" and
-            # cannot be satisfied. routes/chat.py post-parses the
-            # generated text and 422s when ``required`` was set and no
-            # tool_calls came back, so the contract violation surfaces
-            # to the client without us needing to special-case it
-            # here.
-            logger.warning(
-                "DiffusionEngine dropped %d tool(s) — model has no "
-                "function-call grammar; chat continues without them.",
-                len(tools),
-            )
-        # ``apply_chat_template`` returns either a string or a list of
-        # token IDs depending on tokenize=. We want the rendered text
-        # for build_prompt's contract; the tokenization happens inside
-        # stream_chat right before we hand off to mlx-vlm.
+            template_kwargs["tools"] = tools
         return self._processor.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
+            messages, **template_kwargs,
         )
 
     def estimate_new_tokens(self, prompt: str) -> tuple[int, int]:
@@ -1175,6 +1161,31 @@ class DiffusionEngine(BaseEngine):
         special = getattr(tokenizer, "all_special_ids", None) or []
         for sid in special:
             skip_ids.add(int(sid))
+
+        # When the alias declares the ``gemma4`` text-parser path, the
+        # canvas must surface the tool-call wire markers verbatim —
+        # ``<|tool_call>call:NAME{...}<tool_call|>`` and the inner
+        # string-quote marker ``<|"|>`` — so routes/chat.py can extract
+        # ``tool_calls`` post-generation. These tokens otherwise land in
+        # ``all_special_ids`` and get filtered by mlx-vlm's detokenizer,
+        # which strips the call invisible and reduces the tool request
+        # to plain prose. Drop them from the skip set.
+        if self._profile is not None and self._profile.tool_call_parser == "gemma4":
+            for token in (
+                "<|tool_call>",
+                "<tool_call|>",
+                '<|"|>',
+                "<|tool>",
+                "<tool|>",
+            ):
+                try:
+                    token_ids = tokenizer.encode(
+                        token, add_special_tokens=False,
+                    )
+                except TypeError:
+                    token_ids = tokenizer.encode(token)
+                if len(token_ids) == 1 and int(token_ids[0]) in skip_ids:
+                    skip_ids.discard(int(token_ids[0]))
 
         kwargs: dict[str, Any] = {
             "max_tokens": max_tokens,
