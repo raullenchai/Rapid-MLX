@@ -54,15 +54,21 @@ class FakeTokenizer:
 
     stopping_criteria = _StoppingCriteria()
 
+    last_tools: list[dict] | None = None
+
     def apply_chat_template(
         self,
         messages: list[dict[str, Any]],
         tokenize: bool = False,
         add_generation_prompt: bool = True,
+        tools: list[dict] | None = None,
     ) -> str:
         # Concatenate the user turns; good enough for a deterministic
         # prompt fingerprint inside the test.
         rendered = "\n".join(m.get("content", "") for m in messages)
+        if tools:
+            rendered = "TOOLS=" + ",".join(t.get("name", "?") for t in tools) + "\n" + rendered
+        FakeTokenizer.last_tools = tools
         if add_generation_prompt:
             rendered += "\n<start_of_turn>model\n"
         return rendered
@@ -208,33 +214,36 @@ class TestPromptAndTokenAccounting:
         assert "Hello there" in rendered
         assert rendered.endswith("model\n")
 
-    def test_build_prompt_silently_drops_tools_with_warning(
+    def test_build_prompt_forwards_tools_to_template(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # OpenAI-compatible frontends (Big-AGI, BCG, etc.) attach a
-        # built-in tools list to every chat request even when the user
-        # has not invoked a tool. We dropped the hard-reject so the
-        # very first chat doesn't 500; the warning lets the operator
-        # observe the drop in serve logs.
+        # Tools are now forwarded to ``apply_chat_template`` so the
+        # Gemma 4 chat template renders the function declarations into
+        # the prompt. routes/chat.py then runs the gemma4 text parser
+        # against the canvas output to recover structured ``tool_calls``.
         _install_mlx_vlm_mock(monkeypatch)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
+        FakeTokenizer.last_tools = None
         with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
             rendered = engine.build_prompt(
                 [{"role": "user", "content": "Hello there"}],
                 tools=[{"name": "foo"}, {"name": "bar"}, {"name": "baz"}],
             )
-        # Prompt still rendered cleanly — chat surface keeps working.
         assert "Hello there" in rendered
         assert rendered.endswith("model\n")
-        # Exactly one warning, with the tool count and a clear message.
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert len(warnings) == 1, [r.message for r in warnings]
-        assert "dropped 3 tool" in warnings[0].getMessage()
+        # ``tools`` reached the underlying chat template (FakeTokenizer
+        # records the last list it saw) and the rendered prompt carries
+        # the function names — both halves of the contract.
+        assert FakeTokenizer.last_tools is not None
+        assert [t["name"] for t in FakeTokenizer.last_tools] == ["foo", "bar", "baz"]
+        assert "TOOLS=foo,bar,baz" in rendered
+        # No "dropped tools" warning — the v0.7.1 fallback is gone.
+        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
     def test_build_prompt_no_warning_when_tools_absent(
         self,
@@ -344,20 +353,19 @@ class TestStreamChatBlockCollapse:
         assert collected[-1].finish_reason == "stop"
 
     @pytest.mark.asyncio
-    async def test_stream_chat_with_tools_completes_normally(
+    async def test_stream_chat_forwards_tools_to_template(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         # Direct stream_chat invocation with a tools payload must
-        # (a) not crash, (b) silently drop tools, and (c) emit the
-        # documented warning EXACTLY once. Pre-pr_validate r5,
-        # stream_chat called ``build_prompt(messages)`` without
-        # tools, so direct engine callers got neither the drop nor
-        # the warning — only the route layer's upfront build_prompt
-        # call would log it. This test pins both the streaming-
-        # correctness and the warning-visibility contracts for
-        # callers that bypass the route layer.
+        # (a) not crash, (b) forward ``tools`` through build_prompt
+        # to ``apply_chat_template`` so the model sees the function
+        # declarations, and (c) emit no "dropped" warning (the
+        # v0.7.1 fallback that silently swallowed tools is gone).
+        # routes/chat.py recovers structured ``tool_calls`` via the
+        # alias's ``tool_call_parser`` text parser; the engine just
+        # has to surface the rendered prompt and the canvas tokens.
         yields = [
             FakeGenerationResult(text="Hello ", diffusion_block_complete=True),
             FakeGenerationResult(text="world.", finish_reason="stop"),
@@ -367,6 +375,7 @@ class TestStreamChatBlockCollapse:
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
+        FakeTokenizer.last_tools = None
         collected = []
         with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
             async for out in engine.stream_chat(
@@ -378,16 +387,17 @@ class TestStreamChatBlockCollapse:
         # Stream completes normally with the model's text output.
         assert [c.new_text for c in collected] == ["Hello ", "world."]
         assert collected[-1].finish_reason == "stop"
-        # pr_validate r5 NIT contract: stream_chat MUST forward
-        # ``tools`` to build_prompt so the warning fires for direct
-        # engine callers too.
-        warnings = [
+        # ``tools`` reached the underlying chat template via
+        # build_prompt → apply_chat_template — the contract for
+        # callers that bypass routes/chat.py.
+        assert FakeTokenizer.last_tools is not None
+        assert [t["name"] for t in FakeTokenizer.last_tools] == ["web_search"]
+        # No "dropped tools" warning — the v0.7.1 fallback is gone.
+        assert [
             r
             for r in caplog.records
             if r.levelname == "WARNING" and "dropped" in r.getMessage()
-        ]
-        assert len(warnings) == 1, [r.getMessage() for r in warnings]
-        assert "dropped 1 tool" in warnings[0].getMessage()
+        ] == []
 
     @pytest.mark.asyncio
     async def test_route_layer_warning_fires_on_every_pass(
@@ -396,18 +406,12 @@ class TestStreamChatBlockCollapse:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         # Mimics the routes/chat.py contract: build_prompt is called
-        # once with the full tools list (line 691 in chat.py — the
-        # eager template validation), then stream_chat runs the
-        # generation. As of pr_validate r5, stream_chat ALSO forwards
-        # tools to its internal build_prompt call so direct engine
-        # callers see the warning — this means the route-layer flow
-        # now logs twice. The duplication is acceptable because the
-        # alternative (silently drop tools for direct callers) is
-        # exactly the visibility regression codex flagged. Operators
-        # who want one warning per request can move the upfront
-        # build_prompt call inside the routing layer behind a
-        # ``tools=None`` for diffusion engines; this test pins the
-        # current contract.
+        # once eagerly with the full tools list to validate the
+        # template, then stream_chat runs the generation (which
+        # internally re-renders via build_prompt). Both passes MUST
+        # forward ``tools`` to ``apply_chat_template`` so the model
+        # sees the function declarations on both renders. No "dropped
+        # tools" warning fires — that fallback is gone.
         yields = [
             FakeGenerationResult(text="ok.", finish_reason="stop"),
         ]
@@ -416,11 +420,21 @@ class TestStreamChatBlockCollapse:
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
+        FakeTokenizer.last_tools = None
         with caplog.at_level("WARNING", logger="vllm_mlx.runtime.diffusion_lane"):
-            engine.build_prompt(
+            rendered_eager = engine.build_prompt(
                 [{"role": "user", "content": "hi"}],
                 tools=[{"name": "web_search"}, {"name": "weather"}],
             )
+            # Eager pass forwarded the tools to the template.
+            assert FakeTokenizer.last_tools is not None
+            assert [t["name"] for t in FakeTokenizer.last_tools] == [
+                "web_search",
+                "weather",
+            ]
+            assert "TOOLS=web_search,weather" in rendered_eager
+            # Now reset and run stream_chat — it should also forward.
+            FakeTokenizer.last_tools = None
             collected = []
             async for out in engine.stream_chat(
                 [{"role": "user", "content": "hi"}],
@@ -428,13 +442,18 @@ class TestStreamChatBlockCollapse:
                 max_tokens=16,
             ):
                 collected.append(out)
-        warnings = [
+        # stream_chat's internal build_prompt forwarded tools too.
+        assert FakeTokenizer.last_tools is not None
+        assert [t["name"] for t in FakeTokenizer.last_tools] == [
+            "web_search",
+            "weather",
+        ]
+        # No "dropped tools" warning on either pass.
+        assert [
             r
             for r in caplog.records
             if r.levelname == "WARNING" and "dropped" in r.getMessage()
-        ]
-        assert len(warnings) == 2, [r.getMessage() for r in warnings]
-        assert all("dropped 2 tool" in w.getMessage() for w in warnings)
+        ] == []
         # And the stream still produced its output.
         assert collected[-1].new_text == "ok."
 
@@ -1135,22 +1154,25 @@ class TestConcurrentRequests:
         assert engine._worker is None, "Worker started in __init__"
         assert engine._load_error is None, "Load attempted in __init__ (load_error set)"
 
-    def test_supports_tool_calls_attribute_is_false(
+    def test_supports_tool_calls_attribute_is_true(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Codex round 9 [P2]: DiffusionEngine MUST declare
-        # supports_tool_calls = False so the route's
-        # _engine_supports_channel_routed_tool_calls probe doesn't
-        # let tool_choice="required" stream=true requests slip
-        # through (DiffusionGemma's tokenizer would otherwise trip
-        # the Gemma 4 channel-routed allowlist even though the
-        # engine path never runs OutputRouter).
+        # DiffusionGemma emits tool calls as inline wire markers
+        # (``<|tool_call>call:NAME{...}<tool_call|>``) on the same
+        # canvas as plain content — NOT through an OutputRouter
+        # channel. routes/chat.py recovers them post-generation via
+        # the alias's ``tool_call_parser="gemma4"`` text parser, which
+        # only fires when ``supports_tool_calls=True``. The
+        # complementary channel-routed probe in chat.py
+        # (``_engine_supports_channel_routed_tool_calls``) still
+        # returns False because the engine never runs OutputRouter,
+        # so streaming-required-mode tool_choice still 422s upfront.
         _install_mlx_vlm_mock(monkeypatch)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
-        assert engine.supports_tool_calls is False
-        assert DiffusionEngine.supports_tool_calls is False
+        assert engine.supports_tool_calls is True
+        assert DiffusionEngine.supports_tool_calls is True
 
     def test_engine_opts_out_blocks_tool_choice_required_even_with_parser(
         self,
@@ -1943,7 +1965,8 @@ class TestAliasIntegration:
         assert profile.modality == "text-diffusion"
         assert profile.supports_spec_decode is False
         assert profile.supports_dflash is False
-        assert profile.hf_path == "mlx-community/diffusiongemma-26B-A4B-it-4bit"
+        assert profile.hf_path == "mlx-community/diffusiongemma-26B-A4B-it-8bit"
+        assert profile.tool_call_parser == "gemma4"
 
 
 class TestStopRace:
