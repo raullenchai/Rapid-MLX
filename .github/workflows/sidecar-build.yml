@@ -1,0 +1,244 @@
+name: Sidecar build
+
+# Produces the rapid-mlx sidecar artifact that rapid-desktop stages
+# under Rapid.app/Contents/Resources/rapid-mlx/ before codesigning the
+# .app shell. Output: signed tar.gz uploaded to a GitHub Release tagged
+# `sidecar-v<rapid-mlx-version>-<build-N>`.
+#
+# Triggered by:
+#   * push of a tag matching sidecar-v*
+#   * manual workflow_dispatch with optional version override
+#
+# Required repo secrets (set under raullenchai/Rapid-MLX → Settings →
+# Secrets and variables → Actions):
+#   APPLE_DEVELOPER_ID_APP    "Developer ID Application: Name (TEAMID)"
+#                             Used as the codesign --sign identity.
+#   APPLE_SIGNING_CERTIFICATE Base64-encoded .p12 of the Developer ID
+#                             Application certificate + private key.
+#   APPLE_SIGNING_PASSWORD    Password unlocking the .p12.
+#
+# If any secret is missing, the workflow builds the bundle but skips
+# codesigning + GitHub Release upload, so PR runs from forks complete
+# without needing the certificate.
+
+on:
+  push:
+    tags:
+      - 'sidecar-v*'
+  pull_request:
+    # Run on PRs that touch sidecar plumbing so we catch breakage before
+    # tagging a release (codex r1 NIT).
+    paths:
+      - 'scripts/build-sidecar.sh'
+      - 'scripts/sidecar-shim.sh'
+      - 'scripts/sidecar-entitlements.plist'
+      - '.github/workflows/sidecar-build.yml'
+  workflow_dispatch:
+    inputs:
+      tag_suffix:
+        description: 'Suffix appended to sidecar-v<rapid-mlx-version> for the release tag (e.g. "test" → sidecar-v0.7.3-test)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    name: Build sidecar (arm64)
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write  # for creating the GitHub Release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify runner is arm64
+        run: |
+          test "$(uname -m)" = "arm64" || {
+            echo "::error::This workflow requires an arm64 runner (mlx is Apple Silicon only)."
+            exit 1
+          }
+
+      - name: Read rapid-mlx version
+        id: version
+        run: |
+          # pyproject.toml is the source of truth; Phase 5 in CI must
+          # round-trip this through the desktop release-notes pipeline.
+          PYVER=$(python3 -c "import tomllib,sys; print(tomllib.loads(open('pyproject.toml','rb').read().decode())['project']['version'])")
+          SUFFIX="${{ github.event.inputs.tag_suffix }}"
+          if [ -n "$SUFFIX" ]; then
+            TAG="sidecar-v${PYVER}-${SUFFIX}"
+          else
+            TAG="sidecar-v${PYVER}"
+          fi
+          echo "rapid_mlx_version=$PYVER" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag will be: $TAG"
+
+      - name: Set up Python 3.12 (host driver for pip install)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache python-build-standalone download
+        uses: actions/cache@v4
+        with:
+          path: /tmp/rapid-pbs-*.tar.gz
+          # PBS_TAG inside build-sidecar.sh is the source of truth.
+          # When we bump it there, the next run misses cache cleanly.
+          key: pbs-20260610
+
+      - name: Detect codesigning secrets
+        id: codesign
+        run: |
+          if [ -n "${{ secrets.APPLE_DEVELOPER_ID_APP }}" ] \
+             && [ -n "${{ secrets.APPLE_SIGNING_CERTIFICATE }}" ] \
+             && [ -n "${{ secrets.APPLE_SIGNING_PASSWORD }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Codesigning secrets not configured — bundle will be unsigned. Suitable for PR/test runs only."
+          fi
+
+      - name: Import Developer ID Application certificate
+        id: import_cert
+        if: steps.codesign.outputs.available == 'true'
+        env:
+          CERT_B64: ${{ secrets.APPLE_SIGNING_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.APPLE_SIGNING_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/sidecar.keychain-db"
+          echo "keychain_path=$KEYCHAIN" >> "$GITHUB_OUTPUT"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$CERT_B64" | base64 -d > "$CERT_PATH"
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Prepend our keychain so codesign sees the cert first.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$CERT_PATH"
+
+      - name: Build sidecar bundle (signed)
+        if: steps.codesign.outputs.available == 'true'
+        env:
+          DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID_APP }}
+        run: |
+          scripts/build-sidecar.sh \
+            --out build/sidecar-stage \
+            --developer-id "$DEVELOPER_ID"
+
+      - name: Build sidecar bundle (unsigned — PR / test runs)
+        if: steps.codesign.outputs.available != 'true'
+        run: |
+          scripts/build-sidecar.sh \
+            --out build/sidecar-stage \
+            --skip-codesign
+
+      - name: Upload artifact for downstream jobs (signed builds only)
+        # codex r2 B5: do NOT upload artifacts on pull_request runs.
+        # The PR-trigger build executes against the PR's branch code,
+        # which on a fork could be malicious. Uploading a downloadable
+        # `rapid-mlx-sidecar.tar.gz` named exactly like the real release
+        # asset is a supply-chain confusion hazard even when unsigned,
+        # because the bundle's entitlements plist ships the JIT +
+        # library-validation-disabled keys that the host Rapid.app
+        # honors at dlopen time. PR runs only need to prove the build
+        # script + packaging path don't break; we don't need the
+        # artifact downloadable.
+        if: github.event_name != 'pull_request' && steps.codesign.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapid-mlx-sidecar-${{ steps.version.outputs.rapid_mlx_version }}
+          path: |
+            build/sidecar-stage/rapid-mlx-sidecar.tar.gz
+            build/sidecar-stage/rapid-mlx-sidecar.sha256
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Create GitHub Release (signed builds only)
+        # codex r2 B6: belt-and-suspenders. Today codesign secrets are
+        # never injected on fork pull_request runs, so the codesign
+        # gate alone blocks Release. But a future maintainer adding
+        # environment-protected secrets could silently enable this
+        # step on PR runs — adding an explicit pull_request veto here
+        # makes the security invariant non-bypassable by accident.
+        if: |
+          github.event_name != 'pull_request' &&
+          steps.codesign.outputs.available == 'true' &&
+          (startsWith(github.ref, 'refs/tags/sidecar-v') || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.release_tag }}"
+          PYVER="${{ steps.version.outputs.rapid_mlx_version }}"
+          SHA256="$(cat build/sidecar-stage/rapid-mlx-sidecar.sha256)"
+          NOTES_FILE="$(mktemp)"
+          cat > "$NOTES_FILE" <<EOF
+          # rapid-mlx sidecar bundle
+
+          Pre-built rapid-mlx ${PYVER} with embedded Python 3.12.13 and all
+          runtime dependencies. Designed to be staged inside
+          \`Rapid.app/Contents/Resources/rapid-mlx/\` by the rapid-desktop
+          release workflow.
+
+          ## Asset
+
+          - \`rapid-mlx-sidecar.tar.gz\` — extract into your Rapid.app
+            Contents/Resources/. Codesigned with Developer ID; entitlements
+            include \`allow-jit\`, \`disable-library-validation\`,
+            \`allow-unsigned-executable-memory\`.
+          - \`rapid-mlx-sidecar.sha256\` — SHA-256 of the tarball.
+
+          ## Verification
+
+          \`\`\`
+          shasum -a 256 rapid-mlx-sidecar.tar.gz
+          # expected: ${SHA256}
+          \`\`\`
+
+          ## Compatibility
+
+          - macOS 14+
+          - Apple Silicon (arm64) only — mlx requires M-series hardware.
+          - No system Python required at runtime.
+          EOF
+
+          # Check whether the release already exists (re-run case).
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG exists — uploading assets (overwrites on collision)"
+            gh release upload "$TAG" \
+              build/sidecar-stage/rapid-mlx-sidecar.tar.gz \
+              build/sidecar-stage/rapid-mlx-sidecar.sha256 \
+              --clobber
+          else
+            gh release create "$TAG" \
+              build/sidecar-stage/rapid-mlx-sidecar.tar.gz \
+              build/sidecar-stage/rapid-mlx-sidecar.sha256 \
+              --title "rapid-mlx sidecar $PYVER" \
+              --notes-file "$NOTES_FILE"
+          fi
+
+      - name: Clean up signing keychain
+        # codex r1 B4: matter most on self-hosted runners (GitHub-hosted
+        # macos-15 runners get nuked anyway, but defense-in-depth + this
+        # workflow may run on self-hosted later). `if: always()` is
+        # required so we still tear down the keychain when codesign or
+        # smoke fail.
+        if: always() && steps.import_cert.outcome != 'skipped'
+        run: |
+          KEYCHAIN="${{ steps.import_cert.outputs.keychain_path }}"
+          if [ -n "$KEYCHAIN" ] && [ -f "$KEYCHAIN" ]; then
+            security delete-keychain "$KEYCHAIN" || true
+          fi
+          # Best-effort: remove cert .p12 if a previous step left it.
+          rm -f "$RUNNER_TEMP/cert.p12" || true

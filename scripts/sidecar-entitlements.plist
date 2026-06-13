@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+    Entitlements applied to every Mach-O inside the rapid-mlx sidecar
+    bundle. Must match Rapid.app's outer entitlements exactly — when
+    the bundle is staged into Rapid.app/Contents/Resources/rapid-mlx/
+    Apple's library-validation check compares each .so's entitlements
+    against the host process's entitlements.
+
+    Empirically validated during Phase 2 spike on 2026-06-13. All
+    three are required; dropping any one breaks dlopen or Metal JIT.
+
+    See docs/sidecar-bundle-build.md for the Phase 2 spike report.
+    -->
+
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>
