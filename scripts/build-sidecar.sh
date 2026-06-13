@@ -113,6 +113,17 @@ mkdir -p "$OUT_DIR"
 # `./build/sidecar-stage/rapid-mlx-sidecar.tar.gz` from inside its own
 # target directory and fail with "no such file or directory".
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+
+# Belt-and-suspenders (codex r3 N5): if the absolutise step above ever
+# silently produced an empty OUT_DIR (impossible under set -e for the
+# realistic failure modes, but the consequence of getting it wrong is
+# `rm -rf "/rapid-mlx"` two lines down — same family as the famous
+# Steam shell-script bug). Guard explicitly.
+if [ -z "$OUT_DIR" ] || [ ! -d "$OUT_DIR" ]; then
+    echo "ERR: OUT_DIR resolution produced an invalid path: '$OUT_DIR'" >&2
+    exit 1
+fi
+
 STAGE="${OUT_DIR}/rapid-mlx"
 
 rm -rf "$STAGE"
@@ -284,13 +295,23 @@ else
     }
     echo "    mlx import: $IMPORT_OUT"
 
-    METAL_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    # codex r3 B1: capture inside an `if` instead of separate
+    # `X=$(...); RC=$?` lines — under `set -e`, a command-substitution
+    # assignment that exits non-zero aborts the script BEFORE the
+    # `$?` capture runs, making the soft-skip branch below dead code.
+    # `if X="$(...)" ; then` lets `set -e` see the explicit guard and
+    # falls through normally on both success and failure.
+    METAL_RC=0
+    if METAL_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
         "$STAGE/python/bin/python3.12" -s -c \
-        'import mlx.core as mx; mx.eval(mx.zeros((4,4))); print("ok")' 2>&1)"
-    METAL_RC=$?
+        'import mlx.core as mx; mx.eval(mx.zeros((4,4))); print("ok")' 2>&1)"; then
+        METAL_RC=0
+    else
+        METAL_RC=$?
+    fi
     if [ "$METAL_RC" -eq 0 ]; then
         echo "    mlx Metal JIT: OK"
     elif [ -n "${CI:-}" ]; then
