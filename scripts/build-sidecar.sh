@@ -157,13 +157,31 @@ chmod +x "$STAGE/bin/rapid-mlx"
 
 echo "==> enumerating Mach-Os"
 MACHOS_LIST="$(mktemp)"
-trap 'rm -f "$MACHOS_LIST"' EXIT
+# Catch INT/TERM in addition to normal exit so Ctrl-C in interactive
+# runs doesn't leak the tmpfile (codex r1 NIT).
+trap 'rm -f "$MACHOS_LIST"' EXIT INT TERM
 {
     find "$STAGE" -type f \( -name '*.so' -o -name '*.dylib' \)
     echo "$STAGE/python/bin/python3.12"
 } > "$MACHOS_LIST"
 MACHO_COUNT="$(wc -l < "$MACHOS_LIST" | tr -d ' ')"
 echo "    found $MACHO_COUNT Mach-Os (baseline $MACHO_BASELINE_COUNT, tolerance $MACHO_TOLERANCE)"
+
+# Sanity guard (codex r1 B2): a partial pip install can leave us with
+# 30-50 Mach-Os instead of 77 and we'd report "drift" pointing the
+# operator at re-baselining when the real fix is reading the pip log.
+# Anything below half the baseline is almost certainly an install bug,
+# not a wheel-set evolution.
+MACHO_FLOOR=$(( MACHO_BASELINE_COUNT / 2 ))
+if [ "$MACHO_COUNT" -lt "$MACHO_FLOOR" ]; then
+    cat >&2 <<EOF
+ERR: only $MACHO_COUNT Mach-Os found (< floor $MACHO_FLOOR ≈ half baseline
+$MACHO_BASELINE_COUNT). This almost always means pip install above
+silently dropped wheels — re-read the pip output, do NOT bump
+MACHO_BASELINE_COUNT to paper over this.
+EOF
+    exit 1
+fi
 
 DIFF=$(( MACHO_COUNT - MACHO_BASELINE_COUNT ))
 ABS_DIFF=${DIFF#-}
@@ -193,7 +211,37 @@ else
     done < "$MACHOS_LIST"
 fi
 
-# ----- step 6: package --------------------------------------------------
+# ----- step 6: smoke test (codex r1 B1: BEFORE packaging) --------------
+#
+# Order matters: smoke must run BEFORE we package the tarball so a smoke
+# failure prevents the Upload artifact / Release upload steps from ever
+# seeing a bundle. Running smoke after packaging would still block the
+# release (set -e halts the workflow), but you'd waste minutes of CI
+# producing an artifact you immediately throw away.
+
+if [ "$SKIP_VERIFY" = "1" ]; then
+    echo "==> SKIPPING smoke (--skip-verify)"
+else
+    echo "==> smoke test (env-stripped, no system Python)"
+    SMOKE_OUT="$(env -i HOME="$HOME" PATH=/usr/bin:/bin \
+        "$STAGE/bin/rapid-mlx" --version 2>&1)" || {
+        echo "ERR: bundle --version failed:" >&2
+        echo "$SMOKE_OUT" >&2
+        exit 3
+    }
+    echo "    $SMOKE_OUT"
+
+    env -i HOME="$HOME" PATH=/usr/bin:/bin \
+        "$STAGE/python/bin/python3.12" -s -c \
+        'import mlx.core as mx; mx.eval(mx.zeros((4,4)))' \
+        > /dev/null 2>&1 || {
+        echo "ERR: bundled mlx import / Metal JIT failed" >&2
+        exit 3
+    }
+    echo "    mlx import + Metal JIT: OK"
+fi
+
+# ----- step 7: package --------------------------------------------------
 
 TARBALL="${OUT_DIR}/rapid-mlx-sidecar.tar.gz"
 echo "==> packaging $TARBALL"
@@ -205,30 +253,5 @@ TAR_SIZE="$(du -sh "$TARBALL" | cut -f1)"
 echo "==> raw bundle:    $RAW_SIZE"
 echo "==> tarball:       $TAR_SIZE  ($TARBALL)"
 echo "==> sha256:        $(cat "${OUT_DIR}/rapid-mlx-sidecar.sha256")"
-
-# ----- step 7: smoke test ----------------------------------------------
-
-if [ "$SKIP_VERIFY" = "1" ]; then
-    echo "==> SKIPPING smoke (--skip-verify)"
-    exit 0
-fi
-
-echo "==> smoke test (env-stripped, no system Python)"
-SMOKE_OUT="$(env -i HOME="$HOME" PATH=/usr/bin:/bin \
-    "$STAGE/bin/rapid-mlx" --version 2>&1)" || {
-    echo "ERR: bundle --version failed:" >&2
-    echo "$SMOKE_OUT" >&2
-    exit 3
-}
-echo "    $SMOKE_OUT"
-
-env -i HOME="$HOME" PATH=/usr/bin:/bin \
-    "$STAGE/python/bin/python3.12" -s -c \
-    'import mlx.core as mx; mx.eval(mx.zeros((4,4)))' \
-    > /dev/null 2>&1 || {
-    echo "ERR: bundled mlx import / Metal JIT failed" >&2
-    exit 3
-}
-echo "    mlx import + Metal JIT: OK"
 
 echo "==> sidecar build complete"

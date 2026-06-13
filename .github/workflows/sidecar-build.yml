@@ -25,6 +25,14 @@ on:
   push:
     tags:
       - 'sidecar-v*'
+  pull_request:
+    # Run on PRs that touch sidecar plumbing so we catch breakage before
+    # tagging a release (codex r1 NIT).
+    paths:
+      - 'scripts/build-sidecar.sh'
+      - 'scripts/sidecar-shim.sh'
+      - 'scripts/sidecar-entitlements.plist'
+      - '.github/workflows/sidecar-build.yml'
   workflow_dispatch:
     inputs:
       tag_suffix:
@@ -95,12 +103,14 @@ jobs:
           fi
 
       - name: Import Developer ID Application certificate
+        id: import_cert
         if: steps.codesign.outputs.available == 'true'
         env:
           CERT_B64: ${{ secrets.APPLE_SIGNING_CERTIFICATE }}
           CERT_PASSWORD: ${{ secrets.APPLE_SIGNING_PASSWORD }}
         run: |
           KEYCHAIN="$RUNNER_TEMP/sidecar.keychain-db"
+          echo "keychain_path=$KEYCHAIN" >> "$GITHUB_OUTPUT"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
@@ -199,3 +209,18 @@ jobs:
               --title "rapid-mlx sidecar $PYVER" \
               --notes-file "$NOTES_FILE"
           fi
+
+      - name: Clean up signing keychain
+        # codex r1 B4: matter most on self-hosted runners (GitHub-hosted
+        # macos-15 runners get nuked anyway, but defense-in-depth + this
+        # workflow may run on self-hosted later). `if: always()` is
+        # required so we still tear down the keychain when codesign or
+        # smoke fail.
+        if: always() && steps.import_cert.outcome != 'skipped'
+        run: |
+          KEYCHAIN="${{ steps.import_cert.outputs.keychain_path }}"
+          if [ -n "$KEYCHAIN" ] && [ -f "$KEYCHAIN" ]; then
+            security delete-keychain "$KEYCHAIN" || true
+          fi
+          # Best-effort: remove cert .p12 if a previous step left it.
+          rm -f "$RUNNER_TEMP/cert.p12" || true
