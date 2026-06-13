@@ -258,7 +258,16 @@ else
     # virtualized macos-15 runners that don't expose a Metal GPU);
     # then the Metal JIT eval which we make best-effort because GHA
     # macOS runners are virtualized and may lack working Metal.
+    #
+    # NOTE: must mirror sidecar-shim.sh env vars (PYTHONHOME +
+    # PYTHONPATH + PYTHONNOUSERSITE) — without them the bundled
+    # python3.12 can't find `mlx` in site-packages because the install
+    # used `pip --target site-packages/` which isn't on the default
+    # interpreter path.
     IMPORT_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+        PYTHONHOME="$STAGE/python" \
+        PYTHONPATH="$STAGE/site-packages" \
+        PYTHONNOUSERSITE=1 \
         "$STAGE/python/bin/python3.12" -s -c \
         'import mlx.core as mx; print("mlx", mx.__version__)' 2>&1)" || {
         echo "ERR: bundled mlx import failed (this is a hard bundling bug):" >&2
@@ -268,6 +277,9 @@ else
     echo "    mlx import: $IMPORT_OUT"
 
     METAL_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+        PYTHONHOME="$STAGE/python" \
+        PYTHONPATH="$STAGE/site-packages" \
+        PYTHONNOUSERSITE=1 \
         "$STAGE/python/bin/python3.12" -s -c \
         'import mlx.core as mx; mx.eval(mx.zeros((4,4))); print("ok")' 2>&1)"
     METAL_RC=$?
