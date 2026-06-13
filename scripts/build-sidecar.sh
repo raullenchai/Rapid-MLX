@@ -107,6 +107,14 @@ if [ "$ARCH" != "arm64" ]; then
 fi
 
 mkdir -p "$OUT_DIR"
+# Resolve to absolute so paths derived from $OUT_DIR survive the
+# `cd "$OUT_DIR"` we do later when invoking tar — otherwise a relative
+# `--out build/sidecar-stage` (CI passes this) makes tar look for
+# `./build/sidecar-stage/rapid-mlx-sidecar.tar.gz` from inside its own
+# target directory and fail with "no such file or directory".
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+STAGE="${OUT_DIR}/rapid-mlx"
+
 rm -rf "$STAGE"
 mkdir -p "$STAGE/bin"
 
