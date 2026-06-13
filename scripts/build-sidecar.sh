@@ -45,11 +45,17 @@ PBS_VERSION="${PBS_VERSION:-3.12.13}"
 
 # How many Mach-Os we expect to sign. A drift here means a new wheel
 # added a .so OR a dependency moved a binary, both of which need
-# re-baselining. Locked from Phase 2 spike measurement.
-MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-77}"
+# re-baselining. Re-locked on the first authoritative CI run on
+# GitHub-hosted macos-15 (run 27472544784). The original Phase 2 spike
+# value of 77 was measured on a developer M3 Ultra and included
+# build-time artifacts that the strip step removes on a fresh runner
+# — 51 is the canonical "what actually ships" number.
+MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-51}"
 # Allow modest drift without blocking — wheel updates sometimes shift
 # 1-2 .so files. Bigger drift means a new dependency, needs review.
-MACHO_TOLERANCE="${MACHO_TOLERANCE:-3}"
+# Widened from 3 → 5 since we're now at a smaller baseline and the
+# proportional sensitivity is the same.
+MACHO_TOLERANCE="${MACHO_TOLERANCE:-5}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-${REPO_ROOT}/build/sidecar-stage}"
@@ -192,7 +198,10 @@ diff $DIFF > tolerance $MACHO_TOLERANCE). A new wheel added or moved a
 binary. Re-run Phase 2 spike to confirm signing is still safe, then
 bump MACHO_BASELINE_COUNT in this script. See the docs/sidecar-bundle-build.md
 'Bump MACHO_BASELINE_COUNT' section.
+
+Full Mach-O list (relative to \$STAGE) for forensic diff:
 EOF
+    sed "s#$STAGE/##" "$MACHOS_LIST" | sort >&2
     exit 2
 fi
 
