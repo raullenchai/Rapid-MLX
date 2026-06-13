@@ -173,12 +173,18 @@ trap 'rm -f "$MACHOS_LIST"' EXIT INT TERM
 MACHO_COUNT="$(wc -l < "$MACHOS_LIST" | tr -d ' ')"
 echo "    found $MACHO_COUNT Mach-Os (baseline $MACHO_BASELINE_COUNT, tolerance $MACHO_TOLERANCE)"
 
-# Sanity guard (codex r1 B2): a partial pip install can leave us with
-# 30-50 Mach-Os instead of 77 and we'd report "drift" pointing the
+# Sanity guard (codex r1 B2 + r2 N4): a partial pip install can leave us
+# with 30-50 Mach-Os instead of 77 and we'd report "drift" pointing the
 # operator at re-baselining when the real fix is reading the pip log.
 # Anything below half the baseline is almost certainly an install bug,
-# not a wheel-set evolution.
-MACHO_FLOOR=$(( MACHO_BASELINE_COUNT / 2 ))
+# not a wheel-set evolution. For very small baselines (test fixtures
+# overriding via env) we clamp the floor to baseline-2 so a 5-mach-o
+# baseline doesn't end up with a floor of 2 that masks real drops.
+if [ "$MACHO_BASELINE_COUNT" -gt 20 ]; then
+    MACHO_FLOOR=$(( MACHO_BASELINE_COUNT / 2 ))
+else
+    MACHO_FLOOR=$(( MACHO_BASELINE_COUNT - 2 ))
+fi
 if [ "$MACHO_COUNT" -lt "$MACHO_FLOOR" ]; then
     cat >&2 <<EOF
 ERR: only $MACHO_COUNT Mach-Os found (< floor $MACHO_FLOOR ≈ half baseline
@@ -232,7 +238,15 @@ if [ "$SKIP_VERIFY" = "1" ]; then
     echo "==> SKIPPING smoke (--skip-verify)"
 else
     echo "==> smoke test (env-stripped, no system Python)"
-    SMOKE_OUT="$(env -i HOME="$HOME" PATH=/usr/bin:/bin \
+    # codex r2 N1: use a throwaway HOME for the smoke so the JIT cache
+    # mlx writes (under HOME/Library/Caches/mlx) doesn't pollute the
+    # caller's real cache during interactive runs. CI has $HOME set;
+    # local devs running this script repeatedly should not see their
+    # personal mlx cache grow by a few KB each call.
+    SMOKE_HOME="$(mktemp -d -t rapid-sidecar-smoke.XXXXXX)"
+    trap 'rm -rf "$MACHOS_LIST" "$SMOKE_HOME"' EXIT INT TERM
+
+    SMOKE_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         "$STAGE/bin/rapid-mlx" --version 2>&1)" || {
         echo "ERR: bundle --version failed:" >&2
         echo "$SMOKE_OUT" >&2
@@ -240,7 +254,7 @@ else
     }
     echo "    $SMOKE_OUT"
 
-    env -i HOME="$HOME" PATH=/usr/bin:/bin \
+    env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         "$STAGE/python/bin/python3.12" -s -c \
         'import mlx.core as mx; mx.eval(mx.zeros((4,4)))' \
         > /dev/null 2>&1 || {

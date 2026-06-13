@@ -144,7 +144,18 @@ jobs:
             --out build/sidecar-stage \
             --skip-codesign
 
-      - name: Upload artifact for downstream jobs
+      - name: Upload artifact for downstream jobs (signed builds only)
+        # codex r2 B5: do NOT upload artifacts on pull_request runs.
+        # The PR-trigger build executes against the PR's branch code,
+        # which on a fork could be malicious. Uploading a downloadable
+        # `rapid-mlx-sidecar.tar.gz` named exactly like the real release
+        # asset is a supply-chain confusion hazard even when unsigned,
+        # because the bundle's entitlements plist ships the JIT +
+        # library-validation-disabled keys that the host Rapid.app
+        # honors at dlopen time. PR runs only need to prove the build
+        # script + packaging path don't break; we don't need the
+        # artifact downloadable.
+        if: github.event_name != 'pull_request' && steps.codesign.outputs.available == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: rapid-mlx-sidecar-${{ steps.version.outputs.rapid_mlx_version }}
@@ -155,7 +166,14 @@ jobs:
           if-no-files-found: error
 
       - name: Create GitHub Release (signed builds only)
+        # codex r2 B6: belt-and-suspenders. Today codesign secrets are
+        # never injected on fork pull_request runs, so the codesign
+        # gate alone blocks Release. But a future maintainer adding
+        # environment-protected secrets could silently enable this
+        # step on PR runs — adding an explicit pull_request veto here
+        # makes the security invariant non-bypassable by accident.
         if: |
+          github.event_name != 'pull_request' &&
           steps.codesign.outputs.available == 'true' &&
           (startsWith(github.ref, 'refs/tags/sidecar-v') || github.event_name == 'workflow_dispatch')
         env:
