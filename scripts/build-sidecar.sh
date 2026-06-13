@@ -254,14 +254,37 @@ else
     }
     echo "    $SMOKE_OUT"
 
-    env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    # Two-stage mlx smoke. First the import-only check (works in
+    # virtualized macos-15 runners that don't expose a Metal GPU);
+    # then the Metal JIT eval which we make best-effort because GHA
+    # macOS runners are virtualized and may lack working Metal.
+    IMPORT_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
         "$STAGE/python/bin/python3.12" -s -c \
-        'import mlx.core as mx; mx.eval(mx.zeros((4,4)))' \
-        > /dev/null 2>&1 || {
-        echo "ERR: bundled mlx import / Metal JIT failed" >&2
+        'import mlx.core as mx; print("mlx", mx.__version__)' 2>&1)" || {
+        echo "ERR: bundled mlx import failed (this is a hard bundling bug):" >&2
+        echo "$IMPORT_OUT" >&2
         exit 3
     }
-    echo "    mlx import + Metal JIT: OK"
+    echo "    mlx import: $IMPORT_OUT"
+
+    METAL_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+        "$STAGE/python/bin/python3.12" -s -c \
+        'import mlx.core as mx; mx.eval(mx.zeros((4,4))); print("ok")' 2>&1)"
+    METAL_RC=$?
+    if [ "$METAL_RC" -eq 0 ]; then
+        echo "    mlx Metal JIT: OK"
+    elif [ -n "${CI:-}" ]; then
+        # Best-effort on CI. GitHub-hosted macos-15 runners are
+        # virtualized and the Metal device may not be exposed; we
+        # don't want to fail the build for a runner-environment
+        # constraint. Real Metal exercise happens in rapid-desktop's
+        # post-notary smoke (Phase 5).
+        echo "    mlx Metal JIT: SKIPPED on CI (rc=$METAL_RC) — $METAL_OUT" >&2
+    else
+        echo "ERR: bundled mlx Metal JIT failed (local run, this is a real regression):" >&2
+        echo "$METAL_OUT" >&2
+        exit 3
+    fi
 fi
 
 # ----- step 7: package --------------------------------------------------
