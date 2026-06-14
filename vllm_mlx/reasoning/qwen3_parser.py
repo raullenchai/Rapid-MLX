@@ -31,14 +31,17 @@ from .think_parser import BaseThinkingReasoningParser
 # Scoped narrowly to **explicit scratchpad labels** — phrases that are
 # overwhelmingly unambiguous chain-of-thought preambles, identified by
 # (a) being known scratchpad nouns (``thinking process``, ``reasoning``,
-# ``chain-of-thought``, ``scratchpad``, ``analysis``, ``thought
-# process``) and (b) ending with a label punctuation (``:`` / newline
-# pair).  Conversational phrases like ``Let me think...`` or ``I need
+# ``chain-of-thought``, ``scratchpad``, ``thought process``,
+# ``reasoning process``) and (b) ending with a label punctuation
+# (``:``).  Conversational phrases like ``Let me think...`` or ``I need
 # to analyze...`` are NOT matched — they are common openers for direct
 # answers and would be misclassified when ``enable_thinking=False``
-# (codex r1 BLOCKING).  Match anchored at ``^\s*`` so a normal answer
-# that merely mentions a scratchpad noun mid-response is not
-# reclassified.
+# (codex r1 BLOCKING).  Bare ``Step by step:`` / ``Step-by-step:`` is
+# also NOT matched — that form is the canonical heading for a direct
+# answer to "explain step by step" and would clobber legitimate
+# tutorials / how-tos (codex r2 BLOCKING).  Match anchored at ``^\s*``
+# so a normal answer that merely mentions a scratchpad noun mid-
+# response is not reclassified.
 _BARE_THINK_PREFIX_RE = re.compile(
     r"^(?:\s*)"  # leading whitespace from the injected ``<think>\n``
     r"(?:"
@@ -51,13 +54,27 @@ _BARE_THINK_PREFIX_RE = re.compile(
     r"\s*:)"
     # "Thinking step by step:" / "Thinking out loud:" / etc. — only
     # the labelled scratchpad form (terminating ``:`` required).
+    # The bare ``Step by step:`` / ``Step-by-step:`` form is excluded
+    # because it is the canonical heading for direct "explain
+    # step-by-step" answers (tutorials, how-tos).
     r"|(?:Thinking\s+(?:step\s+by\s+step|out\s+loud|through(?:\s+this)?|"
     r"carefully|aloud)\s*:)"
-    r"|(?:(?:Step\s+by\s+step|Step-by-step)\s*:)"
     # "My thought process:" / "My reasoning process:" — scratchpad
     # label that requires ``:`` (e.g. NOT "My thought is that ...").
     r"|(?:My\s+(?:thought|reasoning)\s+process\s*:)"
     r")",
+    re.IGNORECASE,
+)
+
+# Tool-call markup detector used to suppress the bare-text fallback
+# when the model embedded a tool call inside what looks like a thinking
+# preamble. The fallback would otherwise echo the raw output (including
+# ``<tool_call>{...}`` markup) into ``reasoning_content`` — leaking the
+# tool tag the route's tool parser already stripped from ``content``.
+# Defer to the tool parser by skipping the bare-text branch instead.
+# (Codex r2 BLOCKING.)
+_TOOL_CALL_MARKUP_RE = re.compile(
+    r"<tool_call>|<function=|<\|tool_call\|>|<invoke\s|<minimax:tool_call>",
     re.IGNORECASE,
 )
 
@@ -68,10 +85,20 @@ def _looks_like_bare_think_preamble(text: str) -> bool:
     Used as a fallback signal when ``<think>`` was injected by the chat
     template into the prompt (so it is absent from the model output) and
     the model never emitted ``</think>`` before being truncated.
+
+    Returns False when ``text`` contains any tool-call markup so the
+    raw tool tags are not echoed into ``reasoning_content`` by the
+    fallback (codex r2 BLOCKING — the tool parser already stripped
+    them from ``content`` but the reasoning parser otherwise sees the
+    raw output unmodified).
     """
     if not text:
         return False
-    return _BARE_THINK_PREFIX_RE.match(text) is not None
+    if _BARE_THINK_PREFIX_RE.match(text) is None:
+        return False
+    if _TOOL_CALL_MARKUP_RE.search(text):
+        return False
+    return True
 
 
 class Qwen3ReasoningParser(BaseThinkingReasoningParser):
