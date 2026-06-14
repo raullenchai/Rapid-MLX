@@ -991,18 +991,22 @@ class StreamingPostProcessor:
         # Cheap pre-check: every known tool-call format carries at least
         # one structural marker — ``<`` (XML wrappers: ``<tool_call>``,
         # ``<function=>``, ``<|tool_call>``), ``{`` (bare JSON, parameter
-        # blocks), or ``[Calling`` (text-format degradation). Skipping the
+        # blocks), ``[Calling`` (text-format degradation), or ``[name(``
+        # (LFM pythonic bracket calls). Skipping the
         # full regex scan when none of these markers is present keeps
         # end-of-stream cost flat on plain-text responses that happened to
         # have ``tools=...`` in the request (DeepSeek pr_validate finding
         # on PR #424 — high-throughput servers with tool-enabled
         # endpoints would otherwise pay the parser cost on every reply
         # that didn't actually call a tool).
+        from ..tool_parsers.lfm_tool_parser import LFM_CALL_START
+
         _fallback_text = self.tool_accumulated_text or self.accumulated_text
         _has_plausible_markup = bool(_fallback_text) and (
             "<" in _fallback_text
             or "{" in _fallback_text
             or "[Calling" in _fallback_text
+            or LFM_CALL_START.search(_fallback_text) is not None
         )
         if (
             self.tool_parser

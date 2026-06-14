@@ -69,6 +69,7 @@ class ExtractedToolCallInformation:
 #                           xLAM, Llama JSON variant)
 #   calling_tool_text     — [Calling tool="name" k="v"]  text fallback for
 #                           low-quant degradation
+#   pythonic_bracket      — [func_name(arg="value"), ...]  (Liquid LFM)
 #   gemma4_native         — <|tool_call>call:name{k:v}<tool_call|>  (Gemma 4)
 #   harmony_commentary    — <|channel|>commentary to=functions.X<|message|>
 #                           {...}<|call|>  (GPT-OSS / Harmony)
@@ -90,6 +91,7 @@ WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
         "function_bare",
         "raw_json",
         "calling_tool_text",
+        "pythonic_bracket",
         "gemma4_native",
         "harmony_commentary",
         "mistral_tool_calls",
