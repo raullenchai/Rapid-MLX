@@ -280,3 +280,24 @@ class TestBareThinkingProcessLeakRegression:
         )
         assert reasoning is None
         assert cleaned == answer
+
+    def test_bare_thinking_preamble_with_tool_call_does_not_leak_markup(self):
+        # Codex r2 BLOCKING on PR #572: when the model embeds a tool
+        # call inside what looks like a thinking preamble, the bare-text
+        # fallback would otherwise echo the raw output (including
+        # ``<tool_call>`` markup) into ``reasoning_content`` because
+        # ``_finalize_content_and_reasoning`` calls
+        # ``extract_reasoning(raw_text)`` on the unstripped raw output
+        # when ``tool_calls`` is non-empty.
+        raw = (
+            "Here's a thinking process:\n\n"
+            "I need to call the weather tool.\n"
+            '<tool_call>\n{"name": "weather", "arguments": '
+            '{"city": "Seattle"}}\n</tool_call>'
+        )
+        content, tool_calls, reasoning = _drive_chat_route_pipeline(raw)
+        # Tool parser succeeded.
+        assert tool_calls and tool_calls[0]["name"] == "weather"
+        # Tool markup must not leak via either sink.
+        _assert_no_leak(content)
+        _assert_no_leak(reasoning)

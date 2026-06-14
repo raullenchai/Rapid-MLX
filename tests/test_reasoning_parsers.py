@@ -689,6 +689,9 @@ class TestQwen3:
         # deliberately NOT included — they're common direct-answer
         # openers when ``enable_thinking=False`` and matching them would
         # blank out valid responses (codex r1 BLOCKING on PR #572).
+        # ``Step by step:`` / ``Step-by-step:`` are also deliberately
+        # NOT included — that bare form is the canonical heading for
+        # direct "explain step by step" answers (codex r2 BLOCKING).
         for prefix in [
             "Here is my thinking process:",
             "Here's my reasoning:",
@@ -698,8 +701,6 @@ class TestQwen3:
             "Thinking step by step:",
             "Thinking out loud:",
             "Thinking through this:",
-            "Step by step:",
-            "Step-by-step:",
             "My thought process:",
             "My reasoning process:",
         ]:
@@ -716,7 +717,9 @@ class TestQwen3:
         # rerouted to ``reasoning_content`` — they are common answer
         # phrasings and clobbering them would leave the client with an
         # empty ``message.content``. Pinned per codex r1 BLOCKING on
-        # PR #572.
+        # PR #572. ``Step by step:`` / ``Step-by-step:`` added per
+        # codex r2 — that bare form is the canonical heading for direct
+        # "explain step by step" answers (tutorials, how-tos).
         for answer in [
             "Let me think about that — Portland is the best food stop.",
             "Let me analyze the options. The clear winner is San Francisco.",
@@ -727,12 +730,51 @@ class TestQwen3:
             "I should break this down: 1. Portland 2. San Francisco.",
             "Analyzing the user's request, the answer is Portland.",
             "Analyzing the question — the food capital is Portland.",
+            "Step by step:\n1. Drive south on I-5\n2. Stop in Portland",
+            "Step-by-step: first preheat the oven to 350F.",
         ]:
             reasoning, content = self.parser.extract_reasoning(answer)
             assert reasoning is None, (
                 f"ambiguous phrase misclassified as reasoning: {answer!r}"
             )
             assert content == answer
+
+    def test_bare_think_prefix_with_tool_call_markup_not_routed(self):
+        # When the model embeds a tool call inside what looks like a
+        # thinking preamble, the bare-text fallback must NOT echo the
+        # raw output (tool markup and all) into ``reasoning_content``.
+        # The tool parser already stripped tool tags from ``content``;
+        # surfacing them in ``reasoning_content`` would leak the same
+        # tags to clients via the reasoning channel. Pinned per codex
+        # r2 BLOCKING on PR #572 — both branches (matched preamble +
+        # tool tag in body) must defer to the upstream tool/text
+        # pipeline and return ``(None, model_output)``.
+        text_with_tool = (
+            "Here's a thinking process:\n\n"
+            'Need to call the weather API.\n<tool_call>\n{"name": '
+            '"weather", "arguments": {"city": "Seattle"}}\n</tool_call>'
+        )
+        reasoning, content = self.parser.extract_reasoning(text_with_tool)
+        assert reasoning is None, (
+            "tool markup must not leak into reasoning_content via the "
+            "bare-text fallback"
+        )
+        assert content == text_with_tool
+
+        # All tool-tag flavors the rest of the stack recognises.
+        for tag in [
+            "<tool_call>",
+            "<function=foo>",
+            "<|tool_call|>",
+            "<invoke ",
+            "<minimax:tool_call>",
+        ]:
+            text = f"Here's the reasoning:\n\nThinking. {tag}stuff"
+            reasoning, content = self.parser.extract_reasoning(text)
+            assert reasoning is None, (
+                f"tool tag {tag!r} should suppress bare-text fallback"
+            )
+            assert content == text
 
     def test_bare_thinking_prefix_with_close_tag_uses_normal_split(self):
         # When ``</think>`` IS present, the bare-text fallback must not
