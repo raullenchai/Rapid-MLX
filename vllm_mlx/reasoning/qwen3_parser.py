@@ -9,8 +9,96 @@ Supports implicit reasoning mode where <think> is injected in the prompt
 by AI agents (e.g., OpenCode) and only </think> appears in the output.
 """
 
+import re
+
 from .base import DeltaMessage
 from .think_parser import BaseThinkingReasoningParser
+
+# Bare-text "thinking process" prefix patterns.
+#
+# Qwen3 chat templates inject ``<think>\n`` after the assistant generation
+# marker when ``enable_thinking=True`` — putting the model in implicit-think
+# mode. The model is supposed to emit its chain-of-thought followed by
+# ``</think>`` and then the user-facing answer. In practice the model
+# sometimes restates the channel boundary inline as a bare-text prefix
+# like ``Here's a thinking process:\n\n1. **Analyze...`` (the same shape
+# Gemini / older Anthropic models use). When that happens and the model
+# also runs out of ``max_tokens`` before producing ``</think>``, the
+# entire output is reasoning preamble but neither tag is in the output
+# string — so the default "no end token, no start token" branch routes
+# the whole thing into ``content`` and ``reasoning_content`` stays empty.
+#
+# Scoped narrowly to **explicit scratchpad labels** — phrases that are
+# overwhelmingly unambiguous chain-of-thought preambles, identified by
+# (a) being known scratchpad nouns (``thinking process``, ``reasoning``,
+# ``chain-of-thought``, ``scratchpad``, ``thought process``,
+# ``reasoning process``) and (b) ending with a label punctuation
+# (``:``).  Conversational phrases like ``Let me think...`` or ``I need
+# to analyze...`` are NOT matched — they are common openers for direct
+# answers and would be misclassified when ``enable_thinking=False``
+# (codex r1 BLOCKING).  Bare ``Step by step:`` / ``Step-by-step:`` is
+# also NOT matched — that form is the canonical heading for a direct
+# answer to "explain step by step" and would clobber legitimate
+# tutorials / how-tos (codex r2 BLOCKING).  Match anchored at ``^\s*``
+# so a normal answer that merely mentions a scratchpad noun mid-
+# response is not reclassified.
+_BARE_THINK_PREFIX_RE = re.compile(
+    r"^(?:\s*)"  # leading whitespace from the injected ``<think>\n``
+    r"(?:"
+    # "Here's a thinking process:" / "Here is the reasoning:" / etc.
+    # Must end with ``:`` to ensure it's a scratchpad label, not a
+    # casual answer like "Here is the answer: ...".
+    r"(?:Here(?:'s|\s+is)\s+(?:my\s+|a\s+|the\s+)?"
+    r"(?:thinking(?:\s+process)?|reasoning|chain[-\s]of[-\s]thought|"
+    r"scratchpad|thought\s+process|reasoning\s+process)"
+    r"\s*:)"
+    # "Thinking step by step:" / "Thinking out loud:" / etc. — only
+    # the labelled scratchpad form (terminating ``:`` required).
+    # The bare ``Step by step:`` / ``Step-by-step:`` form is excluded
+    # because it is the canonical heading for direct "explain
+    # step-by-step" answers (tutorials, how-tos).
+    r"|(?:Thinking\s+(?:step\s+by\s+step|out\s+loud|through(?:\s+this)?|"
+    r"carefully|aloud)\s*:)"
+    # "My thought process:" / "My reasoning process:" — scratchpad
+    # label that requires ``:`` (e.g. NOT "My thought is that ...").
+    r"|(?:My\s+(?:thought|reasoning)\s+process\s*:)"
+    r")",
+    re.IGNORECASE,
+)
+
+# Tool-call markup detector used to suppress the bare-text fallback
+# when the model embedded a tool call inside what looks like a thinking
+# preamble. The fallback would otherwise echo the raw output (including
+# ``<tool_call>{...}`` markup) into ``reasoning_content`` — leaking the
+# tool tag the route's tool parser already stripped from ``content``.
+# Defer to the tool parser by skipping the bare-text branch instead.
+# (Codex r2 BLOCKING.)
+_TOOL_CALL_MARKUP_RE = re.compile(
+    r"<tool_call>|<function=|<\|tool_call\|>|<invoke\s|<minimax:tool_call>",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_bare_think_preamble(text: str) -> bool:
+    """Return True when ``text`` starts with a known bare-text thinking marker.
+
+    Used as a fallback signal when ``<think>`` was injected by the chat
+    template into the prompt (so it is absent from the model output) and
+    the model never emitted ``</think>`` before being truncated.
+
+    Returns False when ``text`` contains any tool-call markup so the
+    raw tool tags are not echoed into ``reasoning_content`` by the
+    fallback (codex r2 BLOCKING — the tool parser already stripped
+    them from ``content`` but the reasoning parser otherwise sees the
+    raw output unmodified).
+    """
+    if not text:
+        return False
+    if _BARE_THINK_PREFIX_RE.match(text) is None:
+        return False
+    if _TOOL_CALL_MARKUP_RE.search(text):
+        return False
+    return True
 
 
 class Qwen3ReasoningParser(BaseThinkingReasoningParser):
@@ -31,6 +119,11 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
     Example (think in prompt):
         Input: "Let me analyze this...</think>The answer is 42."
         Output: reasoning="Let me analyze this...", content="The answer is 42."
+
+    Example (bare-text thinking preamble, truncated before ``</think>``):
+        Input: "Here's a thinking process:\n\n1. Analyze the request..."
+        Output: reasoning="Here's a thinking process:\n\n1. Analyze...",
+                content=None
     """
 
     @property
@@ -65,6 +158,24 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             if self.start_token in model_output:
                 _, _, reasoning = model_output.partition(self.start_token)
                 return reasoning.strip() or None, None
+            # Bare-text fallback: the chat template injects ``<think>\n``
+            # into the prompt (implicit-think mode), so neither tag appears
+            # in the model output when the model is truncated mid-thought.
+            # If the output opens with a recognizable bare-text thinking
+            # marker, treat the whole output as reasoning so it surfaces
+            # in ``reasoning_content`` instead of leaking into ``content``.
+            # This mirrors the streaming path which already routes pre-tag
+            # text to reasoning while ``</think>`` has not yet been seen.
+            #
+            # Return ``""`` (not ``None``) for content so the upstream
+            # ``_finalize_content_and_reasoning`` overwrites ``cleaned_text``
+            # — the explicit ``<think>...</think>`` path relies on
+            # ``strip_thinking_tags`` to collapse tagged reasoning to empty
+            # downstream, but bare-text reasoning has no tag to strip, so
+            # the parser must signal "no content" explicitly here or the
+            # original raw output would leak through to the client.
+            if _looks_like_bare_think_preamble(model_output):
+                return model_output.strip() or None, ""
             # No think tags at all — pure content
             return None, model_output
 
@@ -104,6 +215,17 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             cleaned = accumulated_text
             if cleaned.startswith(self.start_token):
                 cleaned = cleaned[len(self.start_token) :]
-            if cleaned:
-                return DeltaMessage(content=cleaned)
+            if not cleaned:
+                return None
+            # Bare-text thinking fallback (mirrors ``extract_reasoning``):
+            # when the chat template injects ``<think>`` and the model is
+            # truncated mid-thought before producing ``</think>``, the
+            # accumulated text opens with a bare-text "thinking process"
+            # preamble. The streaming Case-3 default would surface that
+            # preamble as ``content``; keep it in ``reasoning`` instead so
+            # OpenAI-compatible clients can distinguish chain-of-thought
+            # leakage from the final answer. (Issue #570.)
+            if _looks_like_bare_think_preamble(cleaned):
+                return DeltaMessage(reasoning=cleaned)
+            return DeltaMessage(content=cleaned)
         return None
