@@ -189,3 +189,94 @@ class TestToolTagLeakRegression:
             f"downstream strip_thinking_tags), got {cleaned!r}"
         )
         assert reasoning is not None and "thinking" in reasoning
+
+
+class TestBareThinkingProcessLeakRegression:
+    """Regression for issue #570.
+
+    The Qwen3 family chat template injects ``<think>\\n`` after the
+    assistant generation marker when ``enable_thinking=True``. The model
+    is supposed to emit its chain-of-thought followed by ``</think>`` and
+    then the user-facing answer. In practice the model occasionally
+    restates the channel boundary inline with a bare-text preamble
+    (``Here's a thinking process:\\n\\n1. **Analyze...``); when the
+    request also runs out of ``max_tokens`` before the model reaches
+    ``</think>``, neither tag appears anywhere in the output.
+
+    Previously the reasoning parser's "no end token, no start token"
+    branch returned ``(None, model_output)`` — routing the whole
+    chain-of-thought into the user-facing ``content`` field while
+    ``reasoning_content`` stayed empty. Any OpenAI-compatible client
+    consuming ``/v1/chat/completions`` saw reasoning leaking into the
+    answer.
+
+    Fix: extend ``Qwen3ReasoningParser.extract_reasoning`` (and the
+    streaming finalizer) to recognise bare-text "thinking process"
+    preambles and route them to ``reasoning_content`` while clearing
+    the cleaned content. Match conservatively at the very start of the
+    output so a normal answer that merely mentions "let me think" mid-
+    response is not reclassified.
+    """
+
+    # Real text captured from a failing curl against ``qwen3.6-35b-4bit``.
+    _LEAKED_PREAMBLE = (
+        "Here's a thinking process:\n\n"
+        "1.  **Analyze User Input:**\n"
+        "   - **Route:** Seattle to San Diego\n"
+        "   - **Duration:** 7 days\n\n"
+        "2.  **Evaluate Each Option (Food Scene Reputation):**\n"
+        "   - **Portland, OR:** World-renowned food scene. Innovative, diverse.\n"
+        "   - **San Francisco, CA:** Iconic global food destination."
+    )
+
+    def test_bare_thinking_preamble_routes_to_reasoning_not_content(self):
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        cleaned, reasoning = _finalize_content_and_reasoning(
+            raw_text=self._LEAKED_PREAMBLE,
+            cleaned_text=self._LEAKED_PREAMBLE,
+            tool_calls=None,
+            reasoning_parser=Qwen3ReasoningParser(tokenizer=None),
+        )
+        # ``reasoning_content`` must contain the chain-of-thought.
+        assert reasoning is not None
+        assert "thinking process" in reasoning
+        assert "Portland" in reasoning
+        # ``content`` must be cleared so the leak does not reach the
+        # user-facing ``choices[0].message.content`` field.
+        assert not cleaned, (
+            f"chain-of-thought leaked into user-facing content: {cleaned!r}"
+        )
+
+    def test_bare_thinking_preamble_via_full_chat_route_pipeline(self):
+        # Drive the same pipeline the OpenAI ``/v1/chat/completions``
+        # route uses end-to-end (tool parser + reasoning parser +
+        # finalize helper). ``final_content`` here is what the client
+        # sees in ``choices[0].message.content``.
+        content, tool_calls, reasoning = _drive_chat_route_pipeline(
+            self._LEAKED_PREAMBLE
+        )
+        assert not tool_calls
+        assert reasoning is not None and "thinking process" in reasoning
+        assert content is None, (
+            f"expected empty content (full output was reasoning), got {content!r}"
+        )
+
+    def test_normal_answer_with_let_me_think_mid_sentence_not_reclassified(self):
+        # Mid-sentence mentions of "let me think" must not trigger the
+        # bare-text fallback — the regex anchors to the very start of
+        # the output.
+        answer = (
+            "Portland has the best food scene of those options. Many people think "
+            "it's world-class — let me think of an example... Pok Pok was iconic."
+        )
+        cleaned, reasoning = _finalize_content_and_reasoning(
+            raw_text=answer,
+            cleaned_text=answer,
+            tool_calls=None,
+            reasoning_parser=__import__(
+                "vllm_mlx.reasoning.qwen3_parser", fromlist=["Qwen3ReasoningParser"]
+            ).Qwen3ReasoningParser(tokenizer=None),
+        )
+        assert reasoning is None
+        assert cleaned == answer
