@@ -2,6 +2,7 @@
 """Tests for tool injection fallback when chat templates reject tools param."""
 
 import copy
+import json
 
 from vllm_mlx.utils.chat_template import (
     _build_tool_injection_text,
@@ -227,9 +228,16 @@ class TestMistralArgsStripping:
         assert result.tool_calls[0]["name"] == "get_weather"
 
     def test_args_suffix_stripped_streaming(self):
+        # Streaming now re-parses the full accumulated text via
+        # extract_tool_calls (see #579), so [ARGS] is stripped through the
+        # public streaming entry point rather than a per-delta helper.
         parser = MistralToolParser(tokenizer=None)
-        delta = parser._parse_streaming_tool_delta(
-            'get_weather[ARGS]{"location": "Paris"}'
-        )
-        assert delta is not None
-        assert delta["name"] == "get_weather"
+        parser.reset()
+        text = '[TOOL_CALLS]get_weather[ARGS]{"location": "Paris"}'
+        result = parser.extract_tool_calls_streaming("", text, text)
+        assert result is not None
+        assert "tool_calls" in result
+        fn = result["tool_calls"][0]["function"]
+        assert fn["name"] == "get_weather"
+        assert "[ARGS]" not in fn["name"]
+        assert json.loads(fn["arguments"]) == {"location": "Paris"}

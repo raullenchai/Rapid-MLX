@@ -177,6 +177,14 @@ PARITY_FIXTURES: list = [
         ),
         [("read_file", {"path": "/etc/hostname"})],
     ),
+    # mistral — Devstral / Mistral >= v11 [TOOL_CALLS]name[ARGS]{json} form
+    # (the #579 streaming-leak repro; non-stream already recovered it).
+    (
+        "mistral",
+        "mistral_tool_calls",
+        '[TOOL_CALLS]read_file[ARGS]{"path":"/etc/hostname"}',
+        [("read_file", {"path": "/etc/hostname"})],
+    ),
 ]
 
 
@@ -209,7 +217,6 @@ _PARITY_COVERAGE_EXEMPT: dict[str, str] = {
     "llama4": "alias of llama",
     "minimax": "TODO: add MiniMax M2/M2.5 wire-format fixture",
     "minimax_m2": "alias of minimax",
-    "mistral": "TODO: add Mistral [TOOL_CALLS] wire-format fixture",
     "nemotron": "TODO: add Nemotron wire-format fixture",
     "nemotron3": "alias of nemotron",
     "kimi": "TODO: add Kimi K2 wire-format fixture",

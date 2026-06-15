@@ -59,6 +59,13 @@ class MistralToolParser(ToolParser):
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
         self.bot_token_id = self.vocab.get(self.BOT_TOKEN) if self.vocab else None
+        # Number of complete tool calls already emitted on the streaming path.
+        self.streamed_tool_call_count: int = 0
+
+    def reset(self) -> None:
+        """Reset parser state for a new request (streaming counters too)."""
+        super().reset()
+        self.streamed_tool_call_count = 0
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -184,80 +191,58 @@ class MistralToolParser(ToolParser):
         """
         Extract tool calls from streaming Mistral model output.
 
-        For streaming, we detect when [TOOL_CALLS] appears and start
-        accumulating tool call data.
+        Rather than parse each token delta in isolation — which can't
+        reliably reconstruct ``[TOOL_CALLS]name[ARGS]{json}`` once the
+        ``[ARGS]`` separator or the JSON body is split across arbitrary
+        token boundaries (issue #579) — we re-parse the full accumulated
+        text with the non-streaming :meth:`extract_tool_calls` (the single
+        source of truth) and emit each tool call exactly once, the moment
+        its arguments form complete JSON. This guarantees stream ↔
+        non-stream parity by construction.
         """
-        # Check if tool call token is in current output
+        # No tool call marker yet → plain content delta.
         if self.BOT_TOKEN not in current_text:
-            # Not a tool call yet, return content delta
             return {"content": delta_text}
 
-        # Tool call detected
-        if self.BOT_TOKEN in delta_text:
-            # This delta contains the start of tool calls
-            parts = delta_text.split(self.BOT_TOKEN)
-            content_part = parts[0]
-            tool_part = self.BOT_TOKEN.join(parts[1:])
+        result: dict[str, Any] = {}
 
-            result: dict[str, Any] = {}
-            if content_part:
-                result["content"] = content_part
+        # Emit any content that preceded the marker, once, on the delta
+        # where the marker first appears.
+        if self.BOT_TOKEN not in previous_text:
+            leading = delta_text.split(self.BOT_TOKEN, 1)[0]
+            if leading:
+                result["content"] = leading
 
-            # Start tracking tool call
-            self.current_tool_id += 1
+        # Re-parse everything accumulated so far and keep only the tool
+        # calls whose arguments are complete, parseable JSON. A call still
+        # mid-stream has a truncated body and is skipped until it closes.
+        parsed = self.extract_tool_calls(current_text)
+        complete: list[dict[str, Any]] = []
+        for tool_call in parsed.tool_calls:
+            args = tool_call.get("arguments")
+            try:
+                json.loads(args)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            complete.append(tool_call)
 
-            if tool_part:
-                # Try to parse the tool part
-                tool_delta = self._parse_streaming_tool_delta(tool_part)
-                if tool_delta:
-                    result["tool_calls"] = [
-                        {
-                            "index": self.current_tool_id,
-                            "id": generate_mistral_tool_id(),
-                            "type": "function",
-                            "function": tool_delta,
-                        }
-                    ]
+        # Emit only newly completed calls (those past what we've streamed).
+        new_calls = complete[self.streamed_tool_call_count :]
+        if new_calls:
+            deltas = []
+            for offset, tool_call in enumerate(new_calls):
+                deltas.append(
+                    {
+                        "index": self.streamed_tool_call_count + offset,
+                        "id": tool_call.get("id") or generate_mistral_tool_id(),
+                        "type": "function",
+                        "function": {
+                            "name": tool_call["name"],
+                            "arguments": tool_call["arguments"],
+                        },
+                    }
+                )
+            self.streamed_tool_call_count += len(new_calls)
+            result["tool_calls"] = deltas
 
-            return result if result else None
-
-        # We're in the middle of a tool call
-        if self.current_tool_id >= 0:
-            tool_delta = self._parse_streaming_tool_delta(delta_text)
-            if tool_delta:
-                return {
-                    "tool_calls": [
-                        {
-                            "index": self.current_tool_id,
-                            "type": "function",
-                            "function": tool_delta,
-                        }
-                    ]
-                }
-
-        return None
-
-    def _parse_streaming_tool_delta(self, text: str) -> dict[str, str] | None:
-        """Parse a streaming delta for tool call information."""
-        if not text:
-            return None
-
-        result: dict[str, str] = {}
-
-        # Check for function name (before {)
-        # Strip [ARGS] suffix emitted by Devstral models.
-        if "{" in text:
-            name_part = text[: text.find("{")]
-            args_part = text[text.find("{") :]
-            if name_part.strip():
-                result["name"] = name_part.replace("[ARGS]", "").strip()
-            if args_part:
-                result["arguments"] = args_part
-        else:
-            # Could be name or arguments continuation
-            if text.strip() and not text.startswith(("{", "}", "[", "]", ",")):
-                result["name"] = text.strip()
-            else:
-                result["arguments"] = text
-
-        return result if result else None
+        return result or None
