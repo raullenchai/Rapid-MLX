@@ -64,7 +64,9 @@ class TestValidateModelName:
         # Should not raise.
         _validate_model_name(None)
 
-    def test_mismatch_still_raises_404_via_openai_route(self, patched_config, monkeypatch):
+    def test_mismatch_still_raises_404_via_openai_route(
+        self, patched_config, monkeypatch
+    ):
         """The OpenAI chat route must still reject unknown model names with 404.
         This confirms that removing _validate_model_name from the Anthropic
         route did NOT affect the OpenAI route."""

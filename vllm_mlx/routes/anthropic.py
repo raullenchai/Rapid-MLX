@@ -148,7 +148,11 @@ async def create_anthropic_message(
         logger.debug(f"[REQUEST] last user message preview: {last_user_preview!r}")
 
         cfg_for_log = get_config()
-        if anthropic_request.model and cfg_for_log.model_name and anthropic_request.model != cfg_for_log.model_name:
+        if (
+            anthropic_request.model
+            and cfg_for_log.model_name
+            and anthropic_request.model != cfg_for_log.model_name
+        ):
             logger.info(
                 "Anthropic /v1/messages: request model=%r served by loaded engine=%r",
                 anthropic_request.model,
