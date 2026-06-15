@@ -543,6 +543,154 @@ class TestModelsRoutes:
         finally:
             self._restore(orig)
 
+    # ----- Rapid-MLX vendor extension surface (Sweep autoresearch) -----
+
+    def test_retrieve_known_alias_populates_extensions(self):
+        """A known alias (e.g. ``qwen3.5-4b-4bit``) must surface its
+        AliasProfile-derived vendor extension fields so rapid-desktop
+        can bootstrap calibrated sampling on first chat. Profiles
+        without ``recommended_sampling`` MUST still surface
+        ``is_hybrid`` + parser pair + modality so the desktop can
+        decide whether to show the "Show reasoning" toggle."""
+        orig = self._set_config(
+            model_registry=None,
+            model_name="mlx-community/Qwen3.5-4B-MLX-4bit",
+            model_alias="qwen3.5-4b-4bit",
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models/qwen3.5-4b-4bit")
+            assert r.status_code == 200
+            body = r.json()
+            # OpenAI-canonical baseline preserved.
+            assert body["id"] == "qwen3.5-4b-4bit"
+            assert body["object"] == "model"
+            # Vendor-extension fields surfaced from AliasProfile.
+            # The qwen3.5-4b-4bit alias is_hybrid=True per aliases.json
+            # (verified by Round-1 autoresearch sweep, 2026-06-14).
+            assert body["is_hybrid"] is True, (
+                "is_hybrid must be surfaced so the desktop knows to render the "
+                "'Show reasoning' toggle for hybrid models"
+            )
+            # Parser pair surfaced for diagnostics.
+            assert body["tool_call_parser"] == "hermes"
+            assert body["reasoning_parser"] == "qwen3"
+            # Modality defaults to "text" for LLMs.
+            assert body["modality"] == "text"
+        finally:
+            self._restore(orig)
+
+    def test_retrieve_known_alias_surfaces_recommended_sampling(self):
+        """An alias whose ``AliasProfile`` carries ``recommended_sampling``
+        (curated knobs that beat the model's bare ``generation_config.json``
+        on the canonical eval) must surface the values as a JSON object on
+        the wire. Pins the ``tuple[(key, value), ...] -> dict`` conversion
+        the helper does — a future refactor that forgets to convert would
+        either trip Pydantic v2's ``dict_type`` validator at construction
+        (current behavior: hard 500) or, if the field type were ever
+        widened to accept tuples, silently ship nested arrays and break
+        rapid-desktop's slider bootstrap. Either failure mode is caught
+        by asserting ``isinstance(sampling, dict)`` below.
+
+        We pick ``gemma-4-12b-4bit`` because gemma-4 family ships curated
+        sampling (temperature=1.0, top_k=64, top_p=0.95) — verified via
+        ``model_aliases.list_profiles()`` at 2026-06-14."""
+        orig = self._set_config(
+            model_registry=None,
+            model_name="mlx-community/gemma-4-12B-it-4bit",
+            model_alias="gemma-4-12b-4bit",
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models/gemma-4-12b-4bit")
+            assert r.status_code == 200
+            body = r.json()
+            sampling = body["recommended_sampling"]
+            # MUST be a JSON object (Python dict round-trip), not a
+            # list-of-pairs which is what the dataclass stores natively.
+            assert isinstance(sampling, dict), (
+                f"recommended_sampling must serialize as a JSON object, "
+                f"got {type(sampling).__name__}: {sampling!r}"
+            )
+            # Spot-check the known gemma-4 curated values.
+            assert sampling.get("temperature") == 1.0
+            assert sampling.get("top_p") == 0.95
+            assert sampling.get("top_k") == 64
+            # Modality stays "text" for an LLM, is_hybrid=False for gemma.
+            assert body["modality"] == "text"
+            assert body["is_hybrid"] is False
+        finally:
+            self._restore(orig)
+
+    def test_retrieve_unknown_id_keeps_baseline_shape(self):
+        """An id that doesn't resolve to an alias (raw HF path that
+        isn't in the registry, operator-supplied custom model) must
+        keep an OpenAI-compatible shape — id/object/created/owned_by
+        carry their canonical values and the vendor-extension keys
+        appear as JSON ``null`` (since ``ModelInfo`` does not set
+        ``exclude_none``). OpenAI-only clients ignore unknown keys
+        per spec whether they appear as ``null`` or are absent, so
+        this is additive; the assertions below pin the explicit
+        present-with-null contract so a future refactor that flips
+        to ``exclude_none=True`` is caught."""
+        orig = self._set_config(
+            model_registry=None,
+            model_name="custom-operator-model-not-in-registry",
+            model_alias=None,
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models/custom-operator-model-not-in-registry")
+            assert r.status_code == 200
+            body = r.json()
+            assert body["id"] == "custom-operator-model-not-in-registry"
+            # ``ModelInfo`` does NOT set ``exclude_none``, so the
+            # extension keys are PRESENT on the wire body and serialize
+            # as JSON ``null`` (not omitted). Pin both presence AND
+            # null-value so a future refactor that flips to
+            # ``exclude_none=True`` and silently drops the keys is
+            # caught here — clients tolerate either shape per the
+            # OpenAI spec, but the wire contract should be explicit.
+            assert "recommended_sampling" in body
+            assert body["recommended_sampling"] is None
+            assert "is_hybrid" in body
+            assert body["is_hybrid"] is None
+            assert "tool_call_parser" in body
+            assert body["tool_call_parser"] is None
+        finally:
+            self._restore(orig)
+
+    def test_list_models_surfaces_extensions_per_entry(self):
+        """`/v1/models` list endpoint must surface extensions for each
+        alias entry, not just the singleton retrieval path. Without
+        this the desktop's catalog pre-fetch (one round trip on
+        startup) wouldn't get profile data and would fall back to
+        per-alias N+1 calls."""
+        orig = self._set_config(
+            model_registry=None,
+            model_name="mlx-community/Qwen3.5-4B-MLX-4bit",
+            model_alias="qwen3.5-4b-4bit",
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models")
+            assert r.status_code == 200
+            entries = r.json()["data"]
+            alias_entry = next(
+                (e for e in entries if e["id"] == "qwen3.5-4b-4bit"), None
+            )
+            assert alias_entry is not None, (
+                "qwen3.5-4b-4bit must appear in the list endpoint"
+            )
+            assert alias_entry["is_hybrid"] is True
+            assert alias_entry["reasoning_parser"] == "qwen3"
+        finally:
+            self._restore(orig)
+
 
 # ---------------------------------------------------------------------------
 # MCP routes

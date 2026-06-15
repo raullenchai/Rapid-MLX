@@ -414,12 +414,65 @@ class CompletionResponse(BaseModel):
 
 
 class ModelInfo(BaseModel):
-    """Information about an available model."""
+    """Information about an available model.
+
+    The first four fields (`id`, `object`, `created`, `owned_by`) are
+    the OpenAI-canonical shape. The trailing fields are Rapid-MLX
+    vendor extensions surfaced so OpenAI-compatible clients that
+    *also* want per-alias profile info (e.g. the rapid-desktop app
+    auto-applying curated sampling defaults) don't need a separate
+    private endpoint. OpenAI-only clients ignore unknown fields per
+    spec, so the extension is additive — the OpenAI baseline
+    contract is unchanged.
+
+    Extension fields are populated from ``AliasProfile`` when an
+    alias is known to the registry; absent fields stay ``None`` and
+    serialize as JSON ``null`` on the wire (FastAPI default — we do
+    not set ``exclude_none`` so the wire shape is stable and
+    predictable). OpenAI-only clients ignore the unknown keys per
+    spec whether they appear as ``null`` or are omitted, so the
+    baseline contract is unchanged either way.
+    """
 
     id: str
     object: str = "model"
     created: int = Field(default_factory=lambda: int(time.time()))
     owned_by: str = "rapid-mlx"
+
+    # ---- Rapid-MLX vendor extensions (additive; OpenAI clients
+    # ignore unknown fields) ------------------------------------
+    # Curated sampling defaults that out-perform the model's
+    # ``generation_config.json`` baseline on the canonical eval suite.
+    # Shape: ``{key: value}`` where ``key`` is one of
+    # {temperature, top_p, top_k, min_p, repetition_penalty,
+    # presence_penalty, frequency_penalty} and ``value`` is a number.
+    # rapid-desktop applies this on first alias load when the user
+    # hasn't manually overridden the sliders. ``None`` means the
+    # alias has no curated profile — the desktop should fall back
+    # to the model's ``generation_config.json`` (already handled
+    # server-side, no desktop change needed for that path).
+    recommended_sampling: dict[str, float] | None = None
+    # Hybrid-thinking architecture flag (Qwen 3 / 3.5 / 3.6, GLM 4.7,
+    # Qwopus). When ``True`` the desktop surfaces the "Show reasoning"
+    # toggle in Settings → Sampling AND defaults the toggle to OFF
+    # (PR #154 default; see also the parser fix #570). When ``False``
+    # the toggle stays hidden — no reason to show a UI knob that
+    # the model's chat template silently ignores.
+    is_hybrid: bool | None = None
+    # MoE / sparse-expert architecture. Informational only — the
+    # desktop uses this for the "this is an MoE alias" info row
+    # in Settings → Models. Not load-bearing for sampling defaults.
+    is_moe: bool | None = None
+    # Parser pair — informational, useful for diagnostics rows in
+    # the desktop's Settings → Models tab so an operator can see
+    # which parser is doing the routing without grepping the
+    # server logs.
+    tool_call_parser: str | None = None
+    reasoning_parser: str | None = None
+    # Inference modality. Desktop's ``ModelInfoCatalog`` already
+    # dispatches on this — populating from the server lets us drop
+    # the desktop-side hard-coded modality map in a future release.
+    modality: str | None = None
 
 
 class ModelsResponse(BaseModel):
