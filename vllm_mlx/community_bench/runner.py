@@ -182,12 +182,21 @@ async def _run_one_round(
     last_output = None
 
     rid = await engine.add_request(prompt_text, sampling_params)
+    # NOTE: don't ``break`` mid-async-for. Breaking abandons the
+    # ``stream_outputs`` async generator before its ``finally`` block
+    # has a chance to ``_cleanup_request`` (which pops the request
+    # from ``self.scheduler.requests``). The cleanup then runs only at
+    # GC time — by which point ``_run_bucket`` has already looped back
+    # to the next round and ``add_request`` sees the old request still
+    # in-flight, tripping ``BackpressureError`` against the bench's
+    # tight ``max_concurrent_requests=1`` cap. Iterate to completion;
+    # ``stream_outputs`` exits cleanly after yielding the finished
+    # output (its own internal ``break`` on the finished sentinel
+    # routes through ``finally``).
     async for out in engine.stream_outputs(rid, timeout=180):
         if t_first_token is None and out.new_token_ids:
             t_first_token = time.perf_counter()
         last_output = out
-        if out.finished:
-            break
 
     t_end = time.perf_counter()
 

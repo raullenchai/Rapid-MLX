@@ -1211,11 +1211,32 @@ def _run_submit_flow(args) -> int:
         sampling_modes.append("sampled")
 
     async def _run() -> int:
+        import concurrent.futures
+
+        from .engine_core import _init_mlx_step_thread
+
+        # Load model on the future mlx-step worker thread (#170). mlx-lm
+        # 0.31.3+ binds module-level ``generation_stream`` and any
+        # auto-default stream to the thread that triggers them. If the
+        # model weights or ``mx.compile``-cached graphs are touched on
+        # the asyncio loop thread first, every later eval on the step
+        # worker raises "There is no Stream(gpu, N) in current thread."
+        # Spinning the worker BEFORE load and reusing it for
+        # AsyncEngineCore keeps every MLX op on a single owning thread.
+        # Mirrors the pattern in ``BatchedEngine._start_llm`` (which is
+        # why ``rapid-mlx serve`` works but the unfixed ``bench`` path
+        # doesn't).
         print(f"  Loading model {alias} ({hf_path})…")
+        model_load_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="mlx-step",
+            initializer=_init_mlx_step_thread,
+        )
         try:
-            model, tokenizer = load(hf_path)
+            model, tokenizer = model_load_executor.submit(load, hf_path).result()
         except (RepositoryNotFoundError, OSError) as e:
             print(f"  Error loading model: {e}")
+            model_load_executor.shutdown(wait=False)
             return 2
 
         # Standardized config: B=1, no batching, prefix-cache off so the
@@ -1245,7 +1266,12 @@ def _run_submit_flow(args) -> int:
         )
 
         repo_root = Path(args.repo_root) if args.repo_root else Path.cwd()
-        async with AsyncEngineCore(model, tokenizer, engine_config) as engine:
+        # Pass the EXISTING executor to AsyncEngineCore so the engine
+        # loop, BatchGenerator construction, and every forward pass run
+        # on the same thread that owns the model weights.
+        async with AsyncEngineCore(
+            model, tokenizer, engine_config, executor=model_load_executor
+        ) as engine:
             for mode in sampling_modes:
                 print(
                     f"  Running standardized bench "
