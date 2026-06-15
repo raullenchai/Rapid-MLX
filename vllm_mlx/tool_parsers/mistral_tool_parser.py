@@ -68,19 +68,33 @@ class MistralToolParser(ToolParser):
     _STREAMING_SENTINELS: tuple[str, ...] = ("[TOOL_CALLS]",)
 
     def _reset_stream_state(self) -> None:
-        """Reset per-request streaming state machine (see #579)."""
+        """Reset per-request streaming state machine (see #579).
+
+        The new-format machine processes body bytes incrementally:
+        ``_parsed_body_len`` records how many cumulative body bytes we
+        have already consumed; each call only walks the new suffix
+        (``body[parsed_body_len:]``) so total work is O(n) over the
+        stream rather than O(n²) (codex #581 round-2 BLOCKING-3).
+        Per-tool state lives in ``_tool_segments`` — each segment owns
+        its name buffer, JSON depth / string state, and args-emitted
+        offset, so a second ``[TOOL_CALLS]`` is detected only when the
+        current tool's args have actually closed (codex #581 round-2
+        BLOCKING-1 — a literal ``[TOOL_CALLS]`` inside a string value
+        must not split tools).
+        """
         # None until first non-whitespace byte after [TOOL_CALLS]:
         #   "new" → Devstral / Mistral v11 ``name[ARGS]{json}`` or ``name{json}``
         #   "old" → Mistral v10- ``[{"name":..., "arguments":...}]`` array form
         self._stream_format: str | None = None
         self._stream_old_emitted: bool = False  # old-format is emit-once
-        # Per-tool state for new-format multi-tool streams. Each entry:
-        #   {"name_emitted": bool, "args_emitted": int, "id": str}
-        # The 1-tool case (overwhelmingly the common one) just keeps one
-        # entry here. Codex #581 flagged that a single shared counter
-        # silently swallowed second + N-th calls in
-        # ``[TOOL_CALLS]a{}[TOOL_CALLS]b{}`` streams.
-        self._tool_states: list[dict[str, Any]] = []
+        self._parsed_body_len: int = 0
+        self._tool_segments: list[dict[str, Any]] = []
+        self._cur_seg_idx: int = 0
+        # Buffer for bytes between a closed tool and the next ``[TOOL_CALLS]``
+        # opener. Trimmed to longest sentinel-prefix suffix on every
+        # non-match so a long junk run between tools doesn't grow it
+        # without bound.
+        self._inter_buffer: str = ""
 
     @classmethod
     def _safe_content_prefix(cls, text: str) -> str:
@@ -355,74 +369,150 @@ class MistralToolParser(ToolParser):
         result["tool_calls"] = tool_calls_out
         return result
 
+    _ARGS_TAG: str = "[ARGS]"
+
+    def _new_segment_state(self) -> dict[str, Any]:
+        return {
+            "id": "",
+            "name": "",
+            "name_buffer": "",
+            "name_emitted": False,
+            "needs_name_emit": False,
+            "saw_separator": False,
+            "args_buffer": "",
+            "args_emitted": 0,
+            "args_closed": False,
+            # JSON tokenizer for boundary detection inside args:
+            "json_depth": 0,
+            "in_string": False,
+            "escape_next": False,
+        }
+
+    @staticmethod
+    def _json_advance(seg: dict[str, Any], ch: str) -> None:
+        """Advance the per-segment JSON tokenizer one char.
+
+        Tracks ``{``/``}`` and ``[``/``]`` nesting plus string + escape
+        state so a literal ``[TOOL_CALLS]`` inside a string value can't
+        masquerade as a tool-call boundary (codex #581 round-2
+        BLOCKING-1). When ``json_depth`` returns to 0 outside a string,
+        the segment's args are complete.
+        """
+        if seg["escape_next"]:
+            seg["escape_next"] = False
+            return
+        if seg["in_string"]:
+            if ch == "\\":
+                seg["escape_next"] = True
+            elif ch == '"':
+                seg["in_string"] = False
+            return
+        if ch == '"':
+            seg["in_string"] = True
+        elif ch in ("{", "["):
+            seg["json_depth"] += 1
+        elif ch in ("}", "]"):
+            seg["json_depth"] -= 1
+
     def _stream_new_format(
         self, body: str, result: dict[str, Any]
     ) -> dict[str, Any] | None:
-        """New ``name[ARGS]?{json}`` form, possibly with multiple ``[TOOL_CALLS]``
-        delimited calls in the same response.
+        """Incremental, JSON-aware new-format processor.
 
-        Walks the body segment-by-segment (split on ``[TOOL_CALLS]``) and
-        maintains per-segment ``{name_emitted, args_emitted, id}`` state so
-        the second + N-th tool calls get their own index instead of being
-        absorbed into the first call's args (codex #581 BLOCKING-2).
+        Walks only the new suffix ``body[parsed_body_len:]`` so total
+        work over a stream is O(n) (round-2 BLOCKING-3). Each char is
+        classified by the current segment's phase:
+
+        - **name** — accumulating into ``name_buffer`` until either
+          ``[ARGS]`` or the first ``{`` is seen; that locks in the name
+          and queues a ``needs_name_emit``.
+        - **args** — appended to ``args_buffer``; ``_json_advance``
+          updates depth/string state; when depth returns to 0 outside a
+          string the segment is marked ``args_closed``.
+        - **between tools** — bytes go into ``_inter_buffer`` until
+          ``[TOOL_CALLS]`` lands (start a new segment) or the buffer
+          can no longer be a prefix of the opener (discard).
+
+        At the end of the walk, each segment that has new emit-able
+        state (just-locked name and/or new args bytes) contributes one
+        entry to ``tool_calls_out``. Args bytes are streamed verbatim
+        as they arrive — no prefix-hold inside args, since while
+        ``json_depth > 0`` or ``in_string`` is True the chars are
+        unambiguously part of the JSON value (round-2 BLOCKING-2: the
+        previous design held a partial sentinel suffix inside args and
+        could drop trailing bytes like ``"["`` at EOS).
         """
-        args_tag = "[ARGS]"
-        segments = body.split(self.BOT_TOKEN)
+        new_bytes = body[self._parsed_body_len :]
+        self._parsed_body_len = len(body)
+        if not new_bytes:
+            return result or None
 
-        # The LAST segment is the only one whose tail might still be
-        # mid-arrival — anything earlier had its tail fixed when the
-        # next ``[TOOL_CALLS]`` boundary landed. Hold back any suffix
-        # that could be a prefix of the next ``[TOOL_CALLS]`` opener so
-        # it doesn't leak into the current tool's args.
-        if segments:
-            tail = segments[-1]
-            safe_tail = self._safe_content_prefix(tail)
-            segments[-1] = safe_tail
+        for ch in new_bytes:
+            while len(self._tool_segments) <= self._cur_seg_idx:
+                self._tool_segments.append(self._new_segment_state())
+            seg = self._tool_segments[self._cur_seg_idx]
 
+            if seg["args_closed"]:
+                # Between-tool phase: looking for the next ``[TOOL_CALLS]``.
+                self._inter_buffer += ch
+                if self.BOT_TOKEN in self._inter_buffer:
+                    self._cur_seg_idx += 1
+                    self._inter_buffer = ""
+                else:
+                    self._inter_buffer = self._trim_to_sentinel_prefix(
+                        self._inter_buffer
+                    )
+                continue
+
+            if not seg["saw_separator"]:
+                seg["name_buffer"] += ch
+                if seg["name_buffer"].endswith(self._ARGS_TAG):
+                    name = seg["name_buffer"][: -len(self._ARGS_TAG)].strip()
+                    if name:
+                        seg["name"] = name
+                        seg["saw_separator"] = True
+                        if not seg["name_emitted"]:
+                            seg["id"] = generate_mistral_tool_id()
+                            seg["needs_name_emit"] = True
+                    continue
+                if ch == "{":
+                    name = seg["name_buffer"][:-1].strip()
+                    if name:
+                        seg["name"] = name
+                        seg["saw_separator"] = True
+                        if not seg["name_emitted"]:
+                            seg["id"] = generate_mistral_tool_id()
+                            seg["needs_name_emit"] = True
+                        seg["args_buffer"] = "{"
+                        self._json_advance(seg, "{")
+                    continue
+                # Still streaming the name; nothing else to do.
+                continue
+
+            # Args phase.
+            seg["args_buffer"] += ch
+            self._json_advance(seg, ch)
+            if seg["json_depth"] == 0 and not seg["in_string"]:
+                seg["args_closed"] = True
+
+        # Build emission from any segment with new emit-able state.
         tool_calls_out: list[dict[str, Any]] = []
-
-        for i, seg in enumerate(segments):
-            while len(self._tool_states) <= i:
-                self._tool_states.append(
-                    {"name_emitted": False, "args_emitted": 0, "id": ""}
-                )
-            state = self._tool_states[i]
-
-            args_idx = seg.find(args_tag)
-            brace_idx = seg.find("{")
-            if args_idx != -1 and (brace_idx == -1 or args_idx < brace_idx):
-                sep_idx = args_idx
-                args_start_off = sep_idx + len(args_tag)
-            elif brace_idx != -1:
-                sep_idx = brace_idx
-                args_start_off = sep_idx  # ``{`` is part of the JSON args
-            else:
-                # Boundary not in this segment yet — name still streaming.
-                # For non-last segments this would be malformed (no body
-                # between two ``[TOOL_CALLS]`` markers); skip silently.
-                continue
-
-            name = seg[:sep_idx].strip()
-            if not name:
-                continue
-            args = seg[args_start_off:]
-
+        for i, seg in enumerate(self._tool_segments):
             entry: dict[str, Any] | None = None
-            if not state["name_emitted"]:
-                state["id"] = generate_mistral_tool_id()
-                state["name_emitted"] = True
+            if seg["needs_name_emit"]:
+                seg["needs_name_emit"] = False
+                seg["name_emitted"] = True
                 self.current_tool_id = max(self.current_tool_id, i)
                 entry = {
                     "index": i,
-                    "id": state["id"],
+                    "id": seg["id"],
                     "type": "function",
-                    "function": {"name": name},
+                    "function": {"name": seg["name"]},
                 }
                 tool_calls_out.append(entry)
-
-            if len(args) > state["args_emitted"]:
-                args_delta = args[state["args_emitted"] :]
-                state["args_emitted"] = len(args)
+            if seg["name_emitted"] and len(seg["args_buffer"]) > seg["args_emitted"]:
+                args_delta = seg["args_buffer"][seg["args_emitted"] :]
+                seg["args_emitted"] = len(seg["args_buffer"])
                 if entry is not None:
                     entry["function"]["arguments"] = args_delta
                 else:
@@ -437,3 +527,18 @@ class MistralToolParser(ToolParser):
         if tool_calls_out:
             result["tool_calls"] = tool_calls_out
         return result or None
+
+    @classmethod
+    def _trim_to_sentinel_prefix(cls, buf: str) -> str:
+        """Trim ``buf`` to its longest suffix that's a prefix of BOT_TOKEN.
+
+        Used in the between-tools phase: a 3-char run of junk like
+        ``XYZ`` between closing ``}`` and the next ``[TOOL_CALLS]``
+        would otherwise grow the buffer unbounded. The longest suffix
+        that could still complete a sentinel is the only part worth
+        keeping.
+        """
+        for length in range(min(len(buf), len(cls.BOT_TOKEN) - 1), 0, -1):
+            if cls.BOT_TOKEN.startswith(buf[-length:]):
+                return buf[-length:]
+        return ""

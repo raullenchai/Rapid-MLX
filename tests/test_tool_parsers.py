@@ -1127,6 +1127,103 @@ class TestMistralDevstralStreaming:
         assert assembled["content"] == "She said abc["
         assert assembled["tool_calls"] == {}
 
+    def test_literal_tool_calls_inside_string_arg(self, parser):
+        """A literal ``[TOOL_CALLS]`` inside a string-valued arg must NOT
+        split tools (codex #581 round-2 BLOCKING-1). Pre-fix, the
+        body-split approach took the literal as a new tool boundary and
+        corrupted the first call's JSON."""
+        full = '[TOOL_CALLS]search[ARGS]{"query":"see [TOOL_CALLS] in docs","limit":5}'
+        assembled = _run_mistral_streaming(parser, list(full))
+        _assert_no_empty_name_deltas(assembled)
+        assert list(assembled["tool_calls"].keys()) == [0]
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "search"
+        # The literal ``[TOOL_CALLS]`` inside the string value must
+        # round-trip into the final JSON unmodified.
+        args = json.loads(tc["arguments"])
+        assert args == {"query": "see [TOOL_CALLS] in docs", "limit": 5}
+
+    def test_literal_args_inside_string_arg(self, parser):
+        """A literal ``[ARGS]`` inside a string-valued arg (after the real
+        ``[ARGS]`` separator) must NOT be stripped or re-interpreted."""
+        full = '[TOOL_CALLS]echo[ARGS]{"text":"[ARGS] is a delimiter"}'
+        assembled = _run_mistral_streaming(parser, list(full))
+        _assert_no_empty_name_deltas(assembled)
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "echo"
+        args = json.loads(tc["arguments"])
+        assert args == {"text": "[ARGS] is a delimiter"}
+
+    def test_args_value_ending_in_bracket_streams_through(self, parser):
+        """A valid arg JSON ending with a bracketed char (e.g. ``"["``)
+        must not be dropped at EOS (codex #581 round-2 BLOCKING-2). The
+        previous design prefix-held the args tail and silently lost
+        trailing bytes when the stream ended mid-sentinel-candidate."""
+        full = '[TOOL_CALLS]grep[ARGS]{"pattern":"["}'
+        assembled = _run_mistral_streaming(parser, list(full))
+        _assert_no_empty_name_deltas(assembled)
+        tc = assembled["tool_calls"][0]
+        args = json.loads(tc["arguments"])
+        assert args == {"pattern": "["}
+
+    def test_escaped_quote_inside_string_arg(self, parser):
+        """The JSON state machine must respect ``\\\"`` escapes, otherwise
+        a stray escaped quote could prematurely close the string and
+        cause the tokenizer to misidentify args boundaries."""
+        full = '[TOOL_CALLS]echo[ARGS]{"text":"she said \\"hi\\""}'
+        assembled = _run_mistral_streaming(parser, list(full))
+        _assert_no_empty_name_deltas(assembled)
+        tc = assembled["tool_calls"][0]
+        args = json.loads(tc["arguments"])
+        assert args == {"text": 'she said "hi"'}
+
+    def test_streaming_is_incremental_not_quadratic(self, parser):
+        """Codex #581 round-2 BLOCKING-3: each delta must only walk the
+        newly arrived suffix, not the full cumulative body. We can't
+        wall-clock O(n²) in a unit test, but we CAN assert that the
+        parser's ``_parsed_body_len`` advances monotonically and equals
+        the body length on every call — that's the invariant that holds
+        when (and only when) the inner loop is incremental."""
+        chunks = ['[TOOL_CALLS]read[ARGS]{"file_path":"/tmp/a.txt"}']
+        prev = ""
+        for chunk in chunks:
+            cur = prev + chunk
+            parser.extract_tool_calls_streaming(
+                previous_text=prev,
+                current_text=cur,
+                delta_text=chunk,
+                request={"tools": []},
+            )
+            _, _, body = cur.partition(parser.BOT_TOKEN)
+            assert parser._parsed_body_len == len(body), (
+                "parser must consume the full body on each call so the "
+                "next call sees zero re-scan work"
+            )
+            prev = cur
+
+    def test_multi_tool_with_string_args_containing_separators(self, parser):
+        """Combined round-2 stress case: two tools, one with a string arg
+        containing both ``[TOOL_CALLS]`` and ``[ARGS]`` literals. The
+        JSON-aware state machine must pass through the literals
+        verbatim and still detect the real second tool boundary."""
+        full = (
+            "[TOOL_CALLS]"
+            'log[ARGS]{"msg":"[TOOL_CALLS] is the opener, [ARGS] separates"}'
+            "[TOOL_CALLS]"
+            "ack[ARGS]{}"
+        )
+        assembled = _run_mistral_streaming(parser, list(full))
+        _assert_no_empty_name_deltas(assembled)
+        assert sorted(assembled["tool_calls"].keys()) == [0, 1]
+        tc0 = assembled["tool_calls"][0]
+        assert tc0["name"] == "log"
+        assert json.loads(tc0["arguments"]) == {
+            "msg": "[TOOL_CALLS] is the opener, [ARGS] separates"
+        }
+        tc1 = assembled["tool_calls"][1]
+        assert tc1["name"] == "ack"
+        assert json.loads(tc1["arguments"]) == {}
+
     def test_old_array_format_streaming_still_works(self, parser):
         """Pre-Devstral ``[TOOL_CALLS] [{...}]`` array format must still stream."""
         chunks = [
