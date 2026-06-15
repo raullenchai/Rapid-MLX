@@ -1174,14 +1174,36 @@ def _run_submit_flow(args) -> int:
     hf_path = profile.hf_path
 
     notes = args.notes or None
-    if notes and len(notes) > 200:
-        print("  Error: --notes must be <= 200 chars (schema cap).")
-        return 2
+    if notes is not None:
+        if len(notes) > 200:
+            print("  Error: --notes must be <= 200 chars (schema cap).")
+            return 2
+        # Reject control characters in --notes. Newlines/CR/terminal
+        # escapes would land in the PR body, the JSON file, and any
+        # future renderer — the schema's free-form ``notes`` field
+        # invites contributor commentary, but it does not invite
+        # ``\x1b]0;owned\x07`` terminal-title-set sequences.
+        # (Codex PR #582 round-7 NIT.)
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in notes):
+            print(
+                "  Error: --notes contains control characters; only "
+                "printable ASCII/UTF-8 is permitted."
+            )
+            return 2
 
     _check_disk_space(hf_path, force=getattr(args, "force_disk_check", False))
     _check_memory_capacity(hf_path)
 
-    sampling = "sampled" if getattr(args, "sampled", False) else "greedy"
+    # ``--sampled`` runs a SECOND submission (with sampling="sampled")
+    # in addition to the always-on greedy run. The README contract is
+    # "two rows when --sampled is set, one row otherwise" — a previous
+    # version replaced greedy with sampled, breaking that contract and
+    # silently losing the greedy comparison line. (Codex PR #582
+    # round-7 BLOCKING.) Greedy goes first so the contributor can
+    # still cancel the sampled half during its consent prompt.
+    sampling_modes: list[str] = ["greedy"]
+    if getattr(args, "sampled", False):
+        sampling_modes.append("sampled")
 
     async def _run() -> int:
         print(f"  Loading model {alias} ({hf_path})…")
@@ -1217,34 +1239,41 @@ def _run_submit_flow(args) -> int:
             f"mlx={software.mlx}, python={software.python}"
         )
 
-        print(
-            f"  Running standardized bench "
-            f"(sampling={sampling}, 2 buckets × 5 rounds + 1 warmup)…"
-        )
-        async with AsyncEngineCore(model, tokenizer, engine_config) as engine:
-            bench = await run_standardized_bench(engine, tokenizer, sampling=sampling)
-
-        print(
-            f"    short: decode={bench.short.decode_stat['median']:.2f} tok/s, "
-            f"prefill={bench.short.prefill_stat['median']:.2f} tok/s, "
-            f"ttft={bench.short.ttft_stat['median']:.1f} ms"
-        )
-        print(
-            f"    long:  decode={bench.long.decode_stat['median']:.2f} tok/s, "
-            f"prefill={bench.long.prefill_stat['median']:.2f} tok/s, "
-            f"ttft={bench.long.ttft_stat['median']:.1f} ms"
-        )
-
-        payload = build_submission_payload(
-            hardware=hardware,
-            software=software,
-            alias=alias,
-            hf_path=hf_path,
-            bench=bench,
-            notes=notes,
-        )
         repo_root = Path(args.repo_root) if args.repo_root else Path.cwd()
-        return submit_interactive(payload, repo_root)
+        async with AsyncEngineCore(model, tokenizer, engine_config) as engine:
+            for mode in sampling_modes:
+                print(
+                    f"  Running standardized bench "
+                    f"(sampling={mode}, 2 buckets × 5 rounds + 1 warmup)…"
+                )
+                bench = await run_standardized_bench(engine, tokenizer, sampling=mode)
+
+                print(
+                    f"    short: decode={bench.short.decode_stat['median']:.2f} tok/s, "
+                    f"prefill={bench.short.prefill_stat['median']:.2f} tok/s, "
+                    f"ttft={bench.short.ttft_stat['median']:.1f} ms"
+                )
+                print(
+                    f"    long:  decode={bench.long.decode_stat['median']:.2f} tok/s, "
+                    f"prefill={bench.long.prefill_stat['median']:.2f} tok/s, "
+                    f"ttft={bench.long.ttft_stat['median']:.1f} ms"
+                )
+
+                payload = build_submission_payload(
+                    hardware=hardware,
+                    software=software,
+                    alias=alias,
+                    hf_path=hf_path,
+                    bench=bench,
+                    notes=notes,
+                )
+                rc = submit_interactive(payload, repo_root)
+                if rc != 0:
+                    # Setup error (not a "user said no") — bail out
+                    # before kicking off the second submission so the
+                    # contributor sees the failure clearly.
+                    return rc
+        return 0
 
     return asyncio.run(_run())
 

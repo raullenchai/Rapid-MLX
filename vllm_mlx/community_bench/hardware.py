@@ -77,9 +77,14 @@ def _run(cmd: list[str], timeout: float) -> str:
     future contributor can't quietly add ``ioreg`` etc.), or if the
     call fails / times out.
     """
-    if cmd[0] not in _PERMITTED_BINARIES:
+    # Empty argv would crash ``cmd[0]`` with ``IndexError`` rather
+    # than the documented ``RuntimeError`` from the allowlist guard.
+    # Tightening the precondition turns a programmer error into the
+    # same explicit failure mode as a non-allowlisted binary. (Codex
+    # PR #582 round-7 BLOCKING.)
+    if not cmd or cmd[0] not in _PERMITTED_BINARIES:
         raise RuntimeError(
-            f"hardware probe attempted disallowed binary: {cmd[0]!r}. "
+            f"hardware probe attempted disallowed binary: {cmd[0] if cmd else '<empty>'!r}. "
             f"Add to _PERMITTED_BINARIES with review."
         )
     try:
@@ -89,6 +94,13 @@ def _run(cmd: list[str], timeout: float) -> str:
             text=True,
             timeout=timeout,
             check=True,
+            # Defensive: explicit ``shell=False`` matches the privacy
+            # contract's "no shell interpretation". The default is
+            # already False when args is a list, but pinning makes
+            # the invariant resilient to a future refactor that
+            # accidentally accepts a string. (Codex PR #582 round-7
+            # NIT.)
+            shell=False,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         raise RuntimeError(f"probe {cmd!r} failed: {e}") from e

@@ -37,9 +37,41 @@ check; local invocations stay friction-free.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from pathlib import Path
+
+
+def _reject_non_finite(constant: str) -> None:
+    """Reject ``NaN`` / ``Infinity`` / ``-Infinity`` during JSON decode.
+
+    Python's stdlib ``json`` accepts these by default (it emits and
+    parses them as a permissive extension). Every comparison against
+    NaN returns False, so a hand-edited submission with
+    ``decode_tps: NaN`` would silently pass the ``> 0`` / ``< MAX``
+    sanity bounds. (Codex PR #582 round-7 BLOCKING.) Hooking
+    ``parse_constant`` here makes the parser raise instead.
+    """
+    raise _IssueError(f"json: non-finite number ({constant}) is not permitted")
+
+
+def _has_non_finite(obj) -> bool:
+    """Recursively scan a decoded payload for ``NaN`` / ``inf``.
+
+    Defence in depth alongside ``_reject_non_finite``: a serializer that
+    emits non-finite floats outside the standard tokens (e.g. some
+    library encoding ``inf`` as a literal Python repr) would not trip
+    ``parse_constant``. This catches anything the parser missed.
+    """
+    if isinstance(obj, float):
+        return not math.isfinite(obj)
+    if isinstance(obj, dict):
+        return any(_has_non_finite(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_has_non_finite(v) for v in obj)
+    return False
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "community-benchmarks" / "schema.json"
@@ -88,16 +120,25 @@ def _load_aliases() -> dict[str, dict]:
 def _check_schema(payload: dict, schema: dict | None) -> None:
     """Raise ``_IssueError`` if the payload doesn't match the JSON Schema.
 
-    Falls back to a no-op when ``jsonschema`` isn't installed locally
-    (the GHA pins it, so CI always runs the strict path).
+    ``jsonschema`` is mandatory. The previous fallback ("just warn and
+    skip the schema check if the lib is missing") silently demoted the
+    most-load-bearing gate in the validator to a no-op — a contributor
+    or a CI mis-config without ``jsonschema`` installed would pass
+    schema validation purely because the lib wasn't there. (Codex PR
+    #582 round-7 BLOCKING.) The GHA pins ``jsonschema>=4.0`` so CI
+    always has it; local invocations get a clear install hint instead
+    of a silent pass.
     """
     if schema is None:
         return
     try:
         import jsonschema
-    except ImportError:
-        print("  WARN: jsonschema not installed; skipping schema check")
-        return
+    except ImportError as exc:
+        raise _IssueError(
+            "schema: jsonschema package is required for validation but is "
+            "not installed. Install it with `pip install 'jsonschema>=4.0'` "
+            "and re-run."
+        ) from exc
     # ``jsonschema.validate()`` ignores ``format`` by default — it
     # advertises but doesn't enforce. Use a real ``Draft202012Validator``
     # with the format-checker enabled so the schema's
@@ -123,8 +164,22 @@ def _check_alias_whitelist(payload: dict, aliases: dict[str, dict]) -> None:
             f"alias: '{alias}' is not on the whitelist "
             f"(vllm_mlx/aliases.json). Register it there first."
         )
-    expected_path = aliases[alias].get("hf_path")
-    if expected_path and hf_path != expected_path:
+    # Fail closed if the alias entry doesn't carry a usable ``hf_path``.
+    # The previous version skipped the comparison whenever
+    # ``aliases[alias]["hf_path"]`` was missing or empty, which meant a
+    # malformed whitelist entry silently accepted arbitrary submitted
+    # paths — including ones the contributor never ran. (Codex PR #582
+    # round-7 BLOCKING.) A whitelist with a missing ``hf_path`` is a
+    # data error worth surfacing, not a permission to skip the check.
+    entry = aliases[alias]
+    expected_path = entry.get("hf_path") if isinstance(entry, dict) else None
+    if not isinstance(expected_path, str) or not expected_path:
+        raise _IssueError(
+            f"alias: whitelist entry for '{alias}' has no usable hf_path — "
+            f"fix vllm_mlx/aliases.json before any submission for this "
+            f"alias can be validated."
+        )
+    if hf_path != expected_path:
         raise _IssueError(
             f"alias: model.hf_path '{hf_path}' does not match registered "
             f"hf_path for '{alias}' (expected '{expected_path}')"
@@ -192,6 +247,14 @@ def _check_sanity(payload: dict) -> None:
                 f"buckets.{bucket_name}.ttft_ms: median "
                 f"{b['ttft_ms']['median']:.1f} > {MAX_TTFT_MS} ms (likely a stuck request)"
             )
+        # Apply the same bounds to every raw round, not just the
+        # summary median. Without per-round checks, ``rounds_raw`` can
+        # carry zero/negative throughput or 60-second TTFTs as long as
+        # the median lands plausible — and the summary recomputation
+        # check on the next line would still pass because the bogus
+        # rounds DO produce the bogus median. (Codex PR #582 round-7
+        # BLOCKING.) Validating each row directly closes that gap.
+        _check_rounds_raw(bucket_name, b)
         # Recompute every summary stat from ``rounds_raw`` and refuse
         # the file if the precomputed value disagrees. Without this
         # check, a contributor could ship arbitrary median numbers
@@ -199,6 +262,39 @@ def _check_sanity(payload: dict) -> None:
         # aggregator (which trusts ``median``) would publish the lie.
         # (Codex PR #582 round-2 BLOCKING.)
         _check_summary_matches_rounds(bucket_name, b)
+
+
+def _check_rounds_raw(bucket_name: str, bucket: dict) -> None:
+    """Per-round sanity bounds — every entry must individually pass.
+
+    The summary-median checks only look at the median, so a payload
+    can park 4 round values inside the realistic band and bury an
+    arbitrary 5th (negative, zero, 1e9) and the median is unaffected.
+    Per-round checks here force every single value into the same
+    realistic envelope, matching what the runner actually produces.
+    """
+    rounds = bucket.get("rounds_raw", [])
+    for i, r in enumerate(rounds):
+        for tps_field in ("decode_tps", "prefill_tps"):
+            v = r.get(tps_field)
+            if v is None or v <= 0:
+                raise _IssueError(
+                    f"buckets.{bucket_name}.rounds_raw[{i}].{tps_field}: "
+                    f"{v!r} must be > 0"
+                )
+        max_tps = {"decode_tps": MAX_DECODE_TPS, "prefill_tps": MAX_PREFILL_TPS}
+        for tps_field, ceiling in max_tps.items():
+            if r[tps_field] > ceiling:
+                raise _IssueError(
+                    f"buckets.{bucket_name}.rounds_raw[{i}].{tps_field}: "
+                    f"{r[tps_field]:.1f} > {ceiling} (unrealistic)"
+                )
+        ttft = r.get("ttft_ms")
+        if ttft is None or ttft < 0 or ttft > MAX_TTFT_MS:
+            raise _IssueError(
+                f"buckets.{bucket_name}.rounds_raw[{i}].ttft_ms: "
+                f"{ttft!r} out of range [0, {MAX_TTFT_MS}]"
+            )
 
 
 def _check_summary_matches_rounds(bucket_name: str, bucket: dict) -> None:
@@ -333,21 +429,31 @@ def _load_submission_id_index() -> dict[str, set[Path]]:
 
 
 def _ids_with_other_owners(
-    index: dict[str, set[Path]], target: Path, in_run: set[str]
+    index: dict[str, set[Path]],
+    target: Path,
+    target_sid: str | None,
+    in_run: set[str],
 ) -> set[str]:
     """Compose the "id is already used elsewhere" set for one target.
 
-    An id is "already used" iff some OTHER file in the corpus carries
-    it OR it has already been validated successfully this run (so two
-    ADDED files in the same PR with the same id catch each other).
+    O(1) per target: we only need to know whether *the target's own
+    ``submission_id``* is also carried by another file. The earlier
+    version scanned every entry of ``index`` to populate a set that
+    was then membership-tested for one value, making the validator
+    O(targets × corpus) — which Codex round-7 flagged as the round-2
+    fix not actually fixing the asymptote. (PR #582 round-7 BLOCKING.)
+    By only checking ``index.get(target_sid)`` and ``in_run``, the
+    per-target cost is constant.
     """
-    target_resolved = target.resolve()
     out: set[str] = set(in_run)
-    for sid, owners in index.items():
-        # If any owner that isn't the target itself has this id, it
-        # is "already taken" from the target's point of view.
-        if any(p != target_resolved for p in owners):
-            out.add(sid)
+    if target_sid is None:
+        return out
+    owners = index.get(target_sid)
+    if owners is None:
+        return out
+    target_resolved = target.resolve()
+    if any(p != target_resolved for p in owners):
+        out.add(target_sid)
     return out
 
 
@@ -361,9 +467,49 @@ def validate_one(
     issues: list[str] = []
 
     try:
-        _check_path_in_submissions(path.resolve())
+        # Resolve symlinks ONCE and reuse for both the path-shape check
+        # and the file read. The previous version called
+        # ``_check_path_in_submissions(path.resolve())`` but then
+        # ``path.read_text()`` on the original (unresolved) path, leaving
+        # a symlink/TOCTOU gap: a symlink under submissions/ pointing
+        # outside the directory could pass the location check on its
+        # target but be read from the symlink source. (Codex PR #582
+        # round-7 BLOCKING.) ``path.resolve()`` is non-strict to avoid
+        # a confusing "file not found" raise from inside resolve when
+        # the caller passed a typo'd path; the explicit ``is_file()``
+        # check below produces a cleaner error message in that case.
+        resolved = path.resolve()
+        # Reject symlinks outright. Allowing them lets a contributor add
+        # ``submissions/twin.json`` pointing at an existing file, which
+        # the dedup check (keyed on resolved paths) would collapse into
+        # the original — so the symlink "submission" would not be
+        # validated as a fresh row but would still be merged into the
+        # corpus, inflating a single machine's contribution. (Codex
+        # round-7 BLOCKING, validate.py v2.)
+        if path.is_symlink():
+            raise _IssueError(
+                f"path: {path} is a symlink; community submissions must "
+                f"be regular files (a symlink could collapse dedup checks "
+                f"and inflate a contributor's row count)."
+            )
+        if not resolved.is_file():
+            raise _IssueError(f"path: {path} is not a regular file")
+        _check_path_in_submissions(resolved)
         _check_filename(path)
-        payload = json.loads(path.read_text())
+        text = resolved.read_text(encoding="utf-8")
+        # ``parse_constant`` hooks ``NaN`` / ``Infinity`` / ``-Infinity``
+        # so the comparisons in ``_check_sanity`` can't be bypassed by
+        # a hand-edited file with a non-finite throughput. Defensive
+        # recursive scan after parse catches any non-finite that
+        # slipped past the parser (e.g. via a numeric literal that
+        # decoded to ``inf`` through float overflow). (Codex PR #582
+        # round-7 BLOCKING.)
+        payload = json.loads(text, parse_constant=_reject_non_finite)
+        if _has_non_finite(payload):
+            raise _IssueError(
+                "json: payload contains a non-finite number; only finite "
+                "floats are accepted (NaN/Infinity bypass sanity checks)."
+            )
         _check_schema(payload, schema)
         _check_alias_whitelist(payload, aliases)
         _check_sanity(payload)
@@ -408,7 +554,8 @@ def main(argv: list[str]) -> int:
     seen_in_run: set[str] = set()
     failures = 0
     for path in targets:
-        existing = _ids_with_other_owners(id_index, path, seen_in_run)
+        target_sid = _read_submission_id(path)
+        existing = _ids_with_other_owners(id_index, path, target_sid, seen_in_run)
         issues = validate_one(path, schema, aliases, existing_ids=existing)
         if issues:
             failures += 1

@@ -60,6 +60,16 @@ def test_run_rejects_disallowed_binary() -> None:
         hardware._run(["/bin/ls", "/"], timeout=1.0)
 
 
+def test_run_rejects_empty_argv() -> None:
+    """Empty cmd[] used to raise IndexError on ``cmd[0]``; the contract
+    promises RuntimeError on every bad input. (Codex PR #582 round-7
+    BLOCKING.)"""
+    from vllm_mlx.community_bench import hardware
+
+    with pytest.raises(RuntimeError, match="disallowed binary"):
+        hardware._run([], timeout=1.0)
+
+
 def test_run_executes_allowlisted_binary(tmp_path: Path) -> None:
     """A known-good allowlisted binary returns its stripped stdout."""
     from vllm_mlx.community_bench import hardware
@@ -333,7 +343,13 @@ def test_ask_consent_yes() -> None:
     stdin = io.StringIO("y\n")
     stdout = io.StringIO()
     assert _ask_consent({"key": "val"}, stdin=stdin, stdout=stdout) is True
-    assert "Press [y]" in stdout.getvalue()
+    assert "[y]" in stdout.getvalue()
+    # Round-7 BLOCKING: consent text must disclose BOTH network ops,
+    # not just `gh pr create`. A user who just wanted to "open a PR"
+    # should know git push runs first.
+    text = stdout.getvalue()
+    assert "git push" in text
+    assert "gh pr create" in text
 
 
 def test_ask_consent_default_no() -> None:
@@ -489,7 +505,7 @@ def test_find_upstream_remote_accepts_fork_with_upstream(
     can submit. (Codex PR #582 round-6 BLOCKING.)"""
     from vllm_mlx.community_bench.submission import (
         _find_upstream_remote,
-        _origin_host_is_github,
+        _origin_is_safe_github,
     )
 
     subprocess.run(
@@ -522,7 +538,112 @@ def test_find_upstream_remote_accepts_fork_with_upstream(
         capture_output=True,
     )
     assert _find_upstream_remote(tmp_path) == "upstream"
-    assert _origin_host_is_github(tmp_path) is True
+    origin_ok, origin_owner = _origin_is_safe_github(tmp_path)
+    assert origin_ok is True
+    assert origin_owner == "some-contributor"
+
+
+def test_origin_is_safe_github_rejects_malicious_pushurl(tmp_path) -> None:
+    """A repo with origin=github.com (fetch) but pushurl=evil.com must
+    fail the gate — ``git push origin`` honours pushurl, so a fetch-URL-
+    only check would push the payload to the attacker. (Codex PR #582
+    round-7 BLOCKING.)"""
+    from vllm_mlx.community_bench.submission import _origin_is_safe_github
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/raullenchai/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "https://evil.example.com/raullenchai/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    ok, owner = _origin_is_safe_github(tmp_path)
+    assert ok is False
+    assert owner is None
+
+
+def test_make_pr_via_gh_branches_from_upstream_and_uses_owner_head(
+    tmp_path, monkeypatch
+) -> None:
+    """The auto-PR sequence must (a) fetch upstream/main and branch from
+    FETCH_HEAD (not local HEAD) so the contributor's other work isn't
+    swept in, and (b) pass ``--head <owner>:<branch>`` so gh finds the
+    branch on the fork. (Codex PR #582 round-7 BLOCKING.)"""
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, capture_output, text, check, cwd):
+        captured.append(cmd)
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _R()
+
+    monkeypatch.setattr(sub_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda name: "/usr/local/bin/gh")
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "qwen", "hf_path": "x/y"},
+        "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
+        "software": {"rapid_mlx": "0.7.6", "mlx": "0.31.2"},
+        "config": {"sampling": "greedy"},
+        "buckets": {
+            "short": {"decode_tps": {"median": 40.0}},
+            "long": {"decode_tps": {"median": 40.0}},
+        },
+        "notes": None,
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    sub_mod._make_pr_via_gh(
+        tmp_path,
+        sub_path,
+        payload,
+        stdout=io.StringIO(),
+        origin_owner="some-contributor",
+        upstream_remote="upstream",
+    )
+    # First command must fetch upstream's main.
+    assert captured[0][:5] == ["git", "-C", str(tmp_path), "fetch", "--quiet"]
+    assert captured[0][5] == "upstream"
+    # Checkout must branch FROM FETCH_HEAD, not the local HEAD.
+    checkout = captured[1]
+    assert checkout[-1] == "FETCH_HEAD", (
+        f"checkout must branch from FETCH_HEAD, got cmd: {checkout}"
+    )
+    # gh pr create must use `--head <owner>:<branch>`.
+    pr_create = captured[-1]
+    head_idx = pr_create.index("--head")
+    assert pr_create[head_idx + 1] == "some-contributor:community-bench/abcdef012345"
 
 
 def test_find_upstream_remote_rejects_evil_github_lookalike(
@@ -659,11 +780,18 @@ def test_submit_interactive_clean_tree_reaches_pr_step(
     def fake_clean(repo):
         return not submissions_dir.exists() or not any(submissions_dir.iterdir())
 
-    def fake_pr(repo, path, payload, *, stdout):
+    def fake_pr(repo, path, payload, *, stdout, origin_owner, upstream_remote):
         pr_invoked.append(True)
         # ``_make_pr_via_gh`` now returns (success, completed_steps);
         # round-5 state-aware fallback needs the set on failure.
-        return True, {"checkout", "stage", "commit", "push", "pr_create"}
+        return True, {
+            "fetch_base",
+            "checkout",
+            "stage",
+            "commit",
+            "push",
+            "pr_create",
+        }
 
     monkeypatch.setattr(sub_mod, "_git_is_clean", fake_clean)
     monkeypatch.setattr(sub_mod, "_make_pr_via_gh", fake_pr)
@@ -903,16 +1031,16 @@ def test_validate_rejects_bad_filename(cleanup_real_submissions) -> None:
 
 
 def test_validate_rejects_zero_decode_tps(cleanup_real_submissions) -> None:
-    """Regression: ``decode_tps=0`` must fail (Codex PR #582 round-2 BLOCKING).
-
-    Schema's min is 0, so this passes schema; the sanity layer is what
-    catches the contract violation. A zero throughput value means a
-    failed run that should never be published.
+    """Regression: ``decode_tps=0`` must fail. Round-2 used a sanity
+    check on the summary median; round-7 hardened the schema to
+    ``exclusiveMinimum: 0`` on per-round throughput so the rejection
+    fires at the schema layer even if the sanity check were skipped.
+    Either error path is acceptable; the test only insists the file
+    is rejected and the offending field is named.
     """
     pytest.importorskip("jsonschema")
     bad = _good_payload()
-    # Zero every round AND every summary stat — schema allows it, our
-    # sanity layer doesn't.
+    # Zero every round AND every summary stat.
     for r in bad["buckets"]["short"]["rounds_raw"]:
         r["decode_tps"] = 0.0
     bad["buckets"]["short"]["decode_tps"] = {
@@ -925,7 +1053,7 @@ def test_validate_rejects_zero_decode_tps(cleanup_real_submissions) -> None:
     cleanup_real_submissions.append(path)
     rc, out = _run_validate(path)
     assert rc == 1
-    assert "decode_tps" in out and ("must be > 0" in out or "> 0" in out)
+    assert "decode_tps" in out
 
 
 def test_validate_rejects_non_apple_chip(cleanup_real_submissions) -> None:
@@ -1013,6 +1141,105 @@ def test_validate_rejects_summary_mismatch_with_rounds(
     assert "rounds_raw" in out and "median" in out
 
 
+def test_validate_rejects_nan_in_payload(cleanup_real_submissions) -> None:
+    """Regression: NaN/Infinity in any numeric field must fail.
+
+    json.loads accepts these by default and every comparison against
+    NaN evaluates False, so the sanity bounds were bypassable. (Codex
+    PR #582 round-7 BLOCKING.)
+    """
+    pytest.importorskip("jsonschema")
+    payload = _good_payload()
+    path = _write_to_real_submissions(payload)
+    cleanup_real_submissions.append(path)
+    # Write a NaN by hand — json.dump won't emit it for a Python float
+    # with allow_nan=False, but a hand-edited PR JSON could carry one.
+    raw = path.read_text().replace('"decode_tps": 40.0', '"decode_tps": NaN', 1)
+    path.write_text(raw)
+    rc, out = _run_validate(path)
+    assert rc == 1
+    assert "non-finite" in out.lower() or "nan" in out.lower()
+
+
+def test_validate_rejects_symlink(cleanup_real_submissions, tmp_path) -> None:
+    """Symlinks under submissions/ are rejected — they could collapse
+    the dedup check and inflate a single contributor's row count.
+    (Codex PR #582 round-7 BLOCKING.)
+    """
+    pytest.importorskip("jsonschema")
+    target_payload = _good_payload()
+    target_path = _write_to_real_submissions(target_payload)
+    cleanup_real_submissions.append(target_path)
+
+    sub_dir = REPO_ROOT / "community-benchmarks" / "submissions"
+    link_path = sub_dir / "20260615-apple-m4-pro-qwen3-5-9b-4bit-bbbbbbbbbbbb.json"
+    link_path.symlink_to(target_path.name)  # relative within submissions/
+    cleanup_real_submissions.append(link_path)
+
+    rc, out = _run_validate(link_path)
+    assert rc == 1
+    assert "symlink" in out.lower()
+
+
+def test_validate_rejects_zero_in_rounds_raw(cleanup_real_submissions) -> None:
+    """A zero (or negative) value in any rounds_raw row must fail, even
+    when the summary median lands in the realistic band. (Codex PR
+    #582 round-7 BLOCKING.)
+    """
+    pytest.importorskip("jsonschema")
+    bad = _good_payload()
+    # Park 4 normal rows and one zero; the median is still legit.
+    rounds = bad["buckets"]["short"]["rounds_raw"]
+    rounds[2]["decode_tps"] = 0.0
+    # Re-derive summary so summary-vs-raw recompute passes.
+    import statistics
+
+    values = [r["decode_tps"] for r in rounds]
+    bad["buckets"]["short"]["decode_tps"] = {
+        "median": float(statistics.median(values)),
+        "min": float(min(values)),
+        "max": float(max(values)),
+        "stddev": float(statistics.pstdev(values)),
+    }
+    path = _write_to_real_submissions(bad)
+    cleanup_real_submissions.append(path)
+    rc, out = _run_validate(path)
+    assert rc == 1
+    assert "rounds_raw" in out and "decode_tps" in out
+
+
+def test_validate_rejects_empty_hf_path_in_alias_entry(
+    cleanup_real_submissions, monkeypatch, tmp_path
+) -> None:
+    """If aliases.json carries an empty hf_path for an alias, the
+    submission MUST be rejected — not waved through. (Codex PR #582
+    round-7 BLOCKING.)
+
+    We patch aliases.json at the path the validate.py subprocess
+    resolves, run the validator against a payload that names a real
+    alias, and verify it raises.
+    """
+    pytest.importorskip("jsonschema")
+    payload = _good_payload()
+    path = _write_to_real_submissions(payload)
+    cleanup_real_submissions.append(path)
+
+    # Snapshot the real aliases.json and restore it via try/finally —
+    # the cleanup fixture only knows how to delete temp submission
+    # files, not how to restore a checked-in JSON.
+    real_aliases = ALIASES_PATH.read_text()
+    aliases_dict = json.loads(real_aliases)
+    target_alias = payload["model"]["alias"]
+    aliases_dict[target_alias] = {}  # missing hf_path
+    ALIASES_PATH.write_text(json.dumps(aliases_dict, indent=2))
+    try:
+        rc, out = _run_validate(path)
+        assert rc == 1
+        assert "hf_path" in out
+    finally:
+        ALIASES_PATH.write_text(real_aliases)
+
+
 def test_submission_make_pr_uses_repo_cwd(tmp_path, monkeypatch) -> None:
     """Regression: ``gh pr create`` must run with ``cwd=repo`` so the
     PR lands in the right checkout, not in whatever directory the
@@ -1052,7 +1279,14 @@ def test_submission_make_pr_uses_repo_cwd(tmp_path, monkeypatch) -> None:
     sub_path = tmp_path / "submission.json"
     sub_path.write_text("{}")
 
-    sub_mod._make_pr_via_gh(tmp_path, sub_path, payload, stdout=io.StringIO())
+    sub_mod._make_pr_via_gh(
+        tmp_path,
+        sub_path,
+        payload,
+        stdout=io.StringIO(),
+        origin_owner="raullenchai",
+        upstream_remote="origin",
+    )
 
     assert calls, "no subprocess calls captured"
     # Every step must run inside the resolved repo dir.

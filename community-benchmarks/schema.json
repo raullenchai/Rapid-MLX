@@ -73,10 +73,14 @@
         },
         "rapid_mlx": {
           "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[a-zA-Z0-9.+-]*)?$",
+          "maxLength": 64,
           "description": "`vllm_mlx.__version__`."
         },
         "mlx": {
           "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:[a-zA-Z0-9.+-]*)?$",
+          "maxLength": 64,
           "description": "`mlx.__version__`."
         },
         "python": {
@@ -93,10 +97,14 @@
       "properties": {
         "alias": {
           "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z0-9._-]+$",
           "description": "Rapid-MLX alias (must exist in `vllm_mlx/aliases.json` at submission time). The whitelist gate lives in the CLI; the GHA also re-checks."
         },
         "hf_path": {
           "type": "string",
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
           "description": "Resolved HuggingFace path, e.g. 'mlx-community/Qwen3.5-9B-4bit'."
         }
       }
@@ -202,8 +210,8 @@
             "additionalProperties": false,
             "required": ["decode_tps", "prefill_tps", "ttft_ms"],
             "properties": {
-              "decode_tps": {"type": "number", "minimum": 0, "maximum": 5000},
-              "prefill_tps": {"type": "number", "minimum": 0, "maximum": 100000},
+              "decode_tps": {"type": "number", "exclusiveMinimum": 0, "maximum": 5000},
+              "prefill_tps": {"type": "number", "exclusiveMinimum": 0, "maximum": 100000},
               "ttft_ms": {"type": "number", "minimum": 0, "maximum": 600000}
             }
           },

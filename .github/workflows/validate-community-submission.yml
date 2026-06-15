@@ -63,6 +63,43 @@ jobs:
           BASE=$(git merge-base "origin/${BASE_REF}" HEAD)
           echo "merge-base: $BASE"
 
+          # Trust model: a PR can modify ``scripts/validate.py`` and add
+          # a submission in the same commit; running the PR-head's
+          # validator means a weakened validator gets to wave its own
+          # corrupted row through. So we run TWO validators:
+          #
+          #   * Base validator (trusted, checked out from the merge-base)
+          #     against all submissions — schema + alias rules as they
+          #     stood before the PR. This is the gate.
+          #   * Head validator (PR-side) on top — so legitimate validator
+          #     changes still get exercised against the new rows. The
+          #     job fails if EITHER errors.
+          #
+          # Implementation: copy the base copies of validate.py + schema
+          # + aliases out of $BASE into /tmp/base-validator/ via
+          # ``git show``, then invoke that copy with ``PYTHONPATH`` and
+          # ``--`` arguments pointed at the head working tree. (Codex
+          # PR #582 round-7 BLOCKING.)
+          mkdir -p /tmp/base-validator/community-benchmarks/scripts \
+                   /tmp/base-validator/community-benchmarks \
+                   /tmp/base-validator/vllm_mlx
+          # ``git show`` on the base ref — these MAY not exist on the
+          # base (this PR introduces validate.py itself). When absent,
+          # the base-validator pass is a no-op and the head-side run is
+          # the only gate. ``git cat-file -e`` checks existence cheaply
+          # without erroring under ``set -e``.
+          if git cat-file -e "$BASE:community-benchmarks/scripts/validate.py" 2>/dev/null; then
+            git show "$BASE:community-benchmarks/scripts/validate.py" \
+              > /tmp/base-validator/community-benchmarks/scripts/validate.py
+            git show "$BASE:community-benchmarks/schema.json" \
+              > /tmp/base-validator/community-benchmarks/schema.json
+            git show "$BASE:vllm_mlx/aliases.json" \
+              > /tmp/base-validator/vllm_mlx/aliases.json
+            BASE_VALIDATOR=/tmp/base-validator/community-benchmarks/scripts/validate.py
+          else
+            BASE_VALIDATOR=""
+          fi
+
           # The submissions/ tree is contractually APPEND-ONLY (see
           # README "Submission storage" section). Append-only means
           # exactly one mutation is allowed: Add. Modify / Delete /
@@ -72,8 +109,11 @@ jobs:
           # through.) `--diff-filter=a` is the lowercase "anything
           # but A" — anything matching it is a rewrite and fails the
           # job. Then we validate only the Added files below.
+          # NOTE: removed ``|| true`` — a real ``git diff`` failure
+          # here used to be swallowed and the workflow continued as
+          # if the tree were clean. (Codex PR #582 round-7 NIT.)
           REWRITES=$(git diff --name-only --diff-filter=a "$BASE" HEAD \
-            -- 'community-benchmarks/submissions/*.json' || true)
+            -- 'community-benchmarks/submissions/*.json')
           if [ -n "$REWRITES" ]; then
             echo "::error::This PR modifies / deletes / renames append-only submission files:"
             echo "$REWRITES" | sed 's/^/  /'
@@ -93,7 +133,7 @@ jobs:
           SCHEMA_CHANGED=$(git diff --name-only "$BASE" HEAD -- \
             'community-benchmarks/schema.json' \
             'community-benchmarks/scripts/validate.py' \
-            'vllm_mlx/aliases.json' || true)
+            'vllm_mlx/aliases.json')
 
           if [ -n "$SCHEMA_CHANGED" ]; then
             echo "Validation inputs changed in this PR:"
@@ -105,10 +145,10 @@ jobs:
           # Validate only ADDED files. NUL-separated for safe argv
           # handling (-z disables pathname quoting AND uses NUL as
           # the field separator). Empty output means no new submission
-          # files.
+          # files. (Round-7 NIT: removed the trailing ``|| true``.)
           git diff -z --name-only --diff-filter=A "$BASE" HEAD \
             -- 'community-benchmarks/submissions/*.json' \
-            > /tmp/changed-paths.nul || true
+            > /tmp/changed-paths.nul
 
           if [ ! -s /tmp/changed-paths.nul ]; then
             if [ -z "$SCHEMA_CHANGED" ]; then
@@ -125,9 +165,19 @@ jobs:
           # the validator reads the raw NUL stream below.
           tr '\0' '\n' < /tmp/changed-paths.nul
 
+          # Gate 1: trusted base validator over added files (when one
+          # exists on the base — this PR introduces validate.py so the
+          # first run skips this).
+          if [ -n "$BASE_VALIDATOR" ]; then
+            echo "Running base-branch (trusted) validate.py against added files…"
+            xargs -0 -r python "$BASE_VALIDATOR" < /tmp/changed-paths.nul
+          fi
+
+          # Gate 2: head validator (the PR's own version).
           # xargs -0 reads the NUL-separated paths and appends them
           # as argv entries. -r ensures we exit 0 cleanly if the file
           # is empty (already short-circuited above, but defensive).
           # The validator's exit code becomes the job's exit code.
+          echo "Running PR-head validate.py against added files…"
           xargs -0 -r python community-benchmarks/scripts/validate.py \
             < /tmp/changed-paths.nul

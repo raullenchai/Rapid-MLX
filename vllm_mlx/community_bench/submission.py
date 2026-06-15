@@ -145,8 +145,11 @@ def _ask_consent(payload: dict, *, stdin=None, stdout=None) -> bool:
     print(_pretty(payload), file=out)
     print("=" * 72, file=out)
     print(
-        "Nothing has left your machine yet. Press [y] to open a PR with "
-        "the JSON above, or [Enter] to cancel.",
+        "Nothing has left your machine yet. Pressing [y] consents to two "
+        "network operations: `git push` to your `origin` remote on "
+        "github.com, then `gh pr create` against raullenchai/Rapid-MLX. "
+        "Both run under your existing git/gh credentials. Press [Enter] "
+        "to cancel.",
         file=out,
     )
     out.flush()
@@ -225,22 +228,39 @@ def _find_upstream_remote(repo: Path) -> str | None:
     return None
 
 
-def _origin_host_is_github(repo: Path) -> bool:
-    """True iff ``origin`` resolves to a host of ``github.com``.
+def _origin_is_safe_github(repo: Path) -> tuple[bool, str | None]:
+    """Validate every URL ``git push origin`` would talk to.
 
-    We push to ``origin``, so origin must be on GitHub — otherwise
-    a contributor with ``origin = some-random-host.com/x/y`` would
-    have us push their payload to an arbitrary third-party host on
-    the strength of an ``upstream`` remote pointing at the canonical
-    repo. Defeats the variant of the round-6 URL-spoofing BLOCKING
-    where the bad URL hides in ``origin`` while ``upstream`` looks
-    legitimate.
+    Returns ``(is_safe, owner)`` — ``owner`` is the github.com owner
+    of the origin remote (e.g. ``"some-contributor"``), needed to
+    construct ``--head owner:branch`` for fork PRs.
+
+    A git remote can carry separate fetch and push URLs (``url`` and
+    ``pushurl`` in ``.git/config``), and ``git push origin`` honours
+    ``pushurl``. The old check only inspected ``remote.origin.url``,
+    so a malicious or misconfigured repo with a github.com fetch URL
+    plus a ``pushurl`` pointing somewhere else would pass the gate
+    and then push the consented payload to that other host. (Codex
+    PR #582 round-7 BLOCKING.) ``git remote get-url --push --all``
+    enumerates every push destination — we require every single one
+    to resolve to ``github.com`` AND to share the same owner so the
+    ``--head owner:branch`` we generate for the PR is unambiguous.
     """
-    r = _run_git(repo, "remote", "get-url", "origin")
+    r = _run_git(repo, "remote", "get-url", "--push", "--all", "origin")
     if r.returncode != 0:
-        return False
-    host, _ = _parse_git_remote(r.stdout.strip())
-    return host == "github.com"
+        return False, None
+    urls = [line for line in r.stdout.splitlines() if line.strip()]
+    if not urls:
+        return False, None
+    owners: set[str] = set()
+    for url in urls:
+        host, path = _parse_git_remote(url.strip())
+        if host != "github.com" or not path or "/" not in path:
+            return False, None
+        owners.add(path.split("/", 1)[0])
+    if len(owners) != 1:
+        return False, None
+    return True, owners.pop()
 
 
 def _parse_git_remote(url: str) -> tuple[str | None, str | None]:
@@ -304,6 +324,8 @@ def _make_pr_via_gh(
     payload: dict,
     *,
     stdout,
+    origin_owner: str,
+    upstream_remote: str,
 ) -> tuple[bool, set[str]]:
     """Branch + commit + push + ``gh pr create``. Returns (success, completed_steps).
 
@@ -331,8 +353,34 @@ def _make_pr_via_gh(
         )
         return False, set()
 
+    # Branch from the upstream's default branch tip, not whatever
+    # commit the user happens to have checked out. Without this, a
+    # contributor with a feature branch checked out (their own work)
+    # would create the community-bench branch on top of those commits,
+    # and the resulting PR would carry their unrelated work too —
+    # potentially leaking private code into a public bench PR. (Codex
+    # PR #582 round-7 BLOCKING.) ``git fetch <upstream> main`` writes
+    # FETCH_HEAD; the next ``checkout -b ... FETCH_HEAD`` branches
+    # from THAT, regardless of HEAD. Fail closed if the fetch errors —
+    # we won't silently fall back to the local HEAD.
+    base_ref = "main"
     steps: list[tuple[str, list[str]]] = [
-        ("checkout", ["git", "-C", str(repo), "checkout", "-b", branch]),
+        (
+            "fetch_base",
+            [
+                "git",
+                "-C",
+                str(repo),
+                "fetch",
+                "--quiet",
+                upstream_remote,
+                base_ref,
+            ],
+        ),
+        (
+            "checkout",
+            ["git", "-C", str(repo), "checkout", "-b", branch, "FETCH_HEAD"],
+        ),
         ("stage", ["git", "-C", str(repo), "add", rel_path]),
         (
             "commit",
@@ -361,8 +409,15 @@ def _make_pr_via_gh(
                 # community DB. (Codex PR #582 round-6 BLOCKING.)
                 "--repo",
                 UPSTREAM_REPO_FOR_GH,
+                # ``--head <owner>:<branch>`` is required when origin
+                # is a fork — ``gh`` otherwise looks for ``<branch>``
+                # inside the target repo (raullenchai/Rapid-MLX), which
+                # doesn't exist because we pushed to the contributor's
+                # fork. (Codex PR #582 round-7 BLOCKING.) For a
+                # maintainer's direct checkout the ``owner`` equals
+                # ``raullenchai`` so the prefix is harmless.
                 "--head",
-                branch,
+                f"{origin_owner}:{branch}",
                 "--title",
                 f"community-bench: {payload['model']['alias']} on "
                 f"{payload['hardware']['chip']}",
@@ -487,6 +542,10 @@ def _print_manual_fallback(
     # If we already pushed but pr_create failed, just retry pr_create —
     # the user shouldn't re-do the branch ops. ``--repo`` forces the
     # PR target to upstream regardless of whether origin is a fork.
+    # The owner-prefixed ``--head`` is omitted from the manual line
+    # because the contributor running it locally already has gh's
+    # fork-aware default applied; the explicit prefix only matters
+    # when we shell out non-interactively.
     print(
         f"    gh pr create --repo {UPSTREAM_REPO_FOR_GH} --head {branch}",
         file=stdout,
@@ -564,12 +623,14 @@ def submit_interactive(
     # can't redirect the push by setting a malicious origin while
     # leaving a real upstream remote as a decoy.
     upstream_remote = _find_upstream_remote(repo)
-    if upstream_remote is None or not _origin_host_is_github(repo):
+    origin_ok, origin_owner = _origin_is_safe_github(repo)
+    if upstream_remote is None or not origin_ok or origin_owner is None:
         print(
             f"  Error: {repo} is a git repo but no remote points at "
-            f"github.com/{UPSTREAM_OWNER_REPO}, or 'origin' is not on "
-            f"github.com. --submit needs either a direct checkout of "
-            f"raullenchai/Rapid-MLX or a fork with an upstream remote: "
+            f"github.com/{UPSTREAM_OWNER_REPO}, or 'origin' (including any "
+            f"pushurl override) is not a single GitHub repo. --submit "
+            f"needs either a direct checkout of raullenchai/Rapid-MLX or "
+            f"a fork with an upstream remote: "
             f"\n    git remote add upstream https://github.com/{UPSTREAM_REPO_FOR_GH}",
             file=out,
         )
@@ -602,7 +663,14 @@ def submit_interactive(
         _print_thanks(payload, stdout=out)
         return 0
 
-    pr_ok, completed_steps = _make_pr_via_gh(repo, submission_path, payload, stdout=out)
+    pr_ok, completed_steps = _make_pr_via_gh(
+        repo,
+        submission_path,
+        payload,
+        stdout=out,
+        origin_owner=origin_owner,
+        upstream_remote=upstream_remote,
+    )
     if pr_ok:
         print("\n  PR opened successfully.", file=out)
     else:

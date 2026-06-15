@@ -18,10 +18,12 @@ Hardcoded:
   real-world line as a second, separately-bucketed submission.
 - Synthetic random token prompt seeded by ``PROMPT_SEED`` so every
   submitter sends the exact same bytes through the model.
-- Decode TPS formula: ``output_tokens / (t_end − t_first_token)``,
-  i.e. vLLM TPOT / mlx_lm ``generation_tps`` semantics — excludes
-  prefill so the number is the steady-state decoder speed, not a
-  conflated end-to-end rate.
+- Decode TPS formula: ``(output_tokens − 1) / (t_end − t_first_token)``,
+  i.e. vLLM TPOT / llama.cpp ``tg`` semantics — the window measures
+  inter-token gaps for tokens 2..N (the first token lands at
+  ``t_first_token`` itself), so dividing by ``N`` instead of ``N − 1``
+  would underreport TPS by N/(N−1). Excludes prefill so the number
+  is the steady-state decoder speed, not a conflated end-to-end rate.
 """
 
 from __future__ import annotations
@@ -259,6 +261,8 @@ async def _run_bucket(
     sampling_params_factory,
     target_prompt_tokens: int,
     max_tokens: int,
+    *,
+    reset_peak_after_warmup: bool = False,
 ) -> tuple[BucketResult, list[int]]:
     """Run one bucket: warmup + 5 measured rounds.
 
@@ -276,6 +280,18 @@ async def _run_bucket(
         await _run_one_round(
             engine, prompt_text, sampling, target_prompt_tokens, max_tokens
         )
+
+    # Reset the Metal peak-memory counter AFTER warmup, immediately
+    # before the measured rounds. Resetting upstream of warmup (the
+    # round-3 NIT location) still folded warmup JIT + kernel-cache
+    # allocations into ``peak_ram_mb``, contradicting the contract
+    # that peak RAM reflects bench-time allocation. (Codex PR #582
+    # round-7 BLOCKING.) Only reset for the FIRST bucket — resetting
+    # between buckets would wipe the prior bucket's peak and report
+    # only the last one. The ``run_standardized_bench`` orchestrator
+    # sets this flag for short and leaves it False for long.
+    if reset_peak_after_warmup:
+        _reset_peak_ram()
 
     measured: list[RoundResult] = []
     for _ in range(ROUNDS_MEASURED):
@@ -326,16 +342,19 @@ async def run_standardized_bench(
 
     factory = _make_sampling_params_factory(sampling)
 
-    # Reset the Metal peak-memory counter BEFORE measured rounds begin
-    # so ``peak_ram_mb`` reflects what the bench actually allocated, not
-    # what the model load / JIT warm-up did. (Codex PR #582 round-3
-    # NIT.) ``reset_peak_memory`` is best-effort: older mlx versions
-    # don't expose it, in which case the reported number remains
-    # process-peak — still useful, just not as precise.
-    _reset_peak_ram()
+    # NOTE: peak-memory reset moved INTO ``_run_bucket`` (after warmup,
+    # before measured rounds) — see comment at ``_reset_peak_ram()``
+    # call site there. Resetting once up here counts warmup JIT
+    # allocations into ``peak_ram_mb``. (Codex PR #582 round-7
+    # BLOCKING.)
 
     short_result, short_ids = await _run_bucket(
-        engine, tokenizer, factory, SHORT_PROMPT_TOKENS, SHORT_MAX_TOKENS
+        engine,
+        tokenizer,
+        factory,
+        SHORT_PROMPT_TOKENS,
+        SHORT_MAX_TOKENS,
+        reset_peak_after_warmup=True,
     )
     long_result, long_ids = await _run_bucket(
         engine, tokenizer, factory, LONG_PROMPT_TOKENS, LONG_MAX_TOKENS
