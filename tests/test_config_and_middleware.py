@@ -291,8 +291,7 @@ class TestRateLimitClientId:
         client_id_b = _rate_limit_client_id(Request(scope_b))
 
         assert client_id_a == client_id_b, (
-            f"Same /24 must share a bucket, "
-            f"got {client_id_a!r} != {client_id_b!r}"
+            f"Same /24 must share a bucket, got {client_id_a!r} != {client_id_b!r}"
         )
 
     def test_rate_limit_same_token_via_bearer_and_x_api_key_share_bucket(self):
