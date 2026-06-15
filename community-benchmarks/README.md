@@ -15,7 +15,8 @@ The CLI:
 3. Pretty-prints the exact JSON it's about to submit and asks for your `y/N` confirmation. **Nothing leaves your machine without that y.**
 4. On `y`, opens a PR via your local `gh` CLI (uses your existing GitHub auth — no new token required). Branch and PR title are auto-generated.
 5. A GitHub Action validates the schema + sanity-checks the numbers; on green, a maintainer merges.
-6. The aggregator (`scripts/aggregate.py`) rebuilds `aggregated.json`, which the website reads.
+
+The aggregator + website (`aggregated.json` / sortable table) is intentionally **not** in this PR — we want submissions to land in the raw store first so the aggregator can be designed against real shapes rather than speculation.
 
 ## What we collect
 
@@ -34,17 +35,17 @@ Exactly these fields. Anything not on this list is **not** read, sent, or stored
 | model.alias | CLI argument | what was benched |
 | buckets | bench output | the actual numbers |
 | notes | optional `--notes "..."` | "on battery", "fresh boot", etc. |
-| submission_id | random uuid4 (truncated) | de-dup key for the aggregator |
+| submission_id | random uuid4 (truncated) | de-dup key for future tooling |
 | submitted_at | `datetime.utcnow().isoformat()` | when |
 
 **Explicitly not collected**: username, hostname, hardware serial, hardware UUID, IP, MAC address, file paths, prompt text, model output, environment variables, any other data from your machine. The bench uses **synthetic random token sequences** (seeded per `schema_version`), so no user prompt or content ever enters the submission. The only network call is the `gh pr create` you explicitly authorize.
 
 ## What we DO with the data
 
-- Aggregate into `aggregated.json` keyed by `(chip, ram_gb, cpu_cores, gpu_cores, model.alias, rapid_mlx_version, sampling)`. Per bucket: median + IQR + sample count. `cpu_cores`/`gpu_cores` are part of the key so the 16-core and 20-core M4 Pro SKUs (same brand string, different silicon) don't collapse.
-- Render on `rapid-mlx.com/community-benchmarks` — sortable / filterable table.
+- Store each submission as a JSON file under `submissions/`. That's the raw store; future tooling reads from it.
 - Per-contributor attribution: the PR author (your GitHub handle) is the only contributor signal; no other identity is tracked.
 - License: all submissions are CC0 (`SPDX-License-Identifier: CC0-1.0`). The data is community-owned.
+- Bucketing keys we plan to expose to future readers: `(chip, ram_gb, cpu_cores, gpu_cores, model.alias, rapid_mlx_version, sampling)`. The schema already carries each of these so we don't lose information now.
 
 ## Standardized bench config
 
@@ -58,12 +59,12 @@ Locked by `--submit`. If you want to tune knobs you have to drop `--submit` (the
 | Long bucket decode | 512 tokens | matches Rapid-MLX's existing `long_decode_tps` |
 | Rounds | 5 measured + 1 warmup discarded | `llama-bench -r 5` |
 | Sampling | greedy (temp=0, top_p=1) | comparable to llama-bench / TGI / MLPerf |
-| `decode_tps` formula | `output_tokens / (t_end − t_first_token)` | excludes prefill, matches vLLM TPOT + MLX-LM `generation_tps` |
+| `decode_tps` formula | `(output_tokens − 1) / (t_end − t_first_token)` | excludes prefill **and** the first token's decode (it lands at `t_first_token`); matches vLLM TPOT / llama.cpp `tg` semantics. For `N == 1` we fall back to `N / window` to avoid a 0/0. |
 | `prefill_tps` formula | `prompt_tokens / (t_first_token − t_start)` | matches llama.cpp `pp` |
 | `ttft_ms` | `(t_first_token − t_request_in) * 1000` | end-to-end first-token latency |
 | Reported per bucket | `decode_tps`, `prefill_tps`, `ttft_ms`, `peak_ram_mb` | direct overlap with llama-bench + AA + repo's existing `reports/benchmarks/*.json` |
 
-You can additionally pass `--sampled` to run a **second** line at temp=0.7, top_p=0.9 (real-world sampling). Stored as a separate submission with `sampling="sampled"` — the aggregator buckets greedy and sampled separately so they're directly comparable to AA's user-facing numbers.
+You can additionally pass `--sampled` to run a **second** line at temp=0.7, top_p=0.9 (real-world sampling). Stored as a separate submission with `sampling="sampled"` — `sampling` is part of every submission's bucket key so greedy and sampled rows never collapse into one number downstream.
 
 ## Submission storage
 
@@ -73,13 +74,13 @@ Append-only. One file per submission under `submissions/`:
 submissions/<YYYYMMDD>-<chip-slug>-<model-slug>-<submission_id>.json
 ```
 
-Duplicate re-runs from the same machine are allowed and **encouraged** — more samples → tighter median. Each re-run is a fresh `rapid-mlx bench --submit` invocation that generates its own `submission_id`; copying an existing file under a new name does NOT add a second sample (the aggregator de-duplicates by `submission_id` so one machine can't multiply its vote). Outliers are kept in the raw store (auditable) but downweighted in the displayed median (IQR fences).
+Duplicate re-runs from the same machine are allowed and **encouraged** — more samples → tighter median. Each re-run is a fresh `rapid-mlx bench --submit` invocation that generates its own `submission_id`; copying an existing file under a new name does NOT add a second sample (the validator rejects duplicate `submission_id`s so one machine can't multiply its vote). Outliers are kept in the raw store for full auditability.
 
 Submissions are **append-only**: PRs that delete or rename existing rows are rejected by CI. Apply corrections via a new submission rather than mutating history.
 
 ## For maintainers
 
 - Schema: `schema.json` (JSON Schema draft 2020-12, additionalProperties: false everywhere).
-- Aggregator: `scripts/aggregate.py` — pure stdlib, no deps. Rebuilds `aggregated.json` on every merge into `main`.
 - CI: `.github/workflows/validate-community-submission.yml` validates incoming submissions and runs sanity checks (tps > 0, chip on whitelist, etc.). A maintainer reviews and merges; auto-merge can be added later if the false-positive rate stays low.
-- Bumping `schema_version`: increment in `schema.json` + `vllm_mlx/community_bench/runner.py::SCHEMA_VERSION`. Old submissions are kept; the aggregator skips entries it doesn't understand.
+- Bumping `schema_version`: increment in `schema.json` + `vllm_mlx/community_bench/runner.py::SCHEMA_VERSION`. Old submissions are kept; readers should skip entries with an unknown version.
+- Aggregator + website are explicitly deferred to a follow-up PR once the raw store has enough real submissions to design against.

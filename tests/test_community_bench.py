@@ -13,8 +13,10 @@ Scope: every layer that doesn't require loading an MLX model:
   ``submit_interactive`` end-to-end with monkeypatched git/gh.
 - ``community-benchmarks/scripts/validate.py`` — every failure mode
   on synthetic JSON.
-- ``community-benchmarks/scripts/aggregate.py`` — grouping + percentile
-  output on synthetic submissions.
+
+The aggregator + website are intentionally deferred to a follow-up
+PR (see ``community-benchmarks/README.md``), so this PR has no
+aggregator tests.
 
 The real end-to-end bench (load model → run rounds → submit) is not
 unit-testable without spinning up MLX; it's covered manually before
@@ -446,12 +448,13 @@ def test_submit_interactive_rejects_wrong_repo(tmp_path: Path) -> None:
     assert "raullenchai/Rapid-MLX" in text
 
 
-def test_submit_interactive_accepts_ssh_and_https_remotes(
+def test_find_upstream_remote_accepts_ssh_and_https(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """``_remote_is_rapid_mlx`` must accept both git URL forms with or
-    without the trailing ``.git`` suffix."""
-    from vllm_mlx.community_bench.submission import _remote_is_rapid_mlx
+    """``_find_upstream_remote`` must accept all git URL forms with or
+    without the trailing ``.git`` suffix and on either ``origin`` or a
+    fork-style ``upstream`` remote."""
+    from vllm_mlx.community_bench.submission import _find_upstream_remote
 
     # Numeric-prefixed dirs avoid case-insensitive filesystem
     # collisions — macOS APFS folds case by default, so two URL
@@ -475,7 +478,78 @@ def test_submit_interactive_accepts_ssh_and_https_remotes(
             check=True,
             capture_output=True,
         )
-        assert _remote_is_rapid_mlx(d), f"should accept {url!r}"
+        assert _find_upstream_remote(d) == "origin", f"should accept {url!r}"
+
+
+def test_find_upstream_remote_accepts_fork_with_upstream(
+    tmp_path: Path,
+) -> None:
+    """Standard community fork: origin is the user's fork, upstream is
+    raullenchai/Rapid-MLX. Both must be recognized so the contributor
+    can submit. (Codex PR #582 round-6 BLOCKING.)"""
+    from vllm_mlx.community_bench.submission import (
+        _find_upstream_remote,
+        _origin_host_is_github,
+    )
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/some-contributor/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "upstream",
+            "https://github.com/raullenchai/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert _find_upstream_remote(tmp_path) == "upstream"
+    assert _origin_host_is_github(tmp_path) is True
+
+
+def test_find_upstream_remote_rejects_evil_github_lookalike(
+    tmp_path: Path,
+) -> None:
+    """``endswith('github.com/raullenchai/rapid-mlx')`` accepts
+    ``evilgithub.com/raullenchai/rapid-mlx``; our parser must not.
+    (Codex PR #582 round-6 BLOCKING — URL spoofing.)"""
+    from vllm_mlx.community_bench.submission import _find_upstream_remote
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://evilgithub.com/raullenchai/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert _find_upstream_remote(tmp_path) is None
 
 
 def test_submit_interactive_writes_file_then_falls_back_on_dirty_tree(
@@ -939,187 +1013,6 @@ def test_validate_rejects_summary_mismatch_with_rounds(
     assert "rounds_raw" in out and "median" in out
 
 
-# ---------------------------------------------------------------------------
-# aggregate.py
-# ---------------------------------------------------------------------------
-
-
-def _run_aggregate() -> tuple[int, str]:
-    """Run aggregate.py in a subprocess."""
-    r = subprocess.run(
-        [sys.executable, str(SCRIPTS_DIR / "aggregate.py")],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return r.returncode, r.stdout + r.stderr
-
-
-def test_aggregate_percentile_single_value() -> None:
-    """One sample ⇒ every percentile is that sample."""
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        import aggregate as agg
-    finally:
-        sys.path.pop(0)
-    assert agg._percentile([5.0], 25.0) == 5.0
-    assert agg._percentile([5.0], 75.0) == 5.0
-
-
-def test_aggregate_percentile_linear() -> None:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        import aggregate as agg
-    finally:
-        sys.path.pop(0)
-    # p50 of [1,2,3,4,5] is 3.0 — direct hit on index 2
-    assert agg._percentile([1.0, 2.0, 3.0, 4.0, 5.0], 50.0) == 3.0
-    # p25 of [1,2,3,4,5] is 2.0 — direct hit on index 1
-    assert agg._percentile([1.0, 2.0, 3.0, 4.0, 5.0], 25.0) == 2.0
-
-
-def test_aggregate_agg_empty_returns_zeros() -> None:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        import aggregate as agg
-    finally:
-        sys.path.pop(0)
-    r = agg._agg([])
-    assert r["count"] == 0
-    assert r["median"] == 0.0
-
-
-def test_aggregate_groups_by_chip_and_alias(tmp_path: Path) -> None:
-    """Two submissions with same key collapse to one row; sample_count=2."""
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        import aggregate as agg
-    finally:
-        sys.path.pop(0)
-
-    def mk_payload(decode_tps: float, sid: str) -> dict:
-        # Distinct submission_ids — the aggregator de-dupes on this
-        # field, so re-using one would collapse the two payloads to
-        # a single sample (codex round-3 BLOCKING) and break this
-        # test's intent (which is "two independent submissions").
-        p = _good_payload()
-        p["submission_id"] = sid
-        for r in p["buckets"]["short"]["rounds_raw"]:
-            r["decode_tps"] = decode_tps
-        for r in p["buckets"]["long"]["rounds_raw"]:
-            r["decode_tps"] = decode_tps
-        p["buckets"]["short"]["decode_tps"] = {
-            "median": decode_tps,
-            "min": decode_tps,
-            "max": decode_tps,
-            "stddev": 0.0,
-        }
-        p["buckets"]["long"]["decode_tps"] = {
-            "median": decode_tps,
-            "min": decode_tps,
-            "max": decode_tps,
-            "stddev": 0.0,
-        }
-        return p
-
-    rows = agg._aggregate(
-        [mk_payload(40.0, "aaaaaaaa0001"), mk_payload(50.0, "aaaaaaaa0002")]
-    )
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["sample_count"] == 2
-    assert row["buckets"]["short"]["decode_tps"]["count"] == 2
-    assert row["buckets"]["short"]["decode_tps"]["median"] == 45.0
-
-
-def test_aggregate_skips_unsupported_schema_version(tmp_path: Path) -> None:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        import aggregate as agg
-    finally:
-        sys.path.pop(0)
-
-    submissions_dir = tmp_path / "submissions"
-    submissions_dir.mkdir()
-    good = _good_payload()
-    bad = _good_payload()
-    bad["schema_version"] = 999
-    (submissions_dir / "good.json").write_text(json.dumps(good))
-    (submissions_dir / "bad.json").write_text(json.dumps(bad))
-    loaded = agg._load_all(submissions_dir.glob("*.json"))
-    assert len(loaded) == 1
-    assert loaded[0]["schema_version"] == 1
-
-
-def test_aggregate_distinguishes_cpu_gpu_core_variants() -> None:
-    """Regression: same chip + RAM but different core counts must NOT
-    collapse into one row (e.g. 16-core vs 20-core M4 Pro GPU SKUs).
-    (Codex PR #582 round-3 BLOCKING.)
-    """
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        import aggregate as agg
-    finally:
-        sys.path.pop(0)
-
-    a = _good_payload()
-    a["submission_id"] = "111111111111"
-    a["hardware"]["gpu_cores"] = 16
-    b = _good_payload()
-    b["submission_id"] = "222222222222"
-    b["hardware"]["gpu_cores"] = 20
-    rows = agg._aggregate([a, b])
-    # Two distinct GPU-core counts ⇒ two rows.
-    assert len(rows) == 2
-    gpu_cores_seen = {r["gpu_cores"] for r in rows}
-    assert gpu_cores_seen == {16, 20}
-
-
-def test_aggregate_dedupes_by_submission_id() -> None:
-    """Regression: two files with the same ``submission_id`` count as
-    one sample, not two. (Codex PR #582 round-3 BLOCKING.)
-    """
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        import aggregate as agg
-    finally:
-        sys.path.pop(0)
-
-    same_id = "deadbeef0000"
-    a = _good_payload()
-    a["submission_id"] = same_id
-    b = _good_payload()
-    b["submission_id"] = same_id  # duplicate
-    rows = agg._aggregate([a, b])
-    assert len(rows) == 1
-    assert rows[0]["sample_count"] == 1, (
-        "duplicate submission_id should be counted once, not twice"
-    )
-
-
-def test_aggregate_survives_malformed_submission() -> None:
-    """Regression: a hand-edited submission missing required fields
-    must NOT crash the entire aggregate run (Codex PR #582 round-2
-    BLOCKING). One bad file in submissions/ would otherwise DoS the
-    website's data pipeline.
-    """
-    sys.path.insert(0, str(SCRIPTS_DIR))
-    try:
-        import aggregate as agg
-    finally:
-        sys.path.pop(0)
-
-    good = _good_payload()
-    # Drop a required field for ``_bucket_key`` — would have crashed
-    # the aggregate before the fix.
-    malformed = _good_payload()
-    malformed["submission_id"] = "ffffffffffff"
-    del malformed["software"]["rapid_mlx"]
-    rows = agg._aggregate([good, malformed])
-    # The good submission still produces a row; the bad one is skipped.
-    assert len(rows) == 1
-
-
 def test_submission_make_pr_uses_repo_cwd(tmp_path, monkeypatch) -> None:
     """Regression: ``gh pr create`` must run with ``cwd=repo`` so the
     PR lands in the right checkout, not in whatever directory the
@@ -1268,6 +1161,7 @@ def test_decode_tps_formula_uses_n_minus_one(monkeypatch) -> None:
             "synthetic prompt",
             SamplingParams(max_tokens=6, temperature=0.0, top_p=1.0, top_k=0),
             target_prompt_tokens=512,
+            expected_completion_tokens=6,
         )
 
     result = asyncio.run(_run())
@@ -1277,3 +1171,62 @@ def test_decode_tps_formula_uses_n_minus_one(monkeypatch) -> None:
     assert abs(result.decode_tps - 5.0) < 1e-9, (
         f"decode_tps={result.decode_tps}; expected 5.0 = (6-1)/1.0"
     )
+
+
+def test_run_one_round_rejects_eos_early_stop(monkeypatch) -> None:
+    """Regression: a round that produces FEWER tokens than the bucket's
+    ``max_tokens`` (e.g. because the model emitted EOS early) must
+    fail loudly rather than silently publish a non-comparable number.
+    (Codex PR #582 round-6 BLOCKING.)"""
+    import asyncio
+
+    from vllm_mlx.community_bench import runner
+
+    class _FakeOutput:
+        def __init__(
+            self,
+            new_token_ids: list[int],
+            prompt_tokens: int = 0,
+            completion_tokens: int = 0,
+            output_token_ids: list[int] | None = None,
+            finished: bool = False,
+        ):
+            self.new_token_ids = new_token_ids
+            self.prompt_tokens = prompt_tokens
+            self.completion_tokens = completion_tokens
+            self.output_token_ids = output_token_ids or []
+            self.finished = finished
+
+    class _FakeEngine:
+        async def add_request(self, prompt, params):
+            return "rid"
+
+        async def stream_outputs(self, rid, timeout):
+            yield _FakeOutput(new_token_ids=[1])
+            for i in range(2):
+                yield _FakeOutput(new_token_ids=[i + 2])
+            # Only 3 tokens emitted; bucket asked for 6.
+            yield _FakeOutput(
+                new_token_ids=[],
+                prompt_tokens=512,
+                completion_tokens=3,
+                output_token_ids=[1, 2, 3],
+                finished=True,
+            )
+
+    times = iter([0.0, 1.0, 2.0])
+    monkeypatch.setattr(runner.time, "perf_counter", lambda: next(times))
+
+    async def _run():
+        from vllm_mlx.request import SamplingParams
+
+        return await runner._run_one_round(
+            _FakeEngine(),
+            "synthetic prompt",
+            SamplingParams(max_tokens=6, temperature=0.0, top_p=1.0, top_k=0),
+            target_prompt_tokens=512,
+            expected_completion_tokens=6,
+        )
+
+    with pytest.raises(RuntimeError, match="generated 3 tokens"):
+        asyncio.run(_run())

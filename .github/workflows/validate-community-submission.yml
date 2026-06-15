@@ -81,6 +81,27 @@ jobs:
             exit 1
           fi
 
+          # Independently detect whether any *validation input* changed
+          # — schema, validator script, or alias whitelist. If so, the
+          # entire corpus must be re-checked against the new rules even
+          # when this PR also adds new submission files. Earlier
+          # revisions only ran full-corpus validation when no added
+          # files existed, so a PR that bumped the schema AND added a
+          # row could land schema-breaking changes against every
+          # already-merged submission without any of them being
+          # checked. (Codex PR #582 round-6 BLOCKING.)
+          SCHEMA_CHANGED=$(git diff --name-only "$BASE" HEAD -- \
+            'community-benchmarks/schema.json' \
+            'community-benchmarks/scripts/validate.py' \
+            'vllm_mlx/aliases.json' || true)
+
+          if [ -n "$SCHEMA_CHANGED" ]; then
+            echo "Validation inputs changed in this PR:"
+            echo "$SCHEMA_CHANGED" | sed 's/^/  /'
+            echo "Re-validating the entire submission corpus against the new schema/validator/aliases."
+            python community-benchmarks/scripts/validate.py
+          fi
+
           # Validate only ADDED files. NUL-separated for safe argv
           # handling (-z disables pathname quoting AND uses NUL as
           # the field separator). Empty output means no new submission
@@ -90,16 +111,13 @@ jobs:
             > /tmp/changed-paths.nul || true
 
           if [ ! -s /tmp/changed-paths.nul ]; then
-            # No new submission JSONs in this PR, but the workflow was
-            # triggered — that means one of the validation inputs
-            # changed (schema, validator script, or alias whitelist).
-            # Re-validate every existing submission so a schema bump or
-            # alias rename can't accidentally orphan old rows. (Codex
-            # PR #582 round-2 NIT.) ``validate.py`` with no argv
-            # defaults to all files in submissions/.
-            echo "No submission files in this PR diff — re-validating the entire submission corpus against the changed schema/validator/aliases."
-            python community-benchmarks/scripts/validate.py
-            exit $?
+            if [ -z "$SCHEMA_CHANGED" ]; then
+              # Workflow triggered but nothing relevant changed —
+              # shouldn't happen given the path filter, but bail
+              # cleanly if it does.
+              echo "No submission files added and no validation inputs changed; nothing to validate."
+            fi
+            exit 0
           fi
 
           echo "Changed submission files:"

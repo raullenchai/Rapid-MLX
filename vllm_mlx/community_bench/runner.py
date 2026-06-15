@@ -168,6 +168,7 @@ async def _run_one_round(
     prompt_text: str,
     sampling_params,
     target_prompt_tokens: int,
+    expected_completion_tokens: int,
 ) -> RoundResult:
     """Drive one bench round through ``AsyncEngineCore`` and capture timing.
 
@@ -199,6 +200,27 @@ async def _run_one_round(
     completion_tokens = last_output.completion_tokens or len(
         last_output.output_token_ids
     )
+
+    # EOS / early-stop guard. The standardized bench depends on every
+    # round generating *exactly* ``max_tokens`` (128 short / 512 long)
+    # so cross-machine numbers are comparable. If the model emits an
+    # EOS token early — e.g. because the synthetic random-token prompt
+    # happens to nudge it toward a stop — the round terminates with
+    # fewer tokens but ``decode_tps = (N-1)/window`` still computes
+    # against the shorter N. The reported number is then NOT a
+    # tg128 / tg512 result and silently breaks the comparability
+    # contract advertised in the README and schema. (Codex PR #582
+    # round-6 BLOCKING.) Fail the round instead — the caller can
+    # surface a clear error rather than publishing a wrong number.
+    if completion_tokens != expected_completion_tokens:
+        raise RuntimeError(
+            f"bench round generated {completion_tokens} tokens but the "
+            f"standardized bench requires exactly {expected_completion_tokens} "
+            f"(model emitted EOS early or hit a stop sequence). Submitting "
+            f"this number would break comparability with other rows in the "
+            f"community DB. Re-run the bench; if the problem reproduces, "
+            f"this model alias is not suitable for the standardized bench."
+        )
 
     prefill_window_s = max(t_first_token - t_start, 1e-6)
     decode_window_s = max(t_end - t_first_token, 1e-6)
@@ -251,12 +273,16 @@ async def _run_bucket(
     # Warmup rounds (discarded — first-pass JIT + kernel cache warm-up
     # dominates these and would skew the median).
     for _ in range(ROUNDS_WARMUP):
-        await _run_one_round(engine, prompt_text, sampling, target_prompt_tokens)
+        await _run_one_round(
+            engine, prompt_text, sampling, target_prompt_tokens, max_tokens
+        )
 
     measured: list[RoundResult] = []
     for _ in range(ROUNDS_MEASURED):
         measured.append(
-            await _run_one_round(engine, prompt_text, sampling, target_prompt_tokens)
+            await _run_one_round(
+                engine, prompt_text, sampling, target_prompt_tokens, max_tokens
+            )
         )
 
     return BucketResult(rounds_raw=measured), prompt_ids

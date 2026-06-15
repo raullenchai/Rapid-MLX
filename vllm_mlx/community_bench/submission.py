@@ -174,27 +174,103 @@ def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _remote_is_rapid_mlx(repo: Path) -> bool:
-    """True iff ``origin`` resolves to ``raullenchai/Rapid-MLX``.
+UPSTREAM_OWNER_REPO = "raullenchai/rapid-mlx"
+UPSTREAM_REPO_FOR_GH = "raullenchai/Rapid-MLX"
 
-    Accepts both forms ``git`` itself emits:
-        https://github.com/raullenchai/Rapid-MLX(.git)
-        git@github.com:raullenchai/Rapid-MLX(.git)
 
-    Lower-cased compare because GitHub URLs are case-insensitive but
-    user-set remotes might differ in capitalisation. We deliberately
-    DON'T accept arbitrary forks here — a fork's PR can still target
-    upstream, but the user setting that up is signalling they want it.
-    The fail-closed default is the right one for "I just ran the
-    bench in some random repo by accident."
+def _list_remotes(repo: Path) -> dict[str, tuple[str | None, str | None]]:
+    """Return ``{remote_name: (host, owner/repo)}`` for every git remote.
+
+    Parsing each line of ``git remote -v`` (which emits per-fetch/push
+    rows for each remote) and deduplicating to one row per remote name.
+    Values are produced by ``_parse_git_remote``; unparseable URLs map
+    to ``(None, None)`` and are filtered out by the caller.
+    """
+    r = _run_git(repo, "remote", "-v")
+    if r.returncode != 0:
+        return {}
+    out: dict[str, tuple[str | None, str | None]] = {}
+    for line in r.stdout.strip().splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name, url = parts[0], parts[1]
+        if name in out:
+            continue
+        out[name] = _parse_git_remote(url)
+    return out
+
+
+def _find_upstream_remote(repo: Path) -> str | None:
+    """Return the name of the remote pointing at ``raullenchai/Rapid-MLX``.
+
+    Searches every remote — not just ``origin`` — so the standard
+    GitHub fork workflow works:
+
+      - ``origin`` = ``<contributor>/Rapid-MLX`` (their fork)
+      - ``upstream`` = ``raullenchai/Rapid-MLX``
+
+    Earlier revisions only accepted ``origin = raullenchai/Rapid-MLX``,
+    which locked community contributors out: they don't have write
+    access to upstream, so they fork, and their origin is the fork.
+    (Codex PR #582 round-6 BLOCKING.) Returning the *name* (not just
+    a bool) lets the caller decide where to push (always origin) and
+    where to target the PR (always upstream, regardless of name).
+    Host check is exact-match on ``github.com`` to defeat the
+    ``evilgithub.com`` spoofing surface (round-6 BLOCKING, separate).
+    """
+    for name, (host, path) in _list_remotes(repo).items():
+        if host == "github.com" and path == UPSTREAM_OWNER_REPO:
+            return name
+    return None
+
+
+def _origin_host_is_github(repo: Path) -> bool:
+    """True iff ``origin`` resolves to a host of ``github.com``.
+
+    We push to ``origin``, so origin must be on GitHub — otherwise
+    a contributor with ``origin = some-random-host.com/x/y`` would
+    have us push their payload to an arbitrary third-party host on
+    the strength of an ``upstream`` remote pointing at the canonical
+    repo. Defeats the variant of the round-6 URL-spoofing BLOCKING
+    where the bad URL hides in ``origin`` while ``upstream`` looks
+    legitimate.
     """
     r = _run_git(repo, "remote", "get-url", "origin")
     if r.returncode != 0:
         return False
-    url = r.stdout.strip().lower().removesuffix(".git")
-    return url.endswith("github.com/raullenchai/rapid-mlx") or url.endswith(
-        "github.com:raullenchai/rapid-mlx"
-    )
+    host, _ = _parse_git_remote(r.stdout.strip())
+    return host == "github.com"
+
+
+def _parse_git_remote(url: str) -> tuple[str | None, str | None]:
+    """Extract (host, ``owner/repo``) from a git remote URL.
+
+    Handles the three forms ``git remote get-url`` emits:
+      - ``https://host/owner/repo(.git)``
+      - ``ssh://git@host/owner/repo(.git)``
+      - ``git@host:owner/repo(.git)``  (the scp-style form)
+
+    Returns ``(None, None)`` for anything we can't classify, which
+    causes the caller to fail-closed.
+    """
+    s = url.strip().lower().removesuffix(".git")
+    # scp-style: ``git@host:owner/repo``. The colon is NOT a port —
+    # SSH would use ``ssh://...`` for that. We treat the part before
+    # ``:`` as host and the part after as path.
+    if s.startswith("git@") and ":" in s and "://" not in s:
+        host_part, _, path = s.partition(":")
+        host = host_part[len("git@") :]
+        return host or None, path or None
+    # http(s):// and ssh://.
+    if "://" in s:
+        _, _, rest = s.partition("://")
+        # Strip user@ if present in ssh URLs.
+        if "@" in rest.split("/", 1)[0]:
+            _, _, rest = rest.partition("@")
+        host, _, path = rest.partition("/")
+        return host or None, path or None
+    return None, None
 
 
 def _git_is_clean(repo: Path) -> bool:
@@ -277,6 +353,16 @@ def _make_pr_via_gh(
                 "gh",
                 "pr",
                 "create",
+                # Force the PR target to canonical upstream regardless
+                # of which remote ``origin`` points at. Without
+                # ``--repo`` ``gh`` picks the default repo for the cwd,
+                # which on a contributor's fork is the FORK — the PR
+                # would open against their own repo and never reach the
+                # community DB. (Codex PR #582 round-6 BLOCKING.)
+                "--repo",
+                UPSTREAM_REPO_FOR_GH,
+                "--head",
+                branch,
                 "--title",
                 f"community-bench: {payload['model']['alias']} on "
                 f"{payload['hardware']['chip']}",
@@ -399,9 +485,10 @@ def _print_manual_fallback(
     if "push" not in done:
         print(f"    git push -u origin {branch}", file=stdout)
     # If we already pushed but pr_create failed, just retry pr_create —
-    # the user shouldn't re-do the branch ops.
+    # the user shouldn't re-do the branch ops. ``--repo`` forces the
+    # PR target to upstream regardless of whether origin is a fork.
     print(
-        "    gh pr create   # or open the compare URL in your browser",
+        f"    gh pr create --repo {UPSTREAM_REPO_FOR_GH} --head {branch}",
         file=stdout,
     )
 
@@ -422,7 +509,7 @@ def _print_thanks(payload: dict, *, stdout) -> None:
     )
     print(
         "  Once the PR merges, your numbers will show up at "
-        "https://rapid-mlx.com/community-benchmarks.",
+        "https://rapidmlx.com/#models.",
         file=stdout,
     )
 
@@ -464,20 +551,26 @@ def submit_interactive(
         return 2
     repo = Path(probe.stdout.strip())
 
-    # Verify the resolved repo's ``origin`` actually points at
-    # raullenchai/Rapid-MLX before we touch any branches or open a PR.
-    # Without this check, a user who runs ``rapid-mlx bench --submit``
-    # from inside an unrelated checkout (their own work repo, a fork of
-    # something else) would get a branch + commit + PR landing in the
-    # wrong project — and the cleanup is annoying. (Codex PR #582
-    # round-3 BLOCKING.) We accept either HTTPS or SSH forms, with or
-    # without a trailing ``.git``.
-    if not _remote_is_rapid_mlx(repo):
+    # Verify the resolved repo is associated with raullenchai/Rapid-MLX
+    # before we touch any branches or open a PR. Accepted shapes:
+    #   - ``origin`` = raullenchai/Rapid-MLX (maintainer's direct checkout)
+    #   - ``origin`` = <user>/Rapid-MLX fork + some other remote (typically
+    #     ``upstream``) pointing at raullenchai/Rapid-MLX (standard
+    #     community fork workflow)
+    # Without the fork case the only people who could submit are users
+    # with write access to upstream — the entire community contribution
+    # path was unreachable. (Codex PR #582 round-6 BLOCKING.) We also
+    # require origin's host to be exactly ``github.com`` so an attacker
+    # can't redirect the push by setting a malicious origin while
+    # leaving a real upstream remote as a decoy.
+    upstream_remote = _find_upstream_remote(repo)
+    if upstream_remote is None or not _origin_host_is_github(repo):
         print(
-            f"  Error: {repo} is a git repo but its 'origin' remote is "
-            f"not github.com/raullenchai/Rapid-MLX. --submit only works "
-            f"from a checkout of that repository (or a fork of it whose "
-            f"origin still points at raullenchai/Rapid-MLX).",
+            f"  Error: {repo} is a git repo but no remote points at "
+            f"github.com/{UPSTREAM_OWNER_REPO}, or 'origin' is not on "
+            f"github.com. --submit needs either a direct checkout of "
+            f"raullenchai/Rapid-MLX or a fork with an upstream remote: "
+            f"\n    git remote add upstream https://github.com/{UPSTREAM_REPO_FOR_GH}",
             file=out,
         )
         return 2
