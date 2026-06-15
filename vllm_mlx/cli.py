@@ -1149,28 +1149,31 @@ def _run_submit_flow(args) -> int:
     # Whitelist gate. ``model.alias`` in the payload is the bucketing
     # key, so we require the user to type the canonical alias *key*
     # rather than a raw HF path — accepting both forms would let a
-    # contributor's typo silently shift their submission into a different
-    # bucket via the reverse-lookup. (Codex PR #582 BLOCKING: silent
-    # alias coercion bypasses the intended "must be a whitelist key"
-    # contract.) The GHA validator re-checks the alias against
-    # aliases.json, so this guard is layered.
-    if "/" in args.model:
+    # contributor's typo silently shift their submission into a
+    # different bucket via the reverse-lookup. (Codex PR #582 BLOCKING:
+    # silent alias coercion bypasses the intended "must be a whitelist
+    # key" contract.) The GHA validator re-checks the alias against
+    # aliases.json, so this guard is layered. ``args._original_alias``
+    # holds the user-typed value before the dispatcher resolves it to
+    # an HF path; if it's None, the user passed an HF path directly.
+    user_typed = getattr(args, "_original_alias", None) or args.model
+    if "/" in user_typed:
         print(
             f"  Error: --submit requires the canonical alias key "
             f"(e.g. 'qwen3.5-9b-4bit'), not the resolved HF path "
-            f"'{args.model}'. Run `rapid-mlx models` for the whitelist."
+            f"'{user_typed}'. Run `rapid-mlx models` for the whitelist."
         )
         return 2
-    profile = resolve_profile(args.model)
+    profile = resolve_profile(user_typed)
     if profile is None:
         print(
-            f"  Error: '{args.model}' is not a registered alias. "
+            f"  Error: '{user_typed}' is not a registered alias. "
             f"Only models listed in vllm_mlx/aliases.json can be submitted "
             f"(this keeps the comparison apples-to-apples)."
         )
         print("  Run `rapid-mlx models` to see the full whitelist.")
         return 2
-    alias = args.model
+    alias = user_typed
     hf_path = profile.hf_path
 
     notes = args.notes or None

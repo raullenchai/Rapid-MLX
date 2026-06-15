@@ -1464,3 +1464,90 @@ def test_run_one_round_rejects_eos_early_stop(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="generated 3 tokens"):
         asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# _run_submit_flow alias-key gate
+# ---------------------------------------------------------------------------
+
+
+def test_submit_flow_guard_consults_original_alias(monkeypatch, capsys) -> None:
+    """The CLI dispatcher mutates ``args.model`` to the resolved HF path
+    *before* calling ``_run_submit_flow``, then stashes the user-typed
+    alias on ``args._original_alias``. The whitelist gate must read that
+    stash, not ``args.model`` — otherwise every alias submission fails
+    with a spurious "not the canonical alias key" error even when the
+    contributor did type the canonical alias.
+
+    Regression test for the v0.7.7 bench --submit failure on
+    llama3-1b-4bit (the resolved HF path
+    ``mlx-community/Llama-3.2-1B-Instruct-4bit`` tripped the ``"/" in
+    args.model`` branch).
+    """
+    from argparse import Namespace
+
+    from vllm_mlx import cli as cli_mod
+    from vllm_mlx.community_bench import hardware as hw
+
+    # Pretend we're on Apple Silicon so the gate above this one passes.
+    # ``is_apple_silicon`` is imported inside _run_submit_flow, so we
+    # patch the source module.
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+
+    args = Namespace(
+        model="mlx-community/Llama-3.2-1B-Instruct-4bit",
+        _original_alias="llama3-1b-4bit",
+        notes=None,
+        sampled=False,
+        repo_root=None,
+        force_disk_check=False,
+    )
+
+    # We expect the flow to get past the guard and fail later — capture
+    # whatever happens by intercepting the next stage. The simplest probe
+    # is to swap ``_check_disk_space`` with a sentinel that raises a
+    # known marker; if the guard fires first we never see the marker.
+    marker = RuntimeError("__past_guard__")
+
+    def _sentinel(*_a, **_kw):
+        raise marker
+
+    monkeypatch.setattr(cli_mod, "_check_disk_space", _sentinel)
+
+    with pytest.raises(RuntimeError, match="__past_guard__"):
+        cli_mod._run_submit_flow(args)
+
+    out = capsys.readouterr().out
+    # Sanity: the bogus "not the canonical alias key" branch should NOT
+    # have printed.
+    assert "not the resolved HF path" not in out
+    assert "Run `rapid-mlx models`" not in out
+
+
+def test_submit_flow_guard_rejects_hf_path_when_no_original_alias(
+    monkeypatch, capsys
+) -> None:
+    """When the user passes an HF path directly (no alias resolution
+    happens, so ``_original_alias`` is unset), the guard must still
+    reject it — that's the whole point of requiring canonical alias
+    keys."""
+    from argparse import Namespace
+
+    from vllm_mlx import cli as cli_mod
+    from vllm_mlx.community_bench import hardware as hw
+
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+
+    args = Namespace(
+        model="mlx-community/Llama-3.2-1B-Instruct-4bit",
+        notes=None,
+        sampled=False,
+        repo_root=None,
+        force_disk_check=False,
+    )
+
+    rc = cli_mod._run_submit_flow(args)
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "requires the canonical alias key" in out
+    assert "mlx-community/Llama-3.2-1B-Instruct-4bit" in out
