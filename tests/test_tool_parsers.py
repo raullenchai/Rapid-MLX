@@ -844,6 +844,186 @@ class TestStreamingParsing:
         assert result == {"content": "Hello world"}
 
 
+def _run_mistral_streaming(parser: MistralToolParser, chunks: list[str]) -> dict:
+    """Drive ``extract_tool_calls_streaming`` chunk-by-chunk and assemble.
+
+    Mirrors what an OpenAI-compatible client does with the SSE deltas:
+    concatenate each ``function.name`` / ``function.arguments`` fragment,
+    record each ``id`` once, accumulate text content. The single dict
+    returned describes the final assembled tool call as the client would
+    see it after the stream ends, so the assertions can compare against
+    the non-streaming ground truth.
+    """
+    content = ""
+    tool_calls: dict[int, dict[str, str]] = {}
+    prev = ""
+    for chunk in chunks:
+        cur = prev + chunk
+        delta = parser.extract_tool_calls_streaming(
+            previous_text=prev,
+            current_text=cur,
+            delta_text=chunk,
+            request={"tools": []},
+        )
+        prev = cur
+        if not delta:
+            continue
+        if "content" in delta and delta["content"]:
+            content += delta["content"]
+        for tc in delta.get("tool_calls") or []:
+            idx = tc["index"]
+            slot = tool_calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+            if tc.get("id"):
+                slot["id"] = tc["id"]
+            fn = tc.get("function") or {}
+            if fn.get("name"):
+                slot["name"] += fn["name"]
+            if fn.get("arguments"):
+                slot["arguments"] += fn["arguments"]
+    return {"content": content, "tool_calls": tool_calls}
+
+
+class TestMistralDevstralStreaming:
+    """Regression coverage for #579 — Devstral ``[ARGS]`` streaming.
+
+    The non-streaming path correctly strips the ``[ARGS]`` separator
+    (mistral_tool_parser.py extract_tool_calls), but the streaming
+    path operated chunk-by-chunk on ``delta_text`` and only handled
+    ``[ARGS]`` when it landed in the same delta as ``{``. Real
+    Devstral token streams split the separator across chunks, so the
+    literal ``[ARGS]`` leaked into ``arguments`` and (worse) the
+    name slot got clobbered with ``""``. Each test below replays a
+    realistic chunk shape reported by users and asserts the assembled
+    name/arguments match the non-streaming ground truth.
+    """
+
+    @pytest.fixture
+    def parser(self):
+        return MistralToolParser()
+
+    def test_args_separator_as_own_chunk(self, parser):
+        """``[ARGS]`` arrives by itself, must not leak into args or clobber name."""
+        chunks = [
+            "[TOOL_CALLS]",
+            "read",
+            "[ARGS]",
+            '{"file_path"',
+            ': "/tmp/foo.txt"',
+            "}",
+        ]
+        assembled = _run_mistral_streaming(parser, chunks)
+
+        assert list(assembled["tool_calls"].keys()) == [0]
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "read"
+        assert "[ARGS]" not in tc["arguments"]
+        args = json.loads(tc["arguments"])
+        assert args == {"file_path": "/tmp/foo.txt"}
+        assert tc["id"]  # generated id present
+
+    def test_args_separator_fused_with_open_brace(self, parser):
+        """``[ARGS]{"`` in one chunk must not emit empty-string name."""
+        chunks = [
+            "[TOOL_CALLS]",
+            "read",
+            '[ARGS]{"',
+            'file_path": "/tmp/foo.txt"',
+            "}",
+        ]
+        assembled = _run_mistral_streaming(parser, chunks)
+
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "read", (
+            f"name clobbered by empty emit from [ARGS]{{ chunk; got {tc['name']!r}"
+        )
+        assert "[ARGS]" not in tc["arguments"]
+        args = json.loads(tc["arguments"])
+        assert args == {"file_path": "/tmp/foo.txt"}
+
+    def test_name_and_args_separator_fused(self, parser):
+        """``read[ARGS]{`` arriving in one delta (one common Devstral tokenization)."""
+        chunks = [
+            "[TOOL_CALLS]",
+            'read[ARGS]{"file_path":"/tmp/foo.txt"}',
+        ]
+        assembled = _run_mistral_streaming(parser, chunks)
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "read"
+        assert json.loads(tc["arguments"]) == {"file_path": "/tmp/foo.txt"}
+
+    def test_pathological_chunking_from_bug_report(self, parser):
+        """Exact chunking that produced ``name='\"}'``, ``args='[ARGS]{\"'`` in #579."""
+        chunks = [
+            "[TOOL_CALLS]",
+            "read",
+            '[ARGS]{"',
+            'file_path":"/tmp/foo.txt',
+            '"}',
+        ]
+        assembled = _run_mistral_streaming(parser, chunks)
+        tc = assembled["tool_calls"][0]
+        # Pre-fix: name == '"}', arguments == '[ARGS]{"' — assert both gone.
+        assert tc["name"] == "read"
+        assert "[ARGS]" not in tc["arguments"]
+        assert json.loads(tc["arguments"]) == {"file_path": "/tmp/foo.txt"}
+
+    def test_streaming_matches_non_streaming(self, parser):
+        """End-to-end invariant: streaming-assembled output == non-streaming output."""
+        full_text = '[TOOL_CALLS]read[ARGS]{"file_path": "/tmp/foo.txt"}'
+        non_stream = parser.extract_tool_calls(full_text)
+        assert non_stream.tools_called
+        truth_name = non_stream.tool_calls[0]["name"]
+        truth_args = json.loads(non_stream.tool_calls[0]["arguments"])
+
+        # Replay the same bytes byte-by-byte (worst-case chunking)
+        chunks = list(full_text)
+        assembled = _run_mistral_streaming(MistralToolParser(), chunks)
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == truth_name
+        assert json.loads(tc["arguments"]) == truth_args
+
+    def test_content_then_tool_call(self, parser):
+        """Content before ``[TOOL_CALLS]`` streams as content, then tool call streams cleanly."""
+        chunks = [
+            "Let me ",
+            "check that.",
+            "[TOOL_CALLS]",
+            "read",
+            "[ARGS]",
+            '{"file_path":"/tmp/foo.txt"}',
+        ]
+        assembled = _run_mistral_streaming(parser, chunks)
+        assert assembled["content"] == "Let me check that."
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "read"
+        assert json.loads(tc["arguments"]) == {"file_path": "/tmp/foo.txt"}
+
+    def test_old_array_format_streaming_still_works(self, parser):
+        """Pre-Devstral ``[TOOL_CALLS] [{...}]`` array format must still stream."""
+        chunks = [
+            "[TOOL_CALLS] ",
+            '[{"name": "get_weather", ',
+            '"arguments": {"city": "Paris"}}]',
+        ]
+        assembled = _run_mistral_streaming(parser, chunks)
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "get_weather"
+        args = json.loads(tc["arguments"])
+        assert args == {"city": "Paris"}
+
+    def test_new_format_no_args_separator(self, parser):
+        """Plain new format ``name{json}`` without ``[ARGS]`` still streams cleanly."""
+        chunks = [
+            "[TOOL_CALLS]",
+            "get_weather",
+            '{"city": "London"}',
+        ]
+        assembled = _run_mistral_streaming(parser, chunks)
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "get_weather"
+        assert json.loads(tc["arguments"]) == {"city": "London"}
+
+
 class TestThinkTagStripping:
     """Test <think> tag stripping in tool parsers (Issue #26)."""
 

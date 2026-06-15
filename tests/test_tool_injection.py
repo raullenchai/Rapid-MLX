@@ -227,9 +227,25 @@ class TestMistralArgsStripping:
         assert result.tool_calls[0]["name"] == "get_weather"
 
     def test_args_suffix_stripped_streaming(self):
+        """Streaming path must strip ``[ARGS]`` from the name boundary (#579).
+
+        Pre-fix, the private ``_parse_streaming_tool_delta`` did this in
+        one branch; post-fix, the public state machine
+        (``extract_tool_calls_streaming``) is the only entry point. We
+        feed a single delta that fuses the boundary tokens and assert
+        the emitted name is clean.
+        """
         parser = MistralToolParser(tokenizer=None)
-        delta = parser._parse_streaming_tool_delta(
-            'get_weather[ARGS]{"location": "Paris"}'
+        full = '[TOOL_CALLS]get_weather[ARGS]{"location": "Paris"}'
+        delta = parser.extract_tool_calls_streaming(
+            previous_text="",
+            current_text=full,
+            delta_text=full,
+            request={"tools": []},
         )
         assert delta is not None
-        assert delta["name"] == "get_weather"
+        tcs = delta.get("tool_calls") or []
+        assert tcs, "expected a tool_calls delta"
+        fn = tcs[0]["function"]
+        assert fn.get("name") == "get_weather"
+        assert "[ARGS]" not in (fn.get("arguments") or "")

@@ -59,6 +59,22 @@ class MistralToolParser(ToolParser):
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
         self.bot_token_id = self.vocab.get(self.BOT_TOKEN) if self.vocab else None
+        self._reset_stream_state()
+
+    def _reset_stream_state(self) -> None:
+        """Reset per-request streaming state machine (see #579)."""
+        # None until first non-whitespace byte after [TOOL_CALLS]:
+        #   "new" → Devstral / Mistral v11 ``name[ARGS]{json}`` or ``name{json}``
+        #   "old" → Mistral v10- ``[{"name":..., "arguments":...}]`` array form
+        self._stream_format: str | None = None
+        self._stream_name_emitted: bool = False
+        self._stream_args_emitted: int = 0  # chars of args already streamed
+        self._stream_id_value: str = ""
+        self._stream_old_emitted: bool = False  # old-format is emit-once
+
+    def reset(self) -> None:
+        super().reset()
+        self._reset_stream_state()
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -181,83 +197,146 @@ class MistralToolParser(ToolParser):
         delta_token_ids: Sequence[int] | None = None,
         request: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """
-        Extract tool calls from streaming Mistral model output.
+        """Stream tool calls from cumulative Mistral / Devstral output (#579).
 
-        For streaming, we detect when [TOOL_CALLS] appears and start
-        accumulating tool call data.
+        The pre-#579 implementation worked off ``delta_text`` alone and only
+        handled the Devstral ``[ARGS]`` separator when it landed in the same
+        chunk as ``{``. Real token streams split ``[ARGS]`` across deltas,
+        which leaked the literal separator into ``arguments`` and (worse)
+        clobbered the name with ``""`` whenever ``[ARGS]{`` arrived fused.
+
+        This implementation drives a tiny state machine off ``current_text``
+        so token boundaries are irrelevant — the name is only emitted once
+        the boundary character (``[ARGS]`` or ``{``) has been observed in
+        full, and ``arguments`` is diffed against ``_stream_args_emitted``
+        so each char ships exactly once. The state machine also branches on
+        the body's first non-whitespace byte:
+
+        - ``[`` → old Mistral v10- ``[{"name":..., "arguments":...}]`` form
+          (buffered until the closing ``]`` then emitted whole). Old format
+          streaming was previously broken by the same naive delta logic.
+        - anything else → new Devstral / v11+ ``name[ARGS]{json}`` form.
+
+        Multi-tool new-format streams (``[TOOL_CALLS]a{}[TOOL_CALLS]b{}``)
+        currently emit only the first call; tracked separately.
         """
-        # Check if tool call token is in current output
+        # ----- Phase 1: pre-[TOOL_CALLS] content streams unchanged -----
         if self.BOT_TOKEN not in current_text:
-            # Not a tool call yet, return content delta
-            return {"content": delta_text}
+            return {"content": delta_text} if delta_text else None
 
-        # Tool call detected
-        if self.BOT_TOKEN in delta_text:
-            # This delta contains the start of tool calls
-            parts = delta_text.split(self.BOT_TOKEN)
-            content_part = parts[0]
-            tool_part = self.BOT_TOKEN.join(parts[1:])
+        result: dict[str, Any] = {}
 
-            result: dict[str, Any] = {}
-            if content_part:
-                result["content"] = content_part
+        # If [TOOL_CALLS] crossed in *this* delta, emit any preceding
+        # plain-text portion of the delta as content. (Earlier deltas
+        # already shipped their pre-BOT_TOKEN bytes via the phase-1
+        # branch above, so we only need to handle the boundary delta.)
+        if self.BOT_TOKEN not in previous_text and self.BOT_TOKEN in delta_text:
+            head_delta, _, _ = delta_text.partition(self.BOT_TOKEN)
+            if head_delta:
+                result["content"] = head_delta
 
-            # Start tracking tool call
-            self.current_tool_id += 1
+        # ----- Phase 2: classify the body (one-shot, latches) -----
+        _, _, body = current_text.partition(self.BOT_TOKEN)
+        if self._stream_format is None:
+            stripped = body.lstrip()
+            if not stripped:
+                return result or None
+            self._stream_format = "old" if stripped.startswith("[") else "new"
 
-            if tool_part:
-                # Try to parse the tool part
-                tool_delta = self._parse_streaming_tool_delta(tool_part)
-                if tool_delta:
-                    result["tool_calls"] = [
-                        {
-                            "index": self.current_tool_id,
-                            "id": generate_mistral_tool_id(),
-                            "type": "function",
-                            "function": tool_delta,
-                        }
-                    ]
+        if self._stream_format == "old":
+            return self._stream_old_format(body, result)
+        return self._stream_new_format(body, result)
 
-            return result if result else None
+    def _stream_old_format(
+        self, body: str, result: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Old ``[{...}]`` array form: buffer until ``]``, then emit whole."""
+        if self._stream_old_emitted:
+            return result or None
+        if "]" not in body:
+            return result or None
 
-        # We're in the middle of a tool call
-        if self.current_tool_id >= 0:
-            tool_delta = self._parse_streaming_tool_delta(delta_text)
-            if tool_delta:
-                return {
-                    "tool_calls": [
-                        {
-                            "index": self.current_tool_id,
-                            "type": "function",
-                            "function": tool_delta,
-                        }
-                    ]
+        info = self.extract_tool_calls(self.BOT_TOKEN + body)
+        if not info.tools_called:
+            # Malformed array — let downstream finalize handle it.
+            return result or None
+
+        tool_calls_out: list[dict[str, Any]] = []
+        for i, tc in enumerate(info.tool_calls):
+            tool_calls_out.append(
+                {
+                    "index": i,
+                    "id": tc.get("id") or generate_mistral_tool_id(),
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                    },
                 }
+            )
+        self._stream_old_emitted = True
+        self.current_tool_id = max(self.current_tool_id, len(info.tool_calls) - 1)
+        result["tool_calls"] = tool_calls_out
+        return result
 
-        return None
+    def _stream_new_format(
+        self, body: str, result: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """New ``name[ARGS]{json}`` / ``name{json}`` form: state-machine stream."""
+        # Locate the FIRST name→args boundary. ``[ARGS]`` (Devstral) wins
+        # over the first ``{`` only when it appears earlier in the stream;
+        # the v11+ format without ``[ARGS]`` uses ``{`` directly.
+        args_tag = "[ARGS]"
+        args_idx = body.find(args_tag)
+        brace_idx = body.find("{")
 
-    def _parse_streaming_tool_delta(self, text: str) -> dict[str, str] | None:
-        """Parse a streaming delta for tool call information."""
-        if not text:
-            return None
-
-        result: dict[str, str] = {}
-
-        # Check for function name (before {)
-        # Strip [ARGS] suffix emitted by Devstral models.
-        if "{" in text:
-            name_part = text[: text.find("{")]
-            args_part = text[text.find("{") :]
-            if name_part.strip():
-                result["name"] = name_part.replace("[ARGS]", "").strip()
-            if args_part:
-                result["arguments"] = args_part
+        if args_idx != -1 and (brace_idx == -1 or args_idx < brace_idx):
+            sep_idx = args_idx
+            args_start = sep_idx + len(args_tag)
+        elif brace_idx != -1:
+            sep_idx = brace_idx
+            args_start = sep_idx  # ``{`` is part of the JSON args
         else:
-            # Could be name or arguments continuation
-            if text.strip() and not text.startswith(("{", "}", "[", "]", ",")):
-                result["name"] = text.strip()
-            else:
-                result["arguments"] = text
+            # No boundary yet — could still be ``re`` (name) or ``re[`` (en
+            # route to ``[ARGS]``). Buffer; do not emit a partial name (the
+            # whole point of the fix is to never ship the separator as
+            # name/args by accident).
+            return result or None
 
-        return result if result else None
+        name = body[:sep_idx].strip()
+        if not name:
+            return result or None
+        args = body[args_start:]
+
+        tool_calls_out: list[dict[str, Any]] = []
+
+        if not self._stream_name_emitted:
+            self.current_tool_id += 1
+            self._stream_id_value = generate_mistral_tool_id()
+            self._stream_name_emitted = True
+            tool_calls_out.append(
+                {
+                    "index": self.current_tool_id,
+                    "id": self._stream_id_value,
+                    "type": "function",
+                    "function": {"name": name},
+                }
+            )
+
+        if len(args) > self._stream_args_emitted:
+            args_delta = args[self._stream_args_emitted :]
+            self._stream_args_emitted = len(args)
+            if tool_calls_out:
+                tool_calls_out[0]["function"]["arguments"] = args_delta
+            else:
+                tool_calls_out.append(
+                    {
+                        "index": self.current_tool_id,
+                        "type": "function",
+                        "function": {"arguments": args_delta},
+                    }
+                )
+
+        if tool_calls_out:
+            result["tool_calls"] = tool_calls_out
+        return result or None
