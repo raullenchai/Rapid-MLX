@@ -55,9 +55,7 @@ MAX_TTFT_MS = 30_000.0  # 30 s is well past "the model failed to load"
 MAX_RAM_GB = 1024
 # Filename pattern: <YYYYMMDD>-<chip-slug>-<alias-slug>-<id>.json. We
 # don't enforce the exact slugs (chip names change) — just the shape.
-FILENAME_RE = re.compile(
-    r"^[0-9]{8}-[a-z0-9-]+-[a-z0-9.-]+-[0-9a-f]{12}\.json$"
-)
+FILENAME_RE = re.compile(r"^[0-9]{8}-[a-z0-9-]+-[a-z0-9.-]+-[0-9a-f]{12}\.json$")
 
 
 class _IssueError(Exception):
@@ -132,8 +130,7 @@ def _check_sanity(payload: dict) -> None:
         # 1 GB = 1024 MiB. peak ≤ total RAM (some slack for shared GPU).
         if peak > hw["ram_gb"] * 1024 * 2:
             raise _IssueError(
-                f"hardware: peak_ram_mb={peak} exceeds 2× total RAM "
-                f"({hw['ram_gb']} GB)"
+                f"hardware: peak_ram_mb={peak} exceeds 2× total RAM ({hw['ram_gb']} GB)"
             )
 
     for bucket_name in ("short", "long"):
@@ -141,9 +138,7 @@ def _check_sanity(payload: dict) -> None:
         for stat_field in ("decode_tps", "prefill_tps", "ttft_ms"):
             stat = b[stat_field]
             if stat["median"] < 0:
-                raise _IssueError(
-                    f"buckets.{bucket_name}.{stat_field}: median < 0"
-                )
+                raise _IssueError(f"buckets.{bucket_name}.{stat_field}: median < 0")
         if b["decode_tps"]["median"] > MAX_DECODE_TPS:
             raise _IssueError(
                 f"buckets.{bucket_name}.decode_tps: median "
@@ -190,7 +185,9 @@ def _check_path_in_submissions(path: Path) -> None:
         )
 
 
-def validate_one(path: Path, schema: dict | None, aliases: dict[str, dict]) -> list[str]:
+def validate_one(
+    path: Path, schema: dict | None, aliases: dict[str, dict]
+) -> list[str]:
     """Return the list of issues found for one file. Empty = OK."""
     issues: list[str] = []
 

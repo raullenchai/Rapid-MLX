@@ -14,7 +14,7 @@ The CLI:
 2. Runs a standardized benchmark: 2 buckets (short / long), 5 measured rounds + 1 warmup, greedy decode. Numbers are directly comparable to llama.cpp's `llama-bench -p 512 -n 128 -r 5`.
 3. Pretty-prints the exact JSON it's about to submit and asks for your `y/N` confirmation. **Nothing leaves your machine without that y.**
 4. On `y`, opens a PR via your local `gh` CLI (uses your existing GitHub auth — no new token required). Branch and PR title are auto-generated.
-5. A GitHub Action validates the schema + sanity-checks the numbers + auto-merges.
+5. A GitHub Action validates the schema + sanity-checks the numbers; on green, a maintainer merges.
 6. The aggregator (`scripts/aggregate.py`) rebuilds `aggregated.json`, which the website reads.
 
 ## What we collect
@@ -79,5 +79,5 @@ Duplicates are allowed and **encouraged** — more samples → tighter median. O
 
 - Schema: `schema.json` (JSON Schema draft 2020-12, additionalProperties: false everywhere).
 - Aggregator: `scripts/aggregate.py` — pure stdlib, no deps. Rebuilds `aggregated.json` on every merge into `main`.
-- CI: `.github/workflows/validate-community-submission.yml` validates incoming submissions, runs sanity checks (tps > 0, chip on whitelist, etc.), and auto-merges if everything passes.
+- CI: `.github/workflows/validate-community-submission.yml` validates incoming submissions and runs sanity checks (tps > 0, chip on whitelist, etc.). A maintainer reviews and merges; auto-merge can be added later if the false-positive rate stays low.
 - Bumping `schema_version`: increment in `schema.json` + `vllm_mlx/community_bench/runner.py::SCHEMA_VERSION`. Old submissions are kept; the aggregator skips entries it doesn't understand.

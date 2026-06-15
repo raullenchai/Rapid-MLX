@@ -235,9 +235,7 @@ async def _run_bucket(
     measured: list[RoundResult] = []
     for _ in range(ROUNDS_MEASURED):
         measured.append(
-            await _run_one_round(
-                engine, prompt_text, sampling, target_prompt_tokens
-            )
+            await _run_one_round(engine, prompt_text, sampling, target_prompt_tokens)
         )
 
     return BucketResult(rounds_raw=measured), prompt_ids

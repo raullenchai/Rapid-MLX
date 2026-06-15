@@ -156,17 +156,15 @@ def _aggregate(payloads: list[dict]) -> list[dict]:
             # for the website; we take it from the most recent submission
             # in the group (they should all match, but the latest one
             # wins in case of any divergence).
-            "hf_path": sorted(
-                group, key=lambda p: p["submitted_at"]
-            )[-1]["model"]["hf_path"],
+            "hf_path": sorted(group, key=lambda p: p["submitted_at"])[-1]["model"][
+                "hf_path"
+            ],
             "buckets": {},
         }
         for bucket_name in ("short", "long"):
             bucket_agg: dict = {}
             for metric in ("decode_tps", "prefill_tps", "ttft_ms"):
-                medians = [
-                    p["buckets"][bucket_name][metric]["median"] for p in group
-                ]
+                medians = [p["buckets"][bucket_name][metric]["median"] for p in group]
                 bucket_agg[metric] = _agg(medians)
             row["buckets"][bucket_name] = bucket_agg
         rows.append(row)

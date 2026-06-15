@@ -78,9 +78,7 @@ def build_submission_payload(
     so that ``json.dumps(indent=2)`` produces a stable, readable layout
     when shown to the user for consent.
     """
-    submitted_at = (now or datetime.now(timezone.utc)).isoformat(
-        timespec="seconds"
-    )
+    submitted_at = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
     # The schema expects ``date-time`` format; the ``+00:00`` suffix is
     # the canonical ISO 8601 UTC form (NOT bare 'Z', NOT naive). Strip
     # any sub-second precision so two clean submissions a moment apart
@@ -341,9 +339,7 @@ def _print_thanks(payload: dict, *, stdout) -> None:
         "  performance database! Every submission tightens the median",
         file=stdout,
     )
-    print(
-        "  for everyone running this combo:", file=stdout
-    )
+    print("  for everyone running this combo:", file=stdout)
     print(
         f"    {payload['hardware']['chip']} ({payload['hardware']['ram_gb']} GB) "
         f"× {payload['model']['alias']}",
@@ -385,16 +381,23 @@ def submit_interactive(
         print("\n  Submission cancelled. Nothing was written or sent.", file=out)
         return 0
 
+    # Snapshot the working-tree state BEFORE writing — otherwise the
+    # newly-created submission file shows up as untracked in `git status`
+    # and every clean checkout looks dirty, making the auto-PR path
+    # unreachable. (Codex PR #582 BLOCKING.)
+    tree_was_clean = _git_is_clean(repo)
+
     submission_path = _write_payload_file(repo, payload)
     print(f"\n  Wrote submission to {submission_path}", file=out)
 
-    if not _git_is_clean(repo):
+    if not tree_was_clean:
         # User has other uncommitted work — don't sweep it into the PR.
         # The submission file IS on disk; we just stop short of git ops.
         print(
-            "\n  Your working tree has other uncommitted changes; the "
-            "automated PR step is skipped to avoid mixing your work "
-            "into the community-bench commit.",
+            "\n  Your working tree had other uncommitted changes before "
+            "this submission was written; the automated PR step is "
+            "skipped to avoid mixing your work into the community-bench "
+            "commit.",
             file=out,
         )
         _print_manual_fallback(repo, submission_path, payload, stdout=out)

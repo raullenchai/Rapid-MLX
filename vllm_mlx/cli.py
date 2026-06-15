@@ -1146,10 +1146,21 @@ def _run_submit_flow(args) -> int:
         )
         return 2
 
-    # Whitelist gate. The schema requires a registered alias name; the
-    # GHA validator re-checks. We block here too so the user doesn't burn
-    # 10+ minutes of bench time only to find out their model isn't on
-    # the list.
+    # Whitelist gate. ``model.alias`` in the payload is the bucketing
+    # key, so we require the user to type the canonical alias *key*
+    # rather than a raw HF path — accepting both forms would let a
+    # contributor's typo silently shift their submission into a different
+    # bucket via the reverse-lookup. (Codex PR #582 BLOCKING: silent
+    # alias coercion bypasses the intended "must be a whitelist key"
+    # contract.) The GHA validator re-checks the alias against
+    # aliases.json, so this guard is layered.
+    if "/" in args.model:
+        print(
+            f"  Error: --submit requires the canonical alias key "
+            f"(e.g. 'qwen3.5-9b-4bit'), not the resolved HF path "
+            f"'{args.model}'. Run `rapid-mlx models` for the whitelist."
+        )
+        return 2
     profile = resolve_profile(args.model)
     if profile is None:
         print(
@@ -1157,14 +1168,12 @@ def _run_submit_flow(args) -> int:
             f"Only models listed in vllm_mlx/aliases.json can be submitted "
             f"(this keeps the comparison apples-to-apples)."
         )
-        print(
-            "  Run `rapid-mlx models` to see the full whitelist."
-        )
+        print("  Run `rapid-mlx models` to see the full whitelist.")
         return 2
-    alias = args.model if "/" not in args.model else _alias_for_hf_path(args.model)
+    alias = args.model
     hf_path = profile.hf_path
 
-    notes = (args.notes or None)
+    notes = args.notes or None
     if notes and len(notes) > 200:
         print("  Error: --notes must be <= 200 chars (schema cap).")
         return 2
@@ -1213,9 +1222,7 @@ def _run_submit_flow(args) -> int:
             f"(sampling={sampling}, 2 buckets × 5 rounds + 1 warmup)…"
         )
         async with AsyncEngineCore(model, tokenizer, engine_config) as engine:
-            bench = await run_standardized_bench(
-                engine, tokenizer, sampling=sampling
-            )
+            bench = await run_standardized_bench(engine, tokenizer, sampling=sampling)
 
         print(
             f"    short: decode={bench.short.decode_stat['median']:.2f} tok/s, "
@@ -1240,24 +1247,6 @@ def _run_submit_flow(args) -> int:
         return submit_interactive(payload, repo_root)
 
     return asyncio.run(_run())
-
-
-def _alias_for_hf_path(name_or_path: str) -> str:
-    """Reverse-lookup helper for ``_run_submit_flow``.
-
-    If the user typed a full HF path (``mlx-community/Qwen3.5-9B-4bit``)
-    instead of the alias key, we still want the alias key to appear in
-    the submission ``model.alias`` field — that's what the aggregator
-    buckets on. Falls back to the path itself if no alias matches
-    (schema validation will then reject, with a clearer error message
-    upstream).
-    """
-    from .model_aliases import list_aliases
-
-    for alias, hf_path in list_aliases().items():
-        if hf_path == name_or_path:
-            return alias
-    return name_or_path
 
 
 def bench_command(args):

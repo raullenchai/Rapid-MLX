@@ -212,9 +212,9 @@ def test_standardized_config_dict_matches_schema_consts() -> None:
     )
     assert (
         cfg["buckets_spec"]["long"]["max_tokens"]
-        == schema_cfg["buckets_spec"]["properties"]["long"]["properties"][
-            "max_tokens"
-        ]["const"]
+        == schema_cfg["buckets_spec"]["properties"]["long"]["properties"]["max_tokens"][
+            "const"
+        ]
     )
 
 
@@ -232,8 +232,7 @@ def _stub_bench_result(sampling: str = "greedy"):
     )
 
     rounds = [
-        RoundResult(decode_tps=42.0, prefill_tps=500.0, ttft_ms=120.0)
-        for _ in range(5)
+        RoundResult(decode_tps=42.0, prefill_tps=500.0, ttft_ms=120.0) for _ in range(5)
     ]
     return BenchResult(
         short=BucketResult(rounds_raw=rounds),
@@ -289,8 +288,12 @@ def test_build_payload_omits_optional_fields_when_none() -> None:
     )
     hw, sw = _stub_hw_sw()
     payload = build_submission_payload(
-        hw, sw, "qwen3.5-9b-4bit", "mlx-community/Qwen3.5-9B-4bit",
-        bench, notes=None,
+        hw,
+        sw,
+        "qwen3.5-9b-4bit",
+        "mlx-community/Qwen3.5-9B-4bit",
+        bench,
+        notes=None,
         now=datetime(2026, 6, 15, tzinfo=timezone.utc),
     )
     assert "notes" not in payload
@@ -318,9 +321,7 @@ def test_submission_filename_shape() -> None:
         "submission_id": "abcdef012345",
     }
     name = _submission_filename(payload)
-    assert re.match(
-        r"^[0-9]{8}-[a-z0-9-]+-[a-z0-9.-]+-[0-9a-f]{12}\.json$", name
-    )
+    assert re.match(r"^[0-9]{8}-[a-z0-9-]+-[a-z0-9.-]+-[0-9a-f]{12}\.json$", name)
     assert name.startswith("20260615-apple-m4-pro-")
 
 
@@ -442,6 +443,60 @@ def test_submit_interactive_writes_file_then_falls_back_on_dirty_tree(
     text = stdout.getvalue()
     assert "Thank you" in text
     assert "git checkout -b community-bench/abcdef012345" in text
+
+
+def test_submit_interactive_clean_tree_reaches_pr_step(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression: ``_git_is_clean`` must be sampled BEFORE the new file
+    is written, otherwise the newly-untracked submission file makes
+    every clean checkout look dirty and the auto-PR path is never
+    reachable. (Codex PR #582 BLOCKING #2.)
+
+    We stub ``_git_is_clean`` to read the actual filesystem state at
+    the time it's called: returns True iff the submissions/ dir is
+    still empty when probed. With the bug present, the writer has
+    already deposited the file before the check, so the stub returns
+    False and ``_make_pr_via_gh`` is skipped. With the fix, the check
+    runs first and ``_make_pr_via_gh`` is invoked.
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    (tmp_path / ".git").mkdir()
+    submissions_dir = tmp_path / "community-benchmarks" / "submissions"
+    pr_invoked: list[bool] = []
+
+    def fake_clean(repo):
+        return not submissions_dir.exists() or not any(submissions_dir.iterdir())
+
+    def fake_pr(repo, path, payload, *, stdout):
+        pr_invoked.append(True)
+        return True  # pretend the PR opened
+
+    monkeypatch.setattr(sub_mod, "_git_is_clean", fake_clean)
+    monkeypatch.setattr(sub_mod, "_make_pr_via_gh", fake_pr)
+
+    payload = {
+        "schema_version": 1,
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
+        "model": {"alias": "qwen3.5-9b-4bit", "hf_path": "x/y"},
+        "buckets": {
+            "short": {"decode_tps": {"median": 1.0}},
+            "long": {"decode_tps": {"median": 1.0}},
+        },
+        "config": {"sampling": "greedy"},
+        "software": {"rapid_mlx": "0.7.6", "mlx": "0.31.2"},
+    }
+    rc = sub_mod.submit_interactive(
+        payload, tmp_path, stdin=io.StringIO("y\n"), stdout=io.StringIO()
+    )
+    assert rc == 0
+    assert pr_invoked == [True], (
+        "auto-PR path was not reached on a clean tree — likely the "
+        "_git_is_clean ordering regression has returned"
+    )
 
 
 # ---------------------------------------------------------------------------

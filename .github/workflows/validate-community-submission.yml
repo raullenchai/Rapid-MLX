@@ -40,39 +40,49 @@ jobs:
           # validate.py is stdlib. Pinning keeps CI deterministic.
           pip install 'jsonschema>=4.0,<5.0'
 
-      - name: Detect changed submissions
-        id: changed
+      - name: Detect and validate changed submissions
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          # Two-step git diff: first the merge-base (the commit on the
-          # target branch that this PR forks from), then the diff
-          # between merge-base and HEAD. Filters to added/modified files
-          # under submissions/ only; deletions and other paths are
-          # ignored so PRs that remove old submissions don't get blocked.
-          BASE=$(git merge-base origin/${GITHUB_BASE_REF} HEAD)
+          # CRITICAL: NEVER expand untrusted filenames as shell tokens.
+          # A PR can add a submission file whose name contains shell
+          # metacharacters (`;`, backticks, `$()`); piping that name
+          # through `${{ steps.X.outputs.Y }}` into `bash -c` would
+          # execute it as code on the runner.
+          #
+          # We avoid the injection surface entirely by:
+          #   1. Using `git diff -z` to get NUL-separated paths (no
+          #      delimiter clash possible).
+          #   2. Reading the NUL-stream with `xargs -0`, which passes
+          #      each filename as a single argv entry to Python — the
+          #      shell never tokenizes the names.
+          #
+          # The merge-base resolves the actual fork point on the
+          # target branch instead of "wherever main is right now."
+          set -euo pipefail
+          BASE=$(git merge-base "origin/${BASE_REF}" HEAD)
           echo "merge-base: $BASE"
-          CHANGED=$(git diff --name-only --diff-filter=AM "$BASE" HEAD \
-            -- 'community-benchmarks/submissions/*.json' || true)
-          if [ -z "$CHANGED" ]; then
-            echo "No submission files changed."
-            echo "files=" >> "$GITHUB_OUTPUT"
-          else
-            echo "Changed files:"
-            echo "$CHANGED"
-            # Newline-separated → space-separated for argv. validate.py
-            # accepts a list of paths and handles each independently.
-            FILES=$(echo "$CHANGED" | tr '\n' ' ')
-            echo "files=$FILES" >> "$GITHUB_OUTPUT"
+
+          # NUL-separated diff. -z disables pathname quoting AND
+          # changes the field separator to NUL. Empty output means
+          # no changed submission files.
+          git diff -z --name-only --diff-filter=AM "$BASE" HEAD \
+            -- 'community-benchmarks/submissions/*.json' \
+            > /tmp/changed-paths.nul || true
+
+          if [ ! -s /tmp/changed-paths.nul ]; then
+            echo "No submission files in this PR diff — nothing to validate."
+            exit 0
           fi
 
-      - name: Validate
-        if: steps.changed.outputs.files != ''
-        run: |
-          # Use shell word splitting on the space-separated list so each
-          # file becomes its own argv entry. validate.py exits non-zero
-          # if any file fails — that fails this step and blocks the PR.
-          python community-benchmarks/scripts/validate.py ${{ steps.changed.outputs.files }}
+          echo "Changed submission files:"
+          # `tr '\0' '\n'` only for the human-readable log line;
+          # the validator reads the raw NUL stream below.
+          tr '\0' '\n' < /tmp/changed-paths.nul
 
-      - name: Nothing to do
-        if: steps.changed.outputs.files == ''
-        run: |
-          echo "No submission files in this PR diff — nothing to validate."
+          # xargs -0 reads the NUL-separated paths and appends them
+          # as argv entries. -r ensures we exit 0 cleanly if the file
+          # is empty (already short-circuited above, but defensive).
+          # The validator's exit code becomes the job's exit code.
+          xargs -0 -r python community-benchmarks/scripts/validate.py \
+            < /tmp/changed-paths.nul
