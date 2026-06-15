@@ -1,0 +1,78 @@
+name: Validate community benchmark submission
+
+# Gate every PR that touches community-benchmarks/submissions/ through
+# the schema + sanity checks in scripts/validate.py. The CLI runs the
+# same checks on the submitter's machine, but the JSON file in the PR
+# is the authoritative artifact — we re-validate it here so a manually-
+# edited submission can't sneak past.
+
+on:
+  pull_request:
+    paths:
+      - "community-benchmarks/submissions/**"
+      - "community-benchmarks/schema.json"
+      - "community-benchmarks/scripts/validate.py"
+      - "vllm_mlx/aliases.json"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the merge-base so we can diff against the PR target
+          # and only validate files actually changed in this PR.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install validator deps
+        run: |
+          python -m pip install --upgrade pip
+          # ``jsonschema`` is the only dep; everything else in
+          # validate.py is stdlib. Pinning keeps CI deterministic.
+          pip install 'jsonschema>=4.0,<5.0'
+
+      - name: Detect changed submissions
+        id: changed
+        run: |
+          # Two-step git diff: first the merge-base (the commit on the
+          # target branch that this PR forks from), then the diff
+          # between merge-base and HEAD. Filters to added/modified files
+          # under submissions/ only; deletions and other paths are
+          # ignored so PRs that remove old submissions don't get blocked.
+          BASE=$(git merge-base origin/${GITHUB_BASE_REF} HEAD)
+          echo "merge-base: $BASE"
+          CHANGED=$(git diff --name-only --diff-filter=AM "$BASE" HEAD \
+            -- 'community-benchmarks/submissions/*.json' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No submission files changed."
+            echo "files=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changed files:"
+            echo "$CHANGED"
+            # Newline-separated → space-separated for argv. validate.py
+            # accepts a list of paths and handles each independently.
+            FILES=$(echo "$CHANGED" | tr '\n' ' ')
+            echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate
+        if: steps.changed.outputs.files != ''
+        run: |
+          # Use shell word splitting on the space-separated list so each
+          # file becomes its own argv entry. validate.py exits non-zero
+          # if any file fails — that fails this step and blocks the PR.
+          python community-benchmarks/scripts/validate.py ${{ steps.changed.outputs.files }}
+
+      - name: Nothing to do
+        if: steps.changed.outputs.files == ''
+        run: |
+          echo "No submission files in this PR diff — nothing to validate."

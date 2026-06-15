@@ -1113,6 +1113,153 @@ def serve_command(args):
     )
 
 
+def _run_submit_flow(args) -> int:
+    """Execute the standardized B=1 community-bench + PR-open flow.
+
+    Routed-to from ``bench_command`` whenever ``--submit`` is set.
+    Kept as a separate function so the freeform bench path stays
+    completely untouched — the standardized path imports its own
+    deps lazily so that users who never touch ``--submit`` don't pay
+    the import cost of the community_bench module.
+    """
+    import asyncio
+    from pathlib import Path
+
+    from huggingface_hub.utils import RepositoryNotFoundError
+    from mlx_lm import load
+
+    from .community_bench.hardware import collect as collect_hw
+    from .community_bench.hardware import is_apple_silicon
+    from .community_bench.runner import run_standardized_bench
+    from .community_bench.submission import (
+        build_submission_payload,
+        submit_interactive,
+    )
+    from .engine_core import AsyncEngineCore, EngineConfig
+    from .model_aliases import resolve_profile
+    from .scheduler import SchedulerConfig
+
+    if not is_apple_silicon():
+        print(
+            "  Error: --submit only runs on Apple Silicon (arm64 Darwin). "
+            "The community database is Apple-Silicon-specific."
+        )
+        return 2
+
+    # Whitelist gate. The schema requires a registered alias name; the
+    # GHA validator re-checks. We block here too so the user doesn't burn
+    # 10+ minutes of bench time only to find out their model isn't on
+    # the list.
+    profile = resolve_profile(args.model)
+    if profile is None:
+        print(
+            f"  Error: '{args.model}' is not a registered alias. "
+            f"Only models listed in vllm_mlx/aliases.json can be submitted "
+            f"(this keeps the comparison apples-to-apples)."
+        )
+        print(
+            "  Run `rapid-mlx models` to see the full whitelist."
+        )
+        return 2
+    alias = args.model if "/" not in args.model else _alias_for_hf_path(args.model)
+    hf_path = profile.hf_path
+
+    notes = (args.notes or None)
+    if notes and len(notes) > 200:
+        print("  Error: --notes must be <= 200 chars (schema cap).")
+        return 2
+
+    _check_disk_space(hf_path, force=getattr(args, "force_disk_check", False))
+    _check_memory_capacity(hf_path)
+
+    sampling = "sampled" if getattr(args, "sampled", False) else "greedy"
+
+    async def _run() -> int:
+        print(f"  Loading model {alias} ({hf_path})…")
+        try:
+            model, tokenizer = load(hf_path)
+        except (RepositoryNotFoundError, OSError) as e:
+            print(f"  Error loading model: {e}")
+            return 2
+
+        # Standardized config: B=1, no batching, prefix-cache off so the
+        # numbers reflect cold prefill on each round (which is what the
+        # tg/pp metrics are supposed to measure).
+        scheduler_config = SchedulerConfig(
+            max_num_seqs=1,
+            max_concurrent_requests=1,
+            prefill_batch_size=1,
+            completion_batch_size=1,
+            enable_prefix_cache=False,
+        )
+        engine_config = EngineConfig(
+            model_name=hf_path,
+            scheduler_config=scheduler_config,
+        )
+
+        print("  Collecting hardware fingerprint…")
+        hardware, software = collect_hw()
+        print(
+            f"    chip={hardware.chip}, ram={hardware.ram_gb} GB, "
+            f"cpu_cores={hardware.cpu_cores}, gpu_cores={hardware.gpu_cores}"
+        )
+        print(
+            f"    macos={software.macos}, rapid_mlx={software.rapid_mlx}, "
+            f"mlx={software.mlx}, python={software.python}"
+        )
+
+        print(
+            f"  Running standardized bench "
+            f"(sampling={sampling}, 2 buckets × 5 rounds + 1 warmup)…"
+        )
+        async with AsyncEngineCore(model, tokenizer, engine_config) as engine:
+            bench = await run_standardized_bench(
+                engine, tokenizer, sampling=sampling
+            )
+
+        print(
+            f"    short: decode={bench.short.decode_stat['median']:.2f} tok/s, "
+            f"prefill={bench.short.prefill_stat['median']:.2f} tok/s, "
+            f"ttft={bench.short.ttft_stat['median']:.1f} ms"
+        )
+        print(
+            f"    long:  decode={bench.long.decode_stat['median']:.2f} tok/s, "
+            f"prefill={bench.long.prefill_stat['median']:.2f} tok/s, "
+            f"ttft={bench.long.ttft_stat['median']:.1f} ms"
+        )
+
+        payload = build_submission_payload(
+            hardware=hardware,
+            software=software,
+            alias=alias,
+            hf_path=hf_path,
+            bench=bench,
+            notes=notes,
+        )
+        repo_root = Path(args.repo_root) if args.repo_root else Path.cwd()
+        return submit_interactive(payload, repo_root)
+
+    return asyncio.run(_run())
+
+
+def _alias_for_hf_path(name_or_path: str) -> str:
+    """Reverse-lookup helper for ``_run_submit_flow``.
+
+    If the user typed a full HF path (``mlx-community/Qwen3.5-9B-4bit``)
+    instead of the alias key, we still want the alias key to appear in
+    the submission ``model.alias`` field — that's what the aggregator
+    buckets on. Falls back to the path itself if no alias matches
+    (schema validation will then reject, with a clearer error message
+    upstream).
+    """
+    from .model_aliases import list_aliases
+
+    for alias, hf_path in list_aliases().items():
+        if hf_path == name_or_path:
+            return alias
+    return name_or_path
+
+
 def bench_command(args):
     """Run benchmark."""
     import asyncio
@@ -1128,6 +1275,13 @@ def bench_command(args):
     from . import _mlx_compat as _mlx_compat
 
     _mlx_compat.install()
+
+    # --submit routes through the standardized community-bench runner,
+    # which locks the comparability knobs the freeform path exposes.
+    # Keep the branch high in this function so the rest of bench_command
+    # doesn't accidentally read --submit-only args.
+    if getattr(args, "submit", False):
+        sys.exit(_run_submit_flow(args))
 
     from mlx_lm import load
 
@@ -4061,6 +4215,46 @@ Examples:
         type=int,
         default=1000,
         help="Maximum number of cache blocks (default: 1000)",
+    )
+    # Community benchmark submission. Mutually-exclusive with the
+    # freeform bench above — when --submit is set the standardized
+    # B=1 runner takes over and every other knob is ignored.
+    bench_parser.add_argument(
+        "--submit",
+        action="store_true",
+        help=(
+            "Run the standardized B=1 community benchmark and open a PR to "
+            "community-benchmarks/. Locks every comparability knob; ignores "
+            "the freeform --num-prompts / --max-tokens / --max-num-seqs args."
+        ),
+    )
+    bench_parser.add_argument(
+        "--sampled",
+        action="store_true",
+        help=(
+            "With --submit, run the bench at temp=0.7/top_p=0.9 instead of "
+            "greedy. Stored as a separate 'sampled' bucket — useful for "
+            "comparing against Artificial Analysis-style real-world numbers."
+        ),
+    )
+    bench_parser.add_argument(
+        "--notes",
+        type=str,
+        default=None,
+        help=(
+            "Optional free-text annotation attached to the submission "
+            "(e.g. 'on battery', 'fresh boot'). Max 200 chars."
+        ),
+    )
+    bench_parser.add_argument(
+        "--repo-root",
+        type=str,
+        default=None,
+        help=(
+            "Path to the Rapid-MLX git checkout. Defaults to the current "
+            "working directory. The --submit flow writes the JSON file and "
+            "opens the PR from this checkout."
+        ),
     )
 
     # Models command. ``ls`` is registered as a top-level alias that

@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/raullenchai/Rapid-MLX/community-benchmarks/schema.json",
+  "title": "Rapid-MLX community benchmark submission",
+  "description": "One row of single-user (B=1) inference performance from a real user's Apple Silicon machine. Submission semantics: append-only, allow duplicates. The website aggregates by (chip, model, rapid_mlx_version) and shows median + IQR; outliers are kept in the raw store but de-emphasized in display.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "submission_id",
+    "submitted_at",
+    "hardware",
+    "software",
+    "model",
+    "config",
+    "buckets"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Bump when the schema changes incompatibly. Aggregator skips rows it doesn't understand."
+    },
+    "submission_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{12}$",
+      "description": "12 lowercase hex chars (first 12 of a uuid4). Deterministic per submission; not derived from any user-identifying info."
+    },
+    "submitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC. Set by the CLI at submission time."
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chip", "ram_gb", "cpu_cores"],
+      "properties": {
+        "chip": {
+          "type": "string",
+          "description": "From `sysctl -n machdep.cpu.brand_string`, e.g. 'Apple M4 Pro'. Verbatim, but the aggregator normalizes case + family for bucketing.",
+          "maxLength": 64
+        },
+        "ram_gb": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 1024,
+          "description": "Rounded `sysctl -n hw.memsize` / (1<<30)."
+        },
+        "cpu_cores": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256,
+          "description": "From `sysctl -n hw.ncpu`."
+        },
+        "gpu_cores": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 256,
+          "description": "Extracted from `system_profiler SPDisplaysDataType`'s 'Total Number of Cores' line. null if the probe failed (don't block submission for it)."
+        }
+      }
+    },
+    "software": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["macos", "rapid_mlx", "mlx", "python"],
+      "properties": {
+        "macos": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$",
+          "description": "From `sw_vers -productVersion`."
+        },
+        "rapid_mlx": {
+          "type": "string",
+          "description": "`vllm_mlx.__version__`."
+        },
+        "mlx": {
+          "type": "string",
+          "description": "`mlx.__version__`."
+        },
+        "python": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "description": "First three components of `sys.version_info`."
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alias", "hf_path"],
+      "properties": {
+        "alias": {
+          "type": "string",
+          "description": "Rapid-MLX alias (must exist in `vllm_mlx/aliases.json` at submission time). The whitelist gate lives in the CLI; the GHA also re-checks."
+        },
+        "hf_path": {
+          "type": "string",
+          "description": "Resolved HuggingFace path, e.g. 'mlx-community/Qwen3.5-9B-4bit'."
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rounds",
+        "warmup_rounds",
+        "sampling",
+        "buckets_spec",
+        "prompt_hash"
+      ],
+      "properties": {
+        "rounds": {
+          "type": "integer",
+          "const": 5,
+          "description": "Locked to 5 by the standardized runner. Comparable to llama-bench -r 5."
+        },
+        "warmup_rounds": {
+          "type": "integer",
+          "const": 1,
+          "description": "Locked to 1 discarded warmup. Comparable to llama-bench's implicit warmup."
+        },
+        "sampling": {
+          "type": "string",
+          "enum": ["greedy", "sampled"],
+          "description": "'greedy' = temp=0, top_p=1 (apples-to-apples vs llama-bench/TGI/MLPerf). 'sampled' = temp=0.7, top_p=0.9 (real-world)."
+        },
+        "buckets_spec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["short", "long"],
+          "properties": {
+            "short": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["prompt_tokens", "max_tokens"],
+              "properties": {
+                "prompt_tokens": {"type": "integer", "const": 512},
+                "max_tokens": {"type": "integer", "const": 128}
+              }
+            },
+            "long": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["prompt_tokens", "max_tokens"],
+              "properties": {
+                "prompt_tokens": {"type": "integer", "const": 2048},
+                "max_tokens": {"type": "integer", "const": 512}
+              }
+            }
+          }
+        },
+        "prompt_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "SHA256 of the synthetic prompt seed used for both buckets, first 16 hex chars. Locked per schema_version so the aggregator can reject mismatches."
+        }
+      }
+    },
+    "buckets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["short", "long"],
+      "properties": {
+        "short": {"$ref": "#/$defs/bucketResult"},
+        "long": {"$ref": "#/$defs/bucketResult"}
+      }
+    },
+    "notes": {
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "Free-text contributor note (e.g. 'on battery', '4K external monitor connected', 'fresh boot'). Not parsed by the aggregator — shown in PR review to explain outliers."
+    },
+    "peak_ram_mb": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Max of `mx.metal.get_active_memory()` observed across all measured rounds, in MiB. null if unavailable."
+    }
+  },
+  "$defs": {
+    "bucketResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decode_tps",
+        "prefill_tps",
+        "ttft_ms",
+        "rounds_raw"
+      ],
+      "properties": {
+        "decode_tps": {"$ref": "#/$defs/stat"},
+        "prefill_tps": {"$ref": "#/$defs/stat"},
+        "ttft_ms": {"$ref": "#/$defs/stat"},
+        "rounds_raw": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["decode_tps", "prefill_tps", "ttft_ms"],
+            "properties": {
+              "decode_tps": {"type": "number", "minimum": 0, "maximum": 5000},
+              "prefill_tps": {"type": "number", "minimum": 0, "maximum": 100000},
+              "ttft_ms": {"type": "number", "minimum": 0, "maximum": 600000}
+            }
+          },
+          "description": "Per-round raw numbers (post-warmup). Aggregator uses these for median across all submissions; this column lets reviewers spot a single weird round."
+        }
+      }
+    },
+    "stat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["median", "min", "max", "stddev"],
+      "properties": {
+        "median": {"type": "number", "minimum": 0},
+        "min": {"type": "number", "minimum": 0},
+        "max": {"type": "number", "minimum": 0},
+        "stddev": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}
