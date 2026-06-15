@@ -53,17 +53,45 @@ class BaseThinkingReasoningParser(ReasoningParser):
     def extract_reasoning(
         self,
         model_output: str,
+        enable_thinking: bool | None = None,
     ) -> tuple[str | None, str | None]:
         """
         Extract reasoning from complete output.
 
-        Handles three cases:
+        Handles four cases:
         1. Both tags present: <think>reasoning</think>content
         2. Only closing tag: reasoning</think>content (think in prompt)
-        3. No tags: pure content
+        3. Only start tag: <think>reasoning... (incomplete reasoning, no end yet)
+        4. No tags at all: the routing depends on ``enable_thinking``.
+
+        Case 4 — the implicit-thinking path — is the load-bearing
+        addition for #575. Qwen3 chat templates that pre-inject
+        ``<think>\\n`` into the prompt itself (see
+        ``vllm_mlx/utils/chat_templates`` for the family list)
+        emit only the **closing** ``</think>`` in the model output;
+        when the response is truncated mid-thought (``finish_reason
+        == "length"``) it emits *neither* tag — and the entire
+        thought trace would leak to ``content`` if Case 4 stayed
+        unconditional. Round 2 of the 2026-06-14 autoresearch sweep
+        observed this on qwen3.5-4b and qwen3.6-35b at every budget
+        from 2 K to 16 K tokens.
+
+        Fix: when the request set ``enable_thinking=True`` AND
+        neither tag is present, treat the whole output as reasoning
+        — symmetric with the streaming path
+        (``extract_reasoning_streaming``) which already uses Case-3
+        "haven't seen </think> yet → reasoning" semantics. When
+        ``enable_thinking`` is None / False, behaviour is unchanged
+        and the output flows to ``content`` exactly as before.
 
         Args:
             model_output: Complete model output text.
+            enable_thinking: Whether the request set
+                ``chat_template_kwargs.enable_thinking=True``. ``None``
+                preserves pre-#575 behaviour (Case 4 → content); this
+                lets callers that don't know the thinking state opt
+                out of the symmetric-with-streaming path. Threaded
+                through ``_finalize_content_and_reasoning``.
 
         Returns:
             (reasoning, content) tuple. Either may be None.
@@ -89,7 +117,15 @@ class BaseThinkingReasoningParser(ReasoningParser):
             _, _, reasoning = text.partition(self.start_token)
             return reasoning.strip() or None, None
 
-        # Case 4: No tags at all - pure content
+        # Case 4: No tags at all. With ``enable_thinking=True`` the
+        # chat template already injected ``<think>`` into the
+        # prompt — anything we see is the model's continuation of
+        # the thought trace, NOT user-visible content. Route to
+        # reasoning; ``content`` stays None so the empty assistant
+        # bubble doesn't ship a wall of meta-cognition to the UI.
+        # See #575.
+        if enable_thinking is True:
+            return model_output.strip() or None, None
         return None, model_output
 
     def extract_reasoning_streaming(

@@ -44,6 +44,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
     def extract_reasoning(
         self,
         model_output: str,
+        enable_thinking: bool | None = None,
     ) -> tuple[str | None, str | None]:
         """
         Extract reasoning from Qwen3 output.
@@ -53,6 +54,14 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
 
         Args:
             model_output: Complete model output text.
+            enable_thinking: Whether the request set
+                ``chat_template_kwargs.enable_thinking=True``. When True
+                AND neither tag is present, the whole output is treated
+                as reasoning (#575 — Qwen3 chat template pre-injects
+                ``<think>\\n``; truncation leaves zero tags; pre-#575
+                the entire thought trace leaked to ``content``). When
+                None / False the no-tag case is treated as plain
+                content as before.
 
         Returns:
             (reasoning, content) tuple.
@@ -65,11 +74,21 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             if self.start_token in model_output:
                 _, _, reasoning = model_output.partition(self.start_token)
                 return reasoning.strip() or None, None
+            # #575 — when ``enable_thinking=True`` the chat template
+            # pre-injected ``<think>\n`` into the prompt, so a no-tag
+            # response is a truncated thought trace (the streaming
+            # path's Case-3 ``haven't seen </think> yet → reasoning``
+            # already routes it correctly; this branch is the
+            # non-streaming symmetry). The whole output is reasoning;
+            # ``content`` is None so the empty assistant bubble
+            # doesn't leak a wall of meta-cognition to the client.
+            if enable_thinking is True:
+                return model_output.strip() or None, None
             # No think tags at all — pure content
             return None, model_output
 
         # Use base class implementation (handles both explicit and implicit)
-        return super().extract_reasoning(model_output)
+        return super().extract_reasoning(model_output, enable_thinking=enable_thinking)
 
     def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
         """

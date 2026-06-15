@@ -133,6 +133,7 @@ def _finalize_content_and_reasoning(
     tool_calls: list,
     reasoning_parser,
     engine_reasoning_text: str = "",
+    enable_thinking: bool | None = None,
 ) -> tuple[str, str | None]:
     """Compute final ``content`` + ``reasoning_text`` after tool parsing.
 
@@ -181,11 +182,30 @@ def _finalize_content_and_reasoning(
         return cleaned_text, engine_reasoning_text
     if reasoning_parser is None:
         return cleaned_text, reasoning_text
+    # #575 — thread the request-level ``enable_thinking`` so the
+    # underlying ``BaseThinkingReasoningParser.extract_reasoning``
+    # can apply its symmetric-with-streaming Case-4 fallback when
+    # the chat template pre-injected ``<think>`` and the model was
+    # truncated mid-thought (``finish_reason="length"`` with no
+    # ``</think>`` ever emitted). Older reasoning parsers that
+    # don't accept the kwarg fall back to a 1-arg call so we don't
+    # break the contract for third-party parsers.
+    try:
+        extract = lambda text: reasoning_parser.extract_reasoning(
+            text, enable_thinking=enable_thinking
+        )
+        # Probe call to confirm the kwarg is accepted; if it raises
+        # ``TypeError`` the parser is on the old contract and we
+        # fall back below. Using a tiny string keeps the probe cost
+        # at one ``str.partition`` call.
+        extract("")
+    except TypeError:
+        extract = lambda text: reasoning_parser.extract_reasoning(text)
     if tool_calls:
-        reasoning_text, _ = reasoning_parser.extract_reasoning(raw_text)
+        reasoning_text, _ = extract(raw_text)
     else:
         text_to_parse = cleaned_text or raw_text
-        new_reasoning, new_cleaned = reasoning_parser.extract_reasoning(text_to_parse)
+        new_reasoning, new_cleaned = extract(text_to_parse)
         # Harmony retry: the engine's ``clean_output_text`` strips
         # ``<|channel|>analysis<|message|>…`` markers before the route
         # ever sees the output, so a ``HarmonyReasoningParser`` running
@@ -199,7 +219,7 @@ def _finalize_content_and_reasoning(
         # PR #436's empty-TextBlock fix: that PR rescued ``content``
         # from being clobbered to None; this rescues ``reasoning``.)
         if new_reasoning is None and raw_text and raw_text != text_to_parse:
-            retry_reasoning, _ = reasoning_parser.extract_reasoning(raw_text)
+            retry_reasoning, _ = extract(raw_text)
             if retry_reasoning is not None:
                 new_reasoning = retry_reasoning
         reasoning_text = new_reasoning

@@ -134,6 +134,71 @@ class TestBaseThinkExtractReasoning:
         assert reasoning is None
         assert content == text
 
+    # ---- #575 — implicit-thinking truncation fallback -----------------
+
+    def test_575_no_tags_enable_thinking_true_routes_to_reasoning(self):
+        """The autoresearch repro: Qwen3 chat template pre-injected
+        ``<think>\\n`` into the prompt, model was truncated mid-thought
+        (``finish_reason="length"``), neither tag appears in output.
+        Pre-#575 this leaked the whole thought to ``content``; post-fix
+        it routes to ``reasoning`` symmetric with the streaming path.
+        """
+        text = (
+            "Here's a thinking process that leads to the solution:\n\n"
+            "1.  **Analyze the Problem:**\n"
+            "    *   **Entities:** Two trains.\n"
+            "    *   **Start Points:** Boston and New York.\n"
+            "    [... 4000+ chars of pure thought ...]"
+        )
+        reasoning, content = self.parser.extract_reasoning(
+            text, enable_thinking=True
+        )
+        assert reasoning == text.strip(), (
+            "with enable_thinking=True the whole truncated trace MUST "
+            "land in reasoning, not leak into content (Round-2 repro)"
+        )
+        assert content is None, (
+            "content MUST be None on a truncated thought — empty "
+            "assistant bubble in the UI > wall of meta-cognition"
+        )
+
+    def test_575_no_tags_enable_thinking_false_preserves_legacy_behaviour(self):
+        """Backward-compat pin: passing ``enable_thinking=False``
+        keeps the pre-#575 contract — no tags → content. Only the
+        ``True`` path activates the new symmetric-with-streaming
+        fallback; older callers that don't thread the flag at all
+        (None) get the same legacy behaviour."""
+        text = "Just a simple response with no thinking."
+        for flag in (False, None):
+            reasoning, content = self.parser.extract_reasoning(
+                text, enable_thinking=flag
+            )
+            assert reasoning is None
+            assert content == text
+
+    def test_575_enable_thinking_true_does_not_affect_normal_split(self):
+        """``enable_thinking=True`` MUST NOT change behaviour when the
+        output already contains the closing tag — Case 2 (only end tag)
+        is the well-behaved path that already routes correctly and the
+        new flag must be a no-op there. Otherwise we'd silently swap
+        ``reasoning`` and ``content`` on every successful thought."""
+        text = "step by step reasoning</think>The answer is 42."
+        reasoning, content = self.parser.extract_reasoning(
+            text, enable_thinking=True
+        )
+        assert reasoning == "step by step reasoning"
+        assert content == "The answer is 42."
+
+    def test_575_empty_truncated_thought_routes_to_none(self):
+        """A truncated thought that's only whitespace shouldn't ship as
+        a non-empty reasoning string — ``.strip() or None`` returns
+        None so callers don't render a placeholder reasoning bubble."""
+        reasoning, content = self.parser.extract_reasoning(
+            "   \n\t  ", enable_thinking=True
+        )
+        assert reasoning is None
+        assert content is None
+
     def test_multiline_reasoning(self):
         text = "<think>Line 1\nLine 2\nLine 3</think>Answer"
         reasoning, content = self.parser.extract_reasoning(text)

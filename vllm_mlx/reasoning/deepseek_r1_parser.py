@@ -39,6 +39,7 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
     def extract_reasoning(
         self,
         model_output: str,
+        enable_thinking: bool | None = None,
     ) -> tuple[str | None, str | None]:
         """
         Extract reasoning from DeepSeek-R1 output.
@@ -47,6 +48,12 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
 
         Args:
             model_output: Complete model output text.
+            enable_thinking: Threaded through to ``BaseThinkingReasoningParser``
+                Case 4 — when True, no-tag output is routed to reasoning
+                (#575 symmetric-with-streaming fallback). DeepSeek-R1
+                callers rarely set this explicitly; the no-tag branch
+                below short-circuits before the base call, so the flag
+                only matters if a future caller wires it on.
 
         Returns:
             (reasoning, content) tuple.
@@ -58,12 +65,19 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             content = content.strip() or None
             return reasoning, content
 
-        # If neither token, return as pure content
+        # If neither token, return as pure content — UNLESS the caller
+        # explicitly set enable_thinking=True, in which case the chat
+        # template injected ``<think>`` into the prompt and a truncated
+        # response with no tags is the model's continued thought trace.
+        # See ``BaseThinkingReasoningParser.extract_reasoning`` for the
+        # full rationale (#575).
         if self.end_token not in model_output and self.start_token not in model_output:
+            if enable_thinking is True:
+                return model_output.strip() or None, None
             return None, model_output
 
         # Use base class for standard case
-        return super().extract_reasoning(model_output)
+        return super().extract_reasoning(model_output, enable_thinking=enable_thinking)
 
     # Character threshold for no-tag content detection.
     # If no think tags are seen after this many characters, treat output as

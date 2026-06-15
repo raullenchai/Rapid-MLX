@@ -36,8 +36,18 @@ class Gemma4ReasoningParser(ReasoningParser):
         self._in_content = False
         self._saw_any_channel = False
 
-    def extract_reasoning(self, model_output: str) -> tuple[str | None, str | None]:
-        """Extract reasoning from complete output."""
+    def extract_reasoning(
+        self,
+        model_output: str,
+        enable_thinking: bool | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Extract reasoning from complete output.
+
+        ``enable_thinking`` accepted for cross-parser signature parity
+        (#575); Gemma 4 uses unambiguous ``<|channel|>`` tokens so the
+        flag is informational only.
+        """
+        del enable_thinking  # noqa: F841 — channel parser ignores the flag
         if not model_output:
             return None, model_output
 

@@ -72,16 +72,21 @@ class GptOssReasoningParser(ReasoningParser):
     def extract_reasoning(
         self,
         model_output: str,
+        enable_thinking: bool | None = None,
     ) -> tuple[str | None, str | None]:
         """
         Extract reasoning and content from complete model output.
 
         Args:
             model_output: Complete text output from the model.
+            enable_thinking: Accepted for cross-parser signature parity
+                (#575). GPT-OSS uses unambiguous ``<|channel|>`` tokens,
+                so the flag is informational only — no branching here.
 
         Returns:
             (reasoning, content) tuple. Either may be None.
         """
+        del enable_thinking  # noqa: F841 — channel parser ignores the flag
         if not model_output or "<|channel|>" not in model_output:
             return None, model_output if model_output else None
 

@@ -1191,6 +1191,12 @@ async def _create_chat_completion_impl(
         tool_calls=tool_calls,
         reasoning_parser=cfg.reasoning_parser,
         engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
+        # #575 — chat-template-injected ``<think>`` means the model
+        # never emits the start tag; pass the resolved flag so the
+        # parser can keep Case 4 (no tags at all) symmetric with the
+        # streaming Case-3 fallback when the response was truncated
+        # mid-thought.
+        enable_thinking=resolved_thinking,
     )
 
     # Process response_format if specified (after reasoning parser cleaned the text)

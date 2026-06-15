@@ -117,13 +117,25 @@ class MiniMaxReasoningParser(ReasoningParser):
         self._is_reasoning = False
         self._transition_pos = 0
 
-    def extract_reasoning(self, model_output: str) -> tuple[str | None, str | None]:
+    def extract_reasoning(
+        self,
+        model_output: str,
+        enable_thinking: bool | None = None,
+    ) -> tuple[str | None, str | None]:
         """
         Extract reasoning from complete MiniMax output.
+
+        ``enable_thinking`` accepted for cross-parser signature parity
+        (#575); MiniMax uses heuristic pattern detection rather than the
+        prompt-injected ``<think>`` flow, so the flag is informational
+        only — wiring it in here would invert the conservative default
+        (no transition found → return as content) which is the SoP
+        designed to avoid false positives.
 
         Returns:
             (reasoning, content) tuple.
         """
+        del enable_thinking  # noqa: F841 — heuristic parser ignores the flag
         # Handle explicit <think> tags first (MiniMax sometimes uses them)
         if "<think>" in model_output or "</think>" in model_output:
             if "</think>" in model_output:

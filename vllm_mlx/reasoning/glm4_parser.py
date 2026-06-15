@@ -57,11 +57,14 @@ class Glm4ReasoningParser(BaseThinkingReasoningParser):
     def extract_reasoning(
         self,
         model_output: str,
+        enable_thinking: bool | None = None,
     ) -> tuple[str | None, str | None]:
         # Strip 4.6V box markers before tag inspection. They're whole
         # special tokens, never embedded inside actual reasoning prose,
         # so a literal replace is safe.
-        return super().extract_reasoning(self._strip_box(model_output))
+        return super().extract_reasoning(
+            self._strip_box(model_output), enable_thinking=enable_thinking
+        )
 
     def extract_reasoning_streaming(
         self,

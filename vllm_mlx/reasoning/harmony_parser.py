@@ -79,6 +79,7 @@ class HarmonyReasoningParser(ReasoningParser):
     def extract_reasoning(
         self,
         model_output: str,
+        enable_thinking: bool | None = None,
     ) -> tuple[str | None, str | None]:
         """
         Extract reasoning from complete Harmony output.
@@ -88,10 +89,14 @@ class HarmonyReasoningParser(ReasoningParser):
 
         Args:
             model_output: Complete model output text.
+            enable_thinking: Accepted for cross-parser signature parity
+                (#575). Harmony uses unambiguous channel tokens, so the
+                flag is informational only.
 
         Returns:
             (reasoning, content) tuple. Either may be None.
         """
+        del enable_thinking  # noqa: F841 — channel parser ignores the flag
         # Collect all analysis blocks
         analysis_blocks = _ANALYSIS_PATTERN.findall(model_output)
         reasoning = "\n".join(block.strip() for block in analysis_blocks) or None
