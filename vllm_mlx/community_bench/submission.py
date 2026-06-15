@@ -228,8 +228,15 @@ def _make_pr_via_gh(
     payload: dict,
     *,
     stdout,
-) -> bool:
-    """Branch + commit + push + ``gh pr create``. Returns True on PR open.
+) -> tuple[bool, set[str]]:
+    """Branch + commit + push + ``gh pr create``. Returns (success, completed_steps).
+
+    ``completed_steps`` is the set of step labels that succeeded
+    before any failure (or all of them on success). The caller uses
+    that set to render *state-aware* recovery instructions when
+    ``success=False`` — telling the user "re-create the branch" when
+    we've already pushed it would leave them confused and the branch
+    in a half-committed state. (Codex PR #582 round-5 BLOCKING.)
 
     Strategy if anything goes wrong: bail to the manual-fallback path
     in ``submit_interactive`` so the file on disk isn't orphaned. We
@@ -246,11 +253,11 @@ def _make_pr_via_gh(
             "manual instructions below.",
             file=stdout,
         )
-        return False
+        return False, set()
 
     steps: list[tuple[str, list[str]]] = [
-        ("checkout new branch", ["git", "-C", str(repo), "checkout", "-b", branch]),
-        ("stage submission", ["git", "-C", str(repo), "add", rel_path]),
+        ("checkout", ["git", "-C", str(repo), "checkout", "-b", branch]),
+        ("stage", ["git", "-C", str(repo), "add", rel_path]),
         (
             "commit",
             [
@@ -263,9 +270,9 @@ def _make_pr_via_gh(
                 f"{payload['hardware']['chip']} ({payload['submission_id']})",
             ],
         ),
-        ("push branch", ["git", "-C", str(repo), "push", "-u", "origin", branch]),
+        ("push", ["git", "-C", str(repo), "push", "-u", "origin", branch]),
         (
-            "open pull request",
+            "pr_create",
             [
                 "gh",
                 "pr",
@@ -279,6 +286,7 @@ def _make_pr_via_gh(
         ),
     ]
 
+    completed: set[str] = set()
     for label, cmd in steps:
         # ``cwd=repo`` is critical for the ``gh`` step: ``gh pr create``
         # reads the remote / branch state from the *current working
@@ -299,10 +307,11 @@ def _make_pr_via_gh(
                 f"    stderr:  {result.stderr.strip() or '(empty)'}",
                 file=stdout,
             )
-            return False
+            return False, completed
+        completed.add(label)
         if result.stdout.strip():
             print(f"  {label}: {result.stdout.strip()}", file=stdout)
-    return True
+    return True, completed
 
 
 def _pr_body(payload: dict) -> str:
@@ -336,29 +345,61 @@ def _print_manual_fallback(
     payload: dict,
     *,
     stdout,
+    completed: set[str] | None = None,
 ) -> None:
     """Tell the user exactly which commands to run to finish the PR.
 
     Triggered when ``gh`` isn't installed, the git state is dirty, or
     a step in the auto-PR sequence failed. The submission file is
     already on disk at this point — they don't need to re-run the bench.
+
+    ``completed`` is the set of step labels that ``_make_pr_via_gh``
+    successfully ran before bailing. Without it, the fallback would
+    print ``git checkout -b <branch>`` even when the branch already
+    exists and is already pushed, leaving the user confused. (Codex PR
+    #582 round-5 BLOCKING.) Step labels match the literals in
+    ``_make_pr_via_gh.steps``: checkout / stage / commit / push /
+    pr_create. ``None`` (the gh-missing or dirty-tree path) means
+    nothing has happened in git yet, so the full sequence applies.
     """
     branch = f"community-bench/{payload['submission_id']}"
     rel_path = submission_path.relative_to(repo).as_posix()
+    done = completed or set()
+
     print("\n  The JSON file is on disk at:", file=stdout)
     print(f"    {submission_path}", file=stdout)
-    print(
-        "  To finish the submission, run these commands from the repo root:",
-        file=stdout,
-    )
-    print(f"    git checkout -b {branch}", file=stdout)
-    print(f"    git add {rel_path}", file=stdout)
-    print(
-        f"    git commit -m 'community-bench: {payload['model']['alias']} "
-        f"on {payload['hardware']['chip']}'",
-        file=stdout,
-    )
-    print(f"    git push -u origin {branch}", file=stdout)
+
+    # Lead with where we got to so the user knows what to skip.
+    if done:
+        already = " → ".join(
+            s for s in ("checkout", "stage", "commit", "push") if s in done
+        )
+        print(f"  Already completed: {already}", file=stdout)
+        print(
+            "  Resume from where it stopped — these are the commands "
+            "for the steps that still need to run:",
+            file=stdout,
+        )
+    else:
+        print(
+            "  To finish the submission, run these commands from the repo root:",
+            file=stdout,
+        )
+
+    if "checkout" not in done:
+        print(f"    git checkout -b {branch}", file=stdout)
+    if "stage" not in done:
+        print(f"    git add {rel_path}", file=stdout)
+    if "commit" not in done:
+        print(
+            f"    git commit -m 'community-bench: {payload['model']['alias']} "
+            f"on {payload['hardware']['chip']}'",
+            file=stdout,
+        )
+    if "push" not in done:
+        print(f"    git push -u origin {branch}", file=stdout)
+    # If we already pushed but pr_create failed, just retry pr_create —
+    # the user shouldn't re-do the branch ops.
     print(
         "    gh pr create   # or open the compare URL in your browser",
         file=stdout,
@@ -468,10 +509,17 @@ def submit_interactive(
         _print_thanks(payload, stdout=out)
         return 0
 
-    if _make_pr_via_gh(repo, submission_path, payload, stdout=out):
+    pr_ok, completed_steps = _make_pr_via_gh(repo, submission_path, payload, stdout=out)
+    if pr_ok:
         print("\n  PR opened successfully.", file=out)
     else:
-        _print_manual_fallback(repo, submission_path, payload, stdout=out)
+        _print_manual_fallback(
+            repo,
+            submission_path,
+            payload,
+            stdout=out,
+            completed=completed_steps,
+        )
 
     _print_thanks(payload, stdout=out)
     return 0

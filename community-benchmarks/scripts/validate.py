@@ -297,28 +297,58 @@ def _check_no_duplicate_submission_id(
         )
 
 
-def _load_existing_submission_ids(skip: Path | None = None) -> set[str]:
-    """Walk submissions/ and return every ``submission_id`` found.
+def _read_submission_id(path: Path) -> str | None:
+    """Read just the ``submission_id`` from a file, or ``None`` on parse error.
 
-    ``skip`` is the path currently being validated — we don't want to
-    flag the file as a duplicate of itself when re-running validate.py
-    after the file is already on disk (e.g. local dev).
+    Cheap helper for the up-front corpus-id scan: we don't need to
+    re-validate to know which id to subtract from the "is this a
+    duplicate?" check.
     """
-    ids: set[str] = set()
+    try:
+        return json.loads(path.read_text()).get("submission_id")
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _load_submission_id_index() -> dict[str, set[Path]]:
+    """Walk submissions/ and return ``submission_id -> set of paths``.
+
+    Returning paths (not just ids) lets the caller subtract the target
+    file's own path when validating, so we still detect a true
+    duplicate (two different files sharing one id) without false-
+    flagging a file as a duplicate of itself.
+    """
+    index: dict[str, set[Path]] = {}
     if not SUBMISSIONS_DIR.exists():
-        return ids
-    skip_resolved = skip.resolve() if skip else None
+        return index
     for existing in SUBMISSIONS_DIR.glob("*.json"):
-        if skip_resolved and existing.resolve() == skip_resolved:
-            continue
         try:
             payload = json.loads(existing.read_text())
         except (OSError, json.JSONDecodeError):
             continue
         sid = payload.get("submission_id")
         if sid is not None:
-            ids.add(sid)
-    return ids
+            index.setdefault(sid, set()).add(existing.resolve())
+    return index
+
+
+def _ids_with_other_owners(
+    index: dict[str, set[Path]], target: Path, in_run: set[str]
+) -> set[str]:
+    """Compose the "id is already used elsewhere" set for one target.
+
+    An id is "already used" iff some OTHER file in the corpus carries
+    it OR it has already been validated successfully this run (so two
+    ADDED files in the same PR with the same id catch each other).
+    """
+    target_resolved = target.resolve()
+    out: set[str] = set(in_run)
+    for sid, owners in index.items():
+        # If any owner that isn't the target itself has this id, it
+        # is "already taken" from the target's point of view.
+        if any(p != target_resolved for p in owners):
+            out.add(sid)
+    return out
 
 
 def validate_one(
@@ -367,14 +397,19 @@ def main(argv: list[str]) -> int:
         print("  ERROR: aliases.json is empty or missing — every file will fail.")
         return min(125, len(targets))
 
-    # Cross-file uniqueness check: load every submission_id once so
-    # each per-file validate can detect duplicates. Skipping the file
-    # being validated avoids self-collision when re-running locally
-    # against an already-committed submission.
+    # Cross-file uniqueness check: build the id→paths index ONCE
+    # up-front, then for each target derive the "ids owned by some
+    # OTHER file" set rather than rescanning the entire submissions/
+    # directory per target. The previous version was O(n²) over the
+    # corpus. (Codex PR #582 round-5 NIT.) Tracking by path (not just
+    # id) so two files with the same id are correctly flagged: removing
+    # the target's id from a plain set would mask both.
+    id_index = _load_submission_id_index()
+    seen_in_run: set[str] = set()
     failures = 0
     for path in targets:
-        existing_ids = _load_existing_submission_ids(skip=path)
-        issues = validate_one(path, schema, aliases, existing_ids=existing_ids)
+        existing = _ids_with_other_owners(id_index, path, seen_in_run)
+        issues = validate_one(path, schema, aliases, existing_ids=existing)
         if issues:
             failures += 1
             print(f"  FAIL  {path.name}")
@@ -382,6 +417,12 @@ def main(argv: list[str]) -> int:
                 print(f"        {issue}")
         else:
             print(f"  OK    {path.name}")
+            sid_self = _read_submission_id(path)
+            if sid_self:
+                # Track passes so a second ADDED file in the same PR
+                # with the same id (within this run, not yet on disk
+                # in the merge-base) is flagged.
+                seen_in_run.add(sid_self)
 
     print()
     print(f"  {len(targets) - failures}/{len(targets)} files passed.")

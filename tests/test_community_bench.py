@@ -587,7 +587,9 @@ def test_submit_interactive_clean_tree_reaches_pr_step(
 
     def fake_pr(repo, path, payload, *, stdout):
         pr_invoked.append(True)
-        return True  # pretend the PR opened
+        # ``_make_pr_via_gh`` now returns (success, completed_steps);
+        # round-5 state-aware fallback needs the set on failure.
+        return True, {"checkout", "stage", "commit", "push", "pr_create"}
 
     monkeypatch.setattr(sub_mod, "_git_is_clean", fake_clean)
     monkeypatch.setattr(sub_mod, "_make_pr_via_gh", fake_pr)
@@ -1166,3 +1168,112 @@ def test_submission_make_pr_uses_repo_cwd(tmp_path, monkeypatch) -> None:
             f"step {c['cmd'][0]!r} ran with cwd={c['cwd']!r}, "
             f"expected {str(tmp_path)!r}"
         )
+
+
+def test_state_aware_fallback_skips_already_completed_steps(tmp_path, capsys) -> None:
+    """Regression: when ``_make_pr_via_gh`` bails after ``push`` (e.g.
+    ``gh pr create`` failed), the manual-fallback instructions must
+    NOT tell the user to ``git checkout -b <branch>`` because the
+    branch already exists and is already pushed. (Codex PR #582
+    round-5 BLOCKING.)
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "x", "hf_path": "y/z"},
+        "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
+        "software": {"rapid_mlx": "0.7.6", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    completed = {"checkout", "stage", "commit", "push"}  # all but pr_create
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(
+        tmp_path, sub_path, payload, stdout=out, completed=completed
+    )
+    text = out.getvalue()
+    # Must NOT instruct to recreate the branch — that would fail
+    # because it's already pushed.
+    assert "git checkout -b" not in text
+    assert "git add" not in text
+    assert "git commit" not in text
+    assert "git push" not in text
+    # Must still show the only remaining step.
+    assert "gh pr create" in text
+    # Should explain what already happened.
+    assert "Already completed" in text
+
+
+def test_decode_tps_formula_uses_n_minus_one(monkeypatch) -> None:
+    """Regression: ``decode_tps`` must be computed as ``(N-1)/window``,
+    not ``N/window`` — the inter-token window measures N-1 gaps for
+    N tokens. (Codex PR #582 round-5 BLOCKING.) Verify the field
+    value matches vLLM TPOT semantics on a synthetic round.
+    """
+    import asyncio
+
+    from vllm_mlx.community_bench import runner
+
+    class _FakeOutput:
+        def __init__(
+            self,
+            new_token_ids: list[int],
+            prompt_tokens: int = 0,
+            completion_tokens: int = 0,
+            output_token_ids: list[int] | None = None,
+            finished: bool = False,
+        ):
+            self.new_token_ids = new_token_ids
+            self.prompt_tokens = prompt_tokens
+            self.completion_tokens = completion_tokens
+            self.output_token_ids = output_token_ids or []
+            self.finished = finished
+
+    class _FakeEngine:
+        async def add_request(self, prompt, params):
+            return "rid"
+
+        async def stream_outputs(self, rid, timeout):
+            # First call yields token 1 (sets t_first_token).
+            yield _FakeOutput(new_token_ids=[1])
+            # Five more tokens. Total N = 6.
+            for i in range(5):
+                yield _FakeOutput(new_token_ids=[i + 2])
+            yield _FakeOutput(
+                new_token_ids=[],
+                prompt_tokens=512,
+                completion_tokens=6,
+                output_token_ids=list(range(1, 7)),
+                finished=True,
+            )
+
+    # Pin perf_counter so the decode window has a known value.
+    # ``_run_one_round`` calls perf_counter exactly three times:
+    #   1. t_start at function entry
+    #   2. t_first_token on the first chunk carrying new_token_ids
+    #   3. t_end after the loop exits
+    # We don't need per-chunk timestamps; the formula only uses the
+    # window between calls 2 and 3.
+    times = iter([0.0, 1.0, 2.0])
+    monkeypatch.setattr(runner.time, "perf_counter", lambda: next(times))
+
+    async def _run():
+        from vllm_mlx.request import SamplingParams
+
+        return await runner._run_one_round(
+            _FakeEngine(),
+            "synthetic prompt",
+            SamplingParams(max_tokens=6, temperature=0.0, top_p=1.0, top_k=0),
+            target_prompt_tokens=512,
+        )
+
+    result = asyncio.run(_run())
+    # t_first_token=1.0, t_end=2.0 ⇒ decode_window = 1.0s.
+    # N=6 completion_tokens. (N-1)/window = 5/1 = 5.0 tok/s.
+    # The OLD (buggy) formula would give 6.0 tok/s; assert we get 5.0.
+    assert abs(result.decode_tps - 5.0) < 1e-9, (
+        f"decode_tps={result.decode_tps}; expected 5.0 = (6-1)/1.0"
+    )

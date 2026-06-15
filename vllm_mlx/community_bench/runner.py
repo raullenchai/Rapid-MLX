@@ -203,9 +203,30 @@ async def _run_one_round(
     prefill_window_s = max(t_first_token - t_start, 1e-6)
     decode_window_s = max(t_end - t_first_token, 1e-6)
 
+    # ``t_first_token`` marks the arrival of the FIRST decoded token.
+    # The window ``(t_end - t_first_token)`` therefore measures the
+    # inter-token gaps for tokens 2..N — exactly ``N - 1`` gaps for
+    # ``N`` completion tokens. Dividing by ``N`` instead of ``N - 1``
+    # would attribute the first token's decode time to the prefill
+    # window and underreport TPS by a factor of ``N/(N-1)``. (Codex
+    # PR #582 round-5 BLOCKING.) This matches vLLM's TPOT definition
+    # and llama.cpp's tg semantics; numbers then slot 1:1 into the
+    # comparison tables we're trying to populate.
+    #
+    # For ``N == 1`` (single-token completions, e.g. early-stopped
+    # output) the inter-token concept doesn't apply — there's only
+    # the first token. We fall back to ``1 / window`` for that edge
+    # case so we don't divide by zero and the field has a defined
+    # value, but realistically the standardized bench's ``max_tokens``
+    # is always 128 or 512 so this branch is theoretical defensive.
+    if completion_tokens > 1:
+        decode_tps = (completion_tokens - 1) / decode_window_s
+    else:
+        decode_tps = completion_tokens / decode_window_s
+
     return RoundResult(
         prefill_tps=prompt_tokens_actual / prefill_window_s,
-        decode_tps=completion_tokens / decode_window_s,
+        decode_tps=decode_tps,
         ttft_ms=(t_first_token - t_start) * 1000.0,
     )
 
