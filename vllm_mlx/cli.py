@@ -1154,8 +1154,10 @@ def _run_submit_flow(args) -> int:
     # silent alias coercion bypasses the intended "must be a whitelist
     # key" contract.) The GHA validator re-checks the alias against
     # aliases.json, so this guard is layered. ``args._original_alias``
-    # holds the user-typed value before the dispatcher resolves it to
-    # an HF path; if it's None, the user passed an HF path directly.
+    # holds the user-typed value when the dispatcher resolved an alias
+    # to an HF path; if it's absent (HF path passed directly, or any
+    # other no-resolution case) we fall back to ``args.model``, which
+    # this guard then re-checks for the ``/`` HF-path signature.
     user_typed = getattr(args, "_original_alias", None) or args.model
     if "/" in user_typed:
         print(
