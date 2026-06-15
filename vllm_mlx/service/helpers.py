@@ -206,6 +206,25 @@ def _finalize_content_and_reasoning(
     else:
         text_to_parse = cleaned_text or raw_text
         new_reasoning, new_cleaned = extract(text_to_parse)
+        # Capture the FIRST-parse Case-4 signal BEFORE the harmony
+        # retry overwrites ``new_reasoning``. The leak plug below
+        # MUST gate on what the parser routed when it saw the
+        # already-cleaned text, not on what the retry-on-raw-text
+        # later produced — otherwise harmony's analysis-channel
+        # recovery looks like a Case-4 fallback to the guard and
+        # spuriously clears legitimate final-channel content
+        # (codex R2 BLOCKING). The signal is: first parse routed
+        # the whole input to reasoning AND the input had no
+        # ``<think>`` tags (so it really was the no-tag Case-4
+        # fallback firing, not Case 3's ``…</think>answer`` split
+        # nor a harmony channel-strip outcome).
+        first_parse_was_case4 = (
+            new_reasoning is not None
+            and new_cleaned is None
+            and bool(text_to_parse)
+            and "<think>" not in text_to_parse
+            and "</think>" not in text_to_parse
+        )
         # Harmony retry: the engine's ``clean_output_text`` strips
         # ``<|channel|>analysis<|message|>…`` markers before the route
         # ever sees the output, so a ``HarmonyReasoningParser`` running
@@ -240,11 +259,10 @@ def _finalize_content_and_reasoning(
         if new_cleaned is not None:
             cleaned_text = new_cleaned
         # #575 leak-plug: when ``enable_thinking=True`` AND the
-        # parser routed the whole output to reasoning (its new
-        # Case-4 fallback path: ``(reasoning, None)`` on input
-        # that contains neither ``<think>`` nor ``</think>``),
-        # the original ``cleaned_text`` is the same raw thought
-        # trace — ``strip_thinking_tags`` only matches **closed**
+        # parser's FIRST parse routed the whole no-tag output to
+        # reasoning (Case-4 fallback path), the original
+        # ``cleaned_text`` is the same raw thought trace —
+        # ``strip_thinking_tags`` only matches **closed**
         # ``<think>…</think>`` blocks, so a no-tag truncated thought
         # would pass straight through to ``final_content`` and the
         # client would see the exact same prose in BOTH
@@ -252,15 +270,13 @@ def _finalize_content_and_reasoning(
         # finding). Clear ``cleaned_text`` so the route renders
         # ``content=None`` for that case. Streaming-symmetry
         # invariant — the streaming Case-3 path never emits content
-        # for truncated thoughts either.
-        if (
-            enable_thinking is True
-            and new_reasoning is not None
-            and new_cleaned is None
-            and text_to_parse
-            and "<think>" not in text_to_parse
-            and "</think>" not in text_to_parse
-        ):
+        # for truncated thoughts either. Note the gate on the
+        # FIRST-parse outcome rather than the post-retry value: a
+        # harmony reasoning-from-raw-text retry can produce the
+        # same ``(reasoning, None)`` shape but the cleaned_text in
+        # that case is the legitimate final-channel answer that
+        # MUST survive (codex R2 BLOCKING).
+        if enable_thinking is True and first_parse_was_case4:
             cleaned_text = ""
     return cleaned_text, reasoning_text
 

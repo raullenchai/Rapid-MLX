@@ -254,9 +254,12 @@ async def create_anthropic_message(
             # helper is shared between both routes so leaving this
             # call site on the legacy contract would let the leak
             # persist on ``/v1/messages`` while ``/v1/chat/completions``
-            # was fixed).
+            # was fixed). Use ``cfg.model_path`` rather than
+            # ``cfg.model_name`` to avoid divergence with the
+            # prompt-render path when ``--served-model-name`` is set
+            # (codex R2 BLOCKING).
             enable_thinking=_effective_enable_thinking(
-                resolved_thinking, cfg.model_name
+                resolved_thinking, cfg.model_path or cfg.model_name
             ),
         )
 

@@ -1197,12 +1197,14 @@ async def _create_chat_completion_impl(
         # the same ``None`` → ``"coder" not in model_name`` fallback
         # ``vllm_mlx/utils/chat_template.py:127`` uses for prompt
         # rendering) so the parser's Case 4 fallback fires on
-        # default-on thinking — codex R1 BLOCKING: passing the raw
-        # ``resolved_thinking`` left ``None`` for every request that
-        # didn't pin the flag, so the leak persisted on the most
-        # common Qwen3 path.
+        # default-on thinking — codex R1 BLOCKING. Use
+        # ``cfg.model_path`` (the underlying HF path / alias the
+        # engine actually loaded) rather than ``cfg.model_name``,
+        # which can be overridden by ``--served-model-name`` and
+        # would diverge from the prompt-render path's coder check
+        # (codex R2 BLOCKING).
         enable_thinking=_effective_enable_thinking(
-            resolved_thinking, cfg.model_name
+            resolved_thinking, cfg.model_path or cfg.model_name
         ),
     )
 

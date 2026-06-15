@@ -392,3 +392,50 @@ def test_parser_accepts_enable_thinking_no_side_effects():
     parser = StatefulParser()
     assert _parser_accepts_enable_thinking(parser) is True
     assert parser.call_count == 0
+
+
+# ---- #575 codex R2 — Harmony retry must survive Case-4 leak plug ---------
+
+
+def test_575_r2_harmony_retry_with_thinking_on_does_not_clear_cleaned_text():
+    """codex R2 BLOCKING: when Harmony's analysis-channel retry on
+    ``raw_text`` recovers reasoning, the FIRST parse on the engine-
+    cleaned ``"The answer is 391."`` returned ``(None, None)`` — NOT
+    the no-tag Case-4 fallback. The leak plug must NOT mistake this
+    shape for Case-4 and clobber the legitimate final-channel
+    content. Pin the regression that round-1's naive guard would
+    have introduced."""
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_HARMONY_RAW,
+        cleaned_text=_HARMONY_CLEANED,
+        tool_calls=[],
+        reasoning_parser=HarmonyReasoningParser(),
+        engine_reasoning_text="",
+        # Default-on thinking for non-coder models flows through here
+        # via ``_effective_enable_thinking(None, model_name) == True``;
+        # exercise the True branch explicitly so a future refactor
+        # can't silently regress.
+        enable_thinking=True,
+    )
+    assert reasoning is not None and "17 * 23" in reasoning
+    assert cleaned == _HARMONY_CLEANED, (
+        "Harmony's clean final-channel content MUST survive the "
+        "Case-4 leak plug — first parse on cleaned_text was "
+        "(None, None), not the no-tag (reasoning, None) the plug "
+        "targets"
+    )
+
+
+def test_575_r2_qwen3_case4_still_clears_when_thinking_on():
+    """Sanity counter-test to the harmony case above: when the FIRST
+    parse really WAS the no-tag Case-4 fallback, the plug DOES fire."""
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_QWEN3_TRUNCATED_THOUGHT,
+        cleaned_text=_QWEN3_TRUNCATED_THOUGHT,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=True,
+    )
+    assert reasoning == _QWEN3_TRUNCATED_THOUGHT.strip()
+    assert not cleaned
