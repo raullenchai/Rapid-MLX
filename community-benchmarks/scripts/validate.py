@@ -410,18 +410,32 @@ def _read_submission_id(path: Path) -> str | None:
         return None
 
 
-def _load_submission_id_index() -> dict[str, set[Path]]:
+def _load_submission_id_index(
+    submissions_dir: Path | None = None,
+) -> dict[str, set[Path]]:
     """Walk submissions/ and return ``submission_id -> set of paths``.
 
     Returning paths (not just ids) lets the caller subtract the target
     file's own path when validating, so we still detect a true
     duplicate (two different files sharing one id) without false-
     flagging a file as a duplicate of itself.
+
+    ``submissions_dir`` is an explicit override for the corpus location.
+    Without it we fall back to the module-level ``SUBMISSIONS_DIR``,
+    which is derived from the validator script's own path. The GHA
+    trust-gate relocates ``validate.py`` to ``/tmp/base-validator/``,
+    where ``SUBMISSIONS_DIR`` points to an empty/non-existent directory
+    — meaning the duplicate-id gate silently no-op'd on the trusted
+    pass. Letting the caller derive the corpus from the target file's
+    own parent (which the structural ``_check_path_in_submissions``
+    guard already validated as a real ``community-benchmarks/submissions/``
+    folder) closes that hole. (Codex PR #587 BLOCKING.)
     """
     index: dict[str, set[Path]] = {}
-    if not SUBMISSIONS_DIR.exists():
+    corpus = submissions_dir if submissions_dir is not None else SUBMISSIONS_DIR
+    if not corpus.exists():
         return index
-    for existing in SUBMISSIONS_DIR.glob("*.json"):
+    for existing in corpus.glob("*.json"):
         try:
             payload = json.loads(existing.read_text())
         except (OSError, json.JSONDecodeError):
@@ -554,7 +568,18 @@ def main(argv: list[str]) -> int:
     # corpus. (Codex PR #582 round-5 NIT.) Tracking by path (not just
     # id) so two files with the same id are correctly flagged: removing
     # the target's id from a plain set would mask both.
-    id_index = _load_submission_id_index()
+    #
+    # Derive the corpus from the first target's parent rather than the
+    # validator-location-derived ``SUBMISSIONS_DIR``: the
+    # ``_check_path_in_submissions`` guard already validated that the
+    # target lives in a real ``community-benchmarks/submissions/``
+    # folder, so its parent is the authoritative corpus location. This
+    # makes the duplicate-id gate work both for local CLI invocations
+    # (where validator and corpus share a repo) and for the GHA trust
+    # gate's relocated-validator setup (where they don't). (Codex PR
+    # #587 BLOCKING.)
+    corpus_dir = targets[0].resolve().parent if targets else None
+    id_index = _load_submission_id_index(submissions_dir=corpus_dir)
     seen_in_run: set[str] = set()
     failures = 0
     for path in targets:
