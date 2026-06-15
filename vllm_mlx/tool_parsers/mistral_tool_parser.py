@@ -61,16 +61,59 @@ class MistralToolParser(ToolParser):
         self.bot_token_id = self.vocab.get(self.BOT_TOKEN) if self.vocab else None
         self._reset_stream_state()
 
+    # Held-back partial sentinels in the pre-[TOOL_CALLS] content phase
+    # and inside new-format args (where a partial subsequent [TOOL_CALLS]
+    # could be heading). Mirrors the hermes_tool_parser pattern that
+    # closed the same class of leak for ``<tool_call>`` openers.
+    _STREAMING_SENTINELS: tuple[str, ...] = ("[TOOL_CALLS]",)
+
     def _reset_stream_state(self) -> None:
         """Reset per-request streaming state machine (see #579)."""
         # None until first non-whitespace byte after [TOOL_CALLS]:
         #   "new" → Devstral / Mistral v11 ``name[ARGS]{json}`` or ``name{json}``
         #   "old" → Mistral v10- ``[{"name":..., "arguments":...}]`` array form
         self._stream_format: str | None = None
-        self._stream_name_emitted: bool = False
-        self._stream_args_emitted: int = 0  # chars of args already streamed
-        self._stream_id_value: str = ""
         self._stream_old_emitted: bool = False  # old-format is emit-once
+        # Per-tool state for new-format multi-tool streams. Each entry:
+        #   {"name_emitted": bool, "args_emitted": int, "id": str}
+        # The 1-tool case (overwhelmingly the common one) just keeps one
+        # entry here. Codex #581 flagged that a single shared counter
+        # silently swallowed second + N-th calls in
+        # ``[TOOL_CALLS]a{}[TOOL_CALLS]b{}`` streams.
+        self._tool_states: list[dict[str, Any]] = []
+
+    @classmethod
+    def _safe_content_prefix(cls, text: str) -> str:
+        """Strip the longest sentinel-prefix suffix off ``text``.
+
+        Mirror of ``HermesToolParser._safe_content_prefix`` — when the
+        model emits ``[``, ``[T``, ``[TO``... ahead of the full
+        ``[TOOL_CALLS]`` opener, those partial bytes must NOT fall
+        through as content (codex #581 BLOCKING-1). Returns the portion
+        of ``text`` safe to ship right now.
+        """
+        max_hold = 0
+        for sentinel in cls._STREAMING_SENTINELS:
+            for length in range(min(len(text), len(sentinel) - 1), 0, -1):
+                if text.endswith(sentinel[:length]):
+                    if length > max_hold:
+                        max_hold = length
+                    break
+        return text if max_hold == 0 else text[: len(text) - max_hold]
+
+    def flush_held_content(self, full_text: str) -> str:
+        """Release any prefix-held suffix at stream end.
+
+        If a stream ends with bytes that look like a partial
+        ``[TOOL_CALLS]`` opener (e.g. ``"abc["``), those bytes are
+        ordinary content and must surface — otherwise the response
+        ``"abc["`` would arrive at the client as ``"abc"``.
+        """
+        if self.BOT_TOKEN in full_text:
+            # The tool-call branch already claimed everything from the
+            # opener onward; nothing to flush from the pre-opener phase.
+            return ""
+        return full_text[len(self._safe_content_prefix(full_text)) :]
 
     def reset(self) -> None:
         super().reset()
@@ -208,32 +251,55 @@ class MistralToolParser(ToolParser):
         This implementation drives a tiny state machine off ``current_text``
         so token boundaries are irrelevant — the name is only emitted once
         the boundary character (``[ARGS]`` or ``{``) has been observed in
-        full, and ``arguments`` is diffed against ``_stream_args_emitted``
-        so each char ships exactly once. The state machine also branches on
-        the body's first non-whitespace byte:
+        full, and ``arguments`` is diffed against per-tool ``args_emitted``
+        offsets so each char ships exactly once.
+
+        Three correctness invariants enforced by the structure (and pinned
+        by codex review on PR #581):
+
+        1. **Partial-sentinel prefix-hold (BLOCKING-1).** While we're still
+           in the pre-``[TOOL_CALLS]`` content phase, a delta of just ``[``
+           or ``[T`` must NOT ship as content — it could be the start of
+           the opener. ``_safe_content_prefix`` mirrors the hermes pattern
+           that closed this leak for ``<tool_call>``.
+        2. **Multi-tool new-format (BLOCKING-2).** Bodies like
+           ``a{}[TOOL_CALLS]b{}`` are split on subsequent ``[TOOL_CALLS]``
+           markers and each segment carries its own name/args offsets.
+           Previously the second tool got swallowed into the first call's
+           arguments.
+        3. **Boundary buffering.** ``read[`` could be heading toward
+           ``read[ARGS]`` or could be a tool call ``read`` with arg
+           ``[...]``. The state machine waits until either the full
+           ``[ARGS]`` separator or the first ``{`` appears in the segment
+           before deciding — and prefix-holds any sentinel-suffix at the
+           end of the args window so a second-tool boundary still en route
+           doesn't leak into the first tool's args.
+
+        Branches on the body's first non-whitespace byte:
 
         - ``[`` → old Mistral v10- ``[{"name":..., "arguments":...}]`` form
-          (buffered until the closing ``]`` then emitted whole). Old format
-          streaming was previously broken by the same naive delta logic.
-        - anything else → new Devstral / v11+ ``name[ARGS]{json}`` form.
-
-        Multi-tool new-format streams (``[TOOL_CALLS]a{}[TOOL_CALLS]b{}``)
-        currently emit only the first call; tracked separately.
+          (buffered until the closing ``]`` then emitted whole).
+        - anything else → new Devstral / v11+ ``name[ARGS]?{json}`` form.
         """
-        # ----- Phase 1: pre-[TOOL_CALLS] content streams unchanged -----
+        # ----- Phase 1: pre-[TOOL_CALLS] content (prefix-held) -----
         if self.BOT_TOKEN not in current_text:
-            return {"content": delta_text} if delta_text else None
+            return self._emit_safe_content(previous_text, current_text)
 
         result: dict[str, Any] = {}
 
-        # If [TOOL_CALLS] crossed in *this* delta, emit any preceding
-        # plain-text portion of the delta as content. (Earlier deltas
-        # already shipped their pre-BOT_TOKEN bytes via the phase-1
-        # branch above, so we only need to handle the boundary delta.)
-        if self.BOT_TOKEN not in previous_text and self.BOT_TOKEN in delta_text:
-            head_delta, _, _ = delta_text.partition(self.BOT_TOKEN)
-            if head_delta:
-                result["content"] = head_delta
+        # On the boundary delta, release any pre-opener content that was
+        # held back as a partial sentinel in earlier deltas. The pre-
+        # opener portion of current_text is now provably plain content
+        # (since the opener has fully arrived), so anything safe-but-
+        # unshipped from previous_text plus the new head bytes flows out
+        # as the final content event.
+        if self.BOT_TOKEN not in previous_text:
+            head, _, _ = current_text.partition(self.BOT_TOKEN)
+            already_shipped = self._safe_content_prefix(previous_text)
+            if len(head) > len(already_shipped):
+                new_content = head[len(already_shipped) :]
+                if new_content:
+                    result["content"] = new_content
 
         # ----- Phase 2: classify the body (one-shot, latches) -----
         _, _, body = current_text.partition(self.BOT_TOKEN)
@@ -246,6 +312,16 @@ class MistralToolParser(ToolParser):
         if self._stream_format == "old":
             return self._stream_old_format(body, result)
         return self._stream_new_format(body, result)
+
+    def _emit_safe_content(
+        self, previous_text: str, current_text: str
+    ) -> dict[str, Any] | None:
+        """Return the new-content delta with sentinel prefixes held back."""
+        safe_prev = self._safe_content_prefix(previous_text)
+        safe_cur = self._safe_content_prefix(current_text)
+        if len(safe_cur) <= len(safe_prev):
+            return None
+        return {"content": safe_cur[len(safe_prev) :]}
 
     def _stream_old_format(
         self, body: str, result: dict[str, Any]
@@ -282,60 +358,81 @@ class MistralToolParser(ToolParser):
     def _stream_new_format(
         self, body: str, result: dict[str, Any]
     ) -> dict[str, Any] | None:
-        """New ``name[ARGS]{json}`` / ``name{json}`` form: state-machine stream."""
-        # Locate the FIRST name→args boundary. ``[ARGS]`` (Devstral) wins
-        # over the first ``{`` only when it appears earlier in the stream;
-        # the v11+ format without ``[ARGS]`` uses ``{`` directly.
+        """New ``name[ARGS]?{json}`` form, possibly with multiple ``[TOOL_CALLS]``
+        delimited calls in the same response.
+
+        Walks the body segment-by-segment (split on ``[TOOL_CALLS]``) and
+        maintains per-segment ``{name_emitted, args_emitted, id}`` state so
+        the second + N-th tool calls get their own index instead of being
+        absorbed into the first call's args (codex #581 BLOCKING-2).
+        """
         args_tag = "[ARGS]"
-        args_idx = body.find(args_tag)
-        brace_idx = body.find("{")
+        segments = body.split(self.BOT_TOKEN)
 
-        if args_idx != -1 and (brace_idx == -1 or args_idx < brace_idx):
-            sep_idx = args_idx
-            args_start = sep_idx + len(args_tag)
-        elif brace_idx != -1:
-            sep_idx = brace_idx
-            args_start = sep_idx  # ``{`` is part of the JSON args
-        else:
-            # No boundary yet — could still be ``re`` (name) or ``re[`` (en
-            # route to ``[ARGS]``). Buffer; do not emit a partial name (the
-            # whole point of the fix is to never ship the separator as
-            # name/args by accident).
-            return result or None
-
-        name = body[:sep_idx].strip()
-        if not name:
-            return result or None
-        args = body[args_start:]
+        # The LAST segment is the only one whose tail might still be
+        # mid-arrival — anything earlier had its tail fixed when the
+        # next ``[TOOL_CALLS]`` boundary landed. Hold back any suffix
+        # that could be a prefix of the next ``[TOOL_CALLS]`` opener so
+        # it doesn't leak into the current tool's args.
+        if segments:
+            tail = segments[-1]
+            safe_tail = self._safe_content_prefix(tail)
+            segments[-1] = safe_tail
 
         tool_calls_out: list[dict[str, Any]] = []
 
-        if not self._stream_name_emitted:
-            self.current_tool_id += 1
-            self._stream_id_value = generate_mistral_tool_id()
-            self._stream_name_emitted = True
-            tool_calls_out.append(
-                {
-                    "index": self.current_tool_id,
-                    "id": self._stream_id_value,
+        for i, seg in enumerate(segments):
+            while len(self._tool_states) <= i:
+                self._tool_states.append(
+                    {"name_emitted": False, "args_emitted": 0, "id": ""}
+                )
+            state = self._tool_states[i]
+
+            args_idx = seg.find(args_tag)
+            brace_idx = seg.find("{")
+            if args_idx != -1 and (brace_idx == -1 or args_idx < brace_idx):
+                sep_idx = args_idx
+                args_start_off = sep_idx + len(args_tag)
+            elif brace_idx != -1:
+                sep_idx = brace_idx
+                args_start_off = sep_idx  # ``{`` is part of the JSON args
+            else:
+                # Boundary not in this segment yet — name still streaming.
+                # For non-last segments this would be malformed (no body
+                # between two ``[TOOL_CALLS]`` markers); skip silently.
+                continue
+
+            name = seg[:sep_idx].strip()
+            if not name:
+                continue
+            args = seg[args_start_off:]
+
+            entry: dict[str, Any] | None = None
+            if not state["name_emitted"]:
+                state["id"] = generate_mistral_tool_id()
+                state["name_emitted"] = True
+                self.current_tool_id = max(self.current_tool_id, i)
+                entry = {
+                    "index": i,
+                    "id": state["id"],
                     "type": "function",
                     "function": {"name": name},
                 }
-            )
+                tool_calls_out.append(entry)
 
-        if len(args) > self._stream_args_emitted:
-            args_delta = args[self._stream_args_emitted :]
-            self._stream_args_emitted = len(args)
-            if tool_calls_out:
-                tool_calls_out[0]["function"]["arguments"] = args_delta
-            else:
-                tool_calls_out.append(
-                    {
-                        "index": self.current_tool_id,
-                        "type": "function",
-                        "function": {"arguments": args_delta},
-                    }
-                )
+            if len(args) > state["args_emitted"]:
+                args_delta = args[state["args_emitted"] :]
+                state["args_emitted"] = len(args)
+                if entry is not None:
+                    entry["function"]["arguments"] = args_delta
+                else:
+                    tool_calls_out.append(
+                        {
+                            "index": i,
+                            "type": "function",
+                            "function": {"arguments": args_delta},
+                        }
+                    )
 
         if tool_calls_out:
             result["tool_calls"] = tool_calls_out

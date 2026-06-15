@@ -848,14 +848,20 @@ def _run_mistral_streaming(parser: MistralToolParser, chunks: list[str]) -> dict
     """Drive ``extract_tool_calls_streaming`` chunk-by-chunk and assemble.
 
     Mirrors what an OpenAI-compatible client does with the SSE deltas:
-    concatenate each ``function.name`` / ``function.arguments`` fragment,
-    record each ``id`` once, accumulate text content. The single dict
-    returned describes the final assembled tool call as the client would
-    see it after the stream ends, so the assertions can compare against
-    the non-streaming ground truth.
+    concatenate each ``function.name`` / ``function.arguments`` fragment
+    using key-presence (NOT truthiness — codex #581 BLOCKING-3 flagged
+    that an empty-string ``name`` delta would otherwise be swallowed and
+    mask a production regression where ``"name": ""`` clobbers a real
+    name), record each ``id`` once, and accumulate text content. The
+    returned dict also exposes ``raw_name_deltas`` and
+    ``raw_args_deltas`` per tool index so individual tests can assert
+    on the wire-level sequence (e.g. "name was never emitted as the
+    empty string") rather than only the final assembled value.
     """
-    content = ""
+    content_parts: list[str] = []
     tool_calls: dict[int, dict[str, str]] = {}
+    raw_name_deltas: dict[int, list[str]] = {}
+    raw_args_deltas: dict[int, list[str]] = {}
     prev = ""
     for chunk in chunks:
         cur = prev + chunk
@@ -868,19 +874,47 @@ def _run_mistral_streaming(parser: MistralToolParser, chunks: list[str]) -> dict
         prev = cur
         if not delta:
             continue
-        if "content" in delta and delta["content"]:
-            content += delta["content"]
+        if "content" in delta:
+            content_parts.append(delta["content"] or "")
         for tc in delta.get("tool_calls") or []:
             idx = tc["index"]
             slot = tool_calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
             if tc.get("id"):
                 slot["id"] = tc["id"]
             fn = tc.get("function") or {}
-            if fn.get("name"):
+            # Key presence — NOT truthiness — so we don't silently absorb
+            # a clobber-with-empty-string regression (codex BLOCKING-3).
+            if "name" in fn:
                 slot["name"] += fn["name"]
-            if fn.get("arguments"):
+                raw_name_deltas.setdefault(idx, []).append(fn["name"])
+            if "arguments" in fn:
                 slot["arguments"] += fn["arguments"]
-    return {"content": content, "tool_calls": tool_calls}
+                raw_args_deltas.setdefault(idx, []).append(fn["arguments"])
+    # Release any prefix-held suffix at stream end (matches the
+    # postprocessor's finalize() path).
+    held = parser.flush_held_content(prev)
+    if held:
+        content_parts.append(held)
+    return {
+        "content": "".join(content_parts),
+        "tool_calls": tool_calls,
+        "raw_name_deltas": raw_name_deltas,
+        "raw_args_deltas": raw_args_deltas,
+    }
+
+
+def _assert_no_empty_name_deltas(assembled: dict) -> None:
+    """No ``function.name`` delta may be the empty string (codex BLOCKING-3).
+
+    A production regression that emits ``{"name": ""}`` after the real
+    name would clobber the name field in clients that *overwrite*
+    instead of concatenate. The assembler above tracks each raw delta
+    so this test-side assertion fails loudly when that happens.
+    """
+    for idx, deltas in assembled["raw_name_deltas"].items():
+        assert all(d != "" for d in deltas), (
+            f"tool {idx}: empty-string name delta emitted (sequence={deltas!r})"
+        )
 
 
 class TestMistralDevstralStreaming:
@@ -912,6 +946,7 @@ class TestMistralDevstralStreaming:
             "}",
         ]
         assembled = _run_mistral_streaming(parser, chunks)
+        _assert_no_empty_name_deltas(assembled)
 
         assert list(assembled["tool_calls"].keys()) == [0]
         tc = assembled["tool_calls"][0]
@@ -919,7 +954,7 @@ class TestMistralDevstralStreaming:
         assert "[ARGS]" not in tc["arguments"]
         args = json.loads(tc["arguments"])
         assert args == {"file_path": "/tmp/foo.txt"}
-        assert tc["id"]  # generated id present
+        assert tc["id"], "expected a generated tool-call id"
 
     def test_args_separator_fused_with_open_brace(self, parser):
         """``[ARGS]{"`` in one chunk must not emit empty-string name."""
@@ -931,6 +966,7 @@ class TestMistralDevstralStreaming:
             "}",
         ]
         assembled = _run_mistral_streaming(parser, chunks)
+        _assert_no_empty_name_deltas(assembled)
 
         tc = assembled["tool_calls"][0]
         assert tc["name"] == "read", (
@@ -947,6 +983,7 @@ class TestMistralDevstralStreaming:
             'read[ARGS]{"file_path":"/tmp/foo.txt"}',
         ]
         assembled = _run_mistral_streaming(parser, chunks)
+        _assert_no_empty_name_deltas(assembled)
         tc = assembled["tool_calls"][0]
         assert tc["name"] == "read"
         assert json.loads(tc["arguments"]) == {"file_path": "/tmp/foo.txt"}
@@ -961,6 +998,7 @@ class TestMistralDevstralStreaming:
             '"}',
         ]
         assembled = _run_mistral_streaming(parser, chunks)
+        _assert_no_empty_name_deltas(assembled)
         tc = assembled["tool_calls"][0]
         # Pre-fix: name == '"}', arguments == '[ARGS]{"' — assert both gone.
         assert tc["name"] == "read"
@@ -978,9 +1016,14 @@ class TestMistralDevstralStreaming:
         # Replay the same bytes byte-by-byte (worst-case chunking)
         chunks = list(full_text)
         assembled = _run_mistral_streaming(MistralToolParser(), chunks)
+        _assert_no_empty_name_deltas(assembled)
         tc = assembled["tool_calls"][0]
         assert tc["name"] == truth_name
         assert json.loads(tc["arguments"]) == truth_args
+        # The pre-opener portion contains no plain content, so nothing
+        # should have shipped on the ``content`` channel (codex
+        # BLOCKING-1: partial ``[TOOL_`` bytes must never leak).
+        assert assembled["content"] == ""
 
     def test_content_then_tool_call(self, parser):
         """Content before ``[TOOL_CALLS]`` streams as content, then tool call streams cleanly."""
@@ -993,10 +1036,96 @@ class TestMistralDevstralStreaming:
             '{"file_path":"/tmp/foo.txt"}',
         ]
         assembled = _run_mistral_streaming(parser, chunks)
+        _assert_no_empty_name_deltas(assembled)
         assert assembled["content"] == "Let me check that."
         tc = assembled["tool_calls"][0]
         assert tc["name"] == "read"
         assert json.loads(tc["arguments"]) == {"file_path": "/tmp/foo.txt"}
+
+    def test_partial_opener_held_back_as_content(self, parser):
+        """Partial ``[TOOL_CALLS]`` prefix bytes must NOT ship as content
+        (codex #581 BLOCKING-1)."""
+        # Byte-by-byte stream of the opener split across many chunks.
+        # No content_delta should fire until the full opener arrives,
+        # because every prefix of ``[TOOL_CALLS]`` is held back.
+        chunks = list("[TOOL_CALLS]read[ARGS]{}")
+        assembled = _run_mistral_streaming(parser, chunks)
+        _assert_no_empty_name_deltas(assembled)
+        # Nothing ever shipped as content; the opener never leaked.
+        assert assembled["content"] == "", (
+            f"partial opener leaked as content: {assembled['content']!r}"
+        )
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "read"
+        assert json.loads(tc["arguments"]) == {}
+
+    def test_bracket_in_prose_is_released_not_held_forever(self, parser):
+        """A ``[`` in prose that doesn't continue toward ``[TOOL_CALLS]``
+        must be released as content (codex BLOCKING-1 regression guard:
+        the prefix-hold can't deadlock on plain content)."""
+        chunks = [
+            "She said [",
+            "hello] and waved.",  # ``[h`` proves ``[`` was prose, not opener
+        ]
+        assembled = _run_mistral_streaming(parser, chunks)
+        assert assembled["content"] == "She said [hello] and waved."
+        assert assembled["tool_calls"] == {}
+
+    def test_multi_tool_new_format(self, parser):
+        """``[TOOL_CALLS]a[ARGS]{}[TOOL_CALLS]b[ARGS]{}`` must yield TWO calls
+        (codex #581 BLOCKING-2). Pre-fix the second tool's bytes were
+        absorbed into the first call's arguments."""
+        chunks = [
+            "[TOOL_CALLS]",
+            'read[ARGS]{"file_path":"/tmp/a.txt"}',
+            '[TOOL_CALLS]write[ARGS]{"file_path":"/tmp/b.txt","content":"hi"}',
+        ]
+        assembled = _run_mistral_streaming(parser, chunks)
+        _assert_no_empty_name_deltas(assembled)
+        assert sorted(assembled["tool_calls"].keys()) == [0, 1]
+
+        tc0 = assembled["tool_calls"][0]
+        assert tc0["name"] == "read"
+        assert json.loads(tc0["arguments"]) == {"file_path": "/tmp/a.txt"}
+        assert tc0["id"]
+
+        tc1 = assembled["tool_calls"][1]
+        assert tc1["name"] == "write"
+        assert json.loads(tc1["arguments"]) == {
+            "file_path": "/tmp/b.txt",
+            "content": "hi",
+        }
+        assert tc1["id"] and tc1["id"] != tc0["id"]
+
+    def test_multi_tool_boundary_split_across_chunks(self, parser):
+        """The second ``[TOOL_CALLS]`` boundary arriving in pieces must not
+        leak partial bytes into the first call's arguments."""
+        chunks = [
+            "[TOOL_CALLS]",
+            'read[ARGS]{"file_path":"/tmp/a.txt"}',
+            "[TO",
+            "OL_CALLS]",  # opener completes only here
+            'write[ARGS]{"file_path":"/tmp/b.txt"}',
+        ]
+        assembled = _run_mistral_streaming(parser, chunks)
+        _assert_no_empty_name_deltas(assembled)
+        tc0 = assembled["tool_calls"][0]
+        # Pre-fix: ``"[TO"`` chunk would have appended ``[TO`` to the
+        # first call's arguments before the next chunk closed the opener.
+        assert json.loads(tc0["arguments"]) == {"file_path": "/tmp/a.txt"}
+        tc1 = assembled["tool_calls"][1]
+        assert tc1["name"] == "write"
+        assert json.loads(tc1["arguments"]) == {"file_path": "/tmp/b.txt"}
+
+    def test_flush_held_content_releases_partial_opener_at_eos(self, parser):
+        """A stream ending in ``"abc["`` must release ``"abc["`` at EOS —
+        ``flush_held_content`` is the contract that catches the bytes the
+        prefix-hold withheld during streaming."""
+        chunks = ["She said abc", "["]  # stream ends mid-sentinel
+        # _run_mistral_streaming calls flush_held_content at the end.
+        assembled = _run_mistral_streaming(parser, chunks)
+        assert assembled["content"] == "She said abc["
+        assert assembled["tool_calls"] == {}
 
     def test_old_array_format_streaming_still_works(self, parser):
         """Pre-Devstral ``[TOOL_CALLS] [{...}]`` array format must still stream."""

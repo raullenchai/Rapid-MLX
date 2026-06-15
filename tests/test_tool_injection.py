@@ -235,6 +235,8 @@ class TestMistralArgsStripping:
         feed a single delta that fuses the boundary tokens and assert
         the emitted name is clean.
         """
+        import json
+
         parser = MistralToolParser(tokenizer=None)
         full = '[TOOL_CALLS]get_weather[ARGS]{"location": "Paris"}'
         delta = parser.extract_tool_calls_streaming(
@@ -248,4 +250,10 @@ class TestMistralArgsStripping:
         assert tcs, "expected a tool_calls delta"
         fn = tcs[0]["function"]
         assert fn.get("name") == "get_weather"
-        assert "[ARGS]" not in (fn.get("arguments") or "")
+        # Codex PR #581 NIT-2: don't just assert ``[ARGS]`` is absent —
+        # an emit with no arguments at all would silently pass that. Pin
+        # the actual parsed JSON to catch a regression that drops args.
+        args_str = fn.get("arguments")
+        assert args_str, "expected arguments delta in the fused boundary case"
+        assert "[ARGS]" not in args_str
+        assert json.loads(args_str) == {"location": "Paris"}
