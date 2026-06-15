@@ -1499,9 +1499,7 @@ def test_validate_path_check_works_from_relocated_validator(
     relocated.mkdir(parents=True)
     (tmp_path / "community-benchmarks").mkdir(exist_ok=True)
     (tmp_path / "vllm_mlx").mkdir(parents=True, exist_ok=True)
-    (relocated / "validate.py").write_bytes(
-        (SCRIPTS_DIR / "validate.py").read_bytes()
-    )
+    (relocated / "validate.py").write_bytes((SCRIPTS_DIR / "validate.py").read_bytes())
     (tmp_path / "community-benchmarks" / "schema.json").write_bytes(
         SCHEMA_PATH.read_bytes()
     )
@@ -1514,9 +1512,7 @@ def test_validate_path_check_works_from_relocated_validator(
         check=False,
     )
     out = r.stdout + r.stderr
-    assert r.returncode == 0, (
-        f"relocated validator rejected a valid submission: {out}"
-    )
+    assert r.returncode == 0, f"relocated validator rejected a valid submission: {out}"
     assert "is not inside community-benchmarks/submissions/" not in out
 
 
