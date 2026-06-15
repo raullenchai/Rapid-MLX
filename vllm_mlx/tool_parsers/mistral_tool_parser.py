@@ -95,6 +95,12 @@ class MistralToolParser(ToolParser):
         # non-match so a long junk run between tools doesn't grow it
         # without bound.
         self._inter_buffer: str = ""
+        # Test-instrumentation: cumulative count of body bytes walked
+        # by the new-format inner loop. Used by
+        # ``test_streaming_is_incremental_not_quadratic`` to pin the
+        # O(n) invariant — under a re-scan implementation this would
+        # grow as O(L²) across N chunks (codex round-3 BLOCKING-2).
+        self._stream_bytes_walked: int = 0
 
     @classmethod
     def _safe_content_prefix(cls, text: str) -> str:
@@ -381,6 +387,7 @@ class MistralToolParser(ToolParser):
             "saw_separator": False,
             "args_buffer": "",
             "args_emitted": 0,
+            "args_started": False,  # have we entered a JSON value yet?
             "args_closed": False,
             # JSON tokenizer for boundary detection inside args:
             "json_depth": 0,
@@ -446,6 +453,7 @@ class MistralToolParser(ToolParser):
         self._parsed_body_len = len(body)
         if not new_bytes:
             return result or None
+        self._stream_bytes_walked += len(new_bytes)
 
         for ch in new_bytes:
             while len(self._tool_segments) <= self._cur_seg_idx:
@@ -485,14 +493,23 @@ class MistralToolParser(ToolParser):
                             seg["needs_name_emit"] = True
                         seg["args_buffer"] = "{"
                         self._json_advance(seg, "{")
+                        seg["args_started"] = True
                     continue
                 # Still streaming the name; nothing else to do.
                 continue
 
-            # Args phase.
+            # Args phase. ``args_closed`` must NOT trip on the initial
+            # depth-0 state — codex round-3 BLOCKING-1: leading
+            # whitespace after ``[ARGS]`` (e.g. ``read[ARGS] {"x":1}``)
+            # used to flip ``args_closed`` true on the first space,
+            # dumping the actual ``{...}`` into the between-tools
+            # buffer. Gate closure on ``args_started`` so we only
+            # consider an entered-then-exited JSON value as "done".
             seg["args_buffer"] += ch
             self._json_advance(seg, ch)
-            if seg["json_depth"] == 0 and not seg["in_string"]:
+            if seg["json_depth"] > 0 or seg["in_string"]:
+                seg["args_started"] = True
+            elif seg["args_started"]:
                 seg["args_closed"] = True
 
         # Build emission from any segment with new emit-able state.

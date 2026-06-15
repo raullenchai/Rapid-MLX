@@ -1178,13 +1178,27 @@ class TestMistralDevstralStreaming:
         assert args == {"text": 'she said "hi"'}
 
     def test_streaming_is_incremental_not_quadratic(self, parser):
-        """Codex #581 round-2 BLOCKING-3: each delta must only walk the
-        newly arrived suffix, not the full cumulative body. We can't
-        wall-clock O(n²) in a unit test, but we CAN assert that the
-        parser's ``_parsed_body_len`` advances monotonically and equals
-        the body length on every call — that's the invariant that holds
-        when (and only when) the inner loop is incremental."""
-        chunks = ['[TOOL_CALLS]read[ARGS]{"file_path":"/tmp/a.txt"}']
+        """Codex #581 round-2 BLOCKING-3 / round-3 BLOCKING-2: drive a
+        long body across many small chunks and assert that the total
+        bytes walked equals the body length, NOT N × body length. A
+        re-scan implementation would have ``_stream_bytes_walked``
+        grow as O(L²) across N chunks; the incremental implementation
+        keeps it linear.
+
+        The previous single-chunk version of this test would have
+        passed any implementation, including a quadratic re-scan,
+        because there was only one delta to measure.
+        """
+        # A body with many bytes so the O(L) vs O(L²) split is large.
+        full = "[TOOL_CALLS]read[ARGS]" + '{"k":"' + ("x" * 200) + '"}'
+        _, _, body = full.partition(parser.BOT_TOKEN)
+        body_len = len(body)
+
+        # Drive ~50 small chunks (4 chars each) — many tiny deltas.
+        chunk_size = 4
+        chunks = [full[i : i + chunk_size] for i in range(0, len(full), chunk_size)]
+        assert len(chunks) > 30, "need many chunks to distinguish O(L) from O(L²)"
+
         prev = ""
         for chunk in chunks:
             cur = prev + chunk
@@ -1194,12 +1208,56 @@ class TestMistralDevstralStreaming:
                 delta_text=chunk,
                 request={"tools": []},
             )
-            _, _, body = cur.partition(parser.BOT_TOKEN)
-            assert parser._parsed_body_len == len(body), (
-                "parser must consume the full body on each call so the "
-                "next call sees zero re-scan work"
-            )
             prev = cur
+
+        # ``_stream_bytes_walked`` is incremented exactly once per byte
+        # of the new-format body that flows through the inner loop. A
+        # quadratic re-scan would observe each byte once per delta it
+        # was already present in, i.e. growing as
+        # O(num_chunks × body_len). The incremental invariant: total
+        # bytes walked == body length.
+        assert parser._stream_bytes_walked == body_len, (
+            f"expected O(L) walk over {body_len} body bytes, but inner "
+            f"loop walked {parser._stream_bytes_walked} chars across "
+            f"{len(chunks)} chunks — indicates re-scan / quadratic work"
+        )
+        # And the cumulative-offset invariant still holds.
+        assert parser._parsed_body_len == body_len
+
+    def test_leading_whitespace_between_args_tag_and_brace(self, parser):
+        """Whitespace between ``[ARGS]`` and ``{`` must NOT close args
+        prematurely (codex #581 round-3 BLOCKING-1). Pre-fix the JSON
+        state machine saw depth-0 outside string from the first space
+        and flipped ``args_closed`` true, dumping the actual ``{...}``
+        into the between-tools buffer."""
+        full = '[TOOL_CALLS]read[ARGS] {"x":1}'
+        assembled = _run_mistral_streaming(parser, list(full))
+        _assert_no_empty_name_deltas(assembled)
+        assert list(assembled["tool_calls"].keys()) == [0]
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "read"
+        assert json.loads(tc["arguments"]) == {"x": 1}
+
+    def test_leading_newline_between_args_tag_and_brace(self, parser):
+        """Same as the whitespace case but with ``\\n`` — common in
+        pretty-printed tool-call outputs."""
+        full = '[TOOL_CALLS]read[ARGS]\n  {"x":1}'
+        assembled = _run_mistral_streaming(parser, list(full))
+        _assert_no_empty_name_deltas(assembled)
+        tc = assembled["tool_calls"][0]
+        assert tc["name"] == "read"
+        assert json.loads(tc["arguments"]) == {"x": 1}
+
+    def test_multi_tool_with_leading_whitespace_in_each_args(self, parser):
+        """Whitespace gating must work segment-by-segment too — a
+        leading space in the second tool's args mustn't be detected as
+        the first tool's args closure either."""
+        full = '[TOOL_CALLS]a[ARGS] {"x":1}[TOOL_CALLS]b[ARGS]  {"y":2}'
+        assembled = _run_mistral_streaming(parser, list(full))
+        _assert_no_empty_name_deltas(assembled)
+        assert sorted(assembled["tool_calls"].keys()) == [0, 1]
+        assert json.loads(assembled["tool_calls"][0]["arguments"]) == {"x": 1}
+        assert json.loads(assembled["tool_calls"][1]["arguments"]) == {"y": 2}
 
     def test_multi_tool_with_string_args_containing_separators(self, parser):
         """Combined round-2 stress case: two tools, one with a string arg
