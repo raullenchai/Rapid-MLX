@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "submission_id": "acd2ae43768f",
+  "submitted_at": "2026-06-15T21:29:03+00:00",
+  "hardware": {
+    "chip": "Apple M3 Ultra",
+    "ram_gb": 256,
+    "cpu_cores": 28,
+    "gpu_cores": 60
+  },
+  "software": {
+    "macos": "26.3.1",
+    "rapid_mlx": "0.7.9",
+    "mlx": "0.31.2",
+    "python": "3.12.13"
+  },
+  "model": {
+    "alias": "llama-3.1-8b-4bit",
+    "hf_path": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"
+  },
+  "config": {
+    "rounds": 5,
+    "warmup_rounds": 1,
+    "sampling": "greedy",
+    "buckets_spec": {
+      "short": {
+        "prompt_tokens": 512,
+        "max_tokens": 128
+      },
+      "long": {
+        "prompt_tokens": 2048,
+        "max_tokens": 512
+      }
+    },
+    "prompt_hash": "3414e7611df5cfbc"
+  },
+  "buckets": {
+    "short": {
+      "decode_tps": {
+        "median": 119.39102110938477,
+        "min": 119.23865652134674,
+        "max": 119.61914019275831,
+        "stddev": 0.13564363607085897
+      },
+      "prefill_tps": {
+        "median": 1155.9836246559605,
+        "min": 1124.5851702404052,
+        "max": 1164.770114287844,
+        "stddev": 17.60069895537737
+      },
+      "ttft_ms": {
+        "median": 456.7538750015956,
+        "min": 453.3083339993027,
+        "max": 469.50645800097845,
+        "stddev": 7.113294656115796
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 119.61914019275831,
+          "prefill_tps": 1125.0156799034403,
+          "ttft_ms": 469.32679200108396
+        },
+        {
+          "decode_tps": 119.4468435859362,
+          "prefill_tps": 1164.770114287844,
+          "ttft_ms": 453.3083339993027
+        },
+        {
+          "decode_tps": 119.23865652134674,
+          "prefill_tps": 1160.0724166428781,
+          "ttft_ms": 455.1439999995637
+        },
+        {
+          "decode_tps": 119.27410433749179,
+          "prefill_tps": 1124.5851702404052,
+          "ttft_ms": 469.50645800097845
+        },
+        {
+          "decode_tps": 119.39102110938477,
+          "prefill_tps": 1155.9836246559605,
+          "ttft_ms": 456.7538750015956
+        }
+      ]
+    },
+    "long": {
+      "decode_tps": {
+        "median": 110.44850712553149,
+        "min": 110.36706335817189,
+        "max": 110.6391346187477,
+        "stddev": 0.09585316388433272
+      },
+      "prefill_tps": {
+        "median": 1193.6474648339151,
+        "min": 1181.0694592555005,
+        "max": 1194.322616689733,
+        "stddev": 5.0999521219843595
+      },
+      "ttft_ms": {
+        "median": 1793.6619170031918,
+        "min": 1792.6479579982697,
+        "max": 1812.7638330006448,
+        "stddev": 7.743808096369236
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 110.52843053220906,
+          "prefill_tps": 1193.2855537403993,
+          "ttft_ms": 1794.2059160013741
+        },
+        {
+          "decode_tps": 110.41271885373489,
+          "prefill_tps": 1194.322616689733,
+          "ttft_ms": 1792.6479579982697
+        },
+        {
+          "decode_tps": 110.6391346187477,
+          "prefill_tps": 1193.6474648339151,
+          "ttft_ms": 1793.6619170031918
+        },
+        {
+          "decode_tps": 110.44850712553149,
+          "prefill_tps": 1193.9093057497457,
+          "ttft_ms": 1793.268541998259
+        },
+        {
+          "decode_tps": 110.36706335817189,
+          "prefill_tps": 1181.0694592555005,
+          "ttft_ms": 1812.7638330006448
+        }
+      ]
+    }
+  },
+  "notes": "maintainer self-test on Apple M3 Ultra 256GB (v0.7.9 release validation)",
+  "peak_ram_mb": 5260
+}
