@@ -345,22 +345,26 @@ def _check_filename(path: Path) -> None:
 
 
 def _check_path_in_submissions(path: Path) -> None:
-    """Refuse files that aren't inside ``submissions/``.
+    """Refuse files that aren't inside ``community-benchmarks/submissions/``.
 
     PRs editing other files in the same diff are fine — they just
     don't get fed to us. We're called explicitly with each submission
     file path, but a buggy GHA filter could feed us something else;
     this is the cheap belt-and-braces guard.
+
+    The check looks at the file path's own ancestry — ``.../community-benchmarks/submissions/<file>`` —
+    rather than comparing against this script's ``SUBMISSIONS_DIR``. The
+    GHA trust-gate copies a frozen base validator to ``/tmp/base-validator/``
+    and runs it against files in ``/home/runner/work/...``; comparing
+    against the validator's own ``REPO_ROOT`` would always fail there
+    even though the path is structurally correct.
     """
-    try:
-        rel = path.relative_to(SUBMISSIONS_DIR.resolve())
-    except ValueError:
+    resolved = path.resolve()
+    parent = resolved.parent
+    grandparent = parent.parent if parent != parent.parent else parent
+    if parent.name != "submissions" or grandparent.name != "community-benchmarks":
         raise _IssueError(
             f"path: {path} is not inside community-benchmarks/submissions/"
-        )
-    if "/" in str(rel) or "\\" in str(rel):
-        raise _IssueError(
-            f"path: {path} contains a subdirectory; submissions must be flat"
         )
 
 

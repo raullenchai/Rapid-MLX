@@ -1467,6 +1467,60 @@ def test_run_one_round_rejects_eos_early_stop(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# validate.py path-in-submissions check (GHA trust-gate regression)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_path_check_works_from_relocated_validator(
+    cleanup_real_submissions, tmp_path: Path
+) -> None:
+    """The GHA workflow copies validate.py to ``/tmp/base-validator/`` so the
+    "trusted base" pass can run a frozen-in-time validator against the PR's
+    added files. With ``SUBMISSIONS_DIR`` previously computed from the
+    validator's own ``REPO_ROOT``, the relocated copy thought *every*
+    submission file was "not inside community-benchmarks/submissions/" —
+    blocking every community PR. (See PR #585/#586 validation failures
+    after v0.7.9 release.)
+
+    Regression: copy validate.py to a temp location, invoke it against a
+    submission file in the REAL repo. The check must accept it because
+    the file's *own* ancestry is ``community-benchmarks/submissions/``.
+    """
+    pytest.importorskip("jsonschema")
+    payload = _good_payload()
+    path = _write_to_real_submissions(payload)
+    cleanup_real_submissions.append(path)
+
+    # Mirror the GHA setup: copy just the validator script to /tmp-style
+    # location. SCHEMA_PATH and ALIASES_PATH still resolve via the
+    # relocated REPO_ROOT, so we need to seed them too — that's what the
+    # workflow does with ``git show "$BASE:..."``.
+    relocated = tmp_path / "community-benchmarks" / "scripts"
+    relocated.mkdir(parents=True)
+    (tmp_path / "community-benchmarks").mkdir(exist_ok=True)
+    (tmp_path / "vllm_mlx").mkdir(parents=True, exist_ok=True)
+    (relocated / "validate.py").write_bytes(
+        (SCRIPTS_DIR / "validate.py").read_bytes()
+    )
+    (tmp_path / "community-benchmarks" / "schema.json").write_bytes(
+        SCHEMA_PATH.read_bytes()
+    )
+    (tmp_path / "vllm_mlx" / "aliases.json").write_bytes(ALIASES_PATH.read_bytes())
+
+    r = subprocess.run(
+        [sys.executable, str(relocated / "validate.py"), str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, (
+        f"relocated validator rejected a valid submission: {out}"
+    )
+    assert "is not inside community-benchmarks/submissions/" not in out
+
+
+# ---------------------------------------------------------------------------
 # _run_submit_flow alias-key gate
 # ---------------------------------------------------------------------------
 
