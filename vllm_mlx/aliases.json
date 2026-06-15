@@ -194,6 +194,22 @@
     "is_moe": false,
     "supports_spec_decode": true
   },
+  "llama-3.1-8b-4bit": {
+    "hf_path": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
+    "tool_call_parser": "llama",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "deepseek-coder-v2-lite-16b-4bit": {
+    "hf_path": "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": true,
+    "supports_spec_decode": true
+  },
   "qwen3-coder-4bit": {
     "hf_path": "lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
     "tool_call_parser": "hermes",
