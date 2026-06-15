@@ -215,7 +215,6 @@ from vllm_mlx.service.helpers import (
     _parser_accepts_enable_thinking,
 )
 
-
 _QWEN3_TRUNCATED_THOUGHT = (
     "Here's my thinking process:\n"
     "1. The user is asking about train travel between two cities.\n"

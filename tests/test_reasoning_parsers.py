@@ -150,9 +150,7 @@ class TestBaseThinkExtractReasoning:
             "    *   **Start Points:** Boston and New York.\n"
             "    [... 4000+ chars of pure thought ...]"
         )
-        reasoning, content = self.parser.extract_reasoning(
-            text, enable_thinking=True
-        )
+        reasoning, content = self.parser.extract_reasoning(text, enable_thinking=True)
         assert reasoning == text.strip(), (
             "with enable_thinking=True the whole truncated trace MUST "
             "land in reasoning, not leak into content (Round-2 repro)"
@@ -183,9 +181,7 @@ class TestBaseThinkExtractReasoning:
         new flag must be a no-op there. Otherwise we'd silently swap
         ``reasoning`` and ``content`` on every successful thought."""
         text = "step by step reasoning</think>The answer is 42."
-        reasoning, content = self.parser.extract_reasoning(
-            text, enable_thinking=True
-        )
+        reasoning, content = self.parser.extract_reasoning(text, enable_thinking=True)
         assert reasoning == "step by step reasoning"
         assert content == "The answer is 42."
 
@@ -724,9 +720,7 @@ class TestQwen3:
         Case 4). With ``enable_thinking=True`` it must also route to
         reasoning so the explicit + base paths stay in sync."""
         text = "implicit reasoning continuation"
-        reasoning, content = self.parser.extract_reasoning(
-            text, enable_thinking=True
-        )
+        reasoning, content = self.parser.extract_reasoning(text, enable_thinking=True)
         assert reasoning == text
         assert content is None
 
@@ -758,9 +752,7 @@ class TestGlm4EnableThinking:
 
     def test_no_tags_enable_thinking_true_still_routes_to_content(self):
         text = "GLM-4 plain answer with no think tags."
-        reasoning, content = self.parser.extract_reasoning(
-            text, enable_thinking=True
-        )
+        reasoning, content = self.parser.extract_reasoning(text, enable_thinking=True)
         assert reasoning is None
         assert content == text
 

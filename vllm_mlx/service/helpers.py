@@ -305,9 +305,7 @@ def _parser_accepts_enable_thinking(reasoning_parser) -> bool:
     params = sig.parameters
     if "enable_thinking" in params:
         return True
-    return any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-    )
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def _cascade(cli_value, alias_key: str, gen_key: str | None = None):
