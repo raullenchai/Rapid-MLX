@@ -64,25 +64,28 @@ jobs:
           echo "merge-base: $BASE"
 
           # The submissions/ tree is contractually APPEND-ONLY (see
-          # README "Submission storage" section). The previous diff
-          # used --diff-filter=AM which silently dropped Deletes and
-          # Renames — so a PR that removed an old row would re-validate
-          # the *remaining* corpus successfully and slip through.
-          # (Codex PR #582 round-3 BLOCKING.) Detect D/R changes
-          # explicitly and fail the job loudly.
-          REMOVED=$(git diff --name-only --diff-filter=DR "$BASE" HEAD \
+          # README "Submission storage" section). Append-only means
+          # exactly one mutation is allowed: Add. Modify / Delete /
+          # Rename / Copy / Type-change are all rewrites of history.
+          # (Codex PR #582 round-3 BLOCKING caught D+R; round-4
+          # BLOCKING flagged the AM filter still letting Modify
+          # through.) `--diff-filter=a` is the lowercase "anything
+          # but A" — anything matching it is a rewrite and fails the
+          # job. Then we validate only the Added files below.
+          REWRITES=$(git diff --name-only --diff-filter=a "$BASE" HEAD \
             -- 'community-benchmarks/submissions/*.json' || true)
-          if [ -n "$REMOVED" ]; then
-            echo "::error::This PR deletes/renames append-only submission files:"
-            echo "$REMOVED" | sed 's/^/  /'
-            echo "::error::Submissions are append-only — adding new files is fine, but existing files may not be deleted or renamed."
+          if [ -n "$REWRITES" ]; then
+            echo "::error::This PR modifies / deletes / renames append-only submission files:"
+            echo "$REWRITES" | sed 's/^/  /'
+            echo "::error::Submissions are append-only — adding new files is fine, but existing files may not be modified, deleted, or renamed. To correct a wrong number, add a new submission rather than editing an old one."
             exit 1
           fi
 
-          # NUL-separated diff. -z disables pathname quoting AND
-          # changes the field separator to NUL. Empty output means
-          # no changed submission files.
-          git diff -z --name-only --diff-filter=AM "$BASE" HEAD \
+          # Validate only ADDED files. NUL-separated for safe argv
+          # handling (-z disables pathname quoting AND uses NUL as
+          # the field separator). Empty output means no new submission
+          # files.
+          git diff -z --name-only --diff-filter=A "$BASE" HEAD \
             -- 'community-benchmarks/submissions/*.json' \
             > /tmp/changed-paths.nul || true
 
