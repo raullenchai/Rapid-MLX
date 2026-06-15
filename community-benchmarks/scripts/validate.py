@@ -135,10 +135,21 @@ def _check_sanity(payload: dict) -> None:
 
     for bucket_name in ("short", "long"):
         b = payload["buckets"][bucket_name]
-        for stat_field in ("decode_tps", "prefill_tps", "ttft_ms"):
-            stat = b[stat_field]
-            if stat["median"] < 0:
-                raise _IssueError(f"buckets.{bucket_name}.{stat_field}: median < 0")
+        # ``tps > 0`` is the documented contract; the previous check
+        # only rejected negatives, so a maliciously crafted file with
+        # ``decode_tps=0`` would slip through. (Codex PR #582 round-2
+        # BLOCKING.) Zero TTFT is OK (legitimate floor when prefill is
+        # cached); zero throughput is not.
+        for tps_field in ("decode_tps", "prefill_tps"):
+            stat = b[tps_field]
+            if stat["median"] <= 0:
+                raise _IssueError(
+                    f"buckets.{bucket_name}.{tps_field}: median "
+                    f"{stat['median']} must be > 0 (per the validator "
+                    f"contract — zero throughput indicates a failed run)"
+                )
+        if b["ttft_ms"]["median"] < 0:
+            raise _IssueError(f"buckets.{bucket_name}.ttft_ms: median < 0")
         if b["decode_tps"]["median"] > MAX_DECODE_TPS:
             raise _IssueError(
                 f"buckets.{bucket_name}.decode_tps: median "
@@ -154,6 +165,51 @@ def _check_sanity(payload: dict) -> None:
                 f"buckets.{bucket_name}.ttft_ms: median "
                 f"{b['ttft_ms']['median']:.1f} > {MAX_TTFT_MS} ms (likely a stuck request)"
             )
+        # Recompute every summary stat from ``rounds_raw`` and refuse
+        # the file if the precomputed value disagrees. Without this
+        # check, a contributor could ship arbitrary median numbers
+        # alongside a plausible-looking ``rounds_raw`` and the
+        # aggregator (which trusts ``median``) would publish the lie.
+        # (Codex PR #582 round-2 BLOCKING.)
+        _check_summary_matches_rounds(bucket_name, b)
+
+
+def _check_summary_matches_rounds(bucket_name: str, bucket: dict) -> None:
+    """Recompute median/min/max/stddev from ``rounds_raw`` and verify.
+
+    Tolerance is loose (1e-6 absolute, 1e-3 relative) — float
+    serialization round-trips through JSON aren't bit-exact and we
+    don't want to reject submissions over a 1 ULP drift. But anything
+    larger means the summary was tampered with or hand-edited.
+    """
+    import statistics
+
+    rounds = bucket.get("rounds_raw", [])
+    if len(rounds) != 5:
+        # Schema enforces exactly 5 — but if we got here without
+        # jsonschema (older Python or skipped install), guard anyway.
+        return
+    for metric in ("decode_tps", "prefill_tps", "ttft_ms"):
+        values = [r[metric] for r in rounds]
+        sorted_v = sorted(values)
+        computed = {
+            "median": float(statistics.median(values)),
+            "min": float(sorted_v[0]),
+            "max": float(sorted_v[-1]),
+            "stddev": float(statistics.pstdev(values)) if len(values) > 1 else 0.0,
+        }
+        claimed = bucket[metric]
+        for k, want in computed.items():
+            got = float(claimed[k])
+            tol = max(1e-6, abs(want) * 1e-3)
+            if abs(got - want) > tol:
+                raise _IssueError(
+                    f"buckets.{bucket_name}.{metric}.{k}: claimed {got} "
+                    f"but rounds_raw computes to {want:.6f} (Δ={abs(got - want):.6f}, "
+                    f"tol={tol:.6f}). Summary stats must be derivable "
+                    f"from rounds_raw — re-run the bench or recompute "
+                    f"from the raw column."
+                )
 
 
 def _check_filename(path: Path) -> None:

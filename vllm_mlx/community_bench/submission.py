@@ -257,7 +257,18 @@ def _make_pr_via_gh(
     ]
 
     for label, cmd in steps:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        # ``cwd=repo`` is critical for the ``gh`` step: ``gh pr create``
+        # reads the remote / branch state from the *current working
+        # directory's* git repo, not from any flag. Without it, a user
+        # passing ``--repo-root /path/to/checkout`` would git-commit
+        # into ``/path/to/checkout`` but then open the PR against
+        # whatever repo their shell happened to be in. (Codex PR #582
+        # round-2 BLOCKING.) Setting cwd for the git steps is
+        # redundant since ``git -C <repo>`` already routes them, but
+        # using a uniform cwd keeps the failure mode predictable.
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, cwd=str(repo)
+        )
         if result.returncode != 0:
             print(
                 f"\n  Step failed: {label}\n"
@@ -367,15 +378,27 @@ def submit_interactive(
     """
     out = stdout or sys.stdout
 
-    repo = repo_root.resolve()
-    if not (repo / ".git").exists():
+    # Use ``git rev-parse --show-toplevel`` instead of probing for a
+    # ``.git`` directory: ``.git`` is a *file* (not a dir) in linked
+    # worktrees (``git worktree add``), and refusing those would shut
+    # out a legitimate workflow. (Codex PR #582 round-2 NIT.) The
+    # subprocess returns the canonical repo root which we then use as
+    # the cwd for every subsequent git/gh call.
+    probe = subprocess.run(
+        ["git", "-C", str(repo_root.resolve()), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
         print(
-            f"  Error: {repo} is not a git repository root. "
+            f"  Error: {repo_root} is not a git repository root. "
             f"--submit needs to commit the submission file into a "
             f"checkout of github.com/raullenchai/Rapid-MLX.",
             file=out,
         )
         return 2
+    repo = Path(probe.stdout.strip())
 
     if not _ask_consent(payload, stdin=stdin, stdout=out):
         print("\n  Submission cancelled. Nothing was written or sent.", file=out)

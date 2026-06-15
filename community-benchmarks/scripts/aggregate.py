@@ -137,37 +137,63 @@ def _aggregate(payloads: list[dict]) -> list[dict]:
     One row = one (chip, ram_gb, alias, rapid_mlx, sampling) combination
     with aggregated stats per bucket per metric. Sorted by (chip, alias)
     so a hand-readable diff of ``aggregated.json`` makes sense.
+
+    Defensive against malformed inputs: ``_load_all`` checks the schema
+    version but does NOT validate every required field, so a hand-edited
+    file missing a sub-key would crash ``_bucket_key`` and abort the
+    entire aggregate run. (Codex PR #582 round-2 BLOCKING.) We catch
+    KeyError / TypeError per-file and skip with a warning so one bad
+    file can never DoS the whole pipeline.
     """
     by_key: dict[tuple, list[dict]] = {}
     for p in payloads:
-        by_key.setdefault(_bucket_key(p), []).append(p)
+        try:
+            by_key.setdefault(_bucket_key(p), []).append(p)
+        except (KeyError, TypeError) as e:
+            sid = p.get("submission_id", "<no submission_id>")
+            print(
+                f"  WARN: skipping submission {sid}: malformed shape ({e!r})",
+                file=sys.stderr,
+            )
 
     rows: list[dict] = []
     for key, group in by_key.items():
         chip, ram_gb, alias, rapid_mlx, sampling = key
-        row: dict = {
-            "chip": chip,
-            "ram_gb": ram_gb,
-            "model_alias": alias,
-            "rapid_mlx_version": rapid_mlx,
-            "sampling": sampling,
-            "sample_count": len(group),
-            # ``hf_path`` is denormalized to make the row self-contained
-            # for the website; we take it from the most recent submission
-            # in the group (they should all match, but the latest one
-            # wins in case of any divergence).
-            "hf_path": sorted(group, key=lambda p: p["submitted_at"])[-1]["model"][
+        # Per-group exception guard for the same reason as above:
+        # a missing ``hf_path`` or ``model`` field in one file should
+        # downgrade to a warning, not crash the whole aggregate.
+        try:
+            hf_path = sorted(group, key=lambda p: p["submitted_at"])[-1]["model"][
                 "hf_path"
-            ],
-            "buckets": {},
-        }
-        for bucket_name in ("short", "long"):
-            bucket_agg: dict = {}
-            for metric in ("decode_tps", "prefill_tps", "ttft_ms"):
-                medians = [p["buckets"][bucket_name][metric]["median"] for p in group]
-                bucket_agg[metric] = _agg(medians)
-            row["buckets"][bucket_name] = bucket_agg
-        rows.append(row)
+            ]
+            row: dict = {
+                "chip": chip,
+                "ram_gb": ram_gb,
+                "model_alias": alias,
+                "rapid_mlx_version": rapid_mlx,
+                "sampling": sampling,
+                "sample_count": len(group),
+                # ``hf_path`` is denormalized to make the row self-contained
+                # for the website; we take it from the most recent
+                # submission in the group (they should all match, but the
+                # latest one wins in case of any divergence).
+                "hf_path": hf_path,
+                "buckets": {},
+            }
+            for bucket_name in ("short", "long"):
+                bucket_agg: dict = {}
+                for metric in ("decode_tps", "prefill_tps", "ttft_ms"):
+                    medians = [
+                        p["buckets"][bucket_name][metric]["median"] for p in group
+                    ]
+                    bucket_agg[metric] = _agg(medians)
+                row["buckets"][bucket_name] = bucket_agg
+            rows.append(row)
+        except (KeyError, TypeError) as e:
+            print(
+                f"  WARN: skipping group {key}: malformed metric shape ({e!r})",
+                file=sys.stderr,
+            )
 
     rows.sort(key=lambda r: (r["chip"], r["model_alias"], r["rapid_mlx_version"]))
     return rows

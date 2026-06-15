@@ -372,7 +372,12 @@ def test_submit_interactive_user_cancels(tmp_path: Path) -> None:
     """A 'no' answer must not write the JSON file or touch git."""
     from vllm_mlx.community_bench.submission import submit_interactive
 
-    (tmp_path / ".git").mkdir()
+    # Real `git init` so `git rev-parse --show-toplevel` succeeds —
+    # the new code path probes via rev-parse instead of probing
+    # the .git directory (worktree compatibility).
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
     payload = {
         "schema_version": 1,
         "submission_id": "abcdef012345",
@@ -408,7 +413,12 @@ def test_submit_interactive_writes_file_then_falls_back_on_dirty_tree(
     """
     from vllm_mlx.community_bench import submission as sub_mod
 
-    (tmp_path / ".git").mkdir()
+    # Real `git init` so `git rev-parse --show-toplevel` succeeds —
+    # the new code path probes via rev-parse instead of probing
+    # the .git directory (worktree compatibility).
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
     # Force ``_git_is_clean`` to report dirty without invoking real git.
     monkeypatch.setattr(sub_mod, "_git_is_clean", lambda repo: False)
 
@@ -462,7 +472,12 @@ def test_submit_interactive_clean_tree_reaches_pr_step(
     """
     from vllm_mlx.community_bench import submission as sub_mod
 
-    (tmp_path / ".git").mkdir()
+    # Real `git init` so `git rev-parse --show-toplevel` succeeds —
+    # the new code path probes via rev-parse instead of probing
+    # the .git directory (worktree compatibility).
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
     submissions_dir = tmp_path / "community-benchmarks" / "submissions"
     pr_invoked: list[bool] = []
 
@@ -506,14 +521,41 @@ def test_submit_interactive_clean_tree_reaches_pr_step(
 
 def _good_payload() -> dict:
     """A payload that passes every check, used as the baseline for
-    mutation tests below."""
+    mutation tests below.
+
+    Summary stats are computed from ``rounds_raw`` so the new
+    summary-matches-raw check (Codex PR #582 round-2 BLOCKING) passes.
+    Hand-edited mutation tests below override individual fields to
+    trigger specific failures.
+    """
+    import statistics
+
     aliases = json.loads(ALIASES_PATH.read_text())
     alias = next(iter(aliases))
-    rounds = [{"decode_tps": 42.0, "prefill_tps": 500.0, "ttft_ms": 100.0}] * 5
+    # Five distinct values so min ≠ max ≠ median ≠ stddev — exercises
+    # the recomputation path properly. Means: decode=42, prefill=500,
+    # ttft=100.
+    rounds = [
+        {
+            "decode_tps": 40.0 + i,
+            "prefill_tps": 498.0 + i,
+            "ttft_ms": 98.0 + i,
+        }
+        for i in range(5)
+    ]
+
+    def _summary(values: list[float]) -> dict:
+        return {
+            "median": float(statistics.median(values)),
+            "min": float(min(values)),
+            "max": float(max(values)),
+            "stddev": float(statistics.pstdev(values)),
+        }
+
     bucket = {
-        "decode_tps": {"median": 42.0, "min": 41.0, "max": 43.0, "stddev": 1.0},
-        "prefill_tps": {"median": 500.0, "min": 490.0, "max": 510.0, "stddev": 5.0},
-        "ttft_ms": {"median": 100.0, "min": 95.0, "max": 105.0, "stddev": 3.0},
+        "decode_tps": _summary([r["decode_tps"] for r in rounds]),
+        "prefill_tps": _summary([r["prefill_tps"] for r in rounds]),
+        "ttft_ms": _summary([r["ttft_ms"] for r in rounds]),
         "rounds_raw": rounds,
     }
     return {
@@ -683,6 +725,54 @@ def test_validate_rejects_bad_filename(cleanup_real_submissions) -> None:
     assert "filename" in out
 
 
+def test_validate_rejects_zero_decode_tps(cleanup_real_submissions) -> None:
+    """Regression: ``decode_tps=0`` must fail (Codex PR #582 round-2 BLOCKING).
+
+    Schema's min is 0, so this passes schema; the sanity layer is what
+    catches the contract violation. A zero throughput value means a
+    failed run that should never be published.
+    """
+    pytest.importorskip("jsonschema")
+    bad = _good_payload()
+    # Zero every round AND every summary stat — schema allows it, our
+    # sanity layer doesn't.
+    for r in bad["buckets"]["short"]["rounds_raw"]:
+        r["decode_tps"] = 0.0
+    bad["buckets"]["short"]["decode_tps"] = {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stddev": 0.0,
+    }
+    path = _write_to_real_submissions(bad)
+    cleanup_real_submissions.append(path)
+    rc, out = _run_validate(path)
+    assert rc == 1
+    assert "decode_tps" in out and ("must be > 0" in out or "> 0" in out)
+
+
+def test_validate_rejects_summary_mismatch_with_rounds(
+    cleanup_real_submissions,
+) -> None:
+    """Regression: summary stats must be derivable from ``rounds_raw``
+    (Codex PR #582 round-2 BLOCKING).
+
+    Without this check, a malicious contributor could ship a 200 tok/s
+    median alongside a plausible 40 tok/s ``rounds_raw`` and the
+    aggregator (which trusts ``median``) would publish the lie.
+    """
+    pytest.importorskip("jsonschema")
+    bad = _good_payload()
+    # Median is 42 (true), but we claim 99 — large enough delta to
+    # exceed the 1e-3 relative tolerance.
+    bad["buckets"]["short"]["decode_tps"]["median"] = 99.0
+    path = _write_to_real_submissions(bad)
+    cleanup_real_submissions.append(path)
+    rc, out = _run_validate(path)
+    assert rc == 1
+    assert "rounds_raw" in out and "median" in out
+
+
 # ---------------------------------------------------------------------------
 # aggregate.py
 # ---------------------------------------------------------------------------
@@ -772,3 +862,76 @@ def test_aggregate_skips_unsupported_schema_version(tmp_path: Path) -> None:
     loaded = agg._load_all(submissions_dir.glob("*.json"))
     assert len(loaded) == 1
     assert loaded[0]["schema_version"] == 1
+
+
+def test_aggregate_survives_malformed_submission() -> None:
+    """Regression: a hand-edited submission missing required fields
+    must NOT crash the entire aggregate run (Codex PR #582 round-2
+    BLOCKING). One bad file in submissions/ would otherwise DoS the
+    website's data pipeline.
+    """
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    try:
+        import aggregate as agg
+    finally:
+        sys.path.pop(0)
+
+    good = _good_payload()
+    # Drop a required field for ``_bucket_key`` — would have crashed
+    # the aggregate before the fix.
+    malformed = _good_payload()
+    malformed["submission_id"] = "ffffffffffff"
+    del malformed["software"]["rapid_mlx"]
+    rows = agg._aggregate([good, malformed])
+    # The good submission still produces a row; the bad one is skipped.
+    assert len(rows) == 1
+
+
+def test_submission_make_pr_uses_repo_cwd(tmp_path, monkeypatch) -> None:
+    """Regression: ``gh pr create`` must run with ``cwd=repo`` so the
+    PR lands in the right checkout, not in whatever directory the
+    user happened to be in when they ran ``rapid-mlx bench --submit``.
+    (Codex PR #582 round-2 BLOCKING.)
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    calls: list[dict] = []
+
+    def fake_run(cmd, capture_output, text, check, cwd):
+        calls.append({"cmd": cmd, "cwd": cwd})
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _R()
+
+    monkeypatch.setattr(sub_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda name: "/usr/local/bin/gh")
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "x", "hf_path": "y/z"},
+        "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
+        "software": {"rapid_mlx": "0.7.6", "mlx": "0.31.2"},
+        "config": {"sampling": "greedy"},
+        "buckets": {
+            "short": {"decode_tps": {"median": 40.0}},
+            "long": {"decode_tps": {"median": 40.0}},
+        },
+        "notes": None,
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    sub_mod._make_pr_via_gh(tmp_path, sub_path, payload, stdout=io.StringIO())
+
+    assert calls, "no subprocess calls captured"
+    # Every step must run inside the resolved repo dir.
+    for c in calls:
+        assert c["cwd"] == str(tmp_path), (
+            f"step {c['cmd'][0]!r} ran with cwd={c['cwd']!r}, "
+            f"expected {str(tmp_path)!r}"
+        )
