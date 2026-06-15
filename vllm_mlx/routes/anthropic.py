@@ -35,6 +35,7 @@ from ..service.helpers import (
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
+    _effective_enable_thinking,
     _finalize_content_and_reasoning,
     _parse_tool_calls_with_parser,
     _release_admission_unless_committed,
@@ -248,6 +249,15 @@ async def create_anthropic_message(
             tool_calls=tool_calls,
             reasoning_parser=cfg.reasoning_parser,
             engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
+            # #575 — mirror chat.py so the Anthropic non-stream surface
+            # gets the same Case-4 fallback (codex R1 BLOCKING: the
+            # helper is shared between both routes so leaving this
+            # call site on the legacy contract would let the leak
+            # persist on ``/v1/messages`` while ``/v1/chat/completions``
+            # was fixed).
+            enable_thinking=_effective_enable_thinking(
+                resolved_thinking, cfg.model_name
+            ),
         )
 
         final_content = None

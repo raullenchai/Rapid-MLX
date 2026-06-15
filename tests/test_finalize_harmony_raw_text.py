@@ -203,3 +203,192 @@ def test_engine_reasoning_empty_falls_through_to_parser():
         engine_reasoning_text="",
     )
     assert reasoning is not None and "17 * 23" in reasoning
+
+
+# ---------------------------------------------------------------------------
+# #575 — Case-4 leak plug + effective-thinking resolution + signature probe
+# ---------------------------------------------------------------------------
+
+from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
+from vllm_mlx.service.helpers import (
+    _effective_enable_thinking,
+    _parser_accepts_enable_thinking,
+)
+
+
+_QWEN3_TRUNCATED_THOUGHT = (
+    "Here's my thinking process:\n"
+    "1. The user is asking about train travel between two cities.\n"
+    "2. I need to compute the meeting point given two speeds...\n"
+    "3. Let me set up the equation: distance = speed * time...\n"
+    "[truncated mid-thought, finish_reason='length', no closing tag]"
+)
+
+
+def test_575_qwen3_truncated_thought_does_not_leak_to_content_when_thinking_on():
+    """End-to-end behaviour pin: when ``enable_thinking=True`` AND the
+    parser returns ``(reasoning, None)`` on a no-tag truncated thought,
+    the helper MUST clear ``cleaned_text`` so the route's ``final_content``
+    becomes ``None``. Pre-fix the same text leaked into BOTH
+    ``reasoning_content`` AND ``content`` (codex R1 BLOCKING)."""
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_QWEN3_TRUNCATED_THOUGHT,
+        cleaned_text=_QWEN3_TRUNCATED_THOUGHT,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=True,
+    )
+    assert reasoning == _QWEN3_TRUNCATED_THOUGHT.strip()
+    # The critical assertion — falsy cleaned_text means the route
+    # renders ``content=None`` and the client doesn't see the leak.
+    assert not cleaned
+
+
+def test_575_qwen3_truncated_thought_legacy_behaviour_when_thinking_off():
+    """Backward-compat pin: with ``enable_thinking`` left at ``None``
+    (the pre-#575 contract) the helper does NOT clear cleaned_text and
+    the legacy behaviour is preserved — useful for shimming third-party
+    callers that have not yet wired the flag through."""
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_QWEN3_TRUNCATED_THOUGHT,
+        cleaned_text=_QWEN3_TRUNCATED_THOUGHT,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+    )
+    # Legacy path: no Case-4 → text stays as content, reasoning is None.
+    assert reasoning is None
+    assert cleaned == _QWEN3_TRUNCATED_THOUGHT
+
+
+def test_575_glm4_no_tags_thinking_on_does_not_clobber_content():
+    """GLM-4 explicitly diverges from Qwen3 — its parser drops the
+    ``enable_thinking`` kwarg before delegating, so even when the route
+    passes ``True`` the helper must NOT touch ``cleaned_text``."""
+    text = "GLM-4 plain answer with no think tags at all."
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=text,
+        cleaned_text=text,
+        tool_calls=[],
+        reasoning_parser=Glm4ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=True,
+    )
+    assert reasoning is None
+    assert cleaned == text
+
+
+def test_575_qwen3_normal_split_unchanged_with_thinking_on():
+    """When the model emits the normal ``…</think>answer`` shape the
+    helper's Case-4 leak plug must NOT fire — the well-behaved split
+    has both reasoning and content and clobbering content would break
+    every successful thinking response."""
+    raw = "step by step reasoning</think>The answer is 42."
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=True,
+    )
+    assert reasoning == "step by step reasoning"
+    assert cleaned == "The answer is 42."
+
+
+# ---- _effective_enable_thinking ------------------------------------------
+
+
+def test_effective_enable_thinking_concrete_true_passes_through():
+    assert _effective_enable_thinking(True, "qwen3.5-4b-4bit") is True
+
+
+def test_effective_enable_thinking_concrete_false_passes_through():
+    assert _effective_enable_thinking(False, "qwen3.5-4b-4bit") is False
+
+
+def test_effective_enable_thinking_none_non_coder_defaults_true():
+    """Mirrors ``vllm_mlx/utils/chat_template.py:127`` — the same
+    default the prompt-render path applies. Without this, ``None`` on
+    the default Qwen3 path would skip the Case-4 fallback even though
+    the chat template DID inject ``<think>`` (codex R1 BLOCKING)."""
+    assert _effective_enable_thinking(None, "qwen3.5-4b-4bit") is True
+
+
+def test_effective_enable_thinking_none_coder_defaults_false():
+    """Coder variants do NOT pre-inject ``<think>`` — keep them on the
+    legacy no-tag-→-content path."""
+    assert _effective_enable_thinking(None, "qwen3-coder-30b-a3b") is False
+
+
+def test_effective_enable_thinking_no_model_name_preserves_none():
+    """Defensive: callers without a known model name keep the legacy
+    ``None`` so we don't silently flip behaviour."""
+    assert _effective_enable_thinking(None, None) is None
+    assert _effective_enable_thinking(None, "") is None
+
+
+# ---- _parser_accepts_enable_thinking -------------------------------------
+
+
+def test_parser_accepts_enable_thinking_modern_parser():
+    """All in-tree parsers accept the kwarg post-#575."""
+    assert _parser_accepts_enable_thinking(Qwen3ReasoningParser()) is True
+    assert _parser_accepts_enable_thinking(Glm4ReasoningParser()) is True
+    assert _parser_accepts_enable_thinking(HarmonyReasoningParser()) is True
+
+
+def test_parser_accepts_enable_thinking_legacy_parser_returns_false():
+    """A third-party parser on the old 1-arg signature must be detected
+    statically — no side-effecting ``extract("")`` probe (codex R1 NIT)."""
+
+    class LegacyParser:
+        def extract_reasoning(self, model_output: str):  # noqa: ARG002
+            return None, model_output
+
+    assert _parser_accepts_enable_thinking(LegacyParser()) is False
+
+
+def test_parser_accepts_enable_thinking_kwargs_catchall_returns_true():
+    """Parsers that declare ``**kwargs`` should be treated as accepting
+    the flag — they can either consume or ignore it."""
+
+    class KwargsParser:
+        def extract_reasoning(self, model_output: str, **kwargs):  # noqa: ARG002
+            return None, model_output
+
+    assert _parser_accepts_enable_thinking(KwargsParser()) is True
+
+
+def test_parser_accepts_enable_thinking_missing_method_returns_false():
+    """Defensive — a stub without the method should not crash the
+    helper, just fall back to the 1-arg path (which itself will then
+    AttributeError, but that's a separate caller-visible bug)."""
+
+    class NoMethod:
+        pass
+
+    assert _parser_accepts_enable_thinking(NoMethod()) is False
+
+
+def test_parser_accepts_enable_thinking_no_side_effects():
+    """The static signature check MUST NOT call ``extract_reasoning``.
+    A stateful parser whose ``extract_reasoning`` mutates internal
+    state on every call would be silently corrupted by the previous
+    ``extract("")`` probe; this pins that we never touch the body."""
+
+    class StatefulParser:
+        def __init__(self):
+            self.call_count = 0
+
+        def extract_reasoning(
+            self, model_output: str, enable_thinking: bool | None = None
+        ):
+            self.call_count += 1
+            return None, model_output
+
+    parser = StatefulParser()
+    assert _parser_accepts_enable_thinking(parser) is True
+    assert parser.call_count == 0

@@ -48,6 +48,7 @@ from ..service.helpers import (
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
+    _effective_enable_thinking,
     _extract_streaming_token_logprobs,
     _finalize_content_and_reasoning,
     _inject_json_instruction,
@@ -1192,11 +1193,17 @@ async def _create_chat_completion_impl(
         reasoning_parser=cfg.reasoning_parser,
         engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
         # #575 — chat-template-injected ``<think>`` means the model
-        # never emits the start tag; pass the resolved flag so the
-        # parser can keep Case 4 (no tags at all) symmetric with the
-        # streaming Case-3 fallback when the response was truncated
-        # mid-thought.
-        enable_thinking=resolved_thinking,
+        # never emits the start tag; pass the *effective* flag (with
+        # the same ``None`` → ``"coder" not in model_name`` fallback
+        # ``vllm_mlx/utils/chat_template.py:127`` uses for prompt
+        # rendering) so the parser's Case 4 fallback fires on
+        # default-on thinking — codex R1 BLOCKING: passing the raw
+        # ``resolved_thinking`` left ``None`` for every request that
+        # didn't pin the flag, so the leak persisted on the most
+        # common Qwen3 path.
+        enable_thinking=_effective_enable_thinking(
+            resolved_thinking, cfg.model_name
+        ),
     )
 
     # Process response_format if specified (after reasoning parser cleaned the text)

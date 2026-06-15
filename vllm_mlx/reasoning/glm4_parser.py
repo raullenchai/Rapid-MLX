@@ -62,9 +62,19 @@ class Glm4ReasoningParser(BaseThinkingReasoningParser):
         # Strip 4.6V box markers before tag inspection. They're whole
         # special tokens, never embedded inside actual reasoning prose,
         # so a literal replace is safe.
-        return super().extract_reasoning(
-            self._strip_box(model_output), enable_thinking=enable_thinking
-        )
+        #
+        # NB: ``enable_thinking`` is accepted (signature parity with
+        # the base class) but DELIBERATELY NOT forwarded — codex R1
+        # BLOCKING: GLM-4's chat template does NOT prompt-inject
+        # ``<think>`` (this file's module docstring is the canonical
+        # statement of that fact), so a no-tag GLM response is
+        # genuine content, not a truncated thought. Forwarding
+        # ``True`` to ``BaseThinkingReasoningParser`` would trigger
+        # the #575 Case-4 fallback and silently swap legitimate
+        # content into ``reasoning`` — diverging from the streaming
+        # path which already treats no-tag GLM output as content.
+        del enable_thinking  # noqa: F841 — see comment above
+        return super().extract_reasoning(self._strip_box(model_output))
 
     def extract_reasoning_streaming(
         self,

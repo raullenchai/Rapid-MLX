@@ -717,6 +717,62 @@ class TestQwen3:
         assert reasoning is None
         assert content == "content"
 
+    # ---- #575 fast-path coverage (Qwen3 override branch) ----------------
+
+    def test_575_qwen3_fast_path_no_tags_enable_thinking_true(self):
+        """Qwen3's override has its own no-tag branch (not the base class
+        Case 4). With ``enable_thinking=True`` it must also route to
+        reasoning so the explicit + base paths stay in sync."""
+        text = "implicit reasoning continuation"
+        reasoning, content = self.parser.extract_reasoning(
+            text, enable_thinking=True
+        )
+        assert reasoning == text
+        assert content is None
+
+    def test_575_qwen3_fast_path_no_tags_enable_thinking_false_legacy(self):
+        text = "just content with no tags"
+        for flag in (False, None):
+            reasoning, content = self.parser.extract_reasoning(
+                text, enable_thinking=flag
+            )
+            assert reasoning is None
+            assert content == text
+
+
+# ---------------------------------------------------------------------------
+# Glm4ReasoningParser
+# ---------------------------------------------------------------------------
+
+
+class TestGlm4EnableThinking:
+    """#575 codex R1 BLOCKING — GLM-4 does NOT prompt-inject ``<think>``,
+    so the new ``enable_thinking`` kwarg must be a no-op on this parser
+    even when ``True``. Otherwise legitimate no-tag GLM content gets
+    silently re-routed to reasoning, diverging from streaming."""
+
+    def setup_method(self):
+        from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
+
+        self.parser = Glm4ReasoningParser()
+
+    def test_no_tags_enable_thinking_true_still_routes_to_content(self):
+        text = "GLM-4 plain answer with no think tags."
+        reasoning, content = self.parser.extract_reasoning(
+            text, enable_thinking=True
+        )
+        assert reasoning is None
+        assert content == text
+
+    def test_no_tags_enable_thinking_false_routes_to_content(self):
+        text = "Another no-tag GLM response."
+        for flag in (False, None):
+            reasoning, content = self.parser.extract_reasoning(
+                text, enable_thinking=flag
+            )
+            assert reasoning is None
+            assert content == text
+
 
 # ---------------------------------------------------------------------------
 # MiniMaxReasoningParser
