@@ -174,6 +174,29 @@ def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _remote_is_rapid_mlx(repo: Path) -> bool:
+    """True iff ``origin`` resolves to ``raullenchai/Rapid-MLX``.
+
+    Accepts both forms ``git`` itself emits:
+        https://github.com/raullenchai/Rapid-MLX(.git)
+        git@github.com:raullenchai/Rapid-MLX(.git)
+
+    Lower-cased compare because GitHub URLs are case-insensitive but
+    user-set remotes might differ in capitalisation. We deliberately
+    DON'T accept arbitrary forks here — a fork's PR can still target
+    upstream, but the user setting that up is signalling they want it.
+    The fail-closed default is the right one for "I just ran the
+    bench in some random repo by accident."
+    """
+    r = _run_git(repo, "remote", "get-url", "origin")
+    if r.returncode != 0:
+        return False
+    url = r.stdout.strip().lower().removesuffix(".git")
+    return url.endswith("github.com/raullenchai/rapid-mlx") or url.endswith(
+        "github.com:raullenchai/rapid-mlx"
+    )
+
+
 def _git_is_clean(repo: Path) -> bool:
     """True iff there are no uncommitted changes / untracked files.
 
@@ -399,6 +422,24 @@ def submit_interactive(
         )
         return 2
     repo = Path(probe.stdout.strip())
+
+    # Verify the resolved repo's ``origin`` actually points at
+    # raullenchai/Rapid-MLX before we touch any branches or open a PR.
+    # Without this check, a user who runs ``rapid-mlx bench --submit``
+    # from inside an unrelated checkout (their own work repo, a fork of
+    # something else) would get a branch + commit + PR landing in the
+    # wrong project — and the cleanup is annoying. (Codex PR #582
+    # round-3 BLOCKING.) We accept either HTTPS or SSH forms, with or
+    # without a trailing ``.git``.
+    if not _remote_is_rapid_mlx(repo):
+        print(
+            f"  Error: {repo} is a git repo but its 'origin' remote is "
+            f"not github.com/raullenchai/Rapid-MLX. --submit only works "
+            f"from a checkout of that repository (or a fork of it whose "
+            f"origin still points at raullenchai/Rapid-MLX).",
+            file=out,
+        )
+        return 2
 
     if not _ask_consent(payload, stdin=stdin, stdout=out):
         print("\n  Submission cancelled. Nothing was written or sent.", file=out)

@@ -41,7 +41,7 @@ Exactly these fields. Anything not on this list is **not** read, sent, or stored
 
 ## What we DO with the data
 
-- Aggregate into `aggregated.json` keyed by `(chip, ram_gb, model.alias, rapid_mlx_version)`. Per bucket: median + IQR + sample count.
+- Aggregate into `aggregated.json` keyed by `(chip, ram_gb, cpu_cores, gpu_cores, model.alias, rapid_mlx_version, sampling)`. Per bucket: median + IQR + sample count. `cpu_cores`/`gpu_cores` are part of the key so the 16-core and 20-core M4 Pro SKUs (same brand string, different silicon) don't collapse.
 - Render on `rapid-mlx.com/community-benchmarks` — sortable / filterable table.
 - Per-contributor attribution: the PR author (your GitHub handle) is the only contributor signal; no other identity is tracked.
 - License: all submissions are CC0 (`SPDX-License-Identifier: CC0-1.0`). The data is community-owned.
@@ -73,7 +73,9 @@ Append-only. One file per submission under `submissions/`:
 submissions/<YYYYMMDD>-<chip-slug>-<model-slug>-<submission_id>.json
 ```
 
-Duplicates are allowed and **encouraged** — more samples → tighter median. Outliers are kept in the raw store (auditable) but downweighted in the displayed median (IQR fences).
+Duplicate re-runs from the same machine are allowed and **encouraged** — more samples → tighter median. Each re-run is a fresh `rapid-mlx bench --submit` invocation that generates its own `submission_id`; copying an existing file under a new name does NOT add a second sample (the aggregator de-duplicates by `submission_id` so one machine can't multiply its vote). Outliers are kept in the raw store (auditable) but downweighted in the displayed median (IQR fences).
+
+Submissions are **append-only**: PRs that delete or rename existing rows are rejected by CI. Apply corrections via a new submission rather than mutating history.
 
 ## For maintainers
 

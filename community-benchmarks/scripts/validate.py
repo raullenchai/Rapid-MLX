@@ -56,6 +56,14 @@ MAX_RAM_GB = 1024
 # Filename pattern: <YYYYMMDD>-<chip-slug>-<alias-slug>-<id>.json. We
 # don't enforce the exact slugs (chip names change) — just the shape.
 FILENAME_RE = re.compile(r"^[0-9]{8}-[a-z0-9-]+-[a-z0-9.-]+-[0-9a-f]{12}\.json$")
+# The CLI gates on ``is_apple_silicon()`` before benching, but the
+# submission file in a PR is the authoritative artifact — a hand-edited
+# JSON for non-Apple hardware would otherwise bypass the
+# Apple-Silicon-only contract. Pattern matches the strings
+# ``sysctl -n machdep.cpu.brand_string`` actually emits: "Apple M1",
+# "Apple M3 Pro", "Apple M4 Max", "Apple M3 Ultra", etc. (Codex PR
+# #582 round-3 BLOCKING.)
+APPLE_CHIP_RE = re.compile(r"^Apple M\d+(?:\s+(?:Pro|Max|Ultra))?$")
 
 
 class _IssueError(Exception):
@@ -90,11 +98,17 @@ def _check_schema(payload: dict, schema: dict | None) -> None:
     except ImportError:
         print("  WARN: jsonschema not installed; skipping schema check")
         return
-    try:
-        jsonschema.validate(instance=payload, schema=schema)
-    except jsonschema.ValidationError as e:
-        # Take just the first failure — jsonschema's full path is
-        # already in the message, and reviewers don't need a stack.
+    # ``jsonschema.validate()`` ignores ``format`` by default — it
+    # advertises but doesn't enforce. Use a real ``Draft202012Validator``
+    # with the format-checker enabled so the schema's
+    # ``"format": "date-time"`` on ``submitted_at`` actually rejects a
+    # garbage value. (Codex PR #582 round-3 NIT.)
+    validator = jsonschema.Draft202012Validator(
+        schema, format_checker=jsonschema.Draft202012Validator.FORMAT_CHECKER
+    )
+    errors = sorted(validator.iter_errors(payload), key=lambda e: list(e.absolute_path))
+    if errors:
+        e = errors[0]
         loc = "/".join(str(p) for p in e.absolute_path) or "(root)"
         raise _IssueError(f"schema: {loc}: {e.message}") from None
 
@@ -120,8 +134,21 @@ def _check_alias_whitelist(payload: dict, aliases: dict[str, dict]) -> None:
 def _check_sanity(payload: dict) -> None:
     """Plausibility bounds. Each violation raises ``_IssueError``."""
     hw = payload.get("hardware", {})
-    if not hw.get("chip"):
+    chip = hw.get("chip", "")
+    if not chip:
         raise _IssueError("hardware: chip is empty")
+    # Enforce Apple Silicon at the validator boundary so a hand-edited
+    # JSON for non-Apple hardware can't slip past — the CLI gate runs
+    # on the submitter's machine and is bypassable by anyone willing to
+    # edit JSON. Allowlist by pattern rather than enumeration so a
+    # newly-released Apple chip ("Apple M5") doesn't need a code change
+    # to be acceptable.
+    if not APPLE_CHIP_RE.match(chip):
+        raise _IssueError(
+            f"hardware: chip {chip!r} does not match the Apple Silicon "
+            f"pattern 'Apple M<n>[ Pro|Max|Ultra]'. The community DB is "
+            f"Apple-Silicon-only by contract."
+        )
     if not (1 <= hw.get("ram_gb", 0) <= MAX_RAM_GB):
         raise _IssueError(f"hardware: ram_gb out of range: {hw.get('ram_gb')}")
 
@@ -241,8 +268,64 @@ def _check_path_in_submissions(path: Path) -> None:
         )
 
 
+def _check_no_duplicate_submission_id(
+    path: Path, payload: dict, existing_ids: set[str]
+) -> None:
+    """Refuse a submission whose ``submission_id`` already exists.
+
+    ``submission_id`` is generated locally as the first 12 hex of a
+    uuid4 — naturally unique. A duplicate means the contributor
+    copied an existing file and renamed it (intentionally or not),
+    which would inflate the contributing machine's vote in the
+    aggregator. (Codex PR #582 round-3 BLOCKING.)
+
+    Note: this only fires when ``existing_ids`` was passed in by the
+    caller; single-file validation (CI on a PR diff) populates it
+    from the full submissions/ corpus, so the new file is compared
+    against history. The aggregator also has its own de-dup pass as
+    defense in depth.
+    """
+    sid = payload.get("submission_id")
+    if sid is None:
+        return
+    if sid in existing_ids:
+        raise _IssueError(
+            f"submission_id: {sid} already exists in the corpus. "
+            f"Each submission must have a unique uuid4-derived id; "
+            f"copying an existing file under a new name is not how "
+            f"to add a second sample (re-run the bench instead)."
+        )
+
+
+def _load_existing_submission_ids(skip: Path | None = None) -> set[str]:
+    """Walk submissions/ and return every ``submission_id`` found.
+
+    ``skip`` is the path currently being validated — we don't want to
+    flag the file as a duplicate of itself when re-running validate.py
+    after the file is already on disk (e.g. local dev).
+    """
+    ids: set[str] = set()
+    if not SUBMISSIONS_DIR.exists():
+        return ids
+    skip_resolved = skip.resolve() if skip else None
+    for existing in SUBMISSIONS_DIR.glob("*.json"):
+        if skip_resolved and existing.resolve() == skip_resolved:
+            continue
+        try:
+            payload = json.loads(existing.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        sid = payload.get("submission_id")
+        if sid is not None:
+            ids.add(sid)
+    return ids
+
+
 def validate_one(
-    path: Path, schema: dict | None, aliases: dict[str, dict]
+    path: Path,
+    schema: dict | None,
+    aliases: dict[str, dict],
+    existing_ids: set[str] | None = None,
 ) -> list[str]:
     """Return the list of issues found for one file. Empty = OK."""
     issues: list[str] = []
@@ -254,6 +337,8 @@ def validate_one(
         _check_schema(payload, schema)
         _check_alias_whitelist(payload, aliases)
         _check_sanity(payload)
+        if existing_ids is not None:
+            _check_no_duplicate_submission_id(path, payload, existing_ids)
     except _IssueError as e:
         issues.append(str(e))
     except json.JSONDecodeError as e:
@@ -282,9 +367,14 @@ def main(argv: list[str]) -> int:
         print("  ERROR: aliases.json is empty or missing — every file will fail.")
         return min(125, len(targets))
 
+    # Cross-file uniqueness check: load every submission_id once so
+    # each per-file validate can detect duplicates. Skipping the file
+    # being validated avoids self-collision when re-running locally
+    # against an already-committed submission.
     failures = 0
     for path in targets:
-        issues = validate_one(path, schema, aliases)
+        existing_ids = _load_existing_submission_ids(skip=path)
+        issues = validate_one(path, schema, aliases, existing_ids=existing_ids)
         if issues:
             failures += 1
             print(f"  FAIL  {path.name}")

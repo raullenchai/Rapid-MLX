@@ -279,6 +279,14 @@ async def run_standardized_bench(
 
     factory = _make_sampling_params_factory(sampling)
 
+    # Reset the Metal peak-memory counter BEFORE measured rounds begin
+    # so ``peak_ram_mb`` reflects what the bench actually allocated, not
+    # what the model load / JIT warm-up did. (Codex PR #582 round-3
+    # NIT.) ``reset_peak_memory`` is best-effort: older mlx versions
+    # don't expose it, in which case the reported number remains
+    # process-peak — still useful, just not as precise.
+    _reset_peak_ram()
+
     short_result, short_ids = await _run_bucket(
         engine, tokenizer, factory, SHORT_PROMPT_TOKENS, SHORT_MAX_TOKENS
     )
@@ -318,6 +326,32 @@ def _read_peak_ram_mb() -> int | None:
         return bytes_ // (1024 * 1024)
     except (ImportError, AttributeError, ValueError, OSError):
         return None
+
+
+def _reset_peak_ram() -> None:
+    """Zero out the Metal peak-memory counter, best-effort.
+
+    Called between model-load and the first measured round so the
+    reported ``peak_ram_mb`` reflects bench-time allocation only. If
+    the running mlx doesn't expose ``reset_peak_memory`` (older
+    versions don't), we silently no-op — the reported number then
+    represents process-peak, which is still useful and the schema
+    field is annotated accordingly in the README.
+    """
+    try:
+        import mlx.core as mx
+
+        metal = getattr(mx, "metal", None)
+        if metal is None:
+            return
+        resetter = getattr(metal, "reset_peak_memory", None)
+        if resetter is None:
+            return
+        resetter()
+    except (ImportError, AttributeError, ValueError, OSError):
+        # Same suppression as _read_peak_ram_mb — peak RAM is an
+        # optional field, not worth aborting the bench over.
+        return
 
 
 def standardized_config_dict(sampling: str, prompt_hash: str) -> dict:

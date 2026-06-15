@@ -70,17 +70,28 @@ def _load_all(paths: Iterable[Path]) -> list[dict]:
     return out
 
 
-def _bucket_key(payload: dict) -> tuple[str, int, str, str, str]:
+def _bucket_key(payload: dict) -> tuple[str, int, int, int | None, str, str, str]:
     """Stable grouping key for the aggregator.
 
     Includes ``rapid_mlx`` version because the same chip × model can
     move 10-20% between Rapid-MLX releases — collapsing across versions
     would hide regressions. Sampling is also a key because greedy and
     sampled aren't comparable.
+
+    Includes ``cpu_cores`` and ``gpu_cores`` because the same chip
+    brand string (e.g. "Apple M4 Pro") ships in two SKUs — a 16-core
+    GPU variant and a 20-core GPU variant — that benchmark
+    differently. Collapsing them would publish one number that
+    represents neither machine. (Codex PR #582 round-3 BLOCKING.)
+    ``gpu_cores`` is ``None`` when the system_profiler probe failed;
+    bucketing the ``None``s into their own row is correct (we can
+    re-aggregate later if a probe fix gets backfilled).
     """
     return (
         payload["hardware"]["chip"],
         payload["hardware"]["ram_gb"],
+        payload["hardware"]["cpu_cores"],
+        payload["hardware"].get("gpu_cores"),
         payload["model"]["alias"],
         payload["software"]["rapid_mlx"],
         payload["config"]["sampling"],
@@ -158,21 +169,36 @@ def _aggregate(payloads: list[dict]) -> list[dict]:
 
     rows: list[dict] = []
     for key, group in by_key.items():
-        chip, ram_gb, alias, rapid_mlx, sampling = key
+        chip, ram_gb, cpu_cores, gpu_cores, alias, rapid_mlx, sampling = key
+        # De-duplicate by ``submission_id`` before any per-group math.
+        # A contributor copying one file under multiple names would
+        # otherwise multiply their own machine's vote and skew the
+        # community median. (Codex PR #582 round-3 BLOCKING.) Dict
+        # keyed by submission_id keeps the last-written wins, which
+        # is fine because all values in a group share the same id are
+        # the same submission.
+        seen: dict[str, dict] = {}
+        for p in group:
+            sid = p.get("submission_id")
+            if sid is not None:
+                seen[sid] = p
+        deduped = list(seen.values()) if seen else group
         # Per-group exception guard for the same reason as above:
         # a missing ``hf_path`` or ``model`` field in one file should
         # downgrade to a warning, not crash the whole aggregate.
         try:
-            hf_path = sorted(group, key=lambda p: p["submitted_at"])[-1]["model"][
+            hf_path = sorted(deduped, key=lambda p: p["submitted_at"])[-1]["model"][
                 "hf_path"
             ]
             row: dict = {
                 "chip": chip,
                 "ram_gb": ram_gb,
+                "cpu_cores": cpu_cores,
+                "gpu_cores": gpu_cores,
                 "model_alias": alias,
                 "rapid_mlx_version": rapid_mlx,
                 "sampling": sampling,
-                "sample_count": len(group),
+                "sample_count": len(deduped),
                 # ``hf_path`` is denormalized to make the row self-contained
                 # for the website; we take it from the most recent
                 # submission in the group (they should all match, but the
@@ -183,8 +209,11 @@ def _aggregate(payloads: list[dict]) -> list[dict]:
             for bucket_name in ("short", "long"):
                 bucket_agg: dict = {}
                 for metric in ("decode_tps", "prefill_tps", "ttft_ms"):
+                    # Use the de-duplicated list so one machine voting
+                    # via duplicate filenames doesn't multiply its
+                    # influence on the median.
                     medians = [
-                        p["buckets"][bucket_name][metric]["median"] for p in group
+                        p["buckets"][bucket_name][metric]["median"] for p in deduped
                     ]
                     bucket_agg[metric] = _agg(medians)
                 row["buckets"][bucket_name] = bucket_agg

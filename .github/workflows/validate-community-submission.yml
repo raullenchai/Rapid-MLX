@@ -63,6 +63,22 @@ jobs:
           BASE=$(git merge-base "origin/${BASE_REF}" HEAD)
           echo "merge-base: $BASE"
 
+          # The submissions/ tree is contractually APPEND-ONLY (see
+          # README "Submission storage" section). The previous diff
+          # used --diff-filter=AM which silently dropped Deletes and
+          # Renames — so a PR that removed an old row would re-validate
+          # the *remaining* corpus successfully and slip through.
+          # (Codex PR #582 round-3 BLOCKING.) Detect D/R changes
+          # explicitly and fail the job loudly.
+          REMOVED=$(git diff --name-only --diff-filter=DR "$BASE" HEAD \
+            -- 'community-benchmarks/submissions/*.json' || true)
+          if [ -n "$REMOVED" ]; then
+            echo "::error::This PR deletes/renames append-only submission files:"
+            echo "$REMOVED" | sed 's/^/  /'
+            echo "::error::Submissions are append-only — adding new files is fine, but existing files may not be deleted or renamed."
+            exit 1
+          fi
+
           # NUL-separated diff. -z disables pathname quoting AND
           # changes the field separator to NUL. Empty output means
           # no changed submission files.

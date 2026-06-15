@@ -372,11 +372,24 @@ def test_submit_interactive_user_cancels(tmp_path: Path) -> None:
     """A 'no' answer must not write the JSON file or touch git."""
     from vllm_mlx.community_bench.submission import submit_interactive
 
-    # Real `git init` so `git rev-parse --show-toplevel` succeeds —
-    # the new code path probes via rev-parse instead of probing
-    # the .git directory (worktree compatibility).
+    # Real `git init` so `git rev-parse --show-toplevel` succeeds.
+    # We also wire `origin` to the canonical Rapid-MLX URL so the
+    # remote-verification guard (codex round-3 BLOCKING) accepts it.
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/raullenchai/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
     )
     payload = {
         "schema_version": 1,
@@ -403,6 +416,68 @@ def test_submit_interactive_requires_git_repo(tmp_path: Path) -> None:
     assert rc == 2
 
 
+def test_submit_interactive_rejects_wrong_repo(tmp_path: Path) -> None:
+    """Regression: a git repo whose origin is not raullenchai/Rapid-MLX
+    must be rejected with rc=2. (Codex PR #582 round-3 BLOCKING.)
+    """
+    from vllm_mlx.community_bench.submission import submit_interactive
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/some-other/repo.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    payload = {"submission_id": "abcdef012345"}
+    out = io.StringIO()
+    rc = submit_interactive(payload, tmp_path, stdin=io.StringIO("y\n"), stdout=out)
+    assert rc == 2
+    text = out.getvalue()
+    assert "raullenchai/Rapid-MLX" in text
+
+
+def test_submit_interactive_accepts_ssh_and_https_remotes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``_remote_is_rapid_mlx`` must accept both git URL forms with or
+    without the trailing ``.git`` suffix."""
+    from vllm_mlx.community_bench.submission import _remote_is_rapid_mlx
+
+    # Numeric-prefixed dirs avoid case-insensitive filesystem
+    # collisions — macOS APFS folds case by default, so two URL
+    # variants that differ only in case would otherwise share a
+    # directory and the second mkdir() would fail.
+    forms = [
+        "https://github.com/raullenchai/Rapid-MLX",
+        "https://github.com/raullenchai/Rapid-MLX.git",
+        "git@github.com:raullenchai/Rapid-MLX",
+        "git@github.com:raullenchai/Rapid-MLX.git",
+        # Different capitalisation should still match (GitHub URLs are
+        # case-insensitive).
+        "https://github.com/RaullenChai/RAPID-mlx",
+    ]
+    for i, url in enumerate(forms):
+        d = tmp_path / f"repo_{i}"
+        d.mkdir()
+        subprocess.run(["git", "init", "-q", str(d)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(d), "remote", "add", "origin", url],
+            check=True,
+            capture_output=True,
+        )
+        assert _remote_is_rapid_mlx(d), f"should accept {url!r}"
+
+
 def test_submit_interactive_writes_file_then_falls_back_on_dirty_tree(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -413,11 +488,24 @@ def test_submit_interactive_writes_file_then_falls_back_on_dirty_tree(
     """
     from vllm_mlx.community_bench import submission as sub_mod
 
-    # Real `git init` so `git rev-parse --show-toplevel` succeeds —
-    # the new code path probes via rev-parse instead of probing
-    # the .git directory (worktree compatibility).
+    # Real `git init` so `git rev-parse --show-toplevel` succeeds.
+    # We also wire `origin` to the canonical Rapid-MLX URL so the
+    # remote-verification guard (codex round-3 BLOCKING) accepts it.
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/raullenchai/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
     )
     # Force ``_git_is_clean`` to report dirty without invoking real git.
     monkeypatch.setattr(sub_mod, "_git_is_clean", lambda repo: False)
@@ -472,11 +560,24 @@ def test_submit_interactive_clean_tree_reaches_pr_step(
     """
     from vllm_mlx.community_bench import submission as sub_mod
 
-    # Real `git init` so `git rev-parse --show-toplevel` succeeds —
-    # the new code path probes via rev-parse instead of probing
-    # the .git directory (worktree compatibility).
+    # Real `git init` so `git rev-parse --show-toplevel` succeeds.
+    # We also wire `origin` to the canonical Rapid-MLX URL so the
+    # remote-verification guard (codex round-3 BLOCKING) accepts it.
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/raullenchai/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
     )
     submissions_dir = tmp_path / "community-benchmarks" / "submissions"
     pr_invoked: list[bool] = []
@@ -751,6 +852,69 @@ def test_validate_rejects_zero_decode_tps(cleanup_real_submissions) -> None:
     assert "decode_tps" in out and ("must be > 0" in out or "> 0" in out)
 
 
+def test_validate_rejects_non_apple_chip(cleanup_real_submissions) -> None:
+    """Regression: hand-edited submission with non-Apple chip must fail.
+
+    The CLI gate is bypassable by anyone willing to edit JSON, so the
+    validator boundary has to re-enforce the Apple-Silicon-only
+    contract. (Codex PR #582 round-3 BLOCKING.)
+    """
+    pytest.importorskip("jsonschema")
+    bad = _good_payload()
+    bad["hardware"]["chip"] = "Intel Xeon E5-2670"
+    path = _write_to_real_submissions(bad)
+    cleanup_real_submissions.append(path)
+    rc, out = _run_validate(path)
+    assert rc == 1
+    assert "Apple" in out and "chip" in out
+
+
+def test_validate_rejects_duplicate_submission_id(
+    cleanup_real_submissions,
+) -> None:
+    """Regression: a submission whose ``submission_id`` already exists
+    in submissions/ must be rejected. (Codex PR #582 round-3 BLOCKING.)
+
+    Setup: drop a "first" file with one id, then a "second" file with
+    the SAME id but a different filename. Validate the second — it
+    should fail.
+    """
+    pytest.importorskip("jsonschema")
+    first = _good_payload()
+    first["submission_id"] = "aaaaaaaaaaaa"
+    second = _good_payload()
+    second["submission_id"] = "aaaaaaaaaaaa"  # collision
+
+    first_path = _write_to_real_submissions(
+        first, name="20260101-apple-m4-pro-qwen3-5-9b-4bit-aaaaaaaaaaaa.json"
+    )
+    cleanup_real_submissions.append(first_path)
+    second_path = _write_to_real_submissions(
+        second, name="20260102-apple-m4-pro-qwen3-5-9b-4bit-aaaaaaaaaaaa.json"
+    )
+    cleanup_real_submissions.append(second_path)
+
+    rc, out = _run_validate(second_path)
+    assert rc == 1
+    assert "submission_id" in out and "already exists" in out
+
+
+def test_validate_rejects_bad_datetime_format(cleanup_real_submissions) -> None:
+    """Regression: schema ``format: date-time`` must actually be enforced.
+
+    jsonschema's ``validate()`` ignored ``format:`` until we wired in
+    a Draft202012Validator with FORMAT_CHECKER. (Codex PR #582 round-3
+    NIT.)
+    """
+    pytest.importorskip("jsonschema")
+    bad = _good_payload()
+    bad["submitted_at"] = "definitely not a timestamp"
+    path = _write_to_real_submissions(bad)
+    cleanup_real_submissions.append(path)
+    rc, out = _run_validate(path)
+    assert rc == 1
+
+
 def test_validate_rejects_summary_mismatch_with_rounds(
     cleanup_real_submissions,
 ) -> None:
@@ -831,13 +995,34 @@ def test_aggregate_groups_by_chip_and_alias(tmp_path: Path) -> None:
     finally:
         sys.path.pop(0)
 
-    def mk_payload(decode_tps: float) -> dict:
+    def mk_payload(decode_tps: float, sid: str) -> dict:
+        # Distinct submission_ids — the aggregator de-dupes on this
+        # field, so re-using one would collapse the two payloads to
+        # a single sample (codex round-3 BLOCKING) and break this
+        # test's intent (which is "two independent submissions").
         p = _good_payload()
-        p["buckets"]["short"]["decode_tps"]["median"] = decode_tps
-        p["buckets"]["long"]["decode_tps"]["median"] = decode_tps
+        p["submission_id"] = sid
+        for r in p["buckets"]["short"]["rounds_raw"]:
+            r["decode_tps"] = decode_tps
+        for r in p["buckets"]["long"]["rounds_raw"]:
+            r["decode_tps"] = decode_tps
+        p["buckets"]["short"]["decode_tps"] = {
+            "median": decode_tps,
+            "min": decode_tps,
+            "max": decode_tps,
+            "stddev": 0.0,
+        }
+        p["buckets"]["long"]["decode_tps"] = {
+            "median": decode_tps,
+            "min": decode_tps,
+            "max": decode_tps,
+            "stddev": 0.0,
+        }
         return p
 
-    rows = agg._aggregate([mk_payload(40.0), mk_payload(50.0)])
+    rows = agg._aggregate(
+        [mk_payload(40.0, "aaaaaaaa0001"), mk_payload(50.0, "aaaaaaaa0002")]
+    )
     assert len(rows) == 1
     row = rows[0]
     assert row["sample_count"] == 2
@@ -862,6 +1047,52 @@ def test_aggregate_skips_unsupported_schema_version(tmp_path: Path) -> None:
     loaded = agg._load_all(submissions_dir.glob("*.json"))
     assert len(loaded) == 1
     assert loaded[0]["schema_version"] == 1
+
+
+def test_aggregate_distinguishes_cpu_gpu_core_variants() -> None:
+    """Regression: same chip + RAM but different core counts must NOT
+    collapse into one row (e.g. 16-core vs 20-core M4 Pro GPU SKUs).
+    (Codex PR #582 round-3 BLOCKING.)
+    """
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    try:
+        import aggregate as agg
+    finally:
+        sys.path.pop(0)
+
+    a = _good_payload()
+    a["submission_id"] = "111111111111"
+    a["hardware"]["gpu_cores"] = 16
+    b = _good_payload()
+    b["submission_id"] = "222222222222"
+    b["hardware"]["gpu_cores"] = 20
+    rows = agg._aggregate([a, b])
+    # Two distinct GPU-core counts ⇒ two rows.
+    assert len(rows) == 2
+    gpu_cores_seen = {r["gpu_cores"] for r in rows}
+    assert gpu_cores_seen == {16, 20}
+
+
+def test_aggregate_dedupes_by_submission_id() -> None:
+    """Regression: two files with the same ``submission_id`` count as
+    one sample, not two. (Codex PR #582 round-3 BLOCKING.)
+    """
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    try:
+        import aggregate as agg
+    finally:
+        sys.path.pop(0)
+
+    same_id = "deadbeef0000"
+    a = _good_payload()
+    a["submission_id"] = same_id
+    b = _good_payload()
+    b["submission_id"] = same_id  # duplicate
+    rows = agg._aggregate([a, b])
+    assert len(rows) == 1
+    assert rows[0]["sample_count"] == 1, (
+        "duplicate submission_id should be counted once, not twice"
+    )
 
 
 def test_aggregate_survives_malformed_submission() -> None:
