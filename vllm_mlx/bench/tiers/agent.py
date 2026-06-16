@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import time
 
-from ..runner import CheckResult, Status
+from ...doctor.runner import CheckResult, Status
 
 
 def check_agent_profile(
@@ -22,7 +22,7 @@ def check_agent_profile(
     """
     t0 = time.perf_counter()
     try:
-        # Three dots: vllm_mlx/doctor/checks/ → vllm_mlx/agents/
+        # Three dots: vllm_mlx/bench/tiers/ → vllm_mlx/agents/
         from ...agents import get_profile
         from ...agents.testing import AgentTestRunner, TestStatus
     except ImportError as e:

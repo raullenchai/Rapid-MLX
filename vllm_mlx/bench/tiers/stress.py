@@ -6,7 +6,13 @@ from __future__ import annotations
 import re
 import time
 
-from ..runner import REPO_ROOT, CheckResult, Status, python_executable, run_subprocess
+from ...doctor.runner import (
+    REPO_ROOT,
+    CheckResult,
+    Status,
+    python_executable,
+    run_subprocess,
+)
 
 
 def check_stress(port: int) -> CheckResult:

@@ -6,7 +6,13 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from ..runner import REPO_ROOT, CheckResult, Status, python_executable, run_subprocess
+from ...doctor.runner import (
+    REPO_ROOT,
+    CheckResult,
+    Status,
+    python_executable,
+    run_subprocess,
+)
 
 
 def check_pytest_unit() -> CheckResult:

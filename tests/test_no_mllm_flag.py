@@ -1551,9 +1551,9 @@ LOAD_MODEL_ENTRYPOINT_EXEMPTIONS: frozenset[str] = frozenset(
         # Doctor harness — runs internal probes, not user-facing
         # request serving. The doctor checks own routing via the
         # serve command they spawn.
-        "doctor/checks/perf.py",
-        "doctor/checks/api.py",
-        "doctor/checks/benchmark.py",
+        "bench/tiers/perf.py",
+        "bench/tiers/api.py",
+        "bench/tiers/benchmark.py",
         "doctor/checks/load.py",
         "doctor/server.py",
         # Eval harness — bench / scoring tool, not a serving entrypoint.

@@ -130,7 +130,7 @@ def run_smoke_tier():
 
 def run_check_tier(model: str, update_baselines: bool = False):
     """Boot a server with ``model`` and run API + perf + agent checks."""
-    from .checks import smoke
+    from ..bench.tiers import smoke
 
     print(f"Rapid-MLX Doctor — check tier (model={model})")
     print("=" * 60)
@@ -158,7 +158,7 @@ def run_check_tier(model: str, update_baselines: bool = False):
 
 def run_full_tier(models: list[str], update_baselines: bool = False):
     """Loop check-tier work across multiple models + run all agent profiles."""
-    from .checks import smoke
+    from ..bench.tiers import smoke
 
     print(f"Rapid-MLX Doctor — full tier (models={', '.join(models)})")
     print("=" * 60)
@@ -249,7 +249,7 @@ def _run_per_model_block(
     See the constant's docstring for why a single generous value beats
     every per-model / per-tier heuristic we tried.
     """
-    from .checks import agent, api, perf, stress
+    from ..bench.tiers import agent, api, perf, stress
     from .server import ServerStartFailed, serve
 
     if boot_timeout_s is None:
@@ -330,7 +330,7 @@ def run_benchmark_tier(models: list[str] | None = None):
     'latest.md' alias.  Designed to be runnable overnight — no agent
     profile sweep, no baseline diff, just numbers for the table.
     """
-    from .checks import benchmark, smoke
+    from ..bench.tiers import benchmark, smoke
     from .discovery import discover_local_models, load_aliases
     from .scorecard import render_scorecard, write_scorecard
     from .server import ServerStartFailed, serve

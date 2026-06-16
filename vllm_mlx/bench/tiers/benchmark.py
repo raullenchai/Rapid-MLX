@@ -7,7 +7,13 @@ import json
 import os
 import time
 
-from ..runner import REPO_ROOT, CheckResult, Status, python_executable, run_subprocess
+from ...doctor.runner import (
+    REPO_ROOT,
+    CheckResult,
+    Status,
+    python_executable,
+    run_subprocess,
+)
 
 
 def benchmark_one_cell(
