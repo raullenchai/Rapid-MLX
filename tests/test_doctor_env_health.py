@@ -188,6 +188,7 @@ def test_missing_optional_package_marks_warning():
 
 def test_hf_cache_writable_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A writable cache dir produces OK; a missing one produces WARN."""
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
     monkeypatch.setenv("HF_HOME", str(tmp_path))
     (tmp_path / "hub").mkdir()
     section = eh.section_hf_cache()
@@ -205,6 +206,7 @@ def test_hf_cache_writable_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 def test_hf_cache_readonly_marks_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A readonly cache dir is a hard FAIL — downloads can't proceed."""
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
     cache_root = tmp_path / "ro"
     cache_root.mkdir()
     (cache_root / "hub").mkdir()
@@ -215,6 +217,56 @@ def test_hf_cache_readonly_marks_fail(tmp_path: Path, monkeypatch: pytest.Monkey
     first = section.checks[0]
     assert first.status is eh.CheckStatus.FAIL
     assert "NOT writable" in first.label
+
+
+def test_hf_cache_resolves_hf_hub_cache_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``$HF_HUB_CACHE`` wins over ``$HF_HOME`` over the default — matches
+    huggingface_hub itself. Codex review round 1 caught the previous
+    revision returning ``~/.cache/huggingface`` instead of the actual
+    ``~/.cache/huggingface/hub`` subdir where downloads land."""
+    hub = tmp_path / "external_ssd_hub"
+    hub.mkdir()
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    # HF_HOME is *also* set, to a different (writable) path — HF_HUB_CACHE
+    # must take precedence.
+    other_home = tmp_path / "wrong_home"
+    other_home.mkdir()
+    (other_home / "hub").mkdir()
+    monkeypatch.setenv("HF_HOME", str(other_home))
+
+    resolved = eh._hf_cache_dir()
+    assert resolved == hub, (
+        f"HF_HUB_CACHE should win over HF_HOME; resolved {resolved} != {hub}"
+    )
+
+
+def test_hf_cache_default_includes_hub_subdir(monkeypatch: pytest.MonkeyPatch):
+    """Default (no env vars) resolution must include the trailing ``hub``
+    segment — that's where huggingface_hub actually writes downloads."""
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    resolved = eh._hf_cache_dir()
+    assert resolved.name == "hub", (
+        f"default cache dir should end in .../huggingface/hub; got {resolved}"
+    )
+
+
+def test_dir_size_walk_aborts_on_budget(tmp_path: Path):
+    """A walk that exceeds ``budget_s`` returns None rather than running
+    indefinitely — keeps doctor under its 5 s wall-clock contract on
+    network-mounted caches. Codex review round 1 flagged the unbounded
+    walk as a contract violation."""
+    # Populate a tiny tree so there's something to walk.
+    for i in range(3):
+        (tmp_path / f"f{i}.bin").write_bytes(b"\0" * 1024)
+    # budget_s=0 forces an immediate abort on the first deadline check.
+    result = eh._dir_size_gb(tmp_path, budget_s=0.0)
+    assert result is None, (
+        f"zero-budget walk should return None, got {result!r} — "
+        "the deadline guard isn't firing"
+    )
 
 
 # ---------------------------------------------------------------------------

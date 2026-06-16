@@ -34,28 +34,38 @@ def test_doctor_module_does_not_import_engine_or_server():
     """Importing the doctor module must not drag in BatchedEngine,
     mlx.core, vllm_mlx.engine, or the FastAPI server. The old doctor
     smoke tier did pull these in for the model_load check; the new
-    env-health doctor must not."""
-    # Snapshot modules; only check that doctor's own import isn't a
-    # transitive heavy-pull.
-    blocked = {
-        "vllm_mlx.engine",
-        "vllm_mlx.server",
-        "vllm_mlx.api.server",
-    }
-    # Pre-clear so the assertion isn't masked by some other test having
-    # imported them earlier in the session.
-    for mod in list(sys.modules):
-        if mod in blocked:
-            del sys.modules[mod]
+    env-health doctor must not.
 
-    import vllm_mlx.doctor  # noqa: F401
-    import vllm_mlx.doctor.cli  # noqa: F401
-    import vllm_mlx.doctor.env_health  # noqa: F401
+    Runs in a fresh subprocess because (a) sibling tests in
+    ``test_doctor_env_health.py`` already imported the doctor modules
+    in this process, and (b) clearing only the blocked modules would
+    leave the doctor's cached imports in place — so a future regression
+    that adds ``from vllm_mlx import engine`` at the top of
+    ``doctor/env_health.py`` would be invisible to an in-process check
+    (the cached import never re-runs). Codex review round 1 caught
+    this; the subprocess form gives a clean module table.
+    """
+    import subprocess
 
-    still_blocked = blocked & set(sys.modules)
-    assert not still_blocked, (
-        f"doctor module imports must not pull in {still_blocked}; "
-        "those belong to the bench tier."
+    probe = (
+        "import importlib, sys; "
+        "blocked = {'vllm_mlx.engine', 'vllm_mlx.server', 'vllm_mlx.api.server'}; "
+        "importlib.import_module('vllm_mlx.doctor'); "
+        "importlib.import_module('vllm_mlx.doctor.cli'); "
+        "importlib.import_module('vllm_mlx.doctor.env_health'); "
+        "leaked = blocked & set(sys.modules); "
+        "sys.exit('LEAKED:' + ','.join(sorted(leaked))) if leaked else None"
+    )
+    result = subprocess.run(  # noqa: S603 — args constructed by us
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"doctor module imports leaked heavy machinery: "
+        f"{result.stderr.strip() or result.stdout.strip()}"
     )
 
 

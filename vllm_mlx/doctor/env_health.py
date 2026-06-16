@@ -166,22 +166,58 @@ def _disk_free_gb(path: Path) -> float | None:
 
 
 def _hf_cache_dir() -> Path:
-    """Return the HuggingFace cache dir, honouring HF_HOME."""
+    """Return the HuggingFace **hub** cache dir.
+
+    Resolution order matches huggingface_hub itself:
+
+      1. ``$HF_HUB_CACHE`` (the most specific override; some users point this
+         at an external SSD while leaving ``HF_HOME`` alone).
+      2. ``$HF_HOME/hub`` (the canonical sub-path under a custom HF_HOME).
+      3. ``~/.cache/huggingface/hub`` (the default the hub library writes to).
+
+    Earlier revisions returned ``~/.cache/huggingface`` (no ``hub`` suffix).
+    That was wrong: real downloads land in the ``hub`` subdir, so a missing
+    or unwritable hub would have been masked by a probe that checked the
+    parent. Codex-review round 1 caught this; the env-var fall-through plus
+    the trailing ``hub`` segment fix both problems at once.
+    """
+    env_hub_cache = os.environ.get("HF_HUB_CACHE")
+    if env_hub_cache:
+        return Path(env_hub_cache).expanduser()
     env_home = os.environ.get("HF_HOME")
     if env_home:
         return Path(env_home).expanduser() / "hub"
-    return Path.home() / ".cache" / "huggingface"
+    return Path.home() / ".cache" / "huggingface" / "hub"
 
 
-def _dir_size_gb(path: Path) -> float | None:
-    """Sum file sizes under ``path``. Returns None if the dir doesn't exist.
+# Wall-clock budget for the recursive HF-cache size walk. The whole doctor
+# run is contracted at ≤ 5 s and the network probe alone can spend 2 s, so
+# the cache walk must finish in ~1 s on a hot FS / abort cleanly on a cold
+# or network-mounted cache. Codex-review round 1 flagged the previous
+# unbounded walk as a contract violation on TB-scale caches.
+_CACHE_WALK_BUDGET_S = 1.5
 
-    Walks the tree with ``os.walk`` so symlinks aren't followed (we only
-    care about bytes on this filesystem; double-counting linked weights in
-    LM Studio layouts would be misleading).
+
+def _dir_size_gb(path: Path, *, budget_s: float = _CACHE_WALK_BUDGET_S) -> float | None:
+    """Sum file sizes under ``path``.
+
+    Returns:
+        ``None`` if the directory doesn't exist OR the walk hit the wall-clock
+        budget (which is itself useful signal — "cache is too large/slow to
+        size", which the caller renders as "unknown").
+
+        Otherwise the total in GB.
+
+    Walks with ``os.walk(..., followlinks=False)`` so LM-Studio-style symlinks
+    don't double-count. Aborts as soon as ``budget_s`` elapses — the next
+    file's ``getsize`` is still allowed, but no new directory is descended
+    into. That keeps the abort path O(1) instead of O(open-files-in-current-dir).
     """
+    import time as _time
+
     if not path.exists():
         return None
+    deadline = _time.monotonic() + budget_s
     total = 0
     try:
         for root, _dirs, files in os.walk(path, followlinks=False):
@@ -193,6 +229,11 @@ def _dir_size_gb(path: Path) -> float | None:
                     # this probe is "is the cache enormous?", not "audit
                     # every file".
                     continue
+            if _time.monotonic() >= deadline:
+                # Budget exhausted; the partial total isn't useful as a
+                # size (lower bound only), so return None and let the
+                # caller render "unknown / too large to size".
+                return None
     except OSError:
         return None
     return total / (1024**3)
@@ -274,26 +315,36 @@ def section_system() -> Section:
         )
 
     cache = _hf_cache_dir()
-    cache_size_gb = _dir_size_gb(cache)
-    if cache_size_gb is None:
+    if not cache.exists():
         s.add(
             f"HF cache: not present ({cache})",
             CheckStatus.OK,
             detail=f"path={cache}",
         )
-    elif cache_size_gb > 100:
-        s.add(
-            f"HF cache size: {cache_size_gb:.0f} GB "
-            "(consider `rapid-mlx rm` for unused models)",
-            CheckStatus.WARN,
-            detail=f"cache_gb={cache_size_gb:.1f} path={cache}",
-        )
     else:
-        s.add(
-            f"HF cache size: {cache_size_gb:.1f} GB",
-            CheckStatus.OK,
-            detail=f"cache_gb={cache_size_gb:.1f} path={cache}",
-        )
+        cache_size_gb = _dir_size_gb(cache)
+        if cache_size_gb is None:
+            # Walk hit the time budget — likely a very large or network-
+            # mounted cache. Don't penalise the user; just say so.
+            s.add(
+                f"HF cache size: too large to size in {_CACHE_WALK_BUDGET_S:.1f}s "
+                "(consider `rapid-mlx rm` if unused models accumulated)",
+                CheckStatus.WARN,
+                detail=f"path={cache} budget_s={_CACHE_WALK_BUDGET_S}",
+            )
+        elif cache_size_gb > 100:
+            s.add(
+                f"HF cache size: {cache_size_gb:.0f} GB "
+                "(consider `rapid-mlx rm` for unused models)",
+                CheckStatus.WARN,
+                detail=f"cache_gb={cache_size_gb:.1f} path={cache}",
+            )
+        else:
+            s.add(
+                f"HF cache size: {cache_size_gb:.1f} GB",
+                CheckStatus.OK,
+                detail=f"cache_gb={cache_size_gb:.1f} path={cache}",
+            )
 
     return s
 

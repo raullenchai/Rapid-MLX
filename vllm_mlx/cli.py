@@ -4615,12 +4615,16 @@ Examples:
 
     # Doctor command — pure env-health probe (≤5 s, no model load, no server).
     # Model-validation tiers (smoke/check/full/benchmark) moved to
-    # ``rapid-mlx bench --tier ...`` as of v0.7.22. The positional ``tier``
-    # argument is intentionally retained (with the same choices, but
-    # SUPPRESSed from --help) so users hitting the legacy invocation get an
-    # actionable redirect from ``doctor_command`` instead of an argparse
-    # ``unrecognized arguments`` wall. Remove the positional once telemetry
-    # confirms no one's still calling the old form.
+    # ``rapid-mlx bench --tier ...`` as of v0.7.22.
+    #
+    # The legacy positional ``tier`` plus ``--model``, ``--models``, and
+    # ``--update-baselines`` are intentionally retained (SUPPRESSed from
+    # --help) for one release so users hitting the old form
+    # ``rapid-mlx doctor check --model qwen3.5-9b-4bit`` get the actionable
+    # bench redirect from ``doctor_command`` instead of an argparse
+    # ``unrecognized arguments`` wall. Codex review round 1 flagged this:
+    # rejecting at argparse-time defeated the redirect. Drop these in a
+    # future release once telemetry confirms no one's still calling them.
     doctor_parser = subparsers.add_parser(
         "doctor",
         help="Check environment health (Python, packages, HF cache, network, ...)",
@@ -4637,6 +4641,23 @@ Examples:
         "-v",
         action="store_true",
         help="Print the underlying probe detail for each check",
+    )
+    # Legacy compatibility shims — accepted-but-ignored so the redirect
+    # message in ``doctor_command`` can fire (see comment above).
+    doctor_parser.add_argument(
+        "--model",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    doctor_parser.add_argument(
+        "--models",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    doctor_parser.add_argument(
+        "--update-baselines",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
 
     # Telemetry subcommand — opt-in anonymous usage data (Issue #236).
