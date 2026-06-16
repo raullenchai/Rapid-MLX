@@ -18,8 +18,8 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "const": 1,
-      "description": "Bump when the schema changes incompatibly. Aggregator skips rows it doesn't understand."
+      "enum": [1, 2],
+      "description": "Bump when the schema changes incompatibly. Aggregator skips rows it doesn't understand. v1 = speed buckets only. v2 = optional tier-tagged smoke + harness results alongside speed (when ``tier == 'smoke'|'harness'|'all'``); a v2 submission with no new fields is the SAME wire shape as v1 minus the version integer."
     },
     "submission_id": {
       "type": "string",
@@ -185,8 +185,92 @@
       "type": ["integer", "null"],
       "minimum": 0,
       "description": "Max of `mx.metal.get_active_memory()` observed across all measured rounds, in MiB. null if unavailable."
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["speed", "smoke", "harness", "all"],
+      "description": "v2 only. Which bench tier produced this submission. ``speed`` (default if absent) = the historical short+long buckets — wire-shape identical to v1. ``smoke`` = single-prompt boot probe; populates ``smoke_result``. ``harness`` = adversarial CLI-harness gauntlet; populates ``harness_result``. ``all`` = all three. The aggregator decides which views to render off the tier tag; missing tier on a v2 payload is treated as ``speed`` for backwards compatibility with v1 submitters who just bumped the version integer."
+    },
+    "smoke_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["boot_time_ms", "first_prompt_ok", "first_token_latency_ms", "response_excerpt"],
+      "properties": {
+        "boot_time_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Wall-clock from `rapid-mlx serve` start to the moment the model accepts requests."
+        },
+        "first_prompt_ok": {
+          "type": "boolean",
+          "description": "True iff the first single-prompt smoke probe returned a non-empty response without error."
+        },
+        "first_token_latency_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "TTFT for the smoke probe in milliseconds. Distinct from the speed-bucket TTFT (which is a per-round median over 5 measured rounds against a synthetic 512/2048-token prompt)."
+        },
+        "response_excerpt": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "First ≤200 chars of the smoke response. Truncated for privacy/size; the aggregator displays it verbatim for sanity review."
+        }
+      },
+      "description": "v2 only. Boot + first-prompt smoke probe result. Required iff ``tier`` is ``smoke`` or ``all``; absent for tier=speed and tier=harness."
+    },
+    "harness_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codex", "opencode", "hermes", "aider", "langchain"],
+      "properties": {
+        "codex":     {"$ref": "#/$defs/harnessAdapterResult"},
+        "opencode":  {"$ref": "#/$defs/harnessAdapterResult"},
+        "hermes":    {"$ref": "#/$defs/harnessAdapterResult"},
+        "aider":     {"$ref": "#/$defs/harnessAdapterResult"},
+        "langchain": {"$ref": "#/$defs/harnessAdapterResult"}
+      },
+      "description": "v2 only. Per-adapter results from the agent-harness gauntlet. Required iff ``tier`` is ``harness`` or ``all``; absent for tier=speed and tier=smoke. Each entry carries a pass/fail flag, the round-trip duration, and a short error excerpt on failure (null on pass)."
     }
   },
+  "allOf": [
+    {
+      "comment": "v2 conditional: when tier requires smoke_result/harness_result, enforce presence. v1 submissions skip these branches entirely (the if-clause requires schema_version==2 AND the relevant tier value).",
+      "if": {
+        "properties": {
+          "schema_version": {"const": 2},
+          "tier": {"enum": ["smoke", "all"]}
+        },
+        "required": ["schema_version", "tier"]
+      },
+      "then": {"required": ["smoke_result"]}
+    },
+    {
+      "if": {
+        "properties": {
+          "schema_version": {"const": 2},
+          "tier": {"enum": ["harness", "all"]}
+        },
+        "required": ["schema_version", "tier"]
+      },
+      "then": {"required": ["harness_result"]}
+    },
+    {
+      "comment": "v1 has none of the v2 fields. Reject v1 payloads that try to smuggle in tier/smoke_result/harness_result so the wire shape stays unambiguous.",
+      "if": {
+        "properties": {"schema_version": {"const": 1}},
+        "required": ["schema_version"]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {"required": ["tier"]},
+            {"required": ["smoke_result"]},
+            {"required": ["harness_result"]}
+          ]
+        }
+      }
+    }
+  ],
   "$defs": {
     "bucketResult": {
       "type": "object",
@@ -228,6 +312,27 @@
         "min": {"type": "number", "minimum": 0},
         "max": {"type": "number", "minimum": 0},
         "stddev": {"type": "number", "minimum": 0}
+      }
+    },
+    "harnessAdapterResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "duration_s", "error_excerpt"],
+      "properties": {
+        "passed": {
+          "type": "boolean",
+          "description": "True iff the adapter completed the harness scenario end-to-end without raising."
+        },
+        "duration_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Wall-clock duration of the adapter run in seconds. Recorded even on failure so reviewers can spot adapters that hang vs adapters that fail fast."
+        },
+        "error_excerpt": {
+          "type": ["string", "null"],
+          "maxLength": 200,
+          "description": "First ≤200 chars of the adapter's error output. ``null`` on success; non-null short string on failure. Kept tight so a stack-trace-spammy adapter doesn't bloat the submission file."
+        }
       }
     }
   }

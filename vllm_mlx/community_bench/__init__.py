@@ -17,10 +17,20 @@ Each layer can be unit-tested independently; nothing imports model
 weights or MLX state until ``runner`` runs.
 """
 
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 """Bump in lockstep with ``community-benchmarks/schema.json``'s
-``schema_version`` const. Submissions carry this so the aggregator can
-ignore rows from a schema it doesn't understand instead of failing."""
+``schema_version`` enum. Submissions carry this so the aggregator can
+ignore rows from a schema it doesn't understand instead of failing.
+
+v1 → v2 (additive only): three optional top-level fields — ``tier``,
+``smoke_result``, ``harness_result``. A v2 submission with only
+``schema_version`` bumped and none of the new fields populated is the
+SAME wire shape as v1 minus the version integer, so the aggregator can
+treat it interchangeably. The new fields kick in when the CLI is run
+with ``bench --tier {smoke,harness,all} --submit`` — the dispatch for
+``--tier all --submit`` itself is wired in a follow-up PR; this module
+just exposes the kwargs so the payload builder can carry the data when
+the CLI calls it."""
 
 # Synthetic prompt seed. Locked per schema_version so the prompt_hash
 # field in submissions stays bit-stable across all submitters — that's
