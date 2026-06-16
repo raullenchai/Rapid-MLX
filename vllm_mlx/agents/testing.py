@@ -1018,11 +1018,25 @@ class AgentTestRunner:
                     )
                 )
         elif testing.binary:
+            # Two distinct skip reasons land here:
+            #   (a) binary on PATH but profile has `query_cmd: null`
+            #       — interactive-only agent (opencode, openhands,
+            #       openclaude). The runner has no way to drive it
+            #       headlessly, but the binary is installed; saying
+            #       "Binary not found" is actively misleading.
+            #   (b) binary is genuinely missing from PATH / disk.
+            if self._agent_binary_available() and not testing.query_cmd:
+                msg = (
+                    f"Interactive-only profile ({testing.binary} installed "
+                    "but query_cmd=null — no headless driver)"
+                )
+            else:
+                msg = f"Binary not found: {testing.binary}"
             report.results.append(
                 TestResult(
                     "e2e_tests",
                     TestStatus.SKIP,
-                    message=f"Binary not found: {testing.binary}",
+                    message=msg,
                     category="e2e",
                 )
             )
@@ -1162,15 +1176,29 @@ class AgentTestRunner:
                 ]
 
             test_results = []
+            per_test_ms = (time.time() - t0) * 1000 / max(len(results_dict), 1)
             for name, status in results_dict.items():
+                # Test modules report PASS / "FAIL: <reason>" / "SKIP: <reason>".
+                # SKIP exists so deep agentic tests can signal "the environment
+                # can't honestly run this" (e.g. Hermes's 32K-context refusal
+                # on small models) without dirtying the gauntlet with a FAIL
+                # that isn't actionable.
                 if status == "PASS":
                     test_results.append(
                         TestResult(
                             name,
                             TestStatus.PASS,
-                            duration_ms=(time.time() - t0)
-                            * 1000
-                            / max(len(results_dict), 1),
+                            duration_ms=per_test_ms,
+                            category="specific",
+                        )
+                    )
+                elif isinstance(status, str) and status.startswith("SKIP:"):
+                    test_results.append(
+                        TestResult(
+                            name,
+                            TestStatus.SKIP,
+                            duration_ms=per_test_ms,
+                            message=status[len("SKIP:") :].strip()[:120],
                             category="specific",
                         )
                     )
@@ -1184,9 +1212,7 @@ class AgentTestRunner:
                         TestResult(
                             name,
                             TestStatus.FAIL,
-                            duration_ms=(time.time() - t0)
-                            * 1000
-                            / max(len(results_dict), 1),
+                            duration_ms=per_test_ms,
                             message=msg[:120],
                             category="specific",
                         )
