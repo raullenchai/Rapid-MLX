@@ -163,6 +163,8 @@ print(response.choices[0].message.content)
 | [Aider](https://aider.chat) | Agent | CLI edit-and-commit, architect mode ([test](tests/integrations/test_aider.sh)) |
 | [Goose](https://github.com/block/goose) | Agent | Ollama provider via `OLLAMA_HOST` |
 | [OpenCode](https://github.com/sst/opencode) | TUI Agent | Claude Code-like terminal UX, OpenAI-compat provider |
+| [Codex CLI](https://github.com/openai/codex) | Agent | OpenAI's official Rust agent — `/v1/responses` shim ([guide](docs/guides/codex-cli.md)) |
+| [Claude Code](https://www.anthropic.com/claude-code) | Agent | Anthropic SDK via `/v1/messages` — `ANTHROPIC_BASE_URL=http://localhost:8000` |
 | [Claw Code](https://github.com/ultraworkers/claw-code) | Agent | OpenAI & Anthropic endpoints |
 
 ### UI / IDE Clients
@@ -317,6 +319,19 @@ docker run -d -p 3000:8080 \
   }
 }
 ```
+
+**Codex CLI** (`~/.codex/config.toml` — or run `rapid-mlx agents codex --setup` to write this for you):
+```toml
+model = "default"
+model_provider = "rapid-mlx"
+
+[model_providers.rapid-mlx]
+name = "Rapid-MLX (local)"
+base_url = "http://localhost:8000/v1"
+api_key = "not-needed"
+```
+
+Then `codex` (or `codex exec '<query>'`) talks to the local model via `/v1/responses`. See the [Codex CLI guide](docs/guides/codex-cli.md) for the full setup.
 
 **PydanticAI** (`pip install pydantic-ai`):
 ```python
