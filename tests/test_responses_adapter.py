@@ -13,6 +13,7 @@ from vllm_mlx.api.models import (
     ChatCompletionChoice,
     ChatCompletionResponse,
     FunctionCall,
+    Message,
     PromptTokensDetails,
     ToolCall,
     Usage,
@@ -22,6 +23,7 @@ from vllm_mlx.api.responses_adapter import (
     _convert_text_format,
     _convert_tool_choice,
     _convert_tools,
+    _merge_system_messages,
     openai_to_responses,
     responses_to_openai,
 )
@@ -250,6 +252,47 @@ class TestResponsesToOpenai:
         assert chat.messages[0].role == "system"
         assert "part one" in chat.messages[0].content
         assert "part two" in chat.messages[0].content
+
+    def test_merge_system_messages_defends_list_content(self):
+        # Directly exercise the defensive `_to_text(list)` path that the
+        # public `responses_to_openai` flow cannot reach today (because
+        # `_message_item_to_chat` joins parts to a string before merge).
+        # Use `model_construct` to bypass pydantic validation and pass a
+        # raw list / dict through — without `_to_text` this would crash
+        # with `TypeError: sequence item 0: expected str instance, list
+        # found` once a future code path leaves `Message.content` un-
+        # coerced. codex_review NIT: cover the path directly.
+        msgs = [
+            Message.model_construct(
+                role="system",
+                content=[{"text": "alpha"}, {"text": "beta"}],
+            ),
+            Message.model_construct(
+                role="system",
+                content={"text": "gamma"},
+            ),
+            Message(role="user", content="hi"),
+        ]
+        merged = _merge_system_messages(msgs)
+        assert sum(1 for m in merged if m.role == "system") == 1
+        assert merged[0].role == "system"
+        assert merged[0].content == "alpha\nbeta\n\ngamma"
+        assert merged[1].role == "user"
+
+    def test_merge_system_messages_unknown_shape_does_not_raise(self):
+        # `_to_text` returns "" for anything that isn't str / dict / list,
+        # so a lone unknown-shape system message yields empty
+        # `system_texts` and the merge is a no-op (original messages
+        # returned unchanged). Defends against future content shapes
+        # (e.g. int, custom object) — better silent passthrough than
+        # crash mid-conversion.
+        msgs = [
+            Message.model_construct(role="system", content=12345),
+            Message(role="user", content="hi"),
+        ]
+        # Must not raise.
+        merged = _merge_system_messages(msgs)
+        assert merged == msgs
 
     def test_multiple_systems_merge_to_single_at_index_0(self):
         # Codex sends BOTH `instructions` (which becomes system) AND a

@@ -237,8 +237,35 @@ for evt in "response.created" "response.output_item.added" "response.completed";
 done
 # Function-call item is the strongest signal — without it Codex sees a
 # turn.completed with zero items and the agent loop ends with no output.
-if ! grep -q '"type":"function_call"' "$sse2" && ! grep -q '"type": "function_call"' "$sse2"; then
-  echo "G7b codex-shape SSE FAIL: no function_call item emitted despite tool-forcing prompt" >&2
+# Parse SSE properly: pair each `event:` line with its `data:` payload
+# and assert at least one `response.output_item.added` carries an item
+# with `type == "function_call"`. Whole-file grep is unsafe — a text
+# delta containing the literal string `"type":"function_call"` would
+# spuriously pass without any function-call item ever being emitted.
+if ! python3 - "$sse2" <<'PY'
+import json, sys
+path = sys.argv[1]
+event = None
+ok = False
+for raw in open(path, encoding="utf-8", errors="replace"):
+    line = raw.rstrip("\n")
+    if line.startswith("event:"):
+        event = line[6:].strip()
+    elif line.startswith("data:") and event == "response.output_item.added":
+        try:
+            payload = json.loads(line[5:].strip())
+        except ValueError:
+            continue
+        item = payload.get("item") or {}
+        if item.get("type") == "function_call":
+            ok = True
+            break
+    elif line == "":
+        event = None
+sys.exit(0 if ok else 1)
+PY
+then
+  echo "G7b codex-shape SSE FAIL: no response.output_item.added with item.type=function_call — codex agent loop would terminate with zero items" >&2
   head -30 "$sse2" >&2
   rm -f "$sse2"
   exit 1

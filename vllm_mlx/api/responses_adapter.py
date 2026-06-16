@@ -79,33 +79,7 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
     # instructions sit *after* `instructions` (where Codex puts them
     # semantically — the per-turn directive refines the base system
     # prompt).
-    # Coerce content to string before merging. Today every system message
-    # reaches this point with a string content (`request.instructions` is
-    # a string per Responses-API spec; `_message_item_to_chat` joins
-    # structured content parts), so the join is safe for current callers.
-    # The explicit `_to_text` guard defends against future paths or hand-
-    # crafted ChatCompletionRequest mutations that could leave a list /
-    # dict in `content` — without this, `"\n\n".join([list, list])` would
-    # raise `TypeError: sequence item 0: expected str instance, list
-    # found` mid-conversion (codex_review BLOCKING).
-    def _to_text(value):
-        if isinstance(value, str):
-            return value
-        if isinstance(value, list):
-            return "\n".join(
-                _to_text(v) if not isinstance(v, dict) else (v.get("text") or "")
-                for v in value
-            )
-        return ""
-
-    system_texts = [
-        _to_text(m.content) for m in messages if m.role == "system" and m.content
-    ]
-    system_texts = [t for t in system_texts if t]
-    if system_texts:
-        non_system = [m for m in messages if m.role != "system"]
-        merged_system = Message(role="system", content="\n\n".join(system_texts))
-        messages = [merged_system] + non_system
+    messages = _merge_system_messages(messages)
 
     tools = _convert_tools(request.tools)
     tool_choice = _convert_tool_choice(request.tool_choice)
@@ -128,6 +102,46 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
         parallel_tool_calls=request.parallel_tool_calls,
         response_format=response_format,
     )
+
+
+def _merge_system_messages(messages: list[Message]) -> list[Message]:
+    """Collapse all system messages into one at index 0.
+
+    Codex 0.136.0 sends BOTH ``instructions`` (the big system prompt)
+    AND ``developer``-role items interleaved with user turns. After role
+    mapping both become ``system``. Qwen / Llama / Gemma chat templates
+    require at most ONE system message at position 0 — otherwise
+    ``raise_exception('System message must be at the beginning.')``
+    fires mid-stream and Codex sees "stream disconnected".
+
+    Defensive coercion: today every system message reaches this point
+    with a string content (``_message_item_to_chat`` joins structured
+    content parts), so the join would be safe for current callers. The
+    explicit ``_to_text`` guard defends against future paths or hand-
+    crafted ``ChatCompletionRequest`` mutations that leave a list / dict
+    in ``content`` — without it, ``"\\n\\n".join([list, list])`` would
+    raise ``TypeError: sequence item 0: expected str instance, list
+    found`` mid-conversion.
+    """
+
+    def _to_text(value):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            return value.get("text") or ""
+        if isinstance(value, list):
+            return "\n".join(_to_text(v) for v in value)
+        return ""
+
+    system_texts = [
+        _to_text(m.content) for m in messages if m.role == "system" and m.content
+    ]
+    system_texts = [t for t in system_texts if t]
+    if not system_texts:
+        return messages
+    non_system = [m for m in messages if m.role != "system"]
+    merged = Message(role="system", content="\n\n".join(system_texts))
+    return [merged] + non_system
 
 
 def openai_to_responses(
