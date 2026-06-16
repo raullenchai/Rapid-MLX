@@ -1238,6 +1238,43 @@ def _run_submit_flow(args) -> int:
             print(f"  Error loading model: {e}")
             model_load_executor.shutdown(wait=False)
             return 2
+        except (ValueError, ModuleNotFoundError) as e:
+            # mlx-lm raises ``ValueError: Model type X not supported`` plus an
+            # internal ``ModuleNotFoundError: No module named 'mlx_lm.models.X'``
+            # for any architecture it can't import. The Gemma 4 family lives
+            # in mlx-vlm (the model classes are vision-aware even for the
+            # text-only checkpoints), so a bare ``pip install rapid-mlx``
+            # without the ``[vision]`` extras hits this every time. The
+            # README still recommends ``gemma-4-*`` aliases so newcomers
+            # would otherwise see a raw traceback and conclude the model
+            # is broken — translate to an actionable hint.
+            msg = str(e)
+            needs_vision = (
+                "gemma4_unified" in msg
+                or "gemma4" in msg
+                or "mlx_vlm" in msg
+                or "mlx-vlm" in msg
+            )
+            if needs_vision:
+                print()
+                print(
+                    "  Error: this model needs the vision extras (Gemma 4 "
+                    "architecture classes live in mlx-vlm)."
+                )
+                print("  Install them and re-run:")
+                print()
+                print("    pip install 'rapid-mlx[vision]'")
+                print()
+                print(
+                    "  Or, if you only need text inference (smaller "
+                    "footprint, ~16 MB vs ~450 MB):"
+                )
+                print("    pip install --no-deps 'mlx-vlm>=0.6.1'")
+                print()
+            else:
+                print(f"  Error loading model: {e}")
+            model_load_executor.shutdown(wait=False)
+            return 2
 
         # Standardized config: B=1, no batching, prefix-cache off so the
         # numbers reflect cold prefill on each round (which is what the

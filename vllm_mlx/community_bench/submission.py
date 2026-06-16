@@ -539,17 +539,51 @@ def _print_manual_fallback(
         )
     if "push" not in done:
         print(f"    git push -u origin {branch}", file=stdout)
-    # If we already pushed but pr_create failed, just retry pr_create —
-    # the user shouldn't re-do the branch ops. ``--repo`` forces the
-    # PR target to upstream regardless of whether origin is a fork.
-    # The owner-prefixed ``--head`` is omitted from the manual line
-    # because the contributor running it locally already has gh's
-    # fork-aware default applied; the explicit prefix only matters
-    # when we shell out non-interactively.
-    print(
-        f"    gh pr create --repo {UPSTREAM_REPO_FOR_GH} --head {branch}",
-        file=stdout,
-    )
+    # The PR-create step has two paths depending on whether ``gh`` is on
+    # PATH. If we got here because gh is missing (the common newcomer
+    # case), recommending ``gh pr create`` is useless — point them at
+    # the GitHub web UI and at the "paste the file into a new issue"
+    # fallback instead. If gh is available (this branch only hits when
+    # git steps failed mid-sequence), surface gh as the resume command.
+    gh_available = shutil.which("gh") is not None
+    if gh_available:
+        # ``--repo`` forces the PR target to upstream regardless of
+        # whether origin is a fork. The owner-prefixed ``--head`` is
+        # omitted because the contributor running it locally already
+        # has gh's fork-aware default applied.
+        print(
+            f"    gh pr create --repo {UPSTREAM_REPO_FOR_GH} --head {branch}",
+            file=stdout,
+        )
+    else:
+        print("", file=stdout)
+        print(
+            "  Then open the PR via the GitHub web UI (no `gh` CLI needed):",
+            file=stdout,
+        )
+        # GitHub auto-detects the just-pushed branch and prefills the
+        # compare-and-PR page when you visit the compare URL with the
+        # branch ref. Works whether origin is the upstream or a fork.
+        print(
+            f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/compare/main...{branch}?expand=1",
+            file=stdout,
+        )
+        print("", file=stdout)
+        print(
+            "  If you'd rather skip git entirely, paste the submission JSON",
+            file=stdout,
+        )
+        print(
+            "  contents (above path) into a new issue and we'll convert it",
+            file=stdout,
+        )
+        print("  to a PR for you:", file=stdout)
+        print(
+            f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/issues/new"
+            f"?title=community-bench:%20{payload['model']['alias']}"
+            f"%20on%20{payload['hardware']['chip'].replace(' ', '%20')}",
+            file=stdout,
+        )
 
 
 def _print_thanks(payload: dict, *, stdout) -> None:
