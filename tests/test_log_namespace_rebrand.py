@@ -31,7 +31,7 @@ def isolated_logging_factory():
     leak state into the next test's caplog or into the rest of the suite.
     """
     saved_factory = logging.getLogRecordFactory()
-    saved_sentinel = getattr(logging, _log_namespace._INSTALLED_SENTINEL, False)
+    saved_sentinel = getattr(logging, _log_namespace._INSTALLED_SENTINEL, None)
     if hasattr(logging, _log_namespace._INSTALLED_SENTINEL):
         delattr(logging, _log_namespace._INSTALLED_SENTINEL)
     try:
@@ -40,8 +40,8 @@ def isolated_logging_factory():
         logging.setLogRecordFactory(saved_factory)
         if hasattr(logging, _log_namespace._INSTALLED_SENTINEL):
             delattr(logging, _log_namespace._INSTALLED_SENTINEL)
-        if saved_sentinel:
-            setattr(logging, _log_namespace._INSTALLED_SENTINEL, True)
+        if saved_sentinel is not None:
+            setattr(logging, _log_namespace._INSTALLED_SENTINEL, saved_sentinel)
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +175,80 @@ def test_install_preserves_existing_custom_factory(isolated_logging_factory):
     assert getattr(record, marker_attr, False) is True
     # ...AND our rebrand ran on top.
     assert record.name == "rapid_mlx.scheduler"
+
+
+def test_factory_survives_make_log_record_with_none_name(isolated_logging_factory):
+    """``logging.makeLogRecord(dict)`` (socket / queue handlers reconstructing
+    records from a wire-format dict) calls the active LogRecord factory with
+    ``name=None`` and then patches ``record.__dict__`` afterwards. A naive
+    ``record.name.startswith(...)`` in our wrapper would AttributeError. This
+    test pins the guard so any future refactor that drops the ``isinstance``
+    check fails fast.
+    """
+    install_log_namespace_rebrand()
+    # Equivalent of what SocketHandler / QueueHandler do.
+    record = logging.makeLogRecord(
+        {
+            "name": "vllm_mlx.routes.chat",
+            "levelno": logging.INFO,
+            "levelname": "INFO",
+            "msg": "x",
+        }
+    )
+    # makeLogRecord doesn't go through our factory's rename path (because
+    # name=None at factory time, and the wire dict patches it AFTER our
+    # wrapper has already returned). But the patched name is what handlers
+    # eventually see -- and we must not crash producing the record.
+    assert record.name == "vllm_mlx.routes.chat"
+
+
+def test_install_rewraps_when_external_factory_is_swapped_in(
+    isolated_logging_factory,
+):
+    """If another component (structlog, a test fixture) replaces the global
+    factory AFTER ``install_log_namespace_rebrand`` has run, calling install
+    again must re-wrap on top of the new factory -- not skip with "already
+    installed". A bare-boolean sentinel would have silently left the new
+    foreign factory un-rebranded, which is the bug codex round 1 caught.
+    """
+    install_log_namespace_rebrand()
+    our_wrapper = logging.getLogRecordFactory()
+
+    marker_attr = "_test_external_marker"
+
+    def external_factory(*args, **kwargs):
+        # Simulate structlog-style: ignore the wrapper above us, build a
+        # fresh record from scratch with a custom attribute.
+        record = logging.LogRecord(*args, **kwargs)
+        setattr(record, marker_attr, True)
+        return record
+
+    logging.setLogRecordFactory(external_factory)
+    # The active factory is no longer ours -- subsequent install must
+    # re-wrap, not bail out.
+    install_log_namespace_rebrand()
+    new_wrapper = logging.getLogRecordFactory()
+
+    assert new_wrapper is not our_wrapper, (
+        "install must produce a NEW wrapper when an external factory took over"
+    )
+    assert new_wrapper is not external_factory, (
+        "external factory must be wrapped, not active"
+    )
+
+    # Drive a record through the new chain: external_factory adds its
+    # marker, our wrapper rebrands the name.
+    record = new_wrapper(
+        "vllm_mlx.scheduler",
+        logging.INFO,
+        __file__,
+        0,
+        "x",
+        None,
+        None,
+    )
+    assert record.name == "rapid_mlx.scheduler"
+    assert getattr(record, marker_attr, False) is True
 
 
 def test_factory_does_not_swallow_extra_args(isolated_logging_factory):

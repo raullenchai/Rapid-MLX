@@ -36,11 +36,16 @@ import logging
 _OLD_PREFIX = "vllm_mlx"
 _NEW_PREFIX = "rapid_mlx"
 
-# Sentinel so install_log_namespace_rebrand() is idempotent. Repeated calls
-# (test fixtures, in-process restarts, CLI re-entry from a wrapper) MUST NOT
-# stack factories on top of each other -- that would still produce correct
-# output but waste a function call per record forever.
-_INSTALLED_SENTINEL = "_rapid_mlx_log_namespace_rebrand_installed"
+# Sentinel so install_log_namespace_rebrand() can detect "I already wrapped
+# the *currently active* factory". We deliberately store the wrapper
+# callable on the logging module rather than a bare boolean: that way, if
+# some other component (structlog, a test fixture, etc.) calls
+# ``logging.setLogRecordFactory`` AFTER us, the next install_… call sees
+# that the active factory is no longer our wrapper and re-wraps on top of
+# the new one. A bare True/False sentinel would silently leave the new
+# foreign factory un-rebranded -- which is exactly the "wrap, don't
+# replace" promise the docstring makes.
+_INSTALLED_SENTINEL = "_rapid_mlx_log_namespace_rebrand_installed_factory"
 
 
 def _rewrite_name(name: str) -> str:
@@ -62,23 +67,34 @@ def _rewrite_name(name: str) -> str:
 def install_log_namespace_rebrand() -> None:
     """Install a LogRecord factory that rebrands ``vllm_mlx.*`` -> ``rapid_mlx.*``.
 
-    Safe to call multiple times -- subsequent calls are no-ops. Wraps any
-    existing factory so other components (e.g. structlog, third-party
-    libraries) that have set their own factory continue to work; their work
-    runs first, then we rebrand on top.
+    Safe to call multiple times. The idempotency check compares the *currently
+    active* factory against the wrapper we last installed: if they match, do
+    nothing; if they differ (because some other component swapped the factory
+    after us), wrap the new factory so its records get rebranded too.
+
+    Wraps any existing factory so other components (e.g. structlog,
+    third-party libraries) that have set their own factory continue to work;
+    their work runs first, then we rebrand on top.
     """
-    if getattr(logging, _INSTALLED_SENTINEL, False):
+    current_factory = logging.getLogRecordFactory()
+    if getattr(logging, _INSTALLED_SENTINEL, None) is current_factory:
         return
 
-    previous_factory = logging.getLogRecordFactory()
+    previous_factory = current_factory
 
     def _factory(*args, **kwargs):
         record = previous_factory(*args, **kwargs)
-        # Only rewrite when needed -- the prefix check is a fast string op and
-        # avoids touching record.name for every uvicorn/asyncio/httpx record.
-        if record.name.startswith(_OLD_PREFIX):
-            record.name = _rewrite_name(record.name)
+        # ``logging.makeLogRecord(d)`` (used by socket / queue receivers that
+        # reconstruct records from a wire-format dict) calls the factory with
+        # ``name=None`` and patches ``record.__dict__`` afterwards. Touching
+        # ``record.name.startswith(...)`` would AttributeError there. Guard
+        # for any non-string ``name``, then short-circuit on the cheap prefix
+        # check so we don't pay a function call per uvicorn / asyncio /
+        # httpx record.
+        name = record.name
+        if isinstance(name, str) and name.startswith(_OLD_PREFIX):
+            record.name = _rewrite_name(name)
         return record
 
     logging.setLogRecordFactory(_factory)
-    setattr(logging, _INSTALLED_SENTINEL, True)
+    setattr(logging, _INSTALLED_SENTINEL, _factory)
