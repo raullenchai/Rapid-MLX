@@ -59,8 +59,11 @@ class RateLimiter:
         # Throttle is keyed off ``time.monotonic()`` so a backwards NTP step
         # cannot suppress sweeps far longer than ``window_size``. Wall time
         # is still used for the request-window math (timestamps must round-
-        # trip with retry-after semantics).
-        self._last_cleanup_mono: float = 0.0
+        # trip with retry-after semantics). Initialized to ``-inf`` so the
+        # first eligible request always sweeps, even on a freshly booted
+        # system where ``time.monotonic()`` may itself be smaller than
+        # ``window_size``.
+        self._last_cleanup_mono: float = float("-inf")
         self._lock = threading.Lock()
 
     def _maybe_cleanup(self, window_start: float, client_id: str) -> None:
@@ -137,7 +140,7 @@ def configure_rate_limiter(
         rate_limiter.enabled = enabled
         rate_limiter._requests.clear()
         rate_limiter._last_seen.clear()
-        rate_limiter._last_cleanup_mono = 0.0
+        rate_limiter._last_cleanup_mono = float("-inf")
     return rate_limiter
 
 

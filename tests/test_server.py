@@ -899,6 +899,39 @@ class TestRateLimiterHTTPResponse:
         limiter.is_allowed("client_2")
         assert limiter._last_cleanup_mono > first_cleanup
 
+    def test_rate_limiter_first_cleanup_never_throttled(self, monkeypatch):
+        """The very first eligible sweep must run regardless of monotonic-clock value.
+
+        Regression for codex round-2 NIT on PR #610: a freshly-booted system
+        can have ``time.monotonic()`` smaller than ``window_size``, so a
+        zero-initialized throttle would incorrectly suppress the first sweep.
+        Initializing to ``-inf`` guarantees the first sweep always runs.
+        """
+        import time
+
+        from vllm_mlx.middleware import auth as auth_mod
+        from vllm_mlx.server import RateLimiter
+
+        # Pin monotonic clock to a small value (simulates fresh boot).
+        monkeypatch.setattr(auth_mod.time, "monotonic", lambda: 1.0)
+
+        limiter = RateLimiter(requests_per_minute=10, enabled=True)
+
+        # Seed >100 stale entries.
+        old = time.time() - 120.0
+        with limiter._lock:
+            for i in range(101):
+                key = f"stale_{i}"
+                limiter._requests[key] = [old]
+                limiter._last_seen[key] = old
+
+        assert len(limiter._requests) == 101
+        # First call must actually sweep, not be silently throttled.
+        limiter.is_allowed("fresh_client")
+        assert len(limiter._requests) < 101, (
+            "first sweep was throttled despite monotonic() < window_size"
+        )
+
     def test_rate_limiter_cleanup_does_not_evict_current_client(self):
         """The client whose request triggers the sweep is never evicted.
 
