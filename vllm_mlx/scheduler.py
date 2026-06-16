@@ -2483,13 +2483,38 @@ class Scheduler:
                 logger.debug(f"Error closing BatchGenerator: {e}")
             self.batch_generator = None
 
-    def _ensure_batch_generator(self, sampling_params: SamplingParams) -> None:
-        """Ensure BatchGenerator exists with compatible settings."""
+    def _ensure_batch_generator(self, sampling_params: SamplingParams) -> bool:
+        """Ensure BatchGenerator exists with compatible settings.
+
+        Returns:
+            ``True`` if a compatible generator is ready for the caller
+            to insert this request into. ``False`` if the caller MUST
+            requeue the request — the current generator's
+            ``stop_tokens`` / sampler differ from what this request
+            requires, and there are active requests still draining, so
+            admitting now would silently bind this request to the wrong
+            stop-token set. The contract is a hard refusal, not advisory;
+            ``_schedule_waiting`` requeues on ``False`` to preserve
+            ignore_eos semantics across overlapping batches.
+        """
+        # `_assemble_stop_tokens` returns the empty set when
+        # ``ignore_eos=True`` and the model's stop-token set otherwise.
+        # The choice is captured inside the BatchGenerator at construction
+        # time, so two requests with identical sampler tuples but
+        # different ``ignore_eos`` MUST NOT share a generator — else a
+        # benchmark probe with ``ignore_eos=True`` will silently strip
+        # EOS stops from the next chat call (or vice versa). Folding the
+        # flag into the reuse key is the smallest fix; the alternative
+        # would be to re-stamp ``stop_tokens`` on the live generator,
+        # which we deliberately avoid because the BatchGenerator's
+        # mlx-lm internals are not designed for in-place mutation.
+        # Surfaced by Rapid-MLX issue #611.
         sampler_params = (
             sampling_params.temperature,
             sampling_params.top_p,
             sampling_params.min_p,
             sampling_params.top_k,
+            bool(sampling_params.ignore_eos),
         )
 
         # Create new generator if needed or if sampling params changed
@@ -2497,13 +2522,22 @@ class Scheduler:
             self.batch_generator is None
             or self._current_sampler_params != sampler_params
         ):
-            # If we have an existing generator with requests, we need to drain it first
+            # If we have an existing generator with requests, the new
+            # request's stop_tokens / sampler are incompatible with the
+            # live generator. Refuse admission — the caller (
+            # ``_schedule_waiting``) requeues and retries on the next
+            # step, after the running batch has had a chance to drain.
+            # Previously we returned without recreating but left the
+            # stale generator in place; ``_schedule_waiting`` would then
+            # insert the new request into it, silently inheriting the
+            # wrong ignore_eos behavior (codex P2 on PR #612).
             if self.batch_generator is not None and self.running:
                 logger.warning(
                     "Sampling parameters changed with active requests. "
-                    "New requests will use new parameters after current batch completes."
+                    "Requeuing request — admission deferred until current "
+                    "batch drains so stop_tokens / sampler remain consistent."
                 )
-                return
+                return False
 
             # Keep prefix cache across BatchGenerator recreations.
             # KV cache entries depend only on the input tokens, not on
@@ -2527,6 +2561,8 @@ class Scheduler:
             self._close_batch_generator()
             self.batch_generator = self._create_batch_generator(sampling_params)
             self._current_sampler_params = sampler_params
+
+        return True
 
     def _validate_cache(self, cache: Any) -> bool:
         """
@@ -2961,8 +2997,15 @@ class Scheduler:
         while self.waiting and len(self.running) < self.config.max_num_seqs:
             request = self.waiting.popleft()
 
-            # Ensure we have a batch generator
-            self._ensure_batch_generator(request.sampling_params)
+            # Ensure we have a batch generator. The False return means
+            # the live generator has incompatible stop_tokens / sampler
+            # for this request and is still draining — we must NOT admit
+            # into the stale generator (Rapid-MLX #611 / codex P2 on
+            # PR #612). Requeue and break so the next ``step`` retries
+            # once the running batch completes.
+            if not self._ensure_batch_generator(request.sampling_params):
+                self.waiting.appendleft(request)
+                break
 
             if self.batch_generator is None:
                 # Put back and try again later

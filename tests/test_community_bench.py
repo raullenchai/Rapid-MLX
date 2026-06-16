@@ -280,6 +280,116 @@ def test_scheduler_honours_ignore_eos() -> None:
     assert immutable_model == frozenset({1, 2, 3})  # unchanged
 
 
+def test_scheduler_batch_generator_reuse_key_includes_ignore_eos() -> None:
+    """Issue #611 — the third half of the #567 fix: the scheduler's
+    BatchGenerator reuse key must differ when ``ignore_eos`` differs.
+
+    Before the fix, ``_ensure_batch_generator`` keyed reuse on the
+    sampler tuple (temperature, top_p, min_p, top_k) only, so two
+    requests with identical samplers but different ``ignore_eos`` would
+    silently share the same generator. The first request's stop-token
+    set (empty if ignore_eos=True, model-EOS if False) leaked to the
+    second — a benchmark probe with ``ignore_eos=True`` followed by a
+    normal chat call would run to ``max_tokens`` instead of stopping at
+    EOS.
+
+    Drive the production method directly with a minimal stub scheduler.
+    Asserting against a recomputed copy of the tuple would let a future
+    refactor silently drop ``ignore_eos`` from the production tuple if
+    the same refactor updated the test in lockstep; calling the real
+    method makes that escape impossible.
+    """
+    # vllm_mlx.scheduler imports mlx unconditionally at module top, so
+    # this test only runs where Apple Silicon mlx is installed; on Linux
+    # CI it skips. pr_validate (PR #612 round 1) classified it as a
+    # regression for failing on Linux with ModuleNotFoundError — the
+    # skip restores the correct "no mlx → no opinion" semantics.
+    pytest.importorskip("mlx")
+    from vllm_mlx.request import SamplingParams
+    from vllm_mlx.scheduler import Scheduler
+
+    sentinel = object()
+    create_calls = []
+    close_calls = []
+
+    class StubScheduler:
+        batch_generator = None
+        running = False
+        memory_aware_cache = None
+        prefix_cache = None
+        _current_sampler_params = None
+
+        def _close_batch_generator(self) -> None:
+            close_calls.append(self.batch_generator)
+            self.batch_generator = None
+
+        def _create_batch_generator(self, sp):
+            create_calls.append(sp)
+            return sentinel
+
+    stub = StubScheduler()
+
+    base_kwargs = dict(
+        max_tokens=512,
+        temperature=0.0,
+        top_p=1.0,
+        min_p=0.0,
+        top_k=-1,
+    )
+    p_strip_eos = SamplingParams(**base_kwargs, ignore_eos=True)
+    p_default = SamplingParams(**base_kwargs, ignore_eos=False)
+
+    assert Scheduler._ensure_batch_generator(stub, p_strip_eos) is True
+    assert len(create_calls) == 1, "first request should build a generator"
+    assert stub.batch_generator is sentinel
+
+    closes_after_first = len(close_calls)
+    assert Scheduler._ensure_batch_generator(stub, p_default) is True
+    assert len(create_calls) == 2, (
+        "second request with different ignore_eos must rebuild the "
+        "generator — the empty stop-token set from the ignore_eos=True "
+        "request would otherwise leak to this normal request (#611)."
+    )
+    assert len(close_calls) > closes_after_first, (
+        "the previous generator must be torn down before the rebuild "
+        "so its resources aren't leaked."
+    )
+
+    # And the inverse — second identical call MUST reuse (sanity that
+    # we didn't accidentally invalidate reuse for the happy path).
+    assert Scheduler._ensure_batch_generator(stub, p_default) is True
+    assert len(create_calls) == 2, (
+        "two consecutive requests with the same sampler tuple AND same "
+        "ignore_eos must share a single BatchGenerator (no regression "
+        "on the reuse fast path)."
+    )
+
+    # Codex r1 P2 (PR #612): with the running batch holding an
+    # ignore_eos=False generator, a new ignore_eos=True request MUST be
+    # refused so the caller (_schedule_waiting) requeues it. Without
+    # this guard, the previous fix only closed the idle-reuse leak — a
+    # request that overlapped a running batch would still inherit the
+    # stale stop_tokens.
+    stub.running = {"req-active": object()}  # non-empty truthy
+    creates_before_overlap = len(create_calls)
+    closes_before_overlap = len(close_calls)
+    refused = Scheduler._ensure_batch_generator(stub, p_strip_eos)
+    assert refused is False, (
+        "request with different ignore_eos must be REFUSED while a "
+        "previous batch is still running — otherwise it inherits the "
+        "wrong stop_tokens (codex P2 on PR #612)."
+    )
+    assert len(create_calls) == creates_before_overlap, (
+        "refused request must not have created a new BatchGenerator."
+    )
+    assert len(close_calls) == closes_before_overlap, (
+        "refused request must not have closed the running BatchGenerator."
+    )
+    assert stub.batch_generator is sentinel, (
+        "the live generator must remain intact for the running batch."
+    )
+
+
 def test_standardized_config_dict_matches_schema_consts() -> None:
     """The hardcoded constants in ``config`` must equal the schema's
     ``const`` values — schema validation depends on this."""
