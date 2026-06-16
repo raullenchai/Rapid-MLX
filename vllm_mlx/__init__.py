@@ -18,6 +18,21 @@ try:
 except Exception:
     __version__ = "0.0.0"  # fallback for editable installs without metadata
 
+# Rebrand runtime logger names from the legacy ``vllm_mlx.*`` namespace to
+# the product-facing ``rapid_mlx.*`` namespace before any submodule has had
+# a chance to create a record. The Python package directory keeps the
+# ``vllm_mlx/`` name (renaming would touch hundreds of imports and break
+# external integrations); only what users see in log output changes. The
+# rebrand is a single ``logging.setLogRecordFactory`` call, idempotent and
+# scoped to the ``vllm_mlx`` prefix -- uvicorn/fastapi/asyncio/httpx
+# namespaces flow through untouched. See ``_log_namespace`` for the
+# rationale (handler-attached filters and logger-attached filters were both
+# rejected; factory is the only path that catches records from descendant
+# loggers without imposing churn on every ``getLogger(__name__)`` site).
+from vllm_mlx._log_namespace import install_log_namespace_rebrand
+
+install_log_namespace_rebrand()
+
 # All imports are lazy to allow usage on non-Apple Silicon platforms
 # (e.g., CI running on Linux) where mlx_lm is not available. The MLX
 # hardware-compat shim (#404 M5 single-stream) lives in `_mlx_compat`
