@@ -937,6 +937,7 @@ from .routes.health import probe_router as _probe_router
 from .routes.health import router as _health_router
 from .routes.mcp_routes import router as _mcp_router
 from .routes.models import router as _models_router
+from .routes.responses import router as _responses_router
 
 app.include_router(_probe_router)
 app.include_router(_health_router)
@@ -944,6 +945,7 @@ app.include_router(_models_router)
 app.include_router(_chat_router)
 app.include_router(_completions_router)
 app.include_router(_anthropic_router)
+app.include_router(_responses_router)
 app.include_router(_embeddings_router)
 app.include_router(_mcp_router)
 app.include_router(_audio_router)
