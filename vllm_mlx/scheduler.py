@@ -2485,11 +2485,24 @@ class Scheduler:
 
     def _ensure_batch_generator(self, sampling_params: SamplingParams) -> None:
         """Ensure BatchGenerator exists with compatible settings."""
+        # `_assemble_stop_tokens` returns the empty set when
+        # ``ignore_eos=True`` and the model's stop-token set otherwise.
+        # The choice is captured inside the BatchGenerator at construction
+        # time, so two requests with identical sampler tuples but
+        # different ``ignore_eos`` MUST NOT share a generator — else a
+        # benchmark probe with ``ignore_eos=True`` will silently strip
+        # EOS stops from the next chat call (or vice versa). Folding the
+        # flag into the reuse key is the smallest fix; the alternative
+        # would be to re-stamp ``stop_tokens`` on the live generator,
+        # which we deliberately avoid because the BatchGenerator's
+        # mlx-lm internals are not designed for in-place mutation.
+        # Surfaced by Rapid-MLX issue #611.
         sampler_params = (
             sampling_params.temperature,
             sampling_params.top_p,
             sampling_params.min_p,
             sampling_params.top_k,
+            bool(sampling_params.ignore_eos),
         )
 
         # Create new generator if needed or if sampling params changed

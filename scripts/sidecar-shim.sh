@@ -42,6 +42,15 @@ ROOT="$(cd "$BIN_DIR/.." && pwd)"
 export PYTHONHOME="$ROOT/python"
 export PYTHONPATH="$ROOT/site-packages"
 export PYTHONNOUSERSITE=1
+# Belt-and-braces on top of build-sidecar.sh's pre-compile pass:
+# refuse to write any new .pyc at runtime even if a downstream import
+# path slips through that the pre-compile didn't cover. Without this,
+# ANY post-build .pyc write would break codesign's seal and any
+# subsequent `spctl --assess` (Migration Assistant copy, macOS major
+# upgrade re-evaluation, fresh quarantine after move/rename) would
+# reject the bundle as "a sealed resource is missing or invalid".
+# rapid-desktop #230.
+export PYTHONDONTWRITEBYTECODE=1
 unset PYTHONSTARTUP
 
 exec "$ROOT/python/bin/python3.12" -s -m vllm_mlx.cli "$@"

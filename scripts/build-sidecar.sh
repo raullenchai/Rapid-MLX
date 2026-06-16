@@ -173,6 +173,36 @@ rm -rf \
     "$STAGE/python/share/man"
 find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
 
+# Pre-compile every .py in the bundled stdlib + site-packages BEFORE
+# we codesign. Otherwise CPython's import machinery writes .pyc files
+# into __pycache__/ at runtime on first use, those additions are
+# unsealed (codesign --verify --deep reports "a sealed resource is
+# missing or invalid"), and any `spctl --assess` after first launch
+# rejects the bundle:
+#
+#   * Migration Assistant copy to a new Mac → first launch fails
+#     "App is damaged, move to Trash".
+#   * macOS major upgrade re-evaluates Gatekeeper → same.
+#   * User moves /Applications/Rapid-MLX Desktop.app and back → same.
+#
+# rapid-desktop issue #230 — confirmed in v0.6.14 with 1008 stray
+# .pyc files post-launch. Notarisation is unaffected (the ticket lives
+# in xattr metadata, not the sealed resource directory), only the
+# spctl-assess re-check path.
+#
+# SOURCE_DATE_EPOCH freezes the .pyc magic-number timestamp so builds
+# stay byte-reproducible — without it every CI re-run produces a
+# different bundle and the upstream `MACHO_BASELINE_COUNT` drift
+# heuristic becomes meaningless. Falls back to 0 when the build runs
+# outside a git checkout (smoke test fixtures).
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO_ROOT" log -1 --format=%ct HEAD 2>/dev/null || echo 0)}"
+export SOURCE_DATE_EPOCH
+echo "==> pre-compiling .pyc cache (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
+"$STAGE/python/bin/python3.12" -m compileall -q -f -j 0 \
+    "$STAGE/python/lib/python3.12" \
+    "$STAGE/site-packages" \
+    || { echo "ERR: compileall failed; bundle would seal-break on first launch" >&2; exit 1; }
+
 # ----- step 4: shim entrypoint -----------------------------------------
 
 cp "${REPO_ROOT}/scripts/sidecar-shim.sh" "$STAGE/bin/rapid-mlx"
