@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import time
+import unittest
 
 import httpx
 
@@ -121,13 +122,20 @@ def hermes_query(query, timeout_sec=120):
         return None, str(e)
 
 
-class HermesSkipError(Exception):
+class HermesSkipError(unittest.SkipTest):
     """Raised by a Hermes test to signal honest unrunnable, not failure.
 
     Hermes refuses to initialize on small-context models, and there's no
     rapid-mlx code to "fix" that — it's the harness asking for more
     context than the served model exposes. The runner maps this to
     SKIP so the gauntlet stays green where it should be.
+
+    Inherits from ``unittest.SkipTest`` so this same exception is honored
+    as SKIP under both code paths:
+      - ``run_test()`` harness (catches ``HermesSkipError`` explicitly)
+      - direct pytest invocation (pytest treats ``unittest.SkipTest``
+        as a skip outcome, not a test failure — which is what
+        pr_validate's targeted_tests step relies on)
     """
 
 
