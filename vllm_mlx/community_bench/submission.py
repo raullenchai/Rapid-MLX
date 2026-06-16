@@ -116,17 +116,11 @@ def build_submission_payload(
     # future CLI code that wires this up — schema errors surface as
     # opaque jsonschema messages with full property paths.
     if tier is not None and tier not in ("speed", "smoke", "harness", "all"):
-        raise ValueError(
-            f"tier must be one of speed/smoke/harness/all, got {tier!r}"
-        )
+        raise ValueError(f"tier must be one of speed/smoke/harness/all, got {tier!r}")
     if tier in ("smoke", "all") and smoke_result is None:
-        raise ValueError(
-            f"tier={tier!r} requires smoke_result to be populated"
-        )
+        raise ValueError(f"tier={tier!r} requires smoke_result to be populated")
     if tier in ("harness", "all") and harness_result is None:
-        raise ValueError(
-            f"tier={tier!r} requires harness_result to be populated"
-        )
+        raise ValueError(f"tier={tier!r} requires harness_result to be populated")
     # Inverse: passing a result without the matching tier would land an
     # ambiguous payload in the corpus (aggregator doesn't know which
     # tier produced it). Cheaper to reject here than to debug a

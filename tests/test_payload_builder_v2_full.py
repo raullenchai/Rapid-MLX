@@ -32,8 +32,7 @@ def _stub_inputs():
     hw = Hardware(chip="Apple M4 Pro", ram_gb=24, cpu_cores=12, gpu_cores=20)
     sw = Software(macos="26.5.1", rapid_mlx="0.7.6", mlx="0.31.2", python="3.12.13")
     rounds = [
-        RoundResult(decode_tps=42.0, prefill_tps=500.0, ttft_ms=120.0)
-        for _ in range(5)
+        RoundResult(decode_tps=42.0, prefill_tps=500.0, ttft_ms=120.0) for _ in range(5)
     ]
     bench = BenchResult(
         short=BucketResult(rounds_raw=rounds),
@@ -52,11 +51,15 @@ _SMOKE = {
     "response_excerpt": "The capital of France is Paris.",
 }
 _HARNESS = {
-    "codex":     {"passed": True,  "duration_s": 11.4, "error_excerpt": None},
-    "opencode":  {"passed": True,  "duration_s":  9.8, "error_excerpt": None},
-    "hermes":    {"passed": False, "duration_s":  3.1, "error_excerpt": "tool_call schema mismatch"},
-    "aider":     {"passed": True,  "duration_s": 14.2, "error_excerpt": None},
-    "langchain": {"passed": True,  "duration_s": 18.5, "error_excerpt": None},
+    "codex": {"passed": True, "duration_s": 11.4, "error_excerpt": None},
+    "opencode": {"passed": True, "duration_s": 9.8, "error_excerpt": None},
+    "hermes": {
+        "passed": False,
+        "duration_s": 3.1,
+        "error_excerpt": "tool_call schema mismatch",
+    },
+    "aider": {"passed": True, "duration_s": 14.2, "error_excerpt": None},
+    "langchain": {"passed": True, "duration_s": 18.5, "error_excerpt": None},
 }
 
 
