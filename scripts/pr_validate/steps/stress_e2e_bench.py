@@ -45,7 +45,15 @@ REGISTRY_PATH = Path(__file__).parent.parent / "golden_models.yaml"
 BASELINE_DIR = Path("harness/baselines")
 BENCH_PORT = 8451
 BENCH_THRESHOLD_PCT = 5.0
-SERVER_BOOT_TIMEOUT_S = 180
+# Server-boot budget. Sized for the worst case the matrix can pick on a
+# cold HuggingFace cache: ``snapshot_download`` re-running Xet
+# revalidation on a 45–80 GB model can spend 3–5 minutes traversing
+# blob hashes before the FastAPI lifespan is reached. The previous
+# 180s budget was tuned for an already-warm cache and silently failed
+# the first PR after every model bump. 360s is the empirical headroom
+# for the 35B-A3B + 27B Qwen models in the current golden registry on a
+# typical home-broadband Mac. (PR #602 round-3 stress_e2e_bench fix.)
+SERVER_BOOT_TIMEOUT_S = 360
 # Per-request timeout. Sized for the worst case in the matrix: cold-start
 # of a 27B-class model (~17 GB weights to mmap) immediately after the
 # previous server's lifespan finished writing its prefix cache to disk.
