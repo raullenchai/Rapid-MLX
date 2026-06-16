@@ -215,18 +215,9 @@ class TestReportRendering:
 
 
 # ----------------------------------------------------------------------
-# Boot-timeout default
-# ----------------------------------------------------------------------
-
-
-class TestDefaultBootTimeout:
-    """Single generous default beats heuristics that miss models like
-    'qwen3-coder-4bit' (80B, no param-count hint in alias)."""
-
-    def test_default_is_generous(self):
-        from vllm_mlx.doctor.cli import DEFAULT_BOOT_TIMEOUT_S
-
-        # 600s is the floor for cold-loading 122B models from a slow SSD;
-        # bumping below 300s would re-introduce the false-fail class
-        # codex round 3 flagged.
-        assert DEFAULT_BOOT_TIMEOUT_S >= 600
+# Boot-timeout default — removed in the env-health refactor.
+#
+# The doctor CLI no longer owns server-boot orchestration; that moved to
+# ``vllm_mlx.bench.tiers.*`` with the rest of the model-validation logic.
+# Any future regression test for the boot timeout should land in
+# ``tests/test_bench_*.py`` against the new owner, not here.

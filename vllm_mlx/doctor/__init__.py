@@ -1,21 +1,47 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Rapid-MLX Doctor — comprehensive regression harness.
+Rapid-MLX Doctor — environment-health check.
 
-Three tiers + a benchmark sweep:
-  - smoke      (~2 min, no model)         — pytest, ruff, CLI sanity
-  - check      (~15 min, qwen3.5-35b-8bit)     — server + perf + agents + baseline diff
-  - full       (~2-3 hr, 2 models)        — check across qwen3.5-35b-8bit + qwen3.6-35b-4bit
-  - benchmark  (overnight, all models)    — cross-model × cross-engine scorecard
+``rapid-mlx doctor`` is a fast (≤ 5 s) self-diagnostic that answers one
+question: *is my install/env broken?*  It probes hardware, Python, packages,
+HuggingFace cache, network, shell integration, and optional tooling.  It
+never loads a model, boots a server, or runs benchmarks.
 
-Entry point: ``rapid-mlx doctor {smoke,check,full,benchmark}``
+Model-validation tiers that used to live here (``smoke / check / full /
+benchmark``) moved to ``rapid-mlx bench --tier ...`` as of v0.7.22.
+
+Entry point: ``rapid-mlx doctor [--verbose]``.
 
 Exit codes:
-  0  all checks pass
-  1  performance regression detected (vs baseline)
-  2  functional test failure
+  0 — everything ok or only warnings
+  1 — one or more ✗ issues
 """
 
-from .runner import DoctorRunner, TierResult
+from .env_health import Check, CheckStatus, Report, Section, run_all
+from .runner import (
+    CheckResult,
+    DoctorRunner,
+    Status,
+    TierResult,
+    python_executable,
+    run_subprocess,
+)
 
-__all__ = ["DoctorRunner", "TierResult"]
+__all__ = [
+    # New env-health surface (the public face of `rapid-mlx doctor`).
+    "Check",
+    "CheckStatus",
+    "Report",
+    "Section",
+    "run_all",
+    # Legacy runner — still re-exported because `vllm_mlx.bench.tiers.*`
+    # uses these primitives to wrap model-validation checks (PR #1 moved
+    # the tier modules but kept the runner shared). The doctor CLI no
+    # longer touches them.
+    "CheckResult",
+    "DoctorRunner",
+    "Status",
+    "TierResult",
+    "python_executable",
+    "run_subprocess",
+]

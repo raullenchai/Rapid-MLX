@@ -4613,37 +4613,30 @@ Examples:
         help="Agent version for version-specific config (e.g. 0.8.5)",
     )
 
-    # Doctor command — regression harness
+    # Doctor command — pure env-health probe (≤5 s, no model load, no server).
+    # Model-validation tiers (smoke/check/full/benchmark) moved to
+    # ``rapid-mlx bench --tier ...`` as of v0.7.22. The positional ``tier``
+    # argument is intentionally retained (with the same choices, but
+    # SUPPRESSed from --help) so users hitting the legacy invocation get an
+    # actionable redirect from ``doctor_command`` instead of an argparse
+    # ``unrecognized arguments`` wall. Remove the positional once telemetry
+    # confirms no one's still calling the old form.
     doctor_parser = subparsers.add_parser(
         "doctor",
-        help="Run regression harness (smoke / check / full / benchmark)",
+        help="Check environment health (Python, packages, HF cache, network, ...)",
     )
     doctor_parser.add_argument(
         "tier",
         nargs="?",
-        default="smoke",
+        default=None,
         choices=["smoke", "check", "full", "benchmark"],
-        help="Which tier to run (default: smoke)",
+        help=argparse.SUPPRESS,
     )
     doctor_parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
-        help="Model alias for check tier (default: qwen3.5-35b-8bit)",
-    ).completer = alias_completer
-    doctor_parser.add_argument(
-        "--models",
-        type=str,
-        default=None,
-        help="Comma-separated model aliases for full / benchmark tiers "
-        "(full default: qwen3.5-35b-8bit,qwen3.6-35b-4bit; "
-        "benchmark default: auto-discovered from local cache)",
-    ).completer = alias_csv_completer
-    doctor_parser.add_argument(
-        "--update-baselines",
+        "--verbose",
+        "-v",
         action="store_true",
-        help="Record current run as the new baseline (check / full only). "
-        "Ignored with a warning for smoke / benchmark tiers.",
+        help="Print the underlying probe detail for each check",
     )
 
     # Telemetry subcommand — opt-in anonymous usage data (Issue #236).
@@ -4881,12 +4874,9 @@ Examples:
 
     # Resolve model aliases before dispatch.
     #
-    # The doctor subcommand is exempt: it intentionally keeps the alias
-    # form so per-model artefacts (baseline filenames, scorecard rows,
-    # report check names) stay human-readable and stable across runs.
-    # Doctor does its own alias→path resolution inside the server-spawn
-    # path via discovery, so resolving here would write the wrong
-    # baseline filename and confuse multi-model loops.
+    # The doctor subcommand is exempt for historical reasons (and as a
+    # belt-and-suspenders guard now that doctor doesn't take ``--model``):
+    # an env-health probe should never trigger an alias→path lookup.
     if (
         hasattr(args, "model")
         and args.model
@@ -5014,9 +5004,6 @@ Examples:
     elif args.command == "doctor":
         from vllm_mlx.doctor.cli import doctor_command
 
-        # Parse --models comma-list now so the doctor module gets a clean list.
-        if getattr(args, "models", None):
-            args.models = [m.strip() for m in args.models.split(",") if m.strip()]
         doctor_command(args)
     elif args.command == "telemetry":
         telemetry_command(args)

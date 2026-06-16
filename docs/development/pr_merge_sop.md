@@ -46,7 +46,7 @@ Not every PR runs the full gauntlet. Skip rules:
 | Dependabot / version-bump bot | satisfied by the bump itself | codex single round on the diff | mandatory — read the dep CHANGELOG | unchanged | unchanged |
 | `chore: bump version to X.Y.Z` (release) | satisfied by linking the commits being shipped | n/a (just the version bump) | bundle-level audit at release time, see [`releasing.md`](releasing.md) | unchanged | unchanged |
 | Revert PR | must name the regression / commit being reverted | targeted tests for the affected area | n/a unless deps reverted | unchanged | unchanged |
-| Hotfix to broken main | satisfied if a regression issue is open or being filed | targeted tests + lint only; full unit can be skipped if main itself is broken | unchanged | **only skip gates that are physically blocked by the broken-main condition** — if the touched surface is parser / router / inference, run Step 8 (doctor) and Step 9 (Anthropic-compat) targeted to the affected surface anyway, those are the *highest-value* gates for a hotfix | document each skipped gate inline in the PR; merge once unblocked gates pass; file follow-up issue for any deferred non-blocking gate |
+| Hotfix to broken main | satisfied if a regression issue is open or being filed | targeted tests + lint only; full unit can be skipped if main itself is broken | unchanged | **only skip gates that are physically blocked by the broken-main condition** — if the touched surface is parser / router / inference, run Step 8 (`bench --tier check`) and Step 9 (Anthropic-compat) targeted to the affected surface anyway, those are the *highest-value* gates for a hotfix | document each skipped gate inline in the PR; merge once unblocked gates pass; file follow-up issue for any deferred non-blocking gate |
 | Embargoed security fix | filed under coordinated-disclosure process; PR opens against private fork | full gauntlet but in private | mandatory | mandatory | merge with disclosure window |
 
 For first-time contributors learning the ropes: relax tone, not standards. Walk them through fixes instead of closing; that builds the contributor base.
@@ -162,8 +162,8 @@ Skip rule:
   make check
   # make full runs across multiple models (~1-2 hr) — only when changes affect generation correctness
   make full
-  # to override the model, call doctor directly (the make targets don't pass --model through):
-  python3 -m vllm_mlx.cli doctor check --model <alias>
+  # to override the model, call bench directly (the make targets don't pass --model through):
+  python3 -m vllm_mlx.cli bench <alias> --tier check
   ```
 
 The bar is **0 regressions vs the per-model baseline in `harness/baselines/`** *for models that have committed baselines* (currently `qwen3.5-35b-8bit` and `qwen3.6-35b-4bit`). For models without baselines, document the chosen ad-hoc reference (e.g., "compared against output on commit X", "manual eyeball vs main"). Pre-existing fails (Test 10 streaming usage, `<|im_end|>` leak, thinking-toggle on qwen3.5-4b-4bit) are documented; new fails block merge.
@@ -236,7 +236,7 @@ The full `pr_validate` pipeline runs on every PR via `.github/workflows/pr-valid
 | 5 — broader unit suite | `ci.yml` test-matrix (linux-compat subset) + test-apple-silicon (mlx-dependent) | `pr_validate.full_unit` on M3 | CI covers the two surfaces it can; full tests/ tree runs on M3 |
 | 6 — pr_validate | **pipeline** (7 of 9 steps) auto via `pr-validate.yml` | `stress_e2e_bench` + `full_unit` | both skipped steps need MLX / a live server; covered by `make release-check-m3` |
 | 7 — supply chain | `pr_validate.supply_chain` (auto) + gha-pinning advisory | license drift + transitive deps still need a human read | partial automation; pip-audit is automated |
-| 8 — doctor `make check` | — | **M3** (needs MLX + cached weights) | inference-touching PRs only |
+| 8 — bench `make check` | — | **M3** (needs MLX + cached weights) | inference-touching PRs only |
 | 9 — Anthropic-compat | — | **M3** (needs MLX + live server) | parser/router PRs only — covered by `make release-check-m3` |
 | 10 — CI gate | `ci.yml` aggregation + `pr-validate.yml` scorecard | — | full coverage |
 | 11 — PR description audit | `pr_validate.cl_description_quality` (auto in pr-validate.yml) | final read | automated rejects empty bodies and bad titles |
@@ -278,6 +278,6 @@ The following items are agreed-good but not yet implemented; tracked in [#320](h
 - GitHub Actions SHA-pinning enforcement when workflows change.
 - PR-time transitive-dep audit (currently only release-time).
 - Per-PR install-size delta comment (`du -sh` site-packages diff vs main).
-- Per-PR doctor-harness smoke tier as a required CI check, gated by an `inference-touching` auto-label.
+- Per-PR `rapid-mlx bench --tier smoke` (or equivalent quick model-validation) as a required CI check, gated by an `inference-touching` auto-label.
 - `claude-code-security-review` action on PRs touching auth / parsers / serialization paths.
 - Quarterly "review-of-the-review" sampling (re-review 10 random merged PRs to score whether codex missed material issues).

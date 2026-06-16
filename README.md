@@ -862,21 +862,39 @@ If you installed via Homebrew and want vision/audio support, use `pip install 'r
 
 ## Troubleshooting
 
-Run the built-in self-diagnostic (works from `pip install`, no dev tools needed):
+Run the built-in environment-health probe (works from `pip install`, no dev tools needed, no model load, ≤5 s):
 
 ```bash
 rapid-mlx doctor
 ```
 
 ```
-Rapid-MLX Doctor
-============================================================
-  [metal] OK        # Apple Silicon Metal GPU available
-  [imports] OK      # Core modules import cleanly
-  [cli] OK          # CLI commands respond
-  [model_load] OK   # Inference pipeline works
-Result: PASS
+┌─────────────────────────────────────────────────────────┐
+│                  🩺 Rapid-MLX Doctor                    │
+└─────────────────────────────────────────────────────────┘
+
+◆ System
+  ✓ Apple Silicon (Apple M3 Pro, 36 GB)
+  ✓ macOS 14.3 (Darwin 23.3.0)
+  ✓ Free disk: 162 GB
+◆ Python
+  ✓ Python 3.12.13
+◆ Required Packages
+  ✓ mlx 0.29.x
+  ✓ mlx-lm 0.31.x
+  ✓ transformers 5.x
+  ✓ fastapi 0.x
+  ✓ uvicorn 0.x
+  ✓ rapid-mlx 0.7.22
+◆ HuggingFace Cache / Network / Shell Integration / Optional Tools
+  ...
+────────────────────────────────────────
+Summary: 18 ok, 4 warnings, 0 issues
 ```
+
+Use `rapid-mlx doctor --verbose` to see the underlying probe detail (exact path, version, response code) for each check.
+
+Want to validate model inference instead? That lives at `rapid-mlx bench <model> --tier {smoke,check,full,benchmark}` — doctor is purely env-health now.
 
 ---
 
@@ -993,7 +1011,8 @@ vllm_mlx/
   speculative/           # DFlash, SuffixDecoding, MTP drafters
   agents/                # 12 agent profiles (YAML)
   runtime/               # Model registry, cache persistence
-  doctor/                # User self-diagnostic
+  doctor/                # Environment-health probe (rapid-mlx doctor)
+  bench/tiers/           # Model-validation tiers (rapid-mlx bench --tier ...)
 scripts/                 # Dev-only (NOT shipped with pip)
   dev_test.py            # Unified test entry point
   stress_test.py         # 8-scenario stress test
