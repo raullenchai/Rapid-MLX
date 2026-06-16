@@ -350,111 +350,110 @@ async def _stream_responses(
             },
         },
     )
-
-    messages, _images, _videos = extract_multimodal_content(
-        openai_request.messages,
-        preserve_native_format=engine.preserve_native_tool_format,
-    )
-
-    chat_kwargs = {
-        "max_tokens": _resolve_max_tokens(
-            openai_request.max_tokens,
-            _resolve_enable_thinking(openai_request),
-        ),
-        **_resolved_sampling_kwargs(openai_request),
-    }
-    if openai_request.tools:
-        chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
-    resolved_thinking = _resolve_enable_thinking(openai_request)
-    if resolved_thinking is not None:
-        chat_kwargs["enable_thinking"] = resolved_thinking
-
-    accumulated_text = ""
-    accumulated_raw = ""
-    accumulated_structured_tool_calls: list[dict] = []
-    tool_filter = StreamingToolCallFilter()
-
-    _tokenizer = engine.tokenizer
-    _chat_template = ""
-    if _tokenizer and hasattr(_tokenizer, "chat_template"):
-        _chat_template = _tokenizer.chat_template or ""
-    _starts_thinking = _should_start_in_thinking(
-        _chat_template, chat_kwargs.get("enable_thinking")
-    )
-    think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
-
-    prompt_tokens = 0
-    completion_tokens = 0
-    cached_tokens = 0
-
-    # Lazy message-item state. We do NOT emit the message
-    # output_item.added until we have actual user-facing text to stream
-    # — a turn that is pure tool_calls should not emit a phantom empty
-    # message item.
-    message_item_id: str | None = None
-    message_output_index: int | None = None
-    message_open = False
-
-    # Per-request reasoning parser instance (matches anthropic.py).
-    reasoning_parser = None
-    if cfg.reasoning_parser_name:
-        try:
-            from ..reasoning import get_parser
-
-            reasoning_parser = get_parser(cfg.reasoning_parser_name)()
-        except Exception:
-            pass
-    if chat_kwargs.get("enable_thinking") is False:
-        reasoning_parser = None
-    if reasoning_parser:
-        reasoning_parser.reset_state()
-
-    async def _open_message_item() -> str:
-        """Emit response.output_item.added for the assistant message.
-
-        Returns the event string so callers can yield it; the bookkeeping
-        for ``message_open`` lives here so the open/close pair stays
-        symmetric.
-        """
-        nonlocal message_item_id, message_output_index, message_open
-        message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
-        message_output_index = 0
-        message_open = True
-        return _sse(
-            "response.output_item.added",
-            {
-                "type": "response.output_item.added",
-                "output_index": message_output_index,
-                "item": {
-                    "type": "message",
-                    "id": message_item_id,
-                    "status": "in_progress",
-                    "role": "assistant",
-                    "content": [],
-                },
-            },
-        )
-
-    async def _emit_text_delta(delta: str) -> AsyncIterator[str]:
-        """Yield the message item-added event (lazily) + a text delta."""
-        nonlocal accumulated_text
-        if not delta:
-            return
-        if not message_open:
-            yield await _open_message_item()
-        accumulated_text += delta
-        yield _sse(
-            "response.output_text.delta",
-            {
-                "type": "response.output_text.delta",
-                "item_id": message_item_id,
-                "output_index": message_output_index,
-                "content_index": 0,
-                "delta": delta,
-            },
-        )
-
     try:
+        messages, _images, _videos = extract_multimodal_content(
+            openai_request.messages,
+            preserve_native_format=engine.preserve_native_tool_format,
+        )
+
+        chat_kwargs = {
+            "max_tokens": _resolve_max_tokens(
+                openai_request.max_tokens,
+                _resolve_enable_thinking(openai_request),
+            ),
+            **_resolved_sampling_kwargs(openai_request),
+        }
+        if openai_request.tools:
+            chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
+        resolved_thinking = _resolve_enable_thinking(openai_request)
+        if resolved_thinking is not None:
+            chat_kwargs["enable_thinking"] = resolved_thinking
+
+        accumulated_text = ""
+        accumulated_raw = ""
+        accumulated_structured_tool_calls: list[dict] = []
+        tool_filter = StreamingToolCallFilter()
+
+        _tokenizer = engine.tokenizer
+        _chat_template = ""
+        if _tokenizer and hasattr(_tokenizer, "chat_template"):
+            _chat_template = _tokenizer.chat_template or ""
+        _starts_thinking = _should_start_in_thinking(
+            _chat_template, chat_kwargs.get("enable_thinking")
+        )
+        think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
+
+        prompt_tokens = 0
+        completion_tokens = 0
+        cached_tokens = 0
+
+        # Lazy message-item state. We do NOT emit the message
+        # output_item.added until we have actual user-facing text to stream
+        # — a turn that is pure tool_calls should not emit a phantom empty
+        # message item.
+        message_item_id: str | None = None
+        message_output_index: int | None = None
+        message_open = False
+
+        # Per-request reasoning parser instance (matches anthropic.py).
+        reasoning_parser = None
+        if cfg.reasoning_parser_name:
+            try:
+                from ..reasoning import get_parser
+
+                reasoning_parser = get_parser(cfg.reasoning_parser_name)()
+            except Exception:
+                pass
+        if chat_kwargs.get("enable_thinking") is False:
+            reasoning_parser = None
+        if reasoning_parser:
+            reasoning_parser.reset_state()
+
+        async def _open_message_item() -> str:
+            """Emit response.output_item.added for the assistant message.
+
+            Returns the event string so callers can yield it; the bookkeeping
+            for ``message_open`` lives here so the open/close pair stays
+            symmetric.
+            """
+            nonlocal message_item_id, message_output_index, message_open
+            message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
+            message_output_index = 0
+            message_open = True
+            return _sse(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": message_output_index,
+                    "item": {
+                        "type": "message",
+                        "id": message_item_id,
+                        "status": "in_progress",
+                        "role": "assistant",
+                        "content": [],
+                    },
+                },
+            )
+
+        async def _emit_text_delta(delta: str) -> AsyncIterator[str]:
+            """Yield the message item-added event (lazily) + a text delta."""
+            nonlocal accumulated_text
+            if not delta:
+                return
+            if not message_open:
+                yield await _open_message_item()
+            accumulated_text += delta
+            yield _sse(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": message_item_id,
+                    "output_index": message_output_index,
+                    "content_index": 0,
+                    "delta": delta,
+                },
+            )
+
         async for output in engine.stream_chat(messages=messages, **chat_kwargs):
             delta_text = output.new_text
 
