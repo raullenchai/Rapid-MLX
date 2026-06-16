@@ -18,7 +18,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
 # SKIP NOTE: this test file has heavy environmental requirements that
 # the Linux CI runners (`pr_validate.targeted_tests`,
 # `.github/workflows/ci.yml`'s test-matrix) deliberately don't satisfy:
