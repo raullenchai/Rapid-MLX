@@ -37,7 +37,7 @@ help:
 	@echo "    make soak               10-min agent soak test (needs server)"
 	@echo ""
 	@echo "  Doctor (regression harness — see harness/README.md):"
-	@echo "    make check              ~10 min, qwen3.5-4b (auto starts server)"
+	@echo "    make check              ~10 min, qwen3.5-35b-8bit (auto starts server)"
 	@echo "    make full               ~1-2 hr, 3 models + 12 agents"
 	@echo "    make benchmark          overnight, all local models"
 	@echo "    make update-baselines TIER=check  re-record baseline"
@@ -98,7 +98,7 @@ release-smoke:
 # Cost: zero (your own machine + your own electricity).
 #
 # Override the test model: MODEL=qwen3.6-27b-4bit make release-check-m3
-MODEL ?= qwen3.5-4b
+MODEL ?= qwen3.5-4b-4bit
 release-check-m3:
 	@MODEL=$(MODEL) PY=$(PY) bash scripts/release_check_m3.sh
 

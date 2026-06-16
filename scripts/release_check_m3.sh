@@ -108,6 +108,13 @@ line
 # not in the gauntlet — they need third-party CLIs on PATH and are
 # environmentally flaky for a release gate. `--test` runs the bundled
 # integration assets without requiring the external CLI binary.
+#
+# Exit-code contract: `rapid-mlx agents <name> --test` exits 1 iff any
+# test failed or errored (vllm_mlx/cli.py: sys.exit(0 if success else 1),
+# wrapping AgentTestRunner.print_summary's `failed == 0 and errored == 0`
+# at vllm_mlx/agents/testing.py:130). `set -e` aborts the gauntlet on
+# the first failure — series-fail-fast matches G7's pattern. Don't
+# `|| true` these; a quiet skip means a missed release gate.
 line
 echo "  G7b — agent harness layer (codex / opencode / hermes)"
 line
