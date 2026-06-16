@@ -22,7 +22,7 @@
 
 set -euo pipefail
 
-MODEL="${MODEL:-qwen3.5-4b}"
+MODEL="${MODEL:-qwen3.5-4b-4bit}"
 PY="${PY:-python3.12}"
 PORT="${PORT:-8000}"
 LOG=/tmp/release-check-m3.log
@@ -97,6 +97,23 @@ line
 echo "  G7 — smolagents (informational; expected partial fail on 4B)"
 line
 "$PY" tests/integrations/test_smolagents_full.py || true
+
+#-------------------- G7b agent harness layer ---------------------
+# Hits `/v1/chat/completions` + `/v1/responses` (codex) + the parser
+# choices the agent profiles ship — the layer that PR-validate's
+# unit-level profile tests can't exercise without a live server.
+# Codex is the newest and covers the response shim (rapid-mlx >= 0.7.10);
+# opencode + hermes are the established hard-gate harnesses on the
+# Chat Completions path. Other registered profiles are intentionally
+# not in the gauntlet — they need third-party CLIs on PATH and are
+# environmentally flaky for a release gate. `--test` runs the bundled
+# integration assets without requiring the external CLI binary.
+line
+echo "  G7b — agent harness layer (codex / opencode / hermes)"
+line
+"$PY" -m vllm_mlx.cli agents codex    --test
+"$PY" -m vllm_mlx.cli agents opencode --test
+"$PY" -m vllm_mlx.cli agents hermes   --test
 
 #-------------------- G6 fix-path repro ---------------------------
 line

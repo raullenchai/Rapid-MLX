@@ -38,7 +38,7 @@ help:
 	@echo ""
 	@echo "  Doctor (regression harness — see harness/README.md):"
 	@echo "    make check              ~10 min, qwen3.5-4b (auto starts server)"
-	@echo "    make full               ~1-2 hr, 3 models + 11 agents"
+	@echo "    make full               ~1-2 hr, 3 models + 12 agents"
 	@echo "    make benchmark          overnight, all local models"
 	@echo "    make update-baselines TIER=check  re-record baseline"
 	@echo ""
@@ -97,7 +97,7 @@ release-smoke:
 # Time budget: ~10-15 minutes on M3 Ultra with weights warm-cached.
 # Cost: zero (your own machine + your own electricity).
 #
-# Override the test model: MODEL=qwen3.6-27b make release-check-m3
+# Override the test model: MODEL=qwen3.6-27b-4bit make release-check-m3
 MODEL ?= qwen3.5-4b
 release-check-m3:
 	@MODEL=$(MODEL) PY=$(PY) bash scripts/release_check_m3.sh

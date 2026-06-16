@@ -152,6 +152,7 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 | G5 | `make stress` — 8 scenarios | **M3** | `make release-check-m3` | concurrent-batching regressions |
 | G6 | Live-server fix-path repro | **M3** | `make release-check-m3` | fix doesn't ship to user-visible path |
 | G7 | SDK integration (anthropic / pydantic_ai / smolagents) | **M3** | `make release-check-m3` | router-level breakage unit tests miss |
+| G7b | Agent harness layer (`rapid-mlx agents codex/opencode/hermes --test`) | **M3** | `make release-check-m3` | live-server harness regressions (Codex `/v1/responses`, OpenCode tool-call parser, Hermes 62-tool stress) |
 | G8a | Parser microbench (×10k iters) | CI | `ci.yml` lint (ubuntu) | >10× parser regression |
 | G8b | End-to-end perf bench (tok/s baseline) | **M3** | `make release-check-m3` | KV-cache / hot-path perf regressions |
 | G9 | 10-sequential latency | **M3** | `make release-check-m3` | tok/s stability degradation |
@@ -174,7 +175,9 @@ make release-check-m3              # uses MODEL=qwen3.5-4b-4bit (default)
 MODEL=qwen3.6-27b-4bit make release-check-m3   # override
 ```
 
-Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `rapid-mlx serve` once on port 8000, then runs G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.
+Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `rapid-mlx serve` once on port 8000, then runs G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G7b (agent harness layer: codex / opencode / hermes via `rapid-mlx agents <name> --test`) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.
+
+G7b covers the live-server harness path that `pr-validate`'s unit-level profile tests can't reach: Codex's `/v1/responses` SSE stream (added in v0.7.10), OpenCode's tool-call routing, and Hermes' 62-tool stress. Other registered profiles (`aider`, `goose`, `openhands`, `cline`, `openclaude`, `langchain`, `pydanticai`, `smolagents`, `generic`) are intentionally not in the gauntlet — they need third-party CLIs on PATH and are environmentally flaky for a release gate. Add a new profile here when (a) the integration is core to a release and (b) `--test` runs without depending on an external CLI binary.
 
 Budget: ~10-15 minutes on M3 Ultra with weights warm-cached. Zero $.
 

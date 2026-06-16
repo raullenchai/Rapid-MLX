@@ -64,7 +64,7 @@ vllm_mlx/
 │
 ├── reasoning/                 # 7 reasoning parsers (Qwen3, DeepSeek, MiniMax, etc.)
 ├── tool_parsers/              # 20+ tool call parsers
-├── agents/                    # 11 agent profiles (YAML)
+├── agents/                    # 12 agent profiles (YAML)
 ├── runtime/                   # Model registry, cache persistence
 ├── middleware/                # Auth, rate limiting
 ├── doctor/                    # User self-diagnostic
