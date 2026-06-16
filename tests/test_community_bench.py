@@ -1193,6 +1193,83 @@ def test_validate_rejects_bad_datetime_format(cleanup_real_submissions) -> None:
     assert rc == 1
 
 
+@pytest.mark.parametrize(
+    "bogus_value",
+    [
+        # Date-only — fromisoformat accepts this, but schema promises
+        # date-time. Without the regex gate the validator silently passed
+        # these as valid timestamps. (Codex PR #602 round-1 BLOCKING.)
+        "2026-06-16",
+        # Naïve timestamp — has T-separator and time component but no
+        # timezone offset. fromisoformat returns a tz-less datetime;
+        # schema requires Z or ±HH:MM per RFC 3339.
+        "2026-06-16T12:00:00",
+        "2026-06-16T12:00:00.123456",
+        # Time-only — fromisoformat happily parses HH:MM:SS but it's
+        # not a valid date-time.
+        "12:00:00Z",
+        # Empty string.
+        "",
+        # Wrong separator.
+        "2026/06/16T12:00:00Z",
+    ],
+)
+def test_validate_rejects_non_rfc3339_datetimes(
+    cleanup_real_submissions, bogus_value
+) -> None:
+    """Regression: the ``date-time`` checker must enforce full RFC 3339,
+    not the loose subset accepted by ``datetime.fromisoformat`` alone.
+
+    Codex's PR #602 round-1 BLOCKING: date-only strings and naïve
+    timestamps without offset slipped through the first version of the
+    fix because ``fromisoformat`` accepts them. The current implementation
+    requires a regex match for the full ``YYYY-MM-DDThh:mm:ss(.frac)?
+    (Z|±hh:mm)`` shape AND a non-None tzinfo on the parsed object.
+    """
+    pytest.importorskip("jsonschema")
+    bad = _good_payload()
+    bad["submitted_at"] = bogus_value
+    path = _write_to_real_submissions(bad)
+    cleanup_real_submissions.append(path)
+    rc, out = _run_validate(path)
+    assert rc == 1, (
+        f"validator must reject submitted_at={bogus_value!r} per RFC 3339; "
+        f"got rc=0 (passed) with out={out!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "good_value",
+    [
+        # Canonical CLI output: Z suffix.
+        "2026-06-16T12:00:00Z",
+        # With fractional seconds.
+        "2026-06-16T12:00:00.123456Z",
+        # Numeric UTC offset.
+        "2026-06-16T12:00:00+00:00",
+        # Non-UTC numeric offset.
+        "2026-06-16T08:00:00-04:00",
+        # Lowercase t separator is also valid RFC 3339.
+        "2026-06-16t12:00:00Z",
+    ],
+)
+def test_validate_accepts_valid_rfc3339_datetimes(
+    cleanup_real_submissions, good_value
+) -> None:
+    """Counterpart: the tightened checker must not over-reject legitimate
+    RFC 3339 forms — Z suffix, fractional seconds, numeric offsets,
+    lowercase ``t``."""
+    pytest.importorskip("jsonschema")
+    good = _good_payload()
+    good["submitted_at"] = good_value
+    path = _write_to_real_submissions(good)
+    cleanup_real_submissions.append(path)
+    rc, out = _run_validate(path)
+    assert rc == 0, (
+        f"validator wrongly rejected submitted_at={good_value!r}; out={out!r}"
+    )
+
+
 def test_validate_rejects_summary_mismatch_with_rounds(
     cleanup_real_submissions,
 ) -> None:
