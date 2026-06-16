@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -697,11 +698,26 @@ def _test_tag_suppression(
 def _agent_query(
     binary: str, query_cmd: str, query: str, timeout: int = 120
 ) -> tuple[str | None, str | None]:
-    """Run a single agent query. Returns (output, error)."""
+    """Run a single agent query. Returns (output, error).
+
+    `binary` may be an absolute / ``~``-prefixed path *or* a bare name
+    (e.g. ``codex``, ``opencode``). Bare names are resolved via
+    ``shutil.which`` against ``$PATH``. Mirror of
+    ``AgentTestRunner._agent_binary_available`` — a previous bug here
+    treated bare names as relative paths so every e2e gate silently
+    skipped with "Binary not found" even when the CLI was installed.
+    """
     import shlex
 
-    if not os.path.exists(os.path.expanduser(binary)):
-        return None, f"Binary not found: {binary}"
+    if "/" not in binary and not binary.startswith("~"):
+        resolved = shutil.which(binary)
+        if not resolved:
+            return None, f"Binary not found: {binary}"
+        binary_path = resolved
+    else:
+        binary_path = os.path.expanduser(binary)
+        if not os.path.exists(binary_path):
+            return None, f"Binary not found: {binary}"
 
     # Substitute {query} placeholder and parse with shlex to respect quotes
     cmd_str = query_cmd.replace("{query}", query)
@@ -711,7 +727,7 @@ def _agent_query(
         # Fallback: simple split if shlex can't parse
         cmd_parts = cmd_str.split()
     # Replace first part with full binary path
-    cmd_parts[0] = os.path.expanduser(binary)
+    cmd_parts[0] = binary_path
 
     try:
         proc = subprocess.run(
@@ -867,11 +883,25 @@ class AgentTestRunner:
             return False
 
     def _agent_binary_available(self) -> bool:
-        """Check if the agent binary is installed."""
+        """Check if the agent binary is installed.
+
+        Two forms of `testing.binary` are supported:
+          - **Absolute / ``~``-prefixed path** (e.g. ``~/.hermes/venv/bin/hermes``)
+            — checked with ``os.path.exists`` after ``expanduser``.
+          - **Bare name** (e.g. ``codex``, ``opencode``) — resolved via
+            ``shutil.which`` against the current ``$PATH``. Profiles that
+            ship a homebrew/npm CLI use this form, and a previous bug
+            here treated them as relative paths so the e2e gate never
+            fired even with the binary installed.
+        """
         testing = self.profile.get_testing_for_version(self.agent_version)
         if not testing.binary:
             return False
-        return os.path.exists(os.path.expanduser(testing.binary))
+        binary = testing.binary
+        # Bare name (no `/`, no leading `~`) → look up on $PATH.
+        if "/" not in binary and not binary.startswith("~"):
+            return shutil.which(binary) is not None
+        return os.path.exists(os.path.expanduser(binary))
 
     def build_test_plan(self) -> list[str]:
         """Build the list of test names that will run for this profile."""
@@ -988,11 +1018,25 @@ class AgentTestRunner:
                     )
                 )
         elif testing.binary:
+            # Two distinct skip reasons land here:
+            #   (a) binary on PATH but profile has `query_cmd: null`
+            #       — interactive-only agent (opencode, openhands,
+            #       openclaude). The runner has no way to drive it
+            #       headlessly, but the binary is installed; saying
+            #       "Binary not found" is actively misleading.
+            #   (b) binary is genuinely missing from PATH / disk.
+            if self._agent_binary_available() and not testing.query_cmd:
+                msg = (
+                    f"Interactive-only profile ({testing.binary} installed "
+                    "but query_cmd=null — no headless driver)"
+                )
+            else:
+                msg = f"Binary not found: {testing.binary}"
             report.results.append(
                 TestResult(
                     "e2e_tests",
                     TestStatus.SKIP,
-                    message=f"Binary not found: {testing.binary}",
+                    message=msg,
                     category="e2e",
                 )
             )
@@ -1132,15 +1176,29 @@ class AgentTestRunner:
                 ]
 
             test_results = []
+            per_test_ms = (time.time() - t0) * 1000 / max(len(results_dict), 1)
             for name, status in results_dict.items():
+                # Test modules report PASS / "FAIL: <reason>" / "SKIP: <reason>".
+                # SKIP exists so deep agentic tests can signal "the environment
+                # can't honestly run this" (e.g. Hermes's 32K-context refusal
+                # on small models) without dirtying the gauntlet with a FAIL
+                # that isn't actionable.
                 if status == "PASS":
                     test_results.append(
                         TestResult(
                             name,
                             TestStatus.PASS,
-                            duration_ms=(time.time() - t0)
-                            * 1000
-                            / max(len(results_dict), 1),
+                            duration_ms=per_test_ms,
+                            category="specific",
+                        )
+                    )
+                elif isinstance(status, str) and status.startswith("SKIP:"):
+                    test_results.append(
+                        TestResult(
+                            name,
+                            TestStatus.SKIP,
+                            duration_ms=per_test_ms,
+                            message=status[len("SKIP:") :].strip()[:120],
                             category="specific",
                         )
                     )
@@ -1154,9 +1212,7 @@ class AgentTestRunner:
                         TestResult(
                             name,
                             TestStatus.FAIL,
-                            duration_ms=(time.time() - t0)
-                            * 1000
-                            / max(len(results_dict), 1),
+                            duration_ms=per_test_ms,
                             message=msg[:120],
                             category="specific",
                         )

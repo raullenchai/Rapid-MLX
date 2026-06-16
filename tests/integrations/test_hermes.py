@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import time
+import unittest
 
 import httpx
 
@@ -81,7 +82,15 @@ def ensure_hermes_config():
 
 
 def hermes_query(query, timeout_sec=120):
-    """Run a single Hermes query in non-interactive mode."""
+    """Run a single Hermes query in non-interactive mode.
+
+    Returns ``(output, error)`` where ``error`` may be prefixed:
+      - ``"SKIP: <reason>"`` — environment can't run this honestly
+        (binary missing; model context too small for Hermes's 62-tool
+        system prompt). Test harnesses should propagate this as a
+        SKIP, not a FAIL.
+      - any other non-None error → genuine failure.
+    """
     if not os.path.exists(HERMES_BIN):
         return None, "SKIP: hermes binary not found"
     try:
@@ -96,11 +105,58 @@ def hermes_query(query, timeout_sec=120):
         # Detect Hermes-level errors
         if "Non-retryable error" in output or "HTTP 404" in output:
             return None, "Hermes error: model mismatch or server down"
+        # Hermes refuses to initialize when the served model's reported
+        # context window is below what Hermes's full tool-rich prompt
+        # needs. Surfacing this as FAIL is dishonest — it isn't a
+        # rapid-mlx regression, it's the served model being too small
+        # for this specific harness setup. Caller should SKIP.
+        if "Failed to initialize agent" in output and "context window" in output:
+            return None, (
+                "SKIP: Hermes requires larger context than served model "
+                "provides (Hermes init refused)"
+            )
         return output, None
     except subprocess.TimeoutExpired:
         return None, "TIMEOUT"
     except Exception as e:
         return None, str(e)
+
+
+class HermesSkipError(unittest.SkipTest):
+    """Raised by a Hermes test to signal honest unrunnable, not failure.
+
+    Hermes refuses to initialize on small-context models, and there's no
+    rapid-mlx code to "fix" that — it's the harness asking for more
+    context than the served model exposes. The runner maps this to
+    SKIP so the gauntlet stays green where it should be.
+
+    Inherits from ``unittest.SkipTest`` so this same exception is honored
+    as SKIP under both code paths:
+      - ``run_test()`` harness (catches ``HermesSkipError`` explicitly)
+      - direct pytest invocation (pytest treats ``unittest.SkipTest``
+        as a skip outcome, not a test failure — which is what
+        pr_validate's targeted_tests step relies on)
+    """
+
+
+def skip(reason):
+    """Helper: ``skip(err)`` propagates a ``"SKIP: ..."`` from hermes_query."""
+    msg = reason[len("SKIP:") :].strip() if reason.startswith("SKIP:") else reason
+    raise HermesSkipError(msg)
+
+
+def fail_or_skip(err):
+    """Translate a hermes_query error into FAIL or SKIP based on prefix.
+
+    Replaces the previous ``if err: assert False, err`` pattern so every
+    test propagates the SKIP signal hermes_query started emitting for
+    the small-context init refusal.
+    """
+    if err is None:
+        return
+    if err.startswith("SKIP:"):
+        skip(err)
+    assert False, err
 
 
 def run_test(name, fn):
@@ -112,6 +168,9 @@ def run_test(name, fn):
         fn()
         results[name] = "PASS"
         print("  ✅ PASS")
+    except HermesSkipError as e:
+        results[name] = f"SKIP: {e}"
+        print(f"  ⬜ SKIP: {e}")
     except AssertionError as e:
         results[name] = f"FAIL: {e}"
         print(f"  ❌ FAIL: {e}")
@@ -394,8 +453,7 @@ def test_api_stress_no_leak():
 def test_hermes_chat():
     """Basic Hermes chat (no tool use)."""
     out, err = hermes_query("What is 2+2? Reply with just the number.")
-    if err:
-        assert False, err
+    fail_or_skip(err)
     assert "4" in out, f"Expected 4 in: {out[:100]}"
     print(f"  Hermes output: {out.strip()[:80]}")
 
@@ -403,8 +461,7 @@ def test_hermes_chat():
 def test_hermes_read_file():
     """Hermes reads a file via tool call."""
     out, err = hermes_query("Read the first line of pyproject.toml")
-    if err:
-        assert False, err
+    fail_or_skip(err)
     assert "build" in out.lower() or "project" in out.lower(), (
         f"Unexpected: {out[:100]}"
     )
@@ -414,8 +471,7 @@ def test_hermes_read_file():
 def test_hermes_terminal():
     """Hermes runs a shell command."""
     out, err = hermes_query("Run 'echo rapid_mlx_hermes_test' and show me the output")
-    if err:
-        assert False, err
+    fail_or_skip(err)
     assert "rapid_mlx_hermes_test" in out, f"Command output missing: {out[:100]}"
     print("  Hermes terminal: OK")
 
@@ -423,8 +479,7 @@ def test_hermes_terminal():
 def test_hermes_search():
     """Hermes searches for files."""
     out, err = hermes_query("Search for files named 'aliases.json' in this project")
-    if err:
-        assert False, err
+    fail_or_skip(err)
     assert "aliases" in out.lower(), f"Search failed: {out[:100]}"
     print("  Hermes search: OK")
 
@@ -435,8 +490,7 @@ def test_hermes_multi_step():
         "Find the file aliases.json, read it, and tell me how many entries it has",
         timeout_sec=180,
     )
-    if err:
-        assert False, err
+    fail_or_skip(err)
     # Should mention a number (we have ~22 aliases)
     assert any(str(n) in out for n in range(15, 30)), f"No count found: {out[:200]}"
     print("  Hermes multi-step: OK")
@@ -454,8 +508,7 @@ def test_hermes_write_and_run():
         "10 fibonacci numbers as a comma-separated list, then run it and show output",
         timeout_sec=120,
     )
-    if err:
-        assert False, err
+    fail_or_skip(err)
     # Verify via Hermes output or by checking the file directly
     import subprocess
 
@@ -480,13 +533,15 @@ def test_hermes_code_with_tests():
         "Then run the tests.",
         timeout_sec=180,
     )
-    if err:
-        assert False, err
-    # Verify the files exist and tests pass
-    import subprocess
-
+    fail_or_skip(err)
+    # Verify the files exist and tests pass.
+    # Use sys.executable so we run pytest from the same interpreter that
+    # ran this test (almost always a venv with pytest installed).
+    # Bare ``python3`` resolved to system /Library/Developer/CommandLineTools
+    # on macOS which doesn't carry pytest and made this test FAIL with an
+    # infra issue, not a Hermes issue.
     result = subprocess.run(
-        ["python3", "-m", "pytest", "/tmp/hermes_test_calc.py", "-v"],
+        [sys.executable, "-m", "pytest", "/tmp/hermes_test_calc.py", "-v"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -503,8 +558,7 @@ def test_hermes_code_review():
         "Read vllm_mlx/model_auto_config.py and suggest one specific improvement. Be concise.",
         timeout_sec=120,
     )
-    if err:
-        assert False, err
+    fail_or_skip(err)
     # Should mention something about the code (patterns, config, etc.)
     assert len(out) > 50, f"Response too short for a code review: {out[:100]}"
     assert (
@@ -519,8 +573,7 @@ def test_hermes_git_analysis():
         "Check the git log of this repo and tell me the last 3 commit messages",
         timeout_sec=120,
     )
-    if err:
-        assert False, err
+    fail_or_skip(err)
     assert (
         "commit" in out.lower()
         or "hermes" in out.lower()
@@ -541,8 +594,7 @@ def test_hermes_patch_file():
         f"Add a docstring 'Say hello.' to the hello function in {test_file}",
         timeout_sec=120,
     )
-    if err:
-        assert False, err
+    fail_or_skip(err)
     # Verify the file was modified
     with open(test_file) as f:
         content = f.read()
