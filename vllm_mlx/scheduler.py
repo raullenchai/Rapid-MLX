@@ -2013,7 +2013,15 @@ class Scheduler:
             top_k=sampling_params.top_k,
         )
 
-        stop_tokens = self._get_stop_tokens()
+        # ``ignore_eos`` suppresses the model's own EOS / chat-terminator
+        # tokens (matches llama-bench ``--no-eos`` and vLLM semantics).
+        # User-supplied ``stop_token_ids`` are still honoured below —
+        # those are caller intent, not model intent. Used by community-bench
+        # to guarantee its ``tg512`` rounds always reach exactly 512 tokens
+        # regardless of what the model thinks of the synthetic prompt.
+        stop_tokens: set[int] = (
+            set() if sampling_params.ignore_eos else self._get_stop_tokens()
+        )
         # Add custom stop token IDs
         if sampling_params.stop_token_ids:
             stop_tokens.update(sampling_params.stop_token_ids)

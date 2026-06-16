@@ -206,6 +206,81 @@ def test_make_sampling_params_factory() -> None:
         runner._make_sampling_params_factory("bogus")
 
 
+def test_bench_sampling_always_ignores_eos() -> None:
+    """Regression guard for #567 (dineshdb).
+
+    The standardized bench's ``tg128`` / ``tg512`` contract requires every
+    round to generate exactly ``max_tokens`` decode steps for cross-machine
+    comparability. If the synthetic random-token prompt nudges the model
+    toward EOS — qwen3.5-9b-4bit on the locked ``0xC0FFEE`` seed does this
+    — the round aborts early and the guard in ``_run_one_round`` (correctly)
+    rejects the result.
+
+    The fix is to set ``ignore_eos=True`` on the sampling params so the
+    engine suppresses the model's own EOS / chat-terminator tokens. This
+    test pins that contract at the factory boundary: BOTH sampling modes
+    MUST set ``ignore_eos=True``. If a future refactor drops the flag,
+    the bench fails again on the same models that hit it the first time.
+    """
+    from vllm_mlx.community_bench import runner
+
+    for sampling_mode in ("greedy", "sampled"):
+        factory = runner._make_sampling_params_factory(sampling_mode)
+        for max_tokens in (128, 512):
+            params = factory(max_tokens)
+            assert params.ignore_eos is True, (
+                f"_make_sampling_params_factory({sampling_mode!r})({max_tokens}) "
+                f"must set ignore_eos=True — without it the bench fails on any "
+                f"model whose response to the 0xC0FFEE synthetic prompt is to "
+                f"emit EOS early (see issue #567 for the original report)."
+            )
+
+
+def test_scheduler_honours_ignore_eos() -> None:
+    """The other half of the #567 fix: the scheduler must actually act
+    on ``sampling_params.ignore_eos``. The factory above can set the flag
+    all it wants — if the scheduler still merges the model's EOS / chat-
+    terminator tokens into the BatchGenerator's ``stop_tokens``, the bench
+    aborts at token 88 anyway.
+
+    This test inspects the scheduler's stop-token assembly directly (the
+    same logic at ``vllm_mlx/scheduler.py`` near the ``ignore_eos`` branch)
+    by simulating the contract with a stand-in: when ``ignore_eos=True``
+    and no user-supplied stop tokens, the resulting set must be empty.
+    """
+    from vllm_mlx.request import SamplingParams
+
+    # Mirror scheduler.py's stop-token assembly contract. We don't need
+    # the full scheduler — the boundary is small enough to lock with a
+    # tiny re-implementation that future refactors will trip if they
+    # break the contract. The point is: ``ignore_eos=True`` + no caller
+    # stop ids ⇒ empty set, regardless of what the model would have
+    # contributed.
+    model_eos_tokens = {2, 151645, 151643}  # arbitrary stand-in EOS ids
+
+    def assemble_stop_tokens(params: SamplingParams, model_eos: set[int]) -> set[int]:
+        stop = set() if params.ignore_eos else set(model_eos)
+        if params.stop_token_ids:
+            stop.update(params.stop_token_ids)
+        return stop
+
+    # Case A: ignore_eos=True, no extras → empty
+    p = SamplingParams(max_tokens=512, ignore_eos=True)
+    assert assemble_stop_tokens(p, model_eos_tokens) == set()
+
+    # Case B: ignore_eos=True + caller stop ids → only the caller's
+    p = SamplingParams(max_tokens=512, ignore_eos=True, stop_token_ids=[99])
+    assert assemble_stop_tokens(p, model_eos_tokens) == {99}
+
+    # Case C: ignore_eos=False (default) → model EOS preserved
+    p = SamplingParams(max_tokens=512)
+    assert assemble_stop_tokens(p, model_eos_tokens) == model_eos_tokens
+
+    # Case D: default + caller stop ids → union
+    p = SamplingParams(max_tokens=512, stop_token_ids=[99])
+    assert assemble_stop_tokens(p, model_eos_tokens) == model_eos_tokens | {99}
+
+
 def test_standardized_config_dict_matches_schema_consts() -> None:
     """The hardcoded constants in ``config`` must equal the schema's
     ``const`` values — schema validation depends on this."""

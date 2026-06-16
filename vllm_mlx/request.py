@@ -77,12 +77,23 @@ class SamplingParams:
     frequency_penalty: float = 0.0
     stop: list[str] | None = None
     stop_token_ids: list[int] | None = None
-
-    def __post_init__(self):
-        if self.stop is None:
-            self.stop = []
-        if self.stop_token_ids is None:
-            self.stop_token_ids = []
+    # Suppress the model's own EOS / chat-terminator tokens so generation
+    # always runs to ``max_tokens``. Matches llama.cpp ``llama-bench
+    # --no-eos`` and vLLM's ``ignore_eos`` semantics — the same standardized
+    # name across the ecosystem. User-supplied ``stop_token_ids`` and
+    # string ``stop`` sequences are still honoured (those are caller
+    # intent, not model intent), so a probe that wants "exactly N tokens
+    # of decode work, regardless of what the model thinks" gets it.
+    #
+    # Why this exists: community-bench's ``tg512`` contract requires every
+    # round to generate exactly 512 tokens for cross-machine comparability.
+    # Without this flag, a model that emits EOS at token 88 on the
+    # synthetic random-token prompt aborts the round and the bench
+    # fails — exactly the failure dineshdb hit in issue #567 on
+    # qwen3.5-9b-4bit. The guard in ``community_bench/runner.py`` is
+    # correct (don't publish wrong numbers), but without ``ignore_eos``
+    # there's no way to satisfy it on models that early-stop.
+    ignore_eos: bool = False
 
 
 @dataclass

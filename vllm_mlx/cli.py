@@ -1277,7 +1277,30 @@ def _run_submit_flow(args) -> int:
                     f"  Running standardized bench "
                     f"(sampling={mode}, 2 buckets × 5 rounds + 1 warmup)…"
                 )
-                bench = await run_standardized_bench(engine, tokenizer, sampling=mode)
+                try:
+                    bench = await run_standardized_bench(
+                        engine, tokenizer, sampling=mode
+                    )
+                except RuntimeError as exc:
+                    # Friendly surface for the bench's "exactly N tokens"
+                    # guard. As of #567's fix this branch is engine-bug
+                    # territory (sampling sets ``ignore_eos=True`` so the
+                    # model's EOS shouldn't fire); previously it blamed
+                    # the user's model alias. Print a clear summary so
+                    # contributors aren't dumped into a raw traceback.
+                    msg = str(exc)
+                    if "standardized bench requires exactly" in msg:
+                        print()
+                        print(
+                            "  Bench round aborted (engine bug — NOT your model's fault):"
+                        )
+                        for line in msg.split(". "):
+                            line = line.strip()
+                            if line:
+                                print(f"    {line}")
+                        print()
+                        return 1
+                    raise
 
                 print(
                     f"    short: decode={bench.short.decode_stat['median']:.2f} tok/s, "

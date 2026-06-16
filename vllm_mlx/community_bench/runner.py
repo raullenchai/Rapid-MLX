@@ -214,23 +214,30 @@ async def _run_one_round(
 
     # EOS / early-stop guard. The standardized bench depends on every
     # round generating *exactly* ``max_tokens`` (128 short / 512 long)
-    # so cross-machine numbers are comparable. If the model emits an
-    # EOS token early — e.g. because the synthetic random-token prompt
-    # happens to nudge it toward a stop — the round terminates with
-    # fewer tokens but ``decode_tps = (N-1)/window`` still computes
-    # against the shorter N. The reported number is then NOT a
-    # tg128 / tg512 result and silently breaks the comparability
-    # contract advertised in the README and schema. (Codex PR #582
-    # round-6 BLOCKING.) Fail the round instead — the caller can
-    # surface a clear error rather than publishing a wrong number.
+    # so cross-machine numbers are comparable. ``decode_tps = (N-1)/window``
+    # against a shorter ``N`` is NOT a tg128 / tg512 result and silently
+    # breaks the comparability contract advertised in the README and
+    # schema. (Codex PR #582 round-6 BLOCKING.)
+    #
+    # As of #567's fix, ``_make_sampling_params_factory`` always sets
+    # ``ignore_eos=True``, so the engine should suppress the model's
+    # own EOS / chat-terminator tokens and run to ``max_tokens``
+    # regardless of what the model thinks of the synthetic prompt.
+    # If we reach this branch anyway, the engine ignored the flag —
+    # that is an engine-side regression, not a model-suitability issue,
+    # and not a user-recoverable situation. Make the error message say so.
     if completion_tokens != expected_completion_tokens:
         raise RuntimeError(
             f"bench round generated {completion_tokens} tokens but the "
-            f"standardized bench requires exactly {expected_completion_tokens} "
-            f"(model emitted EOS early or hit a stop sequence). Submitting "
-            f"this number would break comparability with other rows in the "
-            f"community DB. Re-run the bench; if the problem reproduces, "
-            f"this model alias is not suitable for the standardized bench."
+            f"standardized bench requires exactly {expected_completion_tokens}. "
+            f"This is an engine bug — sampling was configured with "
+            f"`ignore_eos=True`, so the EOS / chat-terminator path should "
+            f"have been suppressed (see vllm_mlx/scheduler.py near `ignore_eos`). "
+            f"Re-running won't help on greedy sampling with a fixed-seed prompt. "
+            f"Please file a bug at "
+            f"https://github.com/raullenchai/Rapid-MLX/issues/new with the model "
+            f"alias, rapid-mlx version, and this exact error so we can pin the "
+            f"regression. Your hardware row is NOT at fault."
         )
 
     prefill_window_s = max(t_first_token - t_start, 1e-6)
@@ -317,18 +324,37 @@ def _make_sampling_params_factory(sampling: str):
     """Build a callable ``max_tokens -> SamplingParams``."""
     from vllm_mlx.request import SamplingParams
 
+    # ``ignore_eos=True`` is mandatory for the standardized bench: the
+    # ``tg128`` / ``tg512`` contract requires every round to generate
+    # exactly ``max_tokens`` decode steps for cross-machine
+    # comparability. Without it, a model that emits EOS early on the
+    # synthetic random-token prompt (Qwen3.5-9B does on 0xC0FFEE seed
+    # — issue #567) aborts the round and the guard in ``_run_one_round``
+    # rejects the result. Matches ``llama-bench --no-eos`` semantics —
+    # we measure *hardware* decode throughput, not "model decided to
+    # stop here". User-supplied ``stop_token_ids`` / ``stop`` strings
+    # are still honoured if any caller plumbs them through; only the
+    # model's own EOS / chat-terminator is suppressed.
     if sampling == "greedy":
         # temp=0 + top_p=1 ⇒ argmax. Deterministic, matches llama-bench.
         def factory(max_tokens: int):
             return SamplingParams(
-                max_tokens=max_tokens, temperature=0.0, top_p=1.0, top_k=0
+                max_tokens=max_tokens,
+                temperature=0.0,
+                top_p=1.0,
+                top_k=0,
+                ignore_eos=True,
             )
     elif sampling == "sampled":
         # Real-world sampling. Matches Rapid-MLX's serve defaults
         # (config.py SamplingParams.temperature=0.7, top_p=0.9).
         def factory(max_tokens: int):
             return SamplingParams(
-                max_tokens=max_tokens, temperature=0.7, top_p=0.9, top_k=0
+                max_tokens=max_tokens,
+                temperature=0.7,
+                top_p=0.9,
+                top_k=0,
+                ignore_eos=True,
             )
     else:
         raise ValueError(f"unknown sampling mode: {sampling!r}")

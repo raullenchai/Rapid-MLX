@@ -289,6 +289,26 @@ def test_sampling_params_accepts_extended_fields():
     assert sp.frequency_penalty == 0.3
 
 
+def test_sampling_params_ignore_eos_field():
+    """``ignore_eos`` is the standardized name (matches llama.cpp
+    ``llama-bench --no-eos`` and vLLM ``SamplingParams.ignore_eos``).
+    Renaming or dropping it breaks ecosystem expectations + reopens
+    issue #567 (the community-bench EOS-early failure on qwen3.5-9b
+    that wasted dineshdb's first contribution attempt).
+
+    Defaults to ``False`` — only opted into by callers that genuinely
+    want decode work measured to ``max_tokens`` regardless of EOS
+    (community-bench, ad-hoc throughput probes).
+    """
+    sp_default = SamplingParams(max_tokens=128)
+    assert sp_default.ignore_eos is False, (
+        "ignore_eos must default to False so serve/chat behave normally"
+    )
+
+    sp_optin = SamplingParams(max_tokens=128, ignore_eos=True)
+    assert sp_optin.ignore_eos is True
+
+
 # =============================================================================
 # Layer 4 — scheduler honours top_k + penalties
 # =============================================================================
