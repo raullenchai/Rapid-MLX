@@ -844,7 +844,7 @@ class TestRateLimiterHTTPResponse:
         for i in range(60):
             assert f"stale_{i}" not in limiter._requests
 
-    def test_rate_limiter_cleanup_amortized_constant_time(self):
+    def test_rate_limiter_cleanup_amortized_constant_time(self, monkeypatch):
         """Cleanup cost is amortized — not run on every request when dict is large.
 
         Regression for issue #195: previously every request walked the full
@@ -852,10 +852,19 @@ class TestRateLimiterHTTPResponse:
         quadratic worst-case work over a burst of requests. The fix throttles
         the sweep to at most once per window, so back-to-back requests after
         a sweep must not retrigger it.
+
+        The monotonic clock is patched so this is independent of wall time
+        and won't flake on slow/suspended CI workers.
         """
         import time
 
+        from vllm_mlx.middleware import auth as auth_mod
         from vllm_mlx.server import RateLimiter
+
+        # Hold the monotonic clock steady so the throttle window cannot
+        # silently elapse mid-test.
+        fake_mono = [1000.0]
+        monkeypatch.setattr(auth_mod.time, "monotonic", lambda: fake_mono[0])
 
         limiter = RateLimiter(requests_per_minute=1000, enabled=True)
 
@@ -867,21 +876,28 @@ class TestRateLimiterHTTPResponse:
                 limiter._requests[key] = [recent]
                 limiter._last_seen[key] = recent
 
-        # First call triggers a sweep and stamps _last_cleanup.
+        # First call triggers a sweep and stamps _last_cleanup_mono.
         limiter.is_allowed("client_0")
-        first_cleanup = limiter._last_cleanup
+        first_cleanup = limiter._last_cleanup_mono
         assert first_cleanup > 0, "first call should have run cleanup"
 
-        # The very next call (sub-second later) must NOT retrigger cleanup.
+        # The very next call (no monotonic-clock advance) must NOT retrigger.
         limiter.is_allowed("client_1")
-        assert limiter._last_cleanup == first_cleanup, (
+        assert limiter._last_cleanup_mono == first_cleanup, (
             "cleanup ran twice within the same window — amortization broken"
         )
 
-        # Hammer the limiter many times; cleanup must remain pinned.
+        # Hammer the limiter many times; cleanup must remain pinned even if
+        # the clock crawls forward slightly (still inside the 60s throttle).
+        fake_mono[0] += 10.0  # < window_size
         for i in range(50):
             limiter.is_allowed(f"client_{i % 200}")
-        assert limiter._last_cleanup == first_cleanup
+        assert limiter._last_cleanup_mono == first_cleanup
+
+        # Advance past the throttle window — now a sweep is allowed again.
+        fake_mono[0] += limiter.window_size + 1.0
+        limiter.is_allowed("client_2")
+        assert limiter._last_cleanup_mono > first_cleanup
 
     def test_rate_limiter_cleanup_does_not_evict_current_client(self):
         """The client whose request triggers the sweep is never evicted.

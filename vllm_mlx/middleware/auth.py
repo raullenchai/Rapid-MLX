@@ -56,25 +56,29 @@ class RateLimiter:
         # so the sweep avoids the per-entry ``max(v)`` scan that drove the
         # quadratic worst case.
         self._last_seen: dict[str, float] = {}
-        self._last_cleanup: float = 0.0
+        # Throttle is keyed off ``time.monotonic()`` so a backwards NTP step
+        # cannot suppress sweeps far longer than ``window_size``. Wall time
+        # is still used for the request-window math (timestamps must round-
+        # trip with retry-after semantics).
+        self._last_cleanup_mono: float = 0.0
         self._lock = threading.Lock()
 
-    def _maybe_cleanup(
-        self, current_time: float, window_start: float, client_id: str
-    ) -> None:
+    def _maybe_cleanup(self, window_start: float, client_id: str) -> None:
         """Sweep stale entries. Must be called with ``self._lock`` held.
 
-        Throttled to at most once per ``window_size`` seconds and skipped
-        entirely when the dict is small. The current ``client_id`` is never
-        evicted — removing it here would either be a wasted op (the caller
-        is about to re-create it) or race-prone in the rare case the sweep
-        encountered a brand-new defaultdict-inserted empty list for it.
+        Throttled to at most once per ``window_size`` seconds (measured on
+        the monotonic clock so NTP/wall-clock adjustments cannot starve it)
+        and skipped entirely when the dict is small. The current ``client_id``
+        is never evicted — removing it here would either be a wasted op (the
+        caller is about to re-create it) or race-prone in the rare case the
+        sweep encountered a brand-new defaultdict-inserted empty list for it.
         """
         if len(self._requests) <= self._CLEANUP_DICT_THRESHOLD:
             return
-        if current_time - self._last_cleanup < self.window_size:
+        now_mono = time.monotonic()
+        if now_mono - self._last_cleanup_mono < self.window_size:
             return
-        self._last_cleanup = current_time
+        self._last_cleanup_mono = now_mono
 
         # Snapshot keys to avoid mutating during iteration.
         for k in list(self._requests.keys()):
@@ -95,13 +99,11 @@ class RateLimiter:
         window_start = current_time - self.window_size
 
         with self._lock:
-            self._maybe_cleanup(current_time, window_start, client_id)
+            self._maybe_cleanup(window_start, client_id)
 
             # Filter the current client's window. Strict ``>`` matches the
             # original semantics (timestamps exactly at window_start are out).
-            timestamps = [
-                t for t in self._requests[client_id] if t > window_start
-            ]
+            timestamps = [t for t in self._requests[client_id] if t > window_start]
             self._requests[client_id] = timestamps
 
             if len(timestamps) >= self.requests_per_minute:
@@ -135,7 +137,7 @@ def configure_rate_limiter(
         rate_limiter.enabled = enabled
         rate_limiter._requests.clear()
         rate_limiter._last_seen.clear()
-        rate_limiter._last_cleanup = 0.0
+        rate_limiter._last_cleanup_mono = 0.0
     return rate_limiter
 
 
