@@ -29,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -561,11 +562,22 @@ def _print_manual_fallback(
             "  Then open the PR via the GitHub web UI (no `gh` CLI needed):",
             file=stdout,
         )
-        # GitHub auto-detects the just-pushed branch and prefills the
-        # compare-and-PR page when you visit the compare URL with the
-        # branch ref. Works whether origin is the upstream or a fork.
+        # GitHub's "compare across forks" URL uses ``main...<owner>:<branch>``
+        # when the head branch lives on a fork — bare ``main...<branch>``
+        # only works if the branch is on the upstream repo, which most
+        # community contributors don't have write access to. Detect the
+        # origin owner so the printed URL works for the fork workflow
+        # too. (Codex PR #600 round-1 BLOCKING.) Fall back to the
+        # owner-less form when we can't parse origin (covers the
+        # ``no git remote yet`` case where the user hasn't pushed).
+        is_safe, origin_owner = _origin_is_safe_github(repo)
+        upstream_owner = UPSTREAM_REPO_FOR_GH.split("/", 1)[0]
+        if is_safe and origin_owner and origin_owner != upstream_owner:
+            head_ref = f"{origin_owner}:{branch}"
+        else:
+            head_ref = branch
         print(
-            f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/compare/main...{branch}?expand=1",
+            f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/compare/main...{head_ref}?expand=1",
             file=stdout,
         )
         print("", file=stdout)
@@ -578,10 +590,18 @@ def _print_manual_fallback(
             file=stdout,
         )
         print("  to a PR for you:", file=stdout)
+        # ``urlencode`` over the whole querystring handles spaces, ``&``,
+        # ``#``, ``%``, and any other special chars that might appear
+        # in a model alias or in the chip name. Bare ``.replace(' ', '%20')``
+        # produced malformed URLs for aliases like ``qwen3.6/27b`` where
+        # the slash breaks GitHub's title parser. (Codex PR #600 round-1.)
+        title = (
+            f"community-bench: {payload['model']['alias']} "
+            f"on {payload['hardware']['chip']}"
+        )
+        query = urllib.parse.urlencode({"title": title})
         print(
-            f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/issues/new"
-            f"?title=community-bench:%20{payload['model']['alias']}"
-            f"%20on%20{payload['hardware']['chip'].replace(' ', '%20')}",
+            f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/issues/new?{query}",
             file=stdout,
         )
 

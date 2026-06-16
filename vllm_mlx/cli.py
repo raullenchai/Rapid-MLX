@@ -1234,10 +1234,6 @@ def _run_submit_flow(args) -> int:
         )
         try:
             model, tokenizer = model_load_executor.submit(load, hf_path).result()
-        except (RepositoryNotFoundError, OSError) as e:
-            print(f"  Error loading model: {e}")
-            model_load_executor.shutdown(wait=False)
-            return 2
         except (ValueError, ModuleNotFoundError) as e:
             # mlx-lm raises ``ValueError: Model type X not supported`` plus an
             # internal ``ModuleNotFoundError: No module named 'mlx_lm.models.X'``
@@ -1247,7 +1243,10 @@ def _run_submit_flow(args) -> int:
             # without the ``[vision]`` extras hits this every time. The
             # README still recommends ``gemma-4-*`` aliases so newcomers
             # would otherwise see a raw traceback and conclude the model
-            # is broken — translate to an actionable hint.
+            # is broken — translate to an actionable hint. Placed BEFORE
+            # the broader ``OSError`` clause so a future maintainer can't
+            # accidentally make the broad branch swallow it (Codex PR
+            # #600 round-1 BLOCKING).
             msg = str(e)
             needs_vision = (
                 "gemma4_unified" in msg
@@ -1273,6 +1272,10 @@ def _run_submit_flow(args) -> int:
                 print()
             else:
                 print(f"  Error loading model: {e}")
+            model_load_executor.shutdown(wait=False)
+            return 2
+        except (RepositoryNotFoundError, OSError) as e:
+            print(f"  Error loading model: {e}")
             model_load_executor.shutdown(wait=False)
             return 2
 

@@ -1428,6 +1428,8 @@ def test_manual_fallback_without_gh_points_at_web_ui(tmp_path, monkeypatch) -> N
     sub_path.write_text("{}")
 
     monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+    # tmp_path has no git remote — _origin_is_safe_github returns
+    # (False, None) so the owner-less compare URL is used.
     out = io.StringIO()
     sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
     text = out.getvalue()
@@ -1443,9 +1445,130 @@ def test_manual_fallback_without_gh_points_at_web_ui(tmp_path, monkeypatch) -> N
     # Must also offer the paste-to-issue escape hatch so users with no
     # git fluency at all still have a way to land their numbers.
     assert (f"https://github.com/{sub_mod.UPSTREAM_REPO_FOR_GH}/issues/new") in text
-    assert "qwen3.5-9b-4bit" in text
-    # Chip name has to be URL-encoded — bare spaces would break the link.
-    assert "Apple%20M3%20Ultra" in text
+    # Title (alias + chip) round-trips through urlencode — verify both
+    # appear unmodified after decoding.
+    import urllib.parse as _up
+
+    issue_line = next(
+        line for line in text.splitlines() if "issues/new" in line
+    ).strip()
+    query = issue_line.split("?", 1)[1]
+    parsed = dict(_up.parse_qsl(query))
+    assert parsed["title"] == "community-bench: qwen3.5-9b-4bit on Apple M3 Ultra"
+
+
+def test_manual_fallback_without_gh_uses_fork_owner_when_origin_is_fork(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: when origin is a contributor's fork (the normal
+    contribution path), the compare URL must use ``main...<owner>:<branch>``
+    so GitHub can find the head branch on the fork — bare ``main...<branch>``
+    only resolves on the upstream repo. (Codex PR #600 round-1 BLOCKING.)
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "qwen3.5-9b-4bit", "hf_path": "y/z"},
+        "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
+        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+    # Mock origin → contributor's fork on github.com.
+    monkeypatch.setattr(
+        sub_mod,
+        "_origin_is_safe_github",
+        lambda _repo: (True, "some-contributor"),
+    )
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    branch = f"community-bench/{payload['submission_id']}"
+    # Cross-fork compare URL: head is owner-prefixed.
+    assert (f"compare/main...some-contributor:{branch}?expand=1") in text
+    # Must NOT print the bare same-repo form (would 404 for the user).
+    assert f"compare/main...{branch}?expand=1" not in text
+
+
+def test_manual_fallback_without_gh_skips_owner_when_origin_is_upstream(
+    tmp_path, monkeypatch
+) -> None:
+    """Counterpart to the fork case: when origin owner equals the
+    upstream owner (maintainer running locally), the URL must NOT
+    include the ``upstream:`` prefix — that would be redundant and
+    GitHub's compare page redirects it anyway.
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "x", "hf_path": "y/z"},
+        "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
+        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    upstream_owner = sub_mod.UPSTREAM_REPO_FOR_GH.split("/", 1)[0]
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+    monkeypatch.setattr(
+        sub_mod,
+        "_origin_is_safe_github",
+        lambda _repo: (True, upstream_owner),
+    )
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    branch = f"community-bench/{payload['submission_id']}"
+    assert f"compare/main...{branch}?expand=1" in text
+    assert f"compare/main...{upstream_owner}:" not in text
+
+
+def test_manual_fallback_url_encodes_alias_special_chars(tmp_path, monkeypatch) -> None:
+    """Regression: aliases or chip names containing ``&``, ``#``, ``/``,
+    ``%``, or spaces must round-trip cleanly through the issue-new
+    URL. Bare ``.replace(' ', '%20')`` produced malformed URLs for
+    realistic aliases like ``qwen3.6/27b``. (Codex PR #600 round-1 NIT.)
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {
+            "alias": "qwen3.6/27b & friends #beta 50%",
+            "hf_path": "y/z",
+        },
+        "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
+        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    # Decode the title param back and assert it round-trips losslessly.
+    import urllib.parse as _up
+
+    issue_line = next(
+        line for line in text.splitlines() if "issues/new" in line
+    ).strip()
+    query = issue_line.split("?", 1)[1]
+    parsed = dict(_up.parse_qsl(query))
+    assert (
+        parsed["title"]
+        == "community-bench: qwen3.6/27b & friends #beta 50% on Apple M3 Ultra"
+    )
 
 
 def test_manual_fallback_with_gh_keeps_gh_command(tmp_path, monkeypatch) -> None:

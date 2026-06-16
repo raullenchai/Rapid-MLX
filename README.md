@@ -1030,7 +1030,7 @@ We welcome contributions of all sizes! See [CONTRIBUTING.md](CONTRIBUTING.md) fo
   ```bash
   rapid-mlx bench qwen3.5-9b-4bit --submit
   ```
-  Runs the standardized B=1 bench (greedy, 128 + 512 token buckets, 5 rounds each), shows you the JSON payload, asks for consent, and opens the PR for you via `gh`. If you don't have `gh`, it prints the JSON path + a deep-link to GitHub's compare page so you can open the PR in your browser. Submitted rows land in [community-benchmarks/submissions/](community-benchmarks/) and show up on https://rapidmlx.com once merged.
+  Runs the standardized B=1 bench (greedy, 128 + 512 token buckets, 5 rounds each), shows you the JSON payload, asks for consent, and opens the PR for you via `gh`. If you don't have `gh`, it prints the JSON path + a deep-link to GitHub's compare page so you can open the PR in your browser. Submitted rows land in [community-benchmarks/submissions/](community-benchmarks/submissions/) and show up on https://rapidmlx.com once merged.
 - Test with your favorite AI client (Cursor, Aider, LangChain, etc.)
 - [Report a bug](https://github.com/raullenchai/Rapid-MLX/issues/new?template=bug_report.yml)
 
