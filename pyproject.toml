@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "0.7.15"
+version = "0.7.16"
 description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, 2-4x faster than Ollama."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -30,7 +30,7 @@ classifiers = [
 dependencies = [
     # Core — these are all you need for `rapid-mlx serve <text-model>`
     "mlx>=0.29.0",
-    "mlx-lm>=0.31.0",  # 0.31+ required for ArraysCache native batching (hybrid models)
+    "mlx-lm>=0.31.3",  # 0.31.3: BatchKVCache/BatchRotatingKVCache extend() dim fix (PR #1141, #1169, #1177) + thread-local generation stream (PR #1090). 0.31.2 brought non-trimmable prefix cache (hybrid models) + batch generator refactor + presence/frequency penalties. 0.31.0 yanked upstream ("Batched KV cache cross contamination").
     # mlx-vlm is opt-in via [vision] extras (saves ~322 MB for text-only users)
     "transformers>=5.0.0",  # mlx-lm 0.30.5+ requires transformers 5.0 (rc3 bug fixed in stable)
     "tokenizers>=0.19.0",
