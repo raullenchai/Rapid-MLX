@@ -28,6 +28,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -209,9 +210,12 @@ def _dir_size_gb(path: Path, *, budget_s: float = _CACHE_WALK_BUDGET_S) -> float
         Otherwise the total in GB.
 
     Walks with ``os.walk(..., followlinks=False)`` so LM-Studio-style symlinks
-    don't double-count. Aborts as soon as ``budget_s`` elapses — the next
-    file's ``getsize`` is still allowed, but no new directory is descended
-    into. That keeps the abort path O(1) instead of O(open-files-in-current-dir).
+    don't double-count. The deadline is checked **inside** the per-file loop,
+    not just between directories: HF cache's ``blobs/`` subdir is flat with
+    thousands of entries, so a per-directory deadline would let a single
+    cold-cache stat() storm blow past the 1.5 s budget. Codex review round 2
+    caught the per-directory variant as a contract violation; this version
+    aborts on the very next file once the deadline expires.
     """
     import time as _time
 
@@ -222,6 +226,10 @@ def _dir_size_gb(path: Path, *, budget_s: float = _CACHE_WALK_BUDGET_S) -> float
     try:
         for root, _dirs, files in os.walk(path, followlinks=False):
             for f in files:
+                if _time.monotonic() >= deadline:
+                    # Budget exhausted mid-directory; partial total isn't
+                    # useful (lower bound only). Caller renders "unknown".
+                    return None
                 try:
                     total += os.path.getsize(os.path.join(root, f))
                 except OSError:
@@ -230,9 +238,6 @@ def _dir_size_gb(path: Path, *, budget_s: float = _CACHE_WALK_BUDGET_S) -> float
                     # every file".
                     continue
             if _time.monotonic() >= deadline:
-                # Budget exhausted; the partial total isn't useful as a
-                # size (lower bound only), so return None and let the
-                # caller render "unknown / too large to size".
                 return None
     except OSError:
         return None
@@ -463,12 +468,31 @@ def section_optional_packages() -> Section:
 # ---------------------------------------------------------------------------
 
 
+def _nearest_existing_parent(p: Path) -> Path | None:
+    """Walk up ``p``'s ancestors until we find one that exists, or return
+    ``None`` if even the filesystem root has somehow disappeared."""
+    for ancestor in (p, *p.parents):
+        if ancestor.exists():
+            return ancestor
+    return None
+
+
 def section_hf_cache() -> Section:
     s = Section("HuggingFace Cache")
 
     cache = _hf_cache_dir()
     if cache.exists():
-        if os.access(cache, os.W_OK):
+        # Codex review round 2: ``os.access`` returns True for a writable
+        # regular file too, so a user who set ``HF_HUB_CACHE`` to a path
+        # that's now a file (typo, mv accident, …) would see ✓ here and
+        # then fail on the first download with a confusing error.
+        if not cache.is_dir():
+            s.add(
+                f"{cache} exists but is NOT a directory",
+                CheckStatus.FAIL,
+                detail=f"path={cache} type=non-directory",
+            )
+        elif os.access(cache, os.W_OK):
             s.add(
                 f"{cache} exists, writable",
                 CheckStatus.OK,
@@ -481,13 +505,25 @@ def section_hf_cache() -> Section:
                 detail=f"path={cache}",
             )
     else:
-        # Missing cache isn't a failure — first run will create it. But warn
-        # so users with a misconfigured HF_HOME notice early.
-        s.add(
-            f"{cache} does not exist yet (will be created on first download)",
-            CheckStatus.WARN,
-            detail=f"path={cache}",
-        )
+        # Missing cache isn't *always* a soft warning — if the nearest
+        # existing parent isn't writable either, the first download will
+        # fail trying to create ``cache``. Codex review round 2 caught
+        # the previous unconditional WARN as silently green for
+        # ``HF_HOME=/readonly/hf``.
+        parent = _nearest_existing_parent(cache.parent)
+        if parent is None or not os.access(parent, os.W_OK):
+            s.add(
+                f"{cache} does not exist and parent {parent} is NOT writable "
+                "— next download will fail",
+                CheckStatus.FAIL,
+                detail=f"path={cache} parent={parent}",
+            )
+        else:
+            s.add(
+                f"{cache} does not exist yet (will be created on first download)",
+                CheckStatus.WARN,
+                detail=f"path={cache} parent={parent}",
+            )
 
     # Disk free for the partition the cache lives on (or would live on).
     probe_dir = cache if cache.exists() else cache.parent
@@ -555,7 +591,9 @@ def _probe_hf(timeout: float = _HF_PROBE_TIMEOUT_S) -> tuple[CheckStatus, str]:
         return CheckStatus.WARN, f"OSError: {e}"
 
 
-def section_network(*, probe: callable | None = None) -> Section:
+def section_network(
+    *, probe: Callable[[], tuple[CheckStatus, str]] | None = None
+) -> Section:
     """Network reachability probe.
 
     ``probe`` is injected by tests to avoid hitting the real internet.
@@ -611,6 +649,13 @@ def section_network(*, probe: callable | None = None) -> Section:
 
 _ARGCOMPLETE_HOOK_NEEDLE = "register-python-argcomplete rapid-mlx"
 
+# Bound per-rc read so a 50 MB hand-edited zshrc, a named pipe, or a
+# block device pointed-to via symlink can't make doctor hang or eat RAM.
+# 256 KB is roughly 4000 lines of shell config, which is far above any
+# real-world rc file's footprint. Codex review round 2 caught the
+# previous unbounded ``read_text`` as a DoS / hang vector.
+_RC_READ_LIMIT_BYTES = 256 * 1024
+
 
 def _candidate_shell_rcs() -> list[Path]:
     """Return the rc files we look at for argcomplete activation."""
@@ -623,25 +668,42 @@ def _candidate_shell_rcs() -> list[Path]:
     ]
 
 
+def _read_rc_prefix(rc: Path, limit: int = _RC_READ_LIMIT_BYTES) -> str | None:
+    """Read up to ``limit`` bytes from ``rc``. Skips non-regular files
+    (pipes / devices / symlinks-to-non-files) and decoding errors."""
+    try:
+        # ``stat`` follows symlinks, which is the right behavior for shell
+        # rc files (people symlink their dotfiles all the time) — but we
+        # refuse non-regular targets (S_IFREG missing).
+        st = rc.stat()
+    except OSError:
+        return None
+    import stat as _stat
+
+    if not _stat.S_ISREG(st.st_mode):
+        return None
+    try:
+        with rc.open("rb") as f:
+            return f.read(limit).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def _argcomplete_hook_present(
     rcs: list[Path] | None = None,
 ) -> tuple[bool, Path | None]:
     """Return (present, rc_file_with_hook). ``rcs`` is injected by tests."""
     rcs = rcs if rcs is not None else _candidate_shell_rcs()
     for rc in rcs:
-        try:
-            if rc.exists() and _ARGCOMPLETE_HOOK_NEEDLE in rc.read_text(
-                errors="replace"
-            ):
-                return True, rc
-        except OSError:
-            continue
+        content = _read_rc_prefix(rc)
+        if content and _ARGCOMPLETE_HOOK_NEEDLE in content:
+            return True, rc
     return False, None
 
 
 def section_shell_integration(
     *,
-    which: callable | None = None,
+    which: Callable[[str], str | None] | None = None,
     rcs: list[Path] | None = None,
 ) -> Section:
     """Verify the CLI is on PATH and argcomplete is wired up.
@@ -688,7 +750,9 @@ def section_shell_integration(
 # ---------------------------------------------------------------------------
 
 
-def section_optional_tools(*, which: callable | None = None) -> Section:
+def section_optional_tools(
+    *, which: Callable[[str], str | None] | None = None
+) -> Section:
     """Probe for development tools that improve the rapid-mlx experience but
     are never required to run inference. Missing → ✗ (issue) because the user
     explicitly opted into a workflow that needs them — phrasing makes it

@@ -269,6 +269,73 @@ def test_dir_size_walk_aborts_on_budget(tmp_path: Path):
     )
 
 
+def test_dir_size_walk_aborts_inside_flat_directory(tmp_path: Path):
+    """Flat directory with many files must respect the per-file deadline,
+    not just the per-directory one. HF cache's ``blobs/`` subdir is the
+    real-world example: thousands of files in a single dir; a per-dir
+    deadline check would let a single cold-cache stat() storm blow past
+    the budget. Codex review round 2 caught this; the per-file check
+    fixes it."""
+    # 500 files in one flat dir.
+    for i in range(500):
+        (tmp_path / f"f{i:04d}.bin").write_bytes(b"\0")
+    # budget_s=0 must abort *before* iterating all 500 files.
+    import time as _time
+
+    t0 = _time.monotonic()
+    result = eh._dir_size_gb(tmp_path, budget_s=0.0)
+    elapsed = _time.monotonic() - t0
+    assert result is None, "zero-budget flat-dir walk should return None"
+    # Tight ceiling: must abort within a small multiple of one file's worth.
+    assert elapsed < 0.5, (
+        f"flat-dir walk took {elapsed:.3f}s with budget_s=0 — "
+        "per-file deadline check isn't firing"
+    )
+
+
+def test_hf_cache_non_directory_marks_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``HF_HUB_CACHE`` pointing at a writable regular file must FAIL —
+    ``os.access`` returns True for writable files too, so the previous
+    revision would have shipped ✓ here. Codex review round 2 fixed."""
+    file_target = tmp_path / "i_am_a_file_not_a_dir"
+    file_target.write_text("oops")
+    monkeypatch.setenv("HF_HUB_CACHE", str(file_target))
+
+    section = eh.section_hf_cache()
+    first = section.checks[0]
+    assert first.status is eh.CheckStatus.FAIL
+    assert "NOT a directory" in first.label
+
+
+def test_hf_cache_missing_with_readonly_parent_marks_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Missing cache + readonly nearest-existing-parent → FAIL, not WARN.
+    Codex review round 2: previous unconditional WARN exited 0 even when
+    the first download was guaranteed to fail."""
+    readonly_root = tmp_path / "readonly"
+    readonly_root.mkdir()
+    target = readonly_root / "nonexistent_hub"
+    monkeypatch.setenv("HF_HUB_CACHE", str(target))
+
+    # Mock os.access so the test doesn't depend on chmod semantics across
+    # CI runners (where the actual chmod may not stick in tmpfs).
+    real_access = eh.os.access
+
+    def fake_access(p, mode):
+        if str(p) == str(readonly_root):
+            return False  # parent isn't writable
+        return real_access(p, mode)
+
+    with mock.patch.object(eh.os, "access", side_effect=fake_access):
+        section = eh.section_hf_cache()
+    first = section.checks[0]
+    assert first.status is eh.CheckStatus.FAIL
+    assert "parent" in first.label and "NOT writable" in first.label
+
+
 # ---------------------------------------------------------------------------
 # Section: Network
 # ---------------------------------------------------------------------------

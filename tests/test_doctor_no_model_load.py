@@ -47,14 +47,23 @@ def test_doctor_module_does_not_import_engine_or_server():
     """
     import subprocess
 
+    # Block both exact names AND the ``mlx*`` family (mlx, mlx.core, mlx_lm,
+    # mlx_vlm). Codex review round 2: the previous set missed ``mlx.core``,
+    # so importing mlx at module load would have slipped past silently.
     probe = (
         "import importlib, sys; "
-        "blocked = {'vllm_mlx.engine', 'vllm_mlx.server', 'vllm_mlx.api.server'}; "
+        "blocked_exact = {'vllm_mlx.engine', 'vllm_mlx.server', "
+        "'vllm_mlx.api.server'}; "
+        "blocked_prefixes = ('mlx.', 'mlx_lm', 'mlx_vlm'); "
         "importlib.import_module('vllm_mlx.doctor'); "
         "importlib.import_module('vllm_mlx.doctor.cli'); "
         "importlib.import_module('vllm_mlx.doctor.env_health'); "
-        "leaked = blocked & set(sys.modules); "
-        "sys.exit('LEAKED:' + ','.join(sorted(leaked))) if leaked else None"
+        "loaded = set(sys.modules); "
+        "leaked_exact = blocked_exact & loaded; "
+        "leaked_prefix = {m for m in loaded "
+        "if m == 'mlx' or m.startswith(blocked_prefixes)}; "
+        "leaked = sorted(leaked_exact | leaked_prefix); "
+        "sys.exit('LEAKED:' + ','.join(leaked)) if leaked else None"
     )
     result = subprocess.run(  # noqa: S603 — args constructed by us
         [sys.executable, "-c", probe],
