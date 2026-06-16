@@ -28,35 +28,41 @@ from .think_parser import BaseThinkingReasoningParser
 # string — so the default "no end token, no start token" branch routes
 # the whole thing into ``content`` and ``reasoning_content`` stays empty.
 #
-# Scoped narrowly to **explicit scratchpad labels** — phrases that are
-# overwhelmingly unambiguous chain-of-thought preambles, identified by
-# (a) being known scratchpad nouns (``thinking process``, ``reasoning``,
-# ``chain-of-thought``, ``scratchpad``, ``thought process``,
-# ``reasoning process``) and (b) ending with a label punctuation
-# (``:``).  Conversational phrases like ``Let me think...`` or ``I need
-# to analyze...`` are NOT matched — they are common openers for direct
-# answers and would be misclassified when ``enable_thinking=False``
-# (codex r1 BLOCKING).  Bare ``Step by step:`` / ``Step-by-step:`` is
-# also NOT matched — that form is the canonical heading for a direct
-# answer to "explain step by step" and would clobber legitimate
-# tutorials / how-tos (codex r2 BLOCKING).  The bare ``thinking:``
-# label (without ``process``) is also NOT matched — ``Here's my
-# thinking:`` is normal user-facing phrasing and the broader form
-# generated false positives on direct answers (codex r3 BLOCKING).
+# Scoped narrowly to **unambiguous scratchpad labels** — phrases that
+# overwhelmingly signal chain-of-thought, identified by (a) being
+# known scratchpad nouns and (b) ending with label punctuation (``:``).
+#
+# Excluded — common direct-answer phrasings (would clobber valid
+# answers if the model said them with ``enable_thinking=False`` or
+# without ``enable_thinking`` set):
+#   * ``Let me think…`` / ``I need to analyze…`` (codex r1 BLOCKING)
+#   * Bare ``Step by step:`` / ``Step-by-step:`` (codex r2 BLOCKING)
+#   * Bare ``thinking:`` (``Here's my thinking: …``) — the broader
+#     ``thinking(?:\s+process)?`` form generated false positives on
+#     direct answers (codex r3 BLOCKING)
+#   * Bare ``reasoning:`` / ``reasoning process:`` (``Here's my
+#     reasoning: …``) — ``reasoning`` alone is a very common direct-
+#     answer opener and many legacy callers default to
+#     ``enable_thinking=None``; firing on this label clobbers valid
+#     responses on the most common code path (codex r4 BLOCKING).
+#     ``thinking process``, ``thought process``, ``chain-of-thought``,
+#     and ``scratchpad`` survive because they are scratchpad-shaped
+#     in a way ``reasoning`` is not.
+#
 # Match anchored at ``^\s*`` so a normal answer that merely mentions
 # a scratchpad noun mid-response is not reclassified.
 _BARE_THINK_PREFIX_RE = re.compile(
     r"^(?:\s*)"  # leading whitespace from the injected ``<think>\n``
     r"(?:"
-    # "Here's a thinking process:" / "Here is the reasoning:" / etc.
+    # "Here's a thinking process:" / "Here's the thought process:" /
+    # "Here is the chain-of-thought:" / "Here's the scratchpad:".
     # Must end with ``:`` to ensure it's a scratchpad label, not a
-    # casual answer like "Here is the answer: ...". ``thinking``
-    # alone is excluded because ``Here's my thinking:`` is normal
-    # phrasing — only ``thinking process`` is the scratchpad form
-    # (codex r3 BLOCKING).
+    # casual answer like "Here is the answer: ...". ``reasoning``
+    # and ``reasoning process`` are deliberately NOT in this
+    # alternation — see the header comment for why.
     r"(?:Here(?:'s|\s+is)\s+(?:my\s+|a\s+|the\s+)?"
-    r"(?:thinking\s+process|reasoning|chain[-\s]of[-\s]thought|"
-    r"scratchpad|thought\s+process|reasoning\s+process)"
+    r"(?:thinking\s+process|chain[-\s]of[-\s]thought|"
+    r"scratchpad|thought\s+process)"
     r"\s*:)"
     # "Thinking step by step:" / "Thinking out loud:" / etc. — only
     # the labelled scratchpad form (terminating ``:`` required).
@@ -65,9 +71,12 @@ _BARE_THINK_PREFIX_RE = re.compile(
     # step-by-step" answers (tutorials, how-tos).
     r"|(?:Thinking\s+(?:step\s+by\s+step|out\s+loud|through(?:\s+this)?|"
     r"carefully|aloud)\s*:)"
-    # "My thought process:" / "My reasoning process:" — scratchpad
-    # label that requires ``:`` (e.g. NOT "My thought is that ...").
-    r"|(?:My\s+(?:thought|reasoning)\s+process\s*:)"
+    # "My thought process:" — scratchpad label that requires ``:``
+    # (e.g. NOT "My thought is that ..."). ``My reasoning process:``
+    # is excluded because the same ``reasoning`` over-broadening that
+    # bit the ``Here's`` alternation also bites here on the legacy
+    # ``enable_thinking=None`` path (codex r4 BLOCKING).
+    r"|(?:My\s+thought\s+process\s*:)"
     r")",
     re.IGNORECASE,
 )

@@ -778,21 +778,42 @@ class TestQwen3:
         # direct "explain step by step" answers (codex r2 BLOCKING).
         for prefix in [
             "Here is my thinking process:",
-            "Here's my reasoning:",
             "Here is the chain-of-thought:",
             "Here's the thought process:",
-            "Here is the reasoning process:",
+            "Here's the scratchpad:",
             "Thinking step by step:",
             "Thinking out loud:",
             "Thinking through this:",
             "My thought process:",
-            "My reasoning process:",
         ]:
             text = f"{prefix}\n\n1. First consider..."
             reasoning, content = self.parser.extract_reasoning(text)
             assert reasoning is not None, f"expected reasoning for prefix={prefix!r}"
             # ``""`` signals "overwrite to empty" to the finalize helper.
             assert content == "", f"expected empty content for prefix={prefix!r}"
+
+    def test_bare_reasoning_label_no_longer_matches(self):
+        # Codex r4 BLOCKING regression pin: ``reasoning`` (alone) and
+        # ``reasoning process`` are excluded from the regex because
+        # ``Here's my reasoning: …`` and ``My reasoning process: …``
+        # are common direct-answer openers. Most callers default to
+        # ``enable_thinking=None`` (legacy), so matching these labels
+        # there would clobber valid answers on the busiest code path.
+        # This test pins the exclusion so a future regex rewrite
+        # cannot silently re-add them.
+        for ambiguous in [
+            "Here's my reasoning: Portland wins on food.",
+            "Here is my reasoning: Pittsburgh outperforms in winter.",
+            "Here is the reasoning: route through Salt Lake.",
+            "Here is the reasoning process: sort then score.",
+            "My reasoning process: weigh each option against criteria.",
+        ]:
+            reasoning, content = self.parser.extract_reasoning(ambiguous)
+            assert reasoning is None, (
+                f"bare ``reasoning(:|\\s+process:)`` must no longer "
+                f"match — clobbered direct answer: {ambiguous!r}"
+            )
+            assert content == ambiguous
 
     def test_ambiguous_phrases_not_misclassified(self):
         # When ``enable_thinking=False`` (or the model otherwise emits a
@@ -979,16 +1000,19 @@ class TestQwen3:
         # Codex r3 BLOCKING regression pin: when ``enable_thinking=False``
         # the caller has affirmatively said "no thinking is happening";
         # the bare-text fallback MUST defer and leave a valid answer
-        # alone even if it opens with a scratchpad-shaped phrase.
-        # Without this gate, ``Here's my reasoning: ...`` answers from
-        # non-thinking-mode requests had ``content`` clobbered.
+        # alone even if it opens with a scratchpad-shaped phrase. The
+        # gate exists for legitimate teaching / tutorial content —
+        # explaining a thinking-process methodology in non-thinking
+        # mode is a real use case (``Here's a thinking process you
+        # can use for any optimisation problem: …``) and must not be
+        # reclassified as the model's own chain-of-thought.
         text = (
-            "Here's my reasoning: Portland has the strongest food "
-            "scene of the three options on this route."
+            "Here's a thinking process: first survey the available "
+            "options, then score each one against your criteria, "
+            "then pick the top result. This is a teaching answer "
+            "the user explicitly asked for."
         )
-        reasoning, content = self.parser.extract_reasoning(
-            text, enable_thinking=False
-        )
+        reasoning, content = self.parser.extract_reasoning(text, enable_thinking=False)
         assert reasoning is None
         assert content == text
 
@@ -1003,9 +1027,7 @@ class TestQwen3:
             "1. Sort the options by relevance.\n"
             "2. Score each one against the criteria.\n"
         )
-        reasoning, content = self.parser.extract_reasoning(
-            text, enable_thinking=None
-        )
+        reasoning, content = self.parser.extract_reasoning(text, enable_thinking=None)
         assert reasoning is not None
         assert "thinking process" in reasoning
         # ``""`` not None so the upstream finalize overwrites cleaned_text.

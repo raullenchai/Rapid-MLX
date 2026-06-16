@@ -297,16 +297,17 @@ def test_570_qwen3_truncated_thought_routes_to_reasoning_when_thinking_unspecifi
 
 
 def test_570_qwen3_valid_non_thinking_answer_not_clobbered_when_thinking_off():
-    """Codex r3 BLOCKING regression pin: a perfectly valid non-thinking
-    answer that opens with a scratchpad-shaped phrase (``Here's my
-    reasoning:`` is the canonical false positive) must NOT have its
-    content cleared when the caller passes ``enable_thinking=False``.
-    Without the explicit-False gate, the bare-text regex would match
-    and the user would see empty ``message.content``."""
+    """Codex r3 BLOCKING regression pin: a teaching / tutorial answer
+    that explains a chain-of-thought methodology (``Here's a thinking
+    process you can use…``) must NOT have its content cleared when
+    the caller passes ``enable_thinking=False`` — the user explicitly
+    asked for the explanation. Without the explicit-False gate, the
+    bare-text regex would match and the user would see empty
+    ``message.content``."""
     valid_answer = (
-        "Here's my reasoning: Portland has the best food scene of the "
-        "three options — the Pacific Northwest sourcing pipeline + the "
-        "carts-by-the-dozen culture put it ahead."
+        "Here's a thinking process you can use for any optimisation "
+        "problem: first survey the options, then score each one "
+        "against your criteria, then pick the top-scoring result."
     )
     cleaned, reasoning = _finalize_content_and_reasoning(
         raw_text=valid_answer,
