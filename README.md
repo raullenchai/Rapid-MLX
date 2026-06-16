@@ -67,6 +67,9 @@ brew install raullenchai/rapid-mlx/rapid-mlx
 # pip (requires Python 3.10+ — macOS ships 3.9, so install Python first if needed)
 pip install rapid-mlx
 
+# uv (isolated tool env — to refresh later: `uv tool upgrade rapid-mlx`)
+uv tool install rapid-mlx@latest
+
 # Or one-liner with auto-setup (installs Python if needed)
 curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
 ```
