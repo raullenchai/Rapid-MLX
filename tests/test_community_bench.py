@@ -1256,6 +1256,10 @@ def test_validate_rejects_non_rfc3339_datetimes(
         "2026-06-16T08:00:00-04:00",
         # Lowercase t separator is also valid RFC 3339.
         "2026-06-16t12:00:00Z",
+        # Lowercase z offset is also valid RFC 3339 §5.6.
+        # (Codex PR #602 round-3 BLOCKING.)
+        "2026-06-16T12:00:00z",
+        "2026-06-16t12:00:00z",
     ],
 )
 def test_validate_accepts_valid_rfc3339_datetimes(
