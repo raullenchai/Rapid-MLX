@@ -23,7 +23,11 @@ config:
     [model_providers.rapid-mlx]
     name = "Rapid-MLX (local)"
     base_url = "{base_url}"
-    api_key = "not-needed"
+    # No auth field — rapid-mlx is unauthed by default and Codex
+    # `--strict-config` rejects an inline literal like `api_key = "..."`.
+    # If you start the server with `--api-key`, add:
+    #     env_key = "RAPID_MLX_API_KEY"
+    # and `export RAPID_MLX_API_KEY=<your-key>` in your shell.
     # The /v1/responses path is the hot path Codex uses; rapid-mlx
     # exposes it directly. No wire_api override needed.
 

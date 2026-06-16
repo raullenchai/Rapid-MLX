@@ -328,7 +328,9 @@ model_provider = "rapid-mlx"
 [model_providers.rapid-mlx]
 name = "Rapid-MLX (local)"
 base_url = "http://localhost:8000/v1"
-api_key = "not-needed"
+# If rapid-mlx was started with --api-key, add env_key = "RAPID_MLX_API_KEY"
+# and `export RAPID_MLX_API_KEY=...`. Don't use api_key = "..." — Codex
+# CLI's --strict-config rejects inline literals.
 ```
 
 Then `codex` (or `codex exec '<query>'`) talks to the local model via `/v1/responses`. See the [Codex CLI guide](docs/guides/codex-cli.md) for the full setup.

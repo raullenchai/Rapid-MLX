@@ -64,9 +64,17 @@ def test_codex_template_renders_to_valid_toml():
     assert "rapid-mlx" in providers
     rmlx = providers["rapid-mlx"]
     assert rmlx["base_url"] == "http://localhost:8000/v1"
-    assert "api_key" in rmlx
     # name is a display-only field, must be a string.
     assert isinstance(rmlx["name"], str)
+    # Codex CLI >= 0.135 rejects an inline `api_key = "..."` literal under
+    # `--strict-config` (the field is unknown; credentials come from
+    # `env_key = "VAR_NAME"` indirection instead). rapid-mlx is unauthed
+    # by default so the template omits both — verify neither variant
+    # sneaks back in via a future refactor.
+    assert "api_key" not in rmlx, (
+        "Inline `api_key` is rejected by `codex --strict-config`. "
+        "If you need to ship credentials, use `env_key = \"VAR_NAME\"`."
+    )
 
 
 @pytest.mark.parametrize(

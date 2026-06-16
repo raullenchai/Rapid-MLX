@@ -52,13 +52,29 @@ model_provider = "rapid-mlx"
 [model_providers.rapid-mlx]
 name = "Rapid-MLX (local)"
 base_url = "http://localhost:8000/v1"
-api_key = "not-needed"
 ```
 
 Codex picks the provider from `model_provider` and resolves its
-`base_url` from the matching `[model_providers.NAME]` block. The
-`api_key` value is ignored by rapid-mlx unless you started the server
-with `--api-key`.
+`base_url` from the matching `[model_providers.NAME]` block.
+
+### With `--api-key` enabled on the server
+
+Current Codex CLI (>= 0.135) reads the credential via **env-var
+indirection**, not as an inline literal — Codex's `--strict-config`
+rejects `api_key = "..."` as an unknown field. Use `env_key` instead:
+
+```toml
+[model_providers.rapid-mlx]
+name = "Rapid-MLX (local)"
+base_url = "http://localhost:8000/v1"
+env_key = "RAPID_MLX_API_KEY"
+```
+
+And in your shell:
+
+```bash
+export RAPID_MLX_API_KEY=your-secret
+```
 
 ## Model name passthrough
 
