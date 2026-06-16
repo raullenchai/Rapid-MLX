@@ -32,7 +32,7 @@ make smoke                            # or: rapid-mlx doctor smoke
 # suite, so failures cleanly attribute to rapid-mlx bugs.
 HF_HUB_CACHE=... make check           # or: rapid-mlx doctor check
 
-# Pre-release — three models + all 11 agent profiles
+# Pre-release — three models + all 12 agent profiles
 HF_HUB_CACHE=... make full
 
 # Re-record baselines (after intentional perf changes)
@@ -98,12 +98,12 @@ the old default and made bug triage ambiguous.
 
 Override the model with `--model qwen3.6-35b-4bit` (will need its own baseline).
 
-### `full` (~2-3 hr, 3 models × 11 agent profiles)
+### `full` (~2-3 hr, 3 models × 12 agent profiles)
 
 Loops the check tier across `qwen3.5-35b-8bit` (8-bit) and
 `qwen3.6-35b-4bit` (4-bit) — real-capacity Qwen lines that both go
 through the Hermes parser path that most users hit. For each model,
-also runs all 11 agent profiles' auto-generated test plans.
+also runs all 12 agent profiles' auto-generated test plans.
 
 > Gemma 4 was previously in the default list for orthogonal coverage
 > but was dropped after PR #208 validation showed it fails multiple

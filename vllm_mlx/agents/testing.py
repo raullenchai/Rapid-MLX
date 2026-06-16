@@ -613,8 +613,12 @@ def _test_streaming_basic(base_url: str, model_id: str) -> TestResult:
                     break
                 data = json.loads(line[6:])
                 delta = data["choices"][0].get("delta", {})
-                # Accept content OR reasoning deltas (thinking models)
-                text = delta.get("content") or delta.get("reasoning")
+                # Accept content OR reasoning deltas (thinking models).
+                # The chat route emits `reasoning_content`, not
+                # `reasoning` (vllm_mlx/routes/chat.py:1434) — the prior
+                # `delta.get("reasoning")` lookup silently turned this
+                # test into a no-op for any thinking-only response.
+                text = delta.get("content") or delta.get("reasoning_content")
                 if text:
                     content += text
                     chunks += 1
