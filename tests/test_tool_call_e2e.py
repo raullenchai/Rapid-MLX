@@ -246,12 +246,30 @@ MAX_ROUNDS = 8
 
 
 def _server_available() -> bool:
-    """Check if vllm-mlx server is running."""
+    """Check if a vllm-mlx server on :8000 is reachable AND unauthenticated.
+
+    The tests POST to ``/v1/chat/completions`` without any Authorization
+    header. A server with an API key configured will respond 401 there,
+    but its ``/health`` endpoint stays 200 (intentionally — health probes
+    must not require auth). Probing ``/health`` alone therefore reports
+    "available" against an auth-protected server, the tests then run,
+    each request bounces off auth, ``run_agent_loop`` returns
+    ``content=None``, and every test fails with ``AssertionError:
+    Expected text response``.
+
+    We additionally probe ``/v1/models`` — the surface the tests
+    actually use — and require it to answer 200 unauthenticated. Any
+    non-200 (401, 503, connection error) is treated as "no usable
+    server" and the suite skips cleanly.
+    """
     if not _HTTPX:
         return False
     try:
-        r = httpx.get("http://localhost:8000/health", timeout=2.0)
-        return r.status_code == 200
+        h = httpx.get("http://localhost:8000/health", timeout=2.0)
+        if h.status_code != 200:
+            return False
+        m = httpx.get("http://localhost:8000/v1/models", timeout=2.0)
+        return m.status_code == 200
     except Exception:
         return False
 
