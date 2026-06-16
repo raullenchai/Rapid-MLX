@@ -420,6 +420,26 @@
       "top_k": 64
     }
   },
+  "gemma3-4b-qat-4bit": {
+    "hf_path": "mlx-community/gemma-3-4b-it-qat-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "qwen2.5-14b-4bit": {
+    "hf_path": "mlx-community/Qwen2.5-14B-Instruct-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
   "phi-4-14b-4bit": {
     "hf_path": "mlx-community/phi-4-4bit",
     "tool_call_parser": "hermes",
@@ -678,8 +698,32 @@
       "top_k": 64
     }
   },
+  "gemma3-1b-qat-4bit": {
+    "hf_path": "mlx-community/gemma-3-1b-it-qat-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
   "gemma3-27b-4bit": {
     "hf_path": "mlx-community/gemma-3-27b-it-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64
+    }
+  },
+  "gemma3-27b-qat-4bit": {
+    "hf_path": "mlx-community/gemma-3-27b-it-qat-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
     "is_hybrid": false,

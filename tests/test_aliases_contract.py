@@ -614,6 +614,13 @@ _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     "gemma3-1b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma3-12b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma3-27b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    # Gemma 3 QAT variants — same sampling as the PTQ siblings above. QAT
+    # changes weight distribution (training with simulated quantization),
+    # not the decoding distribution, so Google's chat sampling guidance
+    # applies unchanged. (Matches the Gemma 4 QAT block below.)
+    "gemma3-1b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma3-4b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma3-27b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # Gemma 4 — official Google sampling guidance hasn't been
     # published yet at the time of writing; we extrapolate from the
     # Gemma 3 family card. Revisit when an official Gemma 4 doc lands.
