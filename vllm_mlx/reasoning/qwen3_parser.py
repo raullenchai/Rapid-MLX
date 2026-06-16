@@ -39,17 +39,23 @@ from .think_parser import BaseThinkingReasoningParser
 # (codex r1 BLOCKING).  Bare ``Step by step:`` / ``Step-by-step:`` is
 # also NOT matched — that form is the canonical heading for a direct
 # answer to "explain step by step" and would clobber legitimate
-# tutorials / how-tos (codex r2 BLOCKING).  Match anchored at ``^\s*``
-# so a normal answer that merely mentions a scratchpad noun mid-
-# response is not reclassified.
+# tutorials / how-tos (codex r2 BLOCKING).  The bare ``thinking:``
+# label (without ``process``) is also NOT matched — ``Here's my
+# thinking:`` is normal user-facing phrasing and the broader form
+# generated false positives on direct answers (codex r3 BLOCKING).
+# Match anchored at ``^\s*`` so a normal answer that merely mentions
+# a scratchpad noun mid-response is not reclassified.
 _BARE_THINK_PREFIX_RE = re.compile(
     r"^(?:\s*)"  # leading whitespace from the injected ``<think>\n``
     r"(?:"
     # "Here's a thinking process:" / "Here is the reasoning:" / etc.
     # Must end with ``:`` to ensure it's a scratchpad label, not a
-    # casual answer like "Here is the answer: ...".
+    # casual answer like "Here is the answer: ...". ``thinking``
+    # alone is excluded because ``Here's my thinking:`` is normal
+    # phrasing — only ``thinking process`` is the scratchpad form
+    # (codex r3 BLOCKING).
     r"(?:Here(?:'s|\s+is)\s+(?:my\s+|a\s+|the\s+)?"
-    r"(?:thinking(?:\s+process)?|reasoning|chain[-\s]of[-\s]thought|"
+    r"(?:thinking\s+process|reasoning|chain[-\s]of[-\s]thought|"
     r"scratchpad|thought\s+process|reasoning\s+process)"
     r"\s*:)"
     # "Thinking step by step:" / "Thinking out loud:" / etc. — only
@@ -182,12 +188,21 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # the kwarg defaulted), the chat template still injects
             # ``<think>\n`` for Qwen3 thinking models. If the output
             # opens with a recognizable bare-text thinking marker
-            # (``Here's a thinking process:``, ``Step by step:``, …),
-            # treat the whole output as reasoning so it surfaces in
-            # ``reasoning_content`` instead of leaking into ``content``.
-            # This mirrors the streaming path which already routes
-            # pre-tag text to reasoning while ``</think>`` has not yet
-            # been seen.
+            # (``Here's a thinking process:`` and a few close variants
+            # — see ``_BARE_THINK_PREFIX_RE``), treat the whole output
+            # as reasoning so it surfaces in ``reasoning_content``
+            # instead of leaking into ``content``.
+            #
+            # Gated on ``enable_thinking is not False`` so an explicit
+            # ``enable_thinking=False`` from the caller wins: a
+            # non-thinking answer that happens to start with
+            # ``Here's my reasoning:`` must NOT be reclassified — the
+            # caller has affirmatively told us thinking is disabled
+            # and clobbering a valid answer would leave the client
+            # with empty ``message.content`` (codex r3 BLOCKING).
+            # ``None`` (legacy callers that don't thread the flag) and
+            # ``True`` (explicit thinking-on) both let the fallback
+            # fire defensively.
             #
             # Return ``""`` (not ``None``) for content so the upstream
             # ``_finalize_content_and_reasoning`` overwrites
@@ -197,7 +212,9 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # has no tag to strip, so the parser must signal "no
             # content" explicitly here or the original raw output
             # would leak through to the client.
-            if _looks_like_bare_think_preamble(model_output):
+            if enable_thinking is not False and _looks_like_bare_think_preamble(
+                model_output
+            ):
                 return model_output.strip() or None, ""
             # No think tags at all — pure content
             return None, model_output
@@ -235,9 +252,12 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         if accumulated_text:
             # Cases 1 & 2: no close tag — emit full text as content,
             # stripping the template-injected ``<think>`` prefix if present.
-            cleaned = accumulated_text
-            if cleaned.startswith(self.start_token):
-                cleaned = cleaned[len(self.start_token) :]
+            saw_think_prefix = accumulated_text.startswith(self.start_token)
+            cleaned = (
+                accumulated_text[len(self.start_token) :]
+                if saw_think_prefix
+                else accumulated_text
+            )
             if not cleaned:
                 return None
             # Bare-text thinking fallback (mirrors ``extract_reasoning``):
@@ -248,7 +268,19 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # preamble as ``content``; keep it in ``reasoning`` instead so
             # OpenAI-compatible clients can distinguish chain-of-thought
             # leakage from the final answer. (Issue #570.)
-            if _looks_like_bare_think_preamble(cleaned):
+            #
+            # Gated on ``saw_think_prefix`` because ``finalize_streaming``
+            # has no ``enable_thinking`` kwarg — the leading
+            # ``<think>`` token (template-injected or model-generated)
+            # is our only evidence that thinking mode was active for
+            # this stream. Without that evidence, a bare-text
+            # preamble in the output is more likely a casual answer
+            # opener (``Here's a thinking process I followed: ...``)
+            # than an actual thought trace, so falling through to the
+            # content path matches the pre-fix Anthropic-streaming
+            # correction protocol and avoids clobbering valid
+            # non-thinking answers (codex r3 BLOCKING symmetry).
+            if saw_think_prefix and _looks_like_bare_think_preamble(cleaned):
                 return DeltaMessage(reasoning=cleaned)
             return DeltaMessage(content=cleaned)
         return None

@@ -244,11 +244,44 @@ def test_575_qwen3_truncated_thought_does_not_leak_to_content_when_thinking_on()
     assert not cleaned
 
 
-def test_575_qwen3_truncated_thought_legacy_behaviour_when_thinking_off():
-    """Backward-compat pin: with ``enable_thinking`` left at ``None``
-    (the pre-#575 contract) the helper does NOT clear cleaned_text and
-    the legacy behaviour is preserved — useful for shimming third-party
-    callers that have not yet wired the flag through."""
+def test_575_qwen3_truncated_thought_legacy_behaviour_when_thinking_explicit_off():
+    """Backward-compat pin: with ``enable_thinking=False`` (caller
+    affirmatively disabled thinking) the bare-text fallback added by
+    #570 MUST NOT fire — a non-thinking answer that happens to open
+    with ``Here's my reasoning:`` or similar scratchpad-shaped phrasing
+    must stay in ``content`` or the client gets an empty
+    ``message.content``. (Codex r3 BLOCKING on PR #573.)
+
+    NOTE: the older form of this test pinned ``enable_thinking=None``
+    to the same legacy contract, but #570 (PR #573) changed the
+    None-case to fire the bare-text fallback defensively — see
+    ``test_570_qwen3_truncated_thought_routes_to_reasoning_when_thinking_unspecified``
+    below. Only the explicit-False path still preserves the strict
+    legacy "text stays as content" behaviour, and that's the
+    backward-compat shim third-party callers need."""
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_QWEN3_TRUNCATED_THOUGHT,
+        cleaned_text=_QWEN3_TRUNCATED_THOUGHT,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=False,
+    )
+    # Legacy path: no Case-4 fast-path AND no bare-text fallback when
+    # thinking is explicitly off — text stays as content, reasoning is None.
+    assert reasoning is None
+    assert cleaned == _QWEN3_TRUNCATED_THOUGHT
+
+
+def test_570_qwen3_truncated_thought_routes_to_reasoning_when_thinking_unspecified():
+    """#570 / PR #573 fix path: legacy callers that don't thread the
+    ``enable_thinking`` flag through (it stays at ``None``) still get
+    defensive routing when the model emits a recognizable bare-text
+    thinking preamble. The whole truncated thought lands in
+    ``reasoning`` and ``cleaned_text`` is blanked so it doesn't leak
+    into ``message.content``. Distinguishes from the explicit-False
+    legacy shim above — None is "no signal" → trust the pattern,
+    False is "caller said no" → don't override."""
     cleaned, reasoning = _finalize_content_and_reasoning(
         raw_text=_QWEN3_TRUNCATED_THOUGHT,
         cleaned_text=_QWEN3_TRUNCATED_THOUGHT,
@@ -257,9 +290,34 @@ def test_575_qwen3_truncated_thought_legacy_behaviour_when_thinking_off():
         engine_reasoning_text="",
         enable_thinking=None,
     )
-    # Legacy path: no Case-4 → text stays as content, reasoning is None.
+    assert reasoning == _QWEN3_TRUNCATED_THOUGHT.strip()
+    # Blanked so the route renders ``content=None`` and the bare-text
+    # preamble doesn't leak.
+    assert not cleaned
+
+
+def test_570_qwen3_valid_non_thinking_answer_not_clobbered_when_thinking_off():
+    """Codex r3 BLOCKING regression pin: a perfectly valid non-thinking
+    answer that opens with a scratchpad-shaped phrase (``Here's my
+    reasoning:`` is the canonical false positive) must NOT have its
+    content cleared when the caller passes ``enable_thinking=False``.
+    Without the explicit-False gate, the bare-text regex would match
+    and the user would see empty ``message.content``."""
+    valid_answer = (
+        "Here's my reasoning: Portland has the best food scene of the "
+        "three options — the Pacific Northwest sourcing pipeline + the "
+        "carts-by-the-dozen culture put it ahead."
+    )
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=valid_answer,
+        cleaned_text=valid_answer,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=False,
+    )
     assert reasoning is None
-    assert cleaned == _QWEN3_TRUNCATED_THOUGHT
+    assert cleaned == valid_answer
 
 
 def test_575_glm4_no_tags_thinking_on_does_not_clobber_content():
