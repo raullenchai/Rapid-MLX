@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from starlette.responses import Response
 
 from ..middleware.auth import verify_api_key
@@ -14,10 +14,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Security: cap audio upload size to prevent memory-exhaustion DoS.
+# Security: cap audio upload size to prevent memory-/disk-exhaustion DoS.
 # 25 MB matches OpenAI's Whisper API limit and is far above any reasonable
-# transcription payload (~25 min of 16 kHz mono WAV).
+# transcription payload (~25 min of 16 kHz mono WAV). Multipart overhead
+# (boundary, form fields) adds a few hundred bytes; we allow one MB of slack
+# so a truthful 25 MB audio file isn't rejected at the request-level guard.
 MAX_AUDIO_UPLOAD_SIZE = 25 * 1024 * 1024
+_REQUEST_BODY_SLACK_BYTES = 1024 * 1024  # 1 MB headroom for multipart overhead
 _AUDIO_READ_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
 
 # Audio engines (lazy loaded, module-level to persist across requests)
@@ -25,23 +28,40 @@ _stt_engine = None
 _tts_engine = None
 
 
-def _reject_oversized_audio(advertised: int | None) -> None:
-    """Reject obvious DoS uploads before doing any work.
+async def _enforce_audio_body_limit(request: Request) -> None:
+    """ASGI-level Content-Length guard for ``/v1/audio/transcriptions``.
 
-    `advertised` is the client-supplied Content-Length (or `UploadFile.size`,
-    which Starlette derives from it). If the client truthfully advertises a
-    payload above the cap, fail with 413 *before* touching the engine or
-    reading any bytes. Clients who omit/lie about Content-Length are caught
-    later by the streaming counter in `_stream_upload_to_tempfile`.
+    Runs as a FastAPI ``Depends`` BEFORE the ``UploadFile`` parameter is
+    resolved, i.e. before Starlette begins parsing/spooling the multipart
+    body. This is the only place an honest-Content-Length DoS can be
+    rejected without first letting the body land on disk in
+    Starlette's ``SpooledTemporaryFile``.
+
+    A client that lies about ``Content-Length`` (or omits it via chunked
+    transfer encoding) cannot be caught here — that's what the streaming
+    counter inside ``_stream_upload_to_tempfile`` is for: it bounds the
+    *application*-level temp file write to ``MAX_AUDIO_UPLOAD_SIZE`` and
+    fires 413 long before any STT engine import or load runs.
+
+    We allow a small slack (``_REQUEST_BODY_SLACK_BYTES``) above
+    ``MAX_AUDIO_UPLOAD_SIZE`` so multipart envelopes around a maximally
+    valid audio file don't trigger a spurious 413 at this outer layer;
+    the streaming counter remains the authoritative per-file cap.
     """
-    if advertised is None:
-        return
-    if advertised > MAX_AUDIO_UPLOAD_SIZE:
+    cl = request.headers.get("content-length")
+    if cl is None:
+        return  # chunked / unknown — streaming counter is the safety net
+    try:
+        advertised = int(cl)
+    except ValueError:
+        return  # malformed; let Starlette deal with it
+    limit = MAX_AUDIO_UPLOAD_SIZE + _REQUEST_BODY_SLACK_BYTES
+    if advertised > limit:
         raise HTTPException(
             status_code=413,
             detail=(
-                f"Audio upload too large: {advertised} bytes "
-                f"(max {MAX_AUDIO_UPLOAD_SIZE} bytes)"
+                f"Audio upload too large: request body {advertised} bytes "
+                f"(max {MAX_AUDIO_UPLOAD_SIZE} bytes per file)"
             ),
         )
 
@@ -70,24 +90,36 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
-@router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
+@router.post(
+    "/v1/audio/transcriptions",
+    dependencies=[Depends(verify_api_key), Depends(_enforce_audio_body_limit)],
+)
 async def create_transcription(
     file: UploadFile,
     model: str = "whisper-large-v3",
     language: str | None = None,
     response_format: str = "json",
 ):
-    """Transcribe audio to text (OpenAI Whisper API compatible)."""
-    global _stt_engine
+    """Transcribe audio to text (OpenAI Whisper API compatible).
 
-    # SECURITY: Reject obvious DoS uploads using the per-part size that
-    # Starlette derives for the audio UploadFile. This deliberately checks
-    # the *audio part*, not the outer request body, so a valid 25 MB file
-    # is not rejected just because multipart boundaries / form fields push
-    # the outer Content-Length a few hundred bytes over the cap. The
-    # streaming counter inside _stream_upload_to_tempfile() is the
-    # authoritative cap and also catches chunked / lying-header clients.
-    _reject_oversized_audio(file.size)
+    Three-layer size guard (defense in depth):
+
+    1. ``Depends(_enforce_audio_body_limit)`` rejects requests whose
+       ``Content-Length`` exceeds the cap BEFORE Starlette parses or
+       spools the multipart body. Honest large uploads die at this
+       layer with zero disk I/O.
+
+    2. ``_stream_upload_to_tempfile`` enforces an exact per-file cap
+       while copying chunks into our own temp file. Catches clients who
+       lie about / omit ``Content-Length`` (chunked transfer): even if
+       Starlette already spooled the body to its own temp file, we
+       refuse to copy more than the cap into ours and abort early
+       before any STT engine import / load happens.
+
+    3. The 25 MB ceiling matches OpenAI's Whisper API and bounds the
+       worst-case STT inference cost.
+    """
+    global _stt_engine
 
     tmp_path: str | None = None
     try:

@@ -19,6 +19,127 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
+def _ensure_mlx_stubs() -> None:
+    """Insert minimal `mlx` / `mlx_lm` stubs so `vllm_mlx.routes.audio`
+    can be imported on hosts without MLX installed (Linux CI runners).
+
+    The audio route itself never touches mlx, but it transitively imports
+    `vllm_mlx.config` -> `engine` -> `engine_core` -> `scheduler` etc.,
+    which `import mlx.core` and `from mlx_lm.* import ...` at module top.
+    We don't exercise any of that code in these tests — we only need the
+    import chain to succeed so the streaming-cap branch of the audio
+    handler runs.
+
+    `pr_validate.targeted_tests` runs on Linux CI without MLX in scope,
+    so without these stubs the test ERRORs at collection time and is
+    misread as a regression."""
+    import importlib.abc
+    import importlib.machinery
+
+    def _noop(*_a, **_kw):  # generic no-op stand-in
+        return None
+
+    class _StubBase:
+        """Stand-in usable as both a callable and a base class.
+
+        Some downstream sites do ``class Foo(<stub>):`` (e.g.
+        ``vllm_mlx/utils/mamba_cache.py``) so the stub has to be a real
+        class, not a function."""
+
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def __call__(self, *_a, **_kw):
+            return self
+
+        def __getattr__(self, name: str):  # noqa: D401
+            if name.startswith("__"):
+                raise AttributeError(name)
+            return _StubBase()
+
+    class _AutoModule(types.ModuleType):
+        """Module whose attribute access auto-creates a stub class.
+
+        Lets every ``from <stub_pkg>.X import Y`` resolve — including
+        ``class Subclass(Y):`` patterns — without our having to
+        enumerate every helper used downstream."""
+
+        def __getattr__(self, name: str):  # noqa: D401
+            if name.startswith("__"):
+                raise AttributeError(name)
+            stub = type(name, (_StubBase,), {})
+            setattr(self, name, stub)
+            return stub
+
+    _STUB_ROOTS = ("mlx", "mlx_lm", "mlx_vlm", "mlx_audio")
+
+    class _StubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        """Resolve any ``mlx`` / ``mlx_lm`` / ``mlx_vlm`` / ``mlx_audio``
+        submodule to an empty ``_AutoModule`` so submodule imports don't
+        ``ModuleNotFoundError`` on Linux CI."""
+
+        def find_spec(self, fullname, path, target=None):
+            root = fullname.split(".", 1)[0]
+            if root not in _STUB_ROOTS:
+                return None
+            # Don't override real installs (e.g. dev machine).
+            if fullname in sys.modules:
+                return None
+            return importlib.machinery.ModuleSpec(fullname, self, is_package=True)
+
+        def create_module(self, spec):
+            return _AutoModule(spec.name)
+
+        def exec_module(self, module):
+            module.__path__ = []  # mark as package so deeper imports work
+
+    # Only install the finder if mlx truly isn't importable — dev
+    # machines with real mlx installed should use the real package.
+    try:
+        import mlx.core  # noqa: F401
+    except ImportError:
+        sys.meta_path.append(_StubFinder())
+
+    # Pre-populate mlx.core with the specific attributes engine_core /
+    # scheduler / _mlx_compat read at module load (auto-stub returns
+    # _noop for everything; some sites want a real-ish object).
+    def _ensure(name: str) -> types.ModuleType:
+        mod = sys.modules.get(name)
+        if mod is None:
+            mod = _AutoModule(name)
+            mod.__path__ = []  # type: ignore[attr-defined]
+            sys.modules[name] = mod
+        return mod
+
+    if "mlx" not in sys.modules:
+        _ensure("mlx")
+    if "mlx.core" not in sys.modules:
+        mlx_core = _ensure("mlx.core")
+        sys.modules["mlx"].core = mlx_core  # type: ignore[attr-defined]
+    else:
+        mlx_core = sys.modules["mlx.core"]
+
+    class _Stream:  # placeholder for mx.Stream
+        pass
+
+    # Only set attributes we know are sampled at import time and need
+    # a non-None value; everything else falls through to _noop via
+    # _AutoModule.__getattr__.
+    if not hasattr(mlx_core, "Stream"):
+        mlx_core.Stream = _Stream
+    if not hasattr(mlx_core, "metal"):
+        mlx_core.metal = types.SimpleNamespace(
+            set_memory_limit=_noop,
+            set_cache_limit=_noop,
+            get_active_memory=lambda: 0,
+            get_peak_memory=lambda: 0,
+            get_cache_memory=lambda: 0,
+        )
+
+
+_ensure_mlx_stubs()
+
+
 @dataclass
 class _FakeResult:
     text: str = "hello"
@@ -176,6 +297,44 @@ def test_streaming_cap_rejects_chunked_upload_before_engine_load(monkeypatch):
     after = set(os.listdir(_tf.gettempdir()))
     leaked = [n for n in (after - before) if n.endswith(".wav")]
     assert leaked == [], f"temp .wav files leaked on rejection path: {leaked}"
+
+
+def test_content_length_guard_rejects_before_multipart_parsing(
+    audio_client, monkeypatch
+):
+    """Honest-Content-Length DoS attempt: the request advertises a body
+    several times larger than the cap. The ``Depends`` body-limit guard
+    must reject with 413 BEFORE Starlette parses or spools the multipart
+    body — proving codex's review concern (in-handler check too late
+    for honest-Content-Length attackers) is addressed.
+
+    The probe: send a tiny actual body but a Content-Length header that
+    advertises a huge body. Starlette would normally try to read that
+    many bytes (and spool to disk); we must reject before that read."""
+
+    from vllm_mlx.routes import audio as audio_route
+
+    monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
+    monkeypatch.setattr(audio_route, "_REQUEST_BODY_SLACK_BYTES", 256, raising=True)
+
+    # Craft an *honest* multipart body whose true length comfortably
+    # exceeds (cap + slack). The Depends guard reads Content-Length from
+    # request headers BEFORE the multipart parser runs, so this fires
+    # at request entry — Starlette never spools the body.
+    payload = b"A" * 16384  # 16 KB body, far above the 1280 B effective cap
+    resp = audio_client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("big.wav", io.BytesIO(payload), "audio/wav")},
+        data={"model": "whisper-small"},
+    )
+
+    assert resp.status_code == 413, resp.text
+    detail = resp.json()["detail"].lower()
+    assert "too large" in detail and "request body" in detail, detail
+    # Engine never constructed — rejection happened in the Depends, well
+    # before parameter resolution / multipart parsing / handler entry.
+    assert _FakeSTTEngine.instances == []
+    assert audio_route._stt_engine is None
 
 
 def test_normal_audio_upload_succeeds(audio_client, monkeypatch):
