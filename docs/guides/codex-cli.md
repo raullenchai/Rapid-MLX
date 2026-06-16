@@ -137,15 +137,36 @@ curl -sS http://localhost:8000/v1/responses \
 You should see a `response` object with an `output` array containing a
 `message` item. With `--api-key`, add `-H "Authorization: Bearer <key>"`.
 
+## Codex CLI versions
+
+Verified against **Codex CLI 0.136.0** on **rapid-mlx 0.7.12+** with
+Qwen3.5-9B and Qwen3.6-27B. Codex 0.135 → 0.136 reshaped the request
+in three ways that earlier rapid-mlx releases mishandled:
+
+- the per-turn instruction channel switched from `system` to the new
+  Responses-API `developer` role,
+- multiple system-equivalent messages are now interleaved with user
+  turns, and
+- the agent loop terminates silently if the `function_call` item is
+  missing — no error, no partial output, just a closed stream.
+
+If you're on rapid-mlx **< 0.7.12** with a recent Codex, you may see
+"stream disconnected before completion" or a turn that ends with no
+visible output. Upgrade with `rapid-mlx upgrade`.
+
 ## Troubleshooting
 
 **Codex says "stream closed before response.completed"** — this should
-not happen on rapid-mlx >= 0.7.10. If it does, the engine likely
-crashed mid-generation; check the server logs. Re-running the query
-usually works.
+not happen on rapid-mlx >= 0.7.12 with Codex 0.136. If it does, the
+engine likely crashed mid-generation; check the server logs.
+Re-running the query usually works.
 
 **Codex 404s on `/v1/responses`** — you're on rapid-mlx < 0.7.10.
 Upgrade with `rapid-mlx upgrade` (or `pip install -U rapid-mlx`).
+
+**Codex turn ends with no output** — on rapid-mlx 0.7.10–0.7.11 with
+Codex 0.136, tool-call XML was filtered before the parser ran and the
+agent loop saw zero items. Fixed in 0.7.12.
 
 **Tool calls don't apply** — make sure `--enable-auto-tool-choice` is
 passed when starting the server, and that the model's tool parser is
