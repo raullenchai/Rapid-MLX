@@ -2,9 +2,11 @@
 """
 Gemma 4 text-only model loader for the LLM path.
 
-mlx-lm doesn't support gemma4 yet, but mlx-vlm does. This module loads
-just the language model portion from mlx-vlm and wraps it to be compatible
-with mlx-lm's generate_step() interface, enabling:
+mlx-lm 0.31+ added native ``gemma4`` (used by the 26B / 31B aliases), but
+``gemma4_unified`` (the model_type the four ``gemma-4-12b-*`` aliases ship
+under) is still not in mlx-lm. This module loads the language model
+portion from mlx-vlm and wraps it to be compatible with mlx-lm's
+generate_step() interface, enabling:
 - Prompt cache (KV reuse across requests)
 - DeltaNet state snapshots (if applicable)
 - All LLM-path optimizations
@@ -12,7 +14,7 @@ with mlx-lm's generate_step() interface, enabling:
 The wrapper is thin: it just ensures model(input_ids, cache=cache) returns
 a raw logits tensor instead of LanguageModelOutput.
 
-TODO: Remove once mlx-lm adds native gemma4 support.
+TODO: Remove once mlx-lm adds native ``gemma4_unified`` support (12B variants).
 """
 
 import json
