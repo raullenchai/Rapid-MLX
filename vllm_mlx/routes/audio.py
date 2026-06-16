@@ -41,18 +41,23 @@ class AudioBodyLimitMiddleware:
     drained and spooled to ``SpooledTemporaryFile`` on disk —
     confirmed empirically with an ASGI ``receive`` probe.
 
-    Running at the ASGI layer lets us short-circuit the receive loop:
+    Running at the ASGI layer lets us short-circuit the receive loop
+    in TWO complementary ways:
 
-    1. Honest-``Content-Length`` clients above the cap → 413 returned
-       immediately with zero ``receive`` calls, so the body never lands
-       on disk.
+    1. **Honest-``Content-Length`` fast path** — if the advertised
+       length exceeds the cap, return 413 immediately. Zero ``receive``
+       calls, zero bytes on the server.
 
-    2. Chunked / no-``Content-Length`` clients still flow through to
-       the handler, where ``_stream_upload_to_tempfile`` enforces the
-       per-file cap by counting bytes as it writes our own temp file.
+    2. **Chunked / no-``Content-Length`` slow path** — wrap ``receive``
+       so it tallies streamed body bytes and returns a synthetic
+       ``http.disconnect`` once the cap is exceeded. The middleware
+       then emits 413. Starlette's multipart parser sees the
+       disconnect, stops spooling, and unwinds — the server still
+       lands at most ``MAX_AUDIO_UPLOAD_SIZE + slack`` bytes on disk
+       (the threshold at which we trigger the abort), not the
+       multi-GB body the attacker tried to send.
 
-    Scope is matched by path so unrelated routes pay zero overhead.
-    The path set is intentionally narrow — only
+    Path scope is intentionally narrow — only
     ``/v1/audio/transcriptions`` uploads a file; ``/v1/audio/speech``
     and ``/v1/audio/voices`` have small JSON bodies bounded by other
     means.
@@ -69,7 +74,9 @@ class AudioBodyLimitMiddleware:
         if scope.get("path") not in self._GUARDED_PATHS:
             return await self.app(scope, receive, send)
 
-        # Walk raw ASGI headers — case-insensitive byte keys.
+        limit = MAX_AUDIO_UPLOAD_SIZE + _REQUEST_BODY_SLACK_BYTES
+
+        # Honest-Content-Length fast path: reject before any receive call.
         advertised: int | None = None
         for raw_name, raw_value in scope.get("headers", ()):
             if raw_name.lower() == b"content-length":
@@ -79,7 +86,6 @@ class AudioBodyLimitMiddleware:
                     advertised = None
                 break
 
-        limit = MAX_AUDIO_UPLOAD_SIZE + _REQUEST_BODY_SLACK_BYTES
         if advertised is not None and advertised > limit:
             await _send_413(
                 send,
@@ -90,7 +96,69 @@ class AudioBodyLimitMiddleware:
             )
             return
 
-        await self.app(scope, receive, send)
+        # Streaming slow path: wrap receive so chunked/lying clients
+        # cannot bypass the cap by omitting Content-Length. We tally
+        # bytes as they cross the receive channel and abort the request
+        # the moment the running total exceeds the cap. The trip flag
+        # ensures we emit exactly one 413, even if Starlette keeps
+        # reading after we signal disconnect.
+        tripped = {"value": False}
+        total = {"bytes": 0}
+
+        async def bounded_receive():
+            if tripped["value"]:
+                # Once we've decided to abort, signal disconnect so the
+                # parser unwinds cleanly. (Starlette's MultiPartParser
+                # honors ``http.disconnect`` by stopping its read loop.)
+                return {"type": "http.disconnect"}
+            msg = await receive()
+            if msg.get("type") == "http.request":
+                body_len = len(msg.get("body", b"") or b"")
+                total["bytes"] += body_len
+                if total["bytes"] > limit:
+                    tripped["value"] = True
+                    return {"type": "http.disconnect"}
+            return msg
+
+        # Wrap send so that if the downstream app tries to emit a
+        # response after we've tripped, we substitute our 413 instead.
+        # This handles both the case where Starlette aborts on
+        # disconnect (no downstream response) and the case where it
+        # raises mid-stream (caught by FastAPI and turned into a 500
+        # that we'd otherwise mask).
+        sent_413 = {"value": False}
+
+        async def guarded_send(msg):
+            if tripped["value"] and not sent_413["value"]:
+                sent_413["value"] = True
+                await _send_413(
+                    send,
+                    (
+                        f"Audio upload too large: streamed body exceeded "
+                        f"{MAX_AUDIO_UPLOAD_SIZE} bytes per file"
+                    ),
+                )
+                return
+            if sent_413["value"]:
+                # Downstream tried to send after we already wrote 413;
+                # drop the message to avoid double-write.
+                return
+            await send(msg)
+
+        await self.app(scope, bounded_receive, guarded_send)
+
+        # If the app finished without sending anything (e.g. Starlette
+        # silently dropped on disconnect), make sure the client still
+        # gets a 413 rather than a hung connection.
+        if tripped["value"] and not sent_413["value"]:
+            sent_413["value"] = True
+            await _send_413(
+                send,
+                (
+                    f"Audio upload too large: streamed body exceeded "
+                    f"{MAX_AUDIO_UPLOAD_SIZE} bytes per file"
+                ),
+            )
 
 
 async def _send_413(send, detail: str) -> None:

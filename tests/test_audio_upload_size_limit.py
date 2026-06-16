@@ -392,6 +392,138 @@ def test_content_length_guard_rejects_before_multipart_parsing(monkeypatch):
     assert audio_route._stt_engine is None
 
 
+def test_chunked_no_content_length_aborts_mid_stream(monkeypatch):
+    """A chunked / no-``Content-Length`` attacker who tries to stream a
+    multi-GB body must be aborted by the middleware AS THE BYTES STREAM
+    — not after Starlette finishes spooling. We assert that the
+    middleware stops calling ``receive`` once the running total exceeds
+    the cap, and that the client gets a 413.
+
+    Without this guard, codex's round-6 finding stood: a Transfer-
+    Encoding: chunked client (or one that lies about Content-Length and
+    sends more) could spool gigabytes to disk before any handler-level
+    cap fired.
+
+    Test design: drive the ASGI app directly with a valid multipart
+    envelope split across many ``http.request`` messages with
+    ``more_body=True``. The middleware-side trip is independent of the
+    multipart body's content — it only counts bytes — so we don't need
+    a correctly-formatted multipart payload to prove the cap fires."""
+    import asyncio
+
+    from vllm_mlx.routes import audio as audio_route
+
+    # Effective limit = cap + slack = 1024 + 256 = 1280 bytes.
+    monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
+    monkeypatch.setattr(audio_route, "_REQUEST_BODY_SLACK_BYTES", 256, raising=True)
+    monkeypatch.setattr(audio_route, "_stt_engine", None, raising=False)
+
+    stt_mod = types.ModuleType("vllm_mlx.audio.stt")
+    stt_mod.STTEngine = _FakeSTTEngine
+    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.stt", stt_mod)
+    _FakeSTTEngine.instances.clear()
+
+    app = FastAPI()
+    app.include_router(audio_route.router)
+    audio_route.install_audio_body_limit_middleware(app)
+
+    # Drive the middleware DIRECTLY — bypass the downstream FastAPI
+    # router. We're testing the receive-wrapping logic in isolation;
+    # the inner app just needs to drain the receive channel.
+    middleware = audio_route.AudioBodyLimitMiddleware(_DrainingApp())
+
+    total_chunks = 16
+    chunk_size = 256
+    chunk = b"X" * chunk_size
+    received_count = {"n": 0}
+
+    async def receive():
+        i = received_count["n"]
+        received_count["n"] += 1
+        if i >= total_chunks:
+            # Should never be reached; if it is, the cap regressed.
+            return {"type": "http.request", "body": b"", "more_body": False}
+        more = i < total_chunks - 1
+        return {"type": "http.request", "body": chunk, "more_body": more}
+
+    sent_messages: list[dict] = []
+
+    async def send(msg):
+        sent_messages.append(msg)
+
+    # Critically: NO content-length header (chunked transfer encoding
+    # would omit it). The middleware cannot use the fast path; it must
+    # rely on its streaming tally.
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/audio/transcriptions",
+        "raw_path": b"/v1/audio/transcriptions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"multipart/form-data; boundary=---x"),
+            (b"transfer-encoding", b"chunked"),
+        ],
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 12345),
+    }
+
+    asyncio.run(middleware(scope, receive, send))
+
+    # 1) 413 response — client sees the rejection, not a stalled connection.
+    start = next(m for m in sent_messages if m["type"] == "http.response.start")
+    assert start["status"] == 413, sent_messages
+
+    # 2) THE LOAD-BEARING ASSERTION: receive was called fewer than
+    #    total_chunks times. Effective limit is 1280 bytes; at 256
+    #    B/chunk, the trip must fire by chunk 6 (1536 > 1280). It
+    #    must NOT have drained all 16 chunks.
+    assert received_count["n"] < total_chunks, (
+        f"middleware read {received_count['n']}/{total_chunks} chunks — "
+        "streaming abort regressed"
+    )
+    assert received_count["n"] <= 7, (
+        f"middleware over-read: {received_count['n']} chunks of {chunk_size} B "
+        f"= {received_count['n'] * chunk_size} B vs limit "
+        f"{audio_route.MAX_AUDIO_UPLOAD_SIZE + audio_route._REQUEST_BODY_SLACK_BYTES}"
+    )
+
+    # 3) Handler never ran — no engine constructed.
+    assert _FakeSTTEngine.instances == []
+    assert audio_route._stt_engine is None
+
+
+class _DrainingApp:
+    """Minimal ASGI inner app that drains ``receive`` until it sees
+    ``more_body=False`` or ``http.disconnect``, then emits a 200.
+
+    Stands in for the FastAPI router when testing the middleware's
+    receive-wrapping in isolation; the goal is to verify that the
+    middleware stops the inner app from over-reading, regardless of
+    what the inner app would otherwise do."""
+
+    async def __call__(self, scope, receive, send):
+        while True:
+            msg = await receive()
+            if msg.get("type") == "http.disconnect":
+                return
+            if not msg.get("more_body"):
+                break
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"ok"})
+
+
 def test_normal_audio_upload_succeeds(audio_client, monkeypatch):
     """A small payload (within the cap) must reach the STT engine and
     return a JSON transcription response. Positive control to confirm
