@@ -279,20 +279,49 @@ class TestResponsesToOpenai:
         assert merged[0].content == "alpha\nbeta\n\ngamma"
         assert merged[1].role == "user"
 
+    def test_merge_system_messages_drops_empty_system_after_user(self):
+        # codex_review BLOCKING regression: a `developer` item with
+        # empty content reaches the merge step as `Message(role="system",
+        # content="")`. Old logic branched on whether the merged text
+        # was truthy and returned `messages` unchanged when it wasn't —
+        # leaving the empty system message at index 1 to trip Qwen's
+        # `System message must be at the beginning.` check.
+        msgs = [
+            Message(role="user", content="hi"),
+            Message(role="system", content=""),
+        ]
+        merged = _merge_system_messages(msgs)
+        # No system message survives — and the user message remains.
+        assert all(m.role != "system" for m in merged)
+        assert any(m.role == "user" and m.content == "hi" for m in merged)
+
+    def test_merge_system_messages_drops_empty_system_only(self):
+        # When the ONLY system messages are empty, drop them entirely
+        # rather than emit `Message(role="system", content="")` — some
+        # templates also reject that.
+        msgs = [
+            Message(role="system", content=""),
+            Message(role="user", content="hi"),
+        ]
+        merged = _merge_system_messages(msgs)
+        assert merged == [Message(role="user", content="hi")]
+
     def test_merge_system_messages_unknown_shape_does_not_raise(self):
         # `_to_text` returns "" for anything that isn't str / dict / list,
         # so a lone unknown-shape system message yields empty
-        # `system_texts` and the merge is a no-op (original messages
-        # returned unchanged). Defends against future content shapes
-        # (e.g. int, custom object) — better silent passthrough than
-        # crash mid-conversion.
+        # `system_texts` and the message is dropped (same path as the
+        # empty-content case — keeping it would leave a non-leading or
+        # empty system message that some templates reject). Defends
+        # against future content shapes (e.g. int, custom object)
+        # without raising.
         msgs = [
             Message.model_construct(role="system", content=12345),
             Message(role="user", content="hi"),
         ]
         # Must not raise.
         merged = _merge_system_messages(msgs)
-        assert merged == msgs
+        assert all(m.role != "system" for m in merged)
+        assert merged[0].role == "user"
 
     def test_multiple_systems_merge_to_single_at_index_0(self):
         # Codex sends BOTH `instructions` (which becomes system) AND a

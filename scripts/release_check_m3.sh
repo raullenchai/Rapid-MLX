@@ -210,7 +210,11 @@ echo "    SSE: OK (response.created → response.completed)"
 # item gets emitted (the hardest signal — covers all three regressions
 # at once because a missing event 0 / 1 / 2 all result in zero items).
 sse2=$(mktemp)
-curl -sNf -X POST "http://127.0.0.1:$PORT/v1/responses" \
+# Wrap in `if !` so `set -e` doesn't kill the script on a transport
+# failure before the diagnostic block + cleanup can run. Without this
+# wrapper, an HTTP 5xx or connection drop would exit the gauntlet with
+# zero context and a stale temp file (codex_review NIT).
+if ! curl -sNf -X POST "http://127.0.0.1:$PORT/v1/responses" \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "gpt-5",
@@ -226,7 +230,12 @@ curl -sNf -X POST "http://127.0.0.1:$PORT/v1/responses" \
        "parameters": {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}
     ],
     "tool_choice": "required"
-  }' > "$sse2"
+  }' > "$sse2"; then
+  echo "G7b codex-shape SSE FAIL: curl to /v1/responses errored — server crashed or rejected the codex-shape request" >&2
+  head -30 "$sse2" >&2
+  rm -f "$sse2"
+  exit 1
+fi
 for evt in "response.created" "response.output_item.added" "response.completed"; do
   if ! grep -q "event: $evt" "$sse2"; then
     echo "G7b codex-shape SSE FAIL: missing event '$evt' — codex agent loop would silently terminate" >&2

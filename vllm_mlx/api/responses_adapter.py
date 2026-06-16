@@ -133,13 +133,24 @@ def _merge_system_messages(messages: list[Message]) -> list[Message]:
             return "\n".join(_to_text(v) for v in value)
         return ""
 
-    system_texts = [
-        _to_text(m.content) for m in messages if m.role == "system" and m.content
-    ]
-    system_texts = [t for t in system_texts if t]
-    if not system_texts:
+    # Branch on role presence, not on whether the merged text is truthy.
+    # An empty / unsupported-shape `developer` item still appears as a
+    # system-role message after `_message_item_to_chat`, so leaving the
+    # list untouched when `system_texts` is empty would let a non-leading
+    # system message reach Qwen / Llama / Gemma — the exact template
+    # failure this function exists to prevent (codex_review BLOCKING).
+    has_system = any(m.role == "system" for m in messages)
+    if not has_system:
         return messages
+    system_texts = [
+        t for t in (_to_text(m.content) for m in messages if m.role == "system") if t
+    ]
     non_system = [m for m in messages if m.role != "system"]
+    if not system_texts:
+        # System messages existed but contributed no usable text. Drop
+        # them entirely rather than emit an empty system message, which
+        # some templates also reject.
+        return non_system
     merged = Message(role="system", content="\n\n".join(system_texts))
     return [merged] + non_system
 
