@@ -25,14 +25,66 @@ _RATE_LIMIT_HMAC_KEY = secrets.token_bytes(32)
 
 
 class RateLimiter:
-    """Simple in-memory rate limiter using sliding window."""
+    """Simple in-memory rate limiter using sliding window.
+
+    Stale-entry cleanup is amortized O(1) per request:
+
+    * A separate ``_last_seen`` map records each client's most recent timestamp
+      so the sweep is O(N) over the dict (no per-entry ``max(v)`` scan, which
+      previously made the worst case quadratic when the dict held >100 active
+      clients — each request walked every entry, each entry scanned its
+      window-length timestamp list).
+    * The sweep runs at most once per ``window_size`` interval rather than on
+      every request, so a busy server with >100 active clients no longer pays
+      O(N) per request just to walk the dict.
+    * The current client's entry is always preserved during the sweep — only
+      entries whose newest timestamp is strictly older than ``window_start``
+      are deleted, so a client that made any request inside the window cannot
+      have its counter wiped out by an unrelated concurrent client.
+    """
+
+    # Soft cap that gates cleanup. Kept at 100 to preserve historical behavior
+    # (and the existing regression test in test_server.py).
+    _CLEANUP_DICT_THRESHOLD = 100
 
     def __init__(self, requests_per_minute: int = 60, enabled: bool = False):
         self.requests_per_minute = requests_per_minute
         self.enabled = enabled
         self.window_size = 60.0
         self._requests: dict[str, list[float]] = defaultdict(list)
+        # ``_last_seen[k]`` mirrors ``max(_requests[k])`` for every tracked k,
+        # so the sweep avoids the per-entry ``max(v)`` scan that drove the
+        # quadratic worst case.
+        self._last_seen: dict[str, float] = {}
+        self._last_cleanup: float = 0.0
         self._lock = threading.Lock()
+
+    def _maybe_cleanup(
+        self, current_time: float, window_start: float, client_id: str
+    ) -> None:
+        """Sweep stale entries. Must be called with ``self._lock`` held.
+
+        Throttled to at most once per ``window_size`` seconds and skipped
+        entirely when the dict is small. The current ``client_id`` is never
+        evicted — removing it here would either be a wasted op (the caller
+        is about to re-create it) or race-prone in the rare case the sweep
+        encountered a brand-new defaultdict-inserted empty list for it.
+        """
+        if len(self._requests) <= self._CLEANUP_DICT_THRESHOLD:
+            return
+        if current_time - self._last_cleanup < self.window_size:
+            return
+        self._last_cleanup = current_time
+
+        # Snapshot keys to avoid mutating during iteration.
+        for k in list(self._requests.keys()):
+            if k == client_id:
+                # Never reap the entry that's about to be touched.
+                continue
+            last = self._last_seen.get(k)
+            if last is None or last <= window_start:
+                self._requests.pop(k, None)
+                self._last_seen.pop(k, None)
 
     def is_allowed(self, client_id: str) -> tuple[bool, int]:
         """Check if request is allowed. Returns (is_allowed, retry_after_seconds)."""
@@ -43,25 +95,28 @@ class RateLimiter:
         window_start = current_time - self.window_size
 
         with self._lock:
-            if len(self._requests) > 100:
-                stale = [
-                    k
-                    for k, v in self._requests.items()
-                    if not v or max(v) <= window_start
-                ]
-                for k in stale:
-                    del self._requests[k]
+            self._maybe_cleanup(current_time, window_start, client_id)
 
-            self._requests[client_id] = [
+            # Filter the current client's window. Strict ``>`` matches the
+            # original semantics (timestamps exactly at window_start are out).
+            timestamps = [
                 t for t in self._requests[client_id] if t > window_start
             ]
+            self._requests[client_id] = timestamps
 
-            if len(self._requests[client_id]) >= self.requests_per_minute:
-                oldest = min(self._requests[client_id])
+            if len(timestamps) >= self.requests_per_minute:
+                # ``min`` matches the original semantics; timestamps are
+                # append-ordered so this is also the head.
+                oldest = min(timestamps)
                 retry_after = int(oldest + self.window_size - current_time) + 1
+                # Track the rejected request's time so an entry that's still
+                # actively probing the limit isn't considered stale on the
+                # next sweep.
+                self._last_seen[client_id] = current_time
                 return False, max(1, retry_after)
 
-            self._requests[client_id].append(current_time)
+            timestamps.append(current_time)
+            self._last_seen[client_id] = current_time
             return True, 0
 
 
@@ -79,6 +134,8 @@ def configure_rate_limiter(
         rate_limiter.requests_per_minute = requests_per_minute
         rate_limiter.enabled = enabled
         rate_limiter._requests.clear()
+        rate_limiter._last_seen.clear()
+        rate_limiter._last_cleanup = 0.0
     return rate_limiter
 
 
