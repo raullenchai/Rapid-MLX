@@ -572,10 +572,20 @@ def _print_manual_fallback(
         # ``no git remote yet`` case where the user hasn't pushed).
         is_safe, origin_owner = _origin_is_safe_github(repo)
         upstream_owner = UPSTREAM_REPO_FOR_GH.split("/", 1)[0]
+        # Quote both halves before joining with the literal ``:`` GitHub
+        # expects between owner and branch in the compare path. Owner is
+        # the more constrained piece (GitHub usernames are ``[a-zA-Z0-9-]``
+        # by policy) but we still ``quote(safe="")`` defensively in case
+        # _origin_is_safe_github ever loosens. The branch ref allows ``/``
+        # — that's how we construct ``community-bench/<id>`` to begin with
+        # — so we keep ``/`` unescaped via ``safe="/"``. Without this any
+        # branch ref carrying ``#``, ``?``, or ``%`` would split the URL.
+        # (Codex PR #600 round-2 BLOCKING.)
+        branch_quoted = urllib.parse.quote(branch, safe="/")
         if is_safe and origin_owner and origin_owner != upstream_owner:
-            head_ref = f"{origin_owner}:{branch}"
+            head_ref = f"{urllib.parse.quote(origin_owner, safe='')}:{branch_quoted}"
         else:
-            head_ref = branch
+            head_ref = branch_quoted
         print(
             f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/compare/main...{head_ref}?expand=1",
             file=stdout,

@@ -1531,6 +1531,55 @@ def test_manual_fallback_without_gh_skips_owner_when_origin_is_upstream(
     assert f"compare/main...{upstream_owner}:" not in text
 
 
+def test_manual_fallback_compare_url_quotes_owner_and_branch(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: the ``main...<owner>:<branch>`` compare URL must
+    URL-quote both halves independently — any owner or branch ref
+    carrying ``#``, ``?``, ``%`` or other URL-reserved chars would
+    otherwise truncate or rewrite the URL silently. Branch is
+    constructed by us (``community-bench/<hex>``) and owner is
+    validated upstream, but pinning the quoting at this layer guards
+    against future loosening. (Codex PR #600 round-2 BLOCKING.)
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "x", "hf_path": "y/z"},
+        "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
+        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+    # Deliberately pathological owner with URL-reserved chars — a real
+    # github.com username can't carry these, but we want the quoting
+    # layer to be load-bearing regardless.
+    monkeypatch.setattr(
+        sub_mod,
+        "_origin_is_safe_github",
+        lambda _repo: (True, "weird?owner#name%"),
+    )
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    # The pathological chars must appear percent-encoded — not raw —
+    # so the URL parses as a single path segment, not as a malformed
+    # query/fragment split.
+    compare_line = next(
+        line for line in text.splitlines() if "/compare/main..." in line
+    ).strip()
+    assert "weird?owner#name%" not in compare_line
+    assert "weird%3Fowner%23name%25" in compare_line
+    # The ``:`` between owner and branch stays literal (GitHub's
+    # syntax requirement).
+    assert ":community-bench/" in compare_line
+
+
 def test_manual_fallback_url_encodes_alias_special_chars(tmp_path, monkeypatch) -> None:
     """Regression: aliases or chip names containing ``&``, ``#``, ``/``,
     ``%``, or spaces must round-trip cleanly through the issue-new
