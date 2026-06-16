@@ -224,7 +224,8 @@ curl -sNf -X POST "http://127.0.0.1:$PORT/v1/responses" \
     "tools": [
       {"type": "function", "name": "get_weather", "description": "Get the weather for a city",
        "parameters": {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}
-    ]
+    ],
+    "tool_choice": "required"
   }' > "$sse2"
 for evt in "response.created" "response.output_item.added" "response.completed"; do
   if ! grep -q "event: $evt" "$sse2"; then

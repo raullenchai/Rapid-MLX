@@ -224,6 +224,33 @@ class TestResponsesToOpenai:
         assert chat.messages[0].role == "system"
         assert chat.messages[0].content == "Always reply in JSON."
 
+    def test_developer_role_with_structured_content_does_not_raise(self):
+        # Defensive: today every system message reaches the merge step
+        # with a string content (`_message_item_to_chat` joins parts).
+        # codex_review flagged that a mutated path could leave a list in
+        # `Message.content` and `"\n\n".join([list, list])` would raise
+        # `TypeError: sequence item 0: expected str instance, list found`.
+        # The adapter must coerce defensively rather than crash.
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="developer",
+                    content=[
+                        ResponsesContentItem(type="input_text", text="part one"),
+                        ResponsesContentItem(type="input_text", text="part two"),
+                    ],
+                ),
+                ResponsesInputItem(type="message", role="user", content="hi"),
+            ],
+        )
+        # Must not raise.
+        chat = responses_to_openai(req)
+        assert chat.messages[0].role == "system"
+        assert "part one" in chat.messages[0].content
+        assert "part two" in chat.messages[0].content
+
     def test_multiple_systems_merge_to_single_at_index_0(self):
         # Codex sends BOTH `instructions` (which becomes system) AND a
         # mid-conversation `developer`-role item (which we map to system).

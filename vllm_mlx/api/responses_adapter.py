@@ -79,7 +79,29 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
     # instructions sit *after* `instructions` (where Codex puts them
     # semantically — the per-turn directive refines the base system
     # prompt).
-    system_texts = [m.content for m in messages if m.role == "system" and m.content]
+    # Coerce content to string before merging. Today every system message
+    # reaches this point with a string content (`request.instructions` is
+    # a string per Responses-API spec; `_message_item_to_chat` joins
+    # structured content parts), so the join is safe for current callers.
+    # The explicit `_to_text` guard defends against future paths or hand-
+    # crafted ChatCompletionRequest mutations that could leave a list /
+    # dict in `content` — without this, `"\n\n".join([list, list])` would
+    # raise `TypeError: sequence item 0: expected str instance, list
+    # found` mid-conversion (codex_review BLOCKING).
+    def _to_text(value):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "\n".join(
+                _to_text(v) if not isinstance(v, dict) else (v.get("text") or "")
+                for v in value
+            )
+        return ""
+
+    system_texts = [
+        _to_text(m.content) for m in messages if m.role == "system" and m.content
+    ]
+    system_texts = [t for t in system_texts if t]
     if system_texts:
         non_system = [m for m in messages if m.role != "system"]
         merged_system = Message(role="system", content="\n\n".join(system_texts))
