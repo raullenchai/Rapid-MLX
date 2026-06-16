@@ -145,11 +145,20 @@ class AudioBodyLimitMiddleware:
                 return
             await send(msg)
 
-        await self.app(scope, bounded_receive, guarded_send)
+        try:
+            await self.app(scope, bounded_receive, guarded_send)
+        except Exception:
+            # If we tripped the cap, the downstream app aborted because
+            # of the synthetic http.disconnect we injected — translate
+            # that into the documented 413. Otherwise it's a real
+            # error; re-raise so it surfaces normally.
+            if not tripped["value"]:
+                raise
 
-        # If the app finished without sending anything (e.g. Starlette
-        # silently dropped on disconnect), make sure the client still
-        # gets a 413 rather than a hung connection.
+        # Send a fallback 413 if nothing was emitted: this catches both
+        # (a) the silent-drop-on-disconnect path (Starlette returns
+        #     cleanly without sending a response after seeing disconnect)
+        # (b) the exception path swallowed above.
         if tripped["value"] and not sent_413["value"]:
             sent_413["value"] = True
             await _send_413(

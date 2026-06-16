@@ -498,6 +498,100 @@ def test_chunked_no_content_length_aborts_mid_stream(monkeypatch):
     assert audio_route._stt_engine is None
 
 
+def test_chunked_real_fastapi_app_returns_413(monkeypatch):
+    """End-to-end variant of the chunked-streaming test that drives the
+    REAL FastAPI app (not a stub draining inner app). Proves the
+    middleware survives the multipart parser raising/aborting on the
+    synthetic ``http.disconnect`` and still emits a 413 to the client.
+
+    This is the test codex round 7 specifically asked for: ``_DrainingApp``
+    cannot catch the Starlette MultiPartParser exception path that the
+    real app exercises when it sees the disconnect we inject."""
+    import asyncio
+
+    from vllm_mlx.routes import audio as audio_route
+
+    monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
+    monkeypatch.setattr(audio_route, "_REQUEST_BODY_SLACK_BYTES", 256, raising=True)
+    monkeypatch.setattr(audio_route, "_stt_engine", None, raising=False)
+
+    stt_mod = types.ModuleType("vllm_mlx.audio.stt")
+    stt_mod.STTEngine = _FakeSTTEngine
+    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.stt", stt_mod)
+    _FakeSTTEngine.instances.clear()
+
+    app = FastAPI()
+    app.include_router(audio_route.router)
+    audio_route.install_audio_body_limit_middleware(app)
+
+    # Real-ish multipart prologue so Starlette's parser starts work; the
+    # cap will trip mid-stream long before any "valid" multipart could
+    # complete. We're testing the middleware survives whatever the
+    # multipart parser does when it sees a disconnect.
+    boundary = b"----xyz"
+    prologue = (
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="x.wav"\r\n'
+        b"Content-Type: audio/wav\r\n\r\n"
+    )
+    chunk = b"A" * 512
+    total_chunks = 10  # 5 KB body, way above the 1280 B cap
+    received_count = {"n": 0}
+
+    async def receive():
+        i = received_count["n"]
+        received_count["n"] += 1
+        if i == 0:
+            return {"type": "http.request", "body": prologue, "more_body": True}
+        if i <= total_chunks:
+            more = i < total_chunks
+            return {"type": "http.request", "body": chunk, "more_body": more}
+        # Should never reach here — middleware should have aborted.
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    sent_messages: list[dict] = []
+
+    async def send(msg):
+        sent_messages.append(msg)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/audio/transcriptions",
+        "raw_path": b"/v1/audio/transcriptions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"multipart/form-data; boundary=----xyz"),
+            (b"transfer-encoding", b"chunked"),
+        ],
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 12345),
+    }
+
+    asyncio.run(app(scope, receive, send))
+
+    # The middleware must have emitted a 413 — even if Starlette's
+    # multipart parser raised or aborted along the way.
+    start = next(m for m in sent_messages if m["type"] == "http.response.start")
+    assert start["status"] == 413, sent_messages
+
+    # And the body must have been bounded — receive count below the
+    # total-chunks ceiling proves the streaming abort actually fired.
+    assert received_count["n"] < 1 + total_chunks, (
+        f"middleware drained {received_count['n']} chunks against the real "
+        "FastAPI app — streaming abort regressed"
+    )
+
+    # No engine constructed — handler never ran.
+    assert _FakeSTTEngine.instances == []
+    assert audio_route._stt_engine is None
+
+
 class _DrainingApp:
     """Minimal ASGI inner app that drains ``receive`` until it sees
     ``more_body=False`` or ``http.disconnect``, then emits a 200.
