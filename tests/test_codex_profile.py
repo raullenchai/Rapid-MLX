@@ -73,7 +73,7 @@ def test_codex_template_renders_to_valid_toml():
     # sneaks back in via a future refactor.
     assert "api_key" not in rmlx, (
         "Inline `api_key` is rejected by `codex --strict-config`. "
-        "If you need to ship credentials, use `env_key = \"VAR_NAME\"`."
+        'If you need to ship credentials, use `env_key = "VAR_NAME"`.'
     )
 
 
