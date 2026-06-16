@@ -95,6 +95,12 @@ class SamplingParams:
     # there's no way to satisfy it on models that early-stop.
     ignore_eos: bool = False
 
+    def __post_init__(self):
+        if self.stop is None:
+            self.stop = []
+        if self.stop_token_ids is None:
+            self.stop_token_ids = []
+
 
 @dataclass
 class Request:

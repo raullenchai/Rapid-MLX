@@ -243,42 +243,42 @@ def test_scheduler_honours_ignore_eos() -> None:
     terminator tokens into the BatchGenerator's ``stop_tokens``, the bench
     aborts at token 88 anyway.
 
-    This test inspects the scheduler's stop-token assembly directly (the
-    same logic at ``vllm_mlx/scheduler.py`` near the ``ignore_eos`` branch)
-    by simulating the contract with a stand-in: when ``ignore_eos=True``
-    and no user-supplied stop tokens, the resulting set must be empty.
+    Exercise the **real** production helper that ``_create_batch_generator``
+    calls (codex_review BLOCKING from PR #599: a local stand-in would still
+    pass if the production branch were deleted). Deleting the
+    ``ignore_eos`` branch from ``_assemble_stop_tokens`` now fails this
+    test.
     """
     from vllm_mlx.request import SamplingParams
+    from vllm_mlx.scheduler import _assemble_stop_tokens
 
-    # Mirror scheduler.py's stop-token assembly contract. We don't need
-    # the full scheduler — the boundary is small enough to lock with a
-    # tiny re-implementation that future refactors will trip if they
-    # break the contract. The point is: ``ignore_eos=True`` + no caller
-    # stop ids ⇒ empty set, regardless of what the model would have
-    # contributed.
     model_eos_tokens = {2, 151645, 151643}  # arbitrary stand-in EOS ids
-
-    def assemble_stop_tokens(params: SamplingParams, model_eos: set[int]) -> set[int]:
-        stop = set() if params.ignore_eos else set(model_eos)
-        if params.stop_token_ids:
-            stop.update(params.stop_token_ids)
-        return stop
 
     # Case A: ignore_eos=True, no extras → empty
     p = SamplingParams(max_tokens=512, ignore_eos=True)
-    assert assemble_stop_tokens(p, model_eos_tokens) == set()
+    assert _assemble_stop_tokens(p, model_eos_tokens) == set()
 
     # Case B: ignore_eos=True + caller stop ids → only the caller's
     p = SamplingParams(max_tokens=512, ignore_eos=True, stop_token_ids=[99])
-    assert assemble_stop_tokens(p, model_eos_tokens) == {99}
+    assert _assemble_stop_tokens(p, model_eos_tokens) == {99}
 
     # Case C: ignore_eos=False (default) → model EOS preserved
     p = SamplingParams(max_tokens=512)
-    assert assemble_stop_tokens(p, model_eos_tokens) == model_eos_tokens
+    assert _assemble_stop_tokens(p, model_eos_tokens) == model_eos_tokens
 
     # Case D: default + caller stop ids → union
     p = SamplingParams(max_tokens=512, stop_token_ids=[99])
-    assert assemble_stop_tokens(p, model_eos_tokens) == model_eos_tokens | {99}
+    assert _assemble_stop_tokens(p, model_eos_tokens) == model_eos_tokens | {99}
+
+    # Case E: caller-supplied model-stop set must not be mutated. The
+    # previous in-place ``.update()`` on the ``_get_stop_tokens()`` return
+    # value would have poisoned the cached set on subsequent requests if
+    # the helper failed to copy.
+    immutable_model = frozenset({1, 2, 3})
+    p = SamplingParams(max_tokens=512, stop_token_ids=[99])
+    result = _assemble_stop_tokens(p, immutable_model)
+    assert result == {1, 2, 3, 99}
+    assert immutable_model == frozenset({1, 2, 3})  # unchanged
 
 
 def test_standardized_config_dict_matches_schema_consts() -> None:

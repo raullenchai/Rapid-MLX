@@ -63,6 +63,39 @@ CACHE_CORRUPTION_PATTERNS = [
 ]
 
 
+def _assemble_stop_tokens(
+    sampling_params: SamplingParams, model_stop_tokens: set[int]
+) -> set[int]:
+    """Build the stop-token set the BatchGenerator should respect for one request.
+
+    Contract (locked by ``tests/test_community_bench.py::test_scheduler_honours_ignore_eos``):
+
+    - ``sampling_params.ignore_eos=True`` → suppress every token in
+      ``model_stop_tokens`` (the model's own EOS + chat-template terminators).
+      Matches llama.cpp ``llama-bench --no-eos`` and vLLM upstream semantics.
+      Used by community-bench's ``tg128`` / ``tg512`` rounds where the
+      contract is "decode exactly N tokens", not "decode until the model
+      decides to stop".
+    - ``sampling_params.stop_token_ids`` is **always** unioned in.
+      Those are *caller intent*, not model intent, so they survive
+      ``ignore_eos=True``.
+    - ``sampling_params.ignore_eos=False`` (default) → return the union
+      of model stop tokens and any caller stop ids. Normal serve / chat
+      behaviour.
+
+    Why this is a free function: extracted from ``_create_batch_generator``
+    so the test exercises the production assembly directly. A local
+    stand-in in the test could pass even if this function deleted the
+    ``ignore_eos`` branch — codex_review BLOCKING from PR #599.
+    """
+    stop_tokens: set[int] = (
+        set() if sampling_params.ignore_eos else set(model_stop_tokens)
+    )
+    if sampling_params.stop_token_ids:
+        stop_tokens.update(sampling_params.stop_token_ids)
+    return stop_tokens
+
+
 class SchedulingPolicy(Enum):
     """Scheduling policy for request ordering."""
 
@@ -2013,18 +2046,7 @@ class Scheduler:
             top_k=sampling_params.top_k,
         )
 
-        # ``ignore_eos`` suppresses the model's own EOS / chat-terminator
-        # tokens (matches llama-bench ``--no-eos`` and vLLM semantics).
-        # User-supplied ``stop_token_ids`` are still honoured below —
-        # those are caller intent, not model intent. Used by community-bench
-        # to guarantee its ``tg512`` rounds always reach exactly 512 tokens
-        # regardless of what the model thinks of the synthetic prompt.
-        stop_tokens: set[int] = (
-            set() if sampling_params.ignore_eos else self._get_stop_tokens()
-        )
-        # Add custom stop token IDs
-        if sampling_params.stop_token_ids:
-            stop_tokens.update(sampling_params.stop_token_ids)
+        stop_tokens = _assemble_stop_tokens(sampling_params, self._get_stop_tokens())
 
         # mlx-lm 0.31.3+: BatchGenerator captures generation_stream at __init__
         # via a thread-local Stream; without an explicit stream= the captured
