@@ -163,7 +163,7 @@ print(response.choices[0].message.content)
 | [Aider](https://aider.chat) | Agent | CLI edit-and-commit, architect mode ([test](tests/integrations/test_aider.sh)) |
 | [Goose](https://github.com/block/goose) | Agent | Ollama provider via `OLLAMA_HOST` |
 | [OpenCode](https://github.com/sst/opencode) | TUI Agent | Claude Code-like terminal UX, OpenAI-compat provider |
-| [Codex CLI](https://github.com/openai/codex) | Agent | OpenAI's official Rust agent — `/v1/responses` shim ([guide](docs/guides/codex-cli.md)) |
+| [Codex CLI](https://github.com/openai/codex) | Agent | OpenAI's official Rust agent — `/v1/responses` shim, **12/12 release-gauntlet E2E on M3** ([guide](docs/guides/codex-cli.md), [G7b](docs/development/releasing.md)) |
 | [Claude Code](https://www.anthropic.com/claude-code) | Agent | Anthropic SDK via `/v1/messages` — `ANTHROPIC_BASE_URL=http://localhost:8000` |
 | [Claw Code](https://github.com/ultraworkers/claw-code) | Agent | OpenAI & Anthropic endpoints |
 
