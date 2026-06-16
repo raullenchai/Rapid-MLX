@@ -90,15 +90,18 @@ def doctor_command(args) -> None:
         )
         update_baselines = False
 
-    # --- Deprecation-shim path: when a model is supplied, forward to
-    # the new bench --tier surface. The shim mapping is intentionally
-    # conservative — we map each old tier to the closest new tier
-    # rather than try to preserve every doctor-specific knob (baseline
-    # diff, scorecard) that PR #4 will be removing anyway.
+    # --- Deprecation-shim path: only ``smoke <model>`` and ``benchmark``
+    # forward to the new ``bench --tier`` surface in PR #2. We keep
+    # ``check`` and ``full`` on the OLD code path because their behavior
+    # (API + perf, NO harness, baseline-diff, scorecard) doesn't map
+    # cleanly to any single ``--tier`` value — codex PR #621 BLOCKING
+    # flagged that ``doctor check`` redirected to ``--tier all`` would
+    # newly fail on harness-only regressions the old check tier was
+    # explicitly opt-out of. PR #4 will remove ``check`` and ``full``
+    # entirely as part of the doctor slim-down; until then, they keep
+    # their existing semantics so dev CI doesn't shift under foot.
     bench_tier_map = {
         "smoke": "smoke",
-        "check": "all",  # check = API + perf + (no agents) — closest is "all"
-        "full": "all",  # full = check + agents — exactly what "all" exercises
         "benchmark": "speed",  # benchmark tier was a perf scorecard
     }
     forward_to = bench_tier_map.get(tier)
@@ -108,14 +111,34 @@ def doctor_command(args) -> None:
         result = run_smoke_tier()
         sys.exit(result.exit_code)
 
-    # Decide which model to forward with.
+    # ``check`` and ``full`` — keep on the old path (no shim). They
+    # require source checkout and have model defaults / multi-model loops
+    # the bench tier interface doesn't replicate today.
+    if tier == "check":
+        _require_source_checkout()
+        result = run_check_tier(
+            model=explicit_model or DEFAULT_CHECK_MODEL,
+            update_baselines=update_baselines,
+        )
+        sys.exit(result.exit_code)
+    if tier == "full":
+        _require_source_checkout()
+        models = (
+            [m.strip() for m in explicit_models.split(",")]
+            if isinstance(explicit_models, str) and explicit_models
+            else (explicit_models or DEFAULT_FULL_MODELS)
+        )
+        result = run_full_tier(models=models, update_baselines=update_baselines)
+        sys.exit(result.exit_code)
+
+    # Decide which model to forward with for the redirected tiers.
     forward_model = explicit_model
     if forward_model is None and explicit_models:
-        # full / benchmark take a CSV; for shim purposes we forward the
-        # first model and warn that multi-model loops have moved.
-        first = explicit_models.split(",")[0].strip() if isinstance(
-            explicit_models, str
-        ) else (explicit_models[0] if explicit_models else None)
+        first = (
+            explicit_models.split(",")[0].strip()
+            if isinstance(explicit_models, str)
+            else (explicit_models[0] if explicit_models else None)
+        )
         forward_model = first
         if forward_model:
             print(
@@ -124,16 +147,14 @@ def doctor_command(args) -> None:
                 f"Forwarding {forward_model!r} only; re-run for the others.",
                 file=sys.stderr,
             )
-    if forward_model is None and tier == "check":
-        forward_model = DEFAULT_CHECK_MODEL
-    if forward_model is None and tier in ("full", "benchmark"):
-        # full had defaults; benchmark auto-discovered. The shim path
-        # asks the user to be explicit so we don't silently kick off a
-        # multi-GB download via bench's normal model resolution.
+    if forward_model is None and tier == "benchmark":
+        # benchmark auto-discovered locally; the shim path asks the user
+        # to be explicit so we don't silently kick off a multi-GB
+        # download via bench's normal model resolution.
         print(
-            f"[doctor] `doctor {tier}` no longer auto-selects models in the "
-            "shim path. Pass `--model <alias>` (or the new "
-            f"`rapid-mlx bench <alias> --tier {forward_to}`) directly.",
+            "[doctor] `doctor benchmark` no longer auto-discovers models in "
+            "the shim path. Pass `--model <alias>` (or the new "
+            "`rapid-mlx bench <alias> --tier speed`) directly.",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -150,9 +171,6 @@ def doctor_command(args) -> None:
         f"{forward_to}` instead. Running it now…"
     )
 
-    # Import lazily so a pip-install user without the bench module on
-    # their import path (shouldn't happen, but defensive) gets a clean
-    # error instead of an import-time crash.
     from ..bench.tier_runner import run_tier
 
     sys.exit(

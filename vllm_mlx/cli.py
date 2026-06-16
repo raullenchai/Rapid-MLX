@@ -1397,7 +1397,8 @@ def bench_command(args):
         if getattr(args, "submit", False):
             print(
                 "  Error: --tier and --submit are mutually-exclusive. "
-                "Run --tier to validate, then --submit to upload."
+                "Run --tier to validate, then --submit to upload.",
+                file=sys.stderr,
             )
             sys.exit(2)
         from .bench.tier_runner import run_tier

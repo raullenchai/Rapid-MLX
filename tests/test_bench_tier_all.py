@@ -45,19 +45,17 @@ def test_all_runs_smoke_speed_harness_in_order(patch_serve_only, capsys):
     """Happy path: all 3 tiers run in smoke → speed → harness order."""
     call_order: list[str] = []
 
-    def _smoke_stub(model, port):
+    def _smoke_stub(model, base_url):
         call_order.append("smoke")
-        return TierResult(
-            name="smoke", passed=True, duration_s=0.5, detail="PASS"
-        )
+        return TierResult(name="smoke", passed=True, duration_s=0.5, detail="PASS")
 
-    def _speed_stub(model, port, sampled=False):
+    def _speed_stub(model, base_url, sampled=False):
         call_order.append("speed")
         return TierResult(
             name="speed", passed=True, duration_s=10.0, detail="PASS tps=42.0"
         )
 
-    def _harness_stub(model, port):
+    def _harness_stub(model, base_url):
         call_order.append("harness")
         return TierResult(
             name="harness", passed=True, duration_s=30.0, detail="5/5 pass"
@@ -83,7 +81,7 @@ def test_all_aborts_after_smoke_failure(patch_serve_only, capsys):
     """If smoke fails, --tier all must NOT run speed or harness."""
     call_order: list[str] = []
 
-    def _smoke_fail(model, port):
+    def _smoke_fail(model, base_url):
         call_order.append("smoke")
         return TierResult(
             name="smoke",
@@ -92,13 +90,13 @@ def test_all_aborts_after_smoke_failure(patch_serve_only, capsys):
             detail="FAIL no '4' in response",
         )
 
-    def _speed_should_not_run(model, port, sampled=False):
+    def _speed_should_not_run(model, base_url, sampled=False):
         call_order.append("speed")
         return TierResult(
             name="speed", passed=True, duration_s=10.0, detail="should not run"
         )
 
-    def _harness_should_not_run(model, port):
+    def _harness_should_not_run(model, base_url):
         call_order.append("harness")
         return TierResult(
             name="harness",
@@ -128,17 +126,17 @@ def test_all_continues_past_speed_failure(patch_serve_only, capsys):
     """Speed failure does NOT abort the sweep — harness still runs."""
     call_order: list[str] = []
 
-    def _smoke_stub(model, port):
+    def _smoke_stub(model, base_url):
         call_order.append("smoke")
         return TierResult(name="smoke", passed=True, duration_s=0.5)
 
-    def _speed_fail(model, port, sampled=False):
+    def _speed_fail(model, base_url, sampled=False):
         call_order.append("speed")
         return TierResult(
             name="speed", passed=False, duration_s=10.0, detail="FAIL HTTP 500"
         )
 
-    def _harness_stub(model, port):
+    def _harness_stub(model, base_url):
         call_order.append("harness")
         return TierResult(name="harness", passed=True, duration_s=30.0)
 
@@ -169,13 +167,13 @@ def test_all_boots_server_exactly_once(capsys):
     def _stub(model, port, **kwargs):
         return TierResult(name="x", passed=True, duration_s=0.1)
 
-    def _smoke_stub(model, port):
+    def _smoke_stub(model, base_url):
         return TierResult(name="smoke", passed=True, duration_s=0.1)
 
-    def _speed_stub(model, port, sampled=False):
+    def _speed_stub(model, base_url, sampled=False):
         return TierResult(name="speed", passed=True, duration_s=0.1)
 
-    def _harness_stub(model, port):
+    def _harness_stub(model, base_url):
         return TierResult(name="harness", passed=True, duration_s=0.1)
 
     with (
@@ -204,13 +202,13 @@ def test_all_with_base_url_skips_server_boot(capsys):
         boot_count["n"] += 1
         yield {"base_url": f"http://127.0.0.1:{port}/v1", "port": port}
 
-    def _smoke_stub(model, port):
+    def _smoke_stub(model, base_url):
         return TierResult(name="smoke", passed=True, duration_s=0.1)
 
-    def _speed_stub(model, port, sampled=False):
+    def _speed_stub(model, base_url, sampled=False):
         return TierResult(name="speed", passed=True, duration_s=0.1)
 
-    def _harness_stub(model, port):
+    def _harness_stub(model, base_url):
         return TierResult(name="harness", passed=True, duration_s=0.1)
 
     # Stub the urlopen call so the attach health-check passes.
@@ -245,6 +243,58 @@ def test_all_with_base_url_skips_server_boot(capsys):
     )
     captured = capsys.readouterr()
     assert "attached to existing server" in captured.out
+
+
+def test_speed_tier_fails_when_server_returns_zero_tokens(capsys):
+    """HTTP 200 with empty content + zero usage tokens must FAIL the tier.
+
+    Regression coverage for codex PR #621 BLOCKING: previous revision
+    returned passed=True unconditionally after HTTP 200, masking the
+    "server unhealthy but route reachable" silent-failure class.
+    """
+    from vllm_mlx.bench.tier_runner import _run_speed
+
+    class _FakeResp:
+        def __init__(self, body):
+            self._body = body
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._body
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            self.gets = []
+            self.posts = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url):
+            return _FakeResp({"data": [{"id": "test-model"}]})
+
+        def post(self, url, json=None):
+            # Server returns HTTP 200 but emits nothing — usage zero AND
+            # message content empty. This is the silent regression class.
+            return _FakeResp(
+                {
+                    "choices": [{"message": {"content": ""}}],
+                    "usage": {"completion_tokens": 0},
+                }
+            )
+
+    with patch("httpx.Client", _FakeClient):
+        r = _run_speed(model="qwen3.5-4b-4bit", base_url="http://127.0.0.1:8500/v1")
+
+    assert r.passed is False, (
+        "speed tier must FAIL when server emits zero tokens and empty content"
+    )
+    assert "no completion tokens" in r.detail.lower() or "unhealthy" in r.detail.lower()
 
 
 def test_all_with_dead_base_url_fails_fast(capsys):

@@ -65,9 +65,7 @@ def patch_harness_environment():
         ),
         patch("vllm_mlx.doctor.server.serve", _fake_serve),
         patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch(
-            "vllm_mlx.agents.testing.AgentTestRunner", side_effect=_fake_runner_init
-        ),
+        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_fake_runner_init),
     ):
         yield invocations
 
@@ -129,9 +127,7 @@ def test_harness_single_failure_marks_tier_failed(capsys):
         ),
         patch("vllm_mlx.doctor.server.serve", _fake_serve),
         patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch(
-            "vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory
-        ),
+        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="harness")
 
@@ -177,9 +173,7 @@ def test_harness_crash_in_runner_does_not_abort_sweep(capsys):
         ),
         patch("vllm_mlx.doctor.server.serve", _fake_serve),
         patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch(
-            "vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory
-        ),
+        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="harness")
 
@@ -216,9 +210,7 @@ def test_harness_missing_profile_marks_as_failure(capsys):
         ),
         patch("vllm_mlx.doctor.server.serve", _fake_serve),
         patch("vllm_mlx.agents.get_profile", _fake_get_profile),
-        patch(
-            "vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory
-        ),
+        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="harness")
 

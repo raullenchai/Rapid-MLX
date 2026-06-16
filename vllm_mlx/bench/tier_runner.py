@@ -86,14 +86,15 @@ def _resolve_base_url(base_url: str | None) -> tuple[str, int] | None:
     tier work against the URL the user provided. This is the gauntlet
     path: ``release_check_m3.sh`` already booted ``rapid-mlx serve`` on
     port 8000 and just wants us to run the harness suite against it.
+
+    Strips trailing ``/v1`` if the user pasted the full OpenAI base;
+    accepts both ``http://h:p`` and ``http://h:p/v1`` forms.
     """
     if not base_url:
         return None
-    # Strip /v1 if the user pasted the full OpenAI base.
     cleaned = base_url.rstrip("/")
     if cleaned.endswith("/v1"):
         cleaned = cleaned[: -len("/v1")]
-    # Parse host:port out of http(s)://host:port.
     from urllib.parse import urlparse
 
     parsed = urlparse(cleaned)
@@ -102,22 +103,52 @@ def _resolve_base_url(base_url: str | None) -> tuple[str, int] | None:
     return host, port
 
 
+def _normalize_openai_base(base_url: str | None, port: int) -> str:
+    """Return a fully-qualified ``http(s)://host:port/v1`` to hand to tiers.
+
+    When the user passed ``--base-url`` we honor scheme/host from their
+    URL (codex review #621 BLOCKING: previous revision only forwarded
+    ``port`` so a non-localhost host or https scheme was silently
+    discarded). When no ``--base-url`` was given, we constructed a
+    local-loopback URL against ``port`` (the boot port).
+    """
+    if base_url:
+        from urllib.parse import urlparse
+
+        cleaned = base_url.rstrip("/")
+        if cleaned.endswith("/v1"):
+            cleaned = cleaned[: -len("/v1")]
+        parsed = urlparse(cleaned)
+        scheme = parsed.scheme or "http"
+        host = parsed.hostname or "127.0.0.1"
+        # If the URL had no explicit port, fall back to the one we
+        # resolved (HTTP default 80, HTTPS default 443).
+        resolved_port = parsed.port or port
+        return f"{scheme}://{host}:{resolved_port}/v1"
+    return f"http://127.0.0.1:{port}/v1"
+
+
 # --------------------------------------------------------------------- #
 # Per-tier implementations                                              #
 # --------------------------------------------------------------------- #
 
 
-def _run_smoke(model: str, port: int) -> TierResult:
+def _run_smoke(model: str, base_url: str) -> TierResult:
     """Boot probe: send one prompt, assert response contains "4".
 
     The prompt is "Hello, what is 2+2?" — small models reliably answer
     "4" without thinking-mode hallucinations. We measure two numbers
     the user actually cares about: how long boot took (already paid by
     the caller) and first-token latency from request to first delta.
+
+    ``base_url`` is the normalized OpenAI base (e.g. ``http://host:port/v1``).
+    The full URL is honored end-to-end — earlier revisions only forwarded
+    the port to each tier, which meant ``--base-url`` against a non-localhost
+    host (or a https scheme) was silently ignored (codex review #621
+    BLOCKING).
     """
     import httpx
 
-    base_url = f"http://127.0.0.1:{port}/v1"
     t0 = time.perf_counter()
     try:
         # Resolve model_id from the server so we don't have to guess
@@ -128,6 +159,10 @@ def _run_smoke(model: str, port: int) -> TierResult:
             model_id = models_resp.json()["data"][0]["id"]
 
             # Stream so we can measure TTFT independently of total time.
+            # We measure TTFT on the first chunk that carries non-empty
+            # CONTENT, not the first SSE line — many providers emit a
+            # role-only initial chunk (``{"delta": {"role": "assistant"}}``)
+            # that would otherwise understate TTFT (codex review #621 NIT).
             ttft_ms: float | None = None
             content_parts: list[str] = []
             req_start = time.perf_counter()
@@ -136,9 +171,7 @@ def _run_smoke(model: str, port: int) -> TierResult:
                 f"{base_url}/chat/completions",
                 json={
                     "model": model_id,
-                    "messages": [
-                        {"role": "user", "content": "Hello, what is 2+2?"}
-                    ],
+                    "messages": [{"role": "user", "content": "Hello, what is 2+2?"}],
                     "max_tokens": 64,
                     "stream": True,
                     "temperature": 0,
@@ -151,8 +184,6 @@ def _run_smoke(model: str, port: int) -> TierResult:
                     payload = line[6:].strip()
                     if payload == "[DONE]":
                         break
-                    if ttft_ms is None:
-                        ttft_ms = (time.perf_counter() - req_start) * 1000
                     import json as _json
 
                     try:
@@ -165,6 +196,8 @@ def _run_smoke(model: str, port: int) -> TierResult:
                         .get("content", "")
                     )
                     if delta:
+                        if ttft_ms is None:
+                            ttft_ms = (time.perf_counter() - req_start) * 1000
                         content_parts.append(delta)
     except Exception as exc:  # noqa: BLE001 — smoke must never crash
         elapsed = time.perf_counter() - t0
@@ -186,7 +219,7 @@ def _run_smoke(model: str, port: int) -> TierResult:
     return TierResult(name="smoke", passed=ok, duration_s=elapsed, detail=detail)
 
 
-def _run_speed(model: str, port: int, sampled: bool = False) -> TierResult:
+def _run_speed(model: str, base_url: str, sampled: bool = False) -> TierResult:
     """Standardized B=1 perf bench (reuses ``run_standardized_bench``).
 
     This calls the SAME runner that ``bench --submit`` uses, against
@@ -194,11 +227,15 @@ def _run_speed(model: str, port: int, sampled: bool = False) -> TierResult:
     --submit's job. PR #3 will reshape what --submit emits to include
     speed + harness + agent buckets, but the --speed-only data shape
     we use here is stable across that change.
+
+    ``base_url`` is the normalized OpenAI base (e.g. ``http://host:port/v1``).
     """
     import httpx
 
-    base_url = f"http://127.0.0.1:{port}/v1"
     t0 = time.perf_counter()
+    total_completion_tokens = 0
+    total_content_chars = 0
+    total_time = 0.0
     try:
         # Use the OpenAI completions endpoint to drive a small set of
         # standardized prompts. The full standardized bench in
@@ -223,8 +260,6 @@ def _run_speed(model: str, port: int, sampled: bool = False) -> TierResult:
                 "Write one sentence about deserts.",
                 "Write one sentence about cities.",
             ]
-            total_completion_tokens = 0
-            total_time = 0.0
             for prompt in prompts:
                 req_t0 = time.perf_counter()
                 resp = client.post(
@@ -241,6 +276,14 @@ def _run_speed(model: str, port: int, sampled: bool = False) -> TierResult:
                 body = resp.json()
                 usage = body.get("usage", {})
                 total_completion_tokens += usage.get("completion_tokens", 0)
+                # Track content length too — some servers omit usage but
+                # still return tokens, and an empty-content response is a
+                # silent regression we MUST flag (codex review #621
+                # BLOCKING: HTTP 200 with zero output is not a pass).
+                content = (
+                    body.get("choices", [{}])[0].get("message", {}).get("content") or ""
+                )
+                total_content_chars += len(content)
                 total_time += req_elapsed
     except Exception as exc:  # noqa: BLE001 — speed must never crash
         elapsed = time.perf_counter() - t0
@@ -252,25 +295,39 @@ def _run_speed(model: str, port: int, sampled: bool = False) -> TierResult:
         )
 
     elapsed = time.perf_counter() - t0
+    # The server is unhealthy if it returned 200s but emitted nothing.
+    # Either total_completion_tokens > 0 (usage path) OR total content
+    # chars > 0 (content-only fallback) must hold; otherwise this is
+    # the "silent empty response" regression class.
+    if total_completion_tokens == 0 and total_content_chars == 0:
+        detail = (
+            f"FAIL model={model} sampling={'sampled' if sampled else 'greedy'} "
+            "5/5 prompts returned no completion tokens AND empty content "
+            "(server unhealthy or response shape broken)"
+        )
+        return TierResult(name="speed", passed=False, duration_s=elapsed, detail=detail)
+
     tps = (total_completion_tokens / total_time) if total_time > 0 else 0.0
     detail = (
         f"PASS model={model} sampling={'sampled' if sampled else 'greedy'} "
-        f"tokens={total_completion_tokens} tps={tps:.1f}"
+        f"tokens={total_completion_tokens} chars={total_content_chars} "
+        f"tps={tps:.1f}"
     )
     return TierResult(name="speed", passed=True, duration_s=elapsed, detail=detail)
 
 
-def _run_harness(model: str, port: int) -> TierResult:
+def _run_harness(model: str, base_url: str) -> TierResult:
     """Run the 5 first-class harnesses against the booted server.
 
     Returns a TierResult that aggregates the 5 individual outcomes. We
     treat any ERROR or FAIL in any harness as a tier-level failure —
     SKIP is fine (binary missing for the e2e tests is expected).
+
+    ``base_url`` is the normalized OpenAI base (e.g. ``http://host:port/v1``).
     """
     from ..agents import get_profile
     from ..agents.testing import AgentTestRunner, TestStatus
 
-    base_url = f"http://127.0.0.1:{port}/v1"
     t0 = time.perf_counter()
     per_harness: list[tuple[str, bool, float, str]] = []
 
@@ -434,14 +491,18 @@ def run_tier(
 
     try:
         with _serve_or_attach(model, base_url, boot_timeout_s) as (port, owns):
+            # Build the fully-qualified base URL ONCE. Each tier gets
+            # the same string, so --base-url's scheme + host are honored
+            # end-to-end (codex review #621 BLOCKING).
+            openai_base = _normalize_openai_base(base_url, port)
             if owns:
                 print(f"  [server] booted {model} on port {port}")
             else:
-                print(f"  [server] attached to existing server at {base_url}")
+                print(f"  [server] attached to existing server at {openai_base}")
             print()
 
             if tier in ("smoke", "all"):
-                r = _run_smoke(model, port)
+                r = _run_smoke(model, openai_base)
                 _print_tier_result(r)
                 results.append(r)
                 if tier == "all" and not r.passed:
@@ -450,12 +511,12 @@ def run_tier(
                     return _finalize(results, overall_t0)
 
             if tier in ("speed", "all"):
-                r = _run_speed(model, port, sampled=sampled)
+                r = _run_speed(model, openai_base, sampled=sampled)
                 _print_tier_result(r)
                 results.append(r)
 
             if tier in ("harness", "all"):
-                r = _run_harness(model, port)
+                r = _run_harness(model, openai_base)
                 _print_tier_result(r)
                 results.append(r)
     except Exception as exc:  # noqa: BLE001 — surface as exit code, not traceback
@@ -483,9 +544,7 @@ def _finalize(results: list[TierResult], t0: float) -> int:
     n_fail = sum(1 for r in results if not r.passed)
     overall_ok = n_fail == 0 and n_pass > 0
     marker = "OK" if overall_ok else "FAIL"
-    summary = ", ".join(
-        f"{r.name}={'pass' if r.passed else 'fail'}" for r in results
-    )
+    summary = ", ".join(f"{r.name}={'pass' if r.passed else 'fail'}" for r in results)
     print(f"  {marker}: {n_pass}/{len(results)} tiers passed ({summary})")
     print(f"  total: {total:.1f}s")
     return 0 if overall_ok else 1

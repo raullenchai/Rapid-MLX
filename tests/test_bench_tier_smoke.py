@@ -19,6 +19,7 @@ from vllm_mlx.bench.tier_runner import (
     HARNESS_PROFILES,
     TierResult,
     _find_free_port_in_range,
+    _normalize_openai_base,
     _resolve_base_url,
     run_tier,
 )
@@ -96,9 +97,7 @@ def patch_smoke_environment():
     models_payload = {"data": [{"id": "test-model"}]}
 
     def _client_factory(*args, **kwargs):
-        return _FakeClient(
-            models_payload=models_payload, stream_lines=stream_lines
-        )
+        return _FakeClient(models_payload=models_payload, stream_lines=stream_lines)
 
     with (
         patch(
@@ -136,9 +135,7 @@ def test_smoke_fail_when_no_four_in_response(capsys):
     models_payload = {"data": [{"id": "test-model"}]}
 
     def _client_factory(*args, **kwargs):
-        return _FakeClient(
-            models_payload=models_payload, stream_lines=stream_lines
-        )
+        return _FakeClient(models_payload=models_payload, stream_lines=stream_lines)
 
     with (
         patch(
@@ -155,9 +152,7 @@ def test_smoke_fail_when_no_four_in_response(capsys):
     assert "[FAIL] tier=smoke" in captured.out
 
 
-def test_smoke_output_shape_contains_required_fields(
-    patch_smoke_environment, capsys
-):
+def test_smoke_output_shape_contains_required_fields(patch_smoke_environment, capsys):
     """Smoke output must contain model name, tier name, duration, and TTFT."""
     run_tier(model="qwen3.5-4b-4bit", tier="smoke")
 
@@ -204,3 +199,78 @@ def test_tier_result_dataclass_round_trip():
     assert r.passed is True
     assert r.duration_s == 1.5
     assert r.detail == "x"
+
+
+def test_normalize_base_url_honors_user_host_and_scheme():
+    """--base-url scheme + host + port must survive to tier impls.
+
+    Regression coverage for codex PR #621 BLOCKING: a previous revision
+    forwarded only the port, so ``--base-url https://example.com/v1``
+    silently degraded to ``http://127.0.0.1:443/v1`` in the tier call.
+    """
+    # Local-loopback default (no --base-url): builds 127.0.0.1 against port.
+    assert _normalize_openai_base(None, 8500) == "http://127.0.0.1:8500/v1"
+
+    # User passes plain http+host+port — must survive end-to-end.
+    assert (
+        _normalize_openai_base("http://my-rig.local:8080", 8500)
+        == "http://my-rig.local:8080/v1"
+    )
+
+    # User passes https + custom host — scheme must NOT degrade to http.
+    assert (
+        _normalize_openai_base("https://gpu.example.com:9000/v1", 8500)
+        == "https://gpu.example.com:9000/v1"
+    )
+
+    # User passes scheme + host but NO port — falls back to the boot port.
+    # (Unlikely in practice, but the contract should be predictable.)
+    assert _normalize_openai_base("http://my-rig.local", 8500).endswith("/v1"), (
+        "trailing /v1 must be preserved"
+    )
+
+
+def test_smoke_skips_role_only_chunk_for_ttft(capsys):
+    """TTFT must be measured from FIRST CONTENT delta, not first SSE line.
+
+    Many OpenAI-compatible servers emit a role-only initial chunk
+    (``{"delta": {"role": "assistant"}}``) before the first content
+    token. Recording TTFT on that chunk understates first-token
+    latency. Regression coverage for codex PR #621 NIT.
+    """
+
+    def _free_port(lo, hi):
+        return 8500
+
+    # Stream: role-only chunk THEN content chunk THEN [DONE].
+    # If TTFT is measured on the role chunk, the displayed value will
+    # be close to 0; if measured on first content, it includes the
+    # delay between role and first content.
+    stream_lines = [
+        # Role-only — must NOT trigger TTFT recording.
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+        # First content — THIS is when TTFT should be set.
+        'data: {"choices":[{"delta":{"content":"The answer is 4."}}]}',
+        "data: [DONE]",
+    ]
+    models_payload = {"data": [{"id": "test-model"}]}
+
+    def _client_factory(*args, **kwargs):
+        return _FakeClient(models_payload=models_payload, stream_lines=stream_lines)
+
+    with (
+        patch(
+            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            side_effect=_free_port,
+        ),
+        patch("vllm_mlx.doctor.server.serve", _fake_serve),
+        patch("httpx.Client", _client_factory),
+    ):
+        rc = run_tier(model="qwen3.5-4b-4bit", tier="smoke")
+
+    # Smoke should PASS — response contains "4".
+    assert rc == 0
+    captured = capsys.readouterr()
+    # Response body must show through (proving we kept reading past
+    # the role-only chunk).
+    assert "The answer is 4" in captured.out
