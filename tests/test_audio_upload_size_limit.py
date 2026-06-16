@@ -30,7 +30,7 @@ class _FakeSTTEngine:
     """Stand-in for `vllm_mlx.audio.stt.STTEngine` that records the file it
     was handed but performs no real transcription."""
 
-    instances: list["_FakeSTTEngine"] = []
+    instances: list[_FakeSTTEngine] = []
 
     def __init__(self, model_name: str):
         self.model_name = model_name
@@ -71,7 +71,10 @@ def audio_client(monkeypatch):
 
 def test_oversized_audio_upload_returns_413(audio_client, monkeypatch):
     """A payload above MAX_AUDIO_UPLOAD_SIZE must be rejected with HTTP 413
-    and must never reach the STT engine."""
+    *before* the STT engine is ever constructed or loaded.
+
+    This is the regression test for issue #193 — DoS via memory exhaustion
+    on the audio transcription endpoint."""
 
     from vllm_mlx.routes import audio as audio_route
 
@@ -88,9 +91,12 @@ def test_oversized_audio_upload_returns_413(audio_client, monkeypatch):
 
     assert resp.status_code == 413, resp.text
     assert "too large" in resp.json()["detail"].lower()
-    # The handler must never have called the (fake) STT engine.
-    for inst in _FakeSTTEngine.instances:
-        assert inst.transcribed_paths == []
+    # No engine was constructed — the size check ran before the lazy import
+    # and `STTEngine(model_name).load()` call. This is the property that
+    # prevents an attacker from forcing model load just by advertising a
+    # huge Content-Length.
+    assert _FakeSTTEngine.instances == []
+    assert audio_route._stt_engine is None
 
 
 def test_normal_audio_upload_succeeds(audio_client, monkeypatch):

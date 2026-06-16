@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from starlette.responses import Response
 
 from ..middleware.auth import verify_api_key
@@ -25,8 +25,54 @@ _stt_engine = None
 _tts_engine = None
 
 
+def _reject_oversized_audio(advertised: int | None) -> None:
+    """Reject obvious DoS uploads before doing any work.
+
+    `advertised` is the client-supplied Content-Length (or `UploadFile.size`,
+    which Starlette derives from it). If the client truthfully advertises a
+    payload above the cap, fail with 413 *before* touching the engine or
+    reading any bytes. Clients who omit/lie about Content-Length are caught
+    later by the streaming counter in `_stream_upload_to_tempfile`.
+    """
+    if advertised is None:
+        return
+    if advertised > MAX_AUDIO_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Audio upload too large: {advertised} bytes "
+                f"(max {MAX_AUDIO_UPLOAD_SIZE} bytes)"
+            ),
+        )
+
+
+async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
+    """Copy `file` into the open temp-file `tmp`, enforcing the size cap as
+    we go. Raises HTTPException(413) the moment the cap is exceeded.
+
+    Streaming in fixed-size chunks bounds peak memory to one chunk regardless
+    of how much the client sends — defending against chunked-transfer clients
+    that omit Content-Length entirely.
+    """
+    total = 0
+    while True:
+        chunk = await file.read(_AUDIO_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_AUDIO_UPLOAD_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Audio upload too large: exceeds {MAX_AUDIO_UPLOAD_SIZE} bytes"
+                ),
+            )
+        tmp.write(chunk)
+
+
 @router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
 async def create_transcription(
+    request: Request,
     file: UploadFile,
     model: str = "whisper-large-v3",
     language: str | None = None,
@@ -35,6 +81,25 @@ async def create_transcription(
     """Transcribe audio to text (OpenAI Whisper API compatible)."""
     global _stt_engine
 
+    # SECURITY: Enforce the upload-size cap *before* any expensive work
+    # (engine import, model load, multipart materialization). We check the
+    # raw Content-Length header straight from the request scope so that a
+    # malicious client cannot trigger model loading just by advertising a
+    # huge payload.
+    raw_content_length = request.headers.get("content-length")
+    if raw_content_length is not None:
+        try:
+            _reject_oversized_audio(int(raw_content_length))
+        except ValueError:
+            # Malformed Content-Length — treat as unknown and rely on the
+            # streaming cap below.
+            pass
+    # Belt-and-suspenders: Starlette's UploadFile may know the part size
+    # even when the outer Content-Length is missing (e.g. multipart-only
+    # length). Reject early if so.
+    _reject_oversized_audio(file.size)
+
+    tmp_path: str | None = None
     try:
         from ..audio.stt import STTEngine
 
@@ -52,48 +117,15 @@ async def create_transcription(
             _stt_engine = STTEngine(model_name)
             _stt_engine.load()
 
-        # Reject oversized uploads early via Content-Length if the client
-        # advertises it. This avoids reading any bytes for the obvious DoS case.
-        content_length = file.size
-        if content_length is not None and content_length > MAX_AUDIO_UPLOAD_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"Audio upload too large: {content_length} bytes "
-                    f"(max {MAX_AUDIO_UPLOAD_SIZE} bytes)"
-                ),
-            )
-
         # Stream the upload to a temp file in chunks, enforcing the cap as we
-        # go. This bounds memory use even if the client lies about
-        # Content-Length or sends a chunked transfer encoding.
+        # go. Both this `with` and the outer `try/finally` cooperate to make
+        # sure `tmp_path` is unlinked on every exit path (including disk-full
+        # mid-stream, 413 cap-hit mid-stream, or transcribe() raising).
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             tmp_path = tmp.name
-            total = 0
-            while True:
-                chunk = await file.read(_AUDIO_READ_CHUNK_SIZE)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > MAX_AUDIO_UPLOAD_SIZE:
-                    tmp.close()
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise HTTPException(
-                        status_code=413,
-                        detail=(
-                            f"Audio upload too large: exceeds "
-                            f"{MAX_AUDIO_UPLOAD_SIZE} bytes"
-                        ),
-                    )
-                tmp.write(chunk)
+            await _stream_upload_to_tempfile(file, tmp)
 
-        try:
-            result = _stt_engine.transcribe(tmp_path, language=language)
-        finally:
-            os.unlink(tmp_path)
+        result = _stt_engine.transcribe(tmp_path, language=language)
 
         if response_format == "text":
             return result.text
@@ -116,6 +148,16 @@ async def create_transcription(
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_err:
+                logger.warning(
+                    "Failed to unlink temp audio file %s: %s", tmp_path, cleanup_err
+                )
 
 
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
