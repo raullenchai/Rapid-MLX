@@ -170,7 +170,11 @@ class _FakeSTTEngine:
 @pytest.fixture
 def audio_client(monkeypatch):
     """Build a TestClient mounting only the audio router, with the STT
-    engine replaced by an in-process fake so no model is loaded."""
+    engine replaced by an in-process fake so no model is loaded.
+
+    Mirrors how ``vllm_mlx.server`` wires the production app: the
+    :class:`AudioBodyLimitMiddleware` is installed so the
+    Content-Length pre-check is exercised end-to-end."""
 
     # Reset the cached module-level engine in routes.audio between tests so
     # the second test does not reuse the first test's fake.
@@ -186,6 +190,7 @@ def audio_client(monkeypatch):
 
     app = FastAPI()
     app.include_router(audio_route.router)
+    audio_route.install_audio_body_limit_middleware(app)
     with TestClient(app) as client:
         yield client
 
@@ -299,40 +304,90 @@ def test_streaming_cap_rejects_chunked_upload_before_engine_load(monkeypatch):
     assert leaked == [], f"temp .wav files leaked on rejection path: {leaked}"
 
 
-def test_content_length_guard_rejects_before_multipart_parsing(
-    audio_client, monkeypatch
-):
+def test_content_length_guard_rejects_before_multipart_parsing(monkeypatch):
     """Honest-Content-Length DoS attempt: the request advertises a body
-    several times larger than the cap. The ``Depends`` body-limit guard
-    must reject with 413 BEFORE Starlette parses or spools the multipart
-    body — proving codex's review concern (in-handler check too late
-    for honest-Content-Length attackers) is addressed.
+    several times larger than the cap. :class:`AudioBodyLimitMiddleware`
+    must reject with 413 BEFORE Starlette's multipart parser calls
+    ``receive`` to drain the body. This is the property codex flagged:
+    a FastAPI ``Depends`` cannot do this because parameter resolution
+    (which triggers ``MultiPartParser``) runs first.
 
-    The probe: send a tiny actual body but a Content-Length header that
-    advertises a huge body. Starlette would normally try to read that
-    many bytes (and spool to disk); we must reject before that read."""
+    The probe: wrap the FastAPI app in an ASGI-layer ``receive`` tracer
+    and assert NO ``http.request`` message was ever consumed. That is
+    the empirical proof that no spooling-to-disk happened — there is
+    no other way to land bytes server-side."""
+    import asyncio
 
     from vllm_mlx.routes import audio as audio_route
 
     monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
     monkeypatch.setattr(audio_route, "_REQUEST_BODY_SLACK_BYTES", 256, raising=True)
+    monkeypatch.setattr(audio_route, "_stt_engine", None, raising=False)
 
-    # Craft an *honest* multipart body whose true length comfortably
-    # exceeds (cap + slack). The Depends guard reads Content-Length from
-    # request headers BEFORE the multipart parser runs, so this fires
-    # at request entry — Starlette never spools the body.
-    payload = b"A" * 16384  # 16 KB body, far above the 1280 B effective cap
-    resp = audio_client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("big.wav", io.BytesIO(payload), "audio/wav")},
-        data={"model": "whisper-small"},
+    # Stub the engine import so a regression that *did* parse the body and
+    # reach the handler would be visible via _FakeSTTEngine.instances.
+    stt_mod = types.ModuleType("vllm_mlx.audio.stt")
+    stt_mod.STTEngine = _FakeSTTEngine
+    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.stt", stt_mod)
+    _FakeSTTEngine.instances.clear()
+
+    # Build an app exactly the way the audio_client fixture does — but
+    # without TestClient, so we can drive ASGI manually and observe the
+    # receive channel.
+    app = FastAPI()
+    app.include_router(audio_route.router)
+    audio_route.install_audio_body_limit_middleware(app)
+
+    receive_calls: list[str] = []
+    body_bytes = b"A" * 16384  # 16 KB — comfortably above cap + slack
+
+    async def receive():
+        # If the middleware does its job, this never runs. We record
+        # every call so the assertion below can prove the negative.
+        receive_calls.append("http.request")
+        return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+    sent_messages: list[dict] = []
+
+    async def send(msg):
+        sent_messages.append(msg)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/audio/transcriptions",
+        "raw_path": b"/v1/audio/transcriptions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"multipart/form-data; boundary=---x"),
+            (b"content-length", str(len(body_bytes)).encode("ascii")),
+        ],
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 12345),
+    }
+
+    asyncio.run(app(scope, receive, send))
+
+    # 1) Middleware returned a 413 — the explicit safety result.
+    start = next(m for m in sent_messages if m["type"] == "http.response.start")
+    assert start["status"] == 413, sent_messages
+
+    # 2) THE LOAD-BEARING ASSERTION: receive was never called, so the
+    #    request body never left the client / never landed on the server.
+    #    This is what codex's earlier review demanded — a test that
+    #    fails if any body parsing started before the limit check.
+    assert receive_calls == [], (
+        f"middleware let body parsing begin (receive called "
+        f"{len(receive_calls)} time(s)) — guard regressed to a "
+        "Depends/handler-level check"
     )
 
-    assert resp.status_code == 413, resp.text
-    detail = resp.json()["detail"].lower()
-    assert "too large" in detail and "request body" in detail, detail
-    # Engine never constructed — rejection happened in the Depends, well
-    # before parameter resolution / multipart parsing / handler entry.
+    # 3) No engine was ever constructed — handler never ran.
     assert _FakeSTTEngine.instances == []
     assert audio_route._stt_engine is None
 

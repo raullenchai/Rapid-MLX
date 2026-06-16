@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from starlette.responses import Response
 
 from ..middleware.auth import verify_api_key
@@ -28,42 +28,101 @@ _stt_engine = None
 _tts_engine = None
 
 
-async def _enforce_audio_body_limit(request: Request) -> None:
-    """ASGI-level Content-Length guard for ``/v1/audio/transcriptions``.
+class AudioBodyLimitMiddleware:
+    """ASGI middleware that bounds the request body of audio-upload
+    routes BEFORE Starlette's multipart parser can spool it.
 
-    Runs as a FastAPI ``Depends`` BEFORE the ``UploadFile`` parameter is
-    resolved, i.e. before Starlette begins parsing/spooling the multipart
-    body. This is the only place an honest-Content-Length DoS can be
-    rejected without first letting the body land on disk in
-    Starlette's ``SpooledTemporaryFile``.
+    Why ASGI middleware and not a FastAPI ``Depends``: when the route
+    handler signature includes ``file: UploadFile``, Starlette's
+    ``MultiPartParser`` runs as part of parameter resolution and reads
+    the entire request body off the ``receive`` channel before any
+    ``Depends`` callable is invoked. A ``Depends`` that inspects
+    ``Content-Length`` therefore fires *after* the body has already been
+    drained and spooled to ``SpooledTemporaryFile`` on disk —
+    confirmed empirically with an ASGI ``receive`` probe.
 
-    A client that lies about ``Content-Length`` (or omits it via chunked
-    transfer encoding) cannot be caught here — that's what the streaming
-    counter inside ``_stream_upload_to_tempfile`` is for: it bounds the
-    *application*-level temp file write to ``MAX_AUDIO_UPLOAD_SIZE`` and
-    fires 413 long before any STT engine import or load runs.
+    Running at the ASGI layer lets us short-circuit the receive loop:
 
-    We allow a small slack (``_REQUEST_BODY_SLACK_BYTES``) above
-    ``MAX_AUDIO_UPLOAD_SIZE`` so multipart envelopes around a maximally
-    valid audio file don't trigger a spurious 413 at this outer layer;
-    the streaming counter remains the authoritative per-file cap.
+    1. Honest-``Content-Length`` clients above the cap → 413 returned
+       immediately with zero ``receive`` calls, so the body never lands
+       on disk.
+
+    2. Chunked / no-``Content-Length`` clients still flow through to
+       the handler, where ``_stream_upload_to_tempfile`` enforces the
+       per-file cap by counting bytes as it writes our own temp file.
+
+    Scope is matched by path so unrelated routes pay zero overhead.
+    The path set is intentionally narrow — only
+    ``/v1/audio/transcriptions`` uploads a file; ``/v1/audio/speech``
+    and ``/v1/audio/voices`` have small JSON bodies bounded by other
+    means.
     """
-    cl = request.headers.get("content-length")
-    if cl is None:
-        return  # chunked / unknown — streaming counter is the safety net
-    try:
-        advertised = int(cl)
-    except ValueError:
-        return  # malformed; let Starlette deal with it
-    limit = MAX_AUDIO_UPLOAD_SIZE + _REQUEST_BODY_SLACK_BYTES
-    if advertised > limit:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"Audio upload too large: request body {advertised} bytes "
-                f"(max {MAX_AUDIO_UPLOAD_SIZE} bytes per file)"
-            ),
-        )
+
+    _GUARDED_PATHS: tuple[str, ...] = ("/v1/audio/transcriptions",)
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") != "POST":
+            return await self.app(scope, receive, send)
+        if scope.get("path") not in self._GUARDED_PATHS:
+            return await self.app(scope, receive, send)
+
+        # Walk raw ASGI headers — case-insensitive byte keys.
+        advertised: int | None = None
+        for raw_name, raw_value in scope.get("headers", ()):
+            if raw_name.lower() == b"content-length":
+                try:
+                    advertised = int(raw_value.decode("latin-1"))
+                except (UnicodeDecodeError, ValueError):
+                    advertised = None
+                break
+
+        limit = MAX_AUDIO_UPLOAD_SIZE + _REQUEST_BODY_SLACK_BYTES
+        if advertised is not None and advertised > limit:
+            await _send_413(
+                send,
+                (
+                    f"Audio upload too large: request body {advertised} bytes "
+                    f"(max {MAX_AUDIO_UPLOAD_SIZE} bytes per file)"
+                ),
+            )
+            return
+
+        await self.app(scope, receive, send)
+
+
+async def _send_413(send, detail: str) -> None:
+    """Emit a JSON 413 response from inside ASGI middleware.
+
+    Hand-rolling the response (rather than raising ``HTTPException``)
+    keeps the rejection self-contained inside the middleware — no
+    FastAPI exception handlers or dependency machinery have to run, so
+    the body is never read from ``receive``."""
+    import json as _json
+
+    body = _json.dumps({"detail": detail}).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body, "more_body": False})
+
+
+def install_audio_body_limit_middleware(app) -> None:
+    """Attach :class:`AudioBodyLimitMiddleware` to an ``app``.
+
+    Centralised so ``vllm_mlx.server`` and tests register the guard
+    through one entry point — keeps the wiring discoverable from this
+    module instead of buried in app-construction code."""
+    app.add_middleware(AudioBodyLimitMiddleware)
 
 
 async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
@@ -90,10 +149,7 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
-@router.post(
-    "/v1/audio/transcriptions",
-    dependencies=[Depends(verify_api_key), Depends(_enforce_audio_body_limit)],
-)
+@router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
 async def create_transcription(
     file: UploadFile,
     model: str = "whisper-large-v3",
@@ -102,22 +158,24 @@ async def create_transcription(
 ):
     """Transcribe audio to text (OpenAI Whisper API compatible).
 
-    Three-layer size guard (defense in depth):
+    Two-layer size guard (defense in depth):
 
-    1. ``Depends(_enforce_audio_body_limit)`` rejects requests whose
-       ``Content-Length`` exceeds the cap BEFORE Starlette parses or
-       spools the multipart body. Honest large uploads die at this
-       layer with zero disk I/O.
+    1. :class:`AudioBodyLimitMiddleware` runs at the ASGI layer and
+       rejects requests whose ``Content-Length`` exceeds the cap
+       BEFORE Starlette's multipart parser drains the receive channel.
+       Honest large uploads die there with zero disk I/O and no
+       handler invocation.
 
-    2. ``_stream_upload_to_tempfile`` enforces an exact per-file cap
-       while copying chunks into our own temp file. Catches clients who
-       lie about / omit ``Content-Length`` (chunked transfer): even if
-       Starlette already spooled the body to its own temp file, we
-       refuse to copy more than the cap into ours and abort early
-       before any STT engine import / load happens.
+    2. ``_stream_upload_to_tempfile`` (below) enforces the exact per-
+       file cap while copying chunks into our own temp file. Catches
+       chunked-transfer / no-``Content-Length`` clients that lied at
+       layer 1: even if Starlette already spooled the body to its own
+       ``SpooledTemporaryFile``, we refuse to copy more than the cap
+       into ours and abort early before any STT engine import /
+       ``.load()`` call happens.
 
-    3. The 25 MB ceiling matches OpenAI's Whisper API and bounds the
-       worst-case STT inference cost.
+    The 25 MB ceiling matches OpenAI's Whisper API and bounds the
+    worst-case STT inference cost.
     """
     global _stt_engine
 

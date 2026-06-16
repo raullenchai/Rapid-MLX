@@ -398,6 +398,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# SECURITY: bound the request body of /v1/audio/transcriptions at the
+# ASGI layer so honest-Content-Length DoS attempts are rejected before
+# Starlette's multipart parser drains the receive channel and spools
+# the body to disk. See vllm_mlx/routes/audio.py for the rationale.
+from .routes.audio import install_audio_body_limit_middleware  # noqa: E402
+
+install_audio_body_limit_middleware(app)
+
 # CORS configuration — configurable via --cors-origins CLI flag
 
 
