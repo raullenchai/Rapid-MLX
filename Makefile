@@ -94,11 +94,13 @@ release-smoke:
 # via .github/workflows/pr-validate.yml. This target covers what CI
 # cannot — every gate that boots a real server.
 #
-# Time budget: ~10-15 minutes on M3 Ultra with weights warm-cached.
+# Time budget: ~15-20 minutes on M3 Ultra with weights warm-cached
+# (default model is qwen3.5-9b-4bit; smaller floor like qwen3.5-4b-4bit
+# is too unreliable on multi-turn-tool / pydantic_ai tests).
 # Cost: zero (your own machine + your own electricity).
 #
 # Override the test model: MODEL=qwen3.6-27b-4bit make release-check-m3
-MODEL ?= qwen3.5-4b-4bit
+MODEL ?= qwen3.5-9b-4bit
 release-check-m3:
 	@MODEL=$(MODEL) PY=$(PY) bash scripts/release_check_m3.sh
 

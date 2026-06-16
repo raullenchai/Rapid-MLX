@@ -152,7 +152,7 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 | G5 | `make stress` — 8 scenarios | **M3** | `make release-check-m3` | concurrent-batching regressions |
 | G6 | Live-server fix-path repro | **M3** | `make release-check-m3` | fix doesn't ship to user-visible path |
 | G7 | SDK integration (anthropic / pydantic_ai / smolagents) | **M3** | `make release-check-m3` | router-level breakage unit tests miss |
-| G7b | Agent harness layer (`rapid-mlx agents codex/opencode/hermes --test`) | **M3** | `make release-check-m3` | live-server harness regressions (Codex `/v1/responses`, OpenCode tool-call parser, Hermes 62-tool stress) |
+| G7b | Agent harness layer — Part A: `rapid-mlx agents codex/opencode/hermes --test` (Chat Completions parser/router); Part B: `/v1/responses` curl + SSE probe | **M3** | `make release-check-m3` | live-server harness regressions on Chat Completions (OpenCode tool-call parser, Hermes 62-tool stress, Codex profile shape) + Codex-only `/v1/responses` route regressions (the `AgentTestRunner` only knows Chat Completions, so the shim needs its own probe) |
 | G8a | Parser microbench (×10k iters) | CI | `ci.yml` lint (ubuntu) | >10× parser regression |
 | G8b | End-to-end perf bench (tok/s baseline) | **M3** | `make release-check-m3` | KV-cache / hot-path perf regressions |
 | G9 | 10-sequential latency | **M3** | `make release-check-m3` | tok/s stability degradation |
@@ -171,15 +171,20 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 ### M3 local — one command before pushing the bump commit
 
 ```bash
-make release-check-m3              # uses MODEL=qwen3.5-4b-4bit (default)
+make release-check-m3              # uses MODEL=qwen3.5-9b-4bit (default)
 MODEL=qwen3.6-27b-4bit make release-check-m3   # override
 ```
 
 Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `rapid-mlx serve` once on port 8000, then runs G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G7b (agent harness layer: codex / opencode / hermes via `rapid-mlx agents <name> --test`) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.
 
-G7b covers the live-server harness path that `pr-validate`'s unit-level profile tests can't reach: Codex's `/v1/responses` SSE stream (added in v0.7.10), OpenCode's tool-call routing, and Hermes' 62-tool stress. Other registered profiles (`aider`, `goose`, `openhands`, `cline`, `openclaude`, `langchain`, `pydanticai`, `smolagents`, `generic`) are intentionally not in the gauntlet — they need third-party CLIs on PATH and are environmentally flaky for a release gate. Add a new profile here when (a) the integration is core to a release and (b) `--test` runs without depending on an external CLI binary.
+G7b covers the live-server harness path that `pr-validate`'s unit-level profile tests can't reach. Split in two parts so each is honestly scoped:
 
-Budget: ~10-15 minutes on M3 Ultra with weights warm-cached. Zero $.
+- **Part A** — `rapid-mlx agents codex / opencode / hermes --test`. Smoke-tests `/v1/chat/completions` parser/router behavior for the three first-class harnesses. `AgentTestRunner` (`vllm_mlx/agents/testing.py`) only knows the Chat Completions endpoint today, so this part does **not** exercise `/v1/responses`.
+- **Part B** — direct curl probes against `/v1/responses` (one non-stream, one SSE). Verifies the Codex-CLI shim added in v0.7.10 is reachable and emits at minimum `response.created` and `response.completed` in the right order. Part B is the only thing in the entire CI + M3 gauntlet that actually touches the Responses route at request time. If you change the route's event sequence, Part B is what catches it.
+
+Other registered profiles (`aider`, `goose`, `openhands`, `cline`, `openclaude`, `langchain`, `pydanticai`, `smolagents`, `generic`) are intentionally not in the gauntlet — they need third-party CLIs on PATH and are environmentally flaky for a release gate. Add a new profile to Part A when (a) the integration is core to a release and (b) `--test` runs without depending on an external CLI binary. Add a new Part-B probe when a new route surface lands that has no `AgentTestRunner` coverage.
+
+Budget: ~15-20 minutes on M3 Ultra with weights warm-cached. Zero $. Default model is `qwen3.5-9b-4bit` — the practical floor for the multi-turn-tool tests (`pydantic_ai 5_multi_turn`, `opencode multi_turn_tool`). Smaller models (e.g. `qwen3.5-4b-4bit`) flake on those tests because the 2048-token per-test cap collides with thinking budget on a 4B model — fast but unreliable. For a higher-confidence release run, `MODEL=qwen3.6-35b-4bit make release-check-m3` matches the codex-CLI workhorse recommendation.
 
 If any sub-gate fails, the script exits non-zero with the failure pinpointed. Don't push the bump commit until it's all green.
 
