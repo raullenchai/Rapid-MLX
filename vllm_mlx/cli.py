@@ -1388,6 +1388,29 @@ def bench_command(args):
 
     _mlx_compat.install()
 
+    # --tier routes through the user-facing tier dispatcher (PR #2 of
+    # the bench-consolidation series). Mutually-exclusive with --submit
+    # for now; PR #3 will unify them. Keep this branch ABOVE --submit
+    # so a future maintainer can't accidentally let --submit win when
+    # both flags are set (we'd rather hard-fail and tell the user).
+    if getattr(args, "tier", None):
+        if getattr(args, "submit", False):
+            print(
+                "  Error: --tier and --submit are mutually-exclusive. "
+                "Run --tier to validate, then --submit to upload."
+            )
+            sys.exit(2)
+        from .bench.tier_runner import run_tier
+
+        sys.exit(
+            run_tier(
+                model=args.model,
+                tier=args.tier,
+                base_url=getattr(args, "base_url", None),
+                sampled=getattr(args, "sampled", False),
+            )
+        )
+
     # --submit routes through the standardized community-bench runner,
     # which locks the comparability knobs the freeform path exposes.
     # Keep the branch high in this function so the rest of bench_command
@@ -4366,6 +4389,34 @@ Examples:
             "Path to the Rapid-MLX git checkout. Defaults to the current "
             "working directory. The --submit flow writes the JSON file and "
             "opens the PR from this checkout."
+        ),
+    )
+    # --tier: user-facing tier dispatcher (PR #2). Mutually-exclusive
+    # with --submit (PR #3 will consolidate them, but for now the two
+    # are independent code paths).
+    bench_parser.add_argument(
+        "--tier",
+        type=str,
+        choices=["smoke", "speed", "harness", "all"],
+        default=None,
+        help=(
+            "Run one of the standardized validation tiers: "
+            "'smoke' (boot + 1 prompt), "
+            "'speed' (B=1 perf probe), "
+            "'harness' (5 first-class agent harnesses: "
+            "codex/opencode/hermes/aider/langchain), "
+            "'all' (smoke → speed → harness sequentially, abort on smoke "
+            "fail). Boots the model server exactly once per invocation."
+        ),
+    )
+    bench_parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help=(
+            "For --tier: attach to an already-running server at this URL "
+            "(e.g. http://localhost:8000) instead of booting one. Used by "
+            "release_check_m3.sh G7b to reuse the gauntlet's server."
         ),
     )
 

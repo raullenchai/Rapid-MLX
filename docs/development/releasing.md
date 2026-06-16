@@ -152,7 +152,7 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 | G5 | `make stress` — 8 scenarios | **M3** | `make release-check-m3` | concurrent-batching regressions |
 | G6 | Live-server fix-path repro | **M3** | `make release-check-m3` | fix doesn't ship to user-visible path |
 | G7 | SDK integration (anthropic / pydantic_ai / smolagents) | **M3** | `make release-check-m3` | router-level breakage unit tests miss |
-| G7b | Agent harness layer — Part A: `rapid-mlx agents codex/opencode/hermes/aider/langchain --test` (Chat Completions parser/router); Part B: `/v1/responses` curl + SSE probe | **M3** | `make release-check-m3` | live-server harness regressions on Chat Completions (OpenCode tool-call parser, Hermes 62-tool stress, Codex profile shape, Aider streaming/text-edit format, LangChain 6-test suite incl. structured output) + Codex-only `/v1/responses` route regressions (the `AgentTestRunner` only knows Chat Completions, so the shim needs its own probe) |
+| G7b | Agent harness layer — Part A: `rapid-mlx bench <model> --tier harness` (single command, sweeps codex/opencode/hermes/aider/langchain Chat Completions); Part B: `/v1/responses` curl + SSE probe | **M3** | `make release-check-m3` | live-server harness regressions on Chat Completions (OpenCode tool-call parser, Hermes 62-tool stress, Codex profile shape, Aider streaming/text-edit format, LangChain 6-test suite incl. structured output) + Codex-only `/v1/responses` route regressions (the `AgentTestRunner` only knows Chat Completions, so the shim needs its own probe) |
 | G8a | Parser microbench (×10k iters) | CI | `ci.yml` lint (ubuntu) | >10× parser regression |
 | G8b | End-to-end perf bench (tok/s baseline) | **M3** | `make release-check-m3` | KV-cache / hot-path perf regressions |
 | G9 | 10-sequential latency | **M3** | `make release-check-m3` | tok/s stability degradation |
@@ -175,7 +175,7 @@ make release-check-m3              # uses MODEL=qwen3.5-9b-4bit (default)
 MODEL=qwen3.6-27b-4bit make release-check-m3   # override
 ```
 
-Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `rapid-mlx serve` once on port 8000, then runs G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G7b (agent harness layer: codex / opencode / hermes via `rapid-mlx agents <name> --test`) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.
+Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `rapid-mlx serve` once on port 8000, then runs G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G7b (agent harness layer: a single `rapid-mlx bench <model> --tier harness` sweep across codex / opencode / hermes / aider / langchain) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.
 
 G7b covers the live-server harness path that `pr-validate`'s unit-level profile tests can't reach. Split in two parts so each is honestly scoped:
 

@@ -143,12 +143,15 @@ line
 echo "  G7b — agent harness layer (codex / opencode / hermes / aider / langchain + /v1/responses probe)"
 line
 
-echo "  Part A: agents --test (chat-completions smoke)"
-"$PY" -m vllm_mlx.cli agents codex     --test
-"$PY" -m vllm_mlx.cli agents opencode  --test
-"$PY" -m vllm_mlx.cli agents hermes    --test
-"$PY" -m vllm_mlx.cli agents aider     --test
-"$PY" -m vllm_mlx.cli agents langchain --test
+echo "  Part A: bench --tier harness (chat-completions smoke for all 5 first-class harnesses)"
+# Consolidated in PR #2 of the bench-tier series: a single
+# `bench --tier harness` call replaces the prior five sequential
+# `agents <name> --test` invocations. Same coverage, one process,
+# one summary block. We pass --base-url so the tier runner attaches
+# to the gauntlet's already-booted server on $PORT instead of booting
+# its own (which would conflict on port + waste model-load time).
+"$PY" -m vllm_mlx.cli bench "$MODEL" --tier harness \
+  --base-url "http://127.0.0.1:$PORT"
 
 echo
 echo "  Part B: /v1/responses curl probe (non-stream + SSE)"

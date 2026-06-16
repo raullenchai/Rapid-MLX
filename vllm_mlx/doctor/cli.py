@@ -59,14 +59,28 @@ def _require_source_checkout() -> None:
 def doctor_command(args) -> None:
     """Dispatch to the requested tier.
 
-    Default (no tier or 'smoke'): user-facing self-diagnostic that works
-    from a pip install — no pytest, ruff, or source checkout required.
+    PR #2 of the bench-consolidation series: ``doctor smoke/check/full/
+    benchmark`` are now deprecation shims that print a one-line notice
+    and re-dispatch to the equivalent ``bench --tier ...`` path. PR #4
+    will collapse ``doctor`` down to env-health only (Metal, imports,
+    CLI sanity) and remove the model-loading tiers entirely.
 
-    Dev tiers (check/full/benchmark): require source checkout with tests/,
-    harness/, and dev tools installed.
+    Two redirect modes:
+
+    * If a model argument is provided (``--model X`` or the existing
+      ``--models X,Y`` for full/benchmark): emit the deprecation note
+      and re-run via ``bench <model> --tier ...``. The new path boots
+      its own server, runs the equivalent checks, and returns its
+      exit code.
+    * For ``doctor smoke`` with NO model: preserve today's env-health
+      behavior (Metal / imports / CLI / model_load probe). This is the
+      one path that survives PR #4 unchanged, and a pip-install user
+      with no model downloaded still needs it.
     """
     tier = getattr(args, "tier", None) or "smoke"
     update_baselines = getattr(args, "update_baselines", False)
+    explicit_model = getattr(args, "model", None)
+    explicit_models = getattr(args, "models", None)
 
     if update_baselines and tier in ("smoke", "benchmark"):
         print(
@@ -76,31 +90,78 @@ def doctor_command(args) -> None:
         )
         update_baselines = False
 
-    if tier == "smoke":
-        # User-facing: no source checkout required
+    # --- Deprecation-shim path: when a model is supplied, forward to
+    # the new bench --tier surface. The shim mapping is intentionally
+    # conservative — we map each old tier to the closest new tier
+    # rather than try to preserve every doctor-specific knob (baseline
+    # diff, scorecard) that PR #4 will be removing anyway.
+    bench_tier_map = {
+        "smoke": "smoke",
+        "check": "all",  # check = API + perf + (no agents) — closest is "all"
+        "full": "all",  # full = check + agents — exactly what "all" exercises
+        "benchmark": "speed",  # benchmark tier was a perf scorecard
+    }
+    forward_to = bench_tier_map.get(tier)
+
+    if tier == "smoke" and not explicit_model:
+        # Preserve env-health behavior. PR #4 will keep this code path.
         result = run_smoke_tier()
-    elif tier in ("check", "full", "benchmark"):
-        # Dev tiers: require source checkout
-        _require_source_checkout()
-        if tier == "check":
-            result = run_check_tier(
-                model=getattr(args, "model", None) or DEFAULT_CHECK_MODEL,
-                update_baselines=update_baselines,
+        sys.exit(result.exit_code)
+
+    # Decide which model to forward with.
+    forward_model = explicit_model
+    if forward_model is None and explicit_models:
+        # full / benchmark take a CSV; for shim purposes we forward the
+        # first model and warn that multi-model loops have moved.
+        first = explicit_models.split(",")[0].strip() if isinstance(
+            explicit_models, str
+        ) else (explicit_models[0] if explicit_models else None)
+        forward_model = first
+        if forward_model:
+            print(
+                f"[doctor] WARNING: --models has multiple aliases; the new "
+                f"`bench --tier {forward_to}` runs ONE model per invocation. "
+                f"Forwarding {forward_model!r} only; re-run for the others.",
+                file=sys.stderr,
             )
-        elif tier == "full":
-            result = run_full_tier(
-                models=getattr(args, "models", None) or DEFAULT_FULL_MODELS,
-                update_baselines=update_baselines,
-            )
-        else:
-            result = run_benchmark_tier(
-                models=getattr(args, "models", None),
-            )
-    else:
+    if forward_model is None and tier == "check":
+        forward_model = DEFAULT_CHECK_MODEL
+    if forward_model is None and tier in ("full", "benchmark"):
+        # full had defaults; benchmark auto-discovered. The shim path
+        # asks the user to be explicit so we don't silently kick off a
+        # multi-GB download via bench's normal model resolution.
+        print(
+            f"[doctor] `doctor {tier}` no longer auto-selects models in the "
+            "shim path. Pass `--model <alias>` (or the new "
+            f"`rapid-mlx bench <alias> --tier {forward_to}`) directly.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if tier not in bench_tier_map:
         print(f"[doctor] unknown tier: {tier}", file=sys.stderr)
         sys.exit(2)
 
-    sys.exit(result.exit_code)
+    # Emit the deprecation note BEFORE the work starts so the user sees
+    # it whether or not the run succeeds. Keep it to one line — long
+    # warnings get ignored.
+    print(
+        f"[deprecated] use `rapid-mlx bench {forward_model} --tier "
+        f"{forward_to}` instead. Running it now…"
+    )
+
+    # Import lazily so a pip-install user without the bench module on
+    # their import path (shouldn't happen, but defensive) gets a clean
+    # error instead of an import-time crash.
+    from ..bench.tier_runner import run_tier
+
+    sys.exit(
+        run_tier(
+            model=forward_model,
+            tier=forward_to,
+            base_url=None,
+        )
+    )
 
 
 # ---------------------------------------------------------------------
