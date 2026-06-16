@@ -67,6 +67,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local secrets that must never be committed
+.webui_secret_key
+
 # IDE
 .idea/
 .vscode/
