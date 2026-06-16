@@ -20,6 +20,10 @@
 </p>
 
 <p align="center">
+  <sub>Prefer a Mac GUI? Try <a href="https://rapidmlx.com"><b>Rapid-MLX Desktop</b></a> — same engine, no terminal.</sub>
+</p>
+
+<p align="center">
   <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/demo.gif" alt="Rapid-MLX demo — install, serve Gemma 4, chat, tool calling" width="700">
   <br>
   <em>pip install → serve Gemma 4 26B → chat + tool calling → works with PydanticAI, LangChain, Aider, and more.</em>
@@ -133,6 +137,8 @@ pip install 'rapid-mlx[vision]'
 pip install 'rapid-mlx[audio]'
 ```
 </details>
+
+> **Not into the terminal?** [**Rapid-MLX Desktop**](https://rapidmlx.com) is a Mac app that bundles the same `rapid-mlx` engine inside a one-click GUI — drag to Applications, pick a model, chat. No Python, no `pip`, no `brew`. The CLI here is still the source of truth for serving and scripting; the desktop app is the friendlier on-ramp.
 
 **Try it with Python** (make sure the server is running, then `pip install openai`):
 
