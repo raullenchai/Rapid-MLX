@@ -19,7 +19,7 @@ import argparse
 import os
 import sys
 
-from vllm_mlx._completion import alias_completer, alias_csv_completer
+from vllm_mlx._completion import alias_completer
 
 # NOTE: ``argcomplete`` is imported lazily inside ``main()`` instead of
 # at module top. Module-level imports of ``vllm_mlx.cli`` (e.g.
