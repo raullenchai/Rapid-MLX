@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Security: cap audio upload size to prevent memory-exhaustion DoS.
+# 25 MB matches OpenAI's Whisper API limit and is far above any reasonable
+# transcription payload (~25 min of 16 kHz mono WAV).
+MAX_AUDIO_UPLOAD_SIZE = 25 * 1024 * 1024
+_AUDIO_READ_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
+
 # Audio engines (lazy loaded, module-level to persist across requests)
 _stt_engine = None
 _tts_engine = None
@@ -46,10 +52,43 @@ async def create_transcription(
             _stt_engine = STTEngine(model_name)
             _stt_engine.load()
 
+        # Reject oversized uploads early via Content-Length if the client
+        # advertises it. This avoids reading any bytes for the obvious DoS case.
+        content_length = file.size
+        if content_length is not None and content_length > MAX_AUDIO_UPLOAD_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Audio upload too large: {content_length} bytes "
+                    f"(max {MAX_AUDIO_UPLOAD_SIZE} bytes)"
+                ),
+            )
+
+        # Stream the upload to a temp file in chunks, enforcing the cap as we
+        # go. This bounds memory use even if the client lies about
+        # Content-Length or sends a chunked transfer encoding.
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            content = await file.read()
-            tmp.write(content)
             tmp_path = tmp.name
+            total = 0
+            while True:
+                chunk = await file.read(_AUDIO_READ_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_AUDIO_UPLOAD_SIZE:
+                    tmp.close()
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"Audio upload too large: exceeds "
+                            f"{MAX_AUDIO_UPLOAD_SIZE} bytes"
+                        ),
+                    )
+                tmp.write(chunk)
 
         try:
             result = _stt_engine.transcribe(tmp_path, language=language)
@@ -70,6 +109,10 @@ async def create_transcription(
             status_code=503,
             detail="mlx-audio not installed. Install with: pip install mlx-audio",
         )
+    except HTTPException:
+        # Preserve our own status codes (e.g. 413 for oversized uploads)
+        # instead of downgrading them to 500 via the catch-all below.
+        raise
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
