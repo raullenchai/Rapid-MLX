@@ -504,7 +504,11 @@ async def _stream_responses(
             if reasoning_parser:
                 # accumulated_raw already updated above; pass current/previous
                 # to the parser's streaming extractor.
-                previous_raw = accumulated_raw[: -len(delta_text)] if delta_text else accumulated_raw
+                previous_raw = (
+                    accumulated_raw[: -len(delta_text)]
+                    if delta_text
+                    else accumulated_raw
+                )
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, accumulated_raw, delta_text
                 )

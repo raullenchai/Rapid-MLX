@@ -245,9 +245,7 @@ class TestResponsesToOpenai:
         # Exactly one system message at index 0, preserving order.
         assert sum(1 for m in chat.messages if m.role == "system") == 1
         assert chat.messages[0].role == "system"
-        assert chat.messages[0].content == (
-            "You are the base agent.\n\nBe terse."
-        )
+        assert chat.messages[0].content == ("You are the base agent.\n\nBe terse.")
         # All other messages preserved in order.
         assert chat.messages[1].role == "user"
         assert chat.messages[1].content == "Hi"
