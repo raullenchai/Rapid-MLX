@@ -106,13 +106,29 @@ def test_info_dflash_marks_4bit_alias_ineligible(capsys) -> None:
     assert "ineligible" in captured.out
 
 
-def test_info_dflash_start_with_uses_alias_not_hf_path(capsys) -> None:
+def test_info_dflash_start_with_uses_alias_not_hf_path(capsys, monkeypatch) -> None:
     """``main()`` resolves alias → HF path before dispatch, stashing the
     user-typed alias on ``args._original_alias``. The ``Start with`` hint
     in the DFlash block must render the *alias*, not the resolved HF
     repo — copy-pasting the resolved path back into ``rapid-mlx serve``
-    breaks the alias-keyed eligibility check."""
+    breaks the alias-keyed eligibility check.
+
+    The ``Start with:`` hint is gated on ``eligible == True``, which
+    requires ``have_runtime()`` (mlx-vlm 0.5.0+) to return True. In
+    base / CI installs without the ``[dflash]`` extras the runtime
+    check returns False, the hint is suppressed, and the alias-vs-HF
+    invariant becomes untestable. Mock ``have_runtime`` so eligibility
+    evaluates cleanly and the hint surface remains pinned regardless
+    of which extras the test env carries.
+    """
     from vllm_mlx.cli import info_command
+
+    # Force eligibility True at the import site that ``_print_dflash_status``
+    # uses, otherwise the start-with hint is suppressed.
+    monkeypatch.setattr(
+        "vllm_mlx.speculative.dflash.eligibility.have_runtime",
+        lambda: True,
+    )
 
     # Mirror main()'s pre-resolve: model = HF path, _original_alias = alias.
     args = type(

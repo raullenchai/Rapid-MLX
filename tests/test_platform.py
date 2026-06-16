@@ -60,7 +60,10 @@ def test_get_device_memory():
 
 def test_supported_dtypes():
     """Test supported dtypes."""
-    import torch
+    torch = pytest.importorskip(
+        "torch",
+        reason="vllm_platform's torch dependency is opt-in ([vision] extras)",
+    )
 
     from vllm_mlx.vllm_platform import MLXPlatform
 

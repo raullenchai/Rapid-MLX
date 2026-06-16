@@ -7,18 +7,45 @@ framework with vLLM's platform system, enabling native Apple Silicon
 GPU acceleration.
 """
 
+from __future__ import annotations
+
 import logging
 import platform
 import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
 
-import torch
-
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    import torch
     from vllm.config import VllmConfig
+
+
+def _torch():
+    """Lazy import of ``torch``.
+
+    ``vllm_platform`` is the vLLM platform-plugin entry point — the only
+    runtime path that hits this module is when vLLM proper loads the
+    plugin (via the ``vllm.platform_plugins`` entry-point). The CLI
+    path (``rapid-mlx serve``, ``chat``, ``bench``) doesn't import
+    this module at all. So torch is a heavy (~700 MB) opt-in dep and
+    used to be a hard top-level import that broke every base install
+    on plugin-discovery scans (vLLM imports plugin modules eagerly).
+    Moving it behind a lazy helper means: module imports cleanly
+    everywhere, and only the methods that need torch (dtype lists,
+    no_grad, manual_seed) demand it at call time.
+    """
+    try:
+        import torch
+
+        return torch
+    except ImportError as exc:
+        raise ImportError(
+            "vllm_mlx.vllm_platform requires PyTorch when invoked by vLLM. "
+            "Install with: pip install 'rapid-mlx[vision]' (vision extras "
+            "include torch), or `pip install torch` directly."
+        ) from exc
 
 
 def _get_apple_chip_name() -> str:
@@ -123,11 +150,12 @@ class MLXPlatform:
         """Return supported dtypes for MLX."""
         # MLX supports bfloat16, float16, and float32
         # bfloat16 may not be available on all Apple Silicon chips
+        torch = _torch()
         try:
             import mlx.core as mx
 
             # Check if bfloat16 is supported
-            test = mx.array([1.0], dtype=mx.bfloat16)
+            _ = mx.array([1.0], dtype=mx.bfloat16)
             return [torch.bfloat16, torch.float16, torch.float32]
         except Exception:
             return [torch.float16, torch.float32]
@@ -179,7 +207,7 @@ class MLXPlatform:
         """Return inference mode context manager."""
         # MLX doesn't need a special inference mode
         # Return torch.no_grad() for compatibility
-        return torch.no_grad()
+        return _torch().no_grad()
 
     @classmethod
     def set_device(cls, device: torch.device) -> None:
@@ -197,7 +225,7 @@ class MLXPlatform:
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
-            torch.manual_seed(seed)
+            _torch().manual_seed(seed)
 
             # Set MLX seed
             try:
@@ -231,7 +259,7 @@ class MLXPlatform:
         return "vllm_mlx.attention.MLXAttentionBackend"
 
     @classmethod
-    def check_and_update_config(cls, vllm_config: "VllmConfig") -> None:
+    def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
         """Check and update vLLM configuration for MLX."""
         logger.info("Configuring vLLM for MLX backend on Apple Silicon")
 

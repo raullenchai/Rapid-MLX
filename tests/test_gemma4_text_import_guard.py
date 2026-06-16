@@ -83,3 +83,46 @@ def test_missing_mlx_vlm_raises_actionable_error(tmp_path, monkeypatch):
     # underlying cause stays visible in the traceback.
     assert excinfo.value.__cause__ is not None
     assert isinstance(excinfo.value.__cause__, ImportError)
+
+
+def test_is_gemma4_model_uses_hf_hub_download_not_snapshot(monkeypatch) -> None:
+    """Regression: ``is_gemma4_model`` must fetch only ``config.json`` via
+    ``hf_hub_download``, never call ``snapshot_download`` (which would
+    pull the entire multi-GB model on every cold ``rapid-mlx serve``
+    start to peek at one ~5 KB JSON file).
+
+    Root cause behind PR #600 stress_e2e_bench server-boot timeouts on
+    35B / 27B models — the old code paid a ~35 GB Xet revalidation tax
+    every time it asked "is this a gemma4 model?".
+    """
+    from huggingface_hub import hf_hub_download as _real_hf_hub_download  # noqa: F401
+
+    import vllm_mlx.models.gemma4_text as gemma_mod
+
+    called: dict[str, object] = {}
+
+    def fake_hf_hub_download(repo_id: str, filename: str, **kwargs) -> str:
+        """Pretend to fetch one file; return a path that doesn't exist
+        so the caller falls through to its ``not config_path.exists()``
+        branch — we don't care about the read, just the call shape."""
+        called["repo_id"] = repo_id
+        called["filename"] = filename
+        return "/tmp/nonexistent-gemma4-config-test.json"
+
+    def fake_snapshot_download(*args, **kwargs) -> str:
+        raise AssertionError(
+            "snapshot_download must NOT be called from is_gemma4_model — "
+            "it would download the entire model tree just to read config.json. "
+            "Use hf_hub_download(repo_id=..., filename='config.json') instead."
+        )
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_hf_hub_download)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+
+    # Hand in a HF repo id (not a local path) so the cache-miss branch fires.
+    gemma_mod.is_gemma4_model("mlx-community/Qwen3.5-35B-A3B-8bit")
+
+    assert called.get("filename") == "config.json", (
+        f"Expected hf_hub_download with filename='config.json'; got called={called}"
+    )
+    assert called.get("repo_id") == "mlx-community/Qwen3.5-35B-A3B-8bit"

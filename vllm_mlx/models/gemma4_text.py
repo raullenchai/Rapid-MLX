@@ -26,16 +26,27 @@ logger = logging.getLogger(__name__)
 
 
 def is_gemma4_model(model_path: str | Path) -> bool:
-    """Check if the model at the given path is a Gemma 4 model."""
+    """Check if the model at the given path is a Gemma 4 model.
+
+    The previous implementation called ``snapshot_download(repo_id)`` to
+    populate a local cache before reading ``config.json``. That works,
+    but ``snapshot_download`` validates/fetches the ENTIRE model tree
+    (all safetensors shards, tokenizer files, generation config), which
+    for an 8-bit 35B model is ~35 GB of Xet-protocol revalidation on
+    every cold ``rapid-mlx serve`` start. Switch to ``hf_hub_download``
+    targeting ``config.json`` directly: a ~5 KB file, validated against
+    the existing HF cache. This was the root cause of stress_e2e_bench
+    server-boot timeouts on large models in PR #600 validation.
+    """
     p = Path(model_path)
     config_path = p / "config.json" if p.is_dir() else None
     if config_path is None or not config_path.exists():
-        # Try HF cache
         try:
-            from huggingface_hub import snapshot_download
+            from huggingface_hub import hf_hub_download
 
-            p = Path(snapshot_download(str(model_path)))
-            config_path = p / "config.json"
+            config_path = Path(
+                hf_hub_download(repo_id=str(model_path), filename="config.json")
+            )
         except Exception:
             return False
     if not config_path.exists():
