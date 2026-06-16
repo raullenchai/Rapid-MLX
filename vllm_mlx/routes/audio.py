@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from starlette.responses import Response
 
 from ..middleware.auth import verify_api_key
@@ -72,7 +72,6 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
 
 @router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
 async def create_transcription(
-    request: Request,
     file: UploadFile,
     model: str = "whisper-large-v3",
     language: str | None = None,
@@ -81,22 +80,13 @@ async def create_transcription(
     """Transcribe audio to text (OpenAI Whisper API compatible)."""
     global _stt_engine
 
-    # SECURITY: Enforce the upload-size cap *before* any expensive work
-    # (engine import, model load, multipart materialization). We check the
-    # raw Content-Length header straight from the request scope so that a
-    # malicious client cannot trigger model loading just by advertising a
-    # huge payload.
-    raw_content_length = request.headers.get("content-length")
-    if raw_content_length is not None:
-        try:
-            _reject_oversized_audio(int(raw_content_length))
-        except ValueError:
-            # Malformed Content-Length — treat as unknown and rely on the
-            # streaming cap below.
-            pass
-    # Belt-and-suspenders: Starlette's UploadFile may know the part size
-    # even when the outer Content-Length is missing (e.g. multipart-only
-    # length). Reject early if so.
+    # SECURITY: Reject obvious DoS uploads using the per-part size that
+    # Starlette derives for the audio UploadFile. This deliberately checks
+    # the *audio part*, not the outer request body, so a valid 25 MB file
+    # is not rejected just because multipart boundaries / form fields push
+    # the outer Content-Length a few hundred bytes over the cap. The
+    # streaming counter inside _stream_upload_to_tempfile() is the
+    # authoritative cap and also catches chunked / lying-header clients.
     _reject_oversized_audio(file.size)
 
     tmp_path: str | None = None
