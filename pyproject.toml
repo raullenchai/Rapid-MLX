@@ -73,7 +73,7 @@ dependencies = [
     # #468 #480). Same library vLLM and SGLang delegate to for gpt-oss
     # tool calling. Soft-imported at runtime; the legacy custom state
     # machine remains the fallback if the dep is unavailable.
-    "openai-harmony>=0.0.6",
+    "openai-harmony>=0.0.8",
 ]
 
 [project.optional-dependencies]
@@ -99,7 +99,7 @@ dflash = [
 ]
 # Embedding endpoint
 embeddings = [
-    "mlx-embeddings>=0.0.5",
+    "mlx-embeddings>=0.1.0",
 ]
 # Gradio chat UI
 chat = [
@@ -120,7 +120,7 @@ all = [
     "gradio>=4.0.0",
     "pytz>=2024.1",
     # embeddings
-    "mlx-embeddings>=0.0.5",
+    "mlx-embeddings>=0.1.0",
     # dflash (text-only path covered by mlx-vlm above; listed for clarity)
 ]
 dev = [
