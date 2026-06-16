@@ -86,7 +86,7 @@ def _assemble_stop_tokens(
     Why this is a free function: extracted from ``_create_batch_generator``
     so the test exercises the production assembly directly. A local
     stand-in in the test could pass even if this function deleted the
-    ``ignore_eos`` branch — codex_review BLOCKING from PR #599.
+    ``ignore_eos`` branch.
     """
     stop_tokens: set[int] = (
         set() if sampling_params.ignore_eos else set(model_stop_tokens)

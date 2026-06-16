@@ -244,10 +244,9 @@ def test_scheduler_honours_ignore_eos() -> None:
     aborts at token 88 anyway.
 
     Exercise the **real** production helper that ``_create_batch_generator``
-    calls (codex_review BLOCKING from PR #599: a local stand-in would still
-    pass if the production branch were deleted). Deleting the
-    ``ignore_eos`` branch from ``_assemble_stop_tokens`` now fails this
-    test.
+    calls — a local stand-in would still pass if the production branch
+    were deleted. Deleting the ``ignore_eos`` branch from
+    ``_assemble_stop_tokens`` now fails this test.
     """
     from vllm_mlx.request import SamplingParams
     from vllm_mlx.scheduler import _assemble_stop_tokens

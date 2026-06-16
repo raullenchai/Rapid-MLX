@@ -217,7 +217,7 @@ async def _run_one_round(
     # so cross-machine numbers are comparable. ``decode_tps = (N-1)/window``
     # against a shorter ``N`` is NOT a tg128 / tg512 result and silently
     # breaks the comparability contract advertised in the README and
-    # schema. (Codex PR #582 round-6 BLOCKING.)
+    # schema.
     #
     # As of #567's fix, ``_make_sampling_params_factory`` always sets
     # ``ignore_eos=True``, so the engine should suppress the model's
