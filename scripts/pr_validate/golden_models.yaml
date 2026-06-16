@@ -118,6 +118,38 @@ families:
         ram_gb_required: 18
         quality_tier: smoke
 
+  - family: diffusion-gemma
+    candidates:
+      # Added 2026-06-16 (v0.7.15) to close the DiffusionEngine coverage
+      # gap. ``modality: text-diffusion`` aliases route via
+      # ``vllm_mlx/runtime/diffusion_lane.py::DiffusionEngine`` →
+      # ``mlx_vlm.generate.diffusion.stream_diffusion_generate`` —
+      # completely independent from BatchedEngine (the AR LLM path the
+      # other families cover). Without an entry here, any PR that
+      # silently breaks ``server.load_model``'s modality dispatch or
+      # any DiffusionEngine internals would slip through pr_validate.
+      # Live v0.7.15 e2e (subagent ``a89586066e0144bf2``): 154 s
+      # download+boot+request, coherent ``"Hello there!"`` response in
+      # 4 tokens, server log clean, mmap released on shutdown.
+      #
+      # Quant choice (deviates from the project's 8-bit-only policy
+      # documented above): we use 4-bit here because the test purpose
+      # is ENGINE-PATH coverage, NOT model correctness — DiffusionGemma
+      # is a Gemma-4 derivative and inherits the instruction-following
+      # weaknesses that got Gemma 4 excluded above. Neither quant would
+      # cleanly pass the full agent battery; the 8-bit would just cost
+      # ~14 GB more disk and ~30-60 s more boot for the same engine-
+      # wiring signal. Tagged ``smoke`` so the multi-tool pydantic_ai
+      # test (which the model class can't pass regardless of quant) is
+      # suppressed; anthropic_sdk + langchain still run as smoke
+      # coverage of the gemma4 tool-call parser × DiffusionEngine seam.
+      #
+      # RAM: ~14 GB 4-bit weights + ~3 GB denoising canvas (256-token
+      # canvas × per-step activation) + MLX runtime overhead → 20 GB.
+      - id: mlx-community/diffusiongemma-26B-A4B-it-4bit
+        ram_gb_required: 20
+        quality_tier: smoke
+
   - family: harmony
     candidates:
       # Added 2026-05-21 to close the router-allowlist coverage gap surfaced
@@ -216,6 +248,13 @@ overrides:
   # convention above).
   "mlx-community/gpt-oss-20b-MXFP4-Q8":
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "harmony"]
+  # DiffusionGemma uses the gemma4 tool-call wire format (alias profile
+  # in ``vllm_mlx/aliases.json`` declares ``tool_call_parser: gemma4``;
+  # auto-detect picks it through the alias). Explicit override mirrors
+  # the qwen / harmony convention above for grep-traceability at the
+  # validation surface.
+  "mlx-community/diffusiongemma-26B-A4B-it-4bit":
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "gemma4"]
 
 # Agent integrations — each is a tests/integrations/ test_X.py script
 # we exec against the live server. The matrix is models × agents.
