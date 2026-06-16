@@ -109,12 +109,21 @@ line
 # Two-part gate.
 #
 # Part A — `rapid-mlx agents <name> --test`: smoke-tests
-# `/v1/chat/completions` parser/router for the three first-class
+# `/v1/chat/completions` parser/router for the five first-class
 # harnesses. Doesn't touch `/v1/responses` (the runner only knows
-# Chat Completions today). codex + opencode + hermes are the gated
-# trio; other registered profiles need third-party CLIs on PATH and
-# are environmentally flaky for a release gate. `--test` runs the
-# bundled integration assets without the external CLI binary.
+# Chat Completions today). The five gated harnesses:
+#   - codex     (Codex CLI, /v1/responses workhorse — Part B covers
+#                the responses route directly)
+#   - opencode  (OpenCode, Hermes-parser path)
+#   - hermes    (Hermes Agent; specific_tests run the 62-tool stress)
+#   - aider     (no CLI dep; API-level smoke only)
+#   - langchain (specific_tests: tests/integrations/test_langchain.py;
+#                pip-installs langchain-openai on the runner)
+# Other registered profiles need third-party CLIs on PATH and are
+# environmentally flaky for a release gate, OR are pure-interactive
+# (cline = VSCode extension, openhands/openclaude = interactive
+# query_cmd=null) and would false-positive PASS on the API-level
+# default plan without exercising the actual agent workflow.
 #
 # Part B — direct `/v1/responses` curl probes: AgentTestRunner has
 # zero coverage of the Responses shim (added in v0.7.10 for Codex).
@@ -131,13 +140,15 @@ line
 # on the first failure — series-fail-fast matches G7's pattern.
 # Don't `|| true` these; a quiet skip means a missed release gate.
 line
-echo "  G7b — agent harness layer (codex / opencode / hermes + /v1/responses probe)"
+echo "  G7b — agent harness layer (codex / opencode / hermes / aider / langchain + /v1/responses probe)"
 line
 
 echo "  Part A: agents --test (chat-completions smoke)"
-"$PY" -m vllm_mlx.cli agents codex    --test
-"$PY" -m vllm_mlx.cli agents opencode --test
-"$PY" -m vllm_mlx.cli agents hermes   --test
+"$PY" -m vllm_mlx.cli agents codex     --test
+"$PY" -m vllm_mlx.cli agents opencode  --test
+"$PY" -m vllm_mlx.cli agents hermes    --test
+"$PY" -m vllm_mlx.cli agents aider     --test
+"$PY" -m vllm_mlx.cli agents langchain --test
 
 echo
 echo "  Part B: /v1/responses curl probe (non-stream + SSE)"
