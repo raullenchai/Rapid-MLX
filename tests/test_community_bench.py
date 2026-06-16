@@ -1212,6 +1212,11 @@ def test_validate_rejects_bad_datetime_format(cleanup_real_submissions) -> None:
         "",
         # Wrong separator.
         "2026/06/16T12:00:00Z",
+        # Space separator — ISO 8601 permits it as a readability
+        # alternative but RFC 3339 §5.6 only admits T/t. Schema
+        # promises RFC 3339, so this must reject.
+        # (Codex PR #602 round-2 BLOCKING.)
+        "2026-06-16 12:00:00Z",
     ],
 )
 def test_validate_rejects_non_rfc3339_datetimes(

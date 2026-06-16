@@ -164,8 +164,13 @@ def _check_schema(payload: dict, schema: dict | None) -> None:
     # silently. (Codex PR #602 round-1 BLOCKING.) Belt-and-suspenders:
     # match the wire shape with a regex, THEN call fromisoformat to
     # confirm semantic validity (real month / day / leap-year).
+    # Strict RFC 3339 disallows the space separator that ISO 8601
+    # permits as a "readability" alternative — the ABNF in §5.6 only
+    # admits ``T``/``t`` between date and time. JSON Schema's
+    # ``format: date-time`` references RFC 3339, so we follow it.
+    # (Codex PR #602 round-2 BLOCKING.)
     _RFC3339_DATETIME = re.compile(
-        r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}"
+        r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}"
         r"(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
     )
 
