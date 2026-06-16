@@ -101,6 +101,15 @@ async def create_transcription(
 
     tmp_path: str | None = None
     try:
+        # SECURITY: Stream the upload to a bounded temp file *before* doing
+        # anything expensive. Even a client that lies about / omits
+        # Content-Length cannot force model load or import — they will hit
+        # the streaming cap inside _stream_upload_to_tempfile() and get a
+        # 413 long before the STTEngine block below runs.
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp_path = tmp.name
+            await _stream_upload_to_tempfile(file, tmp)
+
         from ..audio.stt import STTEngine
 
         model_map = {
@@ -116,14 +125,6 @@ async def create_transcription(
         if _stt_engine is None or _stt_engine.model_name != model_name:
             _stt_engine = STTEngine(model_name)
             _stt_engine.load()
-
-        # Stream the upload to a temp file in chunks, enforcing the cap as we
-        # go. Both this `with` and the outer `try/finally` cooperate to make
-        # sure `tmp_path` is unlinked on every exit path (including disk-full
-        # mid-stream, 413 cap-hit mid-stream, or transcribe() raising).
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp_path = tmp.name
-            await _stream_upload_to_tempfile(file, tmp)
 
         result = _stt_engine.transcribe(tmp_path, language=language)
 

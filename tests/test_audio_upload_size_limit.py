@@ -99,6 +99,98 @@ def test_oversized_audio_upload_returns_413(audio_client, monkeypatch):
     assert audio_route._stt_engine is None
 
 
+def test_streaming_cap_rejects_chunked_upload_before_engine_load(monkeypatch):
+    """Direct unit test of the streaming cap — covers the chunked/no-
+    Content-Length / understated-Content-Length attack vector that the
+    TestClient-level test cannot exercise (TestClient always sets a
+    truthful Content-Length).
+
+    A fake UploadFile yields more bytes than the cap allows; we assert:
+      * the handler raises HTTPException(413)
+      * no STTEngine was ever constructed (no model load on the DoS path)
+      * the temp file written so far was cleaned up
+    """
+    import os
+
+    from fastapi import HTTPException
+    from starlette.datastructures import Headers
+    from starlette.requests import Request
+
+    from vllm_mlx.routes import audio as audio_route
+
+    monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
+    monkeypatch.setattr(audio_route, "_stt_engine", None, raising=False)
+
+    # Stub the engine import so a regression that *did* load the engine
+    # would be visible via _FakeSTTEngine.instances.
+    stt_mod = types.ModuleType("vllm_mlx.audio.stt")
+    stt_mod.STTEngine = _FakeSTTEngine
+    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.stt", stt_mod)
+    _FakeSTTEngine.instances.clear()
+
+    class _LyingChunkedUpload:
+        """Mimics the slice of `UploadFile` the handler touches. Reports
+        `size = None` (chunked encoding semantics) but actually streams
+        well past the cap when `.read()` is called."""
+
+        size = None
+        filename = "evil.wav"
+        content_type = "audio/wav"
+
+        def __init__(self, total_bytes: int, chunk: int = 512):
+            self._remaining = total_bytes
+            self._chunk = chunk
+            self.read_calls = 0
+
+        async def read(self, size: int = -1) -> bytes:
+            self.read_calls += 1
+            if self._remaining <= 0:
+                return b""
+            take = self._chunk if size < 0 else min(size, self._chunk)
+            take = min(take, self._remaining)
+            self._remaining -= take
+            return b"\x00" * take
+
+    fake_upload = _LyingChunkedUpload(total_bytes=8192)  # 8 KB > 1 KB cap
+
+    # Build a Request whose Content-Length is absent / lying.
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/audio/transcriptions",
+        "headers": Headers({}).raw,  # no content-length advertised
+        "query_string": b"",
+    }
+    request = Request(scope)
+
+    # Snapshot temp dir so we can assert no temp file leaked.
+    import tempfile as _tf
+
+    before = set(os.listdir(_tf.gettempdir()))
+
+    import asyncio
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            audio_route.create_transcription(
+                request=request,
+                file=fake_upload,  # type: ignore[arg-type]
+                model="whisper-small",
+            )
+        )
+
+    assert exc_info.value.status_code == 413
+    # The engine was never constructed — the streaming cap fired before
+    # the import + load() block at the bottom of the handler.
+    assert _FakeSTTEngine.instances == []
+    assert audio_route._stt_engine is None
+
+    # No leaked .wav temp file — the finally-block cleaned up.
+    after = set(os.listdir(_tf.gettempdir()))
+    leaked = [n for n in (after - before) if n.endswith(".wav")]
+    assert leaked == [], f"temp .wav files leaked on rejection path: {leaked}"
+
+
 def test_normal_audio_upload_succeeds(audio_client, monkeypatch):
     """A small payload (within the cap) must reach the STT engine and
     return a JSON transcription response. Positive control to confirm
