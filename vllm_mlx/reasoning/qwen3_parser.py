@@ -48,6 +48,14 @@ from .think_parser import BaseThinkingReasoningParser
 #     ``thinking process``, ``thought process``, ``chain-of-thought``,
 #     and ``scratchpad`` survive because they are scratchpad-shaped
 #     in a way ``reasoning`` is not.
+#   * Verb-form ``Thinking step by step:`` / ``Thinking out loud:`` /
+#     ``Thinking through this:`` / ``Thinking carefully:`` /
+#     ``Thinking aloud:`` — these are conversational answer openers
+#     ("Thinking carefully: Portland is the safest option") and would
+#     misclassify when the caller defaults to ``enable_thinking=None``
+#     (codex r5 BLOCKING). The unambiguous scratchpad form is always
+#     ``Here's [my/a/the] <noun>:`` — the noun-led shape is what makes
+#     it scratchpad-shaped, the verb-led form is too conversational.
 #
 # Match anchored at ``^\s*`` so a normal answer that merely mentions
 # a scratchpad noun mid-response is not reclassified.
@@ -64,13 +72,6 @@ _BARE_THINK_PREFIX_RE = re.compile(
     r"(?:thinking\s+process|chain[-\s]of[-\s]thought|"
     r"scratchpad|thought\s+process)"
     r"\s*:)"
-    # "Thinking step by step:" / "Thinking out loud:" / etc. — only
-    # the labelled scratchpad form (terminating ``:`` required).
-    # The bare ``Step by step:`` / ``Step-by-step:`` form is excluded
-    # because it is the canonical heading for direct "explain
-    # step-by-step" answers (tutorials, how-tos).
-    r"|(?:Thinking\s+(?:step\s+by\s+step|out\s+loud|through(?:\s+this)?|"
-    r"carefully|aloud)\s*:)"
     # "My thought process:" — scratchpad label that requires ``:``
     # (e.g. NOT "My thought is that ..."). ``My reasoning process:``
     # is excluded because the same ``reasoning`` over-broadening that
@@ -138,7 +139,11 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
     Example (bare-text thinking preamble, truncated before ``</think>``):
         Input: "Here's a thinking process:\n\n1. Analyze the request..."
         Output: reasoning="Here's a thinking process:\n\n1. Analyze...",
-                content=None
+                content=""  # empty-string sentinel, not None — the
+                            # upstream ``_finalize_content_and_reasoning``
+                            # only blanks ``cleaned_text`` when content
+                            # is explicitly ``""``; ``None`` would let
+                            # the raw preamble fall through to the client.
     """
 
     @property

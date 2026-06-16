@@ -768,22 +768,14 @@ class TestQwen3:
         assert content == ""
 
     def test_bare_thinking_process_variants(self):
-        # Only explicit scratchpad labels (terminating ``:``) trigger the
-        # fallback. Conversational phrases like "Let me think..." are
-        # deliberately NOT included — they're common direct-answer
-        # openers when ``enable_thinking=False`` and matching them would
-        # blank out valid responses (codex r1 BLOCKING on PR #572).
-        # ``Step by step:`` / ``Step-by-step:`` are also deliberately
-        # NOT included — that bare form is the canonical heading for
-        # direct "explain step by step" answers (codex r2 BLOCKING).
+        # Only the ``Here's [my/a/the] <scratchpad-noun>:`` shape (and
+        # the ``My thought process:`` form) trigger the fallback. The
+        # excluded shapes have their own regression pins below.
         for prefix in [
             "Here is my thinking process:",
             "Here is the chain-of-thought:",
             "Here's the thought process:",
             "Here's the scratchpad:",
-            "Thinking step by step:",
-            "Thinking out loud:",
-            "Thinking through this:",
             "My thought process:",
         ]:
             text = f"{prefix}\n\n1. First consider..."
@@ -791,6 +783,31 @@ class TestQwen3:
             assert reasoning is not None, f"expected reasoning for prefix={prefix!r}"
             # ``""`` signals "overwrite to empty" to the finalize helper.
             assert content == "", f"expected empty content for prefix={prefix!r}"
+
+    def test_thinking_verb_form_no_longer_matches(self):
+        # Codex r5 BLOCKING regression pin: the verb-form
+        # ``Thinking step by step:`` / ``Thinking out loud:`` /
+        # ``Thinking through this:`` / ``Thinking carefully:`` /
+        # ``Thinking aloud:`` are conversational answer openers
+        # ("Thinking carefully: Portland is the safest option") and
+        # would clobber valid responses on the default
+        # ``enable_thinking=None`` code path. Only the noun-led
+        # ``Here's [my/a/the] <noun>:`` shape stays in the regex —
+        # the verb-led form is too conversational. This pin prevents
+        # a future regex rewrite from re-adding them.
+        for ambiguous in [
+            "Thinking step by step: first drive south on I-5, then turn east.",
+            "Thinking out loud: Portland has the best Vietnamese food.",
+            "Thinking through this: the cheapest option is the train.",
+            "Thinking carefully: Portland is the safest pick.",
+            "Thinking aloud: I'd weight food culture higher than scenery.",
+        ]:
+            reasoning, content = self.parser.extract_reasoning(ambiguous)
+            assert reasoning is None, (
+                f"verb-form ``Thinking X:`` must no longer match — "
+                f"clobbered direct answer: {ambiguous!r}"
+            )
+            assert content == ambiguous
 
     def test_bare_reasoning_label_no_longer_matches(self):
         # Codex r4 BLOCKING regression pin: ``reasoning`` (alone) and
@@ -866,7 +883,15 @@ class TestQwen3:
         )
         assert content == text_with_tool
 
-        # All tool-tag flavors the rest of the stack recognises.
+        # All tool-tag flavors the rest of the stack recognises. The
+        # preamble MUST match ``_BARE_THINK_PREFIX_RE`` first
+        # (otherwise the bare-text branch wouldn't even consider
+        # routing to reasoning, and the tool-markup detector would
+        # never run — the loop would assert trivially). ``Here's the
+        # reasoning:`` is excluded from the regex (codex r4), so
+        # this loop uses ``Here's a thinking process:`` so each tag
+        # flavor exercises ``_TOOL_CALL_MARKUP_RE`` for real (codex
+        # r5 BLOCKING #2).
         for tag in [
             "<tool_call>",
             "<function=foo>",
@@ -874,7 +899,7 @@ class TestQwen3:
             "<invoke ",
             "<minimax:tool_call>",
         ]:
-            text = f"Here's the reasoning:\n\nThinking. {tag}stuff"
+            text = f"Here's a thinking process:\n\nThinking. {tag}stuff"
             reasoning, content = self.parser.extract_reasoning(text)
             assert reasoning is None, (
                 f"tool tag {tag!r} should suppress bare-text fallback"
