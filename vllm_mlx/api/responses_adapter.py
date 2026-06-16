@@ -64,6 +64,27 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
             converted = _convert_input_item(item)
             messages.extend(converted)
 
+    # Codex 0.136.0 sends BOTH `instructions` (the big system prompt)
+    # AND `developer`-role items interleaved with the user turns.
+    # After role mapping both become `system`. Qwen / Llama / Gemma
+    # chat templates require:
+    #   - at most ONE system message
+    #   - at position 0
+    # …otherwise `raise_exception('System message must be at the
+    # beginning.')` fires mid-stream and Codex sees "stream
+    # disconnected before completion".
+    #
+    # Concatenate every system message into a single one at index 0,
+    # preserving their relative order so the per-turn `developer`
+    # instructions sit *after* `instructions` (where Codex puts them
+    # semantically — the per-turn directive refines the base system
+    # prompt).
+    system_texts = [m.content for m in messages if m.role == "system" and m.content]
+    if system_texts:
+        non_system = [m for m in messages if m.role != "system"]
+        merged_system = Message(role="system", content="\n\n".join(system_texts))
+        messages = [merged_system] + non_system
+
     tools = _convert_tools(request.tools)
     tool_choice = _convert_tool_choice(request.tool_choice)
     response_format = _convert_text_format(request.text)
@@ -176,8 +197,23 @@ def _convert_input_item(item: ResponsesInputItem) -> list[Message]:
     return []
 
 
+_RESPONSES_TO_CHAT_ROLE = {
+    # Responses-API "developer" is the new high-priority instruction role
+    # (Codex CLI uses it for the system prompt). Qwen / Llama chat
+    # templates only know system/user/assistant/tool, so the unmapped
+    # "developer" raises `jinja2.TemplateError: Unexpected message role.`
+    # mid-stream — visible to Codex as "stream disconnected".
+    "developer": "system",
+    "system": "system",
+    "user": "user",
+    "assistant": "assistant",
+    "tool": "tool",
+}
+
+
 def _message_item_to_chat(item: ResponsesInputItem) -> Message:
-    role = item.role or "user"
+    raw_role = item.role or "user"
+    role = _RESPONSES_TO_CHAT_ROLE.get(raw_role, raw_role)
     content = item.content
 
     if isinstance(content, str):

@@ -203,6 +203,55 @@ class TestResponsesToOpenai:
         assert chat.messages[1].role == "user"
         assert chat.messages[1].content == "Hi"
 
+    def test_developer_role_maps_to_system(self):
+        # Codex CLI 0.136.0 uses Responses-API "developer" role for the
+        # system-priority instruction channel. Open-weight chat templates
+        # (Qwen, Llama, Gemma) only know system/user/assistant/tool —
+        # passing "developer" through verbatim raises
+        # `jinja2.TemplateError: Unexpected message role.` mid-stream
+        # and Codex sees "stream disconnected".
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="developer",
+                    content="Always reply in JSON.",
+                ),
+            ],
+        )
+        chat = responses_to_openai(req)
+        assert chat.messages[0].role == "system"
+        assert chat.messages[0].content == "Always reply in JSON."
+
+    def test_multiple_systems_merge_to_single_at_index_0(self):
+        # Codex sends BOTH `instructions` (which becomes system) AND a
+        # mid-conversation `developer`-role item (which we map to system).
+        # Qwen / Llama / Gemma templates require exactly ONE system message
+        # at index 0 — otherwise the template raises
+        # `System message must be at the beginning.` mid-stream and Codex
+        # sees "stream disconnected".
+        req = ResponsesRequest(
+            model="gpt-5",
+            instructions="You are the base agent.",
+            input=[
+                ResponsesInputItem(type="message", role="user", content="Hi"),
+                ResponsesInputItem(
+                    type="message", role="developer", content="Be terse."
+                ),
+            ],
+        )
+        chat = responses_to_openai(req)
+        # Exactly one system message at index 0, preserving order.
+        assert sum(1 for m in chat.messages if m.role == "system") == 1
+        assert chat.messages[0].role == "system"
+        assert chat.messages[0].content == (
+            "You are the base agent.\n\nBe terse."
+        )
+        # All other messages preserved in order.
+        assert chat.messages[1].role == "user"
+        assert chat.messages[1].content == "Hi"
+
     def test_message_input_item(self):
         req = ResponsesRequest(
             model="gpt-5",

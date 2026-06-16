@@ -194,6 +194,57 @@ fi
 rm -f "$sse"
 echo "    SSE: OK (response.created → response.completed)"
 
+# Part B.2 — codex-shape SSE: input[] + developer role + tool definition.
+# The bare-string `input` probe above only exercises the easy code path
+# (`input` → single user message) and missed THREE production regressions
+# at once on Codex CLI 0.136.0:
+#   1. `developer`-role items passed through verbatim → Qwen template
+#      raised `Unexpected message role.`
+#   2. After role mapping, multiple system messages tripped Qwen's
+#      "System message must be at the beginning." check
+#   3. tool_call XML was suppressed by tool_filter but the post-loop
+#      parser was reading the FILTERED text, so no `response.function_call`
+#      event ever emitted — Codex's agent loop terminated silently
+#
+# This probe exercises the codex-shape input + asserts a function_call
+# item gets emitted (the hardest signal — covers all three regressions
+# at once because a missing event 0 / 1 / 2 all result in zero items).
+sse2=$(mktemp)
+curl -sNf -X POST "http://127.0.0.1:$PORT/v1/responses" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "gpt-5",
+    "stream": true,
+    "max_output_tokens": 64,
+    "instructions": "You are a helpful agent.",
+    "input": [
+      {"type": "message", "role": "user", "content": "Call get_weather with city=SF"},
+      {"type": "message", "role": "developer", "content": "Always use the tool when asked."}
+    ],
+    "tools": [
+      {"type": "function", "name": "get_weather", "description": "Get the weather for a city",
+       "parameters": {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}
+    ]
+  }' > "$sse2"
+for evt in "response.created" "response.output_item.added" "response.completed"; do
+  if ! grep -q "event: $evt" "$sse2"; then
+    echo "G7b codex-shape SSE FAIL: missing event '$evt' — codex agent loop would silently terminate" >&2
+    head -30 "$sse2" >&2
+    rm -f "$sse2"
+    exit 1
+  fi
+done
+# Function-call item is the strongest signal — without it Codex sees a
+# turn.completed with zero items and the agent loop ends with no output.
+if ! grep -q '"type":"function_call"' "$sse2" && ! grep -q '"type": "function_call"' "$sse2"; then
+  echo "G7b codex-shape SSE FAIL: no function_call item emitted despite tool-forcing prompt" >&2
+  head -30 "$sse2" >&2
+  rm -f "$sse2"
+  exit 1
+fi
+rm -f "$sse2"
+echo "    SSE (codex-shape): OK (function_call item emitted)"
+
 #-------------------- G6 fix-path repro ---------------------------
 line
 echo "  G6 — parallel_tool_calls=false cap (PR #518 fix path)"

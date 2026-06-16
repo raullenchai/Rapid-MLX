@@ -456,6 +456,18 @@ async def _stream_responses(
 
         async for output in engine.stream_chat(messages=messages, **chat_kwargs):
             delta_text = output.new_text
+            # Accumulate the RAW model output (pre-filter, pre-router) so the
+            # post-loop tool_call parser can see `<tool_call>...</tool_call>`
+            # XML that tool_filter rightly suppresses from the user-facing
+            # text channel. Without this, `accumulated_text` is empty in the
+            # tool-calling case and no `response.function_call` SSE event
+            # gets emitted — Codex sees turn.completed with zero output
+            # items and the agent loop silently ends. The chat-completions
+            # route avoids this by parsing `output.text` (the full
+            # non-streamed text) directly; the streaming path needs an
+            # explicit raw accumulator.
+            if delta_text:
+                accumulated_raw += delta_text
 
             if hasattr(output, "prompt_tokens") and output.prompt_tokens:
                 prompt_tokens = output.prompt_tokens
@@ -490,8 +502,9 @@ async def _stream_responses(
                 continue
 
             if reasoning_parser:
-                previous_raw = accumulated_raw
-                accumulated_raw += delta_text
+                # accumulated_raw already updated above; pass current/previous
+                # to the parser's streaming extractor.
+                previous_raw = accumulated_raw[: -len(delta_text)] if delta_text else accumulated_raw
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, accumulated_raw, delta_text
                 )
@@ -576,8 +589,15 @@ async def _stream_responses(
             )
 
         # Emit function_call items for every tool call we saw.
+        # Pass `accumulated_raw` (pre-filter model output) not
+        # `accumulated_text` (post-filter user-visible text) — tool_filter
+        # rightly suppresses `<tool_call>...</tool_call>` XML from
+        # `accumulated_text`, but the post-loop parser needs that XML
+        # to extract structured tool_calls. Without this swap, the
+        # text-parser path returned zero tool_calls and Codex's agent
+        # loop silently terminated with no items emitted.
         _, tool_calls = _parse_tool_calls_with_parser(
-            accumulated_text,
+            accumulated_raw,
             openai_request,
             structured_tool_calls=accumulated_structured_tool_calls or None,
         )
