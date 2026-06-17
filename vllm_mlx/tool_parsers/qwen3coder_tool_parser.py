@@ -516,16 +516,17 @@ class Qwen3CoderToolParser(ToolParser):
 
                     end_idx = value_text.find(self.parameter_end_token)
                     if end_idx == -1:
-                        # Defensive fallback: model emitted next-param-prefix
-                        # or </function> without a </parameter>. Use that as
-                        # the close to avoid hanging forever in incremental
-                        # mode.
+                        # Defensive fallback: model emitted next-param-prefix,
+                        # </function>, or </tool_call> without a </parameter>.
+                        # Use any of those as the close to avoid hanging
+                        # forever in incremental mode (mirrors the existing
+                        # complete-param fallback path below).
                         nxt = value_text.find(self.parameter_prefix)
                         fe = value_text.find(self.function_end_token)
-                        if nxt != -1 and (fe == -1 or nxt < fe):
-                            end_idx = nxt
-                        elif fe != -1:
-                            end_idx = fe
+                        te = value_text.find(self.tool_call_end_token)
+                        candidates = [c for c in (nxt, fe, te) if c != -1]
+                        if candidates:
+                            end_idx = min(candidates)
                     if end_idx != -1:
                         pv = value_text[:end_idx]
                         if pv.endswith("\n"):

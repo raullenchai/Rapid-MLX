@@ -292,6 +292,44 @@ def test_same_chunk_close_and_trailing_param_not_dropped():
     )
 
 
+def test_truncated_tool_call_closes_in_flight_string_at_tool_call_end():
+    """If the model truncates without ``</parameter>`` but reaches
+    ``</tool_call>``, the in-flight string must still finalize — not hang
+    with ``in_param=True``.
+
+    Mirrors the existing complete-param fallback that already treats
+    ``</tool_call>`` as a defensive close boundary.
+    """
+    parser = Qwen3CoderToolParser(tokenizer=None)
+    request = _request_with_tool("echo", {"value": {"type": "string"}})
+
+    # Multi-chunk feed: first chunks open the in-flight string; the final
+    # chunk arrives with ``</tool_call>`` directly, NO </parameter> and NO
+    # </function> at all (a malformed / truncated stream).
+    value_head = "A" * 80
+    value_tail = "B" * 80
+    chunks = [
+        "<tool_call>\n",
+        "<function=echo>\n",
+        "<parameter=value>\n",
+        value_head,
+        value_tail + "\n</tool_call>",
+    ]
+
+    deltas = _feed(parser, chunks, request)
+    fragments = _argument_fragments(deltas)
+    assert fragments, "no fragments emitted — parser hung in incremental mode"
+    # We don't require the truncated stream to produce strictly-valid JSON
+    # (the original buffered path also doesn't close ``}`` here); but the
+    # parser MUST have closed the string and emitted the buffered value.
+    assert any('"value"' in f for f in fragments), (
+        f"in-flight string never closed; fragments={fragments!r}"
+    )
+    assert not parser.in_param, (
+        "parser left in_param=True after </tool_call> truncation"
+    )
+
+
 @pytest.mark.parametrize(
     "param_type",
     ["string", "str", "text", "enum"],
