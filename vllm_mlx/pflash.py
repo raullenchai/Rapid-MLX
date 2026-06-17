@@ -144,20 +144,23 @@ def resolve_pflash_mode_default(args: Any, *, model_name: str) -> str:
     """
     if args.pflash is not None:
         return args.pflash
+    # Late import: ``model_auto_config`` pulls in ``model_aliases``
+    # (which loads aliases.json) and regex compilation. Defer the
+    # cost so importing ``pflash`` stays cheap for callers that
+    # never resolve a default (e.g. ``compress_tokens`` users).
+    #
+    # Catch ImportError ONLY — it's the legitimate degenerate case
+    # (broken install, partial uninstall). A malformed ``aliases.json``
+    # raises ``ValueError`` from ``_coerce``; the user must see that.
+    # Letting it propagate here keeps codex r3 NIT honest: a
+    # blanket ``except Exception`` would silently default every alias
+    # to PFlash off on a real loader regression, hiding the bug on the
+    # one startup path where this helper is authoritative for defaults.
     try:
-        # Late import: ``model_auto_config`` pulls in ``model_aliases``
-        # (which loads aliases.json) and regex compilation. Defer the
-        # cost so importing ``pflash`` stays cheap for callers that
-        # never resolve a default (e.g. ``compress_tokens`` users).
         from .model_auto_config import detect_model_config
-
-        cfg = detect_model_config(model_name)
-    except Exception:
-        # Conservative fallback: if profile resolution blows up for any
-        # reason, keep PFlash off rather than silently enabling it on
-        # an unknown architecture. The startup path will surface the
-        # underlying error elsewhere (model load, parser detect, ...).
+    except ImportError:
         return "off"
+    cfg = detect_model_config(model_name)
     if cfg is not None and cfg.pflash_tier == "verified":
         return "always"
     return "off"

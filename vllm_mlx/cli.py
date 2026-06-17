@@ -1926,9 +1926,11 @@ def bench_command(args):
 
     from mlx_lm import load
 
+    from .api.utils import is_mllm_model as _bench_is_mllm_model
     from .engine_core import AsyncEngineCore, EngineConfig
     from .pflash import config_from_args as _pflash_config_from_args
     from .pflash import resolve_pflash_mode_default as _pflash_resolve_default
+    from .pflash import validate_model_support as _bench_pflash_validate
     from .request import SamplingParams
     from .scheduler import SchedulerConfig
 
@@ -1941,10 +1943,19 @@ def bench_command(args):
     # PFlash for the bench command — same per-alias default as serve:
     # verified Qwen3.5 / Qwen3.6 aliases switch to ``always``, everything
     # else stays ``off``. Resolves before config_from_args so the
-    # validate path sees the final mode.
+    # validate path sees the final mode, then runs the MLLM-rejection
+    # gate ``serve``/``server.py`` already enforce (codex r3 BLOCKING:
+    # bench previously skipped this check, so ``rapid-mlx bench
+    # --pflash always <mllm-alias>`` would admit a combo PFlash
+    # explicitly rejects elsewhere).
     args.pflash = _pflash_resolve_default(args, model_name=args.model)
     try:
         bench_pflash_config = _pflash_config_from_args(args)
+        _bench_pflash_validate(
+            bench_pflash_config,
+            model_name=args.model,
+            is_mllm=getattr(args, "mllm", False) or _bench_is_mllm_model(args.model),
+        )
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
