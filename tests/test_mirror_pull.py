@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import urllib.error
 from pathlib import Path
 from typing import Any
@@ -2413,6 +2414,171 @@ def test_cached_hf_blob_symlink_skips_rehash(
     assert hf_mock.call_count == 0
     # File still resolves correctly.
     assert link.read_bytes() == payload
+
+
+# ---------------------------------------------------------------------------
+# Issue #652 — after a sha-verified R2 download of an LFS file, the
+# bytes must land at ``blobs/<sha>`` and the snapshot path must be a
+# RELATIVE symlink to that blob. Matches HF's own cache layout, so the
+# blob-name shortcut at the warm-cache check fires uniformly for both
+# R2-sourced and HF-sourced cache state — avoiding multi-GB rehashes
+# on every warm pull.
+# ---------------------------------------------------------------------------
+
+
+def test_r2_lfs_download_writes_blob_and_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "a1b2" * 10
+    payload = b"W" * 1024
+    sha = hashlib.sha256(payload).hexdigest()
+    files = [("model.safetensors", 1024, sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, payload),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    assert hf_mock.call_count == 0
+
+    repo_root = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit"
+    blob = repo_root / "blobs" / sha
+    snap_file = repo_root / "snapshots" / revision / "model.safetensors"
+
+    # The verified bytes live at ``blobs/<sha>`` as a regular file.
+    assert blob.is_file()
+    assert not blob.is_symlink()
+    assert blob.read_bytes() == payload
+
+    # The snapshot path is a symlink (NOT a regular file) pointing at
+    # the blob via a RELATIVE path. Matching HF's own layout exactly
+    # is what makes the warm-pull blob-name shortcut fire — an
+    # absolute symlink would also work for ``resolve().name`` but
+    # diverges from HF's layout, so codify "relative" here.
+    assert snap_file.is_symlink()
+    link_target = os.readlink(snap_file)
+    assert not os.path.isabs(link_target), (
+        f"snapshot symlink must be relative, got {link_target!r}"
+    )
+    # Resolves to the blob.
+    assert snap_file.resolve() == blob.resolve()
+    # And reading through the symlink still yields the payload.
+    assert snap_file.read_bytes() == payload
+
+
+def test_warm_r2_pull_uses_blob_name_shortcut(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Second pull of the same model must NOT rehash the LFS blob.
+
+    Issue #652 root cause: the old code wrote R2 bytes as a regular
+    file at ``snapshots/<sha>/<file>``, so the cached-check site
+    couldn't take its ``symlink.name == expected_sha256`` shortcut on
+    the second pull — every warm pull rehashed multi-GB shards. With
+    the blob+symlink layout, the shortcut fires and the second pull
+    is rehash-free.
+    """
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "b2c3" * 10
+    payload = b"S" * 4096
+    sha = hashlib.sha256(payload).hexdigest()
+    files = [("model.safetensors", 4096, sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, payload),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+
+    # First (cold) pull — populates blobs/<sha> and the snapshot
+    # symlink via the R2 path.
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        assert _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+        assert hf_mock.call_count == 0
+
+    repo_root = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit"
+    snap_file = repo_root / "snapshots" / revision / "model.safetensors"
+    assert snap_file.is_symlink()  # cold pull installed the layout.
+
+    # Second (warm) pull — instrument ``hashlib.sha256`` so any new
+    # hasher creation during the second pull is detected. The blob-
+    # name shortcut at the cached-check site must skip the rehash
+    # entirely. A second router with NO file URL registered ensures
+    # an accidental refetch would AssertionError too.
+    warm_router = _UrlRouter()
+    warm_router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+
+    import hashlib as _hashlib_mod
+
+    real_sha256 = _hashlib_mod.sha256
+    hasher_calls: list[None] = []
+
+    def _spy_sha256(*args, **kwargs):
+        hasher_calls.append(None)
+        return real_sha256(*args, **kwargs)
+
+    with (
+        patch("urllib.request.urlopen", side_effect=warm_router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock_warm,
+        patch.object(_hashlib_mod, "sha256", side_effect=_spy_sha256),
+    ):
+        assert _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+        assert hf_mock_warm.call_count == 0
+
+    # No file URL probed on the warm pull (only the catalog).
+    file_reqs = [r for r in warm_router.requests if "model.safetensors" in r["url"]]
+    assert file_reqs == [], f"warm pull refetched LFS file: {file_reqs}"
+    # And — the load-bearing assertion — no sha256 hasher was created
+    # during the warm pull. The blob-name shortcut fired.
+    assert hasher_calls == [], (
+        f"warm pull rehashed the LFS blob ({len(hasher_calls)} hashers)"
+    )
 
 
 # ---------------------------------------------------------------------------

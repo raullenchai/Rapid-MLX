@@ -250,6 +250,7 @@ def _download_one_from_r2(
     expected_sha256: str | None = None,
     sidecar_dir: Path,
     sidecar_key: str,
+    repo_root: Path | None = None,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
 
@@ -274,6 +275,14 @@ def _download_one_from_r2(
     text assets), there is no LFS sha and the integrity check falls
     back to size-only — the realistic threat surface for tiny config
     files is much smaller.
+
+    Issue #652: when ``expected_sha256`` is provided and ``repo_root``
+    is set, the verified bytes land at ``repo_root/blobs/<sha>`` and
+    ``target`` becomes a relative symlink to that blob — matching HF's
+    own cache layout, so subsequent warm pulls hit the blob-name
+    shortcut at the cached-check site (skipping a multi-GB rehash).
+    Non-LFS files (no ``expected_sha256``) stay as regular files at
+    ``target`` for parity with HF's own layout for tiny configs.
     """
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -291,7 +300,12 @@ def _download_one_from_r2(
     lock_fh = _acquire_part_lock(lock_path)
     try:
         return _do_r2_download(
-            url, target, tmp, expected_size, expected_sha256=expected_sha256
+            url,
+            target,
+            tmp,
+            expected_size,
+            expected_sha256=expected_sha256,
+            repo_root=repo_root,
         )
     finally:
         _release_part_lock(lock_fh, lock_path)
@@ -304,6 +318,7 @@ def _do_r2_download(
     expected_size: int | None,
     *,
     expected_sha256: str | None = None,
+    repo_root: Path | None = None,
 ) -> tuple[bool, str]:
     """Inner R2 download body — runs with the per-file lock held.
 
@@ -478,12 +493,118 @@ def _do_r2_download(
         _safe_unlink(tmp)
         return False, f"final-size-mismatch:{final_size}!={expected_size}"
 
+    # Issue #652: for LFS files (``expected_sha256`` known) land the
+    # verified bytes at ``repo_root/blobs/<sha>`` and symlink the
+    # snapshot path at it — matches HF's own layout exactly so the
+    # blob-name shortcut at the warm-cache check fires uniformly for
+    # both R2-sourced and HF-sourced cache state. Non-LFS files
+    # (config.json, tokenizer.json, etc.) stay as regular files at
+    # ``target``; HF does the same for those.
+    if expected_sha256 is not None and repo_root is not None:
+        ok, reason = _install_lfs_blob_and_symlink(
+            tmp, target, repo_root, expected_sha256
+        )
+        if not ok:
+            _safe_unlink(tmp)
+            return False, reason
+        return True, ""
+
     try:
         tmp.rename(target)
     except OSError as e:
         _safe_unlink(tmp)
         return False, f"rename:{type(e).__name__}"
     return True, ""
+
+
+def _install_lfs_blob_and_symlink(
+    tmp: Path,
+    target: Path,
+    repo_root: Path,
+    expected_sha256: str,
+) -> tuple[bool, str]:
+    """Land verified LFS bytes at ``blobs/<sha>`` and symlink ``target``.
+
+    Issue #652. After R2 has produced sha-verified bytes in ``tmp``,
+    we want the resulting cache state to match HF's own layout:
+
+    * The bytes live at ``repo_root/blobs/<expected_sha256>``.
+    * ``target`` (the snapshot path) is a relative symlink at
+      ``../../blobs/<expected_sha256>`` so a warm pull's blob-name
+      shortcut (``resolved.name == expected_sha256``) fires and we
+      skip rehashing multi-GB shards.
+
+    Atomic + concurrency-safe:
+
+    * Hold an ``fcntl.flock`` on the blob path while we materialize it,
+      so two parallel pulls of the same file don't race on the rename.
+    * Write to a ``<sha>.tmp`` sibling under ``blobs/`` then ``rename``
+      onto the final blob — a kill mid-rename cannot leave a half-
+      written blob with the canonical name (rename is atomic on
+      POSIX).
+    * If another process already materialized ``blobs/<sha>`` before
+      we acquired the lock, just symlink to it and drop our ``tmp``
+      (size+sha are already validated upstream, so any existing blob
+      with that name has the same content).
+    """
+    blobs_dir = repo_root / "blobs"
+    blob_path = blobs_dir / expected_sha256
+    try:
+        blobs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return False, f"blob-mkdir:{type(e).__name__}"
+
+    # Per-blob lock keeps two concurrent pulls of the same LFS file
+    # from racing on the blob write. We reuse ``_acquire_part_lock``'s
+    # flock-on-lockfile pattern; the lockfile lives next to the blob.
+    blob_lock = blobs_dir / f"{expected_sha256}.lock"
+    lock_fh = _acquire_part_lock(blob_lock)
+    try:
+        # Race: another process (or another worker in this process)
+        # may have already materialized the blob between our pre-lock
+        # check and now. If it's there with content, drop our tmp and
+        # just symlink. sha+size were validated by the caller, so any
+        # blob already at the canonical name has identical bytes.
+        if blob_path.exists() and not blob_path.is_symlink():
+            _safe_unlink(tmp)
+        else:
+            # Atomic install: write to a ``.tmp`` sibling first so a
+            # kill mid-rename can't leave a partial file at the
+            # canonical blob name. ``Path.rename`` is atomic on POSIX
+            # when source and destination share a filesystem (they
+            # do — both under ``blobs/``).
+            blob_tmp = blobs_dir / f"{expected_sha256}.tmp"
+            _safe_unlink(blob_tmp)
+            try:
+                tmp.rename(blob_tmp)
+            except OSError as e:
+                return False, f"blob-stage:{type(e).__name__}"
+            try:
+                blob_tmp.rename(blob_path)
+            except OSError as e:
+                _safe_unlink(blob_tmp)
+                return False, f"blob-rename:{type(e).__name__}"
+
+        # Install the snapshot symlink. HF uses a relative symlink
+        # (``../../blobs/<sha>``) so the cache is portable across
+        # parent-directory moves; match that exactly. ``target`` may
+        # already exist (stale file / broken symlink from a prior
+        # interrupted run) — clear it before symlinking.
+        _safe_unlink(target)
+        # Snapshot files live at ``snapshots/<rev>/<fname>``; blobs at
+        # ``blobs/<sha>``. The relative path from the snapshot file's
+        # parent (``snapshots/<rev>/``) to the blob is therefore
+        # ``../../blobs/<sha>``. Computing it explicitly via
+        # ``os.path.relpath`` keeps the symlink correct even if a
+        # future change reshapes the layout.
+        rel = os.path.relpath(blob_path, start=target.parent)
+        try:
+            target.symlink_to(rel)
+        except OSError as e:
+            return False, f"symlink:{type(e).__name__}"
+        return True, ""
+    finally:
+        _release_part_lock(lock_fh, blob_lock)
 
 
 def _parse_content_range(
@@ -1111,6 +1232,7 @@ def download_with_mirror_fallback(
                 expected_sha256=expected_sha256,
                 sidecar_dir=sidecar_dir,
                 sidecar_key=_sidecar_key_for(fname),
+                repo_root=repo_root,
             )
             if ok:
                 try:
