@@ -1534,6 +1534,66 @@ def test_custom_mirror_catalog_httperror_404_uses_direct_layout(
 
 
 # ---------------------------------------------------------------------------
+# Codex round-10 BLOCKING — many static-bucket mirrors (S3 with
+# list-bucket denied, vanilla nginx, plain CDN) return 403 / 400 for
+# unknown ``/api/models`` rather than 404. Custom-mirror users on PR
+# #647's contract should still get the direct-layout fallback. Cover
+# 403 and 400 explicitly.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("catalog_status", [400, 401, 403, 404])
+def test_custom_mirror_catalog_4xx_uses_direct_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalog_status: int,
+):
+    """ANY 4xx on a custom mirror's ``/api/models`` should fall back to
+    the legacy ``<base>/<owner>/<repo>/<file>`` layout — narrowing this
+    to exactly 404 would break PR #647 users whose mirror returns 403
+    (S3 with list-bucket denied) or 400 (CDN path-style rejection)."""
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "5555" * 10
+    files = [("config.json", 100)]
+
+    router = _UrlRouter()
+    router.add(
+        f"https://custom-{catalog_status}.example.com/api/models",
+        urllib.error.HTTPError(
+            f"https://custom-{catalog_status}.example.com/api/models",
+            catalog_status,
+            f"HTTP {catalog_status}",
+            {},
+            io.BytesIO(b""),
+        ),
+    )
+    router.add(
+        f"https://custom-{catalog_status}.example.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+
+    monkeypatch.setenv(
+        "RAPID_MLX_MODEL_MIRROR", f"https://custom-{catalog_status}.example.com"
+    )
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok, (
+        f"4xx={catalog_status} on custom mirror should fall back to direct-layout"
+    )
+    assert hf_mock.call_count == 0
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    assert (snap / "config.json").read_bytes() == b"x" * 100
+
+
+# ---------------------------------------------------------------------------
 # Codex round-9 BLOCKING #2 — non-default revision must skip the mirror
 # wholesale so the caller's ``snapshot_download(..., revision="<sha>")``
 # can pin the right ref. We do not currently support per-revision

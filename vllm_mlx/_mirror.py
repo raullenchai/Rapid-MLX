@@ -657,20 +657,27 @@ def download_with_mirror_fallback(
     #   advertised, so an outage is a real signal; route straight to
     #   HF instead of incurring up to ``ceil(files / workers) * 60s``
     #   of mirror timeouts (codex round-4 BLOCKING #3).
-    # * Catalog 404 on a CUSTOM mirror → the user-configured base URL
-    #   doesn't serve /api/models; fall back to direct layout
-    #   (PR #647 contract). Per-file 404 still falls back to HF.
+    # * Catalog 4xx on a CUSTOM mirror → "no catalog endpoint here";
+    #   fall back to direct layout (PR #647 contract). Codex round-10
+    #   BLOCKING: include 400 / 401 / 403 / 404 — many static-bucket
+    #   mirrors (S3 with list-bucket denied, vanilla nginx + a 403
+    #   error_page, CDN 400 on path-style requests, etc.) don't return
+    #   exactly 404 for unknown paths. ANY 4xx on a custom mirror means
+    #   "no JSON catalog here, try the legacy layout instead", which is
+    #   what PR #647 users have been relying on. Per-file 4xx still
+    #   falls back to HF.
     # * Catalog 5xx / network / malformed on a CUSTOM mirror →
     #   transient or misconfigured; skip direct-layout and use HF.
     dub = ""
     use_r2 = False
     is_default_mirror = base.rstrip("/") == MIRROR_DEFAULT.rstrip("/")
+    catalog_is_4xx = catalog_status is not None and 400 <= catalog_status < 500
     if catalog_mirrored and catalog_entry is not None:
         dub = str(catalog_entry.get("download_url_base", "")).strip()
         use_r2 = bool(dub)
-    elif catalog is None and not is_default_mirror and catalog_status == 404:
-        # Custom mirror without /api/models — try direct layout. The
-        # PR #647 contract was ``<base>/<owner>/<repo>/<file>``.
+    elif catalog is None and not is_default_mirror and catalog_is_4xx:
+        # Custom mirror without a usable /api/models — try direct layout.
+        # The PR #647 contract was ``<base>/<owner>/<repo>/<file>``.
         dub = f"/{owner}/{repo}/"
         use_r2 = True
 
