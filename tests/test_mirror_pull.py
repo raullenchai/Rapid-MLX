@@ -76,18 +76,43 @@ def _catalog_payload(
     }
 
 
-def _mk_sibling(rfilename: str, size: int):
-    """Build a minimal HF sibling object — mimics ``RepoSibling``."""
+def _mk_sibling(rfilename: str, size: int, lfs_sha256: str | None = None):
+    """Build a minimal HF sibling object — mimics ``RepoSibling``.
+
+    ``lfs_sha256`` is the SHA-256 of the file's bytes when HF tracks it
+    via LFS (only LFS-tracked files expose this). When set, the mirror
+    module uses it to validate downloaded bytes (codex round-5 BLOCKING
+    #1).
+    """
     s = MagicMock()
     s.rfilename = rfilename
     s.size = size
+    if lfs_sha256 is not None:
+        lfs = MagicMock()
+        lfs.sha256 = lfs_sha256
+        s.lfs = lfs
+    else:
+        s.lfs = None
     return s
 
 
-def _mk_model_info(sha: str, files: list[tuple[str, int]]):
+def _mk_model_info(sha: str, files: list[tuple]):
+    """Build a fake ``ModelInfo``.
+
+    ``files`` is a list of ``(rfilename, size)`` or
+    ``(rfilename, size, lfs_sha256)``.
+    """
     info = MagicMock()
     info.sha = sha
-    info.siblings = [_mk_sibling(name, size) for name, size in files]
+    siblings = []
+    for f in files:
+        if len(f) == 2:
+            name, size = f
+            siblings.append(_mk_sibling(name, size))
+        else:
+            name, size, lfs_sha = f
+            siblings.append(_mk_sibling(name, size, lfs_sha256=lfs_sha))
+    info.siblings = siblings
     return info
 
 
@@ -980,3 +1005,195 @@ def test_part_tempfile_does_not_collide_with_dot_part_repo_asset(
     leftovers = list(snap.glob(".*rapid-mlx-mirror.part"))
     assert leftovers == [], f"unexpected leftover temp files: {leftovers}"
     assert hf_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Codex round-5 BLOCKING #1 — LFS sha256 from HF metadata is verified on
+# R2 downloads. A same-size-but-corrupt mirror object is rejected.
+# ---------------------------------------------------------------------------
+
+
+def test_r2_lfs_sha256_mismatch_falls_back_to_hf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "11ee" * 10
+    payload_correct = b"x" * 200
+    payload_corrupt = b"z" * 200  # same size, different bytes
+    correct_sha = hashlib.sha256(payload_correct).hexdigest()
+    # files: (name, size, lfs_sha256)
+    files = [("model.safetensors", 200, correct_sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # R2 returns the SAME 200 bytes but a different payload (same
+    # size). Without SHA check, this would silently cache as valid.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, payload_corrupt),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        target = snap / filename
+        target.write_bytes(payload_correct)
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf) as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # HF was called because R2's SHA didn't match.
+    assert hf_mock.call_count == 1
+    # The final file is HF's correct bytes, not R2's corrupt ones.
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    assert (snap / "model.safetensors").read_bytes() == payload_correct
+    # No stray hidden temp files left behind.
+    leftovers = list(snap.glob(".*rapid-mlx-mirror.part"))
+    assert leftovers == []
+
+
+def test_r2_lfs_sha256_match_accepts_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "22ee" * 10
+    payload = b"a" * 200
+    sha = hashlib.sha256(payload).hexdigest()
+    files = [("model.safetensors", 200, sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, payload),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # SHA matched → R2 bytes were accepted, no HF fallback.
+    assert hf_mock.call_count == 0
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    assert (snap / "model.safetensors").read_bytes() == payload
+
+
+# ---------------------------------------------------------------------------
+# Codex round-5 NIT #3 + #4 — zero-byte files. ``if expected_size`` is
+# falsy for 0, so a legitimate empty file would skip integrity checks
+# and be reprocessed on every pull. Fixed to ``is not None``.
+# ---------------------------------------------------------------------------
+
+
+def test_zero_byte_file_handled_correctly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "3333" * 10
+    # ``.gitkeep``-style 0-byte file alongside a normal one.
+    files = [("empty.txt", 0), ("config.json", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/empty.txt",
+        _FakeResponse(200, b""),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    # The 0-byte file lands as a 0-byte file.
+    assert (snap / "empty.txt").exists()
+    assert (snap / "empty.txt").stat().st_size == 0
+    # The 100-byte file lands correctly.
+    assert (snap / "config.json").read_bytes() == b"x" * 100
+    # No HF fallback needed.
+    assert hf_mock.call_count == 0
+
+    # Second pull → the 0-byte file is recognized as cached and skipped
+    # (NIT #4: ``cached_size == expected_size`` including 0).
+    router2 = _UrlRouter()
+    router2.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # Deliberately do NOT register any file URLs — the test fails if
+    # production code re-fetches them.
+    with (
+        patch("urllib.request.urlopen", side_effect=router2),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock2,
+    ):
+        ok2 = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok2
+    # No HF or R2 file calls — everything was cache hits.
+    assert hf_mock2.call_count == 0
+    r2_file_calls = [
+        r
+        for r in router2.requests
+        if r["url"] != "https://models.rapidmlx.com/api/models"
+    ]
+    assert r2_file_calls == [], (
+        f"0-byte cached file should not be re-fetched, got: {r2_file_calls}"
+    )

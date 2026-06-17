@@ -191,6 +191,8 @@ def _download_one_from_r2(
     url: str,
     target: Path,
     expected_size: int | None,
+    *,
+    expected_sha256: str | None = None,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
 
@@ -200,6 +202,14 @@ def _download_one_from_r2(
 
     Supports resume via ``Range: bytes=<offset>-`` when a non-empty
     ``.part`` already exists from a prior aborted run.
+
+    Codex round-5 BLOCKING #1: when ``expected_sha256`` is provided
+    (HF's LFS sha256 metadata, set on weight shards), the downloaded
+    bytes are checked against it before the rename. A mirror serving a
+    same-size but corrupt object is rejected. For non-LFS files (small
+    text assets), there is no LFS sha and the integrity check falls
+    back to size-only — the realistic threat surface for tiny config
+    files is much smaller.
     """
     # Codex round-4 BLOCKING #1: the naive ``target + ".part"`` collides
     # with a repository that legitimately contains both ``foo`` and
@@ -267,19 +277,44 @@ def _download_one_from_r2(
             # Integrity precheck — if HF told us the size, R2 must agree.
             # Mismatch means the mirror has a different (possibly stale)
             # build of this file. Fall back to HF, don't risk a corrupt
-            # cache.
-            if expected_size and total_size and total_size != expected_size:
+            # cache. Codex round-5 NIT #3: use ``is not None`` so a
+            # legitimate 0-byte file still gets the size check.
+            if expected_size is not None and total_size and total_size != expected_size:
                 _safe_unlink(tmp)
                 return False, f"size-mismatch:{total_size}!={expected_size}"
 
             mode = "ab" if resp.status == 206 and existing > 0 else "wb"
             read = 0
+            # Codex round-5 BLOCKING #1: stream a SHA-256 of the bytes
+            # we write. For resumed downloads we have to rehash the
+            # existing .part prefix first so the running digest covers
+            # the whole final file. If hashing the prefix fails (e.g.
+            # the .part disappeared between stat and open), wipe and
+            # fall back to HF.
+            hasher = None
+            if expected_sha256 is not None:
+                import hashlib
+
+                hasher = hashlib.sha256()
+                if existing > 0:
+                    try:
+                        with tmp.open("rb") as prefix:
+                            while True:
+                                blk = prefix.read(_CHUNK_BYTES)
+                                if not blk:
+                                    break
+                                hasher.update(blk)
+                    except OSError:
+                        _safe_unlink(tmp)
+                        return False, "prefix-rehash-failed"
             with tmp.open(mode) as fh:
                 while True:
                     chunk = resp.read(_CHUNK_BYTES)
                     if not chunk:
                         break
                     fh.write(chunk)
+                    if hasher is not None:
+                        hasher.update(chunk)
                     read += len(chunk)
 
             # Short-read guard — Content-Length lied or the connection
@@ -288,6 +323,18 @@ def _download_one_from_r2(
             if length > 0 and read != length:
                 _safe_unlink(tmp)
                 return False, f"short-read:{read}!={length}"
+
+            # Codex round-5 BLOCKING #1 — SHA-256 check (LFS files
+            # only; non-LFS hashers stay ``None``). Same-size-but-
+            # corrupt mirror objects fail here.
+            if hasher is not None and expected_sha256 is not None:
+                got = hasher.hexdigest()
+                if got != expected_sha256:
+                    _safe_unlink(tmp)
+                    return (
+                        False,
+                        f"sha256-mismatch:{got[:8]}…!={expected_sha256[:8]}…",
+                    )
     except (
         urllib.error.HTTPError,
         urllib.error.URLError,
@@ -298,9 +345,15 @@ def _download_one_from_r2(
         _safe_unlink(tmp)
         return False, type(e).__name__
 
-    # Final size check against HF after the rename — paranoid but cheap.
-    final_size = tmp.stat().st_size if tmp.exists() else 0
-    if expected_size and final_size != expected_size:
+    # Codex round-5 BLOCKING #2: ``tmp.stat()`` was outside the
+    # download try block, so an OSError here would escape without
+    # cleaning up ``tmp``. Wrap in OSError protection.
+    try:
+        final_size = tmp.stat().st_size if tmp.exists() else 0
+    except OSError as e:
+        _safe_unlink(tmp)
+        return False, f"final-stat:{type(e).__name__}"
+    if expected_size is not None and final_size != expected_size:
         _safe_unlink(tmp)
         return False, f"final-size-mismatch:{final_size}!={expected_size}"
 
@@ -408,7 +461,15 @@ def download_with_mirror_fallback(
 
     revision = getattr(info, "sha", None)
     siblings = getattr(info, "siblings", None) or []
-    files: list[tuple[str, int | None]] = []
+    # Each file: (relative_path, expected_size, lfs_sha256).
+    # - ``expected_size`` from HF's siblings metadata (None if HF didn't
+    #   expose it; use ``size is not None`` to distinguish 0 from
+    #   unknown).
+    # - ``lfs_sha256`` only present for LFS-tracked files (the big
+    #   weight shards). Code paths that need stronger-than-size
+    #   integrity check the hash; non-LFS files (small text assets) keep
+    #   the size-only check. Codex round-5 BLOCKING #1.
+    files: list[tuple[str, int | None, str | None]] = []
     for s in siblings:
         rname = getattr(s, "rfilename", None)
         if not rname:
@@ -419,7 +480,11 @@ def download_with_mirror_fallback(
             # which has its own checks.
             return False
         size = getattr(s, "size", None)
-        files.append((rname, size if isinstance(size, int) else None))
+        size = size if isinstance(size, int) else None
+        lfs = getattr(s, "lfs", None)
+        sha256 = getattr(lfs, "sha256", None) if lfs is not None else None
+        sha256 = sha256 if isinstance(sha256, str) and len(sha256) == 64 else None
+        files.append((rname, size, sha256))
     if not revision or not files:
         return False
 
@@ -504,8 +569,10 @@ def download_with_mirror_fallback(
     misses: list[str] = []
     total_bytes = 0
 
-    def _do_file(item: tuple[str, int | None]) -> tuple[str, str, int]:
-        fname, expected_size = item
+    def _do_file(
+        item: tuple[str, int | None, str | None],
+    ) -> tuple[str, str, int]:
+        fname, expected_size, expected_sha256 = item
         target = snap_dir / fname
         # Belt-and-braces: normalize against snap_dir to refuse symlink
         # or normpath escapes the parts check missed.
@@ -534,16 +601,24 @@ def download_with_mirror_fallback(
         # as a definitive "miss" so the outer caller falls back to
         # ``snapshot_download`` (which has its own conflict resolution
         # and a better error path for the user).
+        #
+        # Codex round-5 NIT #4: ``if expected_size`` treated a
+        # legitimate 0-byte file as "size unknown" → use
+        # ``is not None`` so empty files still get their size check.
         try:
             if target.is_dir() and not target.is_symlink():
                 return fname, "miss", 0
             if target.exists():
                 cached_size = target.stat().st_size
-                if expected_size and cached_size != expected_size:
+                if expected_size is not None and cached_size != expected_size:
                     # Stale / truncated cache entry — drop it and fall
                     # through to the R2/HF re-fetch below.
                     _safe_unlink(target)
-                elif cached_size > 0:
+                elif expected_size is not None and cached_size == expected_size:
+                    return fname, "cached", cached_size
+                elif expected_size is None and cached_size > 0:
+                    # HF didn't expose a size — accept any non-empty
+                    # file as cached (matches pre-#650 behavior).
                     return fname, "cached", cached_size
         except OSError:
             # Target is a broken symlink / permission denied / etc.
@@ -557,7 +632,9 @@ def download_with_mirror_fallback(
             # download_url_base (default mirror) or the synthetic
             # ``/<owner>/<repo>/`` (custom mirror / catalog absent).
             url = _build_r2_url(base, dub, fname)
-            ok, _reason = _download_one_from_r2(url, target, expected_size)
+            ok, _reason = _download_one_from_r2(
+                url, target, expected_size, expected_sha256=expected_sha256
+            )
             if ok:
                 try:
                     size = target.stat().st_size if target.exists() else 0
