@@ -21,6 +21,11 @@ from typing import Any
 
 import pytest
 
+# Hard-depends on Apple-Silicon-only ``mlx``. CI's Linux pr_validate
+# runner has no mlx wheels — skip the whole module instead of letting
+# 70 unrelated ImportError "failures" drown out real signal.
+pytest.importorskip("mlx")
+
 # ----------------------------------------------------------------------
 # Helpers — minimal mlx-vlm surface mock
 # ----------------------------------------------------------------------
@@ -1858,8 +1863,73 @@ class TestConcurrentRequests:
         # Flip stuck and verify check_admission refuses even at zero
         # in-flight reservations.
         engine._worker_stuck = True
-        with pytest.raises(BackpressureError, match="marked unhealthy"):
+        with pytest.raises(BackpressureError, match="drain still pending"):
             engine.check_admission()
+
+    @pytest.mark.asyncio
+    async def test_worker_stuck_self_heals_after_drain(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Issue #644: the previous behavior treated ``_worker_stuck = True``
+        # as permanent — the only way out was a server restart. But the
+        # flag fires when a consumer's 30 s drain ceiling beats the
+        # worker's in-flight ``mx.eval``; the worker DOES eventually
+        # finish the block, run its job-finally, and become healthy
+        # again. The drain ceiling is an in-flight observation, not a
+        # GPU death sentence. Verify the worker self-heals after one
+        # successful drain.
+        import queue as _queue
+        import threading as _threading
+
+        from vllm_mlx.runtime.diffusion_lane import (
+            DiffusionEngine,
+            DiffusionGenerationConfig,
+        )
+        from vllm_mlx.scheduler import BackpressureError
+
+        _install_mlx_vlm_mock(monkeypatch)
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        # Simulate the failure mode: a prior request set _worker_stuck
+        # because its done_event.wait(30) expired while the worker was
+        # mid-block. Admission should refuse with the new "drain still
+        # pending" message — not the old "restart to recover".
+        engine._worker_stuck = True
+        with pytest.raises(BackpressureError, match="drain still pending"):
+            engine.check_admission()
+
+        # Now push a real (pre-cancelled, so it fast-skips and doesn't
+        # actually generate) job onto the queue. The worker pulls it,
+        # hits the ``if cancel_event.is_set(): continue`` fast-skip
+        # path, enters the ``finally`` block, sets ``done_event`` —
+        # AND clears the stuck flag.
+        thread_q: _queue.Queue[Any] = _queue.Queue()
+        cancel_event = _threading.Event()
+        cancel_event.set()
+        done_event = _threading.Event()
+        engine._jobs.put(
+            (
+                "prompt",
+                16,
+                DiffusionGenerationConfig(),
+                thread_q,
+                cancel_event,
+                done_event,
+            )
+        )
+        assert done_event.wait(5.0), (
+            "worker should drain the pre-cancelled job within seconds"
+        )
+        assert engine._worker_stuck is False, (
+            "worker-stuck flag must self-clear after a successful drain "
+            "(issue #644 regression — engine was previously stuck until "
+            "process restart)"
+        )
+
+        # Admission must succeed without a server restart.
+        engine.check_admission()
+        engine.release_admission_reservation()
 
     @pytest.mark.asyncio
     async def test_worker_fast_skips_pre_cancelled_jobs(
