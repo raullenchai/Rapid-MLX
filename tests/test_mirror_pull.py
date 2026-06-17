@@ -2720,3 +2720,38 @@ def test_progress_file_count_matches_downloaded_files(
     assert sorted(n for n, _m in progress_markers) == list(range(1, len(files) + 1))
     # Final summary count matches.
     assert f"Pulled {len(files)} files" in captured.out
+
+
+def test_safe_display_name_strips_control_chars():
+    """Filenames from external HF metadata can't inject terminal escapes.
+
+    Codex round-2 BLOCKING on PR #657: ``_validate_relative_filename``
+    only blocks path traversal — it does NOT strip ANSI / control
+    characters. A malicious or accidentally-malformed sibling entry
+    like ``evil\\x1b[2Jfile.bin`` would clear the terminal when echoed
+    by the per-file progress line. ``_safe_display_name`` is the
+    display-side defense.
+    """
+    # ANSI clear-screen sequence stripped.
+    assert "\x1b" not in _mirror._safe_display_name("evil\x1b[2Jfile.bin")
+    # Tab / newline / carriage-return stripped.
+    assert "\n" not in _mirror._safe_display_name("a\nb.bin")
+    assert "\r" not in _mirror._safe_display_name("a\rb.bin")
+    assert "\t" not in _mirror._safe_display_name("a\tb.bin")
+    # NUL stripped.
+    assert "\x00" not in _mirror._safe_display_name("a\x00b.bin")
+    # DEL (0x7f) stripped.
+    assert "\x7f" not in _mirror._safe_display_name("a\x7fb.bin")
+    # Non-control characters preserved verbatim, including Unicode.
+    assert (
+        _mirror._safe_display_name("model-v1.2.safetensors") == "model-v1.2.safetensors"
+    )
+    assert _mirror._safe_display_name("café.bin") == "café.bin"
+    # Empty-after-strip falls back to a placeholder.
+    assert _mirror._safe_display_name("\x00\x01\x02") == "<unprintable>"
+    # Long filenames are truncated in the middle so the head + tail
+    # stay visible — the user still recognizes their file.
+    long = "a" * 200 + "_TAIL.bin"
+    out = _mirror._safe_display_name(long, max_len=40)
+    assert len(out) <= 40
+    assert out.endswith("_TAIL.bin") or "TAIL" in out

@@ -669,6 +669,41 @@ def _print_dim(msg: str) -> None:
     print(msg)
 
 
+def _safe_display_name(fname: str, max_len: int = 80) -> str:
+    """Sanitize a HF-supplied filename for terminal display.
+
+    The catalog and HF model_info pass through filenames from external
+    metadata. ``_validate_relative_filename`` already rejects
+    path-traversal (``..``, absolute paths) but does NOT strip ANSI /
+    control characters — a malicious or accidentally-malformed entry
+    like ``evil\x1b[2Jfile.bin`` would clear the terminal when printed
+    by the per-file progress line. Filenames used for the actual
+    download / on-disk path stay untouched; this transformation only
+    applies to display.
+
+    Codex round-2 BLOCKING on PR #657.
+    """
+    # Strip ASCII control chars (0x00-0x1F) and DEL (0x7F). Anything
+    # >= 0x20 (printable) is preserved, including non-ASCII bytes which
+    # the terminal renders as-is. We don't try to handle Unicode bidi
+    # overrides — those are a different threat surface and HF rejects
+    # them at the API layer.
+    cleaned = "".join(c for c in fname if c >= " " and c != "\x7f")
+    if not cleaned:
+        cleaned = "<unprintable>"
+    if len(cleaned) > max_len:
+        # Keep the basename visible — that's the part the user actually
+        # recognizes. Truncate the middle. Budget 3 chars for the
+        # ellipsis, split the remainder evenly between head and tail.
+        budget = max_len - 3
+        head_len = budget // 2
+        tail_len = budget - head_len
+        head = cleaned[:head_len]
+        tail = cleaned[-tail_len:] if tail_len else ""
+        cleaned = f"{head}...{tail}"
+    return cleaned
+
+
 def download_with_mirror_fallback(
     repo_id: str,
     cache_dir: Path | None = None,
@@ -1174,7 +1209,8 @@ def download_with_mirror_fallback(
                 # back to ``snapshot_download``.
                 tag = f"{DIM}miss (will retry via HF snapshot_download){RESET}"
             _print_dim(
-                f"  {DIM}[{completed}/{total_files_planned}]{RESET} {fname} {tag}"
+                f"  {DIM}[{completed}/{total_files_planned}]{RESET} "
+                f"{_safe_display_name(fname)} {tag}"
             )
 
     if misses:
