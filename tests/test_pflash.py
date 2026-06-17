@@ -16,6 +16,7 @@ from vllm_mlx.pflash import (
     compress_request_tokens,
     compress_tokens,
     config_from_args,
+    resolve_pflash_mode_default,
     validate_model_support,
 )
 
@@ -220,6 +221,97 @@ class TestPFlashConfig:
     def test_validate_allows_mllm_when_disabled(self):
         config = PFlashConfig(mode="off")
         validate_model_support(config, model_name="qwen-vl", is_mllm=True)
+
+
+class TestResolvePFlashModeDefault:
+    """Per-alias tier-based default for ``--pflash`` (#287).
+
+    The contract:
+    * If the user passed ``--pflash {off,auto,always}`` (i.e. ``args.pflash``
+      is not None), the resolver returns that value unchanged.
+    * Otherwise the alias's ``pflash_tier`` decides: ``"verified"`` →
+      ``"always"``, anything else → ``"off"``.
+    """
+
+    def _ns(self, pflash):
+        return SimpleNamespace(pflash=pflash)
+
+    def test_verified_alias_with_no_flag_defaults_to_always(self):
+        # qwen3.5-4b-4bit is tagged pflash_tier=verified in aliases.json
+        # (PR #649). Mirror the alias-driven default the engine wires up.
+        mode = resolve_pflash_mode_default(self._ns(None), model_name="qwen3.5-4b-4bit")
+        assert mode == "always"
+
+    def test_unknown_alias_with_no_flag_defaults_to_off(self):
+        # qwen3-0.6b-4bit is an explicit non-Qwen3.5/3.6 entry; its
+        # default pflash_tier is "unknown".
+        mode = resolve_pflash_mode_default(self._ns(None), model_name="qwen3-0.6b-4bit")
+        assert mode == "off"
+
+    def test_unrecognized_model_path_defaults_to_off(self):
+        # No alias profile match → detect_model_config returns None →
+        # resolver falls through to the conservative "off".
+        mode = resolve_pflash_mode_default(
+            self._ns(None), model_name="some/unmapped-model-path"
+        )
+        assert mode == "off"
+
+    def test_explicit_off_wins_over_verified_default(self):
+        mode = resolve_pflash_mode_default(
+            self._ns("off"), model_name="qwen3.5-4b-4bit"
+        )
+        assert mode == "off"
+
+    def test_explicit_auto_wins_over_unknown_default(self):
+        mode = resolve_pflash_mode_default(
+            self._ns("auto"), model_name="qwen3-0.6b-4bit"
+        )
+        assert mode == "auto"
+
+    def test_explicit_always_wins_for_unknown_alias(self):
+        mode = resolve_pflash_mode_default(
+            self._ns("always"), model_name="some/unmapped-model-path"
+        )
+        assert mode == "always"
+
+    def test_verified_aliases_in_registry_match_qwen35_or_qwen36(self):
+        # Defense-in-depth alongside the contract test in
+        # tests/test_aliases_contract.py: verify the resolver returns
+        # "always" for every verified alias in the registry, not just
+        # the qwen3.5-4b-4bit sample. Catches the case where a future
+        # contributor edits the JSON-level tag but the model_auto_config
+        # → pflash threading regresses.
+        from vllm_mlx.model_aliases import list_profiles
+
+        verified = [
+            a for a, p in list_profiles().items() if p.pflash_tier == "verified"
+        ]
+        assert verified, "no verified aliases — see PR #649 / aliases.json"
+        for alias in verified:
+            mode = resolve_pflash_mode_default(self._ns(None), model_name=alias)
+            assert mode == "always", (
+                f"{alias}: tier=verified but resolver returned {mode!r}"
+            )
+
+    def test_config_from_args_treats_none_mode_as_off(self):
+        # Defensive: config_from_args is the public surface other tests
+        # exercise via SimpleNamespace. Callers that build args.pflash=None
+        # and skip the resolver should still get a valid (off) config
+        # rather than a ValueError or silent compression.
+        args = SimpleNamespace(
+            pflash=None,
+            pflash_threshold=1024,
+            pflash_keep_ratio=0.25,
+            pflash_min_keep_tokens=128,
+            pflash_sink_tokens=16,
+            pflash_tail_tokens=64,
+            pflash_block_size=32,
+            pflash_query_window=128,
+            pflash_stride_blocks=4,
+            pflash_include_tools=False,
+        )
+        config = config_from_args(args)
+        assert config.mode == "off"
 
 
 class TestCompressRequestTokens:

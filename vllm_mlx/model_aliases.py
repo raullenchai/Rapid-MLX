@@ -49,6 +49,22 @@ _RESERVED_MODALITIES: frozenset[str] = frozenset({"vision", "image-gen"})
 # - ``avoid``:   benched, regression on at least one canonical workload
 VALID_SUFFIX_TIERS: frozenset[str] = frozenset({"unknown", "neutral", "good", "avoid"})
 
+# Canonical enum for ``pflash_tier``. PFlash long-prompt compression
+# (#287) is a per-model decision: the bench evidence showed 3.87x-8.5x
+# TTFT speedups with 100% needle recall on the Qwen3.5 / Qwen3.6 family
+# at keep_ratio=0.20, but we have no evidence for other families. To
+# avoid a silent quality regression on an unbenched arch, an alias must
+# be explicitly tagged ``"verified"`` before the engine defaults
+# ``--pflash`` to ``always`` for it; everything else stays ``"unknown"``
+# and the engine keeps PFlash off (preserving v0.7.x behaviour). Any
+# explicit ``--pflash {off,auto,always}`` flag on the CLI still wins
+# over the tier-based default.
+#
+# - ``unknown``:  not benched / no decision (default, engine keeps PFlash off)
+# - ``verified``: bench-validated speedup + recall on this alias; engine
+#                 defaults PFlash to ``always`` unless the user overrides
+VALID_PFLASH_TIERS: frozenset[str] = frozenset({"unknown", "verified"})
+
 
 # Canonical name for the DFlash speculative-decoding drafter kind. Kept
 # as a module constant so eligibility checks, CLI flag handlers, and
@@ -156,6 +172,20 @@ class AliasProfile:
     diffusion_backend: str = "mlx-vlm"
     diffusion_fixed_steps: int = 8
     diffusion_sc_every: int = 1
+    # PFlash long-prompt compression eligibility (#287). Default
+    # ``"unknown"`` keeps the engine's PFlash mode at ``"off"`` so a
+    # brand-new alias never silently enables compression on an
+    # unbenched architecture. ``"verified"`` flips the engine's default
+    # to ``"always"`` — used only for aliases where we've measured both
+    # the TTFT speedup AND the needle-recall floor (Qwen3.5 / Qwen3.6
+    # families per #287). Explicit CLI ``--pflash {off,auto,always}``
+    # still wins; this only changes the no-flag default.
+    #
+    # NOTE on positional ABI: kept at the tail of the dataclass to
+    # preserve the positional-construction contract spelled out on
+    # ``modality`` — inserting a field higher silently routes existing
+    # positional kwargs into the wrong slot.
+    pflash_tier: str = "unknown"
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
@@ -199,6 +229,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "supports_dflash",
             "dflash_draft_model",
             "recommended_sampling",
+            "pflash_tier",
             # Deprecated v0.7.2 PR #555 diffusion knobs — kept in the
             # allowed set so they construct an ``AliasProfile`` with
             # the deprecated no-op fields populated. Warning is emitted
@@ -272,6 +303,19 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     tier = value.get("suffix_decoding_tier", "unknown")
     if not isinstance(tier, str):
         raise ValueError(f"alias {alias!r}: suffix_decoding_tier must be a string")
+
+    # PFlash tier — validated against the closed enum here so a typo
+    # in aliases.json fails loud at load time. ``_coerce`` is the only
+    # place that sees the raw JSON; downstream readers trust the
+    # dataclass.
+    pflash_tier = value.get("pflash_tier", "unknown")
+    if not isinstance(pflash_tier, str):
+        raise ValueError(f"alias {alias!r}: pflash_tier must be a string")
+    if pflash_tier not in VALID_PFLASH_TIERS:
+        raise ValueError(
+            f"alias {alias!r}: pflash_tier={pflash_tier!r} not in "
+            f"{sorted(VALID_PFLASH_TIERS)}"
+        )
 
     # Strict bool coercion — bare ``bool(...)`` treats the string
     # ``"false"`` as True and silently flips a careful maintainer's
@@ -408,6 +452,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         diffusion_backend=value.get("diffusion_backend", "mlx-vlm"),
         diffusion_fixed_steps=value.get("diffusion_fixed_steps", 8),
         diffusion_sc_every=value.get("diffusion_sc_every", 1),
+        pflash_tier=pflash_tier,
     )
 
 

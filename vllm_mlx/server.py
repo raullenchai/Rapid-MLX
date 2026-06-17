@@ -1348,9 +1348,14 @@ Examples:
     # CLI builds a richer SchedulerConfig in cli.py; the standalone path only
     # exposes a small subset of flags, so we plumb just those.
     from .pflash import config_from_args as _server_pflash_config_from_args
+    from .pflash import resolve_pflash_mode_default as _server_pflash_resolve_default
     from .pflash import validate_model_support as _server_pflash_validate
     from .scheduler import SchedulerConfig
 
+    # Per-alias PFlash default (#287): verified Qwen3.5 / Qwen3.6 aliases
+    # switch to ``always`` when the user passes no ``--pflash`` flag; all
+    # other aliases keep the conservative ``off``. Explicit overrides win.
+    args.pflash = _server_pflash_resolve_default(args, model_name=args.model)
     try:
         server_pflash_config = _server_pflash_config_from_args(args)
         _server_pflash_validate(

@@ -676,15 +676,20 @@ def _add_pflash_args(parser) -> None:
     """Attach PFlash long-prompt-compression CLI flags to an argparse parser.
 
     Used by both ``serve`` and ``bench`` so the flag surface stays in
-    sync. Defaults keep PFlash off — opt-in by setting
-    ``--pflash auto`` or ``--pflash always``.
+    sync. The default for ``--pflash`` is intentionally ``None``
+    (sentinel for "user passed nothing") so the per-alias resolver in
+    ``pflash.resolve_pflash_mode_default`` can switch the engine to
+    ``always`` for ``pflash_tier="verified"`` aliases (Qwen3.5 /
+    Qwen3.6 family per #287) without breaking the explicit-override
+    contract: passing ``--pflash off`` still wins.
     """
     parser.add_argument(
         "--pflash",
         choices=["off", "auto", "always"],
-        default="off",
+        default=None,
         help="Enable PFlash long-prompt prefill compression "
-        "(off, auto, always; default: off).",
+        "(off, auto, always). Default: 'always' for verified aliases "
+        "(Qwen3.5 / Qwen3.6 family per #287), 'off' for everything else.",
     )
     parser.add_argument(
         "--pflash-threshold",
@@ -843,9 +848,20 @@ def serve_command(args):
     # at startup. Done here (not lazily in the scheduler) so a typo in
     # --pflash-keep-ratio doesn't surface as a model-load failure
     # after a multi-minute weight download. See #287.
+    #
+    # ``resolve_pflash_mode_default`` runs before ``config_from_args``
+    # so the per-alias default (``"always"`` for verified Qwen3.5 /
+    # Qwen3.6 aliases, ``"off"`` everywhere else) is materialized into
+    # ``args.pflash``. The resolved value then flows through the same
+    # validation path the user-explicit case takes.
     from .api.utils import is_mllm_model
-    from .pflash import config_from_args, validate_model_support
+    from .pflash import (
+        config_from_args,
+        resolve_pflash_mode_default,
+        validate_model_support,
+    )
 
+    args.pflash = resolve_pflash_mode_default(args, model_name=args.model)
     try:
         pflash_config = config_from_args(args)
         validate_model_support(
@@ -1910,6 +1926,7 @@ def bench_command(args):
 
     from .engine_core import AsyncEngineCore, EngineConfig
     from .pflash import config_from_args as _pflash_config_from_args
+    from .pflash import resolve_pflash_mode_default as _pflash_resolve_default
     from .request import SamplingParams
     from .scheduler import SchedulerConfig
 
@@ -1919,8 +1936,11 @@ def bench_command(args):
     # Handle prefix cache flags
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
 
-    # PFlash for the bench command — same off-by-default surface as
-    # serve. Validates flag ranges before model load.
+    # PFlash for the bench command — same per-alias default as serve:
+    # verified Qwen3.5 / Qwen3.6 aliases switch to ``always``, everything
+    # else stays ``off``. Resolves before config_from_args so the
+    # validate path sees the final mode.
+    args.pflash = _pflash_resolve_default(args, model_name=args.model)
     try:
         bench_pflash_config = _pflash_config_from_args(args)
     except ValueError as e:

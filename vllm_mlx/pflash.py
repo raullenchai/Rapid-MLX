@@ -92,9 +92,19 @@ class PFlashResult:
 
 
 def config_from_args(args: Any) -> PFlashConfig:
-    """Build and validate a PFlashConfig from argparse-style attributes."""
+    """Build and validate a PFlashConfig from argparse-style attributes.
+
+    ``args.pflash`` may be ``None`` when the CLI hasn't been run through
+    :func:`resolve_pflash_mode_default` yet (e.g. unit tests that build a
+    ``SimpleNamespace`` directly, or callers that opt out of the per-alias
+    default resolution). Treat ``None`` as the conservative ``"off"`` so
+    a forgotten resolver call never silently enables compression — the
+    intent of the tier-based default is *opt-in for verified aliases*,
+    not *opt-in by accident anywhere else*.
+    """
+    mode = args.pflash if args.pflash is not None else "off"
     return PFlashConfig(
-        mode=args.pflash,
+        mode=mode,
         threshold=args.pflash_threshold,
         keep_ratio=args.pflash_keep_ratio,
         min_keep_tokens=args.pflash_min_keep_tokens,
@@ -105,6 +115,49 @@ def config_from_args(args: Any) -> PFlashConfig:
         stride_blocks=args.pflash_stride_blocks,
         skip_when_tools=not getattr(args, "pflash_include_tools", False),
     ).validate()
+
+
+def resolve_pflash_mode_default(args: Any, *, model_name: str) -> str:
+    """Resolve ``args.pflash`` when the user passed nothing on the CLI.
+
+    Per-alias tier-based default (#287 alias-profile integration):
+
+    * If ``args.pflash`` is already set (user passed ``--pflash off|auto|always``)
+      it wins — return it unchanged. This preserves the explicit-override
+      contract documented on the CLI flag and the env var.
+    * Otherwise, look up the model's profile via ``detect_model_config``
+      and switch on ``pflash_tier``:
+
+      - ``"verified"`` → ``"always"``  (Qwen3.5 / Qwen3.6 family, bench
+        evidence in PR #649: 3.87x-8.5x TTFT speedup at keep_ratio=0.20
+        with 100% needle recall across tested cells).
+      - anything else → ``"off"`` (today's behaviour preserved for every
+        alias we haven't measured).
+
+    The result is the string to assign back to ``args.pflash`` before
+    calling :func:`config_from_args`. Splitting resolution from
+    construction keeps unit tests trivial: build a ``SimpleNamespace``
+    with ``pflash=None`` and assert against the returned mode.
+    """
+    if args.pflash is not None:
+        return args.pflash
+    try:
+        # Late import: ``model_auto_config`` pulls in ``model_aliases``
+        # (which loads aliases.json) and regex compilation. Defer the
+        # cost so importing ``pflash`` stays cheap for callers that
+        # never resolve a default (e.g. ``compress_tokens`` users).
+        from .model_auto_config import detect_model_config
+
+        cfg = detect_model_config(model_name)
+    except Exception:
+        # Conservative fallback: if profile resolution blows up for any
+        # reason, keep PFlash off rather than silently enabling it on
+        # an unknown architecture. The startup path will surface the
+        # underlying error elsewhere (model load, parser detect, ...).
+        return "off"
+    if cfg is not None and cfg.pflash_tier == "verified":
+        return "always"
+    return "off"
 
 
 def validate_model_support(

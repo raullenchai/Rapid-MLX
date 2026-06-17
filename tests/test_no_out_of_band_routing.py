@@ -1064,6 +1064,15 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             # AttributeError; not consumed by any code path. Removed in
             # v0.8.0 alongside the loader's deprecation handler.
             "diffusion_backend",
+            # PFlash long-prompt compression eligibility (#287). One of
+            # VALID_PFLASH_TIERS ({"unknown", "verified"}). It IS a
+            # routing decision in the sense that it flips the engine's
+            # default ``--pflash`` mode, but the value space is a closed
+            # enum, the routing flip is gated behind a user-overridable
+            # CLI flag (``--pflash off`` always wins), and the field is
+            # validated by VALID_PFLASH_TIERS at JSON load — so a typo'd
+            # value fails loud rather than misrouting.
+            "pflash_tier",
         }
     )
 

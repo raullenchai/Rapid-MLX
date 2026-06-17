@@ -75,6 +75,15 @@ class ModelConfig:
     # its own fresh dict (a literal ``{}`` would silently share state).
     suffix_bench_speedup: dict[str, float] = field(default_factory=dict)
 
+    # PFlash long-prompt compression eligibility (#287). Mirrors
+    # ``AliasProfile.pflash_tier`` — the single source of truth lives in
+    # ``aliases.json`` and is copied here by ``detect_model_config`` so
+    # ``serve``/``bench`` can pick up the default without re-resolving
+    # the profile. Values: ``"unknown"`` (engine defaults PFlash off) or
+    # ``"verified"`` (engine defaults PFlash to ``always``). Explicit
+    # CLI ``--pflash`` still wins. See VALID_PFLASH_TIERS for the enum.
+    pflash_tier: str = "unknown"
+
 
 # Model family patterns → optimal config.
 # Order matters: first match wins. More specific patterns go first.
@@ -340,7 +349,8 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             f"reasoning_parser={profile.reasoning_parser}, "
             f"is_hybrid={profile.is_hybrid}, "
             f"supports_spec_decode={profile.supports_spec_decode}, "
-            f"suffix_tier={profile.suffix_decoding_tier}"
+            f"suffix_tier={profile.suffix_decoding_tier}, "
+            f"pflash_tier={profile.pflash_tier}"
         )
         # AliasProfile stores the bench dict as a sorted tuple (frozen
         # dataclasses must avoid mutable shared state). Materialize a
@@ -356,6 +366,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             supports_spec_decode=profile.supports_spec_decode,
             suffix_decoding_tier=profile.suffix_decoding_tier,
             suffix_bench_speedup=speedup,
+            pflash_tier=profile.pflash_tier,
         )
 
     for pattern, config in _MODEL_PATTERNS:

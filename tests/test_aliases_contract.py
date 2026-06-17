@@ -31,6 +31,7 @@ import pytest
 
 from vllm_mlx.model_aliases import (
     POPULAR_ALIASES,
+    VALID_PFLASH_TIERS,
     VALID_SUFFIX_TIERS,
     list_profiles,
 )
@@ -55,6 +56,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "supports_dflash",
         "dflash_draft_model",
         "recommended_sampling",
+        "pflash_tier",
     }
 )
 
@@ -218,6 +220,62 @@ def test_alias_suffix_bench_consistency(alias: str) -> None:
 
 
 # =============================================================================
+# PFlash tier sanity (#287 alias-profile integration)
+# =============================================================================
+
+
+@pytest.mark.parametrize("alias", _alias_ids())
+def test_alias_pflash_tier_value_is_in_enum(alias: str) -> None:
+    """``pflash_tier`` must be one of the canonical enum values.
+
+    Same closed-enum guard as ``suffix_decoding_tier``: a typo like
+    ``"verifed"`` would silently fall back to the ``"unknown"`` default
+    behaviour at engine boot, hiding the operator's intent to enable
+    PFlash on a benched alias. Loader rejects it; this test pins the
+    contract at PR review time so the rejection isn't only an integration-
+    test failure.
+    """
+    tier = list_profiles()[alias].pflash_tier
+    assert tier in VALID_PFLASH_TIERS, (
+        f"{alias}: pflash_tier={tier!r} not in "
+        f"{sorted(VALID_PFLASH_TIERS)}. Did you misspell it?"
+    )
+
+
+def test_pflash_verified_aliases_are_qwen35_or_qwen36() -> None:
+    """``pflash_tier="verified"`` is reserved for the Qwen3.5 / Qwen3.6
+    family — the only architectures we've bench-validated for the
+    keep_ratio=0.20 default (PR #649: 3.87x-8.5x TTFT speedup with 100%
+    needle recall across tested cells). Promoting a non-Qwen3.5/3.6 alias
+    to ``"verified"`` should be a deliberate review-blocking change: it
+    flips the engine's default ``--pflash`` mode to ``"always"`` for that
+    alias, which silently shifts the quality/speed tradeoff for every
+    user who hadn't passed an explicit flag. Keep the gate tight until
+    there's matching bench evidence on a new family.
+    """
+    profiles = list_profiles()
+    verified = sorted(a for a, p in profiles.items() if p.pflash_tier == "verified")
+    # Positive control: at least one verified alias exists (otherwise the
+    # test would trivially pass and the intent would silently rot).
+    assert verified, (
+        "No aliases tagged pflash_tier=verified. PR #649 tagged the "
+        "Qwen3.5 / Qwen3.6 family — if you intentionally removed all of "
+        "them, also delete this test."
+    )
+    offenders = [
+        a
+        for a in verified
+        if not (a.startswith("qwen3.5-") or a.startswith("qwen3.6-"))
+    ]
+    assert not offenders, (
+        f"Aliases tagged pflash_tier=verified outside the Qwen3.5 / "
+        f"Qwen3.6 family: {offenders}. Either bench the family and "
+        "extend the allowlist in this test, or reset the tier to "
+        "'unknown'."
+    )
+
+
+# =============================================================================
 # Schema integrity — no unexpected keys (typo guard)
 # =============================================================================
 
@@ -296,6 +354,19 @@ def test_negative_control_typo_in_tier_is_caught() -> None:
     assert "god" not in VALID_SUFFIX_TIERS
     assert "goood" not in VALID_SUFFIX_TIERS
     assert "AVOID" not in VALID_SUFFIX_TIERS  # case-sensitive on purpose
+
+
+def test_negative_control_typo_in_pflash_tier_is_caught() -> None:
+    """A typo like ``"verifed"`` must not be in ``VALID_PFLASH_TIERS``.
+
+    Parallel guard for the PFlash tier enum (#287) — see
+    ``test_negative_control_typo_in_tier_is_caught`` for the
+    suffix-decoding analogue.
+    """
+    assert "verifed" not in VALID_PFLASH_TIERS
+    assert "VERIFIED" not in VALID_PFLASH_TIERS  # case-sensitive on purpose
+    assert "auto" not in VALID_PFLASH_TIERS  # tier != mode (avoid confusion)
+    assert "always" not in VALID_PFLASH_TIERS  # ditto
 
 
 def test_negative_control_unregistered_parser_is_caught() -> None:
