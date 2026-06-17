@@ -672,6 +672,99 @@ def _ensure_model_downloaded(model_name: str) -> None:
         print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
 
 
+def _add_pflash_args(parser) -> None:
+    """Attach PFlash long-prompt-compression CLI flags to an argparse parser.
+
+    Used by both ``serve`` and ``bench`` so the flag surface stays in
+    sync. Defaults keep PFlash off — opt-in by setting
+    ``--pflash auto`` or ``--pflash always``.
+    """
+    parser.add_argument(
+        "--pflash",
+        choices=["off", "auto", "always"],
+        default="off",
+        help="Enable PFlash long-prompt prefill compression "
+        "(off, auto, always; default: off).",
+    )
+    parser.add_argument(
+        "--pflash-threshold",
+        type=int,
+        default=32_768,
+        help="Minimum prompt tokens before --pflash auto compresses (default: 32768).",
+    )
+    parser.add_argument(
+        "--pflash-keep-ratio",
+        type=float,
+        default=0.10,
+        help="Fraction of prompt tokens to keep when compressing (default: 0.10).",
+    )
+    parser.add_argument(
+        "--pflash-min-keep-tokens",
+        type=int,
+        default=2_048,
+        help="Minimum tokens to keep when compressing (default: 2048).",
+    )
+    parser.add_argument(
+        "--pflash-sink-tokens",
+        type=int,
+        default=256,
+        help="Leading prompt tokens always kept by PFlash (default: 256).",
+    )
+    parser.add_argument(
+        "--pflash-tail-tokens",
+        type=int,
+        default=2_048,
+        help="Trailing prompt tokens always kept by PFlash (default: 2048).",
+    )
+    parser.add_argument(
+        "--pflash-block-size",
+        type=int,
+        default=128,
+        help="Middle-token scoring block size (default: 128).",
+    )
+    parser.add_argument(
+        "--pflash-query-window",
+        type=int,
+        default=512,
+        help="Trailing query window used to score middle blocks (default: 512).",
+    )
+    parser.add_argument(
+        "--pflash-stride-blocks",
+        type=int,
+        default=8,
+        help="Keep every Nth middle block as an anchor during scoring "
+        "(0 disables anchors, default: 8).",
+    )
+    parser.add_argument(
+        "--pflash-include-tools",
+        action="store_true",
+        help="Allow PFlash compression on prompts with tool definitions. "
+        "By default tool prompts are skipped for tool-call reliability.",
+    )
+
+
+def _build_benchmark_context(target_tokens: int) -> str:
+    """Build a deterministic long-context filler for the bench command.
+
+    Used by ``--long-prompt-tokens`` to construct repeatable long
+    prompts for TTFT replication runs without depending on a real
+    long-context corpus. The block is intentionally generic so the
+    measurement targets prefill cost, not semantic difficulty.
+    """
+    if target_tokens <= 0:
+        return ""
+    block = (
+        "Reference context for long prompt benchmarking. "
+        "Rapid MLX evaluates prompt prefill latency, prefix cache behavior, "
+        "tool instructions, JSON schema preservation, and model output quality. "
+        "The assistant must preserve system instructions and answer only the "
+        "final user request after reviewing all reference material. "
+    )
+    approx_block_tokens = max(1, len(block.split()))
+    repeats = max(1, target_tokens // approx_block_tokens)
+    return (block * repeats).strip()
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -744,6 +837,24 @@ def serve_command(args):
         print(
             "Error: --gpu-memory-utilization must be between 0.0 (exclusive) and 1.0 (inclusive)"
         )
+        sys.exit(1)
+
+    # Validate PFlash config and reject unsupported model combinations
+    # at startup. Done here (not lazily in the scheduler) so a typo in
+    # --pflash-keep-ratio doesn't surface as a model-load failure
+    # after a multi-minute weight download. See #287.
+    from .api.utils import is_mllm_model
+    from .pflash import config_from_args, validate_model_support
+
+    try:
+        pflash_config = config_from_args(args)
+        validate_model_support(
+            pflash_config,
+            model_name=args.model,
+            is_mllm=getattr(args, "mllm", False) or is_mllm_model(args.model),
+        )
+    except ValueError as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
     # Auto-detect parser config from model name when not explicitly set.
@@ -1088,6 +1199,8 @@ def serve_command(args):
         kv_cache_turboquant=args.kv_cache_turboquant,
         kv_cache_turboquant_bits=args.kv_cache_turboquant_bits,
         kv_cache_turboquant_group_size=args.kv_cache_turboquant_group_size,
+        # PFlash long-prompt compression (#287)
+        pflash_config=pflash_config,
     )
 
     print("Mode: Continuous batching (for multiple concurrent users)")
@@ -1796,6 +1909,7 @@ def bench_command(args):
     from mlx_lm import load
 
     from .engine_core import AsyncEngineCore, EngineConfig
+    from .pflash import config_from_args as _pflash_config_from_args
     from .request import SamplingParams
     from .scheduler import SchedulerConfig
 
@@ -1804,6 +1918,14 @@ def bench_command(args):
 
     # Handle prefix cache flags
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
+
+    # PFlash for the bench command — same off-by-default surface as
+    # serve. Validates flag ranges before model load.
+    try:
+        bench_pflash_config = _pflash_config_from_args(args)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
     async def run_benchmark():
         print(f"Loading model: {args.model}")
@@ -1847,6 +1969,8 @@ def bench_command(args):
             kv_cache_quantization_bits=args.kv_cache_quantization_bits,
             kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
             kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
+            # PFlash long-prompt compression (#287)
+            pflash_config=bench_pflash_config,
         )
         engine_config = EngineConfig(
             model_name=args.model,
@@ -1874,6 +1998,14 @@ def bench_command(args):
                 "travel",
             ][: args.num_prompts]
         ]
+        # Prepend a deterministic long context when the user asks for
+        # one — primarily for PFlash TTFT replication runs (#287).
+        long_prompt_tokens = getattr(args, "long_prompt_tokens", 0)
+        long_context = _build_benchmark_context(long_prompt_tokens)
+        if long_context:
+            prompts = [
+                f"{long_context}\n\nUser request:\n{prompt}" for prompt in prompts
+            ]
 
         params = SamplingParams(
             max_tokens=args.max_tokens,
@@ -1883,6 +2015,8 @@ def bench_command(args):
         print(
             f"\nRunning benchmark with {len(prompts)} prompts, max_tokens={args.max_tokens}"
         )
+        if long_prompt_tokens > 0:
+            print(f"Long prompt target: ~{long_prompt_tokens} tokens")
         print("-" * 50)
 
         total_prompt_tokens = 0
@@ -4636,6 +4770,9 @@ Examples:
         default=None,
         help="Pre-load an embedding model at startup (e.g. mlx-community/embeddinggemma-300m-6bit)",
     )
+    # PFlash long-prompt prefill compression (#287). Off by default; see
+    # vllm_mlx/pflash.py for the design and the prefix-cache bypass.
+    _add_pflash_args(serve_parser)
     # Bench command
     bench_parser = subparsers.add_parser("bench", help="Run benchmark")
     bench_parser.add_argument(
@@ -4811,6 +4948,15 @@ Examples:
             "release_check_m3.sh G7b to reuse the gauntlet's server."
         ),
     )
+    bench_parser.add_argument(
+        "--long-prompt-tokens",
+        type=int,
+        default=0,
+        help="Approximate reference-context tokens to prepend to each "
+        "benchmark prompt. Used with --pflash auto/always for "
+        "long-prompt TTFT replication (#287).",
+    )
+    _add_pflash_args(bench_parser)
 
     # Models command. ``ls`` is registered as a top-level alias that
     # defaults to ``models --cached`` (the locally-cached view) — two

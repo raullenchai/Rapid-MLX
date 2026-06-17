@@ -1084,6 +1084,13 @@ Examples:
         default=True,
         help="Enable continuous batching (default: on).",
     )
+    # PFlash long-prompt prefill compression (#287). Off by default. The
+    # unified ``rapid-mlx serve`` CLI exposes the same surface; we mirror
+    # it here so the standalone ``python -m vllm_mlx.server`` path is
+    # not a silent gap (SOP §10).
+    from .cli import _add_pflash_args as _add_pflash_args_to_server_parser
+
+    _add_pflash_args_to_server_parser(parser)
     # Deprecated flags — accepted silently to avoid breaking user scripts
     import argparse as _ap
 
@@ -1340,9 +1347,24 @@ Examples:
     # was silently dropped — same bug class as #400. The unified rapid-mlx
     # CLI builds a richer SchedulerConfig in cli.py; the standalone path only
     # exposes a small subset of flags, so we plumb just those.
+    from .pflash import config_from_args as _server_pflash_config_from_args
+    from .pflash import validate_model_support as _server_pflash_validate
     from .scheduler import SchedulerConfig
 
-    scheduler_config = SchedulerConfig(prefill_step_size=args.prefill_step_size)
+    try:
+        server_pflash_config = _server_pflash_config_from_args(args)
+        _server_pflash_validate(
+            server_pflash_config,
+            model_name=args.model,
+            is_mllm=args.mllm or is_mllm_model(args.model),
+        )
+    except ValueError as e:
+        parser.error(str(e))
+
+    scheduler_config = SchedulerConfig(
+        prefill_step_size=args.prefill_step_size,
+        pflash_config=server_pflash_config,
+    )
 
     # Load model before starting server
     if args.mllm and args.no_mllm:

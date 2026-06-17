@@ -681,6 +681,15 @@ async def _create_chat_completion_impl(
     if request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(request.tools)
 
+    # PFlash routing (#287): tool calls and structured-output prompts
+    # are prompt-integrity-sensitive — lossy compression of the
+    # prompt would corrupt tool-call channel markers and JSON schema
+    # context. Engine's chat() also infers integrity from tools; we
+    # set it here explicitly so the signal is correct even on routes
+    # that bypass the chat-template tools path.
+    if request.tools or response_format:
+        chat_kwargs["requires_prompt_integrity"] = True
+
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
 
