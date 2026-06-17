@@ -1,0 +1,168 @@
+{
+  "schema_version": 2,
+  "submission_id": "bcdd015e6401",
+  "submitted_at": "2026-06-17T13:50:44+00:00",
+  "hardware": {
+    "chip": "Apple M3 Ultra",
+    "ram_gb": 256,
+    "cpu_cores": 28,
+    "gpu_cores": 60
+  },
+  "software": {
+    "macos": "26.5.1",
+    "rapid_mlx": "0.7.26",
+    "mlx": "0.31.2",
+    "python": "3.12.13"
+  },
+  "model": {
+    "alias": "gemma3-1b-4bit",
+    "hf_path": "mlx-community/gemma-3-1b-it-4bit"
+  },
+  "config": {
+    "rounds": 5,
+    "warmup_rounds": 1,
+    "sampling": "greedy",
+    "buckets_spec": {
+      "short": {
+        "prompt_tokens": 512,
+        "max_tokens": 128
+      },
+      "long": {
+        "prompt_tokens": 2048,
+        "max_tokens": 512
+      }
+    },
+    "prompt_hash": "3414e7611df5cfbc"
+  },
+  "buckets": {
+    "short": {
+      "decode_tps": {
+        "median": 257.65444178143696,
+        "min": 255.20796309406066,
+        "max": 258.27277911007945,
+        "stddev": 1.1058607528360698
+      },
+      "prefill_tps": {
+        "median": 6827.53063250403,
+        "min": 6624.227860849915,
+        "max": 7256.723616110081,
+        "stddev": 212.33277828091582
+      },
+      "ttft_ms": {
+        "median": 78.06629200058524,
+        "min": 73.44912500411738,
+        "max": 80.46220800315496,
+        "stddev": 2.3438303466631845
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 256.53130158395004,
+          "prefill_tps": 6827.53063250403,
+          "ttft_ms": 78.06629200058524
+        },
+        {
+          "decode_tps": 257.8270559083876,
+          "prefill_tps": 6939.814285374877,
+          "ttft_ms": 76.80320799408946
+        },
+        {
+          "decode_tps": 258.27277911007945,
+          "prefill_tps": 7256.723616110081,
+          "ttft_ms": 73.44912500411738
+        },
+        {
+          "decode_tps": 257.65444178143696,
+          "prefill_tps": 6624.227860849915,
+          "ttft_ms": 80.46220800315496
+        },
+        {
+          "decode_tps": 255.20796309406066,
+          "prefill_tps": 6771.227632949012,
+          "ttft_ms": 78.71541600616183
+        }
+      ]
+    },
+    "long": {
+      "decode_tps": {
+        "median": 258.6301577366272,
+        "min": 257.9804497774972,
+        "max": 258.95667226355823,
+        "stddev": 0.33637410766268194
+      },
+      "prefill_tps": {
+        "median": 8345.765070368108,
+        "min": 8310.01842185102,
+        "max": 8376.289692939363,
+        "stddev": 28.297924894976006
+      },
+      "ttft_ms": {
+        "median": 255.33908299985342,
+        "min": 254.4085840054322,
+        "max": 256.4374579960713,
+        "stddev": 0.8662202321053091
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 258.5437221283334,
+          "prefill_tps": 8374.854987770535,
+          "ttft_ms": 254.45216700609308
+        },
+        {
+          "decode_tps": 258.6301577366272,
+          "prefill_tps": 8310.01842185102,
+          "ttft_ms": 256.4374579960713
+        },
+        {
+          "decode_tps": 257.9804497774972,
+          "prefill_tps": 8376.289692939363,
+          "ttft_ms": 254.4085840054322
+        },
+        {
+          "decode_tps": 258.95667226355823,
+          "prefill_tps": 8314.8118070864,
+          "ttft_ms": 256.28962500195485
+        },
+        {
+          "decode_tps": 258.82667230240105,
+          "prefill_tps": 8345.765070368108,
+          "ttft_ms": 255.33908299985342
+        }
+      ]
+    }
+  },
+  "peak_ram_mb": 1592,
+  "tier": "all",
+  "smoke_result": {
+    "boot_time_ms": 11194.103333997191,
+    "first_prompt_ok": true,
+    "first_token_latency_ms": 109.37362498953007,
+    "response_excerpt": "2 + 2 = 4\n<end_of_turn>absolute zero! \n<end_of_turn>راbbi)<end_of_turn>\n<end_of_turn>راbbi!<end_of_turn>\n<end_of_turn>راbbi!<end_of_turn>\n<end_of_turn>راbbi!<end_of_turn>\n<end_of_turn>راbbi!<end_of_tu"
+  },
+  "harness_result": {
+    "codex": {
+      "passed": false,
+      "duration_s": 256.37250058399513,
+      "error_excerpt": "6p 4f 2e 0s | single_tool_call: No tool_calls in response"
+    },
+    "opencode": {
+      "passed": false,
+      "duration_s": 22.890389874999528,
+      "error_excerpt": "5p 5f 0e 1s | single_tool_call: No tool_calls in response"
+    },
+    "hermes": {
+      "passed": false,
+      "duration_s": 75.27716595798847,
+      "error_excerpt": "17p 17f 0e 0s | single_tool_call: No tool_calls in response"
+    },
+    "aider": {
+      "passed": true,
+      "duration_s": 1.995194957999047,
+      "error_excerpt": null
+    },
+    "langchain": {
+      "passed": false,
+      "duration_s": 19.09922445799748,
+      "error_excerpt": "5p 4f 1e 0s | single_tool_call: No tool_calls in response"
+    }
+  }
+}
