@@ -562,7 +562,12 @@ class Qwen3CoderToolParser(ToolParser):
 
             # In-flight string param from a prior call: emit incremental
             # tail (or close it now that the end-tag has arrived).
-            if was_in_param and self.in_param and self.in_param_name is not None:
+            if (
+                was_in_param
+                and self.in_param
+                and self.in_param_name is not None
+                and self.param_count < len(param_starts)
+            ):
                 param_idx = param_starts[self.param_count]
                 param_start = param_idx + len(self.parameter_prefix)
                 remaining = tool_text[param_start:]

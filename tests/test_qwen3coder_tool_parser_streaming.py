@@ -163,11 +163,21 @@ def test_close_tag_never_leaks_into_emitted_fragment():
     ]
 
     deltas = _feed(parser, chunks, request)
-    for frag in _argument_fragments(deltas):
+    fragments = _argument_fragments(deltas)
+    for frag in fragments:
         assert "</par" not in frag, f"close-tag leaked into streamed fragment: {frag!r}"
         assert "</parameter>" not in frag, (
             f"close-tag leaked into streamed fragment: {frag!r}"
         )
+
+    # Belt + braces: concatenate everything, parse the JSON, and assert
+    # the decoded value is exactly the original — catches escaped /
+    # split-across-fragments leaks that a substring scan alone would miss.
+    combined = "".join(fragments)
+    decoded = json.loads(combined)
+    assert decoded == {"value": value}, (
+        f"streamed args decoded to {decoded!r}, expected {{'value': {value!r}}}"
+    )
 
 
 def test_streaming_json_matches_non_streaming():
