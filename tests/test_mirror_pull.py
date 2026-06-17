@@ -318,8 +318,15 @@ def test_per_file_fallback(
 
     assert ok, "download should succeed when every file is reachable from R2 or HF"
     # Snapshot directory should contain all three files, exactly once.
+    # Codex round-12 BLOCKING: the cross-process flock sidecar
+    # (``.<file>.rapid-mlx-mirror.lock``) is intentionally retained on
+    # disk after release — filter it out of the comparison.
     snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
-    on_disk = sorted(p.name for p in snap.iterdir() if p.is_file())
+    on_disk = sorted(
+        p.name
+        for p in snap.iterdir()
+        if p.is_file() and not p.name.endswith(".rapid-mlx-mirror.lock")
+    )
     assert on_disk == sorted(f for f, _ in files)
     # refs/main pins the snapshot — required for is_repo_cached.
     refs_main = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "refs" / "main"
@@ -1873,8 +1880,35 @@ def test_part_lock_roundtrip(tmp_path: Path):
         # don't try that. Just smoke-test release.
     finally:
         _mirror._release_part_lock(fh, lock_path)
-    # The lock file is cleaned up.
-    assert not lock_path.exists()
+    # Codex round-12 BLOCKING: the lock file is INTENTIONALLY NOT
+    # cleaned up on release — unlinking would split waiters and new
+    # acquirers onto different inodes and let concurrent writers race
+    # on the same ``.part``. Verify the sidecar persists so the next
+    # acquirer can re-lock the same inode.
+    assert lock_path.exists()
+
+
+def test_part_lock_reacquire_uses_same_inode(tmp_path: Path):
+    """After release, a fresh ``_acquire_part_lock`` on the same path
+    must see the SAME inode as before — otherwise process A's release
+    and process C's acquire would happen on a different file from B's
+    in-flight ``flock``, allowing the very race round-12 patched out.
+    """
+    lock_path = tmp_path / "y.lock"
+    fh1 = _mirror._acquire_part_lock(lock_path)
+    inode1 = lock_path.stat().st_ino
+    _mirror._release_part_lock(fh1, lock_path)
+    # File must still exist on disk after release.
+    assert lock_path.exists()
+    inode_after_release = lock_path.stat().st_ino
+    assert inode_after_release == inode1
+    # And a re-acquire grabs the same inode.
+    fh2 = _mirror._acquire_part_lock(lock_path)
+    inode2 = lock_path.stat().st_ino
+    try:
+        assert inode2 == inode1
+    finally:
+        _mirror._release_part_lock(fh2, lock_path)
 
 
 # ---------------------------------------------------------------------------

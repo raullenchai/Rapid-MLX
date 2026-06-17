@@ -556,6 +556,17 @@ def _release_part_lock(lock_fh, lock_path: Path) -> None:
     Idempotent. Best-effort — if anything goes wrong (lock file already
     deleted, fh already closed, etc.) we swallow the error rather than
     propagate it past the download's own success/failure signal.
+
+    Codex round-12 BLOCKING: we deliberately do NOT unlink ``lock_path``
+    on release. Unlinking would split waiters and new acquirers onto
+    different inodes — process A would release+unlink while B's flock
+    is still on A's now-deleted inode; C would then open and lock a
+    NEW inode at the same path, letting C and B race for the
+    ``.part`` file. The lock file is just a sidecar; leaving it on
+    disk lets every subsequent acquirer see the same inode, which is
+    what ``flock`` actually serializes on. Stale lock files don't
+    accumulate in practice — each repo only has a fixed set of
+    sibling-paths under ``snapshots/<sha>/``.
     """
     if lock_fh is None:
         return
@@ -572,11 +583,8 @@ def _release_part_lock(lock_fh, lock_path: Path) -> None:
         lock_fh.close()
     except OSError:
         pass
-    # Best-effort cleanup of the lock file itself. A racing process may
-    # have already grabbed it for its own lock — that's fine, the
-    # unlink will just fail and we move on. The next acquirer
-    # re-creates it.
-    _safe_unlink(lock_path)
+    # NB: ``lock_path`` is intentionally NOT removed (see docstring).
+    del lock_path
 
 
 def _hf_fallback_one(
