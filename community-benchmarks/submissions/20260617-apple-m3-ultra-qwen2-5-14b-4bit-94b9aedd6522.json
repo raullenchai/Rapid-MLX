@@ -1,0 +1,168 @@
+{
+  "schema_version": 2,
+  "submission_id": "94b9aedd6522",
+  "submitted_at": "2026-06-17T04:52:59+00:00",
+  "hardware": {
+    "chip": "Apple M3 Ultra",
+    "ram_gb": 256,
+    "cpu_cores": 28,
+    "gpu_cores": 60
+  },
+  "software": {
+    "macos": "26.5.1",
+    "rapid_mlx": "0.7.26",
+    "mlx": "0.31.2",
+    "python": "3.12.13"
+  },
+  "model": {
+    "alias": "qwen2.5-14b-4bit",
+    "hf_path": "mlx-community/Qwen2.5-14B-Instruct-4bit"
+  },
+  "config": {
+    "rounds": 5,
+    "warmup_rounds": 1,
+    "sampling": "greedy",
+    "buckets_spec": {
+      "short": {
+        "prompt_tokens": 512,
+        "max_tokens": 128
+      },
+      "long": {
+        "prompt_tokens": 2048,
+        "max_tokens": 512
+      }
+    },
+    "prompt_hash": "3414e7611df5cfbc"
+  },
+  "buckets": {
+    "short": {
+      "decode_tps": {
+        "median": 66.36243007407856,
+        "min": 66.17150353439276,
+        "max": 66.84174758910044,
+        "stddev": 0.23534629058020115
+      },
+      "prefill_tps": {
+        "median": 606.9246849037439,
+        "min": 606.6591404073553,
+        "max": 607.2973466755087,
+        "stddev": 0.21458995877097922
+      },
+      "ttft_ms": {
+        "median": 874.9026250006864,
+        "min": 874.3657500017434,
+        "max": 875.2855839993572,
+        "stddev": 0.3092795806816386
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 66.60366704438282,
+          "prefill_tps": 606.9246849037439,
+          "ttft_ms": 874.9026250006864
+        },
+        {
+          "decode_tps": 66.84174758910044,
+          "prefill_tps": 606.8791930363415,
+          "ttft_ms": 874.9682079942431
+        },
+        {
+          "decode_tps": 66.36243007407856,
+          "prefill_tps": 606.6591404073553,
+          "ttft_ms": 875.2855839993572
+        },
+        {
+          "decode_tps": 66.32649097705713,
+          "prefill_tps": 607.2973466755087,
+          "ttft_ms": 874.3657500017434
+        },
+        {
+          "decode_tps": 66.17150353439276,
+          "prefill_tps": 607.0971481286238,
+          "ttft_ms": 874.6540840074886
+        }
+      ]
+    },
+    "long": {
+      "decode_tps": {
+        "median": 60.467997455139184,
+        "min": 60.16957369113886,
+        "max": 60.50875339485938,
+        "stddev": 0.12579703996833175
+      },
+      "prefill_tps": {
+        "median": 622.2664907049742,
+        "min": 622.1519223534342,
+        "max": 622.8382063697421,
+        "stddev": 0.2779753153715952
+      },
+      "ttft_ms": {
+        "median": 3469.574582995847,
+        "min": 3466.3897909922525,
+        "max": 3470.213499997044,
+        "stddev": 1.5487394153298335
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 60.37810369317743,
+          "prefill_tps": 622.1519223534342,
+          "ttft_ms": 3470.213499997044
+        },
+        {
+          "decode_tps": 60.16957369113886,
+          "prefill_tps": 622.251986150867,
+          "ttft_ms": 3469.6554580004886
+        },
+        {
+          "decode_tps": 60.50875339485938,
+          "prefill_tps": 622.8382063697421,
+          "ttft_ms": 3466.3897909922525
+        },
+        {
+          "decode_tps": 60.467997455139184,
+          "prefill_tps": 622.7220054258761,
+          "ttft_ms": 3467.0366249920335
+        },
+        {
+          "decode_tps": 60.49581082050197,
+          "prefill_tps": 622.2664907049742,
+          "ttft_ms": 3469.574582995847
+        }
+      ]
+    }
+  },
+  "peak_ram_mb": 8956,
+  "tier": "all",
+  "smoke_result": {
+    "boot_time_ms": 75619.20829200244,
+    "first_prompt_ok": true,
+    "first_token_latency_ms": 396.45112499420065,
+    "response_excerpt": "Hello! The answer to 2+2 is 4."
+  },
+  "harness_result": {
+    "codex": {
+      "passed": false,
+      "duration_s": 247.0073218329926,
+      "error_excerpt": "10p 0f 2e 0s | e2e_chat: TIMEOUT"
+    },
+    "opencode": {
+      "passed": true,
+      "duration_s": 9.816426166013116,
+      "error_excerpt": null
+    },
+    "hermes": {
+      "passed": false,
+      "duration_s": 38.98112804201082,
+      "error_excerpt": "23p 1f 0e 10s | e2e_file_read: Unexpected: Failed to initialize agent: Model mlx-community/gemma-3-1b-it-qat-4b"
+    },
+    "aider": {
+      "passed": true,
+      "duration_s": 0.4539509580063168,
+      "error_excerpt": null
+    },
+    "langchain": {
+      "passed": false,
+      "duration_s": 6.502309707997483,
+      "error_excerpt": "9p 0f 1e 0s | specific:test_langchain.py: Module execution failed: No module named 'langchain_core'"
+    }
+  }
+}
