@@ -36,16 +36,19 @@ PFlashMode = Literal["off", "auto", "always"]
 class PFlashConfig:
     """Configuration for PFlash prompt compression.
 
-    Defaults match the conservative profile from the #287 discussion:
-    threshold 32 768 tokens, keep ratio 0.10 (~10× prefill reduction),
-    minimum 2 048 kept tokens so very-long prompts still retain a
-    usable amount of body context, large 2 048-token tail because the
-    user's actual query tends to live there.
+    Defaults match the validated profile from PR #649 needle + TTFT
+    runs: threshold 32 768 tokens, keep ratio 0.20 (~5× prefill
+    reduction), minimum 2 048 kept tokens so very-long prompts still
+    retain a usable amount of body context, large 2 048-token tail
+    because the user's actual query tends to live there. The fork's
+    default was 0.10 but our bench evidence (TTFT 3.87x-8.5x, needle
+    recall 5/5) is all at 0.20 — the verified-tier auto-ON default
+    must match the validated number, so we use 0.20 here.
     """
 
     mode: PFlashMode = "off"
     threshold: int = 32_768
-    keep_ratio: float = 0.10
+    keep_ratio: float = 0.20
     min_keep_tokens: int = 2_048
     sink_tokens: int = 256
     tail_tokens: int = 2_048

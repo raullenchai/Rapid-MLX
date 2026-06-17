@@ -700,8 +700,10 @@ def _add_pflash_args(parser) -> None:
     parser.add_argument(
         "--pflash-keep-ratio",
         type=float,
-        default=0.10,
-        help="Fraction of prompt tokens to keep when compressing (default: 0.10).",
+        default=0.20,
+        help="Fraction of prompt tokens to keep when compressing "
+        "(default: 0.20 — matches the bench-validated profile in PR #649: "
+        "TTFT 3.87x-8.5x, needle recall 5/5 across tested cells).",
     )
     parser.add_argument(
         "--pflash-min-keep-tokens",
