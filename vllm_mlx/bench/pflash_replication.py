@@ -76,40 +76,44 @@ async def _run_one(
         # — the number of tokens in the user's prompt. The actual
         # prefill workload is shorter on PFlash-on runs.
         #
-        # Surface a ratio-based UPPER BOUND so the replication JSON
-        # makes the workload reduction inspectable (codex r4 NIT). The
-        # bound is intentionally NOT the exact post-compression count:
-        # the real compressor (see ``pflash.compress_tokens``) also
-        # applies ``min_keep_tokens`` floor, ``sink_tokens`` + ``tail_
-        # tokens`` preservation, threshold short-circuits, and block-
-        # truncation rounding — none of which we can derive from
-        # ``output.prompt_tokens`` alone. Wiring an exact ``model_
-        # prompt_tokens`` field through ``RequestOutput`` for an opt-in
-        # replication harness would be more code than the harness
-        # itself. Keep the estimate explicitly labelled as an upper
-        # bound; the maintainer running the bench can compare it
-        # against the TTFT speedup row in the PR body to sanity-check.
+        # Surface a ratio-only estimate so the replication JSON makes
+        # the intended workload reduction inspectable (codex r4 NIT).
+        # IMPORTANT: this is NOT an upper or lower bound on the real
+        # post-compression count. The real compressor (see
+        # ``pflash.compress_tokens``) applies ``min_keep_tokens`` floor,
+        # ``sink_tokens`` + ``tail_tokens`` preservation, threshold
+        # short-circuits, and block-truncation rounding — any of which
+        # can move the actual count above OR below the ratio number.
+        # Codex r6 NIT flagged the old ``_upper_bound`` naming as
+        # misleading for exactly this reason. Wiring an exact
+        # post-compression count through ``RequestOutput`` for an
+        # opt-in replication harness would be more code than the
+        # harness itself; the maintainer running the bench can compare
+        # this ratio number against the TTFT speedup row in the PR
+        # body to sanity-check.
         is_compressed_mode = pflash_mode != "off"
         if is_compressed_mode:
             from math import ceil
 
-            ratio_upper_bound = max(1, ceil(output.prompt_tokens * keep_ratio))
+            ratio_estimate = max(1, ceil(output.prompt_tokens * keep_ratio))
         else:
-            ratio_upper_bound = output.prompt_tokens
+            ratio_estimate = output.prompt_tokens
         return {
             "mode": pflash_mode,
             "keep_ratio": keep_ratio,
             "ttft_s": elapsed,
             "prompt_tokens": output.prompt_tokens,
-            # ``ratio_upper_bound`` rounds up the ``keep_ratio`` budget
-            # only; the real compressor's min_keep_tokens / sink / tail
-            # floors can push the actual count higher. Treat as a
-            # ceiling, not an exact figure (codex r5 NIT).
-            "model_prompt_tokens_ratio_upper_bound": ratio_upper_bound,
+            # Ratio-only estimate. NOT a bound — the real compressor's
+            # ``min_keep_tokens`` / ``sink_tokens`` / ``tail_tokens``
+            # floors and threshold short-circuits can move the actual
+            # count in either direction (codex r6 NIT).
+            "model_prompt_tokens_ratio_estimate": ratio_estimate,
             "model_prompt_tokens_estimate_caveat": (
-                "ratio-based upper bound only; real count clamped to "
-                "min_keep_tokens / sink / tail floors and threshold "
-                "short-circuits"
+                "ratio-only number = ceil(prompt_tokens * keep_ratio); "
+                "not an upper or lower bound — the real compressor also "
+                "applies min_keep_tokens / sink / tail floors and "
+                "threshold short-circuits that can move the actual "
+                "post-compression count in either direction"
             ),
             "completion_tokens": output.completion_tokens,
         }

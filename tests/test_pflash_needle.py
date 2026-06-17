@@ -163,7 +163,9 @@ def test_pflash_compressor_honors_keep_budget() -> None:
     # is 328 (= ceil(16_384 * 0.02)); ``min_keep_tokens=64`` is below
     # that, so the effective cap is the ratio. Allow a small slack
     # window for sink+tail overflow rounding from ``_keep_budget``.
-    expected_max = int(len(prompt) * 0.02) + config.sink_tokens + config.tail_tokens + 32
+    expected_max = (
+        int(len(prompt) * 0.02) + config.sink_tokens + config.tail_tokens + 32
+    )
     assert len(result.tokens) <= expected_max, (
         f"compressor kept {len(result.tokens)} tokens out of {len(prompt)} "
         f"(expected <= {expected_max}). Budget gate is not honoring keep_ratio."
