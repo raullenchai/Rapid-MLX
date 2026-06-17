@@ -740,11 +740,50 @@ def _agent_query(
         output = proc.stdout + proc.stderr
         if "error" in output.lower() and "HTTP 4" in output:
             return None, "Agent error: server issue"
+        # Harness self-refuses to initialize when the served model's
+        # advertised context window is below what the harness's tool-rich
+        # system prompt requires (issue #655 — Hermes hard-requires 64K;
+        # qwen3.5-4b/9b-4bit advertise 32K, so init always fails on those).
+        # The subprocess exits 0 and writes the refusal to stdout, so
+        # without this check downstream tests see "no expected substring"
+        # and report FAIL — which is dishonest, it's a harness-config
+        # mismatch, not a rapid-mlx regression. Propagate as SKIP via the
+        # ``SKIP:``-prefixed err sentinel that each ``_test_e2e_*`` already
+        # honors.
+        if (
+            "Failed to initialize agent" in output
+            and "context window" in output
+        ):
+            return None, (
+                "SKIP: agent refused init — served model's context window "
+                "is below the harness minimum (see output for details)"
+            )
         return output, None
     except subprocess.TimeoutExpired:
         return None, "TIMEOUT"
     except Exception as e:
         return None, str(e)
+
+
+def _err_to_status(err: str | None) -> TestStatus:
+    """Map an ``_agent_query`` err string to the right TestStatus.
+
+    Three buckets, in priority order:
+
+    - ``"not found"`` → SKIP. Harness binary isn't installed; we can't
+      run the e2e gate and shouldn't pretend to.
+    - ``"SKIP:"`` prefix → SKIP. ``_agent_query`` propagates this for
+      harness-side init refusals where rapid-mlx has nothing to fix —
+      currently the Hermes-on-32K-context case (#655).
+    - anything else → ERROR. Subprocess crashed / timed out / etc.
+    """
+    if not err:
+        return TestStatus.PASS  # caller shouldn't pass empty err but stay safe
+    if "not found" in err:
+        return TestStatus.SKIP
+    if err.startswith("SKIP:"):
+        return TestStatus.SKIP
+    return TestStatus.ERROR
 
 
 def _test_e2e_chat(binary: str, query_cmd: str, timeout: int) -> TestResult:
@@ -754,7 +793,7 @@ def _test_e2e_chat(binary: str, query_cmd: str, timeout: int) -> TestResult:
         binary, query_cmd, "What is 2+2? Reply with just the number.", timeout
     )
     if err:
-        status = TestStatus.SKIP if "not found" in (err or "") else TestStatus.ERROR
+        status = _err_to_status(err)
         return TestResult(
             "e2e_chat",
             status,
@@ -785,7 +824,7 @@ def _test_e2e_file_read(binary: str, query_cmd: str, timeout: int) -> TestResult
         binary, query_cmd, "Read the first line of pyproject.toml", timeout
     )
     if err:
-        status = TestStatus.SKIP if "not found" in (err or "") else TestStatus.ERROR
+        status = _err_to_status(err)
         return TestResult(
             "e2e_file_read",
             status,
@@ -819,7 +858,7 @@ def _test_e2e_terminal(
         binary, query_cmd, f"Run 'echo {marker}' and show me the output", timeout
     )
     if err:
-        status = TestStatus.SKIP if "not found" in (err or "") else TestStatus.ERROR
+        status = _err_to_status(err)
         return TestResult(
             "e2e_terminal",
             status,
