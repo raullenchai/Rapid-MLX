@@ -9,13 +9,15 @@
 
 ```bash
 brew tap raullenchai/rapid-mlx
+brew trust raullenchai/rapid-mlx
 brew install rapid-mlx
 ```
 
-The `brew tap` step is required: Homebrew 4.x refuses one-shot installs from
-third-party taps (`Refusing to load formula ... from untrusted tap`). The tap
-only needs to be added once per machine; `brew upgrade rapid-mlx` after that
-works directly.
+All three steps are required. Homebrew 4.x refuses one-shot installs from
+third-party taps with `Refusing to load formula ... from untrusted tap` —
+the `brew trust` line is what marks the tap as trusted. Tap + trust are
+both per-machine and persist across upgrades; `brew upgrade rapid-mlx`
+after the first install works directly.
 
 ## Install with pip
 
@@ -92,9 +94,10 @@ rapid-mlx serve qwen3.5-4b-4bit
 
 ### `Refusing to load formula ... from untrusted tap`
 
-Homebrew 4.x refuses one-shot installs from third-party taps. Use the
-two-step install at the top of this page (`brew tap raullenchai/rapid-mlx`
-then `brew install rapid-mlx`). Only needs to be done once per machine.
+Homebrew 4.x refuses installs from third-party taps until you mark them
+trusted. Run the three-step install at the top of this page (tap, trust,
+install). The `brew trust` line is the one that flips the refusal off.
+Only needs to be done once per machine.
 
 ### `brew install` fails with `Operation not permitted`
 
@@ -104,5 +107,6 @@ Pre-tap it once, then retry:
 ```bash
 brew tap homebrew/core --force   # ~1.3 GB, one-time
 brew tap raullenchai/rapid-mlx
+brew trust raullenchai/rapid-mlx
 brew install rapid-mlx
 ```
