@@ -535,6 +535,14 @@ def serve_command(args):
     if prompt_upgrade_if_available():
         sys.exit(0)
 
+    # Pre-fetch the model via the R2 mirror (with HF fallback) BEFORE the
+    # heavy server boot. Without this, ``serve`` falls into
+    # ``mlx_lm.load`` → ``huggingface_hub.snapshot_download`` directly and
+    # skips the mirror entirely (#651). ``_ensure_model_downloaded`` is a
+    # no-op on local paths and on fully-cached repos, so this is free on
+    # the warm path.
+    _ensure_model_downloaded(args.model)
+
     # Import unified server
     from . import server
     from .middleware.auth import configure_rate_limiter

@@ -2413,3 +2413,44 @@ def test_cached_hf_blob_symlink_skips_rehash(
     assert hf_mock.call_count == 0
     # File still resolves correctly.
     assert link.read_bytes() == payload
+
+
+# ---------------------------------------------------------------------------
+# Wiring assertions: serve must NOT bypass the mirror
+# ---------------------------------------------------------------------------
+
+
+def _function_loads_global(func, name: str) -> bool:
+    """Return True iff ``func``'s bytecode loads the named global.
+
+    Bytecode-level check survives a refactor that would delete the
+    actual call but leave a stale string-search match in a comment.
+    Mirrors the helper in ``test_memory_capacity_check.py``.
+    """
+    import dis
+
+    return any(
+        ins.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_DEREF") and ins.argval == name
+        for ins in dis.get_instructions(func)
+    )
+
+
+def test_serve_command_calls_ensure_model_downloaded():
+    """``rapid-mlx serve <alias>`` on a cold cache must route through the
+    R2 mirror — not fall into ``mlx_lm.load`` → ``snapshot_download``
+    directly. Issue #651: Desktop saw HF tqdm ``Fetching 9 files: 0%``
+    streaming the 6.7 GB shard at ~5 MB/s while the mirror would have
+    delivered it at ~50 MB/s.
+
+    The cheapest defense is ``_ensure_model_downloaded(args.model)``
+    early in serve_command — it's a no-op on local paths / fully-cached
+    repos, and tries the mirror before HF on cold pulls. A future
+    refactor that drops this call would re-introduce #651, so this is
+    a bytecode-level wiring assertion.
+    """
+    from vllm_mlx import cli
+
+    assert _function_loads_global(cli.serve_command, "_ensure_model_downloaded"), (
+        "serve_command must call _ensure_model_downloaded so cold-cache "
+        "serves go through the R2 mirror (issue #651)"
+    )
