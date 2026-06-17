@@ -504,9 +504,19 @@ def _parse_content_range(
 
 
 def _safe_unlink(path: Path) -> None:
+    """Best-effort unlink that also removes broken symlinks.
+
+    Codex round-13 BLOCKING #2: ``Path.exists()`` returns ``False`` for
+    a broken symlink (the link target doesn't exist), so the old
+    ``if path.exists(): path.unlink()`` guard would silently *skip*
+    broken-symlink targets — leaving the dangling link in place. A
+    later ``tmp.rename(target)`` would then fail (``ENOTDIR`` /
+    ``EEXIST`` depending on platform) and force the whole pull to
+    fall back unnecessarily. Use ``unlink(missing_ok=True)``: it
+    handles both broken symlinks and truly-missing paths in one call.
+    """
     try:
-        if path.exists():
-            path.unlink()
+        path.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -896,6 +906,36 @@ def download_with_mirror_fallback(
         try:
             if target.is_dir() and not target.is_symlink():
                 return fname, "miss", 0
+            # Codex round-13 BLOCKING #1: a symlink at the target path
+            # pointing OUTSIDE the repo's cache dir (e.g. ``snapshots/
+            # <sha>/foo -> /etc/passwd``) would be ``stat()``-ed
+            # through, and on the absurd off-chance the destination
+            # matches expected_size + sha256 (or HF didn't tell us a
+            # sha) we'd "accept" it as cached and pin ``refs/main`` to
+            # a malicious-looking snapshot. HF caches legitimately use
+            # symlinks (``snapshots/<sha>/foo -> ../../blobs/<hash>``)
+            # so we can't blanket-reject them. Instead, resolve the
+            # symlink and refuse anything that escapes ``repo_root``.
+            if target.is_symlink():
+                try:
+                    resolved = target.resolve(strict=False)
+                    repo_root_resolved = repo_root.resolve(strict=False)
+                except OSError:
+                    _safe_unlink(target)
+                    raise  # caught by outer OSError handler below
+                try:
+                    # ``repo_root`` was set earlier as ``cache_root /
+                    # f"models--{owner}--{repo}"``. Anything inside the
+                    # repo's blobs/ subdir is the legitimate HF layout.
+                    resolved.relative_to(repo_root_resolved)
+                except ValueError:
+                    # Symlink escapes the repo's cache dir → malicious
+                    # or accidentally-misplaced. Drop and refetch.
+                    _safe_unlink(target)
+                    # Don't try the rest of the cached-checks on a
+                    # deleted target — fall through to R2/HF.
+                # else: legit HF blob symlink, fall through to the
+                # size/sha check below.
             if target.exists():
                 cached_size = target.stat().st_size
                 if expected_size is not None and cached_size != expected_size:
@@ -1047,7 +1087,12 @@ def download_with_mirror_fallback(
     # "<sha>")`` would otherwise survive our pull, breaking the cache
     # contract for the loader.
     try:
-        (refs_dir / "main").write_text(revision)
+        # Codex round-13 NIT #3: write the ref in deterministic UTF-8
+        # rather than the platform default encoding. SHA hashes are
+        # ASCII so the bytes are the same in practice, but matching
+        # the HF cache writer's encoding keeps cross-platform reads
+        # bit-identical.
+        (refs_dir / "main").write_text(revision, encoding="utf-8")
     except OSError:
         return False
 

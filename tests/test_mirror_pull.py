@@ -1931,3 +1931,141 @@ def test_malformed_mirror_url_returns_false_gracefully(
     assert data is None
     # status may be None (URLError) or some int — both are acceptable
     # "no catalog here" signals.
+
+
+# ---------------------------------------------------------------------------
+# Codex round-13 BLOCKING #1 — a symlink target pointing OUTSIDE the
+# repo's cache dir must be rejected (refused as cached) even if the
+# pointed-to file happens to match expected_size / sha256.
+# ---------------------------------------------------------------------------
+
+
+def test_cached_symlink_escaping_repo_root_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Plant a malicious symlink at the snapshot path pointing to a
+    file outside the repo's cache dir. Even though the pointed-to file
+    has the right size, the mirror module must drop it and refetch
+    instead of pinning ``refs/main`` to a snapshot dir containing a
+    rogue symlink.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "1234" * 10
+    files = [("config.json", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    # Outside-the-repo file with the same expected size.
+    outside = tmp_path / "outside_payload.bin"
+    outside.write_bytes(b"M" * 100)  # matching size
+
+    # Plant the malicious symlink at the cached path.
+    snap_dir = (
+        tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    )
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    symlink_path = snap_dir / "config.json"
+    symlink_path.symlink_to(outside)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # R2 serves the real content for the refetch.
+    real_bytes = b"R" * 100
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, real_bytes),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # The symlink was dropped — the file at the path is now the real
+    # bytes from R2, NOT the outside payload.
+    assert symlink_path.is_symlink() is False
+    assert symlink_path.read_bytes() == real_bytes
+    # Outside file is untouched (we deleted the symlink, not the
+    # target).
+    assert outside.read_bytes() == b"M" * 100
+    # R2 served the refetch.
+    r2_file_calls = [r for r in router.requests if "config.json" in r["url"]]
+    assert len(r2_file_calls) == 1
+    assert hf_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Codex round-13 BLOCKING #2 — _safe_unlink must remove BROKEN symlinks
+# (path.exists() returns False for them, but the dangling link still
+# needs cleanup or the later tmp.rename() fails).
+# ---------------------------------------------------------------------------
+
+
+def test_safe_unlink_removes_broken_symlink(tmp_path: Path):
+    broken_target = tmp_path / "does_not_exist"
+    link = tmp_path / "broken_link"
+    link.symlink_to(broken_target)
+    # Confirm precondition: link exists as a symlink, target does not.
+    assert link.is_symlink()
+    assert not link.exists()  # Path.exists() follows the link → False
+
+    _mirror._safe_unlink(link)
+
+    # The broken symlink is now gone.
+    assert not link.is_symlink()
+    # And os.lstat would raise → confirm via the parent listing.
+    assert "broken_link" not in [p.name for p in tmp_path.iterdir()]
+
+
+# ---------------------------------------------------------------------------
+# Codex round-13 NIT #3 — refs/main is written as UTF-8, not platform
+# default encoding.
+# ---------------------------------------------------------------------------
+
+
+def test_refs_main_written_as_utf8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "abcd" * 10  # ASCII; any encoding gives the same bytes,
+    # but we check the file is utf-8-decodable as a contract.
+    files = [("config.json", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    refs_main = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "refs" / "main"
+    # Explicitly read as utf-8 — would raise on non-utf-8 encodings.
+    content = refs_main.read_text(encoding="utf-8")
+    assert content == revision
