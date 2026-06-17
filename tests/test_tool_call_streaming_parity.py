@@ -177,6 +177,19 @@ PARITY_FIXTURES: list = [
         ),
         [("read_file", {"path": "/etc/hostname"})],
     ),
+    # qwen3_coder_xml — canonical Qwen3-Coder XML body. Streaming-side
+    # incremental string emission (#479) must still concatenate to the same
+    # final JSON the non-stream path returns.
+    (
+        "qwen3_coder_xml",
+        "xml_body",
+        (
+            "<tool_call>\n<function=read_file>\n"
+            "<parameter=path>\n/etc/hostname\n</parameter>\n"
+            "</function>\n</tool_call>"
+        ),
+        [("read_file", {"path": "/etc/hostname"})],
+    ),
 ]
 
 
@@ -226,7 +239,6 @@ _PARITY_COVERAGE_EXEMPT: dict[str, str] = {
     "qwen": "JSON-body Qwen variant — covered by hermes json_body fixture (same shape)",
     "qwen3": "alias of qwen",
     "qwen3_coder": "alias of hermes",
-    "qwen3_coder_xml": "TODO: add Qwen3-Coder XML wire-format fixture",
     "nous": "alias of hermes",
     "auto": "router, not a wire-format parser",
     "generic": "router, not a wire-format parser",

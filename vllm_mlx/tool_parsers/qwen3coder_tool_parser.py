@@ -52,6 +52,21 @@ def _get_arguments_config(func_name: str, tools: list[dict] | None) -> dict:
     return {}
 
 
+def _is_string_param(param_name: str, param_config: dict) -> bool:
+    """Whether ``param_name`` is a string-typed param per the tool schema.
+
+    Unknown / un-configured params default to string — the non-streaming
+    path treats them as raw strings via _decode_json_like(), so streaming
+    them char-by-char preserves the same final JSON shape.
+    """
+    if param_name not in param_config:
+        return True
+    param_type = _schema_type(param_config[param_name])
+    if param_type is None:
+        return True
+    return param_type in ("string", "str", "text", "varchar", "char", "enum")
+
+
 def _convert_param_value(
     param_value: str, param_name: str, param_config: dict, func_name: str
 ) -> Any:
@@ -153,6 +168,54 @@ class Qwen3CoderToolParser(ToolParser):
         self.accumulated_params = {}
         self._streaming_request = None
         self.prev_tool_call_arr = []
+        self.in_param_emitted_chars = 0
+        self.in_param_opened = False
+        self.in_param_name: str | None = None
+
+    def _emit_string_increment(self, param_name: str, value_text: str) -> str:
+        """Return a JSON fragment for the safe (already-final) portion of an
+        in-flight string param value, or "" if nothing new can be flushed.
+
+        We withhold the last ``len("</parameter>")`` chars of unread tail so
+        a partial close tag (e.g. ``</par`` straddling a chunk boundary)
+        cannot leak into an emitted JSON fragment.
+        """
+        keep_back = len(self.parameter_end_token)
+        safe_end = len(value_text) - keep_back
+        if safe_end <= self.in_param_emitted_chars:
+            return ""
+        safe = value_text[self.in_param_emitted_chars : safe_end]
+        if not safe:
+            return ""
+        inner = json.dumps(safe, ensure_ascii=False)[1:-1]
+        self.in_param_emitted_chars = safe_end
+        if not self.in_param_opened:
+            self.in_param_opened = True
+            prefix = "" if self.param_count == 0 else ", "
+            return f'{prefix}"{param_name}": "{inner}'
+        return inner
+
+    def _close_string_increment(
+        self, param_name: str, full_value: str, param_config: dict
+    ) -> str:
+        """Emit the closing fragment for an in-flight string param now that
+        ``</parameter>`` has arrived. Handles both the long-string case
+        (opener already emitted; emit tail + closing quote) and the short-
+        string case (opener never emitted; emit the whole ``"name": "value"``).
+        """
+        if not self.in_param_opened:
+            converted = _convert_param_value(
+                full_value,
+                param_name,
+                param_config,
+                self.current_function_name or "",
+            )
+            serialized = json.dumps(converted, ensure_ascii=False)
+            prefix = "" if self.param_count == 0 else ", "
+            return f'{prefix}"{param_name}": {serialized}'
+        tail = full_value[self.in_param_emitted_chars :]
+        inner = json.dumps(tail, ensure_ascii=False)[1:-1]
+        return f'{inner}"'
 
     def _parse_xml_function_call(
         self, function_call_str: str, tools: list[dict] | None
@@ -416,8 +479,20 @@ class Qwen3CoderToolParser(ToolParser):
                 param_starts.append(si)
                 si += len(self.parameter_prefix)
 
+            tools = None
+            if self._streaming_request:
+                tools = (
+                    self._streaming_request.get("tools")
+                    if isinstance(self._streaming_request, dict)
+                    else None
+                )
+            param_config = _get_arguments_config(
+                self.current_function_name or "", tools
+            )
+
             # Process complete parameters
             json_fragments = []
+            was_in_param = self.in_param
             while not self.in_param and self.param_count < len(param_starts):
                 param_idx = param_starts[self.param_count]
                 param_start = param_idx + len(self.parameter_prefix)
@@ -447,6 +522,18 @@ class Qwen3CoderToolParser(ToolParser):
                         if tool_end_in_val != -1:
                             param_end_idx = tool_end_in_val
                         else:
+                            # Param not yet closed. For string params, emit
+                            # incrementally; for non-string types we can't
+                            # emit partial JSON (half an int isn't valid),
+                            # so fall through to the existing break path.
+                            if _is_string_param(current_param_name, param_config):
+                                frag = self._emit_string_increment(
+                                    current_param_name, value_text
+                                )
+                                if frag:
+                                    json_fragments.append(frag)
+                                self.in_param = True
+                                self.in_param_name = current_param_name
                             break
 
                 if param_end_idx == -1:
@@ -458,17 +545,6 @@ class Qwen3CoderToolParser(ToolParser):
 
                 self.accumulated_params[current_param_name] = pv
 
-                # Type conversion
-                tools = None
-                if self._streaming_request:
-                    tools = (
-                        self._streaming_request.get("tools")
-                        if isinstance(self._streaming_request, dict)
-                        else None
-                    )
-                param_config = _get_arguments_config(
-                    self.current_function_name or "", tools
-                )
                 converted = _convert_param_value(
                     pv,
                     current_param_name,
@@ -483,6 +559,53 @@ class Qwen3CoderToolParser(ToolParser):
                     frag = f', "{current_param_name}": {serialized}'
                 self.param_count += 1
                 json_fragments.append(frag)
+
+            # In-flight string param from a prior call: emit incremental
+            # tail (or close it now that the end-tag has arrived).
+            if was_in_param and self.in_param and self.in_param_name is not None:
+                param_idx = param_starts[self.param_count]
+                param_start = param_idx + len(self.parameter_prefix)
+                remaining = tool_text[param_start:]
+                if ">" in remaining:
+                    name_end = remaining.find(">")
+                    value_start = param_start + name_end + 1
+                    value_text = tool_text[value_start:]
+                    if value_text.startswith("\n"):
+                        value_text = value_text[1:]
+
+                    end_idx = value_text.find(self.parameter_end_token)
+                    if end_idx == -1:
+                        # Defensive fallback: model emitted next-param-prefix
+                        # or </function> without a </parameter>. Use that as
+                        # the close to avoid hanging forever in incremental
+                        # mode.
+                        nxt = value_text.find(self.parameter_prefix)
+                        fe = value_text.find(self.function_end_token)
+                        if nxt != -1 and (fe == -1 or nxt < fe):
+                            end_idx = nxt
+                        elif fe != -1:
+                            end_idx = fe
+                    if end_idx != -1:
+                        pv = value_text[:end_idx]
+                        if pv.endswith("\n"):
+                            pv = pv[:-1]
+                        self.accumulated_params[self.in_param_name] = pv
+                        frag = self._close_string_increment(
+                            self.in_param_name, pv, param_config
+                        )
+                        if frag:
+                            json_fragments.append(frag)
+                        self.param_count += 1
+                        self.in_param = False
+                        self.in_param_name = None
+                        self.in_param_emitted_chars = 0
+                        self.in_param_opened = False
+                    else:
+                        frag = self._emit_string_increment(
+                            self.in_param_name, value_text
+                        )
+                        if frag:
+                            json_fragments.append(frag)
 
             if json_fragments:
                 combined = "".join(json_fragments)
