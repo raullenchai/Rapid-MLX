@@ -2742,6 +2742,14 @@ def test_safe_display_name_strips_control_chars():
     assert "\x00" not in _mirror._safe_display_name("a\x00b.bin")
     # DEL (0x7f) stripped.
     assert "\x7f" not in _mirror._safe_display_name("a\x7fb.bin")
+    # Unicode C1 control (CSI, U+009B) — same terminal-injection vector
+    # as ESC[. Codex round-3 BLOCKING on PR #657.
+    assert "" not in _mirror._safe_display_name("a[2Jb.bin")
+    # Bidi override (U+202E) — would visually swap ``...exe.txt`` into
+    # ``...txt.exe`` and mislead the user about the file type.
+    assert "‮" not in _mirror._safe_display_name("a‮exe.txt")
+    # Zero-width joiner (U+200D) — Cf category, also stripped.
+    assert "‍" not in _mirror._safe_display_name("a‍b.bin")
     # Non-control characters preserved verbatim, including Unicode.
     assert (
         _mirror._safe_display_name("model-v1.2.safetensors") == "model-v1.2.safetensors"

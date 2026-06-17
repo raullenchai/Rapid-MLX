@@ -38,6 +38,7 @@ import json
 import os
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -683,12 +684,18 @@ def _safe_display_name(fname: str, max_len: int = 80) -> str:
 
     Codex round-2 BLOCKING on PR #657.
     """
-    # Strip ASCII control chars (0x00-0x1F) and DEL (0x7F). Anything
-    # >= 0x20 (printable) is preserved, including non-ASCII bytes which
-    # the terminal renders as-is. We don't try to handle Unicode bidi
-    # overrides — those are a different threat surface and HF rejects
-    # them at the API layer.
-    cleaned = "".join(c for c in fname if c >= " " and c != "\x7f")
+    # Strip ASCII controls (0x00-0x1F + DEL) AND Unicode control /
+    # format characters — both can drive terminal behavior:
+    #   * 0x00-0x1F + 0x7F: standard C0 controls + DEL.
+    #   * U+0080-U+009F: C1 controls (```` is CSI — same
+    #     terminal-injection vector as ESC[).
+    #   * U+200E / U+200F / U+202A-U+202E: bidi overrides — a
+    #     ``...‮exe.txt`` filename would render visually as
+    #     ``...txt.exe`` and mislead the user.
+    # Unicode category ``C*`` covers C0/C1 (Cc), format (Cf — includes
+    # bidi marks + zero-width joiners), surrogates (Cs), private-use
+    # (Co), unassigned (Cn). Codex round-3 BLOCKING on PR #657.
+    cleaned = "".join(c for c in fname if not unicodedata.category(c).startswith("C"))
     if not cleaned:
         cleaned = "<unprintable>"
     if len(cleaned) > max_len:
