@@ -162,6 +162,20 @@ def resolve_pflash_mode_default(args: Any, *, model_name: str) -> str:
         return "off"
     cfg = detect_model_config(model_name)
     if cfg is not None and cfg.pflash_tier == "verified":
+        # Surface the alias-driven flip at INFO so a developer running
+        # ``rapid-mlx bench qwen3.5-4b-4bit`` immediately sees that
+        # PFlash is on by default — the verified-tier policy is
+        # uniform across ``serve``/``bench`` by design, but the bench
+        # workflow specifically expects to see what mode is being
+        # measured (codex r4 BLOCKING called out this surprise).
+        import logging as _logging
+
+        _logging.getLogger(__name__).info(
+            "PFlash default: alias %r is pflash_tier=verified — "
+            "engine defaults to --pflash always. Pass --pflash off to "
+            "compare against the no-compression baseline.",
+            model_name,
+        )
         return "always"
     return "off"
 

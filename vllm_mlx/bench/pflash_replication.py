@@ -72,11 +72,31 @@ async def _run_one(
         start = time.perf_counter()
         output = await engine.generate(prompt=prompt, sampling_params=params)
         elapsed = time.perf_counter() - start
+        # ``output.prompt_tokens`` is the logical (pre-compression) count
+        # — the number of tokens in the user's prompt. The actual
+        # prefill workload is shorter on PFlash-on runs. Surface both so
+        # the replication JSON makes the workload reduction inspectable
+        # (codex r4 NIT). ``model_prompt_tokens`` is the post-compression
+        # count we estimate from keep_ratio when PFlash compressed the
+        # request — the engine's RequestOutput doesn't carry the field
+        # directly today (lives on Request), so we approximate here
+        # rather than wire up a new public dataclass attribute just for
+        # this opt-in replication harness.
+        is_compressed_mode = pflash_mode != "off"
+        if is_compressed_mode:
+            from math import ceil
+
+            estimated_model_tokens = max(
+                1, ceil(output.prompt_tokens * keep_ratio)
+            )
+        else:
+            estimated_model_tokens = output.prompt_tokens
         return {
             "mode": pflash_mode,
             "keep_ratio": keep_ratio,
             "ttft_s": elapsed,
             "prompt_tokens": output.prompt_tokens,
+            "model_prompt_tokens_estimate": estimated_model_tokens,
             "completion_tokens": output.completion_tokens,
         }
 
