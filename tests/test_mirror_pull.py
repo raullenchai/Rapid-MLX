@@ -2420,19 +2420,55 @@ def test_cached_hf_blob_symlink_skips_rehash(
 # ---------------------------------------------------------------------------
 
 
-def _function_loads_global(func, name: str) -> bool:
-    """Return True iff ``func``'s bytecode loads the named global.
+def _function_calls_global(func, name: str) -> bool:
+    """Return True iff ``func``'s bytecode contains a LOAD_GLOBAL/NAME/DEREF
+    of ``name`` followed by a CALL op within the same function body.
 
-    Bytecode-level check survives a refactor that would delete the
-    actual call but leave a stale string-search match in a comment.
-    Mirrors the helper in ``test_memory_capacity_check.py``.
+    Stricter than a bare ``LOAD_GLOBAL`` check — a future refactor that
+    merely references ``name`` (e.g. ``f = _ensure_model_downloaded``
+    without ever calling it) would still satisfy LOAD_GLOBAL but
+    silently re-introduce #651. The CALL-follows requirement closes
+    that gap.
+
+    Codex round-1 BLOCKING #1 to PR #654.
     """
     import dis
 
-    return any(
-        ins.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_DEREF") and ins.argval == name
-        for ins in dis.get_instructions(func)
-    )
+    insts = list(dis.get_instructions(func))
+    for idx, ins in enumerate(insts):
+        if (
+            ins.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_DEREF")
+            and ins.argval == name
+        ):
+            # Walk forward looking for a CALL. Any number of LOAD_FAST /
+            # LOAD_ATTR / LOAD_CONST / PUSH_NULL ops can stack arguments
+            # between the load and the call; anything else (STORE_*, a
+            # second LOAD_GLOBAL of an unrelated name, RETURN_*, etc.)
+            # means the loaded reference was used for something other
+            # than calling it — keep scanning for another LOAD of the
+            # same name.
+            allowed_between = {
+                "LOAD_FAST",
+                "LOAD_ATTR",
+                "LOAD_CONST",
+                "LOAD_DEREF",
+                "PUSH_NULL",
+                "COPY",
+                "SWAP",
+                "PRECALL",
+                "KW_NAMES",
+                "LOAD_METHOD",
+                "CACHE",
+            }
+            for follow in insts[idx + 1 : idx + 12]:
+                if follow.opname in ("CALL", "CALL_FUNCTION", "CALL_METHOD"):
+                    return True
+                if follow.opname in allowed_between:
+                    continue
+                # Hit a non-argument-stacking op — this LOAD was not
+                # immediately followed by a CALL.
+                break
+    return False
 
 
 def test_serve_command_calls_ensure_model_downloaded():
@@ -2446,11 +2482,13 @@ def test_serve_command_calls_ensure_model_downloaded():
     early in serve_command — it's a no-op on local paths / fully-cached
     repos, and tries the mirror before HF on cold pulls. A future
     refactor that drops this call would re-introduce #651, so this is
-    a bytecode-level wiring assertion.
+    a bytecode-level wiring assertion that requires both the LOAD and
+    a CALL following it.
     """
     from vllm_mlx import cli
 
-    assert _function_loads_global(cli.serve_command, "_ensure_model_downloaded"), (
-        "serve_command must call _ensure_model_downloaded so cold-cache "
-        "serves go through the R2 mirror (issue #651)"
+    assert _function_calls_global(cli.serve_command, "_ensure_model_downloaded"), (
+        "serve_command must CALL _ensure_model_downloaded (not just "
+        "reference it) so cold-cache serves go through the R2 mirror "
+        "(issue #651). Codex round-1 BLOCKING #1 to PR #654."
     )
