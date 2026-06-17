@@ -1,0 +1,168 @@
+{
+  "schema_version": 2,
+  "submission_id": "ba03a40c2ad9",
+  "submitted_at": "2026-06-17T05:20:50+00:00",
+  "hardware": {
+    "chip": "Apple M3 Ultra",
+    "ram_gb": 256,
+    "cpu_cores": 28,
+    "gpu_cores": 60
+  },
+  "software": {
+    "macos": "26.5.1",
+    "rapid_mlx": "0.7.26",
+    "mlx": "0.31.2",
+    "python": "3.12.13"
+  },
+  "model": {
+    "alias": "gemma3-1b-qat-4bit",
+    "hf_path": "mlx-community/gemma-3-1b-it-qat-4bit"
+  },
+  "config": {
+    "rounds": 5,
+    "warmup_rounds": 1,
+    "sampling": "greedy",
+    "buckets_spec": {
+      "short": {
+        "prompt_tokens": 512,
+        "max_tokens": 128
+      },
+      "long": {
+        "prompt_tokens": 2048,
+        "max_tokens": 512
+      }
+    },
+    "prompt_hash": "3414e7611df5cfbc"
+  },
+  "buckets": {
+    "short": {
+      "decode_tps": {
+        "median": 261.0653644230458,
+        "min": 259.6906224225839,
+        "max": 261.23548252226595,
+        "stddev": 0.5783517444050444
+      },
+      "prefill_tps": {
+        "median": 7356.125130118277,
+        "min": 7344.367108648144,
+        "max": 7376.971186158424,
+        "stddev": 12.122395579264813
+      },
+      "ttft_ms": {
+        "median": 72.45662499917671,
+        "min": 72.25187499716412,
+        "max": 72.57262499479111,
+        "stddev": 0.11923076820474167
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 261.23548252226595,
+          "prefill_tps": 7344.367108648144,
+          "ttft_ms": 72.57262499479111
+        },
+        {
+          "decode_tps": 259.6906224225839,
+          "prefill_tps": 7372.532474437799,
+          "ttft_ms": 72.29537500825245
+        },
+        {
+          "decode_tps": 261.1577687784925,
+          "prefill_tps": 7356.125130118277,
+          "ttft_ms": 72.45662499917671
+        },
+        {
+          "decode_tps": 261.0478797775401,
+          "prefill_tps": 7354.188146802738,
+          "ttft_ms": 72.47570899198763
+        },
+        {
+          "decode_tps": 261.0653644230458,
+          "prefill_tps": 7376.971186158424,
+          "ttft_ms": 72.25187499716412
+        }
+      ]
+    },
+    "long": {
+      "decode_tps": {
+        "median": 262.0431016038515,
+        "min": 261.9338148109007,
+        "max": 262.1194219445232,
+        "stddev": 0.06036559525946416
+      },
+      "prefill_tps": {
+        "median": 8737.021694177374,
+        "min": 8723.402464472281,
+        "max": 8747.93847694858,
+        "stddev": 8.141873595105606
+      },
+      "ttft_ms": {
+        "median": 243.90462500741705,
+        "min": 243.60025000351015,
+        "max": 244.28541600354947,
+        "stddev": 0.22737135206218234
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 262.0053639324636,
+          "prefill_tps": 8723.402464472281,
+          "ttft_ms": 244.28541600354947
+        },
+        {
+          "decode_tps": 262.0431016038515,
+          "prefill_tps": 8747.93847694858,
+          "ttft_ms": 243.60025000351015
+        },
+        {
+          "decode_tps": 262.1194219445232,
+          "prefill_tps": 8740.40964074681,
+          "ttft_ms": 243.81008300406393
+        },
+        {
+          "decode_tps": 262.0440422447482,
+          "prefill_tps": 8732.801278471969,
+          "ttft_ms": 244.02250000275671
+        },
+        {
+          "decode_tps": 261.9338148109007,
+          "prefill_tps": 8737.021694177374,
+          "ttft_ms": 243.90462500741705
+        }
+      ]
+    }
+  },
+  "peak_ram_mb": 1592,
+  "tier": "all",
+  "smoke_result": {
+    "boot_time_ms": 2544.3325829983223,
+    "first_prompt_ok": true,
+    "first_token_latency_ms": 78.52633300353773,
+    "response_excerpt": "2 + 2 = 4\n\nIt's a simple addition!"
+  },
+  "harness_result": {
+    "codex": {
+      "passed": false,
+      "duration_s": 241.8845058750012,
+      "error_excerpt": "6p 4f 2e 0s | single_tool_call: No tool_calls in response"
+    },
+    "opencode": {
+      "passed": false,
+      "duration_s": 2.3701559170003748,
+      "error_excerpt": "5p 5f 0e 1s | single_tool_call: No tool_calls in response"
+    },
+    "hermes": {
+      "passed": false,
+      "duration_s": 22.448630165992654,
+      "error_excerpt": "13p 11f 0e 10s | single_tool_call: No tool_calls in response"
+    },
+    "aider": {
+      "passed": true,
+      "duration_s": 0.2719332080014283,
+      "error_excerpt": null
+    },
+    "langchain": {
+      "passed": false,
+      "duration_s": 1.9924473340070108,
+      "error_excerpt": "5p 4f 1e 0s | single_tool_call: No tool_calls in response"
+    }
+  }
+}
