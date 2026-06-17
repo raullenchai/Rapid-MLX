@@ -519,16 +519,23 @@ class DiffusionEngine(BaseEngine):
         """
         from ..scheduler import BackpressureError, SchedulerConfig
 
-        # Stuck-worker short-circuit — once the drain ceiling has been
-        # hit, refuse new work until the engine is restarted. Routing
-        # requests onto a wedged engine would let them queue behind
-        # GPU work that the lock was meant to exclude (codex round 7
-        # [P2]).
+        # Stuck-worker short-circuit — refuse new work while the
+        # previous job's drain is still pending. Routing requests onto
+        # a wedged engine would let them queue behind GPU work that
+        # the lock was meant to exclude (codex round 7 [P2]). Issue
+        # #644: the worker self-heals via ``_worker_loop``'s finally
+        # block once the long ``mx.eval`` actually returns, so the
+        # caller doesn't need to restart — a transient client of the
+        # stuck window just gets 503 + Retry-After until the worker
+        # drains. The flag is therefore named for what it observes
+        # (the in-flight drain hasn't completed) rather than for a
+        # permanent state.
         if self._worker_stuck:
             raise BackpressureError(
-                "DiffusionEngine worker did not drain a cancelled job "
-                "within the 30 s ceiling — engine marked unhealthy. "
-                "Restart the server to recover."
+                "DiffusionEngine worker drain still pending after a "
+                "previous job exceeded the 30 s cancel ceiling. "
+                "Engine self-heals once the worker finishes its "
+                "current block — retry shortly."
             )
         sc = self._scheduler_config
         if sc is None:
@@ -678,6 +685,28 @@ class DiffusionEngine(BaseEngine):
                 # cancel_event mid-block) head-of-line-blocked the
                 # next queued request behind abandoned GPU work.
                 done_event.set()
+                # Self-heal: if a prior consumer hit the drain-ceiling
+                # while this worker was mid-``mx.eval`` on a long
+                # diffusion block (mlx-vlm yields drafts only when
+                # ``diffusion_show_unmasking`` is set — default False —
+                # so the per-iteration cancel check inside
+                # ``_run_generator`` can be blocked in C for the whole
+                # 32-step denoising loop), the engine was marked
+                # unhealthy. The worker has now drained that job
+                # (this very ``finally`` block ran), so the wedge is
+                # gone. Clear the flag so subsequent admissions
+                # succeed without a process restart (issue #644).
+                #
+                # Truly-wedged scenarios (real GPU hang, deadlocked
+                # mx.eval) never reach this finally — the worker
+                # thread is still blocked in C. So self-heal is safe:
+                # we only clear when we have proof of recovery.
+                if self._worker_stuck:
+                    self._worker_stuck = False
+                    logger.info(
+                        "DiffusionEngine worker drained — clearing "
+                        "stuck flag, engine healthy again"
+                    )
 
     # ------------------------------------------------------------------
     # BaseEngine — prompt / token helpers used by the route layer
@@ -1180,10 +1209,16 @@ class DiffusionEngine(BaseEngine):
                     # benign — it WILL set done_event eventually);
                     # don't poison the engine for that.
                     self._worker_stuck = True
-                    logger.error(
-                        "DiffusionEngine worker did not drain cancelled job "
-                        "within 30 s — engine marked unhealthy. Further "
-                        "admissions will fail until restart."
+                    logger.warning(
+                        "DiffusionEngine worker did not drain cancelled "
+                        "job within 30 s — engine returning 503 until "
+                        "the in-flight block finishes. Self-heal will "
+                        "clear the stuck flag once the worker's "
+                        "``mx.eval`` returns (issue #644). If 503s "
+                        "persist beyond your model's longest expected "
+                        "block (single-block ``mx.eval`` time), the "
+                        "worker is truly wedged and the server needs "
+                        "a restart."
                     )
                 # Unconditional pump terminator. The worker's own
                 # _STREAM_DONE arrives eventually, but if cancellation
