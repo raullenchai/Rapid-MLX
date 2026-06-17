@@ -490,9 +490,63 @@ class Qwen3CoderToolParser(ToolParser):
                 self.current_function_name or "", tools
             )
 
-            # Process complete parameters
             json_fragments = []
-            was_in_param = self.in_param
+
+            # In-flight string param from a prior call: drain whatever's
+            # now available (close it if </parameter> has arrived, else
+            # emit another safe slice). Runs BEFORE the complete-param
+            # loop so same-chunk trailing params after the close get
+            # picked up in the same call.
+            if (
+                self.in_param
+                and self.in_param_name is not None
+                and self.param_count < len(param_starts)
+            ):
+                param_idx = param_starts[self.param_count]
+                param_start = param_idx + len(self.parameter_prefix)
+                remaining = tool_text[param_start:]
+                if ">" in remaining:
+                    name_end = remaining.find(">")
+                    value_start = param_start + name_end + 1
+                    value_text = tool_text[value_start:]
+                    if value_text.startswith("\n"):
+                        value_text = value_text[1:]
+
+                    end_idx = value_text.find(self.parameter_end_token)
+                    if end_idx == -1:
+                        # Defensive fallback: model emitted next-param-prefix
+                        # or </function> without a </parameter>. Use that as
+                        # the close to avoid hanging forever in incremental
+                        # mode.
+                        nxt = value_text.find(self.parameter_prefix)
+                        fe = value_text.find(self.function_end_token)
+                        if nxt != -1 and (fe == -1 or nxt < fe):
+                            end_idx = nxt
+                        elif fe != -1:
+                            end_idx = fe
+                    if end_idx != -1:
+                        pv = value_text[:end_idx]
+                        if pv.endswith("\n"):
+                            pv = pv[:-1]
+                        self.accumulated_params[self.in_param_name] = pv
+                        frag = self._close_string_increment(
+                            self.in_param_name, pv, param_config
+                        )
+                        if frag:
+                            json_fragments.append(frag)
+                        self.param_count += 1
+                        self.in_param = False
+                        self.in_param_name = None
+                        self.in_param_emitted_chars = 0
+                        self.in_param_opened = False
+                    else:
+                        frag = self._emit_string_increment(
+                            self.in_param_name, value_text
+                        )
+                        if frag:
+                            json_fragments.append(frag)
+
+            # Process complete parameters
             while not self.in_param and self.param_count < len(param_starts):
                 param_idx = param_starts[self.param_count]
                 param_start = param_idx + len(self.parameter_prefix)
@@ -559,58 +613,6 @@ class Qwen3CoderToolParser(ToolParser):
                     frag = f', "{current_param_name}": {serialized}'
                 self.param_count += 1
                 json_fragments.append(frag)
-
-            # In-flight string param from a prior call: emit incremental
-            # tail (or close it now that the end-tag has arrived).
-            if (
-                was_in_param
-                and self.in_param
-                and self.in_param_name is not None
-                and self.param_count < len(param_starts)
-            ):
-                param_idx = param_starts[self.param_count]
-                param_start = param_idx + len(self.parameter_prefix)
-                remaining = tool_text[param_start:]
-                if ">" in remaining:
-                    name_end = remaining.find(">")
-                    value_start = param_start + name_end + 1
-                    value_text = tool_text[value_start:]
-                    if value_text.startswith("\n"):
-                        value_text = value_text[1:]
-
-                    end_idx = value_text.find(self.parameter_end_token)
-                    if end_idx == -1:
-                        # Defensive fallback: model emitted next-param-prefix
-                        # or </function> without a </parameter>. Use that as
-                        # the close to avoid hanging forever in incremental
-                        # mode.
-                        nxt = value_text.find(self.parameter_prefix)
-                        fe = value_text.find(self.function_end_token)
-                        if nxt != -1 and (fe == -1 or nxt < fe):
-                            end_idx = nxt
-                        elif fe != -1:
-                            end_idx = fe
-                    if end_idx != -1:
-                        pv = value_text[:end_idx]
-                        if pv.endswith("\n"):
-                            pv = pv[:-1]
-                        self.accumulated_params[self.in_param_name] = pv
-                        frag = self._close_string_increment(
-                            self.in_param_name, pv, param_config
-                        )
-                        if frag:
-                            json_fragments.append(frag)
-                        self.param_count += 1
-                        self.in_param = False
-                        self.in_param_name = None
-                        self.in_param_emitted_chars = 0
-                        self.in_param_opened = False
-                    else:
-                        frag = self._emit_string_increment(
-                            self.in_param_name, value_text
-                        )
-                        if frag:
-                            json_fragments.append(frag)
 
             if json_fragments:
                 combined = "".join(json_fragments)

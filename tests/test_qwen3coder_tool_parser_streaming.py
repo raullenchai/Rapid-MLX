@@ -245,6 +245,52 @@ def test_streaming_json_matches_non_streaming():
     )
 
 
+def test_same_chunk_close_and_trailing_param_not_dropped():
+    """When one chunk batches ``...tail</parameter><parameter=other>val</parameter>``
+    the parser must emit BOTH the closing tail of the in-flight string
+    AND the complete trailing param in the same call — and finalize.
+
+    Without resuming the complete-param loop after closing the in-flight
+    string, the trailing ``other`` param would be silently dropped (a
+    regression caught by adversarial review on PR #648).
+    """
+    parser = Qwen3CoderToolParser(tokenizer=None)
+    request = _request_with_tool(
+        "report",
+        {
+            "summary": {"type": "string"},
+            "score": {"type": "integer"},
+        },
+    )
+
+    # Multi-chunk stream where the FINAL chunk batches
+    # ``<rest_of_summary></parameter><parameter=score>42</parameter></function></tool_call>``
+    # so the in-flight close and the trailing complete param land in
+    # the same parser call.
+    head_value = _LONG_SUMMARY[:120]
+    tail_value = _LONG_SUMMARY[120:]
+    chunks = [
+        "<tool_call>\n",
+        "<function=report>\n",
+        "<parameter=summary>\n",
+        head_value,
+        tail_value
+        + "\n</parameter>\n<parameter=score>\n42\n</parameter>\n</function>\n</tool_call>",
+    ]
+
+    deltas = _feed(parser, chunks, request)
+    fragments = _argument_fragments(deltas)
+    combined = "".join(fragments)
+    # Trailing ``}`` arrives on the next streaming call after function-end
+    # is observed; close manually for the parity assert.
+    if not combined.endswith("}"):
+        combined += "}"
+    decoded = json.loads(combined)
+    assert decoded == {"summary": _LONG_SUMMARY, "score": 42}, (
+        f"trailing param dropped on same-chunk close. decoded={decoded!r}"
+    )
+
+
 @pytest.mark.parametrize(
     "param_type",
     ["string", "str", "text", "enum"],
