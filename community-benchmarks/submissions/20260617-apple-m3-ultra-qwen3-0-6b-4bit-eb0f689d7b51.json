@@ -1,0 +1,168 @@
+{
+  "schema_version": 2,
+  "submission_id": "eb0f689d7b51",
+  "submitted_at": "2026-06-17T05:12:25+00:00",
+  "hardware": {
+    "chip": "Apple M3 Ultra",
+    "ram_gb": 256,
+    "cpu_cores": 28,
+    "gpu_cores": 60
+  },
+  "software": {
+    "macos": "26.5.1",
+    "rapid_mlx": "0.7.26",
+    "mlx": "0.31.2",
+    "python": "3.12.13"
+  },
+  "model": {
+    "alias": "qwen3-0.6b-4bit",
+    "hf_path": "mlx-community/Qwen3-0.6B-4bit"
+  },
+  "config": {
+    "rounds": 5,
+    "warmup_rounds": 1,
+    "sampling": "greedy",
+    "buckets_spec": {
+      "short": {
+        "prompt_tokens": 512,
+        "max_tokens": 128
+      },
+      "long": {
+        "prompt_tokens": 2048,
+        "max_tokens": 512
+      }
+    },
+    "prompt_hash": "3414e7611df5cfbc"
+  },
+  "buckets": {
+    "short": {
+      "decode_tps": {
+        "median": 387.64067235263275,
+        "min": 381.8911429934929,
+        "max": 389.1755067758654,
+        "stddev": 3.2829334610341796
+      },
+      "prefill_tps": {
+        "median": 8853.725941652827,
+        "min": 8734.618024930061,
+        "max": 8909.919207311017,
+        "stddev": 71.7201290385078
+      },
+      "ttft_ms": {
+        "median": 59.97475000913255,
+        "min": 59.59649999567773,
+        "max": 60.79258400131948,
+        "stddev": 0.4894640843393268
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 387.64067235263275,
+          "prefill_tps": 8756.969459553524,
+          "ttft_ms": 60.63741599791683
+        },
+        {
+          "decode_tps": 389.1755067758654,
+          "prefill_tps": 8853.725941652827,
+          "ttft_ms": 59.97475000913255
+        },
+        {
+          "decode_tps": 382.01817470522803,
+          "prefill_tps": 8895.863067404205,
+          "ttft_ms": 59.69066699617542
+        },
+        {
+          "decode_tps": 388.8988272453041,
+          "prefill_tps": 8909.919207311017,
+          "ttft_ms": 59.59649999567773
+        },
+        {
+          "decode_tps": 381.8911429934929,
+          "prefill_tps": 8734.618024930061,
+          "ttft_ms": 60.79258400131948
+        }
+      ]
+    },
+    "long": {
+      "decode_tps": {
+        "median": 340.1172734206654,
+        "min": 339.82629504352246,
+        "max": 340.7574028655953,
+        "stddev": 0.35474124320821077
+      },
+      "prefill_tps": {
+        "median": 9353.220513064718,
+        "min": 9285.196141613227,
+        "max": 9364.827028237476,
+        "stddev": 28.633968149462486
+      },
+      "ttft_ms": {
+        "median": 230.8295839902712,
+        "min": 230.54350000165869,
+        "max": 232.52066699205898,
+        "stddev": 0.7114577885352342
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 340.7574028655953,
+          "prefill_tps": 9353.537957489596,
+          "ttft_ms": 230.82174999581184
+        },
+        {
+          "decode_tps": 340.1100294421177,
+          "prefill_tps": 9353.220513064718,
+          "ttft_ms": 230.8295839902712
+        },
+        {
+          "decode_tps": 340.1172734206654,
+          "prefill_tps": 9285.196141613227,
+          "ttft_ms": 232.52066699205898
+        },
+        {
+          "decode_tps": 340.6554438878816,
+          "prefill_tps": 9364.827028237476,
+          "ttft_ms": 230.54350000165869
+        },
+        {
+          "decode_tps": 339.82629504352246,
+          "prefill_tps": 9351.65572890117,
+          "ttft_ms": 230.86820800381247
+        }
+      ]
+    }
+  },
+  "peak_ram_mb": 1308,
+  "tier": "all",
+  "smoke_result": {
+    "boot_time_ms": 6076.750207997975,
+    "first_prompt_ok": true,
+    "first_token_latency_ms": 82.68733399745543,
+    "response_excerpt": "\n\n2 + 2 equals 4."
+  },
+  "harness_result": {
+    "codex": {
+      "passed": false,
+      "duration_s": 247.4489237079979,
+      "error_excerpt": "9p 1f 2e 0s | multi_turn_tool: Bad follow-up: The IP addresses"
+    },
+    "opencode": {
+      "passed": true,
+      "duration_s": 8.257592291003675,
+      "error_excerpt": null
+    },
+    "hermes": {
+      "passed": false,
+      "duration_s": 38.000819250009954,
+      "error_excerpt": "27p 7f 0e 0s | e2e_file_read: Unexpected: Failed to initialize agent: Model mlx-community/Qwen2.5-14B-Instruct"
+    },
+    "aider": {
+      "passed": true,
+      "duration_s": 1.1464256250037579,
+      "error_excerpt": null
+    },
+    "langchain": {
+      "passed": false,
+      "duration_s": 6.71635616698768,
+      "error_excerpt": "9p 0f 1e 0s | specific:test_langchain.py: Module execution failed: No module named 'langchain_core'"
+    }
+  }
+}
