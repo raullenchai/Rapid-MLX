@@ -960,6 +960,31 @@ class AgentTestRunner:
             )
             return report
 
+        # Refresh the agent's on-disk config (e.g. ``~/.hermes/config.yaml``)
+        # so e2e tests run against the CURRENT model_id + base_url instead
+        # of whatever was left over from a prior bench / manual invocation.
+        # v0.7.26 dogfood found this: after qwen2.5-14b ran first, the
+        # hermes config retained ``Qwen2.5-14B-Instruct`` and every
+        # subsequent harness sweep's ``e2e_file_read`` failed with
+        # ``Failed to initialize agent: Model mlx-community/Qwen2.5-14B-Instruct``.
+        # ``setup_agent_config`` is a no-op for env-var-style profiles
+        # (codex, opencode, aider) since those carry config via env only.
+        try:
+            from .adapter import setup_agent_config
+
+            setup_agent_config(
+                self.profile,
+                base_url=self.base_url,
+                model_id=self.model_id,
+                agent_version=self.agent_version,
+            )
+        except Exception as exc:  # noqa: BLE001 — config refresh must never abort the sweep
+            logger.warning(
+                "could not refresh %s config before harness sweep: %s",
+                self.profile.name,
+                exc,
+            )
+
         t0 = time.time()
         streaming = self.profile.get_streaming_for_version(self.agent_version)
         testing = self.profile.get_testing_for_version(self.agent_version)
