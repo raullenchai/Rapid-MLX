@@ -49,12 +49,35 @@ TIER_PORT_MAX = 8599
 
 @dataclass
 class TierResult:
-    """One tier's outcome. Aggregated by ``--tier all``."""
+    """One tier's outcome. Aggregated by ``--tier all``.
+
+    ``payload`` is the schema-v2-shaped sub-object the
+    community-bench submission would attach for this tier:
+
+    - smoke → matches the schema's ``smoke_result`` object
+      (boot_time_ms / first_prompt_ok / first_token_latency_ms /
+      response_excerpt).
+    - harness → matches the schema's ``harness_result`` object (the
+      per-adapter mapping with passed/duration_s/error_excerpt).
+    - speed → ``None`` here; the schema-shaped speed buckets come
+      from ``run_standardized_bench`` (PR #5's --submit path), not
+      from this HTTP-driven dispatcher. The lightweight
+      tier-speed probe is intentionally NOT submitted to
+      community-benchmarks because its numbers aren't comparable to
+      the locked B=1 protocol.
+
+    Populated unconditionally so ``--tier ... --submit`` can read the
+    same dict that the non-submit human-readable path already prints,
+    with no extra round-trip. Default ``None`` preserves the legacy
+    callsite signature for any caller that doesn't care about the
+    submission payload.
+    """
 
     name: str  # "smoke" | "speed" | "harness"
     passed: bool
     duration_s: float
     detail: str = ""
+    payload: dict | None = None
 
 
 def _find_free_port_in_range(lo: int, hi: int) -> int:
@@ -133,7 +156,11 @@ def _normalize_openai_base(base_url: str | None, port: int) -> str:
 # --------------------------------------------------------------------- #
 
 
-def _run_smoke(model: str, base_url: str) -> TierResult:
+def _run_smoke(
+    model: str,
+    base_url: str,
+    boot_time_ms: float | None = None,
+) -> TierResult:
     """Boot probe: send one prompt, assert response contains "4".
 
     The prompt is "Hello, what is 2+2?" — small models reliably answer
@@ -146,6 +173,14 @@ def _run_smoke(model: str, base_url: str) -> TierResult:
     the port to each tier, which meant ``--base-url`` against a non-localhost
     host (or a https scheme) was silently ignored (codex review #621
     BLOCKING).
+
+    ``boot_time_ms`` is threaded through from ``_serve_or_attach`` so
+    the schema v2 ``smoke_result.boot_time_ms`` field carries the real
+    spawn-to-healthy wall-clock; ``None`` when the user attached via
+    ``--base-url`` (we never measured the boot they paid for) — the
+    payload reports ``0.0`` in that case to satisfy the schema's
+    ``minimum: 0`` constraint while still being unambiguously "we
+    don't know" (a real boot takes seconds).
     """
     import httpx
 
@@ -206,6 +241,16 @@ def _run_smoke(model: str, base_url: str) -> TierResult:
             passed=False,
             duration_s=elapsed,
             detail=f"FAIL: {type(exc).__name__}: {exc}",
+            # Schema-shaped failure payload — the submit path can still
+            # build a valid v2 row when the smoke probe fails, so the
+            # community-bench corpus has visibility into "model booted
+            # but couldn't answer 2+2".
+            payload={
+                "boot_time_ms": float(boot_time_ms) if boot_time_ms is not None else 0.0,
+                "first_prompt_ok": False,
+                "first_token_latency_ms": 0.0,
+                "response_excerpt": f"[error] {type(exc).__name__}: {exc}"[:200],
+            },
         )
 
     elapsed = time.perf_counter() - t0
@@ -216,7 +261,23 @@ def _run_smoke(model: str, base_url: str) -> TierResult:
         f"{'PASS' if ok else 'FAIL'} model={model} ttft={ttft_display}ms "
         f"response={response_text[:60]!r}"
     )
-    return TierResult(name="smoke", passed=ok, duration_s=elapsed, detail=detail)
+    return TierResult(
+        name="smoke",
+        passed=ok,
+        duration_s=elapsed,
+        detail=detail,
+        # Schema-v2 ``smoke_result``. ``response_excerpt`` is capped at
+        # 200 chars (schema maxLength); the truncation happens here so
+        # the displayed-vs-submitted bytes match exactly. TTFT defaults
+        # to 0.0 when the stream emitted no content delta (first_prompt
+        # was not ok in that case).
+        payload={
+            "boot_time_ms": float(boot_time_ms) if boot_time_ms is not None else 0.0,
+            "first_prompt_ok": ok,
+            "first_token_latency_ms": float(ttft_ms) if ttft_ms is not None else 0.0,
+            "response_excerpt": response_text[:200],
+        },
+    )
 
 
 def _run_speed(model: str, base_url: str, sampled: bool = False) -> TierResult:
@@ -384,6 +445,23 @@ def _run_harness(model: str, base_url: str) -> TierResult:
     elapsed = time.perf_counter() - t0
     all_passed = all(ok for _, ok, _, _ in per_harness)
 
+    # Schema-v2 ``harness_result`` shape: one entry per HARNESS_PROFILES
+    # adapter with {passed, duration_s, error_excerpt}. On pass,
+    # error_excerpt is ``null`` (schema enforces ``["string", "null"]``);
+    # on fail, the first 200 chars of the existing detail line — same
+    # truncation cap as schema. The dict is keyed by adapter name; the
+    # schema's ``additionalProperties: false`` plus ``required`` of all
+    # 5 keys means this stays in lock-step with HARNESS_PROFILES (a
+    # mismatch is a schema-validation failure at submission time).
+    payload = {
+        name: {
+            "passed": ok,
+            "duration_s": float(dur),
+            "error_excerpt": None if ok else (detail or "")[:200],
+        }
+        for name, ok, dur, detail in per_harness
+    }
+
     # Render a human-readable summary line per harness.
     lines = [f"harness sweep model={model}"]
     for name, ok, dur, detail in per_harness:
@@ -394,6 +472,7 @@ def _run_harness(model: str, base_url: str) -> TierResult:
         passed=all_passed,
         duration_s=elapsed,
         detail="\n".join(lines),
+        payload=payload,
     )
 
 
@@ -407,11 +486,15 @@ def _serve_or_attach(
     base_url: str | None,
     boot_timeout_s: int = 600,
 ):
-    """Yield ``(port, owns_server)``.
+    """Yield ``(port, owns_server, boot_time_ms)``.
 
     If ``base_url`` is set, attach to that server — caller is responsible
-    for its lifecycle. Otherwise boot one on a port in
-    ``[TIER_PORT_MIN, TIER_PORT_MAX]`` and clean it up on exit.
+    for its lifecycle and ``boot_time_ms`` is ``None`` (the user
+    already paid the boot cost, we didn't measure it). Otherwise boot
+    one on a port in ``[TIER_PORT_MIN, TIER_PORT_MAX]`` and clean it
+    up on exit; ``boot_time_ms`` is the wall-clock from spawn to first
+    healthy /health response, which feeds the schema v2
+    ``smoke_result.boot_time_ms`` field.
     """
     import contextlib
 
@@ -439,19 +522,24 @@ def _serve_or_attach(
                     "Start `rapid-mlx serve <model>` on that port first, "
                     "or drop --base-url to let bench --tier boot its own."
                 )
-            yield port, False
+            yield port, False, None
             return
 
-        # Boot our own. Reuse the doctor's server helper since it's
-        # already battle-tested (proc-group teardown, /health polling).
+        # Boot our own. Helper lives in the bench/ package now (PR #5
+        # — PR #622 deleted the original ``doctor/server.py`` without
+        # repointing this import, breaking every tier invocation; the
+        # bench/ package is the only consumer left so we relocated it
+        # alongside the dispatcher). Battle-tested code path: proc-group
+        # teardown + /health polling, plus a boot_time_ms readout we
+        # need for ``smoke_result.boot_time_ms`` in the v2 schema.
         port = _find_free_port_in_range(TIER_PORT_MIN, TIER_PORT_MAX)
-        from ..doctor.server import serve
+        from ._server import serve
 
         # log_path=None → DEVNULL; the user-facing tier output is the
         # interesting signal. For debugging, the user can re-run with
         # `rapid-mlx serve <model> --port <port>` themselves.
         with serve(model=model, port=port, boot_timeout_s=boot_timeout_s) as info:
-            yield info["port"], True
+            yield info["port"], True, info.get("boot_time_ms")
 
     return _ctx()
 
@@ -467,13 +555,35 @@ def run_tier(
     base_url: str | None = None,
     sampled: bool = False,
     boot_timeout_s: int = 600,
-) -> int:
+    return_results: bool = False,
+    skip_speed: bool = False,
+):
     """Dispatch to the requested tier. Returns process exit code.
 
     ``tier`` is one of: ``"smoke"``, ``"speed"``, ``"harness"``, ``"all"``.
     Server is booted ONCE (or attached via ``base_url``) and torn down
     on exit. For ``"all"``, smoke runs first and aborts the sequence
     on failure — there's no point benching a model that can't say "4".
+
+    Two PR #5 additions (default-off for back-compat):
+
+    - ``return_results=True`` flips the return type to
+      ``tuple[int, dict]`` where the dict carries schema-v2-shaped
+      ``smoke_result`` / ``harness_result`` sub-objects (None when the
+      corresponding tier didn't run, e.g. ``tier=speed``). The
+      ``--tier ... --submit`` wiring needs this so it can feed
+      ``build_submission_payload`` without re-running the tier work.
+    - ``skip_speed=True`` is honored only when ``tier == "all"`` and
+      tells the dispatcher to skip the lightweight HTTP-based speed
+      probe. The caller (``--tier all --submit``) is going to run the
+      locked B=1 ``run_standardized_bench`` against the same model
+      separately — running the lightweight probe too would just
+      double-cost the bench (and produce numbers that aren't comparable
+      to the submitted ones, which is misleading).
+
+    Without either kwarg, the signature and return type are byte-for-
+    byte identical to the PR #2 surface — existing callers continue to
+    receive ``int``.
     """
     if tier not in ("smoke", "speed", "harness", "all"):
         print(
@@ -481,6 +591,8 @@ def run_tier(
             "smoke / speed / harness / all",
             file=sys.stderr,
         )
+        if return_results:
+            return 2, {"smoke_result": None, "harness_result": None}
         return 2
 
     print(f"Rapid-MLX bench — tier={tier} model={model}")
@@ -490,7 +602,11 @@ def run_tier(
     results: list[TierResult] = []
 
     try:
-        with _serve_or_attach(model, base_url, boot_timeout_s) as (port, owns):
+        with _serve_or_attach(model, base_url, boot_timeout_s) as (
+            port,
+            owns,
+            boot_time_ms,
+        ):
             # Build the fully-qualified base URL ONCE. Each tier gets
             # the same string, so --base-url's scheme + host are honored
             # end-to-end (codex review #621 BLOCKING).
@@ -502,15 +618,23 @@ def run_tier(
             print()
 
             if tier in ("smoke", "all"):
-                r = _run_smoke(model, openai_base)
+                r = _run_smoke(model, openai_base, boot_time_ms=boot_time_ms)
                 _print_tier_result(r)
                 results.append(r)
                 if tier == "all" and not r.passed:
                     print()
                     print("  Aborting --tier all: smoke failed.")
-                    return _finalize(results, overall_t0)
+                    return _finalize_with_results(
+                        results, overall_t0, return_results
+                    )
 
-            if tier in ("speed", "all"):
+            # PR #5: --submit code path sets skip_speed=True for tier='all'
+            # because it runs the locked B=1 standardized bench against the
+            # same model right after. The lightweight tier-speed probe is
+            # explicitly NOT comparable to the standardized numbers, so
+            # running both would just waste cycles AND mislead anyone
+            # eyeballing the two outputs.
+            if tier in ("speed", "all") and not (tier == "all" and skip_speed):
                 r = _run_speed(model, openai_base, sampled=sampled)
                 _print_tier_result(r)
                 results.append(r)
@@ -521,9 +645,52 @@ def run_tier(
                 results.append(r)
     except Exception as exc:  # noqa: BLE001 — surface as exit code, not traceback
         print(f"\n  Error during tier run: {type(exc).__name__}: {exc}")
+        if return_results:
+            return 1, _collect_payload(results)
         return 1
 
-    return _finalize(results, overall_t0)
+    return _finalize_with_results(results, overall_t0, return_results)
+
+
+def _collect_payload(results: list[TierResult]) -> dict:
+    """Pull the schema-v2 sub-objects out of the per-tier results.
+
+    Always returns the same shape so the caller can pattern-match
+    without ``in`` checks:
+
+    - ``smoke_result``: the smoke TierResult's payload, or ``None`` if
+      smoke didn't run.
+    - ``harness_result``: same for harness.
+
+    Speed is intentionally absent — the speed bucket of a v2
+    submission comes from ``run_standardized_bench``, not from the
+    tier dispatcher's lightweight HTTP probe (whose numbers aren't
+    comparable to the locked B=1 protocol).
+    """
+    out: dict = {"smoke_result": None, "harness_result": None}
+    for r in results:
+        if r.name == "smoke":
+            out["smoke_result"] = r.payload
+        elif r.name == "harness":
+            out["harness_result"] = r.payload
+    return out
+
+
+def _finalize_with_results(
+    results: list[TierResult],
+    t0: float,
+    return_results: bool,
+):
+    """Print summary, then return either ``int`` or ``(int, dict)``.
+
+    Kept as a separate helper so every early-exit branch in
+    ``run_tier`` shapes its return value consistently — the int-vs-
+    tuple decision lives in exactly one place.
+    """
+    rc = _finalize(results, t0)
+    if return_results:
+        return rc, _collect_payload(results)
+    return rc
 
 
 def _print_tier_result(r: TierResult) -> None:

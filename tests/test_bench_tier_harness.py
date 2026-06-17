@@ -21,7 +21,14 @@ from vllm_mlx.bench.tier_runner import HARNESS_PROFILES, run_tier
 
 @contextlib.contextmanager
 def _fake_serve(model, port=None, **kwargs):
-    yield {"base_url": f"http://127.0.0.1:{port}/v1", "port": port}
+    yield {
+        "base_url": f"http://127.0.0.1:{port}/v1",
+        "port": port,
+        # Schema-v2 ``smoke_result.boot_time_ms`` source — pinned so
+        # tier=harness tests that incidentally hit the smoke probe
+        # (e.g. tier=all) still see deterministic output.
+        "boot_time_ms": 1234.5,
+    }
 
 
 def _make_fake_report(*, passed=10, failed=0, errored=0, skipped=2, results=None):
@@ -63,7 +70,7 @@ def patch_harness_environment():
             "vllm_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.doctor.server.serve", _fake_serve),
+        patch("vllm_mlx.bench._server.serve", _fake_serve),
         patch("vllm_mlx.agents.get_profile", _fake_get_profile),
         patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_fake_runner_init),
     ):
@@ -125,7 +132,7 @@ def test_harness_single_failure_marks_tier_failed(capsys):
             "vllm_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.doctor.server.serve", _fake_serve),
+        patch("vllm_mlx.bench._server.serve", _fake_serve),
         patch("vllm_mlx.agents.get_profile", _fake_get_profile),
         patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
     ):
@@ -171,7 +178,7 @@ def test_harness_crash_in_runner_does_not_abort_sweep(capsys):
             "vllm_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.doctor.server.serve", _fake_serve),
+        patch("vllm_mlx.bench._server.serve", _fake_serve),
         patch("vllm_mlx.agents.get_profile", _fake_get_profile),
         patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
     ):
@@ -208,7 +215,7 @@ def test_harness_missing_profile_marks_as_failure(capsys):
             "vllm_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.doctor.server.serve", _fake_serve),
+        patch("vllm_mlx.bench._server.serve", _fake_serve),
         patch("vllm_mlx.agents.get_profile", _fake_get_profile),
         patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
     ):

@@ -76,8 +76,15 @@ class _FakeClient:
 
 @contextlib.contextmanager
 def _fake_serve(model, port=None, **kwargs):
-    """Drop-in for vllm_mlx.doctor.server.serve — no subprocess."""
-    yield {"base_url": f"http://127.0.0.1:{port}/v1", "port": port}
+    """Drop-in for vllm_mlx.bench._server.serve — no subprocess."""
+    yield {
+        "base_url": f"http://127.0.0.1:{port}/v1",
+        "port": port,
+        # boot_time_ms threads through to ``_run_smoke`` for the
+        # schema-v2 ``smoke_result.boot_time_ms`` field; pinned for
+        # reproducible test output.
+        "boot_time_ms": 1234.5,
+    }
 
 
 @pytest.fixture
@@ -104,7 +111,7 @@ def patch_smoke_environment():
             "vllm_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.doctor.server.serve", _fake_serve),
+        patch("vllm_mlx.bench._server.serve", _fake_serve),
         patch("httpx.Client", _client_factory),
     ):
         yield
@@ -142,7 +149,7 @@ def test_smoke_fail_when_no_four_in_response(capsys):
             "vllm_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.doctor.server.serve", _fake_serve),
+        patch("vllm_mlx.bench._server.serve", _fake_serve),
         patch("httpx.Client", _client_factory),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="smoke")
@@ -263,7 +270,7 @@ def test_smoke_skips_role_only_chunk_for_ttft(capsys):
             "vllm_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.doctor.server.serve", _fake_serve),
+        patch("vllm_mlx.bench._server.serve", _fake_serve),
         patch("httpx.Client", _client_factory),
     ):
         rc = run_tier(model="qwen3.5-4b-4bit", tier="smoke")

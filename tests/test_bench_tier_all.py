@@ -21,7 +21,14 @@ from vllm_mlx.bench.tier_runner import TierResult, run_tier
 
 @contextlib.contextmanager
 def _fake_serve(model, port=None, **kwargs):
-    yield {"base_url": f"http://127.0.0.1:{port}/v1", "port": port}
+    yield {
+        "base_url": f"http://127.0.0.1:{port}/v1",
+        "port": port,
+        # boot_time_ms threads through to ``_run_smoke`` for the
+        # schema-v2 ``smoke_result.boot_time_ms`` field; pinned for
+        # reproducible test output.
+        "boot_time_ms": 1234.5,
+    }
 
 
 @pytest.fixture
@@ -36,7 +43,7 @@ def patch_serve_only():
             "vllm_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.doctor.server.serve", _fake_serve),
+        patch("vllm_mlx.bench._server.serve", _fake_serve),
     ):
         yield
 
@@ -45,7 +52,7 @@ def test_all_runs_smoke_speed_harness_in_order(patch_serve_only, capsys):
     """Happy path: all 3 tiers run in smoke → speed → harness order."""
     call_order: list[str] = []
 
-    def _smoke_stub(model, base_url):
+    def _smoke_stub(model, base_url, boot_time_ms=None):
         call_order.append("smoke")
         return TierResult(name="smoke", passed=True, duration_s=0.5, detail="PASS")
 
@@ -81,7 +88,7 @@ def test_all_aborts_after_smoke_failure(patch_serve_only, capsys):
     """If smoke fails, --tier all must NOT run speed or harness."""
     call_order: list[str] = []
 
-    def _smoke_fail(model, base_url):
+    def _smoke_fail(model, base_url, boot_time_ms=None):
         call_order.append("smoke")
         return TierResult(
             name="smoke",
@@ -126,7 +133,7 @@ def test_all_continues_past_speed_failure(patch_serve_only, capsys):
     """Speed failure does NOT abort the sweep — harness still runs."""
     call_order: list[str] = []
 
-    def _smoke_stub(model, base_url):
+    def _smoke_stub(model, base_url, boot_time_ms=None):
         call_order.append("smoke")
         return TierResult(name="smoke", passed=True, duration_s=0.5)
 
@@ -159,7 +166,11 @@ def test_all_boots_server_exactly_once(capsys):
     @contextlib.contextmanager
     def _counting_serve(model, port=None, **kwargs):
         boot_count["n"] += 1
-        yield {"base_url": f"http://127.0.0.1:{port}/v1", "port": port}
+        yield {
+            "base_url": f"http://127.0.0.1:{port}/v1",
+            "port": port,
+            "boot_time_ms": 1234.5,
+        }
 
     def _free_port(lo, hi):
         return 8500
@@ -167,7 +178,7 @@ def test_all_boots_server_exactly_once(capsys):
     def _stub(model, port, **kwargs):
         return TierResult(name="x", passed=True, duration_s=0.1)
 
-    def _smoke_stub(model, base_url):
+    def _smoke_stub(model, base_url, boot_time_ms=None):
         return TierResult(name="smoke", passed=True, duration_s=0.1)
 
     def _speed_stub(model, base_url, sampled=False):
@@ -181,7 +192,7 @@ def test_all_boots_server_exactly_once(capsys):
             "vllm_mlx.bench.tier_runner._find_free_port_in_range",
             side_effect=_free_port,
         ),
-        patch("vllm_mlx.doctor.server.serve", _counting_serve),
+        patch("vllm_mlx.bench._server.serve", _counting_serve),
         patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_stub),
         patch("vllm_mlx.bench.tier_runner._run_speed", _speed_stub),
         patch("vllm_mlx.bench.tier_runner._run_harness", _harness_stub),
@@ -200,9 +211,13 @@ def test_all_with_base_url_skips_server_boot(capsys):
     @contextlib.contextmanager
     def _counting_serve(model, port=None, **kwargs):
         boot_count["n"] += 1
-        yield {"base_url": f"http://127.0.0.1:{port}/v1", "port": port}
+        yield {
+            "base_url": f"http://127.0.0.1:{port}/v1",
+            "port": port,
+            "boot_time_ms": 1234.5,
+        }
 
-    def _smoke_stub(model, base_url):
+    def _smoke_stub(model, base_url, boot_time_ms=None):
         return TierResult(name="smoke", passed=True, duration_s=0.1)
 
     def _speed_stub(model, base_url, sampled=False):
@@ -225,7 +240,7 @@ def test_all_with_base_url_skips_server_boot(capsys):
         return _FakeResp()
 
     with (
-        patch("vllm_mlx.doctor.server.serve", _counting_serve),
+        patch("vllm_mlx.bench._server.serve", _counting_serve),
         patch("vllm_mlx.bench.tier_runner._run_smoke", _smoke_stub),
         patch("vllm_mlx.bench.tier_runner._run_speed", _speed_stub),
         patch("vllm_mlx.bench.tier_runner._run_harness", _harness_stub),

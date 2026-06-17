@@ -1113,7 +1113,120 @@ def serve_command(args):
     )
 
 
-def _run_submit_flow(args) -> int:
+def _run_tier_submit_flow(args) -> int:
+    """``rapid-mlx bench <model> --tier <T> --submit`` — PR #5 unification.
+
+    Three-phase pipeline:
+
+    1. Run the requested tier's smoke / harness work through the
+       existing HTTP-server-backed dispatcher (``run_tier`` with
+       ``return_results=True``). For ``tier='all'`` we pass
+       ``skip_speed=True`` because phase 2 will produce the comparable
+       speed numbers directly from the engine; running the lightweight
+       HTTP-speed probe too would just double-cost the bench AND
+       produce a second set of non-comparable numbers next to it.
+       For ``tier='speed'`` phase 1 is a no-op — straight to phase 2.
+    2. Run the locked B=1 ``run_standardized_bench`` against the same
+       model so the schema-required ``buckets`` field carries the
+       comparable numbers the community-benchmarks corpus expects.
+       This phase IS what plain ``--submit`` (no ``--tier``) has
+       always done; the tier kwargs just decorate the payload.
+    3. Build the schema-v2 payload and run the standard interactive
+       submit flow (consent → write → commit → push → gh pr create).
+
+    Tier-failure handling: if phase 1's smoke probe FAILS, abort
+    before phase 2 — there's no point benching a model that can't
+    answer "what is 2+2?". A phase 1 harness failure does NOT abort:
+    submitting a failure row IS the point of the harness tier (the
+    aggregator wants visibility into "this combo doesn't pass the
+    gauntlet"), so we proceed and let the payload carry the per-
+    adapter failure flags.
+    """
+    tier = args.tier
+    assert tier in ("smoke", "speed", "harness", "all"), tier
+
+    # tier='speed' --submit is the historical --submit path with a
+    # new ``tier='speed'`` tag on the payload. No phase 1 needed.
+    if tier == "speed":
+        return _run_submit_flow(args, tier="speed")
+
+    # Phase 1: run the tier dispatcher to capture smoke/harness data.
+    # Speed bucket is intentionally skipped (see docstring); ``run_tier``
+    # only honours ``skip_speed`` when tier=='all'.
+    from .bench.tier_runner import run_tier
+
+    rc, tier_results = run_tier(
+        model=args.model,
+        tier=tier,
+        base_url=getattr(args, "base_url", None),
+        sampled=getattr(args, "sampled", False),
+        return_results=True,
+        skip_speed=True,
+    )
+    smoke_result = tier_results.get("smoke_result")
+    harness_result = tier_results.get("harness_result")
+
+    # Abort gating. The smoke probe is a hard prerequisite for ANY
+    # submission: if the model can't say "4" the speed numbers we'd
+    # collect in phase 2 would be misleading at best and a fork-and-
+    # burn of the user's compute at worst. Harness failures are
+    # surfaced THROUGH the payload (the schema's per-adapter
+    # ``passed: false`` carries the signal); we DON'T abort there.
+    if tier in ("smoke", "all") and smoke_result is not None:
+        if not smoke_result.get("first_prompt_ok", False):
+            print(
+                "\n  Submission aborted: smoke probe failed. The model "
+                "couldn't answer the boot prompt cleanly — submitting "
+                "speed/harness numbers from this run would be "
+                "misleading. Re-check the model + environment with "
+                "`rapid-mlx bench <model> --tier smoke` first.",
+                file=sys.stderr,
+            )
+            return 1
+
+    if tier == "smoke" and smoke_result is None:
+        # Phase 1 errored before producing smoke_result (e.g. server
+        # boot failure). The exit code from ``run_tier`` is already
+        # the right thing to return — don't try to phase 2 without
+        # the required smoke_result data.
+        print(
+            "\n  Submission aborted: smoke phase did not produce a "
+            "result (server boot likely failed). Nothing was sent.",
+            file=sys.stderr,
+        )
+        return rc or 1
+    if tier == "harness" and harness_result is None:
+        print(
+            "\n  Submission aborted: harness phase did not produce a "
+            "result. Nothing was sent.",
+            file=sys.stderr,
+        )
+        return rc or 1
+    if tier == "all" and (smoke_result is None or harness_result is None):
+        print(
+            "\n  Submission aborted: --tier all did not produce both "
+            "smoke and harness results. Nothing was sent.",
+            file=sys.stderr,
+        )
+        return rc or 1
+
+    # Phase 2 + 3 reuse the existing standardized + submit path; the
+    # tier kwargs decorate the payload built inside ``_run_submit_flow``.
+    return _run_submit_flow(
+        args,
+        tier=tier,
+        smoke_result=smoke_result,
+        harness_result=harness_result,
+    )
+
+
+def _run_submit_flow(
+    args,
+    *,
+    tier: str | None = None,
+    smoke_result: dict | None = None,
+    harness_result: dict | None = None,
+) -> int:
     """Execute the standardized B=1 community-bench + PR-open flow.
 
     Routed-to from ``bench_command`` whenever ``--submit`` is set.
@@ -1121,6 +1234,19 @@ def _run_submit_flow(args) -> int:
     completely untouched — the standardized path imports its own
     deps lazily so that users who never touch ``--submit`` don't pay
     the import cost of the community_bench module.
+
+    PR #5 added the schema-v2 tier-tagging kwargs:
+
+    - ``tier`` — string copied verbatim into the ``tier`` field of the
+      payload (``"speed"`` | ``"smoke"`` | ``"harness"`` | ``"all"``).
+      ``None`` (the default, used by ``--submit`` without ``--tier``)
+      omits the field, preserving byte-for-byte equivalence with the
+      v1 ``--submit`` payload shape.
+    - ``smoke_result`` / ``harness_result`` — schema-v2 sub-objects
+      from the tier dispatcher. The builder enforces the
+      tier↔result coupling so passing the wrong combo here ``ValueError``s
+      at the payload-build line rather than landing a half-shaped row
+      in the submissions corpus.
     """
     import asyncio
     from pathlib import Path
@@ -1360,6 +1486,15 @@ def _run_submit_flow(args) -> int:
                     hf_path=hf_path,
                     bench=bench,
                     notes=notes,
+                    # v2 tier-tagging: pass through only when the caller
+                    # supplied them. The builder validates the tier ↔
+                    # smoke_result/harness_result coupling — passing
+                    # ``smoke_result`` for ``tier=speed`` would
+                    # ``ValueError`` here rather than land a half-shaped
+                    # row in the corpus.
+                    tier=tier,
+                    smoke_result=smoke_result,
+                    harness_result=harness_result,
                 )
                 rc = submit_interactive(payload, repo_root)
                 if rc != 0:
@@ -1389,18 +1524,17 @@ def bench_command(args):
     _mlx_compat.install()
 
     # --tier routes through the user-facing tier dispatcher (PR #2 of
-    # the bench-consolidation series). Mutually-exclusive with --submit
-    # for now; PR #3 will unify them. Keep this branch ABOVE --submit
-    # so a future maintainer can't accidentally let --submit win when
-    # both flags are set (we'd rather hard-fail and tell the user).
+    # the bench-consolidation series). PR #5 unified --tier with
+    # --submit: when both flags are set the dispatcher runs the
+    # requested smoke/harness work for the schema-v2 sub-objects and
+    # ALSO runs the locked B=1 ``run_standardized_bench`` so the
+    # required ``buckets`` field carries comparable numbers (the
+    # lightweight tier-speed probe is NEVER submitted — its results
+    # aren't apples-to-apples with the community DB).
+    if getattr(args, "tier", None) and getattr(args, "submit", False):
+        sys.exit(_run_tier_submit_flow(args))
+
     if getattr(args, "tier", None):
-        if getattr(args, "submit", False):
-            print(
-                "  Error: --tier and --submit are mutually-exclusive. "
-                "Run --tier to validate, then --submit to upload.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
         from .bench.tier_runner import run_tier
 
         sys.exit(
