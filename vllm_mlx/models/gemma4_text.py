@@ -27,6 +27,81 @@ import mlx.nn as nn
 logger = logging.getLogger(__name__)
 
 
+_FP_DTYPES_NOT_QUANTIZED = (
+    mx.bfloat16,
+    mx.float16,
+    mx.float32,
+)
+
+
+def _bare_fp_weight_paths(sanitized: dict) -> set[str]:
+    """Return paths whose ``.weight`` is stored as bare fp (no scales/biases).
+
+    These are layers the checkpoint deliberately left unquantized (e.g.
+    the ``per_layer_model_projection`` "altup" projection on gemma-4-e2b/
+    e4b). The blanket ``nn.quantize`` path would otherwise convert them
+    to QuantizedLinear and then ``mx.quantized_matmul`` would raise at
+    inference time on the bf16 weight that disk supplied.
+
+    We return the bare-path (no ``.weight`` suffix) so it can be matched
+    against ``nn.quantize``'s dotted module paths via suffix-equality.
+    """
+    weight_paths = {k[: -len(".weight")] for k in sanitized if k.endswith(".weight")}
+    skip: set[str] = set()
+    for base in weight_paths:
+        wkey = f"{base}.weight"
+        scales = f"{base}.scales"
+        biases = f"{base}.biases"
+        w = sanitized.get(wkey)
+        if w is None:
+            continue
+        # A truly quantized weight will have dtype uint32 AND a matching
+        # ``.scales`` companion. A bare fp16/bf16 ``.weight`` with no
+        # scales companion means "checkpoint kept this layer in full
+        # precision on purpose".
+        if w.dtype in _FP_DTYPES_NOT_QUANTIZED and (
+            scales not in sanitized and biases not in sanitized
+        ):
+            skip.add(base)
+    return skip
+
+
+def _path_matches_any_suffix(path: str, suffixes: set[str]) -> bool:
+    """Is ``path`` a suffix-match for any of ``suffixes``?
+
+    ``nn.quantize`` visits each ``to_quantized``-able module with a
+    dotted path relative to the root (e.g.
+    ``language_model.model.per_layer_model_projection``). The
+    sanitized-weights keys come from disk and may carry slightly
+    different prefixes (``model.``, ``language_model.model.``)
+    depending on which wrapper layer they live under. So we match
+    by suffix on the bare module path (everything before ``.weight``)
+    rather than equality.
+    """
+    if not suffixes:
+        return False
+    for suffix in suffixes:
+        # Direct suffix match handles "language_model.model.X" vs
+        # nn.quantize path "language_model.model.X" naturally; the
+        # second form ("model.X") falls out because Python's str.endswith
+        # also accepts the bare tail.
+        if path == suffix or path.endswith("." + suffix.split(".")[-1]):
+            # Verify the FULL final segment matches (don't let
+            # "self_attn.k_proj" suffix-match against
+            # "self_attn.k_proj_extra" — both end with "k_proj" but
+            # the latter isn't the same module).
+            if path.split(".")[-1] == suffix.split(".")[-1]:
+                # Match more of the path to avoid colliding with sibling
+                # modules in different layers. Compare the last N tokens
+                # of each.
+                p_tokens = path.split(".")
+                s_tokens = suffix.split(".")
+                n = min(len(p_tokens), len(s_tokens))
+                if p_tokens[-n:] == s_tokens[-n:]:
+                    return True
+    return False
+
+
 def is_gemma4_model(model_path: str | Path) -> bool:
     """Check if the model at the given path is a Gemma 4 model.
 
@@ -173,6 +248,42 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
     # Wrap for mlx-lm compatibility
     model = Gemma4TextWrapper(language_model)
 
+    # Load weights once up front (mmap-backed, cheap) — we'll feed these
+    # back into ``model.load_weights`` after quantization. Sanitize per
+    # shard so peak memory stays proportional to the text-only model,
+    # not the full multimodal checkpoint (#123).
+    weight_files = sorted(
+        f for f in p.glob("*.safetensors") if not f.name.startswith("._")
+    )
+    if not weight_files:
+        raise FileNotFoundError(f"No .safetensors files in {p}")
+    sanitized = {}
+    for wf in weight_files:
+        shard = mx.load(str(wf))
+        sanitized.update(model.sanitize(shard))
+        del shard
+
+    # Identify layers the checkpoint stored as bare fp16/bf16 instead of
+    # quantized (uint32 ``.weight`` + ``.scales`` + ``.biases``).
+    # mlx-community's QAT pipeline intentionally leaves a few layers in
+    # full precision — on the gemma-4-e2b/e4b "altup" variants this
+    # includes ``per_layer_model_projection``. Our prior code applied
+    # ``nn.quantize`` blanket, converted that Linear to QuantizedLinear,
+    # then loaded a bare bfloat16 ``.weight`` into it. At inference time
+    # ``mx.quantized_matmul`` raised:
+    #
+    #   ValueError: [quantized_matmul] The weight matrix should be
+    #   uint32 but received bfloat16
+    #
+    # …and the server emitted 0 tokens with finish_reason=length. Self-
+    # tuning the predicate from disk dtype keeps the post-quantize model
+    # bit-exactly consistent with what mlx-community shipped: layers
+    # they quantized stay quantized, layers they left fp16 stay fp16.
+    # On variants where every ``.weight`` IS quantized (12b/26b/31b
+    # don't even have per_layer_model_projection), this set is empty
+    # and behavior is identical to the previous code.
+    skip_quant_paths = _bare_fp_weight_paths(sanitized)
+
     # Apply quantization config if present (converts Linear → QuantizedLinear)
     quant_config = config.get("quantization", config.get("quantization_config"))
     if quant_config:
@@ -190,6 +301,14 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
                     if kk in ("bits", "group_size", "mode")
                 }
 
+        if skip_quant_paths:
+            logger.info(
+                "[gemma4] %d layer(s) kept as fp16 per checkpoint "
+                "(e.g. %s) — won't be quantized",
+                len(skip_quant_paths),
+                next(iter(skip_quant_paths)),
+            )
+
         if overrides:
             logger.info(
                 "[gemma4] Mixed quantization: %d-bit default, %d overrides (8-bit MLP)",
@@ -199,6 +318,8 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
 
             def _class_predicate(path, module):
                 if not hasattr(module, "to_quantized"):
+                    return False
+                if _path_matches_any_suffix(path, skip_quant_paths):
                     return False
                 # Check per-layer overrides
                 # Override keys use "language_model.model.layers..." but nn.quantize
@@ -217,23 +338,21 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
                 default_bits,
                 default_gs,
             )
-            nn.quantize(model, bits=default_bits, group_size=default_gs)
 
-    # Load weights — sanitize per shard to keep peak memory proportional
-    # to the text-model size, not the full multimodal checkpoint.  On
-    # Gemma 4 the multimodal shards can be >2× the language-model
-    # weight, so loading everything then sanitizing would transiently
-    # allocate the entire checkpoint and OOM smaller Macs.  Fixes #123.
-    weight_files = sorted(
-        f for f in p.glob("*.safetensors") if not f.name.startswith("._")
-    )
-    if not weight_files:
-        raise FileNotFoundError(f"No .safetensors files in {p}")
-    sanitized = {}
-    for wf in weight_files:
-        shard = mx.load(str(wf))
-        sanitized.update(model.sanitize(shard))
-        del shard
+            def _class_predicate(path, module):
+                if not hasattr(module, "to_quantized"):
+                    return False
+                if _path_matches_any_suffix(path, skip_quant_paths):
+                    return False
+                return True
+
+            nn.quantize(
+                model,
+                class_predicate=_class_predicate,
+                group_size=default_gs,
+                bits=default_bits,
+            )
+
     model.load_weights(list(sanitized.items()), strict=False)
 
     # Verify weights loaded
