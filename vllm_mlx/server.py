@@ -1361,7 +1361,7 @@ Examples:
         _server_pflash_validate(
             server_pflash_config,
             model_name=args.model,
-            is_mllm=args.mllm or is_mllm_model(args.model),
+            is_mllm=getattr(args, "mllm", False) or is_mllm_model(args.model),
         )
     except ValueError as e:
         parser.error(str(e))

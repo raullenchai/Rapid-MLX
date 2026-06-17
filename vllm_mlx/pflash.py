@@ -218,16 +218,24 @@ def compress_tokens(
     """
 
     n_tokens = len(tokens)
-    if config.mode == "off":
-        return _unchanged(tokens, "off")
+    # Structural eligibility checks first — these are properties of the
+    # request itself (schema-protected? tool prompt? empty?) and don't
+    # depend on the engine's current PFlash mode. Reporting the
+    # structural reason in skip telemetry is more actionable than
+    # "off": a downstream telemetry consumer can tell whether the
+    # request would have been a compression candidate IF the mode
+    # were on. Operational checks (mode, threshold) come after so
+    # ``--pflash off`` still short-circuits before the budget math.
     if requires_prompt_integrity:
         return _unchanged(tokens, "protected_prompt")
-    if config.mode == "auto" and n_tokens < config.threshold:
-        return _unchanged(tokens, "threshold")
     if has_tools and config.skip_when_tools:
         return _unchanged(tokens, "tools")
     if n_tokens == 0:
         return _unchanged(tokens, "empty")
+    if config.mode == "off":
+        return _unchanged(tokens, "off")
+    if config.mode == "auto" and n_tokens < config.threshold:
+        return _unchanged(tokens, "threshold")
 
     block_size = max(1, config.block_size)
     keep_budget = _keep_budget(n_tokens, config)
