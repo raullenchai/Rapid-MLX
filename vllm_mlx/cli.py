@@ -1143,7 +1143,20 @@ def _run_tier_submit_flow(args) -> int:
     adapter failure flags.
     """
     tier = args.tier
-    assert tier in ("smoke", "speed", "harness", "all"), tier
+    # Validate the tier even though argparse's ``choices=`` should
+    # have rejected anything else — a programmatic Namespace (e.g.
+    # someone constructing args directly) could bypass argparse, and
+    # the previous ``assert`` would be stripped under ``python -O``
+    # (Codex PR #623 review NIT-1). Explicit guard returns 2 with a
+    # readable error rather than blowing up later inside the submit
+    # flow with a less targeted traceback.
+    if tier not in ("smoke", "speed", "harness", "all"):
+        print(
+            f"  Error: unknown tier {tier!r}; expected one of "
+            "smoke / speed / harness / all",
+            file=sys.stderr,
+        )
+        return 2
 
     # Reject --base-url for the --submit combo (Codex PR #623
     # BLOCKING-1). The community-bench corpus aggregates by

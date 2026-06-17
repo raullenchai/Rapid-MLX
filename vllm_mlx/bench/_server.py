@@ -139,9 +139,16 @@ def serve(
 
 
 def _wait_for_health(health_url: str, proc: subprocess.Popen, timeout_s: int) -> None:
-    """Poll /health until 200 or timeout. Abort early if the process dies."""
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
+    """Poll /health until 200 or timeout. Abort early if the process dies.
+
+    Uses ``time.monotonic()`` for the deadline so a system clock
+    adjustment mid-boot (NTP step, manual ``date`` change) can't
+    shorten or extend the health wait incorrectly (Codex PR #623
+    review NIT-2). ``time.time()`` would happily measure negative
+    elapsed time if the clock stepped backwards.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise ServerStartFailed(
                 f"server exited with code {proc.returncode} before becoming healthy"

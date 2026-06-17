@@ -245,15 +245,19 @@ def _run_smoke(
             passed=False,
             duration_s=elapsed,
             detail=f"FAIL: {type(exc).__name__}: {exc}",
-            # Schema-shaped failure payload — the submit path can still
-            # build a valid v2 row when the smoke probe fails, so the
-            # community-bench corpus has visibility into "model booted
-            # but couldn't answer 2+2". Emitted ONLY when we actually
-            # measured the boot ourselves; when ``boot_time_ms`` is
-            # ``None`` (--base-url attach path) we set ``payload=None``
-            # instead of inventing a ``0.0`` placeholder that the
-            # corpus can't tell apart from "machine boots in zero ms"
-            # (Codex PR #623 BLOCKING-1).
+            # Schema-shaped failure payload — diagnostic only under
+            # current policy. ``_run_tier_submit_flow`` aborts BEFORE
+            # consuming this payload when smoke fails (no point
+            # benching a model that can't say "4"), so the populated
+            # failure payload here is for the human-readable tier
+            # output and for any future caller that chooses to
+            # surface a failure-row to the corpus. Emitted ONLY when
+            # we actually measured the boot ourselves; when
+            # ``boot_time_ms`` is ``None`` (--base-url attach path)
+            # we set ``payload=None`` instead of inventing a ``0.0``
+            # placeholder that the corpus can't tell apart from
+            # "machine boots in zero ms" (Codex PR #623 BLOCKING-1,
+            # review-round-2 NIT-3 clarified the policy).
             payload=(
                 {
                     "boot_time_ms": float(boot_time_ms),
