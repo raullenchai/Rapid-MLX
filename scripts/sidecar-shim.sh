@@ -51,6 +51,20 @@ export PYTHONNOUSERSITE=1
 # reject the bundle as "a sealed resource is missing or invalid".
 # rapid-desktop #230.
 export PYTHONDONTWRITEBYTECODE=1
+
+# HuggingFace download path. hf_xet 1.5.1 (the chunked-download client
+# huggingface_hub 1.19 selects by default) stalls at ~6 MB transferred
+# and emits no error, leaving model downloads frozen at "0 of N files"
+# on residential macOS networks. Diagnosed 2026-06-16 against a v0.7.0
+# install: raw curl through cas-bridge.xethub.hf.co / us.aws.cdn.hf.co
+# pulls 200 MB at a steady 2.3 MB/s; the Python client on the same
+# socket hangs zero-progress for >5 min. Disabling Xet routes the
+# downloader back onto plain HTTPS range-GETs against the same CDN,
+# which works. HF_HUB_DOWNLOAD_TIMEOUT=300 is cheap insurance on the
+# slower link. Both honor ${VAR:-default} so power-users can override.
+export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
+export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-300}"
+
 unset PYTHONSTARTUP
 
 exec "$ROOT/python/bin/python3.12" -s -m vllm_mlx.cli "$@"
