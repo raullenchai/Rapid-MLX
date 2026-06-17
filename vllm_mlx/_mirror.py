@@ -305,10 +305,19 @@ def _hf_fallback_one(
     the per-file R2 miss path. Codex round-1 NIT #3: capture the path
     rather than re-resolving via ``snap_dir / fname``, so success
     accounting is robust to changes in HF's symlink layout.
-    """
-    try:
-        from huggingface_hub import hf_hub_download
 
+    Codex round-2 BLOCKING #4: narrow the exception net. Only expected
+    network/cache/HF-API errors are swallowed; programmer errors
+    (``TypeError``, ``AttributeError``) and validation errors
+    (``HFValidationError``) propagate so a misuse surfaces a real
+    stack trace instead of being silently re-routed through the
+    ``snapshot_download`` fallback.
+    """
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
+    from huggingface_hub.utils import RepositoryNotFoundError
+
+    try:
         path = hf_hub_download(
             repo_id=repo_id,
             filename=filename,
@@ -316,7 +325,15 @@ def _hf_fallback_one(
             cache_dir=str(cache_dir) if cache_dir else None,
         )
         return True, path
-    except Exception:
+    except (
+        # Expected network / HF API surface — these are legitimate
+        # "this file isn't reachable right now" signals.
+        EntryNotFoundError,
+        RepositoryNotFoundError,
+        HfHubHTTPError,
+        OSError,
+        TimeoutError,
+    ):
         return False, None
 
 
@@ -449,20 +466,37 @@ def download_with_mirror_fallback(
         # before we accept it; otherwise we delete it and re-fetch.
         # When HF didn't expose a size (rare — README-only repos etc.),
         # fall back to the old non-empty heuristic.
-        if target.exists():
-            cached_size = target.stat().st_size
-            if expected_size and cached_size != expected_size:
-                # Stale / truncated cache entry — drop it and fall
-                # through to the R2/HF re-fetch below.
-                _safe_unlink(target)
-            elif cached_size > 0:
-                return fname, "cached", cached_size
+        #
+        # Codex round-2 BLOCKING #3: if ``target`` is a directory, a
+        # broken symlink, or otherwise unstatable, ``stat()`` raises an
+        # OSError that would otherwise collapse this worker into a
+        # "miss" and force the whole pull to fall back to
+        # ``snapshot_download``. Wrap the stat/unlink in OSError
+        # protection and just fall through to the R2/HF re-fetch below
+        # — the rename in ``_download_one_from_r2`` will overwrite
+        # whatever was there.
+        try:
+            if target.exists():
+                cached_size = target.stat().st_size
+                if expected_size and cached_size != expected_size:
+                    # Stale / truncated cache entry — drop it and fall
+                    # through to the R2/HF re-fetch below.
+                    _safe_unlink(target)
+                elif cached_size > 0:
+                    return fname, "cached", cached_size
+        except OSError:
+            # Target is a directory / broken symlink / permission
+            # denied. Try to remove it (best-effort) and fall through.
+            _safe_unlink(target)
 
         if use_r2 and catalog_entry is not None:
             url = _build_r2_url(base, dub, fname)
             ok, _reason = _download_one_from_r2(url, target, expected_size)
             if ok:
-                size = target.stat().st_size if target.exists() else 0
+                try:
+                    size = target.stat().st_size if target.exists() else 0
+                except OSError:
+                    size = 0
                 return fname, "r2", size
 
         # Either R2 not eligible or R2 missed — fall back to HF for
@@ -518,34 +552,21 @@ def download_with_mirror_fallback(
 
     # Pin the snapshot. ``is_repo_cached`` requires ``refs/main`` to
     # consider the snapshot complete; without this the next run would
-    # see a partial-looking cache.
+    # see a partial-looking cache. ``pull_command`` also reads
+    # ``refs/main`` to print "Cached at: …/snapshots/<sha>" — a stale
+    # ref would make that line point at the wrong snapshot.
     #
-    # Codex round-1 BLOCKING #2: don't clobber an existing ``refs/main``
-    # that points at a DIFFERENT sha. The HF cache may legitimately
-    # already hold a ref to an older snapshot (e.g. because the user
-    # called ``snapshot_download(revision="<sha>")`` before us), and
-    # overwriting that ref would silently switch which snapshot the
-    # loader picks. Three legal cases here:
-    #   (a) ref absent → write it (this is the common case).
-    #   (b) ref present, matches our sha → no-op.
-    #   (c) ref present, points at a different sha → leave it alone but
-    #       still return success: the user already pulled some other
-    #       revision separately, our snapshot is on disk and addressable
-    #       by sha, and re-pinning ``main`` is a side-effect we don't
-    #       own. ``hf_hub_download``/``snapshot_download`` will fix it
-    #       up the next time the user explicitly asks for ``main``.
-    refs_main = refs_dir / "main"
+    # We always fetch HEAD of ``main`` (``model_info(repo_id)`` with no
+    # revision argument resolves to the default branch's tip), so it's
+    # safe — and required — to overwrite ``refs/main`` with our sha.
+    # This matches ``snapshot_download``'s own behaviour, which updates
+    # ``refs/main`` on every default-revision pull. Codex round-2
+    # BLOCKING #1+#2 reverted the round-1 "don't clobber" behaviour: a
+    # stale ref left over from a manual ``snapshot_download(revision=
+    # "<sha>")`` would otherwise survive our pull, breaking the cache
+    # contract for the loader.
     try:
-        if refs_main.exists():
-            existing = refs_main.read_text().strip()
-            if existing != revision:
-                # Don't clobber a foreign ref. Snapshot is still usable
-                # by sha via ``snapshots/<revision>/<file>``.
-                pass
-            # If existing == revision, the file already holds the right
-            # value; no rewrite needed (idempotent).
-        else:
-            refs_main.write_text(revision)
+        (refs_dir / "main").write_text(revision)
     except OSError:
         return False
 

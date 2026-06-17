@@ -629,28 +629,30 @@ def test_truncated_cached_file_is_replaced(
 
 
 # ---------------------------------------------------------------------------
-# Codex round-1 BLOCKING #2 regression — refs/main must NOT be clobbered
-# when it already points at a different sha (the user pulled some other
-# revision separately). The snapshot is still addressable by sha; the
-# ref belongs to whoever wrote it.
+# Codex round-2 BLOCKING #1+#2 regression — refs/main MUST be updated
+# to the downloaded sha, because ``pull_command`` reads ``refs/main`` to
+# print the cache path and downstream consumers resolve ``main`` through
+# it. We always pull HEAD of ``main`` (``model_info`` with no revision),
+# so overwriting the ref is correct.
 # ---------------------------------------------------------------------------
 
 
-def test_refs_main_not_clobbered_when_pointing_elsewhere(
+def test_refs_main_updated_when_pointing_elsewhere(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
     revision = "2222" * 10
-    foreign_sha = "9999" * 10
+    stale_sha = "9999" * 10
     files = [("config.json", 100)]
     catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
 
-    # Pre-stage a refs/main pointing at a different (foreign) sha.
+    # Pre-stage a refs/main pointing at a stale sha (e.g. left over from
+    # an earlier explicit ``snapshot_download(revision="<sha>")``).
     repo_root = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit"
     refs_dir = repo_root / "refs"
     refs_dir.mkdir(parents=True, exist_ok=True)
-    (refs_dir / "main").write_text(foreign_sha)
+    (refs_dir / "main").write_text(stale_sha)
 
     router = _UrlRouter()
     router.add(
@@ -674,9 +676,11 @@ def test_refs_main_not_clobbered_when_pointing_elsewhere(
         ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
 
     assert ok
-    # The pre-existing refs/main MUST be preserved — we don't own it.
-    assert (refs_dir / "main").read_text() == foreign_sha
-    # Our snapshot is still addressable by sha — that's what matters.
+    # refs/main MUST be updated to the new sha so that downstream
+    # consumers (including pull_command's "Cached at:" print and
+    # is_repo_cached) resolve to the snapshot we just populated.
+    assert (refs_dir / "main").read_text() == revision
+    # Snapshot is on disk under the new sha.
     assert (repo_root / "snapshots" / revision / "config.json").exists()
 
 
@@ -714,3 +718,76 @@ def test_refs_main_written_when_absent(
     assert ok
     refs_main = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "refs" / "main"
     assert refs_main.read_text() == revision
+
+
+# ---------------------------------------------------------------------------
+# Codex round-2 BLOCKING #3 regression — when ``target.stat()`` raises
+# OSError (e.g. EACCES on a permission-locked path, or unusual mount),
+# the worker would otherwise return "miss" and force the whole pull to
+# fall back to ``snapshot_download``. The fix wraps the cached-stat
+# block in OSError protection and falls through to the R2/HF re-fetch.
+#
+# Easiest way to reliably trigger OSError on stat() in a unit test is
+# to monkey-patch ``Path.stat`` to raise on the specific target path.
+# ---------------------------------------------------------------------------
+
+
+def test_unstatable_cached_path_falls_through_to_r2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "4444" * 10
+    files = [("model.safetensors", 200)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    # Pre-stage a file at the snapshot path that we'll claim raises
+    # on stat(). The ``exists()`` returns True (file is there), but the
+    # ``stat()`` call inside the worker hits our raising stub.
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    snap.mkdir(parents=True, exist_ok=True)
+    pre_existing = snap / "model.safetensors"
+    pre_existing.write_bytes(b"a" * 50)  # truncated relic
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, b"x" * 200),
+    )
+
+    # Monkey-patch ``Path.stat`` to raise on the FIRST stat of our
+    # specific target path (the cached-check stat). Subsequent stats
+    # for the same path (after the R2 rename) succeed normally — that's
+    # the realistic shape of a transient EACCES / ELOOP / etc.
+    original_stat = Path.stat
+    raised_once = {"done": False}
+    target_path_suffix = f"snapshots/{revision}/model.safetensors"
+
+    def _raising_stat(self, *args, **kwargs):
+        if str(self).endswith(target_path_suffix) and not raised_once["done"]:
+            raised_once["done"] = True
+            raise OSError("simulated stat failure")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _raising_stat)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    # The pull should have completed via R2 despite the stat OSError on
+    # the existing file. (We rely on the rename-from-.part to overwrite
+    # the broken target.)
+    assert ok
+    # No HF fallback needed — R2 served the file fresh.
+    assert hf_mock.call_count == 0
