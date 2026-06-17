@@ -164,6 +164,16 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # servers. It selects external tool endpoints, never which model /
         # parser / tier the engine routes a request to.
         "RAPID_MLX_MCP_CONFIG",
+        # User-configured HTTP base URL for a weight mirror (R2/S3/any HTTP
+        # host) consumed by ``_try_mirror_prefetch`` in ``vllm_mlx/cli.py``.
+        # Pre-populates the HF cache layout (``snapshots/<sha>/<file>``) from
+        # ``${mirror}/<owner>/<repo>/<file>`` before falling back to
+        # huggingface_hub on any miss. This selects *where the bytes come
+        # from* — strictly a download/CDN knob — not which model alias loads,
+        # which parser fires, or which tier engages. The desktop app sets a
+        # default R2 URL; power users override with any URL or "" to disable.
+        # Never consulted by the engine, scheduler, or routing layer.
+        "RAPID_MLX_MODEL_MIRROR",
     }
 )
 
