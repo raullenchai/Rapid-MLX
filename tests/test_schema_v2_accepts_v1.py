@@ -28,16 +28,32 @@ SUBMISSIONS_DIR = REPO_ROOT / "community-benchmarks" / "submissions"
 
 
 def _existing_submissions() -> list[Path]:
-    """Every JSON file in ``community-benchmarks/submissions/``.
+    """Every v1 JSON file in ``community-benchmarks/submissions/``.
+
+    Filter to ``schema_version == 1`` so this regression set keeps
+    its meaning (does v2 schema still accept v1 wire shape?) as v2
+    submissions accumulate in the same directory. Without the filter,
+    a real v2 submission with ``tier``/``smoke_result``/``harness_result``
+    is parametrized into a test that asserts ``schema_version == 1`` and
+    fails with a misleading "not a v1 submission anymore" message —
+    the file was always v2.
 
     Empty list short-circuits the parametrize loop — pytest will skip
     the test rather than report zero collected, so the harness still
     reports a clean run on a fresh checkout that hasn't accumulated
-    submissions yet.
+    v1 submissions yet.
     """
     if not SUBMISSIONS_DIR.exists():
         return []
-    return sorted(SUBMISSIONS_DIR.glob("*.json"))
+    out: list[Path] = []
+    for p in sorted(SUBMISSIONS_DIR.glob("*.json")):
+        try:
+            payload = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("schema_version") == 1:
+            out.append(p)
+    return out
 
 
 @pytest.mark.parametrize(
