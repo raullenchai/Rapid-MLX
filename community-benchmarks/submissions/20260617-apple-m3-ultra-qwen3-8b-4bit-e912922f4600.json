@@ -1,0 +1,168 @@
+{
+  "schema_version": 2,
+  "submission_id": "e912922f4600",
+  "submitted_at": "2026-06-17T05:42:26+00:00",
+  "hardware": {
+    "chip": "Apple M3 Ultra",
+    "ram_gb": 256,
+    "cpu_cores": 28,
+    "gpu_cores": 60
+  },
+  "software": {
+    "macos": "26.5.1",
+    "rapid_mlx": "0.7.26",
+    "mlx": "0.31.2",
+    "python": "3.12.13"
+  },
+  "model": {
+    "alias": "qwen3-8b-4bit",
+    "hf_path": "mlx-community/Qwen3-8B-4bit"
+  },
+  "config": {
+    "rounds": 5,
+    "warmup_rounds": 1,
+    "sampling": "greedy",
+    "buckets_spec": {
+      "short": {
+        "prompt_tokens": 512,
+        "max_tokens": 128
+      },
+      "long": {
+        "prompt_tokens": 2048,
+        "max_tokens": 512
+      }
+    },
+    "prompt_hash": "3414e7611df5cfbc"
+  },
+  "buckets": {
+    "short": {
+      "decode_tps": {
+        "median": 112.8930742617306,
+        "min": 112.83230554376033,
+        "max": 114.04373805242955,
+        "stddev": 0.4632428828666957
+      },
+      "prefill_tps": {
+        "median": 1069.1567578596164,
+        "min": 1068.7436828680343,
+        "max": 1070.4996775042036,
+        "stddev": 0.6004113211572314
+      },
+      "ttft_ms": {
+        "median": 496.6530829988187,
+        "min": 496.0300420061685,
+        "max": 496.8450419983128,
+        "stddev": 0.27862789239184166
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 113.01687844346,
+          "prefill_tps": 1068.7436828680343,
+          "ttft_ms": 496.8450419983128
+        },
+        {
+          "decode_tps": 112.83230554376033,
+          "prefill_tps": 1069.0726274362812,
+          "ttft_ms": 496.69216699840035
+        },
+        {
+          "decode_tps": 112.84616202160588,
+          "prefill_tps": 1069.1567578596164,
+          "ttft_ms": 496.6530829988187
+        },
+        {
+          "decode_tps": 112.8930742617306,
+          "prefill_tps": 1069.3552025897884,
+          "ttft_ms": 496.56091700308025
+        },
+        {
+          "decode_tps": 114.04373805242955,
+          "prefill_tps": 1070.4996775042036,
+          "ttft_ms": 496.0300420061685
+        }
+      ]
+    },
+    "long": {
+      "decode_tps": {
+        "median": 103.74271555462862,
+        "min": 103.68366223570857,
+        "max": 104.11955859411735,
+        "stddev": 0.15932005580767017
+      },
+      "prefill_tps": {
+        "median": 1093.5023434295824,
+        "min": 1091.1181347955653,
+        "max": 1093.5848722877952,
+        "stddev": 0.9435482594208295
+      },
+      "ttft_ms": {
+        "median": 1974.389916009386,
+        "min": 1974.240916009876,
+        "max": 1978.7041669915197,
+        "stddev": 1.707294720782448
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 103.84929293040639,
+          "prefill_tps": 1091.1181347955653,
+          "ttft_ms": 1978.7041669915197
+        },
+        {
+          "decode_tps": 103.68366223570857,
+          "prefill_tps": 1093.0005377082884,
+          "ttft_ms": 1975.2963749924675
+        },
+        {
+          "decode_tps": 103.71151406998634,
+          "prefill_tps": 1093.5705856014663,
+          "ttft_ms": 1974.2667079990497
+        },
+        {
+          "decode_tps": 103.74271555462862,
+          "prefill_tps": 1093.5848722877952,
+          "ttft_ms": 1974.240916009876
+        },
+        {
+          "decode_tps": 104.11955859411735,
+          "prefill_tps": 1093.5023434295824,
+          "ttft_ms": 1974.389916009386
+        }
+      ]
+    }
+  },
+  "peak_ram_mb": 5330,
+  "tier": "all",
+  "smoke_result": {
+    "boot_time_ms": 42518.02616599889,
+    "first_prompt_ok": true,
+    "first_token_latency_ms": 87.58458300144412,
+    "response_excerpt": "\n\nHello! 2 + 2 equals 4. Let me know if you need help with anything else! 😊"
+  },
+  "harness_result": {
+    "codex": {
+      "passed": false,
+      "duration_s": 249.92811633300153,
+      "error_excerpt": "9p 1f 2e 0s | no_tool_needed: Expected Paris: The question cannot be answered using the provided tools."
+    },
+    "opencode": {
+      "passed": true,
+      "duration_s": 16.091990082990378,
+      "error_excerpt": null
+    },
+    "hermes": {
+      "passed": false,
+      "duration_s": 43.649371583989705,
+      "error_excerpt": "27p 7f 0e 0s | e2e_file_read: Unexpected: Failed to initialize agent: Model mlx-community/gemma-3-4b-it-qat-4b"
+    },
+    "aider": {
+      "passed": true,
+      "duration_s": 2.129712042005849,
+      "error_excerpt": null
+    },
+    "langchain": {
+      "passed": false,
+      "duration_s": 13.09086812500027,
+      "error_excerpt": "8p 1f 1e 0s | no_tool_needed: Expected Paris: The question cannot be answered using the provided tools."
+    }
+  }
+}
