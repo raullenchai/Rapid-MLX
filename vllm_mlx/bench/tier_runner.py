@@ -204,14 +204,25 @@ def _run_smoke(
             # that would otherwise understate TTFT (codex review #621 NIT).
             ttft_ms: float | None = None
             content_parts: list[str] = []
+            reasoning_parts: list[str] = []
             req_start = time.perf_counter()
+            # max_tokens=256 (was 64): qwen3 / gemma4 / deepseek_r1 reasoning
+            # parsers route the first chunk of tokens into ``<think>...</think>``
+            # and emit them as ``delta.reasoning_content`` rather than
+            # ``delta.content``. A 64-token budget could be entirely consumed
+            # by the reasoning prefix on very small models (qwen3-0.6b-4bit
+            # hit this — smoke failed with response='' even on a healthy
+            # boot). 256 gives reasoning models room to finish thinking and
+            # produce the actual answer without making the probe slow on
+            # non-reasoning models (they stop at ~5-10 content tokens via
+            # finish_reason=stop).
             with client.stream(
                 "POST",
                 f"{base_url}/chat/completions",
                 json={
                     "model": model_id,
                     "messages": [{"role": "user", "content": "Hello, what is 2+2?"}],
-                    "max_tokens": 64,
+                    "max_tokens": 256,
                     "stream": True,
                     "temperature": 0,
                 },
@@ -229,15 +240,21 @@ def _run_smoke(
                         chunk = _json.loads(payload)
                     except ValueError:
                         continue
-                    delta = (
-                        chunk.get("choices", [{}])[0]
-                        .get("delta", {})
-                        .get("content", "")
-                    )
-                    if delta:
+                    delta_obj = chunk.get("choices", [{}])[0].get("delta", {})
+                    content_delta = delta_obj.get("content") or ""
+                    # Reasoning-parser models (qwen3, gemma4, deepseek_r1)
+                    # stream ``<think>...</think>`` into reasoning_content
+                    # instead of content. We track both so the smoke probe
+                    # passes for reasoning models AND measures TTFT from
+                    # whichever stream fires first.
+                    reasoning_delta = delta_obj.get("reasoning_content") or ""
+                    if content_delta or reasoning_delta:
                         if ttft_ms is None:
                             ttft_ms = (time.perf_counter() - req_start) * 1000
-                        content_parts.append(delta)
+                        if content_delta:
+                            content_parts.append(content_delta)
+                        if reasoning_delta:
+                            reasoning_parts.append(reasoning_delta)
     except Exception as exc:  # noqa: BLE001 — smoke must never crash
         elapsed = time.perf_counter() - t0
         return TierResult(
@@ -272,11 +289,23 @@ def _run_smoke(
 
     elapsed = time.perf_counter() - t0
     response_text = "".join(content_parts)
-    ok = "4" in response_text
+    reasoning_text = "".join(reasoning_parts)
+    # Pass if either stream produced "4" — reasoning models may answer
+    # entirely inside ``<think>`` for short prompts, and that's still a
+    # healthy boot.
+    ok = "4" in response_text or "4" in reasoning_text
+    # If only reasoning content streamed (no content delta at all), use
+    # it as the displayed excerpt so the user can see what the model
+    # actually said. Prefix with ``[reasoning]`` so the source is
+    # obvious in the corpus / logs.
+    if not response_text and reasoning_text:
+        display_text = f"[reasoning] {reasoning_text}"
+    else:
+        display_text = response_text
     ttft_display = f"{ttft_ms:.0f}" if ttft_ms is not None else "?"
     detail = (
         f"{'PASS' if ok else 'FAIL'} model={model} ttft={ttft_display}ms "
-        f"response={response_text[:60]!r}"
+        f"response={display_text[:60]!r}"
     )
     return TierResult(
         name="smoke",
@@ -297,7 +326,7 @@ def _run_smoke(
                 "first_token_latency_ms": (
                     float(ttft_ms) if ttft_ms is not None else 0.0
                 ),
-                "response_excerpt": response_text[:200],
+                "response_excerpt": display_text[:200],
             }
             if boot_time_ms is not None
             else None
