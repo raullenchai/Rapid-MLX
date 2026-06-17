@@ -200,8 +200,11 @@ async def create_anthropic_message(
         # Resolve enable_thinking via shared helper (#387: chat_template_kwargs
         # passthrough). Same precedence as the OpenAI route.
         resolved_thinking = _resolve_enable_thinking(openai_request)
-        if resolved_thinking is not None:
-            chat_kwargs["enable_thinking"] = resolved_thinking
+        effective_thinking = _effective_enable_thinking(
+            resolved_thinking, cfg.model_path or cfg.model_name
+        )
+        if effective_thinking is not None:
+            chat_kwargs["enable_thinking"] = effective_thinking
 
         start_time = time.perf_counter()
         timeout = cfg.default_timeout

@@ -181,10 +181,35 @@ print(response.choices[0].message.content)
 | Client | Status | Setup |
 |--------|--------|-------|
 | [Cursor](https://cursor.com) | Compatible | Settings → OpenAI Base URL |
+| [Claude Code](https://claude.ai/code) | Tested | One command ([see below](#claude-code)) |
 | [Continue.dev](https://continue.dev) | Compatible | VS Code / JetBrains extension |
 | [LibreChat](https://librechat.ai) | Tested | Docker ([test](tests/integrations/test_librechat_docker.py)) |
 | [Open WebUI](https://github.com/open-webui/open-webui) | Tested | Docker ([test](tests/integrations/test_openwebui.py)) |
 | Any OpenAI-compatible app | Compatible | Point at `http://localhost:8000/v1` |
+
+### Claude Code
+
+**Claude Code** (Anthropic's web-based code editor) works with Rapid-MLX via the Anthropic Messages API endpoint (`/v1/messages`).
+
+**Terminal 1 — Start the Rapid-MLX server:**
+```bash
+rapid-mlx serve qwen3.5-9b-4bit
+```
+Wait for: `Ready: http://localhost:8000/v1`
+
+**Terminal 2 — Launch Claude Code pointing to your local server:**
+```bash
+export ANTHROPIC_BASE_URL="http://localhost:8000"
+export ANTHROPIC_API_KEY="not-needed"
+claude --model claude-opus-4-5
+```
+
+The server accepts any `claude-*` or `gpt-*` model name in requests and routes them to the loaded engine (configured on the server). The response always reflects the actual loaded model, not the client-requested name. This means:
+- Claude Code can use `--model claude-opus-4-5` or any other alias
+- The server runs whatever model you specified with `rapid-mlx serve <model>`
+- Tool calling and streaming work out of the box with Qwen3.5 / Qwen3.6 models
+
+**Tip:** For the best Claude Code experience on a 24 GB MacBook Pro, use `qwen3.5-9b-4bit` — it's smart enough for coding tasks while staying responsive.
 
 ### Model-Harness Index (MHI)
 
