@@ -15,79 +15,29 @@ the compressor preserves the needle at the validated default
 the scoring weights and accidentally drops the needle on the floor at
 the verified-tier default.
 
-The optional engine-level harness (the original intent of this file)
-lives behind ``PFLASH_NEEDLE_MODEL`` — it loads a long-context MLX
-model and runs the engine-side recall check. That path is opt-in
-because it needs ~30 minutes of model load + generate per cell; the
-token-level checks below run in milliseconds and gate every PR.
+A full engine-level harness (loads a long-context MLX model, drives
+``BatchedEngine.chat``) is deferred — see the "Engine-level harness"
+section at the bottom for the deliberate non-stub. The bench-side
+sweep that produced the PR #649 TTFT + recall numbers lives at
+``vllm_mlx/bench/pflash_replication.py`` and is exercised from the
+``rapid-mlx bench`` CLI, not pytest.
 
-Run the engine path locally with::
-
-    PFLASH_NEEDLE_MODEL=mlx-community/Qwen3-4B-4bit \\
-      uv run pytest -m needle tests/test_pflash_needle.py
-
-The engine path carries ``@pytest.mark.needle`` so the default CI run
-skips it (see ``pytest.ini``); the token-level tests below run on every
-PR because they need no model and finish in milliseconds.
+The token-level tests below run on every PR (no marker) because they
+need no model and finish in milliseconds. The ``needle`` marker
+registered in ``pytest.ini`` is reserved for the future engine path.
 """
 
 from __future__ import annotations
-
-import os
 
 import pytest
 
 from vllm_mlx.pflash import PFlashConfig, compress_tokens
 
-# Engine-path opt-in. The token-level tests below do not need this.
-NEEDLE_MODEL = os.environ.get("PFLASH_NEEDLE_MODEL")
-NEEDLE_TRIALS = int(os.environ.get("PFLASH_NEEDLE_TRIALS", "20"))
-
 # NOTE: no module-level ``pytestmark = pytest.mark.needle`` here. The
 # token-level tests below run on every PR — they're the regression
-# guard for the verified-tier default. Only the engine-level
-# ``test_pflash_needle_recall_above_90pct`` carries the ``needle``
-# marker so the heavy model-load path stays opt-in (see pytest.ini).
-
-
-# ---------------------------------------------------------------------------
-# String-level haystack (used by both paths so the engine and token tests
-# are constructed identically).
-# ---------------------------------------------------------------------------
-
-
-def _haystack(target_tokens: int, needle: str, position_frac: float) -> str:
-    """Construct a long filler prompt with a unique needle at a known
-    fractional position.
-
-    Deterministic — same inputs always produce the same prompt.
-    """
-    filler_line = (
-        "The Pittsburgh weather report for the week shows a mix of sun and "
-        "rain with temperatures averaging fifty-two degrees. "
-    )
-    approx_tokens_per_line = len(filler_line.split())
-    total_lines = max(1, target_tokens // approx_tokens_per_line)
-    insert_at = int(total_lines * position_frac)
-    needle_line = (
-        f"IMPORTANT: The secret code for this session is {needle}. "
-        "Memorize it and report it back exactly when asked. "
-    )
-    body_lines = [filler_line] * total_lines
-    body_lines[insert_at] = needle_line
-    return "".join(body_lines)
-
-
-def _ask_needle(haystack: str, needle: str) -> str:
-    return (
-        f"{haystack}\n\n"
-        "User request:\n"
-        f"What is the secret code given earlier? Reply with the four-digit code only."
-    )
-
-
-def _recall_pass(response: str, needle: str) -> bool:
-    return needle in response
+# guard for the verified-tier default. The ``needle`` marker registered
+# in ``pytest.ini`` is reserved for the deferred engine-level harness
+# (see bottom of file).
 
 
 # ---------------------------------------------------------------------------
@@ -207,52 +157,37 @@ def test_pflash_aggressive_keep_ratio_can_drop_needle() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Engine-level harness (opt-in via PFLASH_NEEDLE_MODEL).
+# Engine-level harness — deferred.
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def needle_engine():
-    if not NEEDLE_MODEL:
-        pytest.skip(
-            "PFLASH_NEEDLE_MODEL not set — engine-level needle recall "
-            "is opt-in. The token-level tests above gate the verified-"
-            "tier default. See module docstring for the engine path "
-            "run command."
-        )
-    from vllm_mlx.engine.batched import BatchedEngine
-
-    engine = BatchedEngine(NEEDLE_MODEL)
-    return engine
-
-
-@pytest.mark.needle
-@pytest.mark.parametrize("context_tokens", [32_768, 65_536, 131_072])
-@pytest.mark.parametrize("keep_ratio", [0.10, 0.20, 0.40])
-def test_pflash_needle_recall_above_90pct(
-    needle_engine, context_tokens: int, keep_ratio: float
-):
-    """Engine-level recall check. Acceptance: ``recall >= 0.90`` at
-    ``keep_ratio=0.20``. Lower keep_ratios are informational; higher
-    keep_ratios should monotonically improve recall.
-
-    The current implementation runs a single deterministic trial per
-    cell (the synthetic haystack above) to keep the opt-in path cheap.
-    Multi-trial aggregation lives in
-    ``vllm_mlx/bench/pflash_replication.py`` for the full bench.
-    """
-    needle = "8421"
-    haystack = _haystack(context_tokens, needle, position_frac=0.5)
-    prompt = _ask_needle(haystack, needle)
-    # Feed the engine fixture; engine wiring lives in ``BatchedEngine``
-    # — we rely on its chat path threading ``pflash_config`` through.
-    response = needle_engine.chat(
-        prompt,
-        max_tokens=64,
-        pflash_keep_ratio=keep_ratio,
-    )
-    if keep_ratio >= 0.20:
-        assert _recall_pass(response, needle), (
-            f"engine path: keep_ratio={keep_ratio} ctx={context_tokens} "
-            f"dropped needle {needle!r} from response {response!r}"
-        )
+#
+# An end-to-end recall check against ``BatchedEngine.chat`` would close
+# the loop on real long-context model behaviour, but ``BatchedEngine``
+# exposes ``chat`` as an async coroutine and PFlash keep_ratio is wired
+# via ``SchedulerConfig`` rather than per-call. Wiring a one-shot
+# synchronous-friendly path here would either (a) leak partial
+# async-runtime scaffolding into this test module or (b) drift from the
+# real engine call shape — both worse than the current arrangement.
+#
+# The token-level tests above are the contracted regression guard for
+# the verified-tier default (keep_ratio=0.20 must preserve the needle).
+# The full engine sweep that produced the PR #649 TTFT + recall table
+# lives at ``vllm_mlx/bench/pflash_replication.py`` and is invoked from
+# the bench CLI, not pytest.
+#
+# When someone re-introduces an engine-level harness here, the right
+# shape is::
+#
+#     @pytest.mark.needle
+#     @pytest.mark.asyncio
+#     async def test_recall_engine(needle_engine, ctx, ratio):
+#         response = await needle_engine.chat(prompt, ...)
+#         assert needle in response
+#
+# Don't leave a stub — codex round 2 [BLOCKING] caught the sync-call-
+# against-async-method shape, and a stub that pretends to gate quality
+# but doesn't is worse than no stub at all.
+#
+# Env contract for that future harness: ``PFLASH_NEEDLE_MODEL`` selects
+# the model, ``PFLASH_NEEDLE_TRIALS`` controls per-cell aggregation.
+# Re-instate as module-level reads when the harness lands; reading them
+# here now would just be dead code.
