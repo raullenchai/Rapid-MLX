@@ -371,14 +371,20 @@ def test_not_yet_mirrored_skips_r2_entirely(
     ):
         ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
 
-    assert ok
+    # Codex round-8 BLOCKING #1+#2: when the catalog says the alias is
+    # not mirrored, ``download_with_mirror_fallback`` must return False
+    # so the caller invokes the real ``snapshot_download(repo_id)`` —
+    # which preserves allow/ignore patterns, retries, and the existing
+    # HF logging. Per-file ``hf_hub_download`` is NOT an equivalent.
+    assert ok is False
     # Catalog hit, but ZERO per-file R2 calls.
     r2_file_calls = [
         r for r in router.requests if "/mlx-community/Gemma-4-31B-4bit/" in r["url"]
     ]
     assert r2_file_calls == []
-    # HF served everything.
-    assert sorted(hf_calls) == sorted(f for f, _ in files)
+    # No per-file HF calls either — caller is expected to use
+    # ``snapshot_download`` instead.
+    assert hf_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -427,10 +433,11 @@ def test_catalog_500_falls_through_to_hf(
     ):
         ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
 
-    assert ok
-    # HF served the only file — catalog 500'd, R2 file URLs were never
-    # probed (default mirror + catalog outage → straight to HF).
-    assert hf_mock.call_count == 1
+    # Codex round-8: when the DEFAULT mirror's catalog 5xx's we treat
+    # the mirror as wholly skipped and return False so the caller falls
+    # through to ``snapshot_download``. No per-file HF or R2 work here.
+    assert ok is False
+    assert hf_mock.call_count == 0
     r2_file_calls = [
         r
         for r in router.requests
@@ -1239,9 +1246,11 @@ def test_custom_mirror_with_5xx_catalog_skips_direct_layout(
     ):
         ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
 
-    assert ok
-    # HF served the file. Zero R2 file probes.
-    assert hf_mock.call_count == 1
+    # Codex round-8: custom mirror catalog 5xx (vs 404) means "mirror
+    # transient/misconfigured" — skip the mirror wholesale and return
+    # False so caller invokes ``snapshot_download``. No per-file work.
+    assert ok is False
+    assert hf_mock.call_count == 0
     r2_file_calls = [
         r
         for r in router.requests

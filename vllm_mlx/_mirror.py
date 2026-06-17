@@ -659,10 +659,14 @@ def download_with_mirror_fallback(
             f"fallback: HF){RESET}"
         )
     else:
-        # Catalog explicitly said this alias is not mirrored.
-        _print_dim(
-            f"  {BOLD}Pulling {repo_id}{RESET} {DIM}(not mirrored, using HF){RESET}"
-        )
+        # Mirror is skipped wholesale (catalog says not mirrored, OR
+        # default-mirror catalog 5xx/network/parse failure, OR custom
+        # mirror catalog 5xx). Codex round-8 BLOCKING #1+#2: do NOT
+        # impersonate ``snapshot_download`` with per-file
+        # ``hf_hub_download`` calls — return False so the caller invokes
+        # the real ``snapshot_download`` and gets its allow/ignore
+        # patterns, retries, and repository-level error reporting.
+        return False
 
     # Per-file plan: for each file, attempt R2 first (if eligible),
     # otherwise fall straight to HF. Run a small pool in parallel.
@@ -789,18 +793,36 @@ def download_with_mirror_fallback(
     # Concurrency cap — small pool to stay polite. Even when R2 isn't
     # in play, parallel HF downloads (hf_hub_download is thread-safe) is
     # marginally faster than serial.
+    #
+    # ``_hf_fallback_one`` already converts the expected HF surface
+    # (``EntryNotFoundError``, ``RepositoryNotFoundError``,
+    # ``HfHubHTTPError``, ``OSError``, ``TimeoutError``) to ``(False,
+    # None)`` internally — this except clause is a belt-and-braces in
+    # case a future refactor leaks one of those out of a worker. Codex
+    # round-8 NIT #3: keep this set in sync with ``_hf_fallback_one``.
+    from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
+    from huggingface_hub.utils import RepositoryNotFoundError
+
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
         futures = {pool.submit(_do_file, item): item[0] for item in files}
         for fut in as_completed(futures):
             fname = futures[fut]
             # Codex round-3 NIT #1: narrow the worker exception net.
-            # Only convert expected network / filesystem errors into a
-            # silent "miss". Programmer errors (TypeError, etc.) and
+            # Only convert expected network / filesystem / HF errors into
+            # a silent "miss". Programmer errors (TypeError, etc.) and
             # HF validation errors propagate so misuse surfaces a real
             # stack trace instead of disappearing into the fallback.
             try:
                 _, kind, size = fut.result()
-            except (OSError, urllib.error.URLError, urllib.error.HTTPError):
+            except (
+                OSError,
+                TimeoutError,
+                urllib.error.URLError,
+                urllib.error.HTTPError,
+                EntryNotFoundError,
+                RepositoryNotFoundError,
+                HfHubHTTPError,
+            ):
                 kind, size = "miss", 0
             if kind == "r2":
                 r2_hits += 1
