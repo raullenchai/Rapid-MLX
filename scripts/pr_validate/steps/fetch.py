@@ -15,6 +15,7 @@ random foreign code.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -98,7 +99,7 @@ class FetchStep(Step):
         # run validation on them by editing this gate, but the common
         # case of "is this merge-safe" wants an OPEN PR.
         state = meta.get("state", "")
-        if state != "OPEN":
+        if state != "OPEN" and os.environ.get("PR_VALIDATE_ALLOW_MERGED") != "1":
             return StepResult(
                 name=self.name,
                 status="fail",

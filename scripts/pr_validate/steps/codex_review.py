@@ -386,6 +386,19 @@ class CodexReviewStep(Step):
                         # README + step description promise gpt-5.5.
                         "--model",
                         CODEX_MODEL,
+                        # Force the OpenAI cloud provider for the review
+                        # call. The user's config.toml may set
+                        # ``model_provider = "rapid-mlx"`` for normal
+                        # codex use (so codex routes to local server),
+                        # but pr_validate wants the gpt-5.5 cloud model
+                        # talking through OpenAI, not the local mlx
+                        # server. Without this override, codex tries to
+                        # refresh /models against the rapid-mlx server
+                        # and exits 1 because rapid-mlx's OpenAI-shaped
+                        # ``{"data": [...]}`` response lacks the
+                        # ``models`` field codex 0.136+ expects.
+                        "-c",
+                        'model_provider="openai"',
                         # Skip the "is this a git repo?" check — we
                         # deliberately run codex outside the repo (in
                         # an empty tempdir, see ``cwd=`` below).
