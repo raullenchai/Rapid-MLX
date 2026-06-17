@@ -2492,3 +2492,231 @@ def test_serve_command_calls_ensure_model_downloaded():
         "reference it) so cold-cache serves go through the R2 mirror "
         "(issue #651). Codex round-1 BLOCKING #1 to PR #654."
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #651 follow-up: per-file progress UX.
+#
+# User reported (rapid-mlx v0.7.27) that ``rapid-mlx pull <alias>`` prints
+# the banner then sits silent for minutes while multi-GB shards stream
+# via R2. The HF fallback path shows tqdm progress naturally; only the
+# R2 path was silent. Fix: emit one line per file at the point it lands
+# (under stdlib only — no tqdm / no carriage-return animations). Output
+# must degrade gracefully when stdout is non-TTY (no ANSI escapes).
+# ---------------------------------------------------------------------------
+
+
+def _full_pull_scaffold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    files: list[tuple[str, int]],
+    repo_id: str = "mlx-community/Qwen3-0.6B-4bit",
+    revision: str | None = None,
+):
+    """Set up a fully-mirrored pull with R2 serving every file.
+
+    Returns ``(router, revision)`` for the caller's assertions. The
+    caller is responsible for invoking ``download_with_mirror_fallback``
+    inside its own ``with patch(...)`` block — that way each progress
+    test can layer on its own stdout / isatty patches.
+    """
+    if revision is None:
+        revision = "f00d" * 10
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    for fname, size in files:
+        url = f"https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/{fname}"
+        router.add(url, _FakeResponse(200, b"x" * size))
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    return router, revision
+
+
+def test_progress_lines_print_in_expected_format(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Each landed file emits a ``[N/M] <fname> R2 (X MB)`` line.
+
+    The fix for #651: previously the R2 pull printed only a banner, then
+    nothing for minutes. Now the user sees one completion line per file.
+    """
+    files = [
+        ("config.json", 100),
+        ("model.safetensors", 250),
+        ("tokenizer.json", 75),
+    ]
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    router, revision = _full_pull_scaffold(tmp_path, monkeypatch, files, repo_id)
+
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    assert hf_mock.call_count == 0  # every file landed via R2
+    captured = capsys.readouterr()
+
+    # Strip ANSI for the format assertions (the suite runs under pytest,
+    # which captures stdout — the production code therefore takes the
+    # non-TTY branch and emits no ANSI here. We still strip defensively
+    # in case a future fixture turns isatty back on.)
+    import re
+
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    plain = ansi.sub("", captured.out)
+
+    # One ``[N/M] <fname>`` line per file, all three present, none repeated.
+    for n, (fname, _size) in enumerate(files, start=1):
+        marker = f"[{n}/{len(files)}]"
+        # Find the line that mentions this index AND this filename — order
+        # is non-deterministic across workers, so we don't assert which
+        # filename pairs with which index, only that every filename has
+        # SOME ``[*/3]`` marker line.
+        assert marker in plain, f"missing progress marker {marker} in:\n{plain}"
+        assert fname in plain, f"missing filename {fname} in progress output"
+    # R2 tag appears on every per-file line (3 files, all R2 hits).
+    assert plain.count("R2 (") == len(files), (
+        f"expected one ``R2 (`` tag per file, got:\n{plain}"
+    )
+    # Up-front file-count line — the user's #651 complaint was "no
+    # feedback after the banner" — this is the first signal.
+    assert f"Found {len(files)} files" in plain
+    # Final summary still printed.
+    assert "Pulled 3 files" in plain
+
+
+def test_progress_no_ansi_escapes_when_stdout_not_a_tty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """When stdout is not a TTY (pipe, CI), progress must be plain text.
+
+    No bold, no dim, no carriage returns — just one appended line per
+    file. The production code gates ANSI on
+    ``sys.stdout.isatty() and "NO_COLOR" not in os.environ``; this test
+    locks that contract in place so a future refactor doesn't spam
+    escape codes into CI logs.
+    """
+    files = [("config.json", 100), ("model.safetensors", 200)]
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    router, revision = _full_pull_scaffold(tmp_path, monkeypatch, files, repo_id)
+
+    # pytest's capsys already captures stdout into a non-TTY StringIO —
+    # ``isatty()`` returns False there. Belt-and-braces: also clear
+    # NO_COLOR (which would force ANSI off regardless) to make the
+    # isatty branch the actual cause of plain output.
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    captured = capsys.readouterr()
+    # No ANSI escapes anywhere in the output.
+    assert "\x1b[" not in captured.out, (
+        f"non-TTY output must not contain ANSI escapes, got:\n{captured.out!r}"
+    )
+    # No carriage-return animation either — only newlines.
+    assert "\r" not in captured.out, (
+        f"non-TTY output must not use carriage returns, got:\n{captured.out!r}"
+    )
+
+
+def test_progress_file_count_matches_downloaded_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """``[N/M]`` totals must match the number of files actually pulled.
+
+    Off-by-one regression guard: every file emits exactly one progress
+    line, the M-of-N denominator matches the file list length, and the
+    final ``Pulled <K> files`` count agrees with both.
+    """
+    # Mix R2 hits (200) and HF fallbacks (404 → HF) so the test covers
+    # both per-file paths flowing through the same progress counter.
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "beef" * 10
+    files = [
+        ("config.json", 50),
+        ("model.safetensors", 150),
+        ("tokenizer.json", 30),
+        ("tokenizer_config.json", 20),
+    ]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # config.json + tokenizer.json land via R2; the others 404 → HF.
+    r2_ok = {"config.json", "tokenizer.json"}
+    for fname, size in files:
+        url = f"https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/{fname}"
+        if fname in r2_ok:
+            router.add(url, _FakeResponse(200, b"x" * size))
+        else:
+            router.add(url, _FakeResponse(404, b""))
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        expected_size = next(s for n, s in files if n == filename)
+        (snap / filename).write_bytes(b"h" * expected_size)
+        return str(snap / filename)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    captured = capsys.readouterr()
+    import re
+
+    # Count the ``[N/4]`` markers — should be exactly len(files), each
+    # with a distinct N. The denominator M must equal len(files) on
+    # every line (no off-by-one in ``total_files_planned``).
+    markers = re.findall(r"\[(\d+)/(\d+)\]", captured.out)
+    # Filter to the progress markers (denominator == file count). Up-
+    # front and summary lines don't use the ``[N/M]`` shape.
+    progress_markers = [(int(n), int(m)) for n, m in markers if int(m) == len(files)]
+    assert len(progress_markers) == len(files), (
+        f"expected {len(files)} progress lines, got {len(progress_markers)} in:\n"
+        f"{captured.out}"
+    )
+    # Every N in 1..M appears exactly once.
+    assert sorted(n for n, _m in progress_markers) == list(range(1, len(files) + 1))
+    # Final summary count matches.
+    assert f"Pulled {len(files)} files" in captured.out
