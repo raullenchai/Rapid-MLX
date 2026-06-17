@@ -433,7 +433,9 @@ def _try_mirror_prefetch(model_name: str) -> bool:
     except OSError:
         return False
 
+    import http.client
     import urllib.error
+    import urllib.parse
     import urllib.request
 
     base = mirror.rstrip("/")
@@ -445,14 +447,48 @@ def _try_mirror_prefetch(model_name: str) -> bool:
 
     total = len(files)
     for idx, fname in enumerate(files, 1):
+        # Path-traversal guard: a maliciously-crafted ``siblings`` entry
+        # (``../../etc/passwd`` or ``/etc/passwd``) would otherwise let
+        # ``snap_dir / fname`` resolve outside the snapshot directory and
+        # clobber arbitrary files when the rename lands. Reject any
+        # absolute path or any component that normalises to ``..``.
+        fname_parts = Path(fname).parts
+        if Path(fname).is_absolute() or ".." in fname_parts or fname.startswith("/"):
+            print(
+                f"\n  Mirror miss on {fname} (PathTraversal); "
+                "falling back to HuggingFace."
+            )
+            return False
         target = snap_dir / fname
+        # ``resolve`` would chase symlinks we don't trust; compare the
+        # normalised path against ``snap_dir`` as a belt-and-braces
+        # check on the parts check above.
+        try:
+            target_norm = Path(os.path.normpath(str(target)))
+            snap_norm = Path(os.path.normpath(str(snap_dir)))
+            target_norm.relative_to(snap_norm)
+        except ValueError:
+            print(
+                f"\n  Mirror miss on {fname} (PathTraversal); "
+                "falling back to HuggingFace."
+            )
+            return False
         if target.exists() and target.stat().st_size > 0:
             continue
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
             return False
-        url = f"{base}/{owner}/{repo}/{fname}"
+        # URL-encode each path segment so filenames containing spaces,
+        # ``#``, ``?``, ``%`` or other reserved characters resolve to
+        # the right object on the mirror. ``safe=""`` ensures even
+        # ``/`` inside a single segment gets escaped (sibling listings
+        # already split nested dirs into multiple parts, so each part
+        # is a single filesystem component).
+        encoded_fname = "/".join(
+            urllib.parse.quote(part, safe="") for part in fname_parts
+        )
+        url = f"{base}/{owner}/{repo}/{encoded_fname}"
         tmp = target.with_suffix(target.suffix + ".part")
         try:
             req = urllib.request.Request(
@@ -474,18 +510,46 @@ def _try_mirror_prefetch(model_name: str) -> bool:
                             if pct != last_pct:
                                 print(
                                     f"\r  [{idx}/{total}] {fname} "
-                                    f"{read/1e6:6.0f}/{length/1e6:6.0f} MB ({pct:3d}%)",
+                                    f"{read / 1e6:6.0f}/{length / 1e6:6.0f} MB ({pct:3d}%)",
                                     end="",
                                     flush=True,
                                 )
                                 last_pct = pct
+            # Content-Length integrity: an upstream proxy or a
+            # connection drop mid-stream can leave us with a short
+            # ``.part`` whose stream-time read silently terminates
+            # without raising. Renaming such a truncated file into
+            # ``snapshots/<sha>/`` would make the cache look complete
+            # and skip ``snapshot_download`` on the next run too,
+            # leaving the user stuck on a corrupt model. Detect the
+            # truncation here and fall back to HuggingFace.
+            if length > 0 and read != length:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+                print(
+                    f"\n  Mirror miss on {fname} "
+                    f"(short read: {read}/{length} B); "
+                    "falling back to HuggingFace."
+                )
+                return False
             tmp.rename(target)
             if length > 16 * 1024 * 1024 and is_tty:
-                print(
-                    f"\r  [{idx}/{total}] {fname} {length/1e6:6.0f} MB"
-                    f"{' ' * 20}"
-                )
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+                print(f"\r  [{idx}/{total}] {fname} {length / 1e6:6.0f} MB{' ' * 20}")
+        except (
+            urllib.error.URLError,
+            urllib.error.HTTPError,
+            http.client.HTTPException,
+            OSError,
+            ValueError,
+        ) as e:
+            # ``http.client.HTTPException`` (super of
+            # ``IncompleteRead``) covers stream-time failures the
+            # ``URLError``/``HTTPError`` pair misses. ``OSError`` keeps
+            # disk-IO covered, ``ValueError`` catches malformed mirror
+            # responses (e.g. non-integer ``Content-Length``).
             if tmp.exists():
                 try:
                     tmp.unlink()
@@ -2107,8 +2171,10 @@ def pull_command(args):
     # miss we fall through to HuggingFace below.
     if _try_mirror_prefetch(repo_id):
         from pathlib import Path
+
         try:
             from huggingface_hub.constants import HF_HUB_CACHE
+
             cache_root = Path(HF_HUB_CACHE)
         except Exception:
             cache_root = Path.home() / ".cache" / "huggingface" / "hub"
