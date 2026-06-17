@@ -207,8 +207,17 @@ def _download_one_from_r2(
     except OSError as e:
         return False, f"mkdir:{type(e).__name__}"
 
-    # Resume offset — pick up where a prior run left off.
-    existing = tmp.stat().st_size if tmp.exists() else 0
+    # Resume offset — pick up where a prior run left off. Codex
+    # round-3 NIT #2: if the existing .part is unstatable (directory,
+    # permission, etc.) we drop it and start fresh rather than letting
+    # the OSError propagate out of the worker.
+    existing = 0
+    if tmp.exists():
+        try:
+            existing = tmp.stat().st_size
+        except OSError:
+            _safe_unlink(tmp)
+            existing = 0
 
     headers = {"User-Agent": _USER_AGENT}
     if existing > 0:
@@ -421,6 +430,19 @@ def download_with_mirror_fallback(
         if not dub:
             use_r2 = False
 
+    # Codex round-2 BLOCKING #1: custom (non-default)
+    # ``RAPID_MLX_MODEL_MIRROR`` URLs typically point at a simple static
+    # HTTP mirror at ``<base>/<owner>/<repo>/<file>`` and do NOT serve
+    # ``/api/models``. PR #647's whole-repo prefetch worked against
+    # those — silently disabling R2 here would regress that contract.
+    # When the catalog is unreachable AND the base is non-default, fall
+    # back to the direct URL layout so #647-style mirrors keep working.
+    if not use_r2 and catalog is None and base != MIRROR_DEFAULT:
+        own, _, rep = repo_id.partition("/")
+        if own and rep:
+            use_r2 = True
+            dub = f"{own}/{rep}"
+
     is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
     BOLD = "\x1b[1m" if is_tty else ""
     DIM = "\x1b[2m" if is_tty else ""
@@ -467,15 +489,19 @@ def download_with_mirror_fallback(
         # When HF didn't expose a size (rare — README-only repos etc.),
         # fall back to the old non-empty heuristic.
         #
-        # Codex round-2 BLOCKING #3: if ``target`` is a directory, a
-        # broken symlink, or otherwise unstatable, ``stat()`` raises an
-        # OSError that would otherwise collapse this worker into a
-        # "miss" and force the whole pull to fall back to
-        # ``snapshot_download``. Wrap the stat/unlink in OSError
-        # protection and just fall through to the R2/HF re-fetch below
-        # — the rename in ``_download_one_from_r2`` will overwrite
-        # whatever was there.
+        # Codex round-2 BLOCKING #3: if ``target`` is a broken symlink
+        # or otherwise unstatable, ``stat()`` raises an OSError that
+        # would otherwise collapse this worker into a "miss" and force
+        # the whole pull to fall back. Wrap in OSError protection.
+        #
+        # Codex round-3 NIT #3: if a DIRECTORY occupies the target
+        # path, we cannot rename a file over it later — surface that
+        # as a definitive "miss" so the outer caller falls back to
+        # ``snapshot_download`` (which has its own conflict resolution
+        # and a better error path for the user).
         try:
+            if target.is_dir() and not target.is_symlink():
+                return fname, "miss", 0
             if target.exists():
                 cached_size = target.stat().st_size
                 if expected_size and cached_size != expected_size:
@@ -485,8 +511,10 @@ def download_with_mirror_fallback(
                 elif cached_size > 0:
                     return fname, "cached", cached_size
         except OSError:
-            # Target is a directory / broken symlink / permission
-            # denied. Try to remove it (best-effort) and fall through.
+            # Target is a broken symlink / permission denied / etc.
+            # Try to remove it (best-effort) and fall through. The
+            # rename in ``_download_one_from_r2`` will then place a
+            # fresh file at the path.
             _safe_unlink(target)
 
         if use_r2 and catalog_entry is not None:
@@ -527,9 +555,14 @@ def download_with_mirror_fallback(
         futures = {pool.submit(_do_file, item): item[0] for item in files}
         for fut in as_completed(futures):
             fname = futures[fut]
+            # Codex round-3 NIT #1: narrow the worker exception net.
+            # Only convert expected network / filesystem errors into a
+            # silent "miss". Programmer errors (TypeError, etc.) and
+            # HF validation errors propagate so misuse surfaces a real
+            # stack trace instead of disappearing into the fallback.
             try:
                 _, kind, size = fut.result()
-            except Exception:
+            except (OSError, urllib.error.URLError, urllib.error.HTTPError):
                 kind, size = "miss", 0
             if kind == "r2":
                 r2_hits += 1
