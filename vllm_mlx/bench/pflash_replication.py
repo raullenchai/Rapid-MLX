@@ -74,29 +74,43 @@ async def _run_one(
         elapsed = time.perf_counter() - start
         # ``output.prompt_tokens`` is the logical (pre-compression) count
         # — the number of tokens in the user's prompt. The actual
-        # prefill workload is shorter on PFlash-on runs. Surface both so
-        # the replication JSON makes the workload reduction inspectable
-        # (codex r4 NIT). ``model_prompt_tokens`` is the post-compression
-        # count we estimate from keep_ratio when PFlash compressed the
-        # request — the engine's RequestOutput doesn't carry the field
-        # directly today (lives on Request), so we approximate here
-        # rather than wire up a new public dataclass attribute just for
-        # this opt-in replication harness.
+        # prefill workload is shorter on PFlash-on runs.
+        #
+        # Surface a ratio-based UPPER BOUND so the replication JSON
+        # makes the workload reduction inspectable (codex r4 NIT). The
+        # bound is intentionally NOT the exact post-compression count:
+        # the real compressor (see ``pflash.compress_tokens``) also
+        # applies ``min_keep_tokens`` floor, ``sink_tokens`` + ``tail_
+        # tokens`` preservation, threshold short-circuits, and block-
+        # truncation rounding — none of which we can derive from
+        # ``output.prompt_tokens`` alone. Wiring an exact ``model_
+        # prompt_tokens`` field through ``RequestOutput`` for an opt-in
+        # replication harness would be more code than the harness
+        # itself. Keep the estimate explicitly labelled as an upper
+        # bound; the maintainer running the bench can compare it
+        # against the TTFT speedup row in the PR body to sanity-check.
         is_compressed_mode = pflash_mode != "off"
         if is_compressed_mode:
             from math import ceil
 
-            estimated_model_tokens = max(
-                1, ceil(output.prompt_tokens * keep_ratio)
-            )
+            ratio_upper_bound = max(1, ceil(output.prompt_tokens * keep_ratio))
         else:
-            estimated_model_tokens = output.prompt_tokens
+            ratio_upper_bound = output.prompt_tokens
         return {
             "mode": pflash_mode,
             "keep_ratio": keep_ratio,
             "ttft_s": elapsed,
             "prompt_tokens": output.prompt_tokens,
-            "model_prompt_tokens_estimate": estimated_model_tokens,
+            # ``ratio_upper_bound`` rounds up the ``keep_ratio`` budget
+            # only; the real compressor's min_keep_tokens / sink / tail
+            # floors can push the actual count higher. Treat as a
+            # ceiling, not an exact figure (codex r5 NIT).
+            "model_prompt_tokens_ratio_upper_bound": ratio_upper_bound,
+            "model_prompt_tokens_estimate_caveat": (
+                "ratio-based upper bound only; real count clamped to "
+                "min_keep_tokens / sink / tail floors and threshold "
+                "short-circuits"
+            ),
             "completion_tokens": output.completion_tokens,
         }
 

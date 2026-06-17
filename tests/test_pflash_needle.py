@@ -129,14 +129,19 @@ def test_pflash_default_preserves_needle(ctx_tokens: int, position_frac: float) 
     )
 
 
-def test_pflash_aggressive_keep_ratio_can_drop_needle() -> None:
-    """Inverse / negative control: at aggressive ``keep_ratio=0.02``
-    the compressor may legitimately drop the needle. If this test
-    starts unconditionally PASSING with the needle present, the
-    compressor is silently ignoring the budget and the positive
-    test above is no longer load-bearing.
+def test_pflash_compressor_honors_keep_budget() -> None:
+    """Budget invariant: at aggressive ``keep_ratio=0.02`` with a tiny
+    ``min_keep_tokens`` floor the compressor MUST shrink the output
+    well below the input. Guards against the "compressor silently
+    returns the unchanged prompt" regression class — without this
+    check, the positive needle test above could pass trivially if a
+    future refactor inadvertently made compression a no-op on this
+    workload shape.
+
+    Re-purposed from a previous "needle may be dropped" claim that
+    didn't actually assert the negative condition (codex r5 BLOCKING).
     """
-    prompt, needle = _build_token_haystack(ctx_tokens=16_384, needle_position_frac=0.5)
+    prompt, _ = _build_token_haystack(ctx_tokens=16_384, needle_position_frac=0.5)
     config = PFlashConfig(
         mode="always",
         threshold=1,
@@ -149,11 +154,31 @@ def test_pflash_aggressive_keep_ratio_can_drop_needle() -> None:
         stride_blocks=0,
     )
     result = compress_tokens(prompt, config)
-    assert result.compressed is True
-    # We assert the budget was honored; whether the needle survives at
-    # this aggressive ratio is informational. This guards against the
-    # "compressor silently bails out" regression class.
-    assert len(result.tokens) < len(prompt)
+    assert result.compressed is True, (
+        "aggressive keep_ratio must engage compression — if this fires "
+        "the threshold/mode short-circuits are masking the budget gate"
+    )
+    # Budget cap is ``ceil(N * keep_ratio)`` clamped up to
+    # ``min_keep_tokens``. With N=16_384, keep_ratio=0.02, that ceiling
+    # is 328 (= ceil(16_384 * 0.02)); ``min_keep_tokens=64`` is below
+    # that, so the effective cap is the ratio. Allow a small slack
+    # window for sink+tail overflow rounding from ``_keep_budget``.
+    expected_max = int(len(prompt) * 0.02) + config.sink_tokens + config.tail_tokens + 32
+    assert len(result.tokens) <= expected_max, (
+        f"compressor kept {len(result.tokens)} tokens out of {len(prompt)} "
+        f"(expected <= {expected_max}). Budget gate is not honoring keep_ratio."
+    )
+    # Inverse to the positive needle test above: the positive test
+    # asserts the needle survives at keep_ratio=0.20. Here we don't
+    # require the needle to drop (PFlash's overlap scoring may still
+    # preserve it under extreme compression because the query tail
+    # mentions the needle ids), but we DO require the output to be
+    # materially smaller than the input — without that, the positive
+    # test could be passing for the wrong reason.
+    assert len(result.tokens) < len(prompt) // 4, (
+        f"compressor produced {len(result.tokens)} tokens — expected "
+        f"materially less than 25% of {len(prompt)} at keep_ratio=0.02"
+    )
 
 
 # ---------------------------------------------------------------------------
