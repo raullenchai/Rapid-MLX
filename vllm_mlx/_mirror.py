@@ -414,50 +414,62 @@ def download_with_mirror_fallback(
     except OSError:
         return False
 
-    # Catalog lookup — only probe R2 if the catalog confirms the alias
-    # is mirrored. Catalog fetch failure (network, 5xx) is treated as
-    # "no R2 for this run" — we still attempt the HF path per file.
+    # Catalog lookup — for the project default mirror, the catalog
+    # confirms whether the alias is mirrored and gives us
+    # ``download_url_base``. For a custom mirror (user set
+    # ``RAPID_MLX_MODEL_MIRROR=<other URL>``), the catalog endpoint may
+    # not exist — fall back to the direct-layout convention
+    # (``<base>/<owner>/<repo>/<file>``) that PR #647 introduced. Codex
+    # round-4 BLOCKING #1+#2 caught this regression: requiring a
+    # catalog entry to attempt R2 would silently skip the entire
+    # mirror for custom URLs without ``/api/models``.
     catalog = fetch_catalog(base)
-    catalog_entry = None
+    catalog_entry: dict[str, Any] | None = None
     catalog_mirrored = False
     if catalog is not None:
         catalog_entry = find_catalog_entry(catalog, repo_id)
         catalog_mirrored = catalog_entry is not None and _is_mirrored(catalog_entry)
 
-    use_r2 = catalog_mirrored and catalog_entry is not None
-    if use_r2:
+    # Decide download_url_base + whether to try R2:
+    #
+    # * Catalog says mirrored → use the catalog's download_url_base.
+    # * Catalog says NOT mirrored → skip R2 entirely (the catalog is
+    #   authoritative for the project default mirror).
+    # * Catalog absent (custom mirror or 5xx) → try direct layout for
+    #   each file (PR #647 contract); per-file 404 still falls back to
+    #   HF.
+    dub = ""
+    use_r2 = False
+    if catalog_mirrored and catalog_entry is not None:
         dub = str(catalog_entry.get("download_url_base", "")).strip()
-        if not dub:
-            use_r2 = False
-
-    # Codex round-2 BLOCKING #1: custom (non-default)
-    # ``RAPID_MLX_MODEL_MIRROR`` URLs typically point at a simple static
-    # HTTP mirror at ``<base>/<owner>/<repo>/<file>`` and do NOT serve
-    # ``/api/models``. PR #647's whole-repo prefetch worked against
-    # those — silently disabling R2 here would regress that contract.
-    # When the catalog is unreachable AND the base is non-default, fall
-    # back to the direct URL layout so #647-style mirrors keep working.
-    if not use_r2 and catalog is None and base != MIRROR_DEFAULT:
-        own, _, rep = repo_id.partition("/")
-        if own and rep:
-            use_r2 = True
-            dub = f"{own}/{rep}"
+        use_r2 = bool(dub)
+    elif catalog is None:
+        # Custom mirror or transient catalog outage — fall back to
+        # ``/<owner>/<repo>/<file>``. The per-file fallback still kicks
+        # in on 404 so this is safe even when the mirror has nothing.
+        dub = f"/{owner}/{repo}/"
+        use_r2 = True
 
     is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
     BOLD = "\x1b[1m" if is_tty else ""
     DIM = "\x1b[2m" if is_tty else ""
     RESET = "\x1b[0m" if is_tty else ""
 
-    if use_r2:
+    if use_r2 and catalog_mirrored:
         _print_dim(
             f"  {BOLD}Pulling {repo_id}{RESET} {DIM}(R2 mirror, fallback: HF){RESET}"
         )
-    elif catalog is None:
+    elif use_r2:
+        # Catalog unreachable (custom mirror or transient outage); we
+        # still try direct ``<base>/<owner>/<repo>/<file>`` URLs and
+        # fall back to HF per file on 404. Preserves PR #647's contract
+        # for non-default ``RAPID_MLX_MODEL_MIRROR`` URLs.
         _print_dim(
-            f"  {BOLD}Pulling {repo_id}{RESET} {DIM}(catalog unreachable, "
-            f"using HF){RESET}"
+            f"  {BOLD}Pulling {repo_id}{RESET} {DIM}(mirror direct-layout, "
+            f"fallback: HF){RESET}"
         )
     else:
+        # Catalog explicitly said this alias is not mirrored.
         _print_dim(
             f"  {BOLD}Pulling {repo_id}{RESET} {DIM}(not mirrored, using HF){RESET}"
         )
@@ -517,7 +529,10 @@ def download_with_mirror_fallback(
             # fresh file at the path.
             _safe_unlink(target)
 
-        if use_r2 and catalog_entry is not None:
+        if use_r2:
+            # ``dub`` is set above to either the catalog's
+            # download_url_base (default mirror) or the synthetic
+            # ``/<owner>/<repo>/`` (custom mirror / catalog absent).
             url = _build_r2_url(base, dub, fname)
             ok, _reason = _download_one_from_r2(url, target, expected_size)
             if ok:

@@ -374,6 +374,12 @@ def test_catalog_500_falls_through_to_hf(
         "https://models.rapidmlx.com/api/models",
         _FakeResponse(500, b"oops"),
     )
+    # Direct-layout R2 attempt is still made when catalog is
+    # unreachable (PR #647 compat). Mirror returns 404; HF picks up.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(404, b""),
+    )
 
     def _fake_hf(repo_id, filename, revision, cache_dir=None):
         snap = (
@@ -398,15 +404,63 @@ def test_catalog_500_falls_through_to_hf(
         ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
 
     assert ok
-    # HF served the only file even though catalog 500'd.
+    # HF served the only file: catalog 500'd, direct R2 layout 404'd,
+    # HF picked up. The pull still completes transparently.
     assert hf_mock.call_count == 1
-    # No per-file R2 requests (catalog miss disables R2 for this run).
-    r2_file_calls = [
-        r
-        for r in router.requests
-        if r["url"] != "https://models.rapidmlx.com/api/models"
-    ]
-    assert r2_file_calls == []
+
+
+# ---------------------------------------------------------------------------
+# PR #647 compat — custom mirror URLs without /api/models must still
+# get the direct-layout fallback (codex round-4 BLOCKING #1+#2).
+# ---------------------------------------------------------------------------
+
+
+def test_custom_mirror_without_catalog_uses_direct_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """User sets RAPID_MLX_MODEL_MIRROR=<custom URL> that has no
+    /api/models endpoint. We must try ``<base>/<owner>/<repo>/<file>``
+    (the PR #647 contract) instead of silently routing everything via
+    HF.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "5555" * 10
+    files = [("config.json", 100), ("model.safetensors", 200)]
+
+    router = _UrlRouter()
+    # Custom mirror's /api/models doesn't exist — 404.
+    router.add(
+        "https://custom.example.com/api/models",
+        _FakeResponse(404, b"not found"),
+    )
+    # But the direct file URLs DO work.
+    router.add(
+        "https://custom.example.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+    router.add(
+        "https://custom.example.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, b"y" * 200),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://custom.example.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # Both files came from the custom mirror, not HF.
+    assert hf_mock.call_count == 0
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    assert (snap / "config.json").read_bytes() == b"x" * 100
+    assert (snap / "model.safetensors").read_bytes() == b"y" * 200
 
 
 # ---------------------------------------------------------------------------
