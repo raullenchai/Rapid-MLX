@@ -92,6 +92,27 @@ def fetch_catalog(
 
     Returns ``None`` on any failure (network, 5xx, malformed JSON) — the
     caller treats this as "skip R2, go straight to HF".
+
+    Most callers want to know WHY the catalog isn't available — use
+    :func:`fetch_catalog_with_status` to get the HTTP status code
+    alongside the body (codex round-6 NIT #3).
+    """
+    data, _ = fetch_catalog_with_status(base, timeout=timeout)
+    return data
+
+
+def fetch_catalog_with_status(
+    base: str, timeout: float = _CATALOG_TIMEOUT
+) -> tuple[dict[str, Any] | None, int | None]:
+    """Like :func:`fetch_catalog` but also returns the HTTP status code.
+
+    Returned status:
+    * 200 on success (with parsed body).
+    * The actual status (e.g. 404, 503) on a non-200 response with body
+      None — lets the caller distinguish "no catalog endpoint here"
+      (404 → safe to try direct-layout) from "transient failure" (5xx
+      → don't waste time on direct-layout, just use HF).
+    * ``None`` on network errors / malformed JSON — treat as transient.
     """
     url = f"{base.rstrip('/')}/api/models"
     req = urllib.request.Request(
@@ -103,24 +124,27 @@ def fetch_catalog(
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status != 200:
-                return None
+            status = resp.status
+            if status != 200:
+                return None, status
             raw = resp.read()
+    except urllib.error.HTTPError as e:
+        # 4xx / 5xx — capture the status so the caller can decide.
+        return None, e.code
     except (
         urllib.error.URLError,
-        urllib.error.HTTPError,
         http.client.HTTPException,
         OSError,
         ValueError,
     ):
-        return None
+        return None, None
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
+        return None, status
     if not isinstance(data, dict):
-        return None
-    return data
+        return None, status
+    return data, status
 
 
 def find_catalog_entry(catalog: dict[str, Any], hf_path: str) -> dict[str, Any] | None:
@@ -452,11 +476,27 @@ def download_with_mirror_fallback(
     # let us validate R2 responses. Without it we can't pin a revision,
     # which would mean writing files under an unknowable sha — so fall
     # through to HF if this fails.
-    try:
-        from huggingface_hub import model_info
+    #
+    # Codex round-6 BLOCKING #1: narrow the exception net. Only swallow
+    # expected network / HF API errors; programmer errors (TypeError,
+    # AttributeError) and validation errors propagate so misuse
+    # surfaces a real stack trace.
+    from huggingface_hub import model_info
+    from huggingface_hub.errors import (
+        EntryNotFoundError,
+        HfHubHTTPError,
+    )
+    from huggingface_hub.utils import RepositoryNotFoundError
 
+    try:
         info = model_info(repo_id, files_metadata=True)
-    except Exception:
+    except (
+        EntryNotFoundError,
+        RepositoryNotFoundError,
+        HfHubHTTPError,
+        OSError,
+        TimeoutError,
+    ):
         return False
 
     revision = getattr(info, "sha", None)
@@ -504,11 +544,14 @@ def download_with_mirror_fallback(
     # ``download_url_base``. For a custom mirror (user set
     # ``RAPID_MLX_MODEL_MIRROR=<other URL>``), the catalog endpoint may
     # not exist — fall back to the direct-layout convention
-    # (``<base>/<owner>/<repo>/<file>``) that PR #647 introduced. Codex
-    # round-4 BLOCKING #1+#2 caught this regression: requiring a
-    # catalog entry to attempt R2 would silently skip the entire
-    # mirror for custom URLs without ``/api/models``.
-    catalog = fetch_catalog(base)
+    # (``<base>/<owner>/<repo>/<file>``) that PR #647 introduced.
+    #
+    # Codex round-6 NIT #3: distinguish "catalog endpoint not here"
+    # (404 on custom mirror → use direct-layout) from "transient or
+    # malformed" (5xx, network error, bad JSON → use HF only). A
+    # misconfigured custom mirror returning 500 would otherwise eat
+    # ``ceil(files / workers) * 60s`` of per-file timeouts.
+    catalog, catalog_status = fetch_catalog_with_status(base)
     catalog_entry: dict[str, Any] | None = None
     catalog_mirrored = False
     if catalog is not None:
@@ -524,17 +567,20 @@ def download_with_mirror_fallback(
     #   advertised, so an outage is a real signal; route straight to
     #   HF instead of incurring up to ``ceil(files / workers) * 60s``
     #   of mirror timeouts (codex round-4 BLOCKING #3).
-    # * Catalog absent on a CUSTOM mirror → user-configured base URL
-    #   likely doesn't serve /api/models; fall back to direct layout
+    # * Catalog 404 on a CUSTOM mirror → the user-configured base URL
+    #   doesn't serve /api/models; fall back to direct layout
     #   (PR #647 contract). Per-file 404 still falls back to HF.
+    # * Catalog 5xx / network / malformed on a CUSTOM mirror →
+    #   transient or misconfigured; skip direct-layout and use HF.
     dub = ""
     use_r2 = False
+    is_default_mirror = base.rstrip("/") == MIRROR_DEFAULT.rstrip("/")
     if catalog_mirrored and catalog_entry is not None:
         dub = str(catalog_entry.get("download_url_base", "")).strip()
         use_r2 = bool(dub)
-    elif catalog is None and base.rstrip("/") != MIRROR_DEFAULT.rstrip("/"):
-        # Custom mirror — try direct layout. The PR #647 contract was
-        # ``<base>/<owner>/<repo>/<file>``.
+    elif catalog is None and not is_default_mirror and catalog_status == 404:
+        # Custom mirror without /api/models — try direct layout. The
+        # PR #647 contract was ``<base>/<owner>/<repo>/<file>``.
         dub = f"/{owner}/{repo}/"
         use_r2 = True
 

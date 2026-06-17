@@ -406,15 +406,21 @@ def _try_mirror_prefetch(model_name: str) -> bool:
 
     Set ``RAPID_MLX_MODEL_MIRROR=""`` to disable R2 entirely and force
     HuggingFace.
+
+    Codex round-6 BLOCKING #2: the mirror module already returns
+    ``False`` on every recoverable network/cache error, so the only
+    catch worth doing here is ``ImportError`` (mirror module disabled
+    or missing in a minimal install). Programmer errors propagate so
+    bugs in the mirror module surface as real stack traces instead of
+    silently routing to ``snapshot_download``.
     """
     try:
         from vllm_mlx._mirror import download_with_mirror_fallback
-
-        return download_with_mirror_fallback(model_name)
-    except Exception:
-        # Defensive — any unexpected error in the mirror module must
-        # not block the pull. The caller's HF path is the safe fallback.
+    except ImportError:
+        # Mirror module not available (minimal-deps install or
+        # deliberately removed). Use the legacy HF path.
         return False
+    return download_with_mirror_fallback(model_name)
 
 
 def _ensure_model_downloaded(model_name: str) -> None:

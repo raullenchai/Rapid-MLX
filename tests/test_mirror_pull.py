@@ -1008,6 +1008,68 @@ def test_part_tempfile_does_not_collide_with_dot_part_repo_asset(
 
 
 # ---------------------------------------------------------------------------
+# Codex round-6 NIT #3 — custom mirror with 5xx on /api/models should
+# NOT trigger direct-layout (would waste up to ~60s per file on a
+# misconfigured mirror). 404 is the "no catalog endpoint here" signal
+# and DOES trigger direct-layout (handled by
+# test_custom_mirror_without_catalog_uses_direct_layout above).
+# ---------------------------------------------------------------------------
+
+
+def test_custom_mirror_with_5xx_catalog_skips_direct_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "5555" * 10
+    files = [("config.json", 100)]
+
+    router = _UrlRouter()
+    # Custom mirror's /api/models returns 503 (transient or
+    # misconfigured) — NOT 404. We must NOT probe the direct-layout R2
+    # URL, just route to HF.
+    router.add(
+        "https://custom.example.com/api/models",
+        _FakeResponse(503, b"backend down"),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        target = snap / filename
+        target.write_bytes(b"h" * 100)
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://custom.example.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf) as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # HF served the file. Zero R2 file probes.
+    assert hf_mock.call_count == 1
+    r2_file_calls = [
+        r
+        for r in router.requests
+        if r["url"] != "https://custom.example.com/api/models"
+    ]
+    assert r2_file_calls == [], (
+        f"5xx catalog must not trigger direct-layout, got: {r2_file_calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Codex round-5 BLOCKING #1 — LFS sha256 from HF metadata is verified on
 # R2 downloads. A same-size-but-corrupt mirror object is rejected.
 # ---------------------------------------------------------------------------
