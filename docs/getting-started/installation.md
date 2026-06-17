@@ -8,8 +8,14 @@
 ## Install with Homebrew (recommended)
 
 ```bash
-brew install raullenchai/rapid-mlx/rapid-mlx
+brew tap raullenchai/rapid-mlx
+brew install rapid-mlx
 ```
+
+The `brew tap` step is required: Homebrew 4.x refuses one-shot installs from
+third-party taps (`Refusing to load formula ... from untrusted tap`). The tap
+only needs to be added once per machine; `brew upgrade rapid-mlx` after that
+works directly.
 
 ## Install with pip
 
@@ -84,6 +90,12 @@ Use a smaller quantized model:
 rapid-mlx serve qwen3.5-4b-4bit
 ```
 
+### `Refusing to load formula ... from untrusted tap`
+
+Homebrew 4.x refuses one-shot installs from third-party taps. Use the
+two-step install at the top of this page (`brew tap raullenchai/rapid-mlx`
+then `brew install rapid-mlx`). Only needs to be done once per machine.
+
 ### `brew install` fails with `Operation not permitted`
 
 Brew 5.x's install sandbox sometimes can't auto-tap `homebrew/core` mid-install.
@@ -91,5 +103,6 @@ Pre-tap it once, then retry:
 
 ```bash
 brew tap homebrew/core --force   # ~1.3 GB, one-time
-brew install raullenchai/rapid-mlx/rapid-mlx
+brew tap raullenchai/rapid-mlx
+brew install rapid-mlx
 ```

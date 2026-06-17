@@ -62,7 +62,8 @@
 
 ```bash
 # Homebrew (recommended — just works, no Python version issues)
-brew install raullenchai/rapid-mlx/rapid-mlx
+brew tap raullenchai/rapid-mlx
+brew install rapid-mlx
 
 # pip (requires Python 3.10+ — macOS ships 3.9, so install Python first if needed)
 pip install rapid-mlx
@@ -78,10 +79,13 @@ curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
 
 > **"No matching distribution" error?** Your Python is too old. Run `python3 --version` — if it says 3.9, install a newer Python: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`
 
+> **`Refusing to load formula ... from untrusted tap`?** Homebrew 4.x defaults to refusing direct one-shot installs from third-party taps. Run `brew tap raullenchai/rapid-mlx` first (the two-step block above), then `brew install rapid-mlx`. One-time per machine.
+
 > **`Tapping homebrew/core` / `Operation not permitted` during `brew install`?** Brew 5.x's install sandbox can't auto-tap `homebrew/core` mid-install. Pre-tap it once, then retry:
 > ```bash
 > brew tap homebrew/core --force   # ~1.3 GB, one-time
-> brew install raullenchai/rapid-mlx/rapid-mlx
+> brew tap raullenchai/rapid-mlx
+> brew install rapid-mlx
 > ```
 
 **Step 2 — Talk to a model right now** (one command, no second terminal):
