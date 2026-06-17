@@ -390,16 +390,19 @@ def _check_memory_capacity(model_name: str) -> None:
 
 
 def _try_mirror_prefetch(model_name: str) -> bool:
-    """Pre-fetch a HuggingFace repo from a user-configured R2/S3 mirror.
+    """Pre-fetch a HuggingFace repo from an R2/S3 mirror.
 
-    When ``RAPID_MLX_MODEL_MIRROR`` is set, every file in the repo is fetched
-    from ``${mirror}/<owner>/<repo>/<filename>`` straight into the HF cache
-    layout (``snapshots/<rev>/<file>`` + ``refs/main``). Returns True if the
-    whole snapshot landed locally so the caller can skip ``snapshot_download``.
-    Any miss (env unset, mirror 404, network error) returns False and lets the
-    caller fall through to the HF Hub path unchanged.
+    Default mirror is ``https://models.rapidmlx.com`` (the rapid-mlx project's
+    public R2 mirror); override with ``RAPID_MLX_MODEL_MIRROR=<url>`` or set
+    the env var to an empty string to force HF Hub. Every file in the repo is
+    fetched from ``${mirror}/<owner>/<repo>/<filename>`` straight into the HF
+    cache layout (``snapshots/<rev>/<file>`` + ``refs/main``). Returns True if
+    the whole snapshot landed locally so the caller can skip
+    ``snapshot_download``. Any miss (mirror 404, network error) returns False
+    and lets the caller fall through to the HF Hub path unchanged.
     """
-    mirror = os.environ.get("RAPID_MLX_MODEL_MIRROR", "").strip()
+    MIRROR_DEFAULT = "https://models.rapidmlx.com"
+    mirror = os.environ.get("RAPID_MLX_MODEL_MIRROR", MIRROR_DEFAULT).strip()
     if not mirror or "/" not in model_name:
         return False
     try:
