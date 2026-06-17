@@ -216,12 +216,38 @@ def _build_r2_url(base: str, download_url_base: str, fname: str) -> str:
     return f"{base}/{path}/{encoded}"
 
 
+def _sidecar_key_for(relpath: str) -> str:
+    """Build a filesystem-safe key for a file's sidecar artifacts.
+
+    Codex round-14 BLOCKING #1+#2: the ``.part`` and ``.lock`` sidecars
+    used to live next to the target inside ``snapshots/<sha>/``. That
+    lets a repository file legitimately named ``.foo.rapid-mlx-mirror
+    .part`` (yes, file names can start with dots) collide with the
+    temp file for ``foo``, and similarly for ``.lock``. Move sidecars
+    into ``repo_root/.rapid-mlx-mirror/`` with a flattened key derived
+    from the *relative* path — no chance of collision with an HF
+    sibling listing because no HF repo ships files with our key shape.
+
+    Key shape: URL-encoded relpath (path separators replaced with
+    ``__``). E.g. ``model/00001-of-00002.safetensors`` →
+    ``model__00001-of-00002.safetensors``.
+    """
+    # ``relpath`` has already been ``_validate_relative_filename``-d so
+    # no traversal escapes. The URL-encode handles weird chars; the
+    # ``/`` → ``__`` swap flattens directory structure so we can stash
+    # everything in a single sidecar dir.
+    encoded = urllib.parse.quote(relpath, safe="")
+    return encoded.replace("/", "__").replace("%2F", "__").replace("%2f", "__")
+
+
 def _download_one_from_r2(
     url: str,
     target: Path,
     expected_size: int | None,
     *,
     expected_sha256: str | None = None,
+    sidecar_dir: Path,
+    sidecar_key: str,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
 
@@ -232,6 +258,13 @@ def _download_one_from_r2(
     Supports resume via ``Range: bytes=<offset>-`` when a non-empty
     ``.part`` already exists from a prior aborted run.
 
+    ``sidecar_dir`` is the per-repo private sidecar directory
+    (``repo_root/.rapid-mlx-mirror/``) where the ``.part`` and ``.lock``
+    files live — kept OUT of ``snapshots/<sha>/`` so they can't
+    collide with legitimate repo assets (codex round-14 BLOCKING #1
+    + #2). ``sidecar_key`` is the per-file key from
+    :func:`_sidecar_key_for`.
+
     Codex round-5 BLOCKING #1: when ``expected_sha256`` is provided
     (HF's LFS sha256 metadata, set on weight shards), the downloaded
     bytes are checked against it before the rename. A mirror serving a
@@ -240,32 +273,19 @@ def _download_one_from_r2(
     back to size-only — the realistic threat surface for tiny config
     files is much smaller.
     """
-    # Codex round-4 BLOCKING #1: the naive ``target + ".part"`` collides
-    # with a repository that legitimately contains both ``foo`` and
-    # ``foo.part`` — parallel workers could clobber each other's
-    # partial file. Namespace the temp file with a hidden prefix +
-    # ``.rapid-mlx-mirror.part`` suffix that no real HF asset shares.
-    tmp = target.parent / f".{target.name}.rapid-mlx-mirror.part"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         return False, f"mkdir:{type(e).__name__}"
 
-    # Codex round-11 BLOCKING #2: a deterministic ``.part`` is racy
-    # across processes — two concurrent ``rapid-mlx pull / serve`` runs
-    # for the same model would unlink, append, or rename each other's
-    # partial files. We don't want to take on a third-party lock dep,
-    # so use stdlib ``fcntl.flock`` on a sibling ``.lock`` file: posix
-    # acquires an exclusive advisory lock that blocks any other rapid-
-    # mlx process on the same path until we're done. The lock is
-    # released on close. On Windows ``fcntl`` is missing — fall back to
-    # best-effort (no lock) since rapid-mlx is currently
-    # MLX/macOS-only anyway, so the multi-process race window is
-    # essentially the user holding TWO terminals on the same Mac.
-    #
-    # Resume from a pre-existing ``.part`` is preserved: once we hold
-    # the lock, the visible ``.part`` is ours to extend.
-    lock_path = target.parent / f".{target.name}.rapid-mlx-mirror.lock"
+    tmp = sidecar_dir / f"{sidecar_key}.part"
+    lock_path = sidecar_dir / f"{sidecar_key}.lock"
+
+    # Codex round-11 BLOCKING #2 / round-12 BLOCKING: ``fcntl.flock``
+    # advisory lock on the lock sidecar. The lock file is kept on disk
+    # after release so subsequent acquirers see the same inode (which
+    # is what flock actually serializes on).
     lock_fh = _acquire_part_lock(lock_path)
     try:
         return _do_r2_download(
@@ -753,9 +773,17 @@ def download_with_mirror_fallback(
     repo_root = cache_root / f"models--{owner}--{repo}"
     snap_dir = repo_root / "snapshots" / revision
     refs_dir = repo_root / "refs"
+    # Codex round-14 BLOCKING #1+#2: keep ``.part`` and ``.lock``
+    # sidecars OUT of ``snapshots/<sha>/`` so they can't collide with
+    # legitimate repo assets named like our temp files. The leading
+    # ``.rapid-mlx-mirror`` directory is namespaced under the repo
+    # root, so it shares the lifecycle of the cached model but never
+    # mingles with HF's own snapshot files.
+    sidecar_dir = repo_root / ".rapid-mlx-mirror"
     try:
         snap_dir.mkdir(parents=True, exist_ok=True)
         refs_dir.mkdir(parents=True, exist_ok=True)
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False
 
@@ -871,6 +899,15 @@ def download_with_mirror_fallback(
         # symlink across drives), but everything *inside* it must be a
         # real directory.
         try:
+            # Codex round-14 BLOCKING #4: also check ``snap_dir`` itself.
+            # A pre-existing ``snapshots/<sha>`` symlink to ``/etc/`` (or
+            # any other location) would make every write inside this
+            # function escape the HF cache despite the parent walk —
+            # the walk skips ``snap_dir`` because it's the loop's
+            # terminator. Reject up front if it's a symlink, since
+            # legitimate HF caches use real directories at this level.
+            if snap_dir.is_symlink():
+                return fname, "skip-symlink-snapdir", 0
             parent = target.parent
             # Iterate parents strictly between snap_dir and target.
             while parent != snap_dir and snap_dir in parent.parents:
@@ -919,18 +956,23 @@ def download_with_mirror_fallback(
             if target.is_symlink():
                 try:
                     resolved = target.resolve(strict=False)
-                    repo_root_resolved = repo_root.resolve(strict=False)
+                    # Codex round-14 BLOCKING #3: tighten the symlink
+                    # acceptance window. Round-13 accepted anywhere
+                    # under ``repo_root``, which still leaves a tiny
+                    # internal-cache attack surface — e.g. a symlink
+                    # pointing at ``refs/main`` (40 ASCII bytes) or
+                    # another snapshot's file. Real HF cache symlinks
+                    # ALWAYS point under ``repo_root/blobs/<hash>``,
+                    # so restrict to exactly that subtree.
+                    blobs_root_resolved = (repo_root / "blobs").resolve(strict=False)
                 except OSError:
                     _safe_unlink(target)
                     raise  # caught by outer OSError handler below
                 try:
-                    # ``repo_root`` was set earlier as ``cache_root /
-                    # f"models--{owner}--{repo}"``. Anything inside the
-                    # repo's blobs/ subdir is the legitimate HF layout.
-                    resolved.relative_to(repo_root_resolved)
+                    resolved.relative_to(blobs_root_resolved)
                 except ValueError:
-                    # Symlink escapes the repo's cache dir → malicious
-                    # or accidentally-misplaced. Drop and refetch.
+                    # Symlink escapes the blobs/ store → malicious or
+                    # accidentally-misplaced. Drop and refetch.
                     _safe_unlink(target)
                     # Don't try the rest of the cached-checks on a
                     # deleted target — fall through to R2/HF.
@@ -951,7 +993,25 @@ def download_with_mirror_fallback(
                     # mismatches, drop the file and refetch. For non-LFS
                     # files (no sha256), size remains the strongest
                     # check we have, which is fine for tiny configs.
+                    #
+                    # Codex round-14 NIT #5: re-hashing every cached LFS
+                    # shard on a warm pull turns a no-op into a full
+                    # disk scan of the model (10s of GB). HuggingFace's
+                    # cache layout names blob files by their sha256
+                    # (``blobs/<hex>``), so if our target is a symlink
+                    # pointing at ``blobs/<expected_sha256>`` we already
+                    # know the bytes match — skip the rehash.
                     if expected_sha256 is not None:
+                        if target.is_symlink():
+                            try:
+                                blob_name = target.resolve(strict=False).name
+                            except OSError:
+                                blob_name = ""
+                            if blob_name == expected_sha256:
+                                return fname, "cached", cached_size
+                            # Symlink name doesn't match HF's blob hash
+                            # convention — fall through to a full
+                            # rehash to be safe.
                         import hashlib
 
                         hasher = hashlib.sha256()
@@ -988,7 +1048,12 @@ def download_with_mirror_fallback(
             # ``/<owner>/<repo>/`` (custom mirror / catalog absent).
             url = _build_r2_url(base, dub, fname)
             ok, _reason = _download_one_from_r2(
-                url, target, expected_size, expected_sha256=expected_sha256
+                url,
+                target,
+                expected_size,
+                expected_sha256=expected_sha256,
+                sidecar_dir=sidecar_dir,
+                sidecar_key=_sidecar_key_for(fname),
             )
             if ok:
                 try:

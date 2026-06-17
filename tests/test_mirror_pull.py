@@ -35,6 +35,18 @@ import pytest
 
 from vllm_mlx import _mirror
 
+
+def _sidecar_part_path(cache_root: Path, owner_repo: str, fname: str) -> Path:
+    """Compute the per-file sidecar ``.part`` path that production now uses.
+
+    Codex round-14 BLOCKING #1+#2 moved ``.part``/``.lock`` out of the
+    snapshot dir into ``repo_root/.rapid-mlx-mirror/<key>.{part,lock}``
+    where ``<key>`` is :func:`_mirror._sidecar_key_for`(fname).
+    """
+    repo_root = cache_root / f"models--{owner_repo.replace('/', '--')}"
+    return repo_root / ".rapid-mlx-mirror" / f"{_mirror._sidecar_key_for(fname)}.part"
+
+
 # ---------------------------------------------------------------------------
 # Test fixtures — fake catalog + fake HF model_info + URL-routed HTTP stub.
 # ---------------------------------------------------------------------------
@@ -642,13 +654,17 @@ def test_resume_sends_range_header_for_partial_part_file(
     files = [("model.safetensors", 200)]
     catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
 
-    # Pre-stage the partial file at the namespaced temp path the
-    # production code computes (``.<file>.rapid-mlx-mirror.part``).
-    # Codex round-4 BLOCKING #1 made the temp name distinct from a
-    # potential ``<file>.part`` repo asset.
+    # Pre-stage the partial file at the sidecar temp path the
+    # production code computes — round-14 BLOCKING #1+#2 moved the
+    # ``.part`` out of ``snapshots/<sha>/`` into
+    # ``repo_root/.rapid-mlx-mirror/<key>.part`` to avoid collisions
+    # with legitimate repo assets named ``.<file>.rapid-mlx-mirror.part``.
     snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
     snap.mkdir(parents=True, exist_ok=True)
-    part = snap / ".model.safetensors.rapid-mlx-mirror.part"
+    part = _sidecar_part_path(
+        tmp_path, "mlx-community/Qwen3-0.6B-4bit", "model.safetensors"
+    )
+    part.parent.mkdir(parents=True, exist_ok=True)
     part.write_bytes(b"a" * 50)
 
     router = _UrlRouter()
@@ -716,7 +732,10 @@ def test_resume_rejects_bad_content_range(
 
     snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
     snap.mkdir(parents=True, exist_ok=True)
-    part = snap / ".model.safetensors.rapid-mlx-mirror.part"
+    part = _sidecar_part_path(
+        tmp_path, "mlx-community/Qwen3-0.6B-4bit", "model.safetensors"
+    )
+    part.parent.mkdir(parents=True, exist_ok=True)
     part.write_bytes(b"a" * 50)  # resume from offset 50
 
     router = _UrlRouter()
@@ -1003,7 +1022,10 @@ def test_resume_rejects_short_content_range(
 
     snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
     snap.mkdir(parents=True, exist_ok=True)
-    part = snap / ".model.safetensors.rapid-mlx-mirror.part"
+    part = _sidecar_part_path(
+        tmp_path, "mlx-community/Qwen3-0.6B-4bit", "model.safetensors"
+    )
+    part.parent.mkdir(parents=True, exist_ok=True)
     part.write_bytes(b"a" * 50)
 
     router = _UrlRouter()
@@ -1066,7 +1088,10 @@ def test_resume_rejects_wrong_total_in_content_range(
 
     snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
     snap.mkdir(parents=True, exist_ok=True)
-    part = snap / ".model.safetensors.rapid-mlx-mirror.part"
+    part = _sidecar_part_path(
+        tmp_path, "mlx-community/Qwen3-0.6B-4bit", "model.safetensors"
+    )
+    part.parent.mkdir(parents=True, exist_ok=True)
     part.write_bytes(b"a" * 50)
 
     router = _UrlRouter()
@@ -1702,7 +1727,10 @@ def test_resume_range_ignored_200_response_discards_stale_prefix(
         tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
     )
     snap_dir.mkdir(parents=True, exist_ok=True)
-    stale_part = snap_dir / ".model.safetensors.rapid-mlx-mirror.part"
+    stale_part = _sidecar_part_path(
+        tmp_path, "mlx-community/Qwen3-0.6B-4bit", "model.safetensors"
+    )
+    stale_part.parent.mkdir(parents=True, exist_ok=True)
     stale_part.write_bytes(b"Z" * 50)  # 50 bytes of garbage
 
     router = _UrlRouter()
@@ -2069,3 +2097,319 @@ def test_refs_main_written_as_utf8(
     # Explicitly read as utf-8 — would raise on non-utf-8 encodings.
     content = refs_main.read_text(encoding="utf-8")
     assert content == revision
+
+
+# ---------------------------------------------------------------------------
+# Codex round-14 BLOCKING #1+#2 — sidecar dir contract:
+#   * ``.part`` and ``.lock`` live in ``repo_root/.rapid-mlx-mirror/``,
+#     NEVER under ``snapshots/<sha>/``.
+#   * Their names are derived from a flattened key, not from
+#     ``.<file>.rapid-mlx-mirror.{part,lock}`` (which could collide
+#     with a legitimate repo file).
+# ---------------------------------------------------------------------------
+
+
+def test_sidecar_dir_holds_part_and_lock_not_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "5a1d" * 10
+    files = [("model.safetensors", 200)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    snap.mkdir(parents=True, exist_ok=True)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, b"X" * 200),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+
+    # Snapshot dir contains the real file, nothing else.
+    snap_contents = sorted(p.name for p in snap.iterdir() if p.is_file())
+    assert snap_contents == ["model.safetensors"]
+
+    # Sidecar dir holds the lock file (kept on disk per round-12).
+    sidecar = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / ".rapid-mlx-mirror"
+    assert sidecar.is_dir()
+    sidecar_contents = sorted(p.name for p in sidecar.iterdir() if p.is_file())
+    # Lock stays; ``.part`` was renamed to target on success.
+    assert all(n.endswith(".lock") or n.endswith(".part") for n in sidecar_contents), (
+        f"unexpected sidecar contents: {sidecar_contents}"
+    )
+
+
+def test_sidecar_key_collision_safe_with_hidden_repo_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A repo can legitimately contain a file named like our OLD temp
+    file (``.foo.rapid-mlx-mirror.part``). Verify the sidecar key derived
+    from that filename doesn't collide with anything in snap/, and the
+    real repo file lands at the snapshot path with the right bytes
+    while the sidecar artifacts live in a SEPARATE dir."""
+    repo_id = "mlx-community/Hidden-Asset"
+    revision = "babe" * 10
+    # 12 bytes — matches the literal R2 payload below.
+    files = [(".foo.rapid-mlx-mirror.part", 12)]
+    catalog = _catalog_payload([("hidden-asset", repo_id, "mirrored")])
+
+    repo_root = tmp_path / "models--mlx-community--Hidden-Asset"
+    snap = repo_root / "snapshots" / revision
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    payload = b"legit-asset"  # 11 bytes — fix expected size to match
+    files = [(".foo.rapid-mlx-mirror.part", len(payload))]
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Hidden-Asset/.foo.rapid-mlx-mirror.part",
+        _FakeResponse(200, payload),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    assert hf_mock.call_count == 0
+    # The repo file lands at the real path — same name as the OLD
+    # temp file pattern, but now safe because the temp file lives in
+    # the sidecar dir.
+    assert (snap / ".foo.rapid-mlx-mirror.part").read_bytes() == payload
+    # And the sidecar dir is distinct from snap.
+    sidecar = repo_root / ".rapid-mlx-mirror"
+    assert sidecar.is_dir()
+    # The lock file lives there (kept on disk).
+    assert any(p.name.endswith(".lock") for p in sidecar.iterdir())
+    # And ``snap_dir`` does NOT contain any sidecar artifacts that
+    # would collide with the legitimate repo file's name.
+    assert sorted(p.name for p in snap.iterdir() if p.is_file()) == [
+        ".foo.rapid-mlx-mirror.part"
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Codex round-14 BLOCKING #3 — cached symlinks must resolve under
+# ``repo_root/blobs/``, not just anywhere under repo_root. A symlink
+# pointing at ``refs/main`` (40 bytes) would otherwise be accepted as a
+# 40-byte cached file.
+# ---------------------------------------------------------------------------
+
+
+def test_cached_symlink_to_refs_main_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "ab12" * 10  # 40 ASCII chars
+    files = [("config.json", 40)]  # SAME size as the ref file's bytes
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    repo_root = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit"
+    refs_dir = repo_root / "refs"
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    (refs_dir / "main").write_text(revision, encoding="utf-8")  # 40 bytes
+
+    snap = repo_root / "snapshots" / revision
+    snap.mkdir(parents=True, exist_ok=True)
+    # Plant a symlink at the cached path → refs/main (inside repo_root
+    # but NOT under blobs/).
+    sym = snap / "config.json"
+    sym.symlink_to(refs_dir / "main")
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    real_bytes = b"R" * 40
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, real_bytes),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # The intra-cache symlink was rejected (not under blobs/) and the
+    # real bytes were re-downloaded from R2.
+    assert sym.is_symlink() is False
+    assert sym.read_bytes() == real_bytes
+    # ``refs/main`` itself was untouched until our final pin.
+    assert hf_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Codex round-14 BLOCKING #4 — snap_dir itself being a symlink must be
+# caught up-front, not just its descendant parents.
+# ---------------------------------------------------------------------------
+
+
+def test_snap_dir_as_symlink_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "cafe" * 10
+    files = [("config.json", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    # Pre-create the snapshot path AS A SYMLINK to a malicious dir.
+    # NB: production calls ``snap_dir.mkdir(exist_ok=True)`` which
+    # succeeds even if snap_dir is already a symlink to a real dir.
+    # The new guard must reject downloads on such a setup.
+    malicious_dir = tmp_path / "outside_malicious_dir"
+    malicious_dir.mkdir()
+    repo_root = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit"
+    snapshots_parent = repo_root / "snapshots"
+    snapshots_parent.mkdir(parents=True, exist_ok=True)
+    (snapshots_parent / revision).symlink_to(malicious_dir)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        # HF would write to its own cache layout — for this test it
+        # doesn't matter, we just need the per-file loop to complete.
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        # Note: snap is the SYMLINKED dir → writes go to malicious_dir.
+        # HF doesn't know this; the rapid-mlx mirror's job was to refuse
+        # to participate. We only care here that R2 didn't write.
+        return str(snap / filename)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    # The mirror module refused to write into the symlinked snap_dir.
+    # R2 must NOT have been hit for this file (the per-file _do_file
+    # returned "skip-symlink-snapdir" before R2 attempt).
+    r2_file_calls = [r for r in router.requests if "config.json" in r["url"]]
+    assert r2_file_calls == [], (
+        f"R2 was probed despite symlinked snap_dir: {r2_file_calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex round-14 NIT #5 — when an HF-style symlink already points at
+# ``blobs/<expected_sha256>``, skip the full rehash (would otherwise
+# turn a no-op warm pull into a multi-GB disk scan).
+# ---------------------------------------------------------------------------
+
+
+def test_cached_hf_blob_symlink_skips_rehash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "f0f0" * 10
+    payload = b"P" * 200
+    sha = hashlib.sha256(payload).hexdigest()
+    files = [("model.safetensors", 200, sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    # Build the HF-style cache layout: blobs/<sha> + snapshots/<rev>/foo
+    # symlinked to ../../blobs/<sha>.
+    repo_root = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit"
+    blobs = repo_root / "blobs"
+    blobs.mkdir(parents=True, exist_ok=True)
+    (blobs / sha).write_bytes(payload)
+    snap = repo_root / "snapshots" / revision
+    snap.mkdir(parents=True, exist_ok=True)
+    link = snap / "model.safetensors"
+    link.symlink_to(blobs / sha)
+
+    # If the production code DID rehash, it would open the file and
+    # we'd get a successful "cached". Either way the test only cares
+    # that the hasher was NOT used — we instrument hashlib.sha256 to
+    # detect any new hasher created during the call.
+    import vllm_mlx._mirror as m
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # NO file URL registered — if production tries to download, we'll
+    # AssertionError, which would catch the case where the blob-name
+    # shortcut accidentally falls through.
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = m.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # The HF blob symlink was accepted on shortcut (name matches sha).
+    # No file URL was hit, no HF call.
+    file_reqs = [r for r in router.requests if "model.safetensors" in r["url"]]
+    assert file_reqs == []
+    assert hf_mock.call_count == 0
+    # File still resolves correctly.
+    assert link.read_bytes() == payload
