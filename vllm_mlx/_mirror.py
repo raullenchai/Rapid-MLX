@@ -296,23 +296,28 @@ def _hf_fallback_one(
     filename: str,
     revision: str,
     cache_dir: Path | None = None,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Download a single file from HuggingFace into the standard cache.
 
-    Returns True on success. Used for the per-file R2 miss path.
+    Returns ``(True, resolved_path)`` on success, ``(False, None)`` on
+    failure. The resolved path is whatever ``hf_hub_download`` returns
+    (a symlink under ``snapshots/<rev>/`` pointing to a blob). Used for
+    the per-file R2 miss path. Codex round-1 NIT #3: capture the path
+    rather than re-resolving via ``snap_dir / fname``, so success
+    accounting is robust to changes in HF's symlink layout.
     """
     try:
         from huggingface_hub import hf_hub_download
 
-        hf_hub_download(
+        path = hf_hub_download(
             repo_id=repo_id,
             filename=filename,
             revision=revision,
             cache_dir=str(cache_dir) if cache_dir else None,
         )
-        return True
+        return True, path
     except Exception:
-        return False
+        return False, None
 
 
 def _print_dim(msg: str) -> None:
@@ -438,9 +443,20 @@ def download_with_mirror_fallback(
             return fname, "skip-traversal", 0
 
         # Already cached — file present at snapshot path, nothing to do.
-        # This handles both prior R2 downloads and HF symlinks.
-        if target.exists() and target.stat().st_size > 0:
-            return fname, "cached", target.stat().st_size
+        # Codex round-1 BLOCKING #1: a prior interrupted download could
+        # leave a non-empty-but-truncated file at the snapshot path. If
+        # HF told us the canonical size, the cached file MUST match it
+        # before we accept it; otherwise we delete it and re-fetch.
+        # When HF didn't expose a size (rare — README-only repos etc.),
+        # fall back to the old non-empty heuristic.
+        if target.exists():
+            cached_size = target.stat().st_size
+            if expected_size and cached_size != expected_size:
+                # Stale / truncated cache entry — drop it and fall
+                # through to the R2/HF re-fetch below.
+                _safe_unlink(target)
+            elif cached_size > 0:
+                return fname, "cached", cached_size
 
         if use_r2 and catalog_entry is not None:
             url = _build_r2_url(base, dub, fname)
@@ -451,12 +467,19 @@ def download_with_mirror_fallback(
 
         # Either R2 not eligible or R2 missed — fall back to HF for
         # this file. Let huggingface_hub handle its own cache layout.
-        if _hf_fallback_one(repo_id, fname, revision, cache_dir=cache_root):
-            # hf_hub_download returns the resolved snapshot path (a
-            # symlink to a blob). We treat presence as success and
-            # don't double-count bytes.
+        ok, hf_path = _hf_fallback_one(repo_id, fname, revision, cache_dir=cache_root)
+        if ok:
+            # ``hf_hub_download`` returns the resolved snapshot path
+            # (typically a symlink to a blob). Stat the path it gave us
+            # directly — that's the authoritative success signal. Fall
+            # back to the predicted snapshot path only if the returned
+            # path is missing for some reason (it shouldn't be).
+            size = 0
             try:
-                size = (snap_dir / fname).stat().st_size
+                if hf_path:
+                    size = Path(hf_path).stat().st_size
+                else:
+                    size = (snap_dir / fname).stat().st_size
             except OSError:
                 size = 0
             return fname, "hf", size
@@ -496,8 +519,33 @@ def download_with_mirror_fallback(
     # Pin the snapshot. ``is_repo_cached`` requires ``refs/main`` to
     # consider the snapshot complete; without this the next run would
     # see a partial-looking cache.
+    #
+    # Codex round-1 BLOCKING #2: don't clobber an existing ``refs/main``
+    # that points at a DIFFERENT sha. The HF cache may legitimately
+    # already hold a ref to an older snapshot (e.g. because the user
+    # called ``snapshot_download(revision="<sha>")`` before us), and
+    # overwriting that ref would silently switch which snapshot the
+    # loader picks. Three legal cases here:
+    #   (a) ref absent → write it (this is the common case).
+    #   (b) ref present, matches our sha → no-op.
+    #   (c) ref present, points at a different sha → leave it alone but
+    #       still return success: the user already pulled some other
+    #       revision separately, our snapshot is on disk and addressable
+    #       by sha, and re-pinning ``main`` is a side-effect we don't
+    #       own. ``hf_hub_download``/``snapshot_download`` will fix it
+    #       up the next time the user explicitly asks for ``main``.
+    refs_main = refs_dir / "main"
     try:
-        (refs_dir / "main").write_text(revision)
+        if refs_main.exists():
+            existing = refs_main.read_text().strip()
+            if existing != revision:
+                # Don't clobber a foreign ref. Snapshot is still usable
+                # by sha via ``snapshots/<revision>/<file>``.
+                pass
+            # If existing == revision, the file already holds the right
+            # value; no rewrite needed (idempotent).
+        else:
+            refs_main.write_text(revision)
     except OSError:
         return False
 

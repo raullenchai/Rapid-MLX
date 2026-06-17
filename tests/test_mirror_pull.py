@@ -193,22 +193,34 @@ def test_catalog_url_encodes_special_chars():
 
 
 @pytest.mark.parametrize(
-    "r2_status_per_file,expected_r2_hits,expected_hf_hits",
+    "r2_status_per_file,expected_r2_hit_names,expected_hf_hit_names",
     [
         # All files mirrored — every file served from R2.
-        ([200, 200, 200], 3, 0),
-        # Mixed — config from R2, weights miss → HF for weights.
-        ([200, 404, 404], 1, 2),
+        (
+            [200, 200, 200],
+            ["config.json", "model.safetensors", "tokenizer.json"],
+            [],
+        ),
+        # Mixed — config from R2, weights + tokenizer miss → HF.
+        (
+            [200, 404, 404],
+            ["config.json"],
+            ["model.safetensors", "tokenizer.json"],
+        ),
         # Total R2 miss — every file falls back to HF.
-        ([404, 404, 404], 0, 3),
+        (
+            [404, 404, 404],
+            [],
+            ["config.json", "model.safetensors", "tokenizer.json"],
+        ),
     ],
 )
 def test_per_file_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     r2_status_per_file: list[int],
-    expected_r2_hits: int,
-    expected_hf_hits: int,
+    expected_r2_hit_names: list[str],
+    expected_hf_hit_names: list[str],
 ):
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
     revision = "deadbeef" * 5
@@ -266,8 +278,22 @@ def test_per_file_fallback(
     # refs/main pins the snapshot — required for is_repo_cached.
     refs_main = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "refs" / "main"
     assert refs_main.read_text() == revision
-    # HF was called exactly for the files where R2 returned 404.
-    assert len(hf_calls) == expected_hf_hits
+    # Codex round-1 NIT #4: assert the EXACT filenames that fell back
+    # to HF, not just the count. A wrong-file mix would otherwise pass.
+    assert sorted(hf_calls) == sorted(expected_hf_hit_names)
+    # And the R2 file requests match the expected R2 hits (ignore the
+    # catalog request).
+    r2_file_requests = [
+        r["url"].rsplit("/", 1)[-1]
+        for r in router.requests
+        if "/mlx-community/Qwen3-0.6B-4bit/" in r["url"]
+    ]
+    # Every expected R2 hit must have been requested; misses also issue
+    # a request (which returns 404), so the set of requested files is
+    # the union of expected hits and HF-fallbacks.
+    assert sorted(set(r2_file_requests)) == sorted(
+        set(expected_r2_hit_names + expected_hf_hit_names)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -545,3 +571,146 @@ def test_resume_sends_range_header_for_partial_part_file(
     assert hf_mock.call_count == 0
     # No .part leftover after the rename.
     assert not part.exists()
+
+
+# ---------------------------------------------------------------------------
+# Codex round-1 BLOCKING #1 regression — a stale (truncated) cache entry
+# must NOT be accepted as already-cached. The production code must
+# re-fetch when the on-disk size disagrees with HF's advertised size.
+# ---------------------------------------------------------------------------
+
+
+def test_truncated_cached_file_is_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "0001" * 10
+    # HF says 200 bytes; we'll pre-stage a 50-byte truncated file at
+    # the snapshot path (simulating an aborted prior pull).
+    files = [("model.safetensors", 200)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    snap.mkdir(parents=True, exist_ok=True)
+    truncated = snap / "model.safetensors"
+    truncated.write_bytes(b"a" * 50)  # truncated relic
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # R2 will serve the full 200 bytes once the truncated file is dropped.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, b"x" * 200),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # The truncated file MUST have been replaced — final size is 200,
+    # not 50.
+    assert truncated.exists()
+    assert truncated.stat().st_size == 200
+    assert truncated.read_bytes() == b"x" * 200
+    # HF was not needed because R2 had a fresh copy.
+    assert hf_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Codex round-1 BLOCKING #2 regression — refs/main must NOT be clobbered
+# when it already points at a different sha (the user pulled some other
+# revision separately). The snapshot is still addressable by sha; the
+# ref belongs to whoever wrote it.
+# ---------------------------------------------------------------------------
+
+
+def test_refs_main_not_clobbered_when_pointing_elsewhere(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "2222" * 10
+    foreign_sha = "9999" * 10
+    files = [("config.json", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    # Pre-stage a refs/main pointing at a different (foreign) sha.
+    repo_root = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit"
+    refs_dir = repo_root / "refs"
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    (refs_dir / "main").write_text(foreign_sha)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # The pre-existing refs/main MUST be preserved — we don't own it.
+    assert (refs_dir / "main").read_text() == foreign_sha
+    # Our snapshot is still addressable by sha — that's what matters.
+    assert (repo_root / "snapshots" / revision / "config.json").exists()
+
+
+def test_refs_main_written_when_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Common case: refs/main absent → we write it (idempotent)."""
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "3333" * 10
+    files = [("config.json", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    refs_main = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "refs" / "main"
+    assert refs_main.read_text() == revision
