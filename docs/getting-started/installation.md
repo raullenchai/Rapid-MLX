@@ -5,7 +5,27 @@
 - macOS on Apple Silicon (M1/M2/M3/M4)
 - Python 3.10+
 
-## Install with Homebrew (recommended)
+## Install with uv (recommended)
+
+```bash
+uv tool install rapid-mlx@latest
+```
+
+One command, isolated tool venv, no Python-version juggling — uv finds (or
+installs) the right Python automatically. Upgrade later with
+`uv tool upgrade rapid-mlx`. If you don't have uv yet, install it first:
+`curl -LsSf https://astral.sh/uv/install.sh | sh`.
+
+## One-liner install script
+
+```bash
+curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
+```
+
+Auto-installs Python if needed, then `pipx install rapid-mlx`. Good fallback
+if you don't want to install `uv` first.
+
+## Install with Homebrew
 
 ```bash
 brew tap raullenchai/rapid-mlx
@@ -27,12 +47,6 @@ pip install rapid-mlx
 
 If `python3 --version` reports 3.9 (macOS default), install a newer Python
 first: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`.
-
-### One-liner with auto-setup
-
-```bash
-curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
-```
 
 ### From source (for development)
 

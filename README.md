@@ -61,20 +61,23 @@
 **Step 1 — Install** (pick one):
 
 ```bash
-# Homebrew (recommended — just works, no Python version issues)
+# uv (recommended — one command, isolated env, auto-manages Python)
+uv tool install rapid-mlx@latest
+# Don't have uv yet? Install it first: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Or one-liner with auto-setup (installs Python if needed)
+curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
+
+# Homebrew (Mac-native — needs tap + trust before install on Homebrew 4.x)
 brew tap raullenchai/rapid-mlx
 brew trust raullenchai/rapid-mlx
 brew install rapid-mlx
 
 # pip (requires Python 3.10+ — macOS ships 3.9, so install Python first if needed)
 pip install rapid-mlx
-
-# uv (isolated tool env — to refresh later: `uv tool upgrade rapid-mlx`)
-uv tool install rapid-mlx@latest
-
-# Or one-liner with auto-setup (installs Python if needed)
-curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
 ```
+
+Upgrade later: `uv tool upgrade rapid-mlx` / `brew upgrade rapid-mlx` / `pip install -U rapid-mlx`.
 
 > **Vision/multimodal models** (Gemma 4, Qwen-VL, etc.) need extras: `pip install 'rapid-mlx[vision]'`. Text-only install is ~460 MB; vision adds ~322 MB. See [Optional Extras](#optional-extras) for the full list.
 
