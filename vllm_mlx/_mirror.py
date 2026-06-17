@@ -280,20 +280,37 @@ def _download_one_from_r2(
                 _safe_unlink(tmp)
                 return False, "bad-content-length"
 
-            # Codex round-4 BLOCKING #2: a 206 response with a wrong
-            # ``Content-Range`` (proxy bug, mirror serving from the
-            # middle, etc.) would let us concatenate corrupt bytes onto
-            # an existing .part. Validate the start offset matches the
-            # resume position; on absence/mismatch, wipe and restart so
-            # the next attempt re-fetches the whole file from scratch.
+            # Codex round-4 BLOCKING #2 (refined in round-7 BLOCKING #1):
+            # a 206 response with a wrong ``Content-Range`` (proxy bug,
+            # mirror serving from the middle, etc.) would let us
+            # concatenate corrupt bytes onto an existing .part. The
+            # round-4 fix only checked the start byte; codex round-7
+            # caught that a partial range like ``bytes 50-99/200`` would
+            # pass the startswith check but deliver only 50 of the 150
+            # remaining bytes. Validate the FULL start-end/total tuple.
             if resp.status == 206:
                 cr = resp.headers.get("Content-Range", "")
                 # Expected shape: ``bytes <first>-<last>/<total>``.
-                # Reject anything else.
-                expected_prefix = f"bytes {existing}-"
-                if not cr.startswith(expected_prefix):
+                cr_first, cr_last, cr_total = _parse_content_range(cr)
+                # Required: first == existing offset (else the server
+                # is serving the wrong range). last == existing + length
+                # - 1 (else the server is short-changing us). total ==
+                # expected_size when HF told us (else the file changed
+                # under us — different upload, different bytes).
+                fail_reason: str | None = None
+                if cr_first != existing:
+                    fail_reason = f"wrong-start:{cr_first}!={existing}"
+                elif length > 0 and cr_last != existing + length - 1:
+                    fail_reason = f"wrong-end:{cr_last}!={existing + length - 1}"
+                elif (
+                    expected_size is not None
+                    and cr_total is not None
+                    and cr_total != expected_size
+                ):
+                    fail_reason = f"wrong-total:{cr_total}!={expected_size}"
+                if fail_reason is not None:
                     _safe_unlink(tmp)
-                    return False, f"bad-content-range:{cr or 'absent'}"
+                    return False, f"bad-content-range:{fail_reason}"
 
             # Total final size: resume bytes + body bytes.
             total_size = existing + length if resp.status == 206 else length
@@ -387,6 +404,45 @@ def _download_one_from_r2(
         _safe_unlink(tmp)
         return False, f"rename:{type(e).__name__}"
     return True, ""
+
+
+def _parse_content_range(
+    cr: str,
+) -> tuple[int | None, int | None, int | None]:
+    """Parse ``Content-Range: bytes <first>-<last>/<total>``.
+
+    Returns ``(first, last, total)`` or ``(None, None, None)`` if the
+    header is missing, malformed, or uses a non-bytes unit. ``total``
+    may be ``None`` if the server sent ``*`` for unknown length but
+    the spec format was otherwise valid. Codex round-7 BLOCKING #1.
+    """
+    if not cr or not cr.startswith("bytes "):
+        return None, None, None
+    spec = cr[len("bytes ") :]
+    range_part, sep, total_part = spec.partition("/")
+    if not sep:
+        return None, None, None
+    first_str, dash, last_str = range_part.partition("-")
+    if not dash:
+        return None, None, None
+    try:
+        first = int(first_str)
+        last = int(last_str)
+    except ValueError:
+        return None, None, None
+    if first < 0 or last < first:
+        return None, None, None
+    total: int | None
+    if total_part == "*":
+        total = None
+    else:
+        try:
+            total = int(total_part)
+        except ValueError:
+            return None, None, None
+        if total < 0:
+            return None, None, None
+    return first, last, total
 
 
 def _safe_unlink(path: Path) -> None:
@@ -628,6 +684,27 @@ def download_with_mirror_fallback(
             target_norm.relative_to(snap_norm)
         except ValueError:
             return fname, "skip-traversal", 0
+
+        # Codex round-7 BLOCKING #2: ``relative_to`` only checks the
+        # NORMALIZED string path — it doesn't notice that a parent
+        # component under ``snap_dir`` may be a SYMLINK pointing
+        # outside the snapshot. A malicious or accidental symlink at
+        # ``snapshots/<sha>/subdir → /etc`` would let us write to
+        # ``/etc/<basename>``. Walk every parent between snap_dir and
+        # target and reject if any is a symlink. ``snap_dir`` itself
+        # could in principle be a symlink (HF cache layouts do
+        # symlink across drives), but everything *inside* it must be a
+        # real directory.
+        try:
+            parent = target.parent
+            # Iterate parents strictly between snap_dir and target.
+            while parent != snap_dir and snap_dir in parent.parents:
+                if parent.is_symlink():
+                    return fname, "skip-symlink-parent", 0
+                parent = parent.parent
+        except OSError:
+            # Permission denied / unusual fs — refuse to write here.
+            return fname, "skip-stat", 0
 
         # Already cached — file present at snapshot path, nothing to do.
         # Codex round-1 BLOCKING #1: a prior interrupted download could

@@ -950,6 +950,189 @@ def test_unstatable_cached_path_falls_through_to_r2(
 
 
 # ---------------------------------------------------------------------------
+# Codex round-7 BLOCKING #1 — resume Content-Range must validate START,
+# END, and TOTAL. ``bytes 50-99/200`` should NOT be accepted for a
+# 200-byte file resumed from offset 50 — that gives us only 50 of the
+# 150 remaining bytes.
+# ---------------------------------------------------------------------------
+
+
+def test_resume_rejects_short_content_range(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "5e5e" * 10
+    files = [("model.safetensors", 200)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    snap.mkdir(parents=True, exist_ok=True)
+    part = snap / ".model.safetensors.rapid-mlx-mirror.part"
+    part.write_bytes(b"a" * 50)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # Server says it's giving us bytes 50-99/200 (only 50 of the
+    # remaining 150 bytes). This must be rejected because the resumed
+    # download would terminate short.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(206, b"x" * 50, headers={"Content-Range": "bytes 50-99/200"}),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        snap_local = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap_local.mkdir(parents=True, exist_ok=True)
+        target = snap_local / filename
+        target.write_bytes(b"h" * 200)
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf) as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # HF served the file because R2's short Content-Range was rejected.
+    assert hf_mock.call_count == 1
+    # The truncated .part was wiped — no leftover.
+    assert not part.exists()
+    # Final file is HF's bytes (all h's), not R2's truncated concat.
+    assert (snap / "model.safetensors").read_bytes() == b"h" * 200
+
+
+def test_resume_rejects_wrong_total_in_content_range(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If HF says the file is 200 bytes but the server's Content-Range
+    declares a different total, the mirror has the wrong build —
+    reject.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "ab7e" * 10
+    files = [("model.safetensors", 200)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    snap.mkdir(parents=True, exist_ok=True)
+    part = snap / ".model.safetensors.rapid-mlx-mirror.part"
+    part.write_bytes(b"a" * 50)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # Server's total disagrees with HF (300 vs 200).
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(206, b"x" * 150, headers={"Content-Range": "bytes 50-199/300"}),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        snap_local = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap_local.mkdir(parents=True, exist_ok=True)
+        target = snap_local / filename
+        target.write_bytes(b"h" * 200)
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf) as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    assert hf_mock.call_count == 1
+    # Final file is HF's bytes.
+    assert (snap / "model.safetensors").read_bytes() == b"h" * 200
+
+
+# ---------------------------------------------------------------------------
+# Codex round-7 BLOCKING #2 — a symlinked parent component under the
+# snapshot directory must NOT let writes escape to other locations.
+# ---------------------------------------------------------------------------
+
+
+def test_symlinked_parent_under_snapshot_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "5ba5" * 10
+    # File at ``subdir/escape.bin``. We'll plant ``subdir`` as a
+    # symlink pointing outside the snapshot — production code MUST
+    # refuse to write through it.
+    files = [("subdir/escape.bin", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    snap.mkdir(parents=True, exist_ok=True)
+    escape_target = tmp_path / "escape"
+    escape_target.mkdir()
+    # Plant the malicious symlink.
+    (snap / "subdir").symlink_to(escape_target)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # Deliberately do NOT register the file URL — if production code
+    # tries to fetch (and write through the symlink), the AssertionError
+    # in _UrlRouter will surface. The expected behaviour is "skip this
+    # file as untrusted, fall back through download_with_mirror_fallback
+    # returning False".
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    # Mirror module returns False so caller falls back to snapshot_download.
+    assert not ok
+    # The symlink target was NOT written to. (The whole snapshot pull
+    # was refused; we leave it to the safer snapshot_download to deal
+    # with the questionable cache state.)
+    assert not (escape_target / "escape.bin").exists()
+    # HF wasn't called either — the worker bailed out before any
+    # download attempt.
+    assert hf_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
 # Codex round-4 BLOCKING #1 regression — the .part temp file name must
 # not collide with a real repo asset like ``model.safetensors.part``.
 # The mirror module namespaces temp files as
