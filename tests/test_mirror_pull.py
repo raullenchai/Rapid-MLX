@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.error
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -146,6 +147,12 @@ class _UrlRouter:
     Tracks every request so tests can assert call shapes. Each route is
     a callable that takes the ``Request`` and returns a ``_FakeResponse``
     (or raises an exception to simulate network / HTTP error).
+
+    Codex round-9 NIT #4: real ``urllib.request.urlopen`` RAISES
+    ``HTTPError`` for HTTP 4xx/5xx — it does not return a response with
+    ``status == 404``. Translate ``_FakeResponse`` with a 4xx/5xx code
+    into an ``HTTPError`` so the production exception path in
+    ``fetch_catalog_with_status`` is exercised.
     """
 
     def __init__(self):
@@ -166,7 +173,21 @@ class _UrlRouter:
         if isinstance(handler, Exception):
             raise handler
         if callable(handler):
-            return handler(req)
+            handler = handler(req)
+        # Codex round-9 NIT #4: surface 4xx/5xx as HTTPError to match
+        # real urlopen semantics. Production catalog code catches both
+        # the ``raise`` path and the ``return non-200`` path, so existing
+        # tests stay green either way — but raising is the correct
+        # mirror of what production callers see.
+        if isinstance(handler, _FakeResponse) and handler.status >= 400:
+            body = handler._buf.getvalue()
+            raise urllib.error.HTTPError(
+                url,
+                handler.status,
+                f"HTTP {handler.status}",
+                handler.headers,
+                io.BytesIO(body),
+            )
         return handler
 
 
@@ -1451,3 +1472,204 @@ def test_zero_byte_file_handled_correctly(
     assert r2_file_calls == [], (
         f"0-byte cached file should not be re-fetched, got: {r2_file_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Codex round-9 NIT #4 — when the catalog endpoint raises ``HTTPError``
+# directly (which is what real ``urlopen`` does for HTTP 4xx/5xx), the
+# production code's ``except urllib.error.HTTPError`` branch must still
+# route correctly. Lock in the exception path explicitly so a refactor
+# of ``fetch_catalog_with_status`` doesn't silently regress.
+# ---------------------------------------------------------------------------
+
+
+def test_custom_mirror_catalog_httperror_404_uses_direct_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Real ``urlopen`` raises ``HTTPError`` for HTTP 404 — not returns a
+    response with ``.status == 404``. Make sure the exception path in
+    ``fetch_catalog_with_status`` reaches the same direct-layout
+    fallback that the response-style test
+    (``test_custom_mirror_without_catalog_uses_direct_layout``)
+    exercises.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "abcd" * 10
+    files = [("config.json", 100)]
+
+    router = _UrlRouter()
+    # Raise HTTPError directly — this is how real urlopen signals 404.
+    router.add(
+        "https://custom2.example.com/api/models",
+        urllib.error.HTTPError(
+            "https://custom2.example.com/api/models",
+            404,
+            "Not Found",
+            {},
+            io.BytesIO(b""),
+        ),
+    )
+    router.add(
+        "https://custom2.example.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://custom2.example.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # File came from the custom mirror direct-layout path, not HF.
+    assert hf_mock.call_count == 0
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    assert (snap / "config.json").read_bytes() == b"x" * 100
+
+
+# ---------------------------------------------------------------------------
+# Codex round-9 BLOCKING #2 — non-default revision must skip the mirror
+# wholesale so the caller's ``snapshot_download(..., revision="<sha>")``
+# can pin the right ref. We do not currently support per-revision
+# mirroring (the R2 catalog is built from default-branch snapshots).
+# ---------------------------------------------------------------------------
+
+
+def test_non_default_revision_skips_mirror_entirely(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+
+    router = _UrlRouter()
+    # No routes — any HTTP call would AssertionError, proving we
+    # short-circuit before touching the network.
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch("huggingface_hub.model_info") as info_mock,
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(
+            repo_id, cache_dir=tmp_path, revision="abcd" * 10
+        )
+
+    assert ok is False
+    # We didn't even ask HF for metadata, let alone touch the network.
+    assert info_mock.call_count == 0
+    assert hf_mock.call_count == 0
+    assert router.requests == []
+
+
+def test_revision_main_is_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``revision="main"`` is equivalent to default — must NOT short-circuit."""
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "abcd" * 10
+    files = [("config.json", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+    ):
+        ok = _mirror.download_with_mirror_fallback(
+            repo_id, cache_dir=tmp_path, revision="main"
+        )
+
+    assert ok is True
+
+
+# ---------------------------------------------------------------------------
+# Codex round-9 BLOCKING #1 — when we sent a ``Range`` request but the
+# server returned 200 (range ignored), we must discard the stale
+# ``.part`` prefix AND not feed it to the SHA hasher. Otherwise a valid
+# fresh download is rejected as sha-mismatch.
+# ---------------------------------------------------------------------------
+
+
+def test_resume_range_ignored_200_response_discards_stale_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Some R2 / proxy configs ignore Range and return the full body with
+    status 200. With LFS sha256 enabled, the hasher must not see the
+    discarded prefix — otherwise the digest mismatches and the file
+    falls back to HF unnecessarily.
+    """
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "feed" * 10
+    full_body = b"Q" * 200
+    sha = hashlib.sha256(full_body).hexdigest()
+    files = [("model.safetensors", 200, sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    # Plant a stale .part with different bytes — server will ignore our
+    # Range header and return the full body fresh.
+    snap_dir = (
+        tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    )
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    stale_part = snap_dir / ".model.safetensors.rapid-mlx-mirror.part"
+    stale_part.write_bytes(b"Z" * 50)  # 50 bytes of garbage
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # Server returns 200 (range ignored), Content-Length is the FULL body.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, full_body),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # File was written from R2 (no HF fallback needed); sha matches.
+    assert hf_mock.call_count == 0
+    final = snap_dir / "model.safetensors"
+    assert final.read_bytes() == full_body
+    # The Range header WAS sent (existing .part > 0 triggers it) — we
+    # didn't pretend nothing was there.
+    range_reqs = [
+        r
+        for r in router.requests
+        if "model.safetensors" in r["url"] and r["headers"].get("Range") is not None
+    ]
+    assert len(range_reqs) == 1, f"expected exactly one Range request, got {range_reqs}"

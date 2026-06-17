@@ -302,11 +302,13 @@ def _download_one_from_r2(
                     fail_reason = f"wrong-start:{cr_first}!={existing}"
                 elif length > 0 and cr_last != existing + length - 1:
                     fail_reason = f"wrong-end:{cr_last}!={existing + length - 1}"
-                elif (
-                    expected_size is not None
-                    and cr_total is not None
-                    and cr_total != expected_size
-                ):
+                elif expected_size is not None and cr_total != expected_size:
+                    # Codex round-9 NIT #3: when HF gave us a canonical
+                    # size, a 206 with a missing / unknown / wrong total
+                    # is all suspicious — a well-formed ranged response
+                    # for a known-size object must echo that total. Reject
+                    # both ``cr_total is None`` (header was ``*`` or
+                    # malformed) and ``cr_total != expected_size``.
                     fail_reason = f"wrong-total:{cr_total}!={expected_size}"
                 if fail_reason is not None:
                     _safe_unlink(tmp)
@@ -324,14 +326,26 @@ def _download_one_from_r2(
                 _safe_unlink(tmp)
                 return False, f"size-mismatch:{total_size}!={expected_size}"
 
+            # Codex round-9 BLOCKING #1: if we sent ``Range`` but the
+            # server returned 200 (range ignored — common with some
+            # proxies / R2 misconfig), the response body is the FULL
+            # object. Opening in ``"wb"`` correctly discards the stale
+            # ``.part`` prefix, but the SHA hasher would otherwise have
+            # been pre-fed those discarded bytes — producing a bogus
+            # digest that fails the LFS check and forces an unneeded HF
+            # fallback. Reset ``existing`` to 0 here so the prefix
+            # rehash below is skipped and the mode falls to ``"wb"``.
+            if resp.status == 200 and existing > 0:
+                existing = 0
+
             mode = "ab" if resp.status == 206 and existing > 0 else "wb"
             read = 0
             # Codex round-5 BLOCKING #1: stream a SHA-256 of the bytes
-            # we write. For resumed downloads we have to rehash the
-            # existing .part prefix first so the running digest covers
-            # the whole final file. If hashing the prefix fails (e.g.
-            # the .part disappeared between stat and open), wipe and
-            # fall back to HF.
+            # we write. For resumed downloads (206 + existing > 0) we
+            # have to rehash the existing .part prefix first so the
+            # running digest covers the whole final file. If hashing the
+            # prefix fails (e.g. the .part disappeared between stat and
+            # open), wipe and fall back to HF.
             hasher = None
             if expected_sha256 is not None:
                 import hashlib
@@ -507,6 +521,8 @@ def _print_dim(msg: str) -> None:
 def download_with_mirror_fallback(
     repo_id: str,
     cache_dir: Path | None = None,
+    *,
+    revision: str | None = None,
 ) -> bool:
     """Download ``repo_id`` to the HF cache via R2-first / HF-fallback.
 
@@ -520,11 +536,25 @@ def download_with_mirror_fallback(
     On False, no partial damage to the cache is left behind — any files
     we did fetch are valid HF-cache entries that ``snapshot_download``
     will skip.
+
+    Codex round-9 BLOCKING #2: ``revision`` is reserved for future
+    use. Today this function only handles the default branch (HEAD of
+    ``main``) — the catalog and the R2 mirror are built from default-
+    branch snapshots, and ``refs/main`` is the only ref we write. If a
+    caller passes a non-default revision (e.g. ``snapshot_download(...,
+    revision="<sha>")``), return False so the caller's
+    ``snapshot_download`` runs and pins the right revision instead of us
+    silently overwriting ``refs/main`` with HEAD. ``revision=None`` and
+    ``revision="main"`` both mean default branch and are accepted.
     """
     base = _mirror_base()
     if not base or "/" not in repo_id:
         # Mirror disabled or repo_id isn't a HF-shaped ``owner/name``.
         # Local paths fall here too. Defer to caller's HF path.
+        return False
+
+    # Codex round-9 BLOCKING #2: explicit non-default revision → bail.
+    if revision is not None and revision != "main":
         return False
 
     # HF model_info gives us the canonical revision + per-file sizes.
@@ -555,6 +585,10 @@ def download_with_mirror_fallback(
     ):
         return False
 
+    # Reuse the ``revision`` name for the resolved SHA — by now the
+    # input parameter has already been validated above (``None`` or
+    # ``"main"``); from here on ``revision`` always means the concrete
+    # commit hash we'll write under ``snapshots/<sha>/``.
     revision = getattr(info, "sha", None)
     siblings = getattr(info, "siblings", None) or []
     # Each file: (relative_path, expected_size, lfs_sha256).
