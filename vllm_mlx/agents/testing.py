@@ -1152,12 +1152,35 @@ class AgentTestRunner:
 
             # If module failed to execute, report it as an error
             if exec_error is not None:
+                # ImportError / ModuleNotFoundError nearly always means
+                # the harness deps weren't installed in the rapid-mlx
+                # venv. The profile's ``install_cmd`` is exactly that
+                # hint; surface it in the message so users have a
+                # one-line copy-paste fix instead of "Module execution
+                # failed: No module named 'langchain_core'" with no
+                # path forward (v0.7.26 dogfood found this on every
+                # langchain harness run).
+                hint = ""
+                if isinstance(exec_error, (ImportError, ModuleNotFoundError)):
+                    try:
+                        testing = self.profile.get_testing_for_version(
+                            self.agent_version
+                        )
+                        if testing and testing.install_cmd:
+                            hint = (
+                                f" [hint: harness deps missing — run "
+                                f"`{testing.install_cmd}` in the rapid-mlx venv]"
+                            )
+                    except (AttributeError, KeyError):
+                        # Profile shape changed under us — fall back to
+                        # the bare error rather than crash the harness.
+                        pass
                 return [
                     TestResult(
                         f"specific:{test_module_name}",
                         TestStatus.ERROR,
                         duration_ms=(time.time() - t0) * 1000,
-                        message=f"Module execution failed: {exec_error!s:.120}",
+                        message=f"Module execution failed: {exec_error!s:.120}{hint}",
                         category="specific",
                     )
                 ]
