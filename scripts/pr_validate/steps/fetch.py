@@ -106,8 +106,7 @@ class FetchStep(Step):
         # an abandoned branch isn't a workflow we want to enable.
         state = meta.get("state", "")
         merged_audit_ok = (
-            state == "MERGED"
-            and os.environ.get("PR_VALIDATE_ALLOW_MERGED") == "1"
+            state == "MERGED" and os.environ.get("PR_VALIDATE_ALLOW_MERGED") == "1"
         )
         if state != "OPEN" and not merged_audit_ok:
             return StepResult(
