@@ -1145,6 +1145,38 @@ def _run_tier_submit_flow(args) -> int:
     tier = args.tier
     assert tier in ("smoke", "speed", "harness", "all"), tier
 
+    # Reject --base-url for the --submit combo (Codex PR #623
+    # BLOCKING-1). The community-bench corpus aggregates by
+    # (chip, model, version) — every submission MUST reflect the
+    # contributor's actual hardware booting their actual model. Two
+    # gaps if we allowed --base-url:
+    #
+    # 1. ``smoke_result.boot_time_ms`` is meaningless when the
+    #    server was already up (we didn't measure the user's boot);
+    #    the producer would have to invent a ``0.0`` placeholder
+    #    that downstream consumers can't distinguish from "machine
+    #    boots the model in zero ms" — a misleading row in the DB.
+    # 2. Phase 2 runs ``run_standardized_bench`` IN PROCESS against
+    #    a freshly-loaded engine, so the buckets numbers would NOT
+    #    match the server the user pointed at. We'd publish a
+    #    payload labelling itself as the user's setup while the
+    #    speed numbers came from a separate engine init.
+    #
+    # The narrow --tier (no --submit) --base-url path is still
+    # supported — that's the gauntlet/release_check use case where
+    # we WANT to validate against an already-running server.
+    if getattr(args, "base_url", None):
+        print(
+            "  Error: --base-url is incompatible with --submit. "
+            "Community-bench submissions must reflect a fresh boot of "
+            "your model on your hardware — smoke_result.boot_time_ms "
+            "and the standardized B=1 buckets are both measured "
+            "in-process. Drop --base-url and let bench --tier "
+            "--submit boot the server itself.",
+            file=sys.stderr,
+        )
+        return 2
+
     # tier='speed' --submit is the historical --submit path with a
     # new ``tier='speed'`` tag on the payload. No phase 1 needed.
     if tier == "speed":

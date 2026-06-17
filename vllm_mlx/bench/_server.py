@@ -97,18 +97,31 @@ def serve(
     if extra_args:
         cmd.extend(extra_args)
 
+    # Open the log file BEFORE the try/finally so the Popen call has
+    # an fd to point ``stdout=`` at — but guard with a narrow
+    # try/except so an exception INSIDE ``Popen`` (path error, OS
+    # resource exhaustion, etc.) doesn't leak the file handle.
+    # The outer try/finally below then owns the fh for the rest of
+    # the lifetime; this guard only covers the spawn window where
+    # the outer try hasn't started yet. (Codex PR #623 BLOCKING-2.)
     log_fh = open(log_path, "w") if log_path else subprocess.DEVNULL
-    t_spawn = time.perf_counter()
-    proc = subprocess.Popen(  # noqa: S603 — args constructed by us
-        cmd,
-        cwd=REPO_ROOT,
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-        env=os.environ.copy(),
-        # New process group so we can signal the whole tree on teardown
-        # (uvicorn + worker children). POSIX-only; we don't run on win.
-        preexec_fn=os.setsid if sys.platform != "win32" else None,
-    )
+    try:
+        t_spawn = time.perf_counter()
+        proc = subprocess.Popen(  # noqa: S603 — args constructed by us
+            cmd,
+            cwd=REPO_ROOT,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            env=os.environ.copy(),
+            # New process group so we can signal the whole tree on
+            # teardown (uvicorn + worker children). POSIX-only; we
+            # don't run on win.
+            preexec_fn=os.setsid if sys.platform != "win32" else None,
+        )
+    except BaseException:
+        if log_fh is not subprocess.DEVNULL:
+            log_fh.close()
+        raise
 
     try:
         _wait_for_health(health_url, proc, boot_timeout_s)

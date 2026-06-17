@@ -501,6 +501,109 @@ def test_mutual_exclusive_guard_removed():
     assert captured["submit"] is True
 
 
+def test_tier_submit_refuses_base_url(capsys):
+    """``--base-url`` MUST be rejected for the --submit combo.
+
+    Regression coverage for codex PR #623 BLOCKING-1: when the user
+    attaches to a pre-existing server we never measured boot, AND the
+    in-process standardized bench would run against a separately-
+    loaded engine — so the submitted payload would mislabel both
+    smoke and speed numbers. The right call is to fail fast with a
+    clear error pointing them at the supported workflow (drop
+    --base-url and let --submit boot the server itself).
+    """
+    import argparse
+
+    from vllm_mlx.cli import _run_tier_submit_flow
+
+    args = argparse.Namespace(
+        model="qwen3.5-9b-4bit",
+        tier="all",
+        submit=True,
+        base_url="http://127.0.0.1:8000",
+        sampled=False,
+        force_disk_check=False,
+        notes=None,
+        repo_root=None,
+    )
+
+    rc = _run_tier_submit_flow(args)
+    assert rc == 2, "--base-url with --submit MUST exit 2 (setup error)"
+
+    captured = capsys.readouterr()
+    assert "--base-url is incompatible with --submit" in captured.err, (
+        "error message must explain WHY --base-url is incompatible "
+        "with --submit (boot_time_ms + standardized bench correctness)"
+    )
+
+
+def test_smoke_payload_is_none_when_boot_time_unknown(capsys):
+    """``_run_smoke`` with ``boot_time_ms=None`` MUST set payload=None.
+
+    Regression coverage for codex PR #623 BLOCKING-1's defensive
+    second layer: even if a future caller bypasses the
+    ``--base-url`` + ``--submit`` guard in cli.py, ``_run_smoke``
+    itself refuses to invent a ``0.0`` boot-time placeholder. The
+    schema's ``boot_time_ms: number, minimum: 0`` would happily
+    accept ``0.0`` but the aggregator can't distinguish that from
+    "machine boots this model in zero ms" — so the producer fails
+    closed and lets the caller decide what to do with the missing
+    metric.
+    """
+    from vllm_mlx.bench.tier_runner import _run_smoke
+
+    class _FakeResp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "test-model"}]}
+
+    class _FakeStreamResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            return iter(
+                [
+                    'data: {"choices":[{"delta":{"content":"4"}}]}',
+                    "data: [DONE]",
+                ]
+            )
+
+    class _FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url):
+            return _FakeResp()
+
+        def stream(self, method, url, json=None):
+            return _FakeStreamResp()
+
+    with patch("httpx.Client", lambda *a, **k: _FakeClient()):
+        r = _run_smoke(
+            model="qwen3.5-4b-4bit",
+            base_url="http://127.0.0.1:8500/v1",
+            boot_time_ms=None,
+        )
+
+    assert r.passed is True, "smoke should still PASS — '4' is in the response"
+    assert r.payload is None, (
+        "boot_time_ms=None MUST yield payload=None (defensive coverage of "
+        "PR #623 BLOCKING-1; never invent a 0.0 boot-time)"
+    )
+
+
 def test_tier_submit_routes_through_unified_flow(monkeypatch):
     """``bench_command`` MUST route --tier+--submit to ``_run_tier_submit_flow``.
 

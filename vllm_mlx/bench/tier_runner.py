@@ -176,11 +176,15 @@ def _run_smoke(
 
     ``boot_time_ms`` is threaded through from ``_serve_or_attach`` so
     the schema v2 ``smoke_result.boot_time_ms`` field carries the real
-    spawn-to-healthy wall-clock; ``None`` when the user attached via
-    ``--base-url`` (we never measured the boot they paid for) — the
-    payload reports ``0.0`` in that case to satisfy the schema's
-    ``minimum: 0`` constraint while still being unambiguously "we
-    don't know" (a real boot takes seconds).
+    spawn-to-healthy wall-clock. When ``None`` (the user attached via
+    ``--base-url``, we never measured the boot they paid for) the
+    returned ``TierResult.payload`` is itself ``None`` — fails closed
+    rather than invent a ``0.0`` placeholder that the corpus can't
+    tell apart from "machine boots this model in zero ms" (Codex
+    PR #623 BLOCKING-1). The CLI's ``_run_tier_submit_flow`` refuses
+    ``--base-url`` for ``--submit`` so this null-payload case can
+    only surface via the non-submit ``--tier smoke --base-url``
+    path where the payload is never consumed.
     """
     import httpx
 
@@ -244,15 +248,22 @@ def _run_smoke(
             # Schema-shaped failure payload — the submit path can still
             # build a valid v2 row when the smoke probe fails, so the
             # community-bench corpus has visibility into "model booted
-            # but couldn't answer 2+2".
-            payload={
-                "boot_time_ms": float(boot_time_ms)
+            # but couldn't answer 2+2". Emitted ONLY when we actually
+            # measured the boot ourselves; when ``boot_time_ms`` is
+            # ``None`` (--base-url attach path) we set ``payload=None``
+            # instead of inventing a ``0.0`` placeholder that the
+            # corpus can't tell apart from "machine boots in zero ms"
+            # (Codex PR #623 BLOCKING-1).
+            payload=(
+                {
+                    "boot_time_ms": float(boot_time_ms),
+                    "first_prompt_ok": False,
+                    "first_token_latency_ms": 0.0,
+                    "response_excerpt": (f"[error] {type(exc).__name__}: {exc}"[:200]),
+                }
                 if boot_time_ms is not None
-                else 0.0,
-                "first_prompt_ok": False,
-                "first_token_latency_ms": 0.0,
-                "response_excerpt": f"[error] {type(exc).__name__}: {exc}"[:200],
-            },
+                else None
+            ),
         )
 
     elapsed = time.perf_counter() - t0
@@ -272,13 +283,21 @@ def _run_smoke(
         # 200 chars (schema maxLength); the truncation happens here so
         # the displayed-vs-submitted bytes match exactly. TTFT defaults
         # to 0.0 when the stream emitted no content delta (first_prompt
-        # was not ok in that case).
-        payload={
-            "boot_time_ms": float(boot_time_ms) if boot_time_ms is not None else 0.0,
-            "first_prompt_ok": ok,
-            "first_token_latency_ms": float(ttft_ms) if ttft_ms is not None else 0.0,
-            "response_excerpt": response_text[:200],
-        },
+        # was not ok in that case). When ``boot_time_ms`` is ``None``
+        # (--base-url attach path) we OMIT the payload entirely — see
+        # the matching comment in the failure branch for the rationale.
+        payload=(
+            {
+                "boot_time_ms": float(boot_time_ms),
+                "first_prompt_ok": ok,
+                "first_token_latency_ms": (
+                    float(ttft_ms) if ttft_ms is not None else 0.0
+                ),
+                "response_excerpt": response_text[:200],
+            }
+            if boot_time_ms is not None
+            else None
+        ),
     )
 
 
