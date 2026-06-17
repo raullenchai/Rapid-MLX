@@ -98,8 +98,18 @@ class FetchStep(Step):
         # Refuse closed/merged PRs as a default — the user can still
         # run validation on them by editing this gate, but the common
         # case of "is this merge-safe" wants an OPEN PR.
+        # PR_VALIDATE_ALLOW_MERGED=1 opens a narrow escape hatch for
+        # post-merge audit (confirm a recently-landed PR has no
+        # regressions, replay scorecard for changelog inclusion, etc.).
+        # CLOSED-without-merge stays refused: a contributor who closed
+        # the PR explicitly walked away — replaying validation against
+        # an abandoned branch isn't a workflow we want to enable.
         state = meta.get("state", "")
-        if state != "OPEN" and os.environ.get("PR_VALIDATE_ALLOW_MERGED") != "1":
+        merged_audit_ok = (
+            state == "MERGED"
+            and os.environ.get("PR_VALIDATE_ALLOW_MERGED") == "1"
+        )
+        if state != "OPEN" and not merged_audit_ok:
             return StepResult(
                 name=self.name,
                 status="fail",
