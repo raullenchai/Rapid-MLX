@@ -115,14 +115,19 @@ def fetch_catalog_with_status(
     * ``None`` on network errors / malformed JSON — treat as transient.
     """
     url = f"{base.rstrip('/')}/api/models"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": _USER_AGENT,
-            "Accept": "application/json",
-        },
-    )
+    # Codex round-11 NIT #3: ``urllib.request.Request(url)`` raises
+    # ``ValueError`` for a malformed URL (e.g. a user typo in
+    # ``RAPID_MLX_MODEL_MIRROR``). Construct it inside the guarded block
+    # so it routes to "treat as transient, fall through to HF" instead
+    # of escaping the whole pull with a raw stack trace.
     try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": _USER_AGENT,
+                "Accept": "application/json",
+            },
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = resp.status
             if status != 200:
@@ -246,6 +251,45 @@ def _download_one_from_r2(
     except OSError as e:
         return False, f"mkdir:{type(e).__name__}"
 
+    # Codex round-11 BLOCKING #2: a deterministic ``.part`` is racy
+    # across processes — two concurrent ``rapid-mlx pull / serve`` runs
+    # for the same model would unlink, append, or rename each other's
+    # partial files. We don't want to take on a third-party lock dep,
+    # so use stdlib ``fcntl.flock`` on a sibling ``.lock`` file: posix
+    # acquires an exclusive advisory lock that blocks any other rapid-
+    # mlx process on the same path until we're done. The lock is
+    # released on close. On Windows ``fcntl`` is missing — fall back to
+    # best-effort (no lock) since rapid-mlx is currently
+    # MLX/macOS-only anyway, so the multi-process race window is
+    # essentially the user holding TWO terminals on the same Mac.
+    #
+    # Resume from a pre-existing ``.part`` is preserved: once we hold
+    # the lock, the visible ``.part`` is ours to extend.
+    lock_path = target.parent / f".{target.name}.rapid-mlx-mirror.lock"
+    lock_fh = _acquire_part_lock(lock_path)
+    try:
+        return _do_r2_download(
+            url, target, tmp, expected_size, expected_sha256=expected_sha256
+        )
+    finally:
+        _release_part_lock(lock_fh, lock_path)
+
+
+def _do_r2_download(
+    url: str,
+    target: Path,
+    tmp: Path,
+    expected_size: int | None,
+    *,
+    expected_sha256: str | None = None,
+) -> tuple[bool, str]:
+    """Inner R2 download body — runs with the per-file lock held.
+
+    Split out from ``_download_one_from_r2`` so the caller can wrap
+    every exit path in a single ``finally`` that releases the lock,
+    without having to add a release call before each of the many
+    ``return`` sites in this function (codex round-11 BLOCKING #2).
+    """
     # Resume offset — pick up where a prior run left off. Codex
     # round-3 NIT #2: if the existing .part is unstatable (directory,
     # permission, etc.) we drop it and start fresh rather than letting
@@ -465,6 +509,74 @@ def _safe_unlink(path: Path) -> None:
             path.unlink()
     except OSError:
         pass
+
+
+def _acquire_part_lock(lock_path: Path):
+    """Acquire an exclusive advisory lock on ``lock_path``.
+
+    Codex round-11 BLOCKING #2: prevents two concurrent ``rapid-mlx``
+    processes from racing on the same ``<file>.rapid-mlx-mirror.part``.
+    Uses stdlib ``fcntl.flock`` on posix. ``LOCK_EX`` blocks the
+    caller until the holder releases — which is fine since downloads
+    are expected to be slow and only one of two competing pulls would
+    have made progress anyway.
+
+    Returns the open file handle (caller must release via
+    :func:`_release_part_lock`), or ``None`` if locking isn't
+    available on this platform (Windows — ``fcntl`` missing).
+    Failure modes (lock dir unwritable etc.) also degrade to "no
+    lock" rather than aborting the pull.
+    """
+    try:
+        import fcntl  # type: ignore[import-not-found]
+    except ImportError:
+        # Windows / very old systems — best-effort, no lock. The actual
+        # rapid-mlx use case is MLX-only (macOS), so this branch is
+        # essentially unreachable in practice.
+        return None
+    try:
+        # Open in append mode so concurrent processes don't truncate.
+        fh = open(lock_path, "a+b")
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        try:
+            fh.close()
+        except OSError:
+            pass
+        return None
+    return fh
+
+
+def _release_part_lock(lock_fh, lock_path: Path) -> None:
+    """Release the lock acquired via :func:`_acquire_part_lock`.
+
+    Idempotent. Best-effort — if anything goes wrong (lock file already
+    deleted, fh already closed, etc.) we swallow the error rather than
+    propagate it past the download's own success/failure signal.
+    """
+    if lock_fh is None:
+        return
+    try:
+        import fcntl  # type: ignore[import-not-found]
+
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+    except ImportError:
+        pass
+    try:
+        lock_fh.close()
+    except OSError:
+        pass
+    # Best-effort cleanup of the lock file itself. A racing process may
+    # have already grabbed it for its own lock — that's fine, the
+    # unlink will just fail and we move on. The next acquirer
+    # re-creates it.
+    _safe_unlink(lock_path)
 
 
 def _hf_fallback_one(
@@ -783,7 +895,34 @@ def download_with_mirror_fallback(
                     # through to the R2/HF re-fetch below.
                     _safe_unlink(target)
                 elif expected_size is not None and cached_size == expected_size:
-                    return fname, "cached", cached_size
+                    # Codex round-11 BLOCKING #1: size-only acceptance
+                    # of cached LFS files lets a same-size corrupt or
+                    # stale weight bypass the SHA-256 integrity check
+                    # the rest of the pipeline enforces. When HF told us
+                    # an LFS sha256, hash the cached bytes too — if it
+                    # mismatches, drop the file and refetch. For non-LFS
+                    # files (no sha256), size remains the strongest
+                    # check we have, which is fine for tiny configs.
+                    if expected_sha256 is not None:
+                        import hashlib
+
+                        hasher = hashlib.sha256()
+                        try:
+                            with target.open("rb") as fh:
+                                while True:
+                                    blk = fh.read(_CHUNK_BYTES)
+                                    if not blk:
+                                        break
+                                    hasher.update(blk)
+                        except OSError:
+                            _safe_unlink(target)
+                        else:
+                            if hasher.hexdigest() == expected_sha256:
+                                return fname, "cached", cached_size
+                            # Stale / corrupted cache — drop + refetch.
+                            _safe_unlink(target)
+                    else:
+                        return fname, "cached", cached_size
                 elif expected_size is None and cached_size > 0:
                     # HF didn't expose a size — accept any non-empty
                     # file as cached (matches pre-#650 behavior).

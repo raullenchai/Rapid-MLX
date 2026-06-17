@@ -1733,3 +1733,167 @@ def test_resume_range_ignored_200_response_discards_stale_prefix(
         if "model.safetensors" in r["url"] and r["headers"].get("Range") is not None
     ]
     assert len(range_reqs) == 1, f"expected exactly one Range request, got {range_reqs}"
+
+
+# ---------------------------------------------------------------------------
+# Codex round-11 BLOCKING #1 — a cached LFS file with the right SIZE but
+# wrong BYTES (e.g. a previous partial corruption or a bit-flip on disk)
+# must be re-hashed against ``expected_sha256`` and refetched if it
+# fails. Size-only acceptance is not enough for weight shards.
+# ---------------------------------------------------------------------------
+
+
+def test_cached_lfs_file_with_wrong_sha_is_refetched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Plant a same-size but BYTE-WRONG file at the snapshot path. The
+    mirror module must hash it, detect the mismatch, drop it, and
+    refetch from R2. Returning ``"cached"`` would be a silent
+    integrity regression — round-11 fix forbids that."""
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "deca" * 10
+    good_bytes = b"G" * 200
+    corrupt_bytes = b"X" * 200  # same size, wrong content
+    sha = hashlib.sha256(good_bytes).hexdigest()
+    files = [("model.safetensors", 200, sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    # Pre-plant the corrupt bytes at the snapshot path.
+    snap_dir = (
+        tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    )
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    (snap_dir / "model.safetensors").write_bytes(corrupt_bytes)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # R2 serves the GOOD bytes so the refetch can succeed.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, good_bytes),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # The corrupt cache was dropped and replaced with the right bytes.
+    assert (snap_dir / "model.safetensors").read_bytes() == good_bytes
+    # R2 served the refetch (so an R2 file request happened — i.e.
+    # the cached-as-"cached" short-circuit was NOT taken).
+    r2_file_calls = [r for r in router.requests if "model.safetensors" in r["url"]]
+    assert len(r2_file_calls) == 1, (
+        f"expected exactly one R2 refetch, got {r2_file_calls}"
+    )
+    # HF was not asked to do anything — R2 had it.
+    assert hf_mock.call_count == 0
+
+
+def test_cached_lfs_file_with_correct_sha_is_kept(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The same path with CORRECT bytes is NOT refetched — the sha-256
+    matches, the file is accepted as cached, and no R2 / HF traffic
+    happens for that file."""
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "feed" * 10
+    good_bytes = b"G" * 200
+    sha = hashlib.sha256(good_bytes).hexdigest()
+    files = [("model.safetensors", 200, sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    snap_dir = (
+        tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    )
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    (snap_dir / "model.safetensors").write_bytes(good_bytes)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # No file URL registered — if production tries to hit R2 for this
+    # file, the router raises AssertionError.
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    assert (snap_dir / "model.safetensors").read_bytes() == good_bytes
+    assert hf_mock.call_count == 0
+    # Only the catalog was hit.
+    file_calls = [r for r in router.requests if "model.safetensors" in r["url"]]
+    assert file_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Codex round-11 BLOCKING #2 — concurrent ``rapid-mlx`` runs on the
+# same model must serialize on the ``.part`` lock. Smoke-test that
+# acquiring + releasing the lock doesn't break and works on the test
+# platform (macOS posix). Full concurrency simulation is impractical
+# in a unit test, but verifying the helper round-trips guards against
+# regressions like accidentally dropping the lock import.
+# ---------------------------------------------------------------------------
+
+
+def test_part_lock_roundtrip(tmp_path: Path):
+    lock_path = tmp_path / "x.lock"
+    fh = _mirror._acquire_part_lock(lock_path)
+    # On posix we get a file handle; on Windows we get None. Either way
+    # the release call must not raise.
+    try:
+        assert fh is not None  # posix CI
+        # Reacquiring without releasing would deadlock on the same fd —
+        # don't try that. Just smoke-test release.
+    finally:
+        _mirror._release_part_lock(fh, lock_path)
+    # The lock file is cleaned up.
+    assert not lock_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Codex round-11 NIT #3 — a malformed ``RAPID_MLX_MODEL_MIRROR`` URL
+# should not crash the pull. The catalog fetch must catch the
+# ``Request()`` constructor's own ``ValueError``.
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_mirror_url_returns_false_gracefully(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # ``urllib.request.Request`` raises ValueError on unknown URL types.
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "not-a-url://garbage")
+    # No urlopen patch — if anything bypasses the guard we'll get a
+    # real network error not an assertion.
+    data, status = _mirror.fetch_catalog_with_status("not-a-url://garbage")
+    # Should fall through to "transient" (None, None) without raising.
+    assert data is None
+    # status may be None (URLError) or some int — both are acceptable
+    # "no catalog here" signals.
