@@ -246,7 +246,9 @@ def _run_smoke(
             # community-bench corpus has visibility into "model booted
             # but couldn't answer 2+2".
             payload={
-                "boot_time_ms": float(boot_time_ms) if boot_time_ms is not None else 0.0,
+                "boot_time_ms": float(boot_time_ms)
+                if boot_time_ms is not None
+                else 0.0,
                 "first_prompt_ok": False,
                 "first_token_latency_ms": 0.0,
                 "response_excerpt": f"[error] {type(exc).__name__}: {exc}"[:200],
@@ -624,9 +626,7 @@ def run_tier(
                 if tier == "all" and not r.passed:
                     print()
                     print("  Aborting --tier all: smoke failed.")
-                    return _finalize_with_results(
-                        results, overall_t0, return_results
-                    )
+                    return _finalize_with_results(results, overall_t0, return_results)
 
             # PR #5: --submit code path sets skip_speed=True for tier='all'
             # because it runs the locked B=1 standardized bench against the
