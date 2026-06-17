@@ -21,6 +21,12 @@ import sys
 
 from vllm_mlx._completion import alias_completer
 
+# Project-default mirror for ``RAPID_MLX_MODEL_MIRROR`` (consumed by
+# ``_try_mirror_prefetch``). Public Cloudflare Worker → R2 bucket, with
+# rate-limit + Range-request passthrough. Override with the env var
+# (set to an empty string to disable the mirror and force HF Hub).
+MIRROR_DEFAULT = "https://models.rapidmlx.com"
+
 # NOTE: ``argcomplete`` is imported lazily inside ``main()`` instead of
 # at module top. Module-level imports of ``vllm_mlx.cli`` (e.g.
 # ``tests/test_harmony_parsers.py::TestServeLogLevelFlags``) run in the
@@ -401,7 +407,6 @@ def _try_mirror_prefetch(model_name: str) -> bool:
     ``snapshot_download``. Any miss (mirror 404, network error) returns False
     and lets the caller fall through to the HF Hub path unchanged.
     """
-    MIRROR_DEFAULT = "https://models.rapidmlx.com"
     mirror = os.environ.get("RAPID_MLX_MODEL_MIRROR", MIRROR_DEFAULT).strip()
     if not mirror or "/" not in model_name:
         return False
