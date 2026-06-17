@@ -53,17 +53,19 @@ def _get_arguments_config(func_name: str, tools: list[dict] | None) -> dict:
 
 
 def _is_string_param(param_name: str, param_config: dict) -> bool:
-    """Whether ``param_name`` is a string-typed param per the tool schema.
+    """Whether ``param_name`` is explicitly string-typed per the tool schema.
 
-    Unknown / un-configured params default to string — the non-streaming
-    path treats them as raw strings via _decode_json_like(), so streaming
-    them char-by-char preserves the same final JSON shape.
+    Unknown / un-configured / typeless params return False so they stay on
+    the buffer-then-emit-once path. Non-streaming ``_convert_param_value``
+    routes those through ``_decode_json_like()`` which may parse a JSON-
+    looking value into an object — streaming it as a raw string would
+    break stream/non-stream parity for those cases.
     """
     if param_name not in param_config:
-        return True
+        return False
     param_type = _schema_type(param_config[param_name])
     if param_type is None:
-        return True
+        return False
     return param_type in ("string", "str", "text", "varchar", "char", "enum")
 
 
@@ -614,22 +616,18 @@ class Qwen3CoderToolParser(ToolParser):
                 self.param_count += 1
                 json_fragments.append(frag)
 
-            if json_fragments:
-                combined = "".join(json_fragments)
-                return {
-                    "tool_calls": [
-                        {
-                            "index": self.current_tool_index,
-                            "function": {"arguments": combined},
-                        }
-                    ]
-                }
-
-            # Check for function end
-            if not self.json_closed and self.function_end_token in tool_text:
+            # If the function body is now complete, fold the closing ``}``
+            # into the same delta so a chunk that batches the last param +
+            # </function> emits a self-contained, JSON-valid arguments
+            # document instead of leaving the close stranded for a later
+            # call (which may never come if the stream ended).
+            close_pending = (
+                not self.in_param
+                and not self.json_closed
+                and self.function_end_token in tool_text
+            )
+            if close_pending:
                 self.json_closed = True
-
-                # Update prev_tool_call_arr with final arguments
                 tools = None
                 if self._streaming_request:
                     tools = (
@@ -653,14 +651,17 @@ class Qwen3CoderToolParser(ToolParser):
                             ] = parsed["arguments"]
                     except Exception:
                         pass
-
                 self.in_function = False
                 self.accumulated_params = {}
+                json_fragments.append("}")
+
+            if json_fragments:
+                combined = "".join(json_fragments)
                 return {
                     "tool_calls": [
                         {
                             "index": self.current_tool_index,
-                            "function": {"arguments": "}"},
+                            "function": {"arguments": combined},
                         }
                     ]
                 }

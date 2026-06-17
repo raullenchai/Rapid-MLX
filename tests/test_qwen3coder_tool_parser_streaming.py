@@ -281,10 +281,11 @@ def test_same_chunk_close_and_trailing_param_not_dropped():
     deltas = _feed(parser, chunks, request)
     fragments = _argument_fragments(deltas)
     combined = "".join(fragments)
-    # Trailing ``}`` arrives on the next streaming call after function-end
-    # is observed; close manually for the parity assert.
-    if not combined.endswith("}"):
-        combined += "}"
+    # Must be valid JSON exactly as emitted — when the final chunk batches
+    # the close + trailing param + ``</function>``, the parser is required
+    # to fold the closing ``}`` into the same delta so consumers get a
+    # self-contained document, not a half-open one that needs a follow-up
+    # call that may never arrive (max_tokens truncation, stream cancel).
     decoded = json.loads(combined)
     assert decoded == {"summary": _LONG_SUMMARY, "score": 42}, (
         f"trailing param dropped on same-chunk close. decoded={decoded!r}"
