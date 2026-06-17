@@ -182,7 +182,14 @@ find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
 # Two safe drops:
 #   1. transformers/models/*/modeling_*.py — our inference path goes
 #      through mlx-lm's own model classes; we never instantiate
-#      transformers' AutoModel/PreTrainedModel. We DO still need the
+#      transformers' AutoModel/PreTrainedModel. The bundle also has
+#      no PyTorch (`torch` not installed), so transformers' lazy
+#      `from transformers import AutoModel` already returns a
+#      "PyTorch was not found" placeholder — third parties calling
+#      `AutoModel.from_pretrained(...)` against this sidecar hit
+#      the placeholder error path long before any missing-module
+#      lookup, so deleting modeling_*.py is a no-op for the
+#      already-broken AutoModel surface. We DO still need the
 #      tokenizer + config dispatch in transformers/models/auto/, so
 #      that path is pruned out of the find.
 #   2. image_processing_*.py + feature_extraction_*.py — text-only
@@ -256,9 +263,13 @@ echo "==> pre-compiling .pyc cache (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
 #     in theory, but keeping the source is ~negligible cost and avoids
 #     a class of namespace-package downgrade bugs in tools that probe
 #     __file__).
-#   * Anything under site-packages/transformers — already trimmed in
-#     step 3.5, the surviving .py files are mostly small registration
-#     modules.
+#   * Anything under site-packages/transformers/models/ — transformers
+#     scans that subtree at import time (define_import_structure /
+#     create_import_structure_from_path) and only recognises .py
+#     files when building its lazy-load registry; sourceless .pyc
+#     makes the registry empty and the top-level `import transformers`
+#     raises `KeyError: frozenset()`. Other transformers subpackages
+#     (utils/, generation/, models/auto/) are hoisted normally.
 #
 # The sidecar-shim exports PYTHONDONTWRITEBYTECODE=1 so Python won't
 # attempt to write new .pyc on startup (which would also break the
@@ -271,28 +282,31 @@ echo "==> pre-compiling .pyc cache (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
 # local sidecar debugging.
 
 if [[ "${SKIP_SOURCE_DROP:-0}" != "1" ]]; then
-    echo "==> hoisting .pyc out of __pycache__/ and dropping .py sources"
+    # Derive the cpython cache tag from the bundled interpreter so a
+    # future PBS bump to 3.13 / 3.14 doesn't silently skip this whole
+    # step (the .pyc filenames embed the major.minor in the tag —
+    # `cpython-312` today, `cpython-313` tomorrow). Falls back to the
+    # build-host interpreter if the bundled one can't be invoked, which
+    # is fine in practice (PBS_VERSION pins major.minor).
+    CACHE_TAG="$("$STAGE/python/bin/python3.12" -c \
+        'import sys; print(sys.implementation.cache_tag)' \
+        2>/dev/null || echo "cpython-312")"
+    PYC_SUFFIX=".${CACHE_TAG}.pyc"
+    echo "==> hoisting .pyc out of __pycache__/ and dropping .py sources (cache tag: $CACHE_TAG)"
     # Strategy: walk every __pycache__/ in site-packages, for each
-    # <name>.cpython-312.pyc whose adjacent <parent>/<name>.py exists,
+    # <name>.<cache-tag>.pyc whose adjacent <parent>/<name>.py exists,
     # `mv` the .pyc up to <parent>/<name>.pyc and delete the .py.
     # Skip __init__ so packages stay regular packages.
     #
-    # EXCLUSION: transformers/models/ is left in source form. The
-    # transformers init runs `define_import_structure(...)` which
-    # `os.scandir`s every model subdirectory at startup and ONLY
-    # recognises `.py` files when building its lazy-load registry
-    # (see transformers/utils/import_utils.py
-    # `create_import_structure_from_path`). Hoisting to .pyc makes
-    # the registry empty and the init raises `KeyError: frozenset()`
-    # on the next line. The remaining transformers/models tree after
-    # step 3.5 is only ~20 MB so the lost saving is small.
+    # EXCLUSION: transformers/models/ is left in source form (see
+    # comment block above for why).
     find "$STAGE/site-packages" -type d -name __pycache__ \
         -not -path "*/transformers/models/*" -print | \
     while read -r cachedir; do
         parent="$(dirname "$cachedir")"
-        for pyc in "$cachedir"/*.cpython-312.pyc; do
+        for pyc in "$cachedir"/*"$PYC_SUFFIX"; do
             [[ -f "$pyc" ]] || continue
-            base="$(basename "$pyc" .cpython-312.pyc)"
+            base="$(basename "$pyc" "$PYC_SUFFIX")"
             [[ "$base" == "__init__" ]] && continue
             src="$parent/$base.py"
             [[ -f "$src" ]] || continue
