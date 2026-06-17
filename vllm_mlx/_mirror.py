@@ -1157,13 +1157,17 @@ def download_with_mirror_fallback(
             # so the user understands why we'll fall back to
             # ``snapshot_download`` further down.
             completed += 1
-            file_mb = size / 1e6
+            # Only the size-bearing kinds need a MB readout. ``size``
+            # is always an int (workers return 0 on miss) but keeping
+            # the divide inside the branches that use it makes it
+            # obvious that the miss tag never depends on bytes — codex
+            # round-1 NIT on PR #657.
             if kind == "r2":
-                tag = f"{DIM}R2 ({file_mb:.0f} MB){RESET}"
+                tag = f"{DIM}R2 ({size / 1e6:.0f} MB){RESET}"
             elif kind == "hf":
-                tag = f"{DIM}HF ({file_mb:.0f} MB, fallback){RESET}"
+                tag = f"{DIM}HF ({size / 1e6:.0f} MB, fallback){RESET}"
             elif kind == "cached":
-                tag = f"{DIM}cached ({file_mb:.0f} MB){RESET}"
+                tag = f"{DIM}cached ({size / 1e6:.0f} MB){RESET}"
             else:
                 # ``miss`` / sanitized failure — surface the reason so
                 # users aren't surprised when the outer caller falls
