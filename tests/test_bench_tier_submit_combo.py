@@ -604,6 +604,93 @@ def test_smoke_payload_is_none_when_boot_time_unknown(capsys):
     )
 
 
+def test_smoke_passes_when_only_reasoning_content_streams():
+    """``_run_smoke`` MUST recognize ``delta.reasoning_content``.
+
+    Reasoning-parser models (qwen3, gemma4, deepseek_r1) emit their
+    ``<think>...</think>`` block as ``delta.reasoning_content`` instead
+    of ``delta.content`` — at small max_tokens budgets they can finish
+    the reasoning block while still inside it, never producing a
+    content delta at all. Pre-fix behavior on v0.7.26 was: smoke
+    FAIL on every reasoning-parser model with empty response, because
+    the probe only inspected ``delta.content``. qwen3-0.6b-4bit and
+    qwen3-8b-4bit both surfaced this during release dogfood.
+
+    This test pins the new behavior: smoke PASSES when the answer ("4")
+    appears in ``reasoning_content``, the payload's ``response_excerpt``
+    is the reasoning text tagged with ``[reasoning]``, and TTFT is
+    measured from the first reasoning chunk.
+    """
+    from vllm_mlx.bench.tier_runner import _run_smoke
+
+    class _FakeResp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "qwen3-0.6b-4bit"}]}
+
+    class _FakeStreamResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            # Pure reasoning stream, no content deltas at all — what
+            # qwen3-0.6b-4bit actually emits for "what is 2+2" at
+            # max_tokens=64. We split the answer "4" across two chunks
+            # so the test also catches accidental "first chunk only"
+            # regressions.
+            return iter(
+                [
+                    'data: {"choices":[{"delta":{"reasoning_content":"Let me think. "}}]}',
+                    'data: {"choices":[{"delta":{"reasoning_content":"2+2 = 4."}}]}',
+                    "data: [DONE]",
+                ]
+            )
+
+    class _FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url):
+            return _FakeResp()
+
+        def stream(self, method, url, json=None):
+            return _FakeStreamResp()
+
+    with patch("httpx.Client", lambda *a, **k: _FakeClient()):
+        r = _run_smoke(
+            model="qwen3-0.6b-4bit",
+            base_url="http://127.0.0.1:8500/v1",
+            boot_time_ms=2500.0,
+        )
+
+    assert r.passed is True, (
+        "smoke MUST pass when '4' is in reasoning_content — reasoning-parser "
+        "models legitimately answer inside <think>...</think>"
+    )
+    assert r.payload is not None
+    assert r.payload["first_prompt_ok"] is True
+    assert r.payload["first_token_latency_ms"] > 0, (
+        "TTFT must be measured from the first reasoning chunk, not 0.0"
+    )
+    assert "[reasoning]" in r.payload["response_excerpt"], (
+        "When only reasoning content streamed, response_excerpt MUST be "
+        "tagged so the corpus / log reader knows it came from "
+        "delta.reasoning_content, not delta.content"
+    )
+    assert "4" in r.payload["response_excerpt"]
+
+
 def test_tier_submit_routes_through_unified_flow(monkeypatch):
     """``bench_command`` MUST route --tier+--submit to ``_run_tier_submit_flow``.
 

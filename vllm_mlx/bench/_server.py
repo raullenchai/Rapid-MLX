@@ -29,12 +29,15 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from ..doctor.runner import REPO_ROOT, python_executable
+
+_BOOT_LOG_TAIL_LINES = 30
 
 
 class ServerStartFailed(RuntimeError):  # noqa: N818 — domain-specific error name
@@ -104,12 +107,28 @@ def serve(
     # The outer try/finally below then owns the fh for the rest of
     # the lifetime; this guard only covers the spawn window where
     # the outer try hasn't started yet. (Codex PR #623 BLOCKING-2.)
-    log_fh = open(log_path, "w") if log_path else subprocess.DEVNULL
+    #
+    # If the caller didn't provide a log_path, route output to a temp
+    # file anyway so that on a boot crash we can replay the tail in
+    # the ``ServerStartFailed`` exception. Older code piped both
+    # streams to DEVNULL, which left users staring at
+    # ``server exited with code 3`` with nothing to act on (the
+    # gemma-4 / gemma3-multimodal aliases hit this — the real error
+    # was ``mlx-vlm not installed`` but bench surfaced nothing).
+    tmp_log: Path | None = None
+    if log_path is not None:
+        log_fh = open(log_path, "w")
+    else:
+        tmp_log = Path(
+            tempfile.mkstemp(prefix=f"rapid-mlx-bench-{port}-", suffix=".log")[1]
+        )
+        log_fh = open(tmp_log, "w")
     try:
         t_spawn = time.perf_counter()
         proc = subprocess.Popen(  # noqa: S603 — args constructed by us
             cmd,
             cwd=REPO_ROOT,
+            stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             env=os.environ.copy(),
@@ -119,12 +138,22 @@ def serve(
             preexec_fn=os.setsid if sys.platform != "win32" else None,
         )
     except BaseException:
-        if log_fh is not subprocess.DEVNULL:
-            log_fh.close()
+        log_fh.close()
+        if tmp_log is not None:
+            tmp_log.unlink(missing_ok=True)
         raise
 
     try:
-        _wait_for_health(health_url, proc, boot_timeout_s)
+        try:
+            _wait_for_health(health_url, proc, boot_timeout_s)
+        except ServerStartFailed as exc:
+            log_fh.flush()
+            tail = _read_log_tail(log_path or tmp_log, _BOOT_LOG_TAIL_LINES)
+            if tail:
+                raise ServerStartFailed(
+                    f"{exc}\n--- server log tail ---\n{tail}"
+                ) from exc
+            raise
         boot_time_ms = (time.perf_counter() - t_spawn) * 1000.0
         yield {
             "base_url": v1_url,
@@ -134,8 +163,21 @@ def serve(
         }
     finally:
         _terminate(proc)
-        if log_fh is not subprocess.DEVNULL:
-            log_fh.close()
+        log_fh.close()
+        if tmp_log is not None:
+            tmp_log.unlink(missing_ok=True)
+
+
+def _read_log_tail(log_path: Path | None, max_lines: int) -> str:
+    """Return the last ``max_lines`` lines of ``log_path``, best-effort."""
+    if log_path is None:
+        return ""
+    try:
+        with open(log_path, errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return ""
+    return "".join(lines[-max_lines:]).strip()
 
 
 def _wait_for_health(health_url: str, proc: subprocess.Popen, timeout_s: int) -> None:
