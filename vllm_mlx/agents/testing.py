@@ -750,13 +750,26 @@ def _agent_query(
         # mismatch, not a rapid-mlx regression. Propagate as SKIP via the
         # ``SKIP:``-prefixed err sentinel that each ``_test_e2e_*`` already
         # honors.
-        if (
-            "Failed to initialize agent" in output
-            and "context window" in output
-        ):
+        if "Failed to initialize agent" in output and "context window" in output:
+            # Extract the first matching line from the subprocess output so
+            # the resulting TestResult.message carries the actual model
+            # name + advertised vs minimum token counts (codex NIT #659).
+            # Without this, the user sees a generic "below the harness
+            # minimum" and has to dig in the server log to learn which
+            # model and what numbers — the very signal that makes this
+            # actionable.
+            refusal_line = next(
+                (
+                    line.strip()
+                    for line in output.splitlines()
+                    if "Failed to initialize agent" in line
+                ),
+                "",
+            )
+            detail = f": {refusal_line[:200]}" if refusal_line else ""
             return None, (
-                "SKIP: agent refused init — served model's context window "
-                "is below the harness minimum (see output for details)"
+                f"SKIP: agent refused init — served model's context window "
+                f"is below the harness minimum{detail}"
             )
         return output, None
     except subprocess.TimeoutExpired:

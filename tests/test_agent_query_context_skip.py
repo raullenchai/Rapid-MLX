@@ -53,7 +53,9 @@ def test_err_to_status_not_found_is_skip():
 
 
 def test_err_to_status_skip_prefix_is_skip():
-    assert _err_to_status("SKIP: agent refused init — context window") is TestStatus.SKIP
+    assert (
+        _err_to_status("SKIP: agent refused init — context window") is TestStatus.SKIP
+    )
 
 
 def test_err_to_status_timeout_is_error():
@@ -85,12 +87,27 @@ def test_agent_query_detects_context_refusal_as_skip():
             return_value=_stub_completed_proc(stdout=HERMES_REFUSAL_STDOUT),
         ),
     ):
-        out, err = _agent_query("hermes", "hermes chat -q '{query}' -Q", "hi", timeout=10)
-    assert out is None, "On refusal, output must be suppressed so downstream tests route via err"
+        out, err = _agent_query(
+            "hermes", "hermes chat -q '{query}' -Q", "hi", timeout=10
+        )
+    assert out is None, (
+        "On refusal, output must be suppressed so downstream tests route via err"
+    )
     assert err is not None
     assert err.startswith("SKIP:"), (
         f"Refusal must be propagated with a SKIP: prefix so _test_e2e_* "
         f"recognize it; got err={err!r}"
+    )
+    # The actionable bits — model name and the actual vs required token
+    # counts — must survive into the SKIP message (codex NIT #659).
+    # Without them, the user has to dig in the server log to learn what
+    # the harness wanted vs what the model offered.
+    assert "Qwen3.5-9B-4bit" in err, (
+        f"SKIP message must carry the model name; got err={err!r}"
+    )
+    assert "32,768" in err and "64,000" in err, (
+        f"SKIP message must carry the advertised vs minimum context values; "
+        f"got err={err!r}"
     )
 
 
@@ -103,7 +120,9 @@ def test_agent_query_passes_through_normal_output():
             return_value=_stub_completed_proc(stdout="The answer is 4.\n"),
         ),
     ):
-        out, err = _agent_query("codex", "codex -q '{query}'", "what is 2+2?", timeout=10)
+        out, err = _agent_query(
+            "codex", "codex -q '{query}'", "what is 2+2?", timeout=10
+        )
     assert err is None
     assert out is not None and "4" in out
 
@@ -124,7 +143,9 @@ def test_agent_query_does_not_match_unrelated_failures():
             return_value=_stub_completed_proc(stdout=bad_init_no_context),
         ),
     ):
-        out, err = _agent_query("hermes", "hermes chat -q '{query}' -Q", "hi", timeout=10)
+        out, err = _agent_query(
+            "hermes", "hermes chat -q '{query}' -Q", "hi", timeout=10
+        )
     # Output passes through (not None); downstream tests then route via
     # "no expected substring" → FAIL, which is the correct signal for a
     # genuine harness misconfiguration.
@@ -194,9 +215,7 @@ def test_e2e_tests_still_error_on_genuine_failure():
             side_effect=TimeoutError("simulated timeout"),
         ),
     ):
-        result = _test_e2e_file_read(
-            "hermes", "hermes chat -q '{query}' -Q", timeout=1
-        )
+        result = _test_e2e_file_read("hermes", "hermes chat -q '{query}' -Q", timeout=1)
     # TimeoutError raised inside _agent_query → caught by the bare ``except
     # Exception`` and turned into err=str(exc); the resulting err is NOT
     # "not found" and does NOT start with "SKIP:", so the test routes to
