@@ -201,7 +201,12 @@ def _download_one_from_r2(
     Supports resume via ``Range: bytes=<offset>-`` when a non-empty
     ``.part`` already exists from a prior aborted run.
     """
-    tmp = target.with_suffix(target.suffix + ".part")
+    # Codex round-4 BLOCKING #1: the naive ``target + ".part"`` collides
+    # with a repository that legitimately contains both ``foo`` and
+    # ``foo.part`` — parallel workers could clobber each other's
+    # partial file. Namespace the temp file with a hidden prefix +
+    # ``.rapid-mlx-mirror.part`` suffix that no real HF asset shares.
+    tmp = target.parent / f".{target.name}.rapid-mlx-mirror.part"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -240,6 +245,21 @@ def _download_one_from_r2(
             except ValueError:
                 _safe_unlink(tmp)
                 return False, "bad-content-length"
+
+            # Codex round-4 BLOCKING #2: a 206 response with a wrong
+            # ``Content-Range`` (proxy bug, mirror serving from the
+            # middle, etc.) would let us concatenate corrupt bytes onto
+            # an existing .part. Validate the start offset matches the
+            # resume position; on absence/mismatch, wipe and restart so
+            # the next attempt re-fetches the whole file from scratch.
+            if resp.status == 206:
+                cr = resp.headers.get("Content-Range", "")
+                # Expected shape: ``bytes <first>-<last>/<total>``.
+                # Reject anything else.
+                expected_prefix = f"bytes {existing}-"
+                if not cr.startswith(expected_prefix):
+                    _safe_unlink(tmp)
+                    return False, f"bad-content-range:{cr or 'absent'}"
 
             # Total final size: resume bytes + body bytes.
             total_size = existing + length if resp.status == 206 else length
@@ -435,18 +455,21 @@ def download_with_mirror_fallback(
     # * Catalog says mirrored → use the catalog's download_url_base.
     # * Catalog says NOT mirrored → skip R2 entirely (the catalog is
     #   authoritative for the project default mirror).
-    # * Catalog absent (custom mirror or 5xx) → try direct layout for
-    #   each file (PR #647 contract); per-file 404 still falls back to
-    #   HF.
+    # * Catalog absent on the DEFAULT mirror → catalog endpoint is
+    #   advertised, so an outage is a real signal; route straight to
+    #   HF instead of incurring up to ``ceil(files / workers) * 60s``
+    #   of mirror timeouts (codex round-4 BLOCKING #3).
+    # * Catalog absent on a CUSTOM mirror → user-configured base URL
+    #   likely doesn't serve /api/models; fall back to direct layout
+    #   (PR #647 contract). Per-file 404 still falls back to HF.
     dub = ""
     use_r2 = False
     if catalog_mirrored and catalog_entry is not None:
         dub = str(catalog_entry.get("download_url_base", "")).strip()
         use_r2 = bool(dub)
-    elif catalog is None:
-        # Custom mirror or transient catalog outage — fall back to
-        # ``/<owner>/<repo>/<file>``. The per-file fallback still kicks
-        # in on 404 so this is safe even when the mirror has nothing.
+    elif catalog is None and base.rstrip("/") != MIRROR_DEFAULT.rstrip("/"):
+        # Custom mirror — try direct layout. The PR #647 contract was
+        # ``<base>/<owner>/<repo>/<file>``.
         dub = f"/{owner}/{repo}/"
         use_r2 = True
 

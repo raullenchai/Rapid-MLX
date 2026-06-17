@@ -374,12 +374,11 @@ def test_catalog_500_falls_through_to_hf(
         "https://models.rapidmlx.com/api/models",
         _FakeResponse(500, b"oops"),
     )
-    # Direct-layout R2 attempt is still made when catalog is
-    # unreachable (PR #647 compat). Mirror returns 404; HF picks up.
-    router.add(
-        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
-        _FakeResponse(404, b""),
-    )
+    # Default mirror with catalog outage routes straight to HF — we
+    # don't probe the direct-layout because the default mirror is known
+    # to serve /api/models, so an outage there means we should fail
+    # fast to HF rather than incur 60s timeouts per file (codex round-4
+    # BLOCKING #3). Therefore: no R2 file URL is registered.
 
     def _fake_hf(repo_id, filename, revision, cache_dir=None):
         snap = (
@@ -404,9 +403,15 @@ def test_catalog_500_falls_through_to_hf(
         ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
 
     assert ok
-    # HF served the only file: catalog 500'd, direct R2 layout 404'd,
-    # HF picked up. The pull still completes transparently.
+    # HF served the only file — catalog 500'd, R2 file URLs were never
+    # probed (default mirror + catalog outage → straight to HF).
     assert hf_mock.call_count == 1
+    r2_file_calls = [
+        r
+        for r in router.requests
+        if r["url"] != "https://models.rapidmlx.com/api/models"
+    ]
+    assert r2_file_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -577,11 +582,13 @@ def test_resume_sends_range_header_for_partial_part_file(
     files = [("model.safetensors", 200)]
     catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
 
-    # Pre-stage the partial file at the exact snapshot path the
-    # production code will compute.
+    # Pre-stage the partial file at the namespaced temp path the
+    # production code computes (``.<file>.rapid-mlx-mirror.part``).
+    # Codex round-4 BLOCKING #1 made the temp name distinct from a
+    # potential ``<file>.part`` repo asset.
     snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
     snap.mkdir(parents=True, exist_ok=True)
-    part = snap / "model.safetensors.part"
+    part = snap / ".model.safetensors.rapid-mlx-mirror.part"
     part.write_bytes(b"a" * 50)
 
     router = _UrlRouter()
@@ -590,9 +597,12 @@ def test_resume_sends_range_header_for_partial_part_file(
         _FakeResponse(200, json.dumps(catalog).encode()),
     )
     # R2 honors the Range request with 206 + remaining 150 bytes.
+    # Codex round-4 BLOCKING #2: the production code now validates
+    # ``Content-Range`` matches the resume offset, so the mock must
+    # include it.
     router.add(
         "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
-        _FakeResponse(206, b"b" * 150),
+        _FakeResponse(206, b"b" * 150, headers={"Content-Range": "bytes 50-199/200"}),
     )
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
@@ -625,6 +635,73 @@ def test_resume_sends_range_header_for_partial_part_file(
     assert hf_mock.call_count == 0
     # No .part leftover after the rename.
     assert not part.exists()
+
+
+# ---------------------------------------------------------------------------
+# Codex round-4 BLOCKING #2 regression — a 206 with an INCORRECT
+# ``Content-Range`` header must be rejected. A proxy serving the wrong
+# range would otherwise let us concatenate corrupt bytes into the
+# .part and silently cache them as valid.
+# ---------------------------------------------------------------------------
+
+
+def test_resume_rejects_bad_content_range(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "ed1e" * 10
+    files = [("model.safetensors", 200)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    snap.mkdir(parents=True, exist_ok=True)
+    part = snap / ".model.safetensors.rapid-mlx-mirror.part"
+    part.write_bytes(b"a" * 50)  # resume from offset 50
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # Mirror returns 206 but Content-Range starts at byte 0, not 50.
+    # This must be rejected — concatenating these bytes onto our 50-byte
+    # prefix would corrupt the file.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(206, b"x" * 200, headers={"Content-Range": "bytes 0-199/200"}),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        snap_local = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap_local.mkdir(parents=True, exist_ok=True)
+        target = snap_local / filename
+        target.write_bytes(b"h" * 200)
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf) as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # HF served the file because R2's bad Content-Range was rejected.
+    assert hf_mock.call_count == 1
+    # The truncated .part was wiped — no leftover.
+    assert not part.exists()
+    # Final file is HF's bytes (all h's), not R2's corrupted concat.
+    assert (snap / "model.safetensors").read_bytes() == b"h" * 200
 
 
 # ---------------------------------------------------------------------------
@@ -844,4 +921,62 @@ def test_unstatable_cached_path_falls_through_to_r2(
     # the broken target.)
     assert ok
     # No HF fallback needed — R2 served the file fresh.
+    assert hf_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Codex round-4 BLOCKING #1 regression — the .part temp file name must
+# not collide with a real repo asset like ``model.safetensors.part``.
+# The mirror module namespaces temp files as
+# ``.<target.name>.rapid-mlx-mirror.part`` so a hypothetical sibling
+# ``foo.part`` repo asset is safe.
+# ---------------------------------------------------------------------------
+
+
+def test_part_tempfile_does_not_collide_with_dot_part_repo_asset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo_id = "weirdco/repo-with-part-files"
+    revision = "aabb" * 10
+    # The repo contains BOTH ``foo.bin`` and ``foo.bin.part`` as
+    # legitimate assets — pathological but valid. If our temp file
+    # were ``foo.bin`` + ``.part``, the two workers would race over
+    # the same temp path.
+    files = [("foo.bin", 100), ("foo.bin.part", 50)]
+    catalog = _catalog_payload([("weird-repo", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/weirdco/repo-with-part-files/foo.bin",
+        _FakeResponse(200, b"X" * 100),
+    )
+    router.add(
+        "https://models.rapidmlx.com/weirdco/repo-with-part-files/foo.bin.part",
+        _FakeResponse(200, b"Y" * 50),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    snap = tmp_path / "models--weirdco--repo-with-part-files" / "snapshots" / revision
+    # Both real files land with their distinct content — no clobber.
+    assert (snap / "foo.bin").read_bytes() == b"X" * 100
+    assert (snap / "foo.bin.part").read_bytes() == b"Y" * 50
+    # No leftover hidden temp files.
+    leftovers = list(snap.glob(".*rapid-mlx-mirror.part"))
+    assert leftovers == [], f"unexpected leftover temp files: {leftovers}"
     assert hf_mock.call_count == 0
