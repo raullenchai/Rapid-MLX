@@ -389,6 +389,122 @@ def _check_memory_capacity(model_name: str) -> None:
     print()
 
 
+def _try_mirror_prefetch(model_name: str) -> bool:
+    """Pre-fetch a HuggingFace repo from a user-configured R2/S3 mirror.
+
+    When ``RAPID_MLX_MODEL_MIRROR`` is set, every file in the repo is fetched
+    from ``${mirror}/<owner>/<repo>/<filename>`` straight into the HF cache
+    layout (``snapshots/<rev>/<file>`` + ``refs/main``). Returns True if the
+    whole snapshot landed locally so the caller can skip ``snapshot_download``.
+    Any miss (env unset, mirror 404, network error) returns False and lets the
+    caller fall through to the HF Hub path unchanged.
+    """
+    mirror = os.environ.get("RAPID_MLX_MODEL_MIRROR", "").strip()
+    if not mirror or "/" not in model_name:
+        return False
+    try:
+        from huggingface_hub import model_info
+
+        info = model_info(model_name)
+    except Exception:
+        return False
+    revision = getattr(info, "sha", None)
+    siblings = getattr(info, "siblings", None) or []
+    files = [s.rfilename for s in siblings if getattr(s, "rfilename", None)]
+    if not revision or not files:
+        return False
+
+    from pathlib import Path
+
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        cache_root = Path(HF_HUB_CACHE)
+    except Exception:
+        cache_root = Path.home() / ".cache" / "huggingface" / "hub"
+
+    owner, _, repo = model_name.partition("/")
+    repo_root = cache_root / f"models--{owner}--{repo}"
+    snap_dir = repo_root / "snapshots" / revision
+    refs_dir = repo_root / "refs"
+    try:
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        refs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+
+    import urllib.error
+    import urllib.request
+
+    base = mirror.rstrip("/")
+    is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    BOLD = "\x1b[1m" if is_tty else ""
+    DIM = "\x1b[2m" if is_tty else ""
+    RESET = "\x1b[0m" if is_tty else ""
+    print(f"\n  {BOLD}Mirror prefetch{RESET} {DIM}({base}){RESET}")
+
+    total = len(files)
+    for idx, fname in enumerate(files, 1):
+        target = snap_dir / fname
+        if target.exists() and target.stat().st_size > 0:
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return False
+        url = f"{base}/{owner}/{repo}/{fname}"
+        tmp = target.with_suffix(target.suffix + ".part")
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "rapid-mlx-mirror"}
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                length = int(resp.headers.get("Content-Length") or 0)
+                read = 0
+                last_pct = -1
+                with tmp.open("wb") as fh:
+                    while True:
+                        chunk = resp.read(8 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        read += len(chunk)
+                        if length > 16 * 1024 * 1024 and is_tty:
+                            pct = int(read * 100 / length)
+                            if pct != last_pct:
+                                print(
+                                    f"\r  [{idx}/{total}] {fname} "
+                                    f"{read/1e6:6.0f}/{length/1e6:6.0f} MB ({pct:3d}%)",
+                                    end="",
+                                    flush=True,
+                                )
+                                last_pct = pct
+            tmp.rename(target)
+            if length > 16 * 1024 * 1024 and is_tty:
+                print(
+                    f"\r  [{idx}/{total}] {fname} {length/1e6:6.0f} MB"
+                    f"{' ' * 20}"
+                )
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            print(
+                f"\n  Mirror miss on {fname} ({type(e).__name__}); "
+                "falling back to HuggingFace."
+            )
+            return False
+
+    try:
+        (refs_dir / "main").write_text(revision)
+    except OSError:
+        return False
+    print(f"  {BOLD}Mirror prefetch done{RESET} ({total} files)")
+    return True
+
+
 def _ensure_model_downloaded(model_name: str) -> None:
     """Pre-fetch a model in the foreground so HF's tqdm progress is visible.
 
@@ -427,6 +543,13 @@ def _ensure_model_downloaded(model_name: str) -> None:
     # the repo size and aborts with a clear message + exit(1) if there
     # isn't enough room on the resolved HF cache filesystem.
     _check_disk_space(model_name)
+
+    # User-configured mirror path (R2/S3/any HTTP host). When the mirror
+    # serves every file the repo declares, populate the HF cache layout
+    # ourselves and skip snapshot_download. On any miss we fall through
+    # to the normal HuggingFace download below.
+    if _try_mirror_prefetch(model_name):
+        return
 
     try:
         from huggingface_hub import model_info, snapshot_download
@@ -1979,6 +2102,21 @@ def pull_command(args):
     repo_id = args.model  # already alias-resolved by main()
 
     print(f"\n  Pulling {repo_id} ...")
+    # Honour RAPID_MLX_MODEL_MIRROR — when every file streams from the
+    # user-configured mirror we skip snapshot_download entirely. On any
+    # miss we fall through to HuggingFace below.
+    if _try_mirror_prefetch(repo_id):
+        from pathlib import Path
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE
+            cache_root = Path(HF_HUB_CACHE)
+        except Exception:
+            cache_root = Path.home() / ".cache" / "huggingface" / "hub"
+        owner, _, repo = repo_id.partition("/")
+        repo_root = cache_root / f"models--{owner}--{repo}"
+        rev = (repo_root / "refs" / "main").read_text().strip()
+        print(f"  Cached at: {repo_root / 'snapshots' / rev}")
+        return
     try:
         path = snapshot_download(repo_id)
     except HFValidationError:
