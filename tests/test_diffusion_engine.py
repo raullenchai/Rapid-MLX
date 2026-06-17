@@ -21,6 +21,11 @@ from typing import Any
 
 import pytest
 
+# Hard-depends on Apple-Silicon-only ``mlx``. CI's Linux pr_validate
+# runner has no mlx wheels — skip the whole module instead of letting
+# 70 unrelated ImportError "failures" drown out real signal.
+pytest.importorskip("mlx")
+
 # ----------------------------------------------------------------------
 # Helpers — minimal mlx-vlm surface mock
 # ----------------------------------------------------------------------
