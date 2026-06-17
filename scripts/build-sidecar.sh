@@ -244,11 +244,17 @@ echo "==> pre-compiling .pyc cache (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
     "$STAGE/site-packages" \
     || { echo "ERR: compileall failed; bundle would seal-break on first launch" >&2; exit 1; }
 
-# ----- step 3.6: drop .py sources, hoist .pyc to sourceless layout -----
+# ----- step 3.6: drop .py sources in site-packages, hoist .pyc ---------
+#
+# Scope: site-packages only. The bundled stdlib under
+# $STAGE/python/lib/python3.12/ is left in source form on purpose — the
+# stdlib is only ~30 MB on disk after the step-3 strip, and its
+# __pycache__/ entries are already populated by the compileall step
+# above so import latency is identical either way.
 #
 # After compileall, every imported module has a sibling .pyc under
-# __pycache__/<name>.cpython-312.pyc. Python's regular-package loader
-# only treats __pycache__/<name>.cpython-312.pyc as a CACHE for an
+# __pycache__/<name>.<cache-tag>.pyc. Python's regular-package loader
+# only treats __pycache__/<name>.<cache-tag>.pyc as a CACHE for an
 # adjacent <name>.py; if the .py is missing, that .pyc is ignored
 # (verified empirically — websockets.imports, every submodule, broke).
 #
