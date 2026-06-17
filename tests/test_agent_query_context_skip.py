@@ -77,6 +77,18 @@ HERMES_REFUSAL_STDOUT = (
     "required by Hermes Agent.\n"
 )
 
+# Exactly the bytes the real hermes binary prints — it hard-wraps at
+# ~100 cols so the phrase "context window" ends up split as
+# "context\nwindow". A literal substring check misses this case, which
+# is what slipped through #659 round-1 and re-broke the gauntlet. Keep
+# this fixture verbatim so any future regression of the detection
+# layer's whitespace tolerance trips the test, not the user.
+HERMES_REFUSAL_STDOUT_WRAPPED = (
+    "Failed to initialize agent: Model mlx-community/Qwen3.5-9B-4bit has a context\n"
+    "window of 32,768 tokens, which is below the minimum 64,000 required by Hermes\n"
+    "Agent.  Choose a model with at least 64K context.\n"
+)
+
 
 def test_agent_query_detects_context_refusal_as_skip():
     """The Hermes-style "context window below minimum" refusal → SKIP err."""
@@ -109,6 +121,36 @@ def test_agent_query_detects_context_refusal_as_skip():
         f"SKIP message must carry the advertised vs minimum context values; "
         f"got err={err!r}"
     )
+
+
+def test_agent_query_detects_context_refusal_when_phrase_is_line_wrapped():
+    """Direct regression for the #659 round-1 verify-pass finding.
+
+    The real hermes binary hard-wraps stderr at ~100 cols, so the
+    phrase "context window" arrives split as "context\\nwindow". The
+    initial #659 fix used a literal ``"context window" in output``
+    substring check that missed this — gauntlet hermes line was still
+    ``27p 7f 0e 0s`` after the merge. Detection must collapse
+    whitespace first so the wrapped form is recognized.
+    """
+    with (
+        patch("vllm_mlx.agents.testing.shutil.which", return_value="/fake/hermes"),
+        patch(
+            "vllm_mlx.agents.testing.subprocess.run",
+            return_value=_stub_completed_proc(stdout=HERMES_REFUSAL_STDOUT_WRAPPED),
+        ),
+    ):
+        out, err = _agent_query(
+            "hermes", "hermes chat -q '{query}' -Q", "hi", timeout=10
+        )
+    assert out is None
+    assert err is not None and err.startswith("SKIP:"), (
+        f"Wrapped-phrase refusal must STILL be detected; got err={err!r}"
+    )
+    # And the model name + numbers still survive into the message after
+    # whitespace normalization.
+    assert "Qwen3.5-9B-4bit" in err, f"model name lost; err={err!r}"
+    assert "32,768" in err and "64,000" in err, f"context numbers lost; err={err!r}"
 
 
 def test_agent_query_passes_through_normal_output():

@@ -110,7 +110,16 @@ def hermes_query(query, timeout_sec=120):
         # needs. Surfacing this as FAIL is dishonest — it isn't a
         # rapid-mlx regression, it's the served model being too small
         # for this specific harness setup. Caller should SKIP.
-        if "Failed to initialize agent" in output and "context window" in output:
+        #
+        # IMPORTANT: collapse whitespace before the substring check.
+        # The hermes binary hard-wraps stderr at ~100 cols, so the
+        # literal ``"context window"`` substring would miss when
+        # wrapping splits the phrase as ``"context\nwindow"`` (#659
+        # round-1 verify-pass uncovered this).
+        import re as _re
+
+        collapsed = _re.sub(r"\s+", " ", output)
+        if "Failed to initialize agent" in collapsed and "context window" in collapsed:
             return None, (
                 "SKIP: Hermes requires larger context than served model "
                 "provides (Hermes init refused)"

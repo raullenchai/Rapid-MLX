@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -750,23 +751,30 @@ def _agent_query(
         # mismatch, not a rapid-mlx regression. Propagate as SKIP via the
         # ``SKIP:``-prefixed err sentinel that each ``_test_e2e_*`` already
         # honors.
-        if "Failed to initialize agent" in output and "context window" in output:
-            # Extract the first matching line from the subprocess output so
+        #
+        # IMPORTANT: collapse whitespace first. The hermes binary hard-
+        # wraps stderr at ~100 cols, so a literal ``"context window"``
+        # substring check misses when wrapping splits the phrase as
+        # ``"context\nwindow"`` — which is exactly what tripped the
+        # initial #655 fix in production (#659 round-1 verify-pass).
+        collapsed = re.sub(r"\s+", " ", output).strip()
+        if "Failed to initialize agent" in collapsed and "context window" in collapsed:
+            # Extract the actual refusal sentence (everything from
+            # "Failed to initialize agent" through the next period) so
             # the resulting TestResult.message carries the actual model
             # name + advertised vs minimum token counts (codex NIT #659).
             # Without this, the user sees a generic "below the harness
             # minimum" and has to dig in the server log to learn which
             # model and what numbers — the very signal that makes this
             # actionable.
-            refusal_line = next(
-                (
-                    line.strip()
-                    for line in output.splitlines()
-                    if "Failed to initialize agent" in line
-                ),
-                "",
-            )
-            detail = f": {refusal_line[:200]}" if refusal_line else ""
+            # Non-greedy through to a period FOLLOWED BY whitespace or
+            # end-of-string. The plain ``[^.]*\.`` form stops at the
+            # first period — which on a model name like "Qwen3.5" is
+            # mid-sentence, truncating the model identifier and the
+            # advertised/minimum numbers.
+            m = re.search(r"Failed to initialize agent.*?\.(?=\s|$)", collapsed)
+            refusal_line = (m.group(0) if m else "")[:200]
+            detail = f": {refusal_line}" if refusal_line else ""
             return None, (
                 f"SKIP: agent refused init — served model's context window "
                 f"is below the harness minimum{detail}"
