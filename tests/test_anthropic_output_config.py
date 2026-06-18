@@ -247,20 +247,31 @@ class TestAnthropicToOpenaiOutputConfig:
         assert result.response_format.type == "json_schema"
         assert result.response_format.json_schema.name == "thing"
 
-    def test_effort_field_does_not_alter_openai_request(self):
-        """``effort`` is part of Pick 1 — this PR must accept the field
-        on the wire but not mutate any OpenAI-side parameter.
+    def test_effort_field_sets_reasoning_max_tokens(self):
+        """Pick 1 has now landed. ``effort`` is translated through
+        ``ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS`` into a per-request
+        ``reasoning_max_tokens`` on the OpenAI side. Every other OpenAI
+        field stays identical to the baseline request — only
+        ``reasoning_max_tokens`` changes, so the cap path is the single
+        wire effect.
 
-        We diff the model dump of a request with effort vs. without to
-        guarantee no sneaky side effects. The adapter copies sampling
-        params straight through (temperature/top_p/top_k/max_tokens),
-        so equivalence of the OpenAI request is the right invariant.
+        See ``tests/test_per_request_thinking_budget.py`` for the full
+        effort-mapping test matrix; this case pins coexistence with
+        Pick 2's ``format`` field so neither PR's tests can regress
+        the other's surface.
         """
         baseline = anthropic_to_openai(_req())
         with_effort = anthropic_to_openai(
             _req(output_config=AnthropicOutputConfig(effort="high"))
         )
-        assert baseline.model_dump() == with_effort.model_dump()
+        # ``high`` → 8192 per the canonical Anthropic mapping.
+        assert baseline.reasoning_max_tokens is None
+        assert with_effort.reasoning_max_tokens == 8192
+        # Everything else must be identical so Pick 1 doesn't sneak in
+        # a side effect on the OpenAI surface.
+        baseline_dump = baseline.model_dump(exclude={"reasoning_max_tokens"})
+        with_effort_dump = with_effort.model_dump(exclude={"reasoning_max_tokens"})
+        assert baseline_dump == with_effort_dump
 
     def test_unsupported_format_raises(self):
         cfg = AnthropicOutputConfig(
