@@ -12,13 +12,21 @@ on:
       - "community-benchmarks/submissions/**"
       - "community-benchmarks/scripts/aggregate.py"
 
+# Default permissions are read-only across the workflow. The
+# regenerate-on-main job that needs to push gets its own narrow grant
+# below. Without this split, the PR freshness job would run
+# PR-controlled aggregate.py under a contents:write token — defense in
+# depth: even though aggregate.py is pure-stdlib, the workflow itself
+# shouldn't hand out the write capability when the job doesn't use it
+# (codex PR #666 BLOCKING-1).
 permissions:
-  contents: write   # for the push-branch regenerate-on-main path
+  contents: read
 
 jobs:
   # PR path: verify the committed aggregate matches what would be
   # regenerated from the current raw rows. Fails loudly if a
   # contributor added a submission without re-running the aggregator.
+  # Runs under the default read-only permission set above.
   freshness-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -38,6 +46,10 @@ jobs:
   regenerate-on-main:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # Only this job needs write — the rest of the workflow stays
+    # read-only.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:

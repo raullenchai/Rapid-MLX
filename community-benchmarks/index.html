@@ -181,6 +181,23 @@
 
 const AGGREGATE_URL = "aggregated.json";
 
+// HTML-escape any string field we render via innerHTML interpolation.
+// Submission rows go through schema validation + maintainer review,
+// but defense-in-depth: an attacker who lands a row with a model
+// alias like ``<img src=x onerror=…>`` should not be able to execute
+// script on the Performance page. Escape chip / model_alias /
+// rapid_mlx_version everywhere they reach the DOM. (codex PR #666
+// BLOCKING-2.)
+function esc(s) {
+  if (s === null || s === undefined) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 const state = {
   rows: [],
   sortKey: "long_decode",
@@ -283,11 +300,16 @@ function render() {
     return;
   }
 
+  // String fields (chip / model_alias / rapid_mlx_version) are escaped;
+  // numeric fields go through fmtCell which only emits digits + a
+  // hardcoded ``<span class="iqr">…</span>``, never user-controlled
+  // HTML. fmt() routes through toLocaleString which can only return
+  // numbers — safe to interpolate.
   tbody.innerHTML = sorted.map(r => `
     <tr>
-      <td>${r.chip}</td>
-      <td><code>${r.model_alias}</code></td>
-      <td><span class="pill">${r.rapid_mlx_version}</span></td>
+      <td>${esc(r.chip)}</td>
+      <td><code>${esc(r.model_alias)}</code></td>
+      <td><span class="pill">${esc(r.rapid_mlx_version)}</span></td>
       <td class="num">${fmtCell(r.short_decode, r.short_decode_p25, r.short_decode_p75)}</td>
       <td class="num">${fmtCell(r.long_decode, r.long_decode_p25, r.long_decode_p75)}</td>
       <td class="num">${fmtCell(r.long_ttft, r.long_ttft_p25, r.long_ttft_p75, 0)}</td>
@@ -317,15 +339,14 @@ function bindControls() {
         state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
       } else {
         state.sortKey = k;
-        // Numeric columns default to descending (bigger = better);
-        // string columns default to ascending. Decode and counts are
-        // numeric; TTFT is numeric-but-smaller-is-better, so we let
-        // the user click again — defaulting it to asc would be
-        // surprising on first click for a column whose header reads
-        // like a normal metric.
-        state.sortDir = ["short_decode", "long_decode", "long_ttft", "row_count"].includes(k)
-          ? "desc"
-          : "asc";
+        // Default direction per metric semantics: throughput +
+        // counts → desc (bigger = better, top of list = winner);
+        // TTFT → asc (smaller = better); strings → asc. First-click
+        // descending on TTFT would rank slowest results first, which
+        // surprises users used to "bigger numbers up top" on perf
+        // tables (codex PR #666 NIT-3).
+        const descByDefault = ["short_decode", "long_decode", "row_count"];
+        state.sortDir = descByDefault.includes(k) ? "desc" : "asc";
       }
       render();
     });
