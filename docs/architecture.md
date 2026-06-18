@@ -1,45 +1,20 @@
 # Rapid-MLX System Architecture
 
-## Pipeline Architecture
+## Overview
 
-Inference requests flow through a composable pipeline of pluggable stages:
+Inference requests flow through tokenize → prefix-cache lookup → prefill → decode → detokenize, all driven by the scheduler over the mlx-lm public API (`insert`/`next`/`remove`/`close`). The engine layer (`engine/`) wraps mlx-lm with continuous batching; speculative drafters (DFlash, SuffixDecoding, MTP) live in `speculative/`; reasoning and tool-call parsing live in `reasoning/` and `tool_parsers/` and feed the streaming `PostProcessor`.
 
-```
-Request → [Tokenize] → [PrefixCache] → [Prefill] → [Decode] → [Detokenize] → Response
-                              ↑              ↑           ↑
-                         Pluggable:      Pluggable:   Pluggable:
-                         - LRU cache    - Chunked    - Standard (bg.next())
-                         - TurboQuant   - Paged      - MTP draft
-                         - RadixTree    - Offload    - Speculative
-                                                     - Medusa heads
-```
+Design principles:
 
-Each stage implements a Python ABC (`vllm_mlx/pipeline/interfaces.py`). Adding a new optimization = implementing the interface in a new file. No scheduler changes needed.
-
-### Stage Interfaces
-
-| Stage | Interface | Default Implementation | What it does |
-|-------|-----------|----------------------|--------------|
-| **Cache** | `CacheStrategy` | `LRUPrefixCache` | Look up/store KV cache by token prefix |
-| **Decode** | `DecodeStrategy` | `StandardDecode` | Generate tokens via mlx-lm BatchGenerator |
-| **Plugin** | `DecodePlugin` | *(none)* | Wrap decode step with MTP/speculative/Medusa |
-
-### Key Design Principles
-
-1. **No monkey-patching** — use mlx-lm's public API (`insert/next/remove/close`)
-2. **One model = zero scheduler changes** — all model architectures work through the same interface
-3. **Composable plugins** — `MTPPlugin(StandardDecode(...))` wraps without replacing
-4. **mlx-lm version agnostic** — public API is stable across versions
+1. **No monkey-patching** — use mlx-lm's public API (`insert`/`next`/`remove`/`close`).
+2. **mlx-lm version agnostic** — the public API is stable across versions.
+3. **Per-request parsers** — reasoning + tool-call parsers are instantiated per request, never shared.
 
 ## Module Map
 
 ```
 vllm_mlx/
 ├── server.py                  # App factory + model loading + CLI (1047 lines)
-│
-├── pipeline/                  # Composable inference pipeline
-│   ├── interfaces.py          # Stage ABCs: CacheStrategy, DecodeStrategy, DecodePlugin
-│   └── decode.py              # StandardDecode (mlx-lm public API wrapper)
 │
 ├── config/                    # ServerConfig singleton
 │   └── server_config.py
@@ -112,60 +87,6 @@ routes/chat.py: stream_chat_completion()
     PostProcessor.process_chunk() → StreamEvent
     ↓
     SSE formatting → yield "data: {...}\n\n"
-```
-
-## Adding New Optimizations
-
-### Example: TurboQuant KV Cache Compression
-
-```python
-# vllm_mlx/pipeline/turbo_quant.py
-
-class TurboQuantCache(CacheStrategy):
-    """TurboQuant KV cache compression (Google, 2025).
-    
-    Compresses KV cache entries to reduce memory footprint,
-    enabling longer context windows on the same hardware.
-    """
-    
-    def __init__(self, base_cache: CacheStrategy, compression_ratio: float = 4.0):
-        self._base = base_cache
-        self._ratio = compression_ratio
-    
-    def lookup(self, token_ids: list[int]) -> CacheResult:
-        result = self._base.lookup(token_ids)
-        if result.hit:
-            result.cache = self._decompress(result.cache)
-        return result
-    
-    def store(self, token_ids: list[int], cache: Any) -> None:
-        compressed = self._compress(cache)
-        self._base.store(token_ids, compressed)
-```
-
-### Example: Speculative Decode Plugin
-
-```python
-# vllm_mlx/pipeline/speculative.py
-
-class SpeculativePlugin(DecodePlugin):
-    """Draft model speculative decoding.
-    
-    Uses a small draft model to predict N tokens, then verifies
-    with the full model in a single forward pass.
-    """
-    
-    def __init__(self, draft_model, num_draft_tokens: int = 4):
-        self._draft = draft_model
-        self._n = num_draft_tokens
-    
-    def wrap_step(self, base_step):
-        # 1. Generate N draft tokens with small model
-        drafts = self._draft_tokens()
-        # 2. Verify all N+1 tokens in one forward pass
-        verified = self._verify(drafts)
-        # 3. Return accepted tokens
-        return verified
 ```
 
 ## Performance Architecture

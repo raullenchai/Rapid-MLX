@@ -1548,13 +1548,6 @@ def test_auto_routing_flags_have_force_on_and_force_off_pair():
 # a deliberate PR-review act.
 LOAD_MODEL_ENTRYPOINT_EXEMPTIONS: frozenset[str] = frozenset(
     {
-        # Bench tiers — internal model-validation probes, not user-facing
-        # request serving. They drive ``rapid-mlx serve`` as a subprocess
-        # rather than calling load_model() directly, but still tagged here
-        # in case a future helper pulls load_model into the same module.
-        "bench/tiers/perf.py",
-        "bench/tiers/api.py",
-        "bench/tiers/benchmark.py",
         # Eval harness — bench / scoring tool, not a serving entrypoint.
         "agents/testing.py",
     }

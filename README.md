@@ -1066,7 +1066,7 @@ vllm_mlx/
   agents/                # 12 agent profiles (YAML)
   runtime/               # Model registry, cache persistence
   doctor/                # Environment-health probe (rapid-mlx doctor)
-  bench/tiers/           # Model-validation tiers (rapid-mlx bench --tier ...)
+  bench/                 # Model-validation tier runner (rapid-mlx bench --tier ...)
 scripts/                 # Dev-only (NOT shipped with pip)
   dev_test.py            # Unified test entry point
   stress_test.py         # 8-scenario stress test
