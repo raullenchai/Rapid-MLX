@@ -1634,7 +1634,10 @@ def test_r2_empty_response_with_expected_size_still_falls_back_via_size_check(
     router.add(
         "https://models.rapidmlx.com/api/models",
         _FakeResponse(
-            200, json.dumps(_catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])).encode()
+            200,
+            json.dumps(
+                _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+            ).encode(),
         ),
     )
     router.add(
