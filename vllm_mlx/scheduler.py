@@ -2527,36 +2527,37 @@ class Scheduler:
             self.batch_generator = None
 
     def _ensure_batch_generator(self, sampling_params: SamplingParams) -> bool:
-        """Ensure BatchGenerator exists with compatible settings.
+        """Ensure BatchGenerator exists with compatible stop token configuration.
 
         Returns:
             ``True`` if a compatible generator is ready for the caller
             to insert this request into. ``False`` if the caller MUST
-            requeue the request — the current generator's
-            ``stop_tokens`` / sampler differ from what this request
-            requires, and there are active requests still draining, so
-            admitting now would silently bind this request to the wrong
-            stop-token set. The contract is a hard refusal, not advisory;
-            ``_schedule_waiting`` requeues on ``False`` to preserve
-            ignore_eos semantics across overlapping batches.
+            requeue the request — the current generator's stop_tokens
+            differ from what this request requires, and there are active
+            requests still draining, so admitting now would silently bind
+            this request to the wrong stop-token set. The contract is a hard
+            refusal, not advisory; ``_schedule_waiting`` requeues on ``False``
+            to preserve stop_token and ignore_eos semantics across overlapping
+            batches. Per-request samplers (temperature, top_p, etc.) do NOT
+            trigger a new generator — they are passed directly to insert().
         """
-        # `_assemble_stop_tokens` returns the empty set when
-        # ``ignore_eos=True`` and the model's stop-token set otherwise.
-        # The choice is captured inside the BatchGenerator at construction
-        # time, so two requests with identical sampler tuples but
-        # different ``ignore_eos`` MUST NOT share a generator — else a
-        # benchmark probe with ``ignore_eos=True`` will silently strip
-        # EOS stops from the next chat call (or vice versa). Folding the
-        # flag into the reuse key is the smallest fix; the alternative
-        # would be to re-stamp ``stop_tokens`` on the live generator,
-        # which we deliberately avoid because the BatchGenerator's
-        # mlx-lm internals are not designed for in-place mutation.
-        # Surfaced by Rapid-MLX issue #611.
+        # Per-request samplers (temperature, top_p, min_p, top_k) are passed
+        # directly to batch_gen.insert(..., samplers=[request_sampler]), so
+        # they do NOT need to match the global BatchGenerator sampler. The
+        # only generator-level invariant is stop_tokens, which is computed at
+        # init time via _assemble_stop_tokens(sampling_params, model_stop_tokens).
+        #
+        # Two requests must share the same BatchGenerator iff they produce the
+        # same final stop_tokens set. Since model_stop_tokens is invariant
+        # (fixed per model/server run), the key is:
+        # (frozenset(request.stop_token_ids), request.ignore_eos).
+        #
+        # Requests with different temperatures but same stop config can now
+        # batch together, fixing issue where Claude Code's big agentic request
+        # (33K tokens, default temp) blocked smaller concurrent requests with
+        # different temps for 115 seconds (Rapid-MLX #611 follow-up).
         sampler_params = (
-            sampling_params.temperature,
-            sampling_params.top_p,
-            sampling_params.min_p,
-            sampling_params.top_k,
+            frozenset(sampling_params.stop_token_ids or ()),
             bool(sampling_params.ignore_eos),
         )
 
@@ -2576,9 +2577,9 @@ class Scheduler:
             # wrong ignore_eos behavior (codex P2 on PR #612).
             if self.batch_generator is not None and self.running:
                 logger.warning(
-                    "Sampling parameters changed with active requests. "
+                    "Stop token configuration changed with active requests. "
                     "Requeuing request — admission deferred until current "
-                    "batch drains so stop_tokens / sampler remain consistent."
+                    "batch drains so stop_tokens remain consistent."
                 )
                 return False
 

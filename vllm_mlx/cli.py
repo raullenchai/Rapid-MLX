@@ -4256,7 +4256,9 @@ Examples:
         type=int,
         default=0,
         help="Max prefill tokens per scheduler step (0=disabled). "
-        "Prevents starvation of active requests during long prefills.",
+        "Breaks large prompts into chunks to prevent concurrent requests from starving. "
+        "Recommended for Claude Code and agentic workloads with large tool schemas: "
+        "--chunked-prefill-tokens 2048",
     )
     # MTP (Multi-Token Prediction)
     serve_parser.add_argument(
