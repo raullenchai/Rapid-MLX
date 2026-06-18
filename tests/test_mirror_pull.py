@@ -3390,6 +3390,95 @@ def test_progress_no_double_count_on_r2_short_read_then_hf(
     assert int(matches[-1][0]) == 1000
 
 
+def test_progress_resumed_r2_credits_existing_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Resumed R2 downloads must credit the validated ``.part`` prefix
+    so the final heartbeat lands at 100%, not just the suffix.
+
+    Codex R5 BLOCKING on PR #682: ``_do_r2_download`` only credited
+    bytes streamed in the CURRENT process. When a prior interrupted
+    pull left an N-byte ``.part`` and R2 honors ``Range: bytes=N-`` with
+    a valid 206, the chunk loop streams only the remaining bytes — and
+    the final heartbeat used to land at ``length/total`` instead of
+    ``(existing + length)/total``. Fix: credit ``existing`` once before
+    the chunk loop and include it in ``chunks_credited`` so rollback
+    stays balanced if R2 then fails.
+    """
+    import re
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "feed" * 10
+    files = [("model.safetensors", 1000)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    # Pre-seed a 400-byte ``.part`` so R2's request goes out with
+    # ``Range: bytes=400-`` and the server returns 206 with the suffix.
+    # The sidecar layout matches what ``_do_file`` computes.
+    sidecar = (
+        tmp_path
+        / f"models--{repo_id.replace('/', '--')}"
+        / ".rapid-mlx-mirror"
+    )
+    sidecar.mkdir(parents=True)
+    part_key = _mirror._sidecar_key_for("model.safetensors")
+    (sidecar / f"{part_key}.part").write_bytes(b"x" * 400)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+
+    # Range-aware fake: honor the request's Range header by returning a
+    # 206 with just the suffix and the correct Content-Range total.
+    def _ranged(req):
+        rng = req.headers.get("Range", "")
+        m = re.match(r"bytes=(\d+)-", rng)
+        if m:
+            start = int(m.group(1))
+            suffix = b"x" * (1000 - start)
+            return _FakeResponse(
+                206,
+                suffix,
+                headers={
+                    "Content-Length": str(len(suffix)),
+                    "Content-Range": f"bytes {start}-999/1000",
+                },
+            )
+        return _FakeResponse(200, b"x" * 1000)
+
+    router.add(
+        f"https://models.rapidmlx.com/{repo_id}/model.safetensors",
+        _ranged,
+    )
+
+    monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    captured = capsys.readouterr()
+    matches = re.findall(r"\[bytes\] (\d+)/(\d+)", captured.out)
+    assert matches, f"no heartbeat:\n{captured.out}"
+    # Final heartbeat must reflect the FULL file (prefix + suffix),
+    # not just the suffix that streamed in this attempt.
+    assert int(matches[-1][0]) == 1000, (
+        f"resumed pull's final heartbeat short of total — prefix wasn't "
+        f"credited: {matches[-1]}\n{captured.out}"
+    )
+
+
 def test_progress_tracker_clamps_display_at_total():
     """Direct unit test on ``_ProgressTracker``: an over-credit during
     streaming must not emit ``done > total``.

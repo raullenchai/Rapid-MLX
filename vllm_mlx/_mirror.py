@@ -552,6 +552,20 @@ def _do_r2_download(
             # path's ``progress_tracker.add(size)`` would double-count and
             # the desktop bar could exceed 100%.
             chunks_credited = 0
+            # Codex R5 BLOCKING on PR #682: resumed downloads only stream
+            # the suffix; without crediting the validated ``.part``
+            # prefix the final heartbeat finishes short of 100% even
+            # though the file succeeded. Credit it once here and include
+            # it in ``chunks_credited`` — if R2 then fails the
+            # ``_safe_unlink(tmp)`` cleanup discards the prefix from
+            # disk, so the rollback must subtract it too (otherwise
+            # HF's full-file ``add(size)`` would still double-count).
+            # ``existing`` is the post-200/206 reconciled count: the 200
+            # branch above already zeroed it when the proxy ignored
+            # ``Range``.
+            if existing > 0 and progress_tracker is not None:
+                progress_tracker.add(existing)
+                chunks_credited += existing
             with tmp.open(mode) as fh:
                 while True:
                     chunk = resp.read(_CHUNK_BYTES)
