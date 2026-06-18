@@ -342,9 +342,23 @@ _MAX_TOOL_BUFFER_BYTES = 1_048_576  # 1 MB
 # register_tool_call_tag() or by passing extra_tags to StreamingToolCallFilter.
 _TOOL_CALL_TAGS: list[tuple[str, str]] = [
     ("<minimax:tool_call>", "</minimax:tool_call>"),
-    ("<tool_call>", "</tool_call>"),
+    ("<tool_call>", "</tool_call>"),  # hermes, qwen3
     ("<function=", "</function>"),
     ("[TOOL_CALL]", "[/TOOL_CALL]"),
+    # Gemma 4 native wire-format markers (asymmetric: opener has no closing
+    # ``|>`` and closer has no leading ``<|``). The mlx-vlm / mlx-lm streaming
+    # detokenizer USUALLY strips these as special tokens (ids 48/49), but on
+    # the ~40% of runs where the BPE byte form survives decode (issue #686
+    # gemma-4-12b-4bit + Codex CLI), the raw markup leaks into the user-
+    # visible ``response.output_text.delta`` channel. Suppressing the envelope
+    # here also removes the inner ``<|"|>...<|"|>`` string-quoting markers,
+    # because those only appear INSIDE the envelope (verified against the
+    # gemma4_tool_parser pattern at line 41 + tokenizer_config.json
+    # ``stc_token`` / ``etc_token`` fields). Confirmed in all three sources:
+    #   - vllm_mlx/tool_parsers/gemma4_tool_parser.py (GEMMA4_TOOL_PATTERN)
+    #   - tokenizer_config.json (stc_token / etc_token)
+    #   - tests/test_output_router.py (special-token ids 48/49)
+    ("<|tool_call>", "<tool_call|>"),
     (
         "[Calling tool",
         "\n",
