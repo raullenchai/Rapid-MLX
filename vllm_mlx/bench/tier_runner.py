@@ -635,26 +635,31 @@ class _HarnessServerSession:
         if self._release_slot is not None:
             cb = self._release_slot.get("current")
             if cb is not None:
-                # Clear the slot BEFORE calling — if cb() raises we
-                # don't want the OUTER ``_serve_or_attach`` finally to
-                # try the same broken release again on exit (it would
-                # either re-raise or hang).
-                self._release_slot["current"] = None
                 try:
                     cb()
                 except Exception as exc:  # noqa: BLE001
-                    # Disable future reboots for the rest of the sweep
-                    # — if we can't reliably kill servers we own, every
-                    # subsequent boot risks stacking another live engine
-                    # onto whatever zombies are left over.
+                    # Codex review-5 BLOCKING-A: don't clear the slot
+                    # BEFORE the teardown attempt — if it fails, the
+                    # outer ``_serve_or_attach`` finalizer must still
+                    # have a callback to try. Leave ``cb`` registered
+                    # so the final ``_release_current_server`` swallow
+                    # path retries the teardown (subsequent SIGTERMs
+                    # are cheap; the proc-group teardown is idempotent
+                    # via ``ProcessLookupError`` swallowing). Disable
+                    # future reboots in THIS sweep so we don't stack a
+                    # second engine on whatever zombies the failure
+                    # left.
                     self._reboot_disabled = True
                     note = (
                         f"refused to reboot from port {old_port}: "
                         f"teardown of old server raised "
                         f"{type(exc).__name__}: {exc}. Skipping reboot "
-                        f"to avoid running two model servers concurrently"
+                        f"to avoid running two model servers concurrently. "
+                        f"Outer finalizer will retry teardown on tier exit"
                     )
                     return False, note
+                # Teardown succeeded — now safe to clear the slot.
+                self._release_slot["current"] = None
 
         # New port — old one may still be in TIME_WAIT, and a fresh
         # port keeps lsof unambiguous if the user is watching.
@@ -715,11 +720,30 @@ def _run_single_profile(
     The runner is dispatched on a worker thread and joined with a
     ``timeout_s`` deadline. On timeout we abandon the thread (Python
     threads can't be force-killed) and surface a tier-level FAIL with
-    a "timed out" detail — the orphaned thread will eventually exit
-    when its underlying httpx / subprocess call gives up or the
-    server it's talking to gets rebooted by the session manager.
-    Tying up one zombie thread is far cheaper than letting a hung
-    profile silently sink the whole sweep.
+    a "timed out" detail.
+
+    KNOWN LIMITATION — codex review-5 BLOCKING-B (acknowledged as a
+    followup beyond this PR's scope): an abandoned daemon worker can
+    keep running its in-flight subprocess / HTTP call after we move on.
+    Bounded mitigations are already in play:
+
+    - All subprocesses launched via ``_agent_query`` carry their own
+      ``subprocess.run(..., timeout=...)`` (the harness profile's
+      ``testing.query_timeout``, default 120s). So the worst-case
+      lifetime of an orphan subprocess is bounded.
+    - Every ``httpx`` call in ``AgentTestRunner`` carries an explicit
+      timeout (30s for API checks; 60-180s for streaming).
+    - The forced server restart after a timeout cuts the network
+      connection the orphan was using — most HTTP calls error out
+      within seconds of that.
+    - The worker thread itself is ``daemon=True`` so process exit
+      reaps it regardless.
+
+    A complete fix requires running each profile in a child Python
+    process with OS-level signal-killing — substantial refactor. Filed
+    as a followup; the current per-profile budget + forced restart
+    combo handles the production case (codex e2e_file_read hang on
+    qwen3.5-9b) cleanly.
     """
     from ..agents.testing import AgentTestRunner, TestStatus
 
