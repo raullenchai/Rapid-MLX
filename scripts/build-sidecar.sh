@@ -46,11 +46,20 @@ PBS_VERSION="${PBS_VERSION:-3.12.13}"
 # How many Mach-Os we expect to sign. A drift here means a new wheel
 # added a .so OR a dependency moved a binary, both of which need
 # re-baselining. Re-locked on the first authoritative CI run on
-# GitHub-hosted macos-15 (run 27472544784). The original Phase 2 spike
-# value of 77 was measured on a developer M3 Ultra and included
-# build-time artifacts that the strip step removes on a fresh runner
-# — 51 is the canonical "what actually ships" number.
-MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-51}"
+# GitHub-hosted macos-15 (run 27472544784) at 51 (the canonical "what
+# actually ships" number — the original Phase 2 spike value of 77
+# included build-time artifacts the strip step removes on a fresh
+# runner). Re-locked again at 77 on 2026-06-18 (run 27767093261) after
+# bundling Pillow alongside mlx-vlm in step 2.5: Pillow ships 8
+# `.cpython-312-darwin.so` modules (_avif, _imaging{,cms,ft,math,morph,tk},
+# _webp) + 18 `.dylibs/` vendored libraries (libavif, libbrotli{common,dec},
+# libfreetype, libharfbuzz, libjpeg, liblcms2, liblzma, libopenjp2,
+# libpng16, libsharpyuv, libtiff, libwebp{,demux,mux}, libXau, libxcb,
+# libz). All 26 new Mach-Os are standard well-formed Pillow-wheel
+# binaries (same mechanism as mlx_metal / numpy / safetensors etc.
+# already vendor) and codesign cleanly with the existing identity loop
+# at the end of this script — no signing-safety spike re-run needed.
+MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-77}"
 # Allow modest drift without blocking — wheel updates sometimes shift
 # 1-2 .so files. Bigger drift means a new dependency, needs review.
 # Widened from 3 → 5 since we're now at a smaller baseline and the
