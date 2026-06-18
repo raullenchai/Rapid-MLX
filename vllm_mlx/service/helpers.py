@@ -313,7 +313,21 @@ def _apply_reasoning_cap(
         return cleaned_text, reasoning_text
     overflow = reasoning_text[max_chars:]
     truncated = reasoning_text[:max_chars]
-    cleaned_text = (cleaned_text or "") + overflow
+    # Codex round-11 BLOCKING: prepend overflow rather than appending
+    # it. In the source ordering, the overflow bytes were emitted by
+    # the model BEFORE any post-``</think>`` final content. Appending
+    # ``cleaned_text + overflow`` would reorder the response as
+    # ``final-answer + dropped-reasoning``, which:
+    #   1. mis-represents the model's actual token order on the wire,
+    #   2. breaks the streaming-vs-non-streaming parity (the streaming
+    #      pipeline emits overflow on the cap-crossing chunk, BEFORE
+    #      any subsequent content delta — same as putting overflow
+    #      first here),
+    #   3. confuses downstream consumers that pattern-match the start
+    #      of the response (e.g. JSON-schema validators that scan for
+    #      the opening ``{``).
+    # Prepend so the time-ordered emission is preserved.
+    cleaned_text = overflow + (cleaned_text or "")
     return cleaned_text, truncated
 
 

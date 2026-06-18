@@ -941,9 +941,16 @@ class TestFinalizeContentAndReasoningCap:
             engine_reasoning_text="x" * 40,  # ≈ 10 tokens
             reasoning_max_tokens=2,  # cap ≈ 8 chars
         )
-        # First 8 chars stay as reasoning, the rest tacks onto cleaned.
+        # First 8 chars stay as reasoning, the rest is PREPENDED to
+        # cleaned. Codex round-11 BLOCKING: the overflow bytes were
+        # emitted by the model BEFORE any post-``</think>`` final
+        # content, so appending them after ``cleaned_text`` would
+        # reorder time-ordered emission. Prepend preserves the source
+        # order AND matches the streaming pipeline (overflow emitted
+        # on the cap-crossing chunk, BEFORE any subsequent content
+        # delta).
         assert reasoning == "x" * 8
-        assert cleaned == "final answer" + "x" * 32
+        assert cleaned == "x" * 32 + "final answer"
 
     def test_cap_below_text_is_noop(self):
         # text fits comfortably under cap → no truncation
