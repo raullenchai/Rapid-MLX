@@ -598,16 +598,27 @@ async def _stream_responses(
                 # marker. The parser sees ``previous + "</think>" +
                 # original``; the shared buffer holds ``previous +
                 # original``.
+                # Codex round-10 BLOCKING #2: only flip the close-
+                # injected latch AFTER the parser call succeeds. The
+                # earlier draft flipped before the call, so a parser
+                # exception on the injection-carrying chunk left the
+                # latch set and the next chunk would skip injection —
+                # leaving the parser permanently mid-think.
+                injected_this_chunk = False
                 if _reasoning_cap_hit and not _reasoning_close_injected:
                     parser_delta_text = "</think>" + delta_text
                     parser_current = previous_raw + parser_delta_text
-                    _reasoning_close_injected = True
+                    injected_this_chunk = True
                 else:
                     parser_delta_text = delta_text
                     parser_current = accumulated_raw
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, parser_current, parser_delta_text
                 )
+                if injected_this_chunk:
+                    # Parser call succeeded with the synthetic marker
+                    # — latch so subsequent chunks don't re-inject.
+                    _reasoning_close_injected = True
                 if delta_msg is None:
                     continue
                 if delta_msg.reasoning:
@@ -627,7 +638,9 @@ async def _stream_responses(
                     _, overflow, _ = _account_for_reasoning(delta_msg.reasoning)
                     flip_succeeded = _reasoning_close_injected
                     if overflow and not _reasoning_close_injected:
-                        _reasoning_close_injected = True
+                        # Codex round-10 BLOCKING #2: flip the latch
+                        # AFTER success only — if the parser raises,
+                        # next chunk retries the forced transition.
                         flip_previous = accumulated_raw
                         flip_delta = "</think>"
                         flip_current = flip_previous + flip_delta
@@ -635,6 +648,7 @@ async def _stream_responses(
                             flip_msg = reasoning_parser.extract_reasoning_streaming(
                                 flip_previous, flip_current, flip_delta
                             )
+                            _reasoning_close_injected = True
                             flip_succeeded = True
                         except Exception as e:
                             # Codex round-8 BLOCKING #2: when the flip

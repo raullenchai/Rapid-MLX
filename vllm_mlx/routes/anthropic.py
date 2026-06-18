@@ -733,10 +733,16 @@ async def _stream_anthropic_messages(
                 # synthetic marker for the parser call. Shared buffer
                 # holds ``previous_raw + original_delta``; parser sees
                 # ``previous_raw + "</think>" + original_delta``.
+                # Codex round-10 BLOCKING #3: only flip the close-
+                # injected latch AFTER the parser call succeeds. If
+                # the parser raises on the injection-carrying chunk,
+                # the latch stays clear and the next chunk retries
+                # the forced transition.
+                injected_this_chunk = False
                 if _reasoning_cap_hit and not _reasoning_close_injected:
                     parser_delta_text = "</think>" + delta_text
                     parser_current = previous_raw + parser_delta_text
-                    _reasoning_close_injected = True
+                    injected_this_chunk = True
                 else:
                     parser_delta_text = delta_text
                     parser_current = previous_raw + delta_text
@@ -744,6 +750,10 @@ async def _stream_anthropic_messages(
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, parser_current, parser_delta_text
                 )
+                if injected_this_chunk:
+                    # Parser succeeded with the synthetic marker —
+                    # latch so subsequent chunks don't re-inject.
+                    _reasoning_close_injected = True
                 if delta_msg is None:
                     continue
                 pieces: list[tuple[str, str]] = []
@@ -766,7 +776,10 @@ async def _stream_anthropic_messages(
                             # ``accumulated_raw`` — round-6 invariant).
                             flip_succeeded = _reasoning_close_injected
                             if not _reasoning_close_injected:
-                                _reasoning_close_injected = True
+                                # Codex round-10 BLOCKING #3: flip
+                                # the latch AFTER success only — if
+                                # the parser raises, next chunk
+                                # retries the forced transition.
                                 flip_previous = accumulated_raw
                                 flip_delta = "</think>"
                                 flip_current = flip_previous + flip_delta
@@ -776,6 +789,7 @@ async def _stream_anthropic_messages(
                                             flip_previous, flip_current, flip_delta
                                         )
                                     )
+                                    _reasoning_close_injected = True
                                     flip_succeeded = True
                                 except Exception as e:
                                     # Codex round-8 BLOCKING #3: when

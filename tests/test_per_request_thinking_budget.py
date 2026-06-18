@@ -713,6 +713,68 @@ class TestTextParserReasoningCap:
         content_from_finalize = [e for e in events if e.type == "content"]
         assert content_from_finalize == []
 
+    def test_failed_in_chunk_flip_does_not_latch_close_marker(self):
+        """Codex round-10 BLOCKING #1: if the parser raises on the
+        in-chunk forced ``</think>`` flip, the close-injected latch
+        must STAY CLEAR so the NEXT chunk retries the forced
+        transition. The earlier draft flipped the latch BEFORE the
+        parser call — a transient parser bug then left the parser
+        permanently mid-think because subsequent chunks all saw the
+        latch set and skipped injection.
+        """
+        from types import SimpleNamespace
+
+        call_count = 0
+
+        def _extract(previous, current, delta):
+            nonlocal call_count
+            call_count += 1
+            assert current == previous + delta
+            # Chunk 1 (initial reasoning extraction) — no marker yet.
+            if call_count == 1:
+                return SimpleNamespace(reasoning="x" * 40, content=None)
+            # Chunk 1 in-chunk flip — RAISE so the latch stays clear.
+            if call_count == 2:
+                assert delta == "</think>"
+                raise RuntimeError("transient parser bug on flip")
+            # Chunk 2 retries the forced transition — succeeds this time.
+            if call_count == 3:
+                assert delta.startswith("</think>"), (
+                    f"chunk 2 must retry the forced ``</think>`` "
+                    f"injection (latch should have stayed clear after "
+                    f"chunk 1 flip failure); got delta={delta!r}"
+                )
+                return SimpleNamespace(reasoning=None, content="recovered")
+            return SimpleNamespace(reasoning=None, content=None)
+
+        parser = MagicMock()
+        parser.extract_reasoning_streaming = _extract
+        parser.reset_state = MagicMock()
+
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+        # Chunk 1 — cap fires, in-chunk flip raises.
+        pp.process_chunk(_make_output("x" * 40))
+        # The latch MUST be clear so chunk 2 retries.
+        assert pp._reasoning_close_injected is False, (
+            "_reasoning_close_injected must stay False after a failed "
+            "flip — otherwise chunk 2 skips injection and the parser "
+            "stays permanently mid-think"
+        )
+        # Chunk 2 — retries injection, succeeds.
+        events = pp.process_chunk(_make_output("more"))
+        assert pp._reasoning_close_injected is True, (
+            "latch must flip after the retry succeeds"
+        )
+        # The retry released the recovered content.
+        content_events = [e for e in events if e.type == "content"]
+        recovered = [e for e in content_events if "recovered" in e.content]
+        assert len(recovered) == 1, (
+            f"chunk 2 retry must release recovered content; "
+            f"got events={content_events!r}"
+        )
+
     def test_postprocessor_does_not_pollute_accumulated_text_with_close_marker(self):
         """Codex round-8 BLOCKING #1: ``_process_with_reasoning``
         previously mutated ``self.accumulated_text`` with the synthetic

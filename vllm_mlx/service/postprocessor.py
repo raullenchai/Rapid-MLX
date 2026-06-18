@@ -359,17 +359,25 @@ class StreamingPostProcessor:
         on the very next call to ``extract_reasoning_streaming`` —
         mirrors the channel-routed engines' force-close behavior so the
         client-visible semantic is identical across parser families.
-        Idempotent: only injects on the first text chunk after the cap
-        hits.
+
+        Codex round-10 BLOCKING #1: the latch
+        (``_reasoning_close_injected = True``) used to flip HERE,
+        BEFORE the parser call. If the parser then raised on the
+        injected chunk, the next chunk would still see the latch set
+        and skip injection — leaving the parser permanently mid-think.
+        The latch is now flipped in the CALLER
+        (``_process_with_reasoning``) AFTER the parser call succeeds.
+        This function still gates on the latch (idempotency) and
+        prepends the marker, but no longer mutates state.
         """
         if not self._reasoning_cap_hit or self._reasoning_close_injected:
             return delta_text
         if self.reasoning_parser is None:
             # Standard / channel-routed path doesn't need the injection.
             return delta_text
-        self._reasoning_close_injected = True
         # Prepend the marker so the parser sees ``</think>`` BEFORE the
-        # next body bytes, transitioning state to content immediately.
+        # next body bytes. The caller flips ``_reasoning_close_injected``
+        # only after the parser call succeeds.
         return "</think>" + delta_text
 
     def _parallel_tool_calls_allowed(self) -> bool:
@@ -900,7 +908,8 @@ class StreamingPostProcessor:
         original_delta_text = delta_text
         previous_text = self.accumulated_text
         parser_delta_text = self._maybe_inject_reasoning_close(original_delta_text)
-        if parser_delta_text is original_delta_text:
+        injected_this_chunk = parser_delta_text is not original_delta_text
+        if not injected_this_chunk:
             # No injection — common path. Keep the shared buffer
             # update minimal.
             self.accumulated_text += original_delta_text
@@ -910,9 +919,25 @@ class StreamingPostProcessor:
             # ``original_delta``; shared buffer only gets the original.
             self.accumulated_text += original_delta_text
             parser_current = previous_text + parser_delta_text
-        delta_msg = self.reasoning_parser.extract_reasoning_streaming(
-            previous_text, parser_current, parser_delta_text
-        )
+        try:
+            delta_msg = self.reasoning_parser.extract_reasoning_streaming(
+                previous_text, parser_current, parser_delta_text
+            )
+        except Exception:
+            # Codex round-10 BLOCKING #1: if the parser raises on a
+            # chunk that carried the injected ``</think>``, do NOT
+            # flip the ``_reasoning_close_injected`` latch — let the
+            # NEXT chunk retry the forced transition. Re-raise so the
+            # caller can decide (a transient parser bug is still a
+            # bug; just don't lose retry on the cap-flush path).
+            raise
+        if injected_this_chunk:
+            # Parser flip succeeded this chunk — latch so subsequent
+            # chunks don't re-inject. Latch flip lives HERE (not in
+            # ``_maybe_inject_reasoning_close``) so a parser exception
+            # on the injection-carrying chunk leaves the latch clear
+            # and the next chunk retries.
+            self._reasoning_close_injected = True
 
         if delta_msg is None:
             # Skip (e.g., <think> token itself)
@@ -947,7 +972,13 @@ class StreamingPostProcessor:
             if overflow_content:
                 flip_succeeded = self._reasoning_close_injected
                 if not self._reasoning_close_injected:
-                    self._reasoning_close_injected = True
+                    # Codex round-10 BLOCKING #1: only mark the close-
+                    # injected latch AFTER a SUCCESSFUL parser flip.
+                    # If the parser raises, we want the NEXT chunk to
+                    # retry the forced transition rather than skipping
+                    # it forever — otherwise a transient parser bug
+                    # leaves the parser permanently mid-think for the
+                    # rest of the request.
                     flip_previous = self.accumulated_text
                     flip_delta = "</think>"
                     flip_current = flip_previous + flip_delta
@@ -955,13 +986,14 @@ class StreamingPostProcessor:
                         flip_msg = self.reasoning_parser.extract_reasoning_streaming(
                             flip_previous, flip_current, flip_delta
                         )
+                        self._reasoning_close_injected = True
                         flip_succeeded = True
                     except Exception as e:
                         logger.warning(
                             "postprocessor in-chunk close-marker flip raised "
                             "on %r: %s — parser state may stay mid-think; "
-                            "suppressing %d-byte overflow on this chunk to "
-                            "avoid leaking reasoning bytes as content",
+                            "suppressing %d-byte overflow on this chunk; "
+                            "next chunk will retry the forced transition",
                             type(self.reasoning_parser).__name__,
                             e,
                             len(overflow_content),
