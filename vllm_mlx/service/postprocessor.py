@@ -309,8 +309,20 @@ class StreamingPostProcessor:
             return "", reasoning_text
         delta_tokens = self._approx_token_count(reasoning_text)
         new_total = self._reasoning_tokens_emitted + delta_tokens
-        if new_total <= self._reasoning_max_tokens:
+        if new_total < self._reasoning_max_tokens:
             self._reasoning_tokens_emitted = new_total
+            return reasoning_text, ""
+        if new_total == self._reasoning_max_tokens:
+            # Exact-boundary fit: the current chunk uses up the budget
+            # but doesn't overflow. Keep it as reasoning AND latch the
+            # cap so the NEXT incoming chunk is rerouted / triggers the
+            # ``</think>`` injection. Codex round-2 BLOCKING #1: the
+            # earlier ``new_total <= cap`` branch left the latch clear
+            # on exact fit, so the next reasoning chunk was processed
+            # by the parser as ordinary reasoning before being
+            # rerouted, leaking one extra chunk past the cap.
+            self._reasoning_tokens_emitted = new_total
+            self._reasoning_cap_hit = True
             return reasoning_text, ""
         # Cap crosses inside this chunk. Compute how many characters
         # correspond to the remaining budget (4 chars per token), keep

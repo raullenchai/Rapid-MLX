@@ -440,9 +440,17 @@ async def _stream_responses(
                 return "", text, False
             delta = max(1, len(text) // 4)
             new_total = _reasoning_tokens_emitted + delta
-            if new_total <= _reasoning_cap:
+            if new_total < _reasoning_cap:
                 _reasoning_tokens_emitted = new_total
                 return text, "", False
+            if new_total == _reasoning_cap:
+                # Exact-boundary latch (codex round-2 BLOCKING #3):
+                # keep this chunk as reasoning but mark the cap hit so
+                # the NEXT chunk routes through the overflow branch
+                # (and the text-parser path injects ``</think>``).
+                _reasoning_tokens_emitted = new_total
+                _reasoning_cap_hit = True
+                return text, "", True
             remaining = _reasoning_cap - _reasoning_tokens_emitted
             keep_chars = max(0, remaining * 4)
             _reasoning_tokens_emitted = _reasoning_cap

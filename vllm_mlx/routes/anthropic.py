@@ -585,8 +585,18 @@ async def _stream_anthropic_messages(
             return "", text
         delta = max(1, len(text) // 4)
         new_total = _reasoning_tokens_emitted + delta
-        if new_total <= _reasoning_cap:
+        if new_total < _reasoning_cap:
             _reasoning_tokens_emitted = new_total
+            return text, ""
+        if new_total == _reasoning_cap:
+            # Exact-boundary latch (codex round-2 BLOCKING #2): keep
+            # this chunk as reasoning but mark the cap so the next
+            # chunk triggers the close-marker injection / overflow
+            # rerouting. Without this the next reasoning chunk would
+            # be processed as ordinary reasoning before being capped,
+            # leaking one extra chunk past the budget.
+            _reasoning_tokens_emitted = new_total
+            _reasoning_cap_hit = True
             return text, ""
         remaining = _reasoning_cap - _reasoning_tokens_emitted
         keep_chars = max(0, remaining * 4)

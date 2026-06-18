@@ -385,6 +385,45 @@ class TestTextParserReasoningCap:
         pp.process_chunk(_make_output("more"))
         assert not parser.calls[2]["delta"].startswith("</think>")
 
+    def test_text_parser_force_close_exact_boundary(self):
+        """Codex round-2 BLOCKING #4: the cap-fired tests above use
+        chunks that EXCEED the cap (40 chars vs 8-char budget), which
+        masks the exact-boundary case — when the first reasoning delta
+        is exactly ``reasoning_max_tokens * 4`` chars the cumulative
+        token count hits the cap exactly. Early drafts used
+        ``new_total <= cap`` and left ``_reasoning_cap_hit`` clear on
+        exact fit, so the NEXT chunk would slip past the budget before
+        ``</think>`` was injected. After the fix, the cap must latch on
+        exact fit and the next parser call's delta must start with
+        ``</think>``.
+        """
+        # cap = 2 tokens → exactly 8 chars under the chars-÷4 heuristic.
+        # Chunk 1 emits 8 chars of pure reasoning — exact-boundary hit.
+        # Chunk 2 emits content; we assert ``</think>`` was prepended.
+        scripted = [
+            ("x" * 8, None),  # chunk 1: exact-boundary cumulative = cap
+            (None, "y"),  # chunk 2: should see injected close marker
+        ]
+        parser = self._stub_reasoning_parser(scripted)
+        cfg = _make_cfg(
+            reasoning_parser=parser,
+            reasoning_parser_name=None,
+        )
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=2)
+        pp.reset()
+        pp.process_chunk(_make_output("x" * 8))
+        # Exact-boundary latch — must fire even though we did NOT exceed.
+        assert pp._reasoning_cap_hit is True, (
+            "exact-boundary case (new_total == cap) failed to latch — "
+            "force-close marker will leak past budget on next chunk"
+        )
+        pp.process_chunk(_make_output("y"))
+        # Chunk 2's delta must start with the injected </think>.
+        assert parser.calls[1]["delta"].startswith("</think>"), (
+            f"expected </think> injection on chunk 2 after exact-boundary "
+            f"cap hit, got delta={parser.calls[1]['delta']!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 4) Non-streaming helper truncation
