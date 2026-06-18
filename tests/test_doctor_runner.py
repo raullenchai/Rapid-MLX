@@ -218,6 +218,6 @@ class TestReportRendering:
 # Boot-timeout default — removed in the env-health refactor.
 #
 # The doctor CLI no longer owns server-boot orchestration; that moved to
-# ``vllm_mlx.bench.tiers.*`` with the rest of the model-validation logic.
-# Any future regression test for the boot timeout should land in
+# ``vllm_mlx.bench.tier_runner`` with the rest of the model-validation
+# logic. Any future regression test for the boot timeout should land in
 # ``tests/test_bench_*.py`` against the new owner, not here.

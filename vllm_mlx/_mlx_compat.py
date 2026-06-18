@@ -29,8 +29,8 @@ one-time per device.
 This patch must execute *before* any ``import mlx_lm.generate``, since
 that module captures the returned stream at module level. The install
 hook is called at the top of every consumer that imports
-``mlx_lm.generate`` (currently ``vllm_mlx/scheduler.py`` and
-``vllm_mlx/pipeline/decode.py``) — *not* from ``vllm_mlx/__init__.py``.
+``mlx_lm.generate`` (currently ``vllm_mlx/scheduler.py``) — *not* from
+``vllm_mlx/__init__.py``.
 We deliberately keep ``import vllm_mlx`` free of any ``mlx.core`` import
 so the package stays usable for metadata-only access on systems where
 ``mlx`` is installed but Metal is unavailable (``import mlx.core``

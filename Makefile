@@ -1,4 +1,4 @@
-.PHONY: help smoke check full benchmark update-baselines lint audit test stress soak release-smoke release-check-m3 clean
+.PHONY: help smoke lint audit test stress soak release-smoke release-check-m3 clean check full benchmark update-baselines
 
 # Pick the interpreter:
 #   1. Active venv ($VIRTUAL_ENV/bin/python) — wins so contributors using
@@ -21,7 +21,6 @@ PY ?= $(shell \
   done; \
   echo python3)
 HF_HUB_CACHE ?= $(shell echo $$HF_HUB_CACHE)
-DOCTOR := $(PY) -m vllm_mlx.cli doctor
 
 DEV_TEST := $(PY) scripts/dev_test.py
 
@@ -36,11 +35,8 @@ help:
 	@echo "    make stress             8-scenario stress test (needs server)"
 	@echo "    make soak               10-min agent soak test (needs server)"
 	@echo ""
-	@echo "  Doctor (regression harness — see harness/README.md):"
-	@echo "    make check              ~10 min, qwen3.5-35b-8bit (auto starts server)"
-	@echo "    make full               ~1-2 hr, 3 models + 12 agents"
-	@echo "    make benchmark          overnight, all local models"
-	@echo "    make update-baselines TIER=check  re-record baseline"
+	@echo "  Bench tiers (regression harness — see harness/README.md):"
+	@echo "    rapid-mlx bench <model> --tier smoke|speed|harness|all"
 	@echo ""
 	@echo "  Release (see docs/development/releasing.md):"
 	@echo "    make release-smoke      clean-room install+import gate (~30s)"
@@ -66,22 +62,18 @@ stress:
 soak:
 	$(DEV_TEST) soak
 
-# ---------- doctor tiers (regression harness) ----------
-check:
-	$(DOCTOR) check
-
-full:
-	$(DOCTOR) full
-
-benchmark:
-	$(DOCTOR) benchmark
-
-update-baselines:
-	@if [ -z "$(TIER)" ]; then \
-		echo "error: TIER is required. Example: make update-baselines TIER=check"; \
-		exit 2; \
-	fi
-	$(DOCTOR) $(TIER) --update-baselines
+# ---------- removed targets (compat stubs) ----------
+# ``make check / full / benchmark / update-baselines`` ran the doctor
+# tier harness, which moved to ``rapid-mlx bench --tier ...`` in
+# v0.7.22. The doctor CLI has rejected the old subcommands since
+# then; these stubs preserve the migration breadcrumb so an old
+# script gets a usable error instead of GNU make's bare "No rule
+# to make target".
+check full benchmark update-baselines:
+	@echo "error: 'make $@' was removed. The doctor tier harness moved"
+	@echo "       to 'rapid-mlx bench <model> --tier smoke|speed|harness|all'"
+	@echo "       in v0.7.22. See harness/README.md."
+	@exit 2
 
 # ---------- release gate ----------
 release-smoke:

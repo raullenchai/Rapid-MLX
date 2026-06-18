@@ -18,7 +18,14 @@ Exit codes:
 """
 
 from .env_health import Check, CheckStatus, Report, Section, run_all
-from .runner import (
+
+# Deprecated compatibility re-exports. The internal consumer
+# (``vllm_mlx.bench.tiers.*``) was removed; these are kept solely so
+# external PyPI users with ``from vllm_mlx.doctor import DoctorRunner``
+# (or any of the others) don't break across the upgrade. Prefer
+# importing from ``vllm_mlx.doctor.runner`` directly. May be dropped in
+# a future major-version bump.
+from .runner import (  # noqa: F401  # public surface, deprecated
     CheckResult,
     DoctorRunner,
     Status,
@@ -34,10 +41,8 @@ __all__ = [
     "Report",
     "Section",
     "run_all",
-    # Legacy runner — still re-exported because `vllm_mlx.bench.tiers.*`
-    # uses these primitives to wrap model-validation checks (PR #1 moved
-    # the tier modules but kept the runner shared). The doctor CLI no
-    # longer touches them.
+    # Deprecated — kept for back-compat with external imports. See note
+    # above the ``.runner`` re-export block.
     "CheckResult",
     "DoctorRunner",
     "Status",

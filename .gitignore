@@ -127,6 +127,9 @@ reports/*.md
 reports/*.tsv
 reports/scan_*
 
+# Scratch review notes (codex review-loop dumps)
+reviews/
+
 # Doctor harness — per-run artefacts (baselines/ ARE checked in)
 harness/runs/*
 !harness/runs/.gitkeep
