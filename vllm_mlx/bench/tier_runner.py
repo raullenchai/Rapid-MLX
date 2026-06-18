@@ -539,6 +539,10 @@ class _HarnessServerSession:
         # targets the live server. ``None`` in attach mode.
         self._release_slot = release_slot
         self._restarts = 0
+        # When ``True``, the session refuses all further reboots — set
+        # after a single teardown failure to guarantee at most one model
+        # server alive at any time (Codex review-3 BLOCKING).
+        self._reboot_disabled = False
 
     @property
     def base_url(self) -> str:
@@ -607,6 +611,20 @@ class _HarnessServerSession:
         return self._restart()
 
     def _restart(self) -> tuple[bool, str | None]:
+        # If a previous teardown failed, the OLD server may still be
+        # alive — we have no reliable way to tell. The safest stance is
+        # to refuse further reboots for the rest of the sweep so we
+        # never accidentally run two model servers on the GPU at once.
+        # ``ensure_healthy`` will then surface server-not-healthy FAILs
+        # for the remaining profiles instead of trying to recover into
+        # an unsafe state (Codex review-3 BLOCKING).
+        if self._reboot_disabled:
+            return (
+                False,
+                "reboot disabled after a prior teardown failure — "
+                "cannot guarantee single-server invariant",
+            )
+
         # Tear down the currently-live owned server BEFORE booting the
         # replacement. The slot's ``current`` entry was either populated
         # by ``_serve_or_attach`` (first restart) or by this method's
@@ -617,11 +635,26 @@ class _HarnessServerSession:
         if self._release_slot is not None:
             cb = self._release_slot.get("current")
             if cb is not None:
+                # Clear the slot BEFORE calling — if cb() raises we
+                # don't want the OUTER ``_serve_or_attach`` finally to
+                # try the same broken release again on exit (it would
+                # either re-raise or hang).
+                self._release_slot["current"] = None
                 try:
                     cb()
-                except BaseException:  # noqa: BLE001 — teardown errors must not abort restart
-                    pass
-                self._release_slot["current"] = None
+                except Exception as exc:  # noqa: BLE001
+                    # Disable future reboots for the rest of the sweep
+                    # — if we can't reliably kill servers we own, every
+                    # subsequent boot risks stacking another live engine
+                    # onto whatever zombies are left over.
+                    self._reboot_disabled = True
+                    note = (
+                        f"refused to reboot from port {old_port}: "
+                        f"teardown of old server raised "
+                        f"{type(exc).__name__}: {exc}. Skipping reboot "
+                        f"to avoid running two model servers concurrently"
+                    )
+                    return False, note
 
         # New port — old one may still be in TIME_WAIT, and a fresh
         # port keeps lsof unambiguous if the user is watching.
@@ -633,7 +666,7 @@ class _HarnessServerSession:
         )
         try:
             info = ctx.__enter__()
-        except BaseException as exc:  # noqa: BLE001 — failed reboot must surface
+        except Exception as exc:  # noqa: BLE001 — failed reboot must surface
             note = (
                 f"reboot from port {old_port} failed: "
                 f"{type(exc).__name__}: {exc}"
@@ -643,13 +676,13 @@ class _HarnessServerSession:
         released = {"done": False}
 
         def _release_replacement() -> None:
+            # As with ``_release_initial``, don't swallow — the next
+            # restart needs the signal to refuse a follow-up reboot if
+            # this teardown fails.
             if released["done"]:
                 return
             released["done"] = True
-            try:
-                ctx.__exit__(None, None, None)
-            except BaseException:  # noqa: BLE001
-                pass
+            ctx.__exit__(None, None, None)
 
         # Hand the new release back to the slot so the outer
         # ``_serve_or_attach`` finally tears down the REPLACEMENT, not
@@ -1015,13 +1048,18 @@ def _serve_or_attach(
         released = {"done": False}
 
         def _release_initial() -> None:
+            # NOTE: do NOT swallow exceptions here. The harness session
+            # treats a raising release as "teardown failed, refuse to
+            # boot a replacement" (Codex review-3 BLOCKING). If we
+            # silently ate the failure, the session would happily start
+            # a second model server while the first was still alive.
+            # The outer ``_release_current_server`` does swallow on the
+            # FINAL teardown path (it has no reboot to refuse), but the
+            # session's restart path needs the raw signal.
             if released["done"]:
                 return
             released["done"] = True
-            try:
-                ctx.__exit__(None, None, None)
-            except BaseException:  # noqa: BLE001 — release must not raise
-                pass
+            ctx.__exit__(None, None, None)
 
         # The ``current`` slot starts pointing at the initial server's
         # release. ``_HarnessServerSession._restart`` swaps it on each
@@ -1032,13 +1070,16 @@ def _serve_or_attach(
         release_slot: dict[str, object] = {"current": _release_initial}
 
         def _release_current_server() -> None:
+            # Final teardown at outer ``with`` exit — nothing to refuse,
+            # so swallow any failure (logging would be nice but the
+            # bench is mid-shutdown and the log_path is gone).
             cb = release_slot["current"]
             if cb is None:
                 return
             release_slot["current"] = None
             try:
                 cb()  # type: ignore[operator]
-            except BaseException:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 pass
 
         # ``__enter__`` lives INSIDE the try so any future code inserted

@@ -644,6 +644,87 @@ def test_harness_restart_tears_down_old_server_before_booting_new(capsys):
     )
 
 
+def test_harness_restart_refuses_when_old_server_teardown_fails(capsys):
+    """If killing the old server raises, the session must NOT boot a replacement.
+
+    Codex review-3 BLOCKING: starting a fresh server while the previous
+    one's process group failed to terminate would put two model servers
+    on the GPU at once — the exact OOM-adjacent condition the restart
+    is meant to fix. The session must record a FAIL and skip the reboot
+    so the next iteration's ``ensure_healthy`` re-probes (and either
+    finds the original recovering, or marks the profile dead).
+    """
+    serve_calls: list[int] = []
+
+    @contextlib.contextmanager
+    def _serve_failing_teardown(model, port=None, **kwargs):
+        serve_calls.append(port)
+        try:
+            yield {
+                "base_url": f"http://127.0.0.1:{port}/v1",
+                "port": port,
+                "boot_time_ms": 100.0,
+            }
+        finally:
+            # Simulate a teardown that fails (process group SIGTERM
+            # rejected, e.g. zombie unkillable child).
+            raise RuntimeError("simulated teardown failure")
+
+    def _free_port(lo, hi):
+        _free_port.calls += 1
+        return 8500 + _free_port.calls
+
+    _free_port.calls = 0  # type: ignore[attr-defined]
+
+    invocations: list[str] = []
+
+    def _runner_factory(profile, base_url, model_id=None, **kwargs):
+        invocations.append(profile.name)
+        r = MagicMock()
+        r.run.return_value = _make_fake_report()
+        return r
+
+    def _fake_get_profile(name):
+        p = MagicMock()
+        p.name = name
+        p.display_name = name.title()
+        return p
+
+    # /health: codex's pre-check passes, then every subsequent probe
+    # FAILS so the session tries to reboot — and finds the teardown
+    # broken.
+    health_sequence = iter([True, False, False, False, False, False])
+
+    def _stub_health(*args, **kwargs):
+        try:
+            return next(health_sequence)
+        except StopIteration:
+            return False
+
+    with (
+        patch(
+            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            side_effect=_free_port,
+        ),
+        patch("vllm_mlx.bench._server.serve", _serve_failing_teardown),
+        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
+        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("vllm_mlx.bench.tier_runner._health_check", side_effect=_stub_health),
+    ):
+        run_tier(model="qwen3.5-4b-4bit", tier="harness")
+
+    # Only ONE serve() call total — the initial boot. The teardown-
+    # broken reboot must have been refused, so no second serve() ran.
+    assert len(serve_calls) == 1, (
+        f"refusal must skip the replacement boot; got {len(serve_calls)} "
+        f"serve() calls ({serve_calls})"
+    )
+    captured = capsys.readouterr()
+    assert "refused to reboot" in captured.out, (
+        f"expected refusal note in tier output; got:\n{captured.out}"
+    )
+
+
 def test_harness_profile_timeout_env_var_respected(monkeypatch):
     """``HARNESS_PROFILE_TIMEOUT_S`` env var must override the default.
 
