@@ -1001,11 +1001,16 @@ class EngineCore:
         materialize them from the asyncio loop thread raises
         "There is no Stream(gpu, N) in current thread."
 
-        ``should_abort`` is a zero-arg callable evaluated between entries
-        inside ``MemoryAwarePrefixCache.save_to_disk``. The lifespan
-        shutdown plumbs a deadline-backed predicate through so a
-        multi-GB flush can commit early instead of being SIGKILLed
-        mid-write and leaving ``cache_dir.new/`` orphaned.
+        ``should_abort`` is a ``Callable[[float], bool]`` evaluated
+        between entries inside ``MemoryAwarePrefixCache.save_to_disk``.
+        The ``float`` arg is the predicted write duration of the NEXT
+        entry — the predicate answers "would starting that write push
+        us past the deadline?" so a single uninterruptible
+        ``save_prompt_cache`` call can't straddle the deadline and
+        still get SIGKILLed mid-write (the round-1 at-now check could).
+        Zero-arg predicates are accepted for backwards compatibility
+        via auto-detection; the deadline-backed predicate the lifespan
+        plumbs through is one-arg.
         """
         return self._run_on_step_thread(
             self.scheduler.save_cache_to_disk, cache_dir, should_abort=should_abort

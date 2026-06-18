@@ -4060,10 +4060,13 @@ class Scheduler:
     def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
         """Save prefix cache to disk for persistence across restarts.
 
-        ``should_abort`` is an optional zero-arg callable that signals
-        the lifespan SIGTERM-grace deadline to the per-entry loop inside
-        ``MemoryAwarePrefixCache.save_to_disk``. See that method's
-        docstring for the partial-commit guarantee.
+        ``should_abort`` is an optional ``Callable[[float], bool]``
+        (the ``float`` is the next entry's predicted write duration)
+        that signals the lifespan SIGTERM-grace deadline to the per-
+        entry loop inside ``MemoryAwarePrefixCache.save_to_disk``.
+        Zero-arg callables are accepted via auto-detection for
+        backwards compatibility. See that method's docstring for the
+        partial-commit guarantee.
         """
         if self.memory_aware_cache is not None:
             return self.memory_aware_cache.save_to_disk(

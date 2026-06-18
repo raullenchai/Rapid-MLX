@@ -1510,86 +1510,133 @@ def test_save_prefix_cache_to_disk_no_retry_on_internal_typeerror(monkeypatch):
     )
 
 
-def test_save_to_disk_skips_entry_when_predicted_write_exceeds_budget(tmp_path):
-    """Codex PR #667 round 1 BLOCKING-2 + round 2 BLOCKING-1.
+def test_save_to_disk_predicts_entry_zero_from_bootstrap_floor(tmp_path):
+    """Codex PR #667 round 3 BLOCKING-1.
 
-    The per-entry loop must consult the predicate WITH a
-    ``predicted_sec`` estimate so a large entry that would straddle
-    the deadline never starts its (uninterruptible) ``save_prompt_cache``
-    write. Round 2 refines: entry 0 always passes ``predicted_sec=0``
-    (no observed sample → don't lock ourselves out before saving
-    anything; the round 1 50 MB/s bootstrap floor over-predicted a
-    typical 300 MB entry at 6 s and tripped the budget immediately).
-    Entry 1+ then carries a non-zero forward-looking estimate built
-    from observed bytes/sec.
+    Entry 0 must receive a non-zero forward-looking ``predicted_sec``
+    derived from the 150 MB/s bootstrap floor — round 2 passed 0 here
+    and let a catastrophically large first entry straddle the SIGTERM
+    grace deadline, leaving ``cache_dir.new/`` orphaned. The estimate
+    scales with ``entry.memory_bytes`` so a too-large entry-0 trips
+    BEFORE its (uninterruptible) ``save_prompt_cache`` call starts.
+    """
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+
+    seen_predicted = []
+
+    def predicate(predicted_sec=0.0):
+        seen_predicted.append(predicted_sec)
+        return False  # never trip — just record what the loop sends
+
+    cache.save_to_disk(str(cache_dir), should_abort=predicate)
+    assert len(seen_predicted) == 1
+    assert seen_predicted[0] > 0, (
+        f"entry 0 must receive a non-zero predicted_sec (bootstrap "
+        f"150 MB/s × entry size) — round 2 used 0 here and let huge "
+        f"entries straddle the deadline (codex round 3 BLOCKING-1). "
+        f"Got {seen_predicted[0]}"
+    )
+
+
+def test_save_to_disk_skips_entry_zero_when_predicted_exceeds_budget(tmp_path):
+    """Forward-looking check now fires on entry 0 — proves a
+    catastrophically large first entry can't straddle the deadline.
+
+    Predicate trips on any non-trivial ``predicted_sec``. Result:
+    ``saved == 0`` because even entry 0 is gated, and ``save_to_disk``
+    returns False with the staging dir cleaned up (not committed
+    empty, not left as an orphan).
     """
     cache_dir = tmp_path / "snap"
     cache = fresh_cache()
     cache.store(list(range(11)), make_kvcache(num_tokens=11))
     cache.store(list(range(20, 31)), make_kvcache(num_tokens=11, fill=2.0))
-    cache.store(list(range(50, 61)), make_kvcache(num_tokens=11, fill=3.0))
 
     seen_predicted = []
 
     def predicate(predicted_sec=0.0):
         seen_predicted.append(predicted_sec)
-        # Trip on the first NON-zero call — entry 0 passes 0
-        # (bootstrap), entry 1+ passes the observed-throughput
-        # estimate. The transition from 0 → >0 is what proves the
-        # forward-looking machinery is in place.
-        return predicted_sec > 0
+        return predicted_sec > 0  # trip on any forward-looking estimate
 
-    # Entry 0 saves (predicted=0 → predicate False), entry 1 trips
-    # (predicted>0 → predicate True), commit. saved=1 → returns True.
-    assert cache.save_to_disk(str(cache_dir), should_abort=predicate) is True
-    assert len(seen_predicted) >= 2, (
-        f"loop should call predicate for entry 0 AND entry 1, got {seen_predicted}"
+    assert cache.save_to_disk(str(cache_dir), should_abort=predicate) is False
+    assert len(seen_predicted) == 1, (
+        f"loop should abort on first predicate trip (entry 0), got "
+        f"{len(seen_predicted)} calls"
     )
-    assert seen_predicted[0] == 0.0, (
-        f"entry 0 should receive predicted_sec=0 (no observed sample "
-        f"yet — round 2 BLOCKING-1 fix), got {seen_predicted[0]}"
-    )
-    assert seen_predicted[1] > 0, (
-        f"entry 1 should receive predicted_sec>0 from observed "
-        f"throughput — proves the loop is updating its rate estimate "
-        f"between entries, got {seen_predicted[1]}"
-    )
-    # Entry 0 was committed via atomic rename.
+    assert not (tmp_path / "snap").exists()
     assert not (tmp_path / "snap.new").exists()
-    assert (cache_dir / "index.json").exists()
-    index = json.loads((cache_dir / "index.json").read_text())
-    assert index["num_entries"] == 1
 
 
-def test_save_to_disk_entry_zero_attempts_when_no_observed_throughput(tmp_path):
-    """Codex PR #667 round 2 BLOCKING-1 regression, pinned at the layer
-    where the bug lived.
+def test_save_to_disk_accepts_zero_arg_predicate_back_compat(tmp_path):
+    """Codex PR #667 round 3 BLOCKING-2 regression.
 
-    Direct proof that the round-1 bootstrap floor regression is gone:
-    with a generous 60 s budget and a predicate that fires ONLY when
-    the predicate receives a non-zero ``predicted_sec``, the previous
-    code (50 MB/s bootstrap) would have predicted entry 0 at a few
-    hundred ms (well within budget) and saved it anyway — so a
-    targeted test catches the FAILURE mode (saves nothing because
-    bootstrap over-predicts) only by pinning the "predicted_sec is 0
-    for entry 0" invariant directly.
+    Round-1 docstrings described ``should_abort`` as a zero-arg
+    callable. Round-2 changed the loop to ``should_abort(predicted_sec)``
+    but external callers / older fixtures may still pass a zero-arg
+    predicate. The auto-adapter in ``_adapt_should_abort`` must handle
+    both shapes without raising ``TypeError``.
     """
     cache_dir = tmp_path / "snap"
     cache = fresh_cache()
     cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    cache.store(list(range(20, 31)), make_kvcache(num_tokens=11, fill=2.0))
 
-    seen_predicted = []
+    calls = {"n": 0}
 
-    def predicate(predicted_sec=0.0):
-        seen_predicted.append(predicted_sec)
-        return False  # never trip — we just want to record the calls
+    # Deliberately ZERO-ARG predicate — the round-1 documented shape.
+    def predicate():
+        calls["n"] += 1
+        return calls["n"] > 1  # save entry 0, abort entry 1
 
-    cache.save_to_disk(str(cache_dir), should_abort=predicate)
-    assert seen_predicted == [0.0], (
-        f"entry 0 must be called with predicted_sec=0 — the round-1 "
-        f"50 MB/s bootstrap floor over-predicted typical entries and "
-        f"tripped budget before any save. Got {seen_predicted}"
+    # Must not raise. Must save entry 0 and commit via rename.
+    assert cache.save_to_disk(str(cache_dir), should_abort=predicate) is True
+    assert calls["n"] >= 2
+    assert not (tmp_path / "snap.new").exists()
+    index = json.loads((cache_dir / "index.json").read_text())
+    assert index["num_entries"] == 1
+
+
+def test_adapt_should_abort_handles_keyword_only_and_args_kwargs():
+    """``_adapt_should_abort`` must classify a few non-obvious callable
+    shapes correctly. Regressions here would silently call the wrong
+    shape and either raise TypeError mid-save or drop the
+    ``predicted_sec`` arg (re-introducing the round-1 BLOCKING-2 bug).
+    """
+    from vllm_mlx.memory_cache import _adapt_should_abort
+
+    # None passes through.
+    assert _adapt_should_abort(None) is None
+
+    # Zero-arg: must be called with no args.
+    captured = []
+    adapted = _adapt_should_abort(lambda: captured.append("z") or True)
+    assert adapted(0.5) is True
+    assert captured == ["z"]
+
+    # One-arg positional: must receive predicted_sec.
+    captured = []
+    adapted = _adapt_should_abort(lambda p: captured.append(p) or False)
+    assert adapted(1.5) is False
+    assert captured == [1.5]
+
+    # **kwargs: must receive predicted_sec.
+    captured = []
+
+    def pred(**kw):
+        captured.append(kw.get("predicted_sec", "no-arg"))
+        return False
+
+    # The adapter passes positionally, so **kwargs alone doesn't get
+    # the value as a kwarg — but the function still gets CALLED with
+    # the right shape (no TypeError). That's the contract being
+    # pinned: no exception raised.
+    adapted = _adapt_should_abort(
+        lambda *a, **kw: captured.append(("args", a)) or False
     )
+    assert adapted(2.5) is False
+    assert captured == [("args", (2.5,))]
 
 
 def test_save_prefix_cache_to_disk_zero_budget_disables_deadline(tmp_path, monkeypatch):

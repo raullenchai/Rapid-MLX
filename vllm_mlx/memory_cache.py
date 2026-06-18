@@ -45,6 +45,50 @@ _MIN_MEMORY_BYTES = 100 * _BYTES_PER_MB  # Minimum 100MB
 _MAX_ENTRIES_FALLBACK = 50  # Fallback if memory detection fails
 
 
+def _adapt_should_abort(predicate):
+    """Adapt a ``should_abort`` predicate to the one-arg contract.
+
+    The forward-looking shape ``Callable[[float], bool]`` is the new
+    contract, but external callers / older fixtures may pass a
+    zero-arg ``Callable[[], bool]`` from the round-1 docstring.
+    Inspect the signature once and return a normalized
+    ``Callable[[float], bool]`` that calls the inner predicate
+    correctly. ``None`` passes through unchanged.
+
+    Codex PR #667 round 3 BLOCKING-2: round-2 unconditionally called
+    ``should_abort(predicted_sec)`` which raises ``TypeError`` against
+    zero-arg predicates documented in the previous contract.
+    """
+    if predicate is None:
+        return None
+
+    import inspect
+
+    try:
+        sig = inspect.signature(predicate)
+    except (TypeError, ValueError):
+        # Builtin / C-extension / partial — assume one-arg shape
+        # (it's the contract going forward); a runtime TypeError on
+        # invocation is no worse than what callers got before.
+        return lambda predicted_sec: predicate(predicted_sec)
+
+    # Does the predicate accept ANY positional / keyword arg?
+    accepts_arg = any(
+        p.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.VAR_KEYWORD,
+        )
+        for p in sig.parameters.values()
+    )
+    if accepts_arg:
+        return lambda predicted_sec: predicate(predicted_sec)
+    return lambda predicted_sec: predicate()
+
+
 def _safetensors_is_complete(path: str) -> bool:
     """Validate a safetensors file is at least as long as its header claims.
 
@@ -1172,19 +1216,35 @@ class MemoryAwarePrefixCache:
         Args:
             cache_dir: Final committed directory path (``.new`` / ``.old``
                 staging dirs are siblings).
-            should_abort: Optional zero-arg callable that returns True when
-                the caller wants the save loop to stop early — used by the
-                lifespan shutdown to enforce a SIGTERM-grace deadline so a
-                multi-GB save doesn't get SIGKILLed mid-flight and leave
-                ``cache_dir.new/`` orphaned (rapid-desktop only gives the
-                sidecar ~5s before SIGKILL). When the callable trips, the
-                loop stops, the entries that did finish are verified, and
-                the staging dir is committed via the same atomic rename as
-                a normal save — so a partial result is preferable to the
-                previous behavior (truncated mid-entry → orphaned ``.new``
-                → lost cache on next launch). A None value preserves the
-                pre-existing "save everything, no deadline" behavior used
-                by tests and the offline ``rapid-mlx`` CLI.
+            should_abort: Optional ``Callable[[float], bool]`` that returns
+                True when the caller wants the save loop to stop early. The
+                ``float`` arg is ``predicted_sec`` — the per-entry loop's
+                estimate of how long the NEXT entry's write will take, so
+                the predicate can answer "would starting that operation
+                push us past the deadline?" rather than only firing AFTER
+                wall-clock has already crossed it (codex PR #667 round 1
+                BLOCKING-2 — a single uninterruptible 300 MB
+                ``save_prompt_cache`` call can straddle the deadline and
+                still get SIGKILL'd mid-write if the check is at-now only).
+
+                Used by the lifespan shutdown to enforce a SIGTERM-grace
+                deadline so a multi-GB save doesn't get SIGKILLed mid-
+                flight and leave ``cache_dir.new/`` orphaned (rapid-
+                desktop only gives the sidecar ~5s before SIGKILL). When
+                the callable trips, the loop stops, the entries that did
+                finish are verified, and the staging dir is committed via
+                the same atomic rename as a normal save — so a partial
+                result is preferable to the previous behavior (truncated
+                mid-entry → orphaned ``.new`` → lost cache on next
+                launch).
+
+                Backwards-compatible: a zero-arg ``Callable[[], bool]``
+                (the round-1 documented shape) is auto-adapted via
+                ``_adapt_should_abort`` so external callers / older
+                fixtures don't break — see codex round 3 BLOCKING-2.
+                A ``None`` value preserves the pre-existing "save
+                everything, no deadline" behavior used by tests and the
+                offline ``rapid-mlx`` CLI.
 
         Returns True if at least one entry was committed to disk.
         """
@@ -1244,28 +1304,37 @@ class MemoryAwarePrefixCache:
         # deadline and get SIGKILL'd mid-write (leaves ``cache_dir.new/``
         # orphaned; this is the bug the deadline gate exists to prevent).
         #
-        # Entry 0 gets ``predicted_sec=0`` — no observed sample yet,
-        # and a conservative bootstrap floor (the round-1 50 MB/s try)
-        # over-predicted a typical 300 MB entry at 6 s, tripping the
-        # default 3.5 s budget BEFORE saving anything and preserving
-        # zero cache. Strictly worse than letting entry 0 attempt and
-        # letting the next-launch orphan-cleanup recover if it
-        # overshoots (codex PR #667 round 2 BLOCKING-1). Entry 1+
-        # then has real measured throughput to predict from.
+        # Bootstrap floor for entry 0 (no observed sample yet) is
+        # 150 MB/s — calibrated so:
+        #   - typical Gemma 4 26B entry (~250 MB) predicts ~1.7 s,
+        #     comfortably fitting the 3.1 s safe budget (3.5 s budget −
+        #     0.4 s commit headroom);
+        #   - genuinely oversized entry (~600 MB+) predicts >4 s and
+        #     correctly trips before write starts — would straddle
+        #     deadline either way.
+        # Round 1 used 50 MB/s and over-predicted typical entries
+        # (codex round 2 BLOCKING-1). Round 2 used 0 and let huge
+        # entries straddle the deadline (codex round 3 BLOCKING-1).
+        # 150 MB/s is the goldilocks middle ground: 3× round 1, gives
+        # real-world observed throughput (~875 MB/s during the
+        # original incident) ~6× safety margin while still catching
+        # genuinely-too-large entries.
+        _BOOTSTRAP_BYTES_PER_SEC = 150 * _BYTES_PER_MB
+        # Support BOTH zero-arg and one-arg ``should_abort`` predicates
+        # at the per-entry layer. The new contract is
+        # ``Callable[[float], bool]`` (forward-looking) but external
+        # callers may still pass a zero-arg shape from the round 1
+        # docstring contract — auto-detect and adapt instead of
+        # raising TypeError. Codex PR #667 round 3 BLOCKING-2.
+        check_abort = _adapt_should_abort(should_abort)
         total_bytes_written = 0
         total_write_seconds = 0.0
         for i, (tokens_key, entry) in enumerate(self._entries.items()):
             if total_write_seconds > 0:
                 observed_bps = total_bytes_written / total_write_seconds
-                predicted_sec = entry.memory_bytes / observed_bps
             else:
-                # Bootstrap: no observed sample yet → let entry 0 try.
-                # The at-now component of the predicate (wall-clock vs
-                # safe_deadline) still applies, so a late-arriving
-                # SIGTERM that already exhausted the budget before
-                # entry 0 even started will still abort.
-                observed_bps = 0.0
-                predicted_sec = 0.0
+                observed_bps = _BOOTSTRAP_BYTES_PER_SEC
+            predicted_sec = entry.memory_bytes / observed_bps
             # Deadline-aware early exit: the lifespan handler installs a
             # ``should_abort`` predicate driven by the SIGTERM-grace budget.
             # Once it trips we stop persisting NEW entries but still run
@@ -1274,22 +1343,16 @@ class MemoryAwarePrefixCache:
             # rather than left in ``cache_dir.new/``. ``saved >= 1`` is
             # the gate that controls whether the rename happens —
             # nothing else changes from the full-flush path.
-            if should_abort is not None and should_abort(predicted_sec):
+            if check_abort is not None and check_abort(predicted_sec):
                 aborted_early = True
-                if observed_bps > 0:
-                    detail = (
-                        f"(predicted {predicted_sec * 1000:.0f}ms write at "
-                        f"{observed_bps / _BYTES_PER_MB:.0f}MB/s)"
-                    )
-                else:
-                    # Entry 0: no observed throughput; the at-now check
-                    # is what tripped, not a forward-looking estimate.
-                    detail = "(wall-clock already past shutdown deadline)"
+                bps_label = "observed" if total_write_seconds > 0 else "bootstrap floor"
                 logger.warning(
                     f"[cache_persist] shutdown budget would not fit "
-                    f"entry {i}/{total_entries} {detail} — "
-                    f"committing {saved} entries that finished before "
-                    f"deadline"
+                    f"entry {i}/{total_entries} "
+                    f"(predicted {predicted_sec * 1000:.0f}ms write at "
+                    f"{observed_bps / _BYTES_PER_MB:.0f}MB/s "
+                    f"[{bps_label}]) — committing {saved} entries that "
+                    f"finished before deadline"
                 )
                 break
             entry_path, tokens_path = _entry_paths(i)
