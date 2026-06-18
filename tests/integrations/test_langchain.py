@@ -1,6 +1,7 @@
 """Thorough LangChain test suite against local rapid-mlx server."""
 
 import os
+import sys
 
 import httpx as _httpx
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -21,9 +22,19 @@ llm = ChatOpenAI(
     temperature=0.0,
 )
 
-if __name__ == "__main__":
-    results = {}
+# ``results`` is read by the ``rapid-mlx bench --tier harness`` path
+# (``vllm_mlx/agents/testing.py::_run_specific_tests`` does
+# ``getattr(mod, "results", {})`` after ``spec.loader.exec_module``).
+# It MUST be defined at module level so the harness can pick it up — PR
+# #660 originally moved it inside ``if __name__ == "__main__":`` to keep
+# ``pytest`` collection from triggering ``exit()``, which left the harness
+# load path with an empty mapping and the gate reporting "No test results
+# found (missing 'results' dict or all tests skipped)".
+results: dict[str, str] = {}
 
+
+def _run_tests() -> None:
+    """Run the live test battery; populates the module-level ``results``."""
     # === 1. Plain invoke ===
     print("=== Test 1: Plain invoke ===")
     try:
@@ -154,4 +165,18 @@ if __name__ == "__main__":
     print(f"LangChain: {passed}/{len(results)} passed")
     for k, v in results.items():
         print(f"  {k}: {v[:120]}")
-    exit(0 if passed == len(results) else 1)
+
+
+# Run the battery in two cases:
+#   1. Direct invocation: ``python tests/integrations/test_langchain.py``
+#   2. Harness load: ``rapid-mlx bench --tier harness`` calls
+#      ``importlib.util.spec_from_file_location`` then ``exec_module``.
+# Skip under pytest collection so ``pytest tests/integrations/...`` sweeps
+# can import the module without triggering live API calls — restores the
+# PR #660 fix without re-introducing the empty-results harness bug.
+_UNDER_PYTEST = "_pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
+if not _UNDER_PYTEST:
+    _run_tests()
+    if __name__ == "__main__":
+        _passed = sum(1 for v in results.values() if v == "PASS")
+        exit(0 if _passed == len(results) else 1)
