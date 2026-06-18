@@ -127,6 +127,19 @@ class _ProgressTracker:
             done, total = emit
             print(f"  [bytes] {done}/{total}", flush=True)
 
+    def subtract(self, delta: int) -> None:
+        """Roll back optimistic R2-chunk credits when the file fails
+        validation (short-read, sha mismatch, rename error) and the
+        dispatcher will retry via HF — without this the subsequent
+        ``progress_tracker.add(size)`` on the HF path would double-count
+        and the desktop bar could exceed 100% (codex R2 BLOCKING on
+        PR #682). Silent — no heartbeat emit; the next ``add()`` or
+        ``flush()`` carries the corrected total."""
+        if delta <= 0:
+            return
+        with self._lock:
+            self._done = max(0, self._done - int(delta))
+
     def flush(self) -> None:
         """Emit a final heartbeat at the end of a pull regardless of
         throttle window — the last 500 ms of bytes would otherwise be
@@ -138,6 +151,21 @@ class _ProgressTracker:
         if emit is not None:
             done, total = emit
             print(f"  [bytes] {done}/{total}", flush=True)
+
+
+def _rollback_credits(
+    tracker: _ProgressTracker | None,
+    credited: int,
+) -> None:
+    """Subtract optimistic R2-chunk credits when the file fails any
+    post-stream validation (short-read, sha mismatch, final-size, LFS
+    install, rename) and the dispatcher will fall back to HF. Without
+    this rollback, the subsequent ``progress_tracker.add(size)`` on the
+    HF path would double-count and the desktop bar could exceed 100%
+    (codex R2 BLOCKING on PR #682). No-op when there's no tracker or
+    no bytes were credited yet."""
+    if tracker is not None and credited > 0:
+        tracker.subtract(credited)
 
 
 def _mirror_base() -> str:
@@ -313,7 +341,7 @@ def _download_one_from_r2(
     sidecar_dir: Path,
     sidecar_key: str,
     repo_root: Path | None = None,
-    progress_tracker: "_ProgressTracker | None" = None,
+    progress_tracker: _ProgressTracker | None = None,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
 
@@ -383,7 +411,7 @@ def _do_r2_download(
     *,
     expected_sha256: str | None = None,
     repo_root: Path | None = None,
-    progress_tracker: "_ProgressTracker | None" = None,
+    progress_tracker: _ProgressTracker | None = None,
 ) -> tuple[bool, str]:
     """Inner R2 download body — runs with the per-file lock held.
 
@@ -508,6 +536,13 @@ def _do_r2_download(
                     except OSError:
                         _safe_unlink(tmp)
                         return False, "prefix-rehash-failed"
+            # Codex R2 BLOCKING on PR #682: credit R2 chunks optimistically
+            # for smooth desktop heartbeats, but track how many bytes we
+            # credited so EVERY failure path past the chunk loop can roll
+            # back before falling back to HF — otherwise the HF success
+            # path's ``progress_tracker.add(size)`` would double-count and
+            # the desktop bar could exceed 100%.
+            chunks_credited = 0
             with tmp.open(mode) as fh:
                 while True:
                     chunk = resp.read(_CHUNK_BYTES)
@@ -524,12 +559,14 @@ def _do_r2_download(
                     # v0.7.10 "stuck at 83%" UX bug).
                     if progress_tracker is not None:
                         progress_tracker.add(len(chunk))
+                        chunks_credited += len(chunk)
 
             # Short-read guard — Content-Length lied or the connection
             # dropped silently. Don't rename a truncated file into the
             # snapshot; let HF redownload.
             if length > 0 and read != length:
                 _safe_unlink(tmp)
+                _rollback_credits(progress_tracker, chunks_credited)
                 return False, f"short-read:{read}!={length}"
 
             # Codex round-5 BLOCKING #1 — SHA-256 check (LFS files
@@ -539,6 +576,7 @@ def _do_r2_download(
                 got = hasher.hexdigest()
                 if got != expected_sha256:
                     _safe_unlink(tmp)
+                    _rollback_credits(progress_tracker, chunks_credited)
                     return (
                         False,
                         f"sha256-mismatch:{got[:8]}…!={expected_sha256[:8]}…",
@@ -551,6 +589,11 @@ def _do_r2_download(
         ValueError,
     ) as e:
         _safe_unlink(tmp)
+        # ``chunks_credited`` may not be bound if the exception fired
+        # before the chunk loop reached the credit branch (e.g. urlopen
+        # raised). ``locals().get`` keeps the rollback safe in either
+        # case.
+        _rollback_credits(progress_tracker, locals().get("chunks_credited", 0))
         return False, type(e).__name__
 
     # Codex round-5 BLOCKING #2: ``tmp.stat()`` was outside the
@@ -560,9 +603,11 @@ def _do_r2_download(
         final_size = tmp.stat().st_size if tmp.exists() else 0
     except OSError as e:
         _safe_unlink(tmp)
+        _rollback_credits(progress_tracker, chunks_credited)
         return False, f"final-stat:{type(e).__name__}"
     if expected_size is not None and final_size != expected_size:
         _safe_unlink(tmp)
+        _rollback_credits(progress_tracker, chunks_credited)
         return False, f"final-size-mismatch:{final_size}!={expected_size}"
 
     # Issue #?? — defensive 0-byte rejection when HF didn't tell us a
@@ -592,6 +637,7 @@ def _do_r2_download(
     # canonical size for.
     if expected_size is None and final_size == 0:
         _safe_unlink(tmp)
+        _rollback_credits(progress_tracker, chunks_credited)
         return False, "empty-response-no-size"
 
     # Issue #652: for LFS files (``expected_sha256`` known) land the
@@ -607,6 +653,7 @@ def _do_r2_download(
         )
         if not ok:
             _safe_unlink(tmp)
+            _rollback_credits(progress_tracker, chunks_credited)
             return False, reason
         return True, ""
 
@@ -614,6 +661,7 @@ def _do_r2_download(
         tmp.rename(target)
     except OSError as e:
         _safe_unlink(tmp)
+        _rollback_credits(progress_tracker, chunks_credited)
         return False, f"rename:{type(e).__name__}"
     return True, ""
 

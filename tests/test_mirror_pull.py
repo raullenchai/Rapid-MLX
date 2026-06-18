@@ -3314,6 +3314,82 @@ def test_progress_tracker_is_per_pull_not_global(
     assert _final_total(out_b) == sum(s for _, s in files_b)  # 300
 
 
+def test_progress_no_double_count_on_r2_short_read_then_hf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """When R2 streams partial bytes then short-reads → HF fallback
+    succeeds, the heartbeat must NOT report ``done > total``.
+
+    Codex R2 BLOCKING on PR #682: R2 chunks were credited optimistically
+    inside the chunk loop, so an R2 file that streamed N bytes and then
+    failed validation (short-read here, also sha-mismatch / rename) would
+    leave N bytes on the tracker. The HF fallback then added the file's
+    full canonical size again on top, blowing the desktop bar past 100%.
+    Fixed by rolling back ``chunks_credited`` at every post-credit
+    failure path before the dispatcher hands off to HF.
+    """
+    import re
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "feed" * 10
+    # Single big-ish file whose R2 fetch fails short-read; HF fallback
+    # serves the full thing.
+    files = [("model.safetensors", 1000)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # R2 advertises Content-Length: 1000 but delivers only 400 → triggers
+    # the short-read path. Workers credit 400 bytes during streaming.
+    router.add(
+        f"https://models.rapidmlx.com/{repo_id}/model.safetensors",
+        _FakeResponse(200, b"x" * 400, headers={"Content-Length": "1000"}),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        (snap / filename).write_bytes(b"x" * 1000)
+        return str(snap / filename)
+
+    monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    captured = capsys.readouterr()
+    matches = re.findall(r"\[bytes\] (\d+)/(\d+)", captured.out)
+    assert matches, f"no heartbeat at all:\n{captured.out}"
+    # Every heartbeat carries the same denominator and never exceeds it.
+    for done_s, total_s in matches:
+        assert int(total_s) == 1000
+        assert int(done_s) <= 1000, (
+            f"heartbeat done={done_s} exceeds total={total_s} — "
+            f"R2 chunks weren't rolled back before HF credit:\n{captured.out}"
+        )
+    # Final heartbeat after flush lands at exactly 1000 (HF success
+    # credit of the full file).
+    assert int(matches[-1][0]) == 1000
+
+
 def test_safe_display_name_strips_control_chars():
     """Filenames from external HF metadata can't inject terminal escapes.
 
