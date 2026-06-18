@@ -93,9 +93,10 @@ class TestStepThread:
 
         captured = {}
 
-        def fake_save(cache_dir):
+        def fake_save(cache_dir, should_abort=None):
             captured["thread"] = threading.current_thread().name
             captured["cache_dir"] = cache_dir
+            captured["should_abort"] = should_abort
             return True
 
         engine_core.scheduler.save_cache_to_disk.side_effect = fake_save

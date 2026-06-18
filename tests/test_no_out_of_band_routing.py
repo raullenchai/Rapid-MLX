@@ -174,6 +174,13 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # default R2 URL; power users override with any URL or "" to disable.
         # Never consulted by the engine, scheduler, or routing layer.
         "RAPID_MLX_MODEL_MIRROR",
+        # SIGTERM-grace budget (seconds, float) for the lifespan prefix-cache
+        # flush in ``vllm_mlx/runtime/cache.py``. Defaults to 3.5s so a
+        # multi-GB save commits its partial snapshot before downstream
+        # supervisors (rapid-desktop's 5s grace, systemd / Docker / launchd
+        # equivalents) escalate to SIGKILL and orphan ``<cache_dir>.new/``.
+        # Pure deadline knob — never selects model, parser, or tier.
+        "RAPID_MLX_PREFIX_CACHE_SHUTDOWN_BUDGET",
     }
 )
 

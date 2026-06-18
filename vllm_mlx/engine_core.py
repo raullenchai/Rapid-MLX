@@ -993,15 +993,23 @@ class EngineCore:
         """Get prefix cache statistics."""
         return self.scheduler.get_cache_stats()
 
-    def save_cache_to_disk(self, cache_dir: str) -> bool:
+    def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
         """Save prefix cache to disk.
 
         Routed through the mlx-step worker thread because the KV-cache
         arrays are tagged with that thread's generation_stream; trying to
         materialize them from the asyncio loop thread raises
         "There is no Stream(gpu, N) in current thread."
+
+        ``should_abort`` is a zero-arg callable evaluated between entries
+        inside ``MemoryAwarePrefixCache.save_to_disk``. The lifespan
+        shutdown plumbs a deadline-backed predicate through so a
+        multi-GB flush can commit early instead of being SIGKILLed
+        mid-write and leaving ``cache_dir.new/`` orphaned.
         """
-        return self._run_on_step_thread(self.scheduler.save_cache_to_disk, cache_dir)
+        return self._run_on_step_thread(
+            self.scheduler.save_cache_to_disk, cache_dir, should_abort=should_abort
+        )
 
     def load_cache_from_disk(self, cache_dir: str) -> int:
         """Load prefix cache from disk.
@@ -1153,9 +1161,9 @@ class AsyncEngineCore:
         """Get prefix cache statistics."""
         return self.engine.get_cache_stats()
 
-    def save_cache_to_disk(self, cache_dir: str) -> bool:
+    def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
         """Save prefix cache to disk."""
-        return self.engine.save_cache_to_disk(cache_dir)
+        return self.engine.save_cache_to_disk(cache_dir, should_abort=should_abort)
 
     def load_cache_from_disk(self, cache_dir: str) -> int:
         """Load prefix cache from disk."""

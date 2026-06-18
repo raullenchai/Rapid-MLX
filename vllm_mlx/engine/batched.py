@@ -1778,10 +1778,15 @@ class BatchedEngine(BaseEngine):
             return result
         return False
 
-    def save_cache_to_disk(self, cache_dir: str) -> bool:
-        """Save prefix cache to disk for persistence across restarts."""
+    def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
+        """Save prefix cache to disk for persistence across restarts.
+
+        ``should_abort`` is forwarded to the underlying engine so the
+        lifespan SIGTERM-grace deadline can short-circuit a multi-GB
+        flush; see ``EngineCore.save_cache_to_disk`` for details.
+        """
         if self._engine:
-            return self._engine.save_cache_to_disk(cache_dir)
+            return self._engine.save_cache_to_disk(cache_dir, should_abort=should_abort)
         return False
 
     def load_cache_from_disk(self, cache_dir: str) -> int:

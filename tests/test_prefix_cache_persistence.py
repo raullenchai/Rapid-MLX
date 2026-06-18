@@ -1151,3 +1151,213 @@ def test_save_aborts_on_post_filter_dir_loss(tmp_path, monkeypatch):
     )
     # No half-baked cache_dir should have been created
     assert not (cache_dir / "index.json").exists()
+
+
+# --------------------------------------------------------------------------
+# Shutdown-deadline ("should_abort") partial-commit path
+# --------------------------------------------------------------------------
+#
+# Rapid-desktop only gives the rapid-mlx sidecar ~5s between SIGTERM and
+# SIGKILL. The previous synchronous flush would write entries linearly,
+# get SIGKILLed mid-write, and leave ``<cache_dir>.new/`` orphaned on
+# disk — no cache survives to the next launch. The fix lets the lifespan
+# pass a ``should_abort`` predicate down to the per-entry loop; when it
+# trips the loop stops and STILL commits the entries that did finish via
+# the atomic directory-rename swap.
+
+
+def test_save_to_disk_partial_commit_on_abort(tmp_path):
+    """should_abort fires after one entry — staging dir must still be
+    committed via atomic rename and the surviving entry must be
+    loadable on the next session.
+    """
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    # Three entries; the predicate will fire after the first finishes.
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    cache.store(list(range(20, 31)), make_kvcache(num_tokens=11, fill=2.0))
+    cache.store(list(range(50, 61)), make_kvcache(num_tokens=11, fill=3.0))
+
+    calls = {"n": 0}
+
+    def predicate():
+        # Fire from the second invocation onward so entry 0 lands but
+        # entries 1 and 2 are skipped.
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    assert cache.save_to_disk(str(cache_dir), should_abort=predicate) is True
+
+    # Critical invariant: the staging dir is gone — committed via rename.
+    assert not (tmp_path / "snap.new").exists(), (
+        "should_abort path must still run the atomic-rename swap so the "
+        "staging dir is never left orphaned — that's the whole point of "
+        "the fix vs. the pre-existing SIGKILL behavior"
+    )
+    # And the committed dir holds the surviving entry plus a consistent index.
+    assert (cache_dir / "index.json").exists()
+    index = json.loads((cache_dir / "index.json").read_text())
+    assert index["num_entries"] == 1
+    assert len(index["entries"]) == 1
+    assert (cache_dir / "entry_0.safetensors").exists()
+    assert (cache_dir / "entry_0_tokens.bin").exists()
+
+    # Re-loading must succeed and surface exactly the entry that survived.
+    cache2 = fresh_cache()
+    loaded = cache2.load_from_disk(str(cache_dir))
+    assert loaded == 1
+    entry = next(iter(cache2._entries.values()))
+    assert entry.tokens == tuple(range(11))
+
+
+def test_save_to_disk_aborts_before_first_entry_returns_false(tmp_path):
+    """If the deadline already passed before the first write, ``should_abort``
+    fires immediately, ``saved == 0``, and the staging dir is cleaned up
+    rather than committed empty. Matches the existing "no entries saved
+    successfully, aborting" branch.
+    """
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+
+    assert cache.save_to_disk(str(cache_dir), should_abort=lambda: True) is False
+    assert not cache_dir.exists()
+    assert not (tmp_path / "snap.new").exists()
+
+
+def test_save_to_disk_predicate_none_preserves_full_flush(tmp_path):
+    """Passing ``should_abort=None`` must be equivalent to the legacy call
+    shape — all entries get written, no early break. Protects the offline
+    ``rapid-mlx`` CLI path and the existing tests from regressing.
+    """
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    cache.store(list(range(20, 31)), make_kvcache(num_tokens=11, fill=2.0))
+
+    assert cache.save_to_disk(str(cache_dir), should_abort=None) is True
+    index = json.loads((cache_dir / "index.json").read_text())
+    assert index["num_entries"] == 2
+    assert (cache_dir / "entry_0.safetensors").exists()
+    assert (cache_dir / "entry_1.safetensors").exists()
+
+
+def test_save_prefix_cache_to_disk_runs_off_event_loop(tmp_path, monkeypatch):
+    """Regression for the lifespan shutdown bug: ``save_prefix_cache_to_disk``
+    must be wrapped in ``asyncio.to_thread`` so the asyncio loop stays
+    responsive while the multi-GB flush streams to disk.
+
+    Shape: pretend the engine takes 1 second to flush. Drive a tiny
+    coroutine that fires the save AND, on the same loop, polls a
+    monotonic counter every 50ms. Assert the counter advances multiple
+    times concurrently with the save — i.e. the loop wasn't blocked.
+    """
+    import asyncio
+    import time as _time
+
+    from vllm_mlx import config as _config_mod
+    from vllm_mlx.runtime import cache as _cache_mod
+
+    class _SlowEngine:
+        def save_cache_to_disk(self, cache_dir, should_abort=None):
+            # Block for ~600ms on the worker thread — caller is supposed
+            # to wrap us in asyncio.to_thread so the loop keeps spinning.
+            _time.sleep(0.6)
+            return True
+
+    class _FakeCfg:
+        engine = _SlowEngine()
+        model_path = "fake/model"
+        model_name = None
+
+    monkeypatch.setattr(_cache_mod, "get_config", lambda: _FakeCfg())
+    monkeypatch.setattr(_config_mod, "get_config", lambda: _FakeCfg())
+
+    async def _drive():
+        ticks: list[float] = []
+        t0 = _time.monotonic()
+
+        async def _ticker():
+            while _time.monotonic() - t0 < 0.6:
+                ticks.append(_time.monotonic() - t0)
+                await asyncio.sleep(0.05)
+
+        # Mimic the lifespan shutdown call shape exactly.
+        await asyncio.gather(
+            asyncio.to_thread(_cache_mod.save_prefix_cache_to_disk),
+            _ticker(),
+        )
+        return ticks
+
+    ticks = asyncio.run(_drive())
+    # If the save was running on the loop thread, the ticker wouldn't
+    # have produced more than a single tick before the save returned;
+    # with asyncio.to_thread the ticker advances every ~50ms.
+    assert len(ticks) >= 5, (
+        f"event loop was blocked during cache flush — only saw {len(ticks)} "
+        f"ticks in 600ms (expected ≥5). Did the lifespan shutdown lose its "
+        f"asyncio.to_thread wrap?"
+    )
+
+
+def test_save_prefix_cache_to_disk_respects_budget(tmp_path, monkeypatch):
+    """``save_prefix_cache_to_disk`` must build a deadline predicate from
+    the budget arg and forward it as ``should_abort`` to the engine. With
+    a 0.1s budget and a save that takes ≥0.2s to even get its first
+    callback, the predicate is True on first call.
+    """
+    import time as _time
+
+    from vllm_mlx import config as _config_mod
+    from vllm_mlx.runtime import cache as _cache_mod
+
+    captured = {"pred": None}
+
+    class _Engine:
+        def save_cache_to_disk(self, cache_dir, should_abort=None):
+            captured["pred"] = should_abort
+            # Sleep past the deadline so the predicate is guaranteed True.
+            _time.sleep(0.25)
+            return False
+
+    class _FakeCfg:
+        engine = _Engine()
+        model_path = "fake/model"
+        model_name = None
+
+    monkeypatch.setattr(_cache_mod, "get_config", lambda: _FakeCfg())
+    monkeypatch.setattr(_config_mod, "get_config", lambda: _FakeCfg())
+
+    _cache_mod.save_prefix_cache_to_disk(budget_sec=0.1)
+    pred = captured["pred"]
+    assert pred is not None, (
+        "save_prefix_cache_to_disk must pass a should_abort predicate"
+    )
+    assert pred() is True, "deadline-backed predicate should be tripped after sleep"
+
+
+def test_save_prefix_cache_to_disk_zero_budget_disables_deadline(tmp_path, monkeypatch):
+    """A budget of 0 (or negative) means "full flush, no deadline" — the
+    engine should receive ``should_abort=None`` so the offline CLI path
+    is unaffected.
+    """
+    from vllm_mlx import config as _config_mod
+    from vllm_mlx.runtime import cache as _cache_mod
+
+    captured = {"pred": "unset"}
+
+    class _Engine:
+        def save_cache_to_disk(self, cache_dir, should_abort=None):
+            captured["pred"] = should_abort
+            return True
+
+    class _FakeCfg:
+        engine = _Engine()
+        model_path = "fake/model"
+        model_name = None
+
+    monkeypatch.setattr(_cache_mod, "get_config", lambda: _FakeCfg())
+    monkeypatch.setattr(_config_mod, "get_config", lambda: _FakeCfg())
+
+    _cache_mod.save_prefix_cache_to_disk(budget_sec=0.0)
+    assert captured["pred"] is None

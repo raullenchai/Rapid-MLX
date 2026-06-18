@@ -1145,7 +1145,11 @@ class MemoryAwarePrefixCache:
     # Disk persistence — survives server restarts
     # -----------------------------------------------------------------
 
-    def save_to_disk(self, cache_dir: str) -> bool:
+    def save_to_disk(
+        self,
+        cache_dir: str,
+        should_abort=None,
+    ) -> bool:
         """Save all cache entries to disk using mlx_lm's safetensors format.
 
         The snapshot is committed via a directory-rename to make it
@@ -1165,7 +1169,24 @@ class MemoryAwarePrefixCache:
               entry_1_tokens.bin
               ...
 
-        Returns True if at least one entry was saved.
+        Args:
+            cache_dir: Final committed directory path (``.new`` / ``.old``
+                staging dirs are siblings).
+            should_abort: Optional zero-arg callable that returns True when
+                the caller wants the save loop to stop early — used by the
+                lifespan shutdown to enforce a SIGTERM-grace deadline so a
+                multi-GB save doesn't get SIGKILLed mid-flight and leave
+                ``cache_dir.new/`` orphaned (rapid-desktop only gives the
+                sidecar ~5s before SIGKILL). When the callable trips, the
+                loop stops, the entries that did finish are verified, and
+                the staging dir is committed via the same atomic rename as
+                a normal save — so a partial result is preferable to the
+                previous behavior (truncated mid-entry → orphaned ``.new``
+                → lost cache on next launch). A None value preserves the
+                pre-existing "save everything, no deadline" behavior used
+                by tests and the offline ``rapid-mlx`` CLI.
+
+        Returns True if at least one entry was committed to disk.
         """
         import shutil
         import time as _time
@@ -1214,7 +1235,25 @@ class MemoryAwarePrefixCache:
         }
 
         saved = 0
+        aborted_early = False
+        total_entries = len(self._entries)
         for i, (tokens_key, entry) in enumerate(self._entries.items()):
+            # Deadline-aware early exit: the lifespan handler installs a
+            # ``should_abort`` predicate driven by the SIGTERM-grace budget.
+            # Once it trips we stop persisting NEW entries but still run
+            # the verify + index + atomic-rename steps below so the
+            # partial snapshot we already have on disk gets COMMITTED
+            # rather than left in ``cache_dir.new/``. ``saved >= 1`` is
+            # the gate that controls whether the rename happens —
+            # nothing else changes from the full-flush path.
+            if should_abort is not None and should_abort():
+                aborted_early = True
+                logger.warning(
+                    f"[cache_persist] shutdown budget exhausted at entry "
+                    f"{i}/{total_entries} — committing {saved} entries "
+                    f"that finished before deadline"
+                )
+                break
             entry_path, tokens_path = _entry_paths(i)
             try:
                 # Dequantize QuantizedKVCache layers before saving.
@@ -1300,7 +1339,13 @@ class MemoryAwarePrefixCache:
                 f"persisting {len(verified)} that survived"
             )
             index["entries"] = verified
-            index["num_entries"] = len(verified)
+        # Always pin num_entries to the actually-verified count. The initial
+        # value was ``total_entries`` (set before the save loop) which is
+        # wrong both when we aborted early AND when some entry files
+        # vanished mid-save — index.json must agree with the entry list it
+        # ships alongside, or load_from_disk's ``num_entries`` read drifts
+        # from reality and downstream callers report a phantom count.
+        index["num_entries"] = len(index["entries"])
 
         # Defensively recreate new_dir before the index.json write — the
         # filter above proves at least one entry's files exist, so the
@@ -1354,10 +1399,11 @@ class MemoryAwarePrefixCache:
             shutil.rmtree(old_dir, ignore_errors=True)
 
         dt = _time.monotonic() - t0
+        tail = " (partial — shutdown deadline hit)" if aborted_early else ""
         logger.info(
-            f"[cache_persist] SAVED {saved}/{len(self._entries)} entries "
+            f"[cache_persist] SAVED {saved}/{total_entries} entries "
             f"to {cache_dir} in {dt:.1f}s "
-            f"({self._current_memory / _BYTES_PER_MB:.0f}MB total)"
+            f"({self._current_memory / _BYTES_PER_MB:.0f}MB total){tail}"
         )
         return saved > 0
 

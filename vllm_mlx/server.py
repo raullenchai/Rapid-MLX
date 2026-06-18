@@ -38,6 +38,7 @@ The server provides:
 """
 
 import argparse
+import asyncio
 import gc
 import logging
 import os
@@ -361,9 +362,19 @@ async def lifespan(app: FastAPI):
     # Shutdown: stop accepting "ready" before tearing things down.
     get_config().ready = False
 
-    # Shutdown: Save cache to disk BEFORE stopping engine
+    # Shutdown: Save cache to disk BEFORE stopping engine.
+    #
+    # Run on a worker thread so the asyncio loop stays responsive while
+    # the multi-GB save streams to disk — uvicorn's lifespan task is the
+    # only thing waiting on us, but anything else attached to the loop
+    # (graceful-shutdown HTTP responses, /healthz polls from supervisors
+    # that still consider us "stopping") gets to make progress instead
+    # of being starved for tens of seconds. The save itself respects a
+    # wall-clock SIGTERM-grace budget (see runtime/cache.py) and commits
+    # whatever finished via the atomic rename even if the deadline trips
+    # — so a downstream SIGKILL never leaves ``<cache_dir>.new/`` orphaned.
     if _engine is not None and hasattr(_engine, "save_cache_to_disk"):
-        _save_prefix_cache_to_disk()
+        await asyncio.to_thread(_save_prefix_cache_to_disk)
 
     # Shutdown: Close MCP connections and stop engine
     if _mcp_manager is not None:

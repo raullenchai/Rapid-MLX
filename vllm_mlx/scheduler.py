@@ -4057,10 +4057,18 @@ class Scheduler:
     # Cache persistence
     # -----------------------------------------------------------------
 
-    def save_cache_to_disk(self, cache_dir: str) -> bool:
-        """Save prefix cache to disk for persistence across restarts."""
+    def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
+        """Save prefix cache to disk for persistence across restarts.
+
+        ``should_abort`` is an optional zero-arg callable that signals
+        the lifespan SIGTERM-grace deadline to the per-entry loop inside
+        ``MemoryAwarePrefixCache.save_to_disk``. See that method's
+        docstring for the partial-commit guarantee.
+        """
         if self.memory_aware_cache is not None:
-            return self.memory_aware_cache.save_to_disk(cache_dir)
+            return self.memory_aware_cache.save_to_disk(
+                cache_dir, should_abort=should_abort
+            )
         logger.info("[cache_persist] no memory-aware cache to save")
         return False
 
