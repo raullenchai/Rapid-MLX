@@ -272,19 +272,32 @@ class StreamingPostProcessor:
 
     @staticmethod
     def _approx_token_count(text: str) -> int:
-        """OpenAI's documented chars-÷4 heuristic (matches
-        ``helpers._build_usage`` so the streaming cap and the usage
-        block agree on what "a reasoning token" is when no per-channel
-        engine count is available).
+        """OpenAI's documented chars-÷4 heuristic — CEILING division so
+        the streaming cap and the non-streaming
+        ``service.helpers._apply_reasoning_cap`` (which uses
+        ``cap * 4`` as a hard character ceiling) agree on the same
+        token-count contract.
 
-        At least 1 token for any non-empty string so a stream of single
-        characters still advances the counter — without the floor a
-        cap of N would not fire on a stream of N+ one-char reasoning
-        chunks.
+        Codex round-7 NIT: an earlier draft used floor division
+        (``len(text) // 4``) which let 5-7 chars count as 1 token,
+        passing the exact-boundary check in
+        ``_consume_reasoning_budget`` even though the non-stream path
+        would clip the same bytes at 4 chars + 1-3 char overflow.
+        Ceiling division (``(len + 3) // 4``) matches the
+        non-streaming clip: 5 chars → 2 tokens → overflows a 1-token
+        cap → trim to 4 reasoning chars + 1 content char.
+
+        At least 1 token for any non-empty string so a stream of
+        single characters still advances the counter — without the
+        floor a cap of N would not fire on a stream of N+ one-char
+        reasoning chunks. (Ceiling division gives 1 for any 1-4 char
+        chunk anyway, so the floor is redundant in practice but kept
+        as defense-in-depth against future zero-width / empty-string
+        edge cases.)
         """
         if not text:
             return 0
-        return max(1, len(text) // 4)
+        return max(1, (len(text) + 3) // 4)
 
     def _consume_reasoning_budget(self, reasoning_text: str) -> tuple[str, str]:
         """Account for ``reasoning_text`` against the per-request cap.

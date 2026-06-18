@@ -583,7 +583,11 @@ async def _stream_anthropic_messages(
             return text, ""
         if _reasoning_cap_hit:
             return "", text
-        delta = max(1, len(text) // 4)
+        # Codex round-7 NIT #3: CEILING division so the streaming
+        # heuristic matches ``helpers._apply_reasoning_cap``'s
+        # ``cap * 4`` ceiling. Floor division let 5-7 chars pass
+        # exact-boundary checks that non-stream would have clipped.
+        delta = max(1, (len(text) + 3) // 4)
         new_total = _reasoning_tokens_emitted + delta
         if new_total < _reasoning_cap:
             _reasoning_tokens_emitted = new_total
@@ -733,9 +737,46 @@ async def _stream_anthropic_messages(
                         if kept:
                             pieces.append(("thinking", kept))
                         if overflow:
-                            # Overflow becomes content (text); next iteration
-                            # of the loop will see the forged ``</think>``
-                            # so subsequent reasoning routes through content.
+                            # Codex round-7 BLOCKING #1: emitting
+                            # overflow as a TEXT block while the parser
+                            # is still logically in thinking would open
+                            # an Anthropic ``content_block`` (text) that
+                            # is semantically inconsistent with the
+                            # parser's internal state. Force the parser
+                            # flip in THIS same chunk by re-running the
+                            # extractor with a synthetic ``</think>``
+                            # against a LOCAL ``current`` (don't mutate
+                            # ``accumulated_raw`` — round-6 invariant).
+                            if not _reasoning_close_injected:
+                                _reasoning_close_injected = True
+                                flip_previous = accumulated_raw
+                                flip_delta = "</think>"
+                                flip_current = flip_previous + flip_delta
+                                try:
+                                    flip_msg = (
+                                        reasoning_parser.extract_reasoning_streaming(
+                                            flip_previous, flip_current, flip_delta
+                                        )
+                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        "anthropic in-chunk close-marker flip "
+                                        "raised on %r: %s — parser state may "
+                                        "stay mid-think for the rest of this "
+                                        "request",
+                                        type(reasoning_parser).__name__,
+                                        e,
+                                    )
+                                    flip_msg = None
+                                flip_content = (
+                                    getattr(flip_msg, "content", None)
+                                    if flip_msg is not None
+                                    else None
+                                )
+                                if isinstance(flip_content, str) and flip_content:
+                                    filtered_flip = tool_filter.process(flip_content)
+                                    if filtered_flip:
+                                        pieces.append(("text", filtered_flip))
                             filtered = tool_filter.process(overflow)
                             if filtered:
                                 pieces.append(("text", filtered))

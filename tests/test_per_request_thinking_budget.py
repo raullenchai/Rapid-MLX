@@ -668,6 +668,60 @@ class TestTextParserReasoningCap:
         content_from_finalize = [e for e in events if e.type == "content"]
         assert content_from_finalize == []
 
+    def test_approx_token_count_uses_ceiling_division(self):
+        """Codex round-7 NIT #3: the streaming cap heuristic must use
+        CEILING division so a 5-char chunk over a 1-token cap overflows
+        (matches the non-stream ``helpers._apply_reasoning_cap``
+        ``cap * 4`` ceiling). Floor division would compute
+        ``5 // 4 == 1 token``, count as exact-boundary, and keep ALL 5
+        chars as reasoning — non-stream would have clipped at 4 chars
+        with 1 char overflow. Fix the streaming heuristic to ceiling
+        so streaming and non-streaming agree.
+        """
+        # 5 chars: floor=1, ceiling=2. With cap=1: ceiling overflows.
+        assert StreamingPostProcessor._approx_token_count("xxxxx") == 2
+        # 4 chars: both floor and ceiling = 1.
+        assert StreamingPostProcessor._approx_token_count("xxxx") == 1
+        # 1 char: floor and ceiling both clamp up to 1 (the ``max(1,
+        # ...)`` defense-in-depth floor).
+        assert StreamingPostProcessor._approx_token_count("x") == 1
+        # Empty: 0 (no advance).
+        assert StreamingPostProcessor._approx_token_count("") == 0
+        # 8 chars: both = 2.
+        assert StreamingPostProcessor._approx_token_count("xxxxxxxx") == 2
+
+    def test_streaming_and_non_streaming_cap_agree_on_5_chars(self):
+        """End-to-end agreement: a 5-char reasoning chunk over a
+        1-token cap should produce the SAME (kept-reasoning,
+        content-overflow) split in both the streaming postprocessor
+        AND the non-streaming ``_apply_reasoning_cap`` helper.
+        Codex round-7 NIT #3 — single source of truth for the
+        chars-÷4 contract.
+        """
+        from vllm_mlx.service.helpers import _apply_reasoning_cap
+
+        # Non-streaming: 5 chars > 4 (cap*4) → 4 reasoning + 1 content.
+        ns_cleaned, ns_reasoning = _apply_reasoning_cap(
+            cleaned_text="",
+            reasoning_text="xxxxx",
+            reasoning_max_tokens=1,
+        )
+        assert ns_reasoning == "xxxx"
+        assert ns_cleaned == "x"
+
+        # Streaming on a channel-routed engine — should agree.
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, reasoning_max_tokens=1)
+        pp.reset()
+        events = pp.process_chunk(_make_output("xxxxx", channel="reasoning"))
+        reasoning_events = [e for e in events if e.type == "reasoning"]
+        content_events = [e for e in events if e.type == "content"]
+        # Streaming must produce the same split: 4 reasoning + 1 content.
+        assert len(reasoning_events) == 1
+        assert reasoning_events[0].reasoning == "xxxx"
+        assert len(content_events) == 1
+        assert content_events[0].content == "x"
+
     def test_text_parser_force_close_exact_boundary(self):
         """Codex round-2 BLOCKING #4: the cap-fired tests above use
         chunks that EXCEED the cap (40 chars vs 8-char budget), which

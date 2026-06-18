@@ -438,7 +438,11 @@ async def _stream_responses(
                 return text, "", False
             if _reasoning_cap_hit:
                 return "", text, False
-            delta = max(1, len(text) // 4)
+            # Codex round-7 NIT #3: CEILING division so the streaming
+            # heuristic matches ``helpers._apply_reasoning_cap``'s
+            # ``cap * 4`` ceiling. Floor division let 5-7 chars pass
+            # exact-boundary checks that non-stream would have clipped.
+            delta = max(1, (len(text) + 3) // 4)
             new_total = _reasoning_tokens_emitted + delta
             if new_total < _reasoning_cap:
                 _reasoning_tokens_emitted = new_total
@@ -597,13 +601,53 @@ async def _stream_responses(
                 if delta_msg is None:
                     continue
                 if delta_msg.reasoning:
-                    # Account for reasoning bytes. Overflow becomes
-                    # content; the next stream iteration will emit the
-                    # forged ``</think>`` so the parser cleanly transitions.
+                    # Account for reasoning bytes against the per-request
+                    # cap. Overflow is whatever crossed the budget mid-
+                    # chunk; it must NOT be promoted to content until the
+                    # parser has formally transitioned out of thinking,
+                    # otherwise (codex round-7 BLOCKING #2) clients see
+                    # ``response.output_text.delta`` while the parser
+                    # state is still logically inside reasoning. Force
+                    # the parser flip in THIS same chunk by re-running
+                    # the streaming extractor with a synthetic
+                    # ``</think>`` delta against a locally-built
+                    # ``current`` (don't mutate ``accumulated_raw`` —
+                    # the round-6 local-buffer invariant applies here
+                    # too).
                     _, overflow, _ = _account_for_reasoning(delta_msg.reasoning)
+                    if overflow and not _reasoning_close_injected:
+                        _reasoning_close_injected = True
+                        flip_previous = accumulated_raw
+                        flip_delta = "</think>"
+                        flip_current = flip_previous + flip_delta
+                        try:
+                            flip_msg = reasoning_parser.extract_reasoning_streaming(
+                                flip_previous, flip_current, flip_delta
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "responses in-chunk close-marker flip raised "
+                                "on %r: %s — parser state may stay mid-think "
+                                "for the rest of this request",
+                                type(reasoning_parser).__name__,
+                                e,
+                            )
+                            flip_msg = None
+                        # Whatever content the flip released stays
+                        # ahead of the overflow bytes on the wire
+                        # (parser-derived content first, cap-overflow
+                        # bytes second).
+                        flip_content = (
+                            getattr(flip_msg, "content", None)
+                            if flip_msg is not None
+                            else None
+                        )
+                        if isinstance(flip_content, str) and flip_content:
+                            delta_msg.content = (delta_msg.content or "") + flip_content
                     if overflow:
-                        # Promote overflow to content alongside any content
-                        # the parser produced this delta.
+                        # Now safe: parser has flipped (or the flip
+                        # attempt was logged), so the overflow bytes
+                        # carry semantically as content.
                         delta_msg.content = (delta_msg.content or "") + overflow
                 if delta_msg.content:
                     content = strip_special_tokens(delta_msg.content)
