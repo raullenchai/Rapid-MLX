@@ -547,6 +547,103 @@ def test_harness_timeout_forces_server_restart_isolation(capsys):
     )
 
 
+def test_harness_restart_tears_down_old_server_before_booting_new(capsys):
+    """Reboot must kill the current server BEFORE spawning the replacement.
+
+    Codex review-2 BLOCKING: without this ordering, the hung-but-not-
+    dead old model server briefly coexists with the newly-booted one,
+    doubling GPU memory pressure exactly when we're trying to recover
+    from an OOM-adjacent failure. The session's reboot path must call
+    ``release_current_server`` BEFORE its ``serve(...).__enter__()`` so
+    the kill-before-boot invariant holds.
+    """
+    # Record every (event, port) pair so we can assert ordering.
+    timeline: list[tuple[str, int]] = []
+
+    @contextlib.contextmanager
+    def _serve_recording(model, port=None, **kwargs):
+        timeline.append(("boot", port))
+        try:
+            yield {
+                "base_url": f"http://127.0.0.1:{port}/v1",
+                "port": port,
+                "boot_time_ms": 100.0,
+            }
+        finally:
+            timeline.append(("kill", port))
+
+    def _free_port(lo, hi):
+        _free_port.calls += 1
+        return 8500 + _free_port.calls
+
+    _free_port.calls = 0  # type: ignore[attr-defined]
+
+    def _runner_factory(profile, base_url, model_id=None, **kwargs):
+        r = MagicMock()
+        r.run.return_value = _make_fake_report()
+        return r
+
+    def _fake_get_profile(name):
+        p = MagicMock()
+        p.name = name
+        p.display_name = name.title()
+        return p
+
+    # /health fails on the per-profile probe AFTER codex so the session
+    # forces a reboot once. All subsequent probes pass.
+    health_sequence = iter([True, False, True, True, True, True])
+
+    def _stub_health(*args, **kwargs):
+        try:
+            return next(health_sequence)
+        except StopIteration:
+            return True
+
+    with (
+        patch(
+            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            side_effect=_free_port,
+        ),
+        patch("vllm_mlx.bench._server.serve", _serve_recording),
+        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
+        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("vllm_mlx.bench.tier_runner._health_check", side_effect=_stub_health),
+    ):
+        run_tier(model="qwen3.5-4b-4bit", tier="harness")
+
+    # Filter to just boot/kill events for the FIRST two servers
+    # (initial + first restart). Any "boot" for server N must be
+    # preceded by a "kill" of server N-1 — otherwise two servers
+    # coexist.
+    boot_events = [t for t in timeline if t[0] == "boot"]
+    assert len(boot_events) >= 2, (
+        f"expected initial boot + at least one restart-boot; got {timeline}"
+    )
+
+    initial_port = boot_events[0][1]
+    restart_port = boot_events[1][1]
+    assert initial_port != restart_port, (
+        f"restart should use a fresh port; both = {initial_port}"
+    )
+
+    initial_kill_idx = next(
+        (i for i, t in enumerate(timeline) if t == ("kill", initial_port)),
+        None,
+    )
+    restart_boot_idx = next(
+        (i for i, t in enumerate(timeline) if t == ("boot", restart_port)),
+        None,
+    )
+    assert initial_kill_idx is not None, (
+        f"initial server must be killed; timeline={timeline}"
+    )
+    assert restart_boot_idx is not None
+    assert initial_kill_idx < restart_boot_idx, (
+        "kill-before-boot violated: initial server still alive when "
+        f"replacement booted. timeline={timeline}"
+    )
+
+
 def test_harness_profile_timeout_env_var_respected(monkeypatch):
     """``HARNESS_PROFILE_TIMEOUT_S`` env var must override the default.
 

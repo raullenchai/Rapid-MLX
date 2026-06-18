@@ -524,7 +524,7 @@ class _HarnessServerSession:
         initial_port: int,
         initial_owns: bool,
         initial_base_url: str,
-        initial_serve_ctx,
+        release_initial_server,
     ):
         self._model = model
         self._base_url_override = base_url_override
@@ -532,11 +532,18 @@ class _HarnessServerSession:
         self._port = initial_port
         self._owns = initial_owns
         self._base_url = initial_base_url
-        # ``_serve_ctx`` is the live context-manager handle from
-        # ``serve(...)`` (when we own the server) or ``None`` (when
-        # attached). We hold onto it so we can call ``__exit__`` to
-        # tear down and ``__enter__`` again on restart.
-        self._serve_ctx = initial_serve_ctx
+        # ``_release_current`` tears down WHATEVER server is currently
+        # live and owned by us. On construction it's the
+        # ``release_current_server`` closure ``_serve_or_attach`` handed
+        # us — which closes over the live ``serve(...)`` ctx the outer
+        # ``run_tier`` opened. After each restart we replace it with a
+        # fresh closure tied to the NEW serve context, so the next
+        # restart still has an idempotent "kill the live server"
+        # primitive (Codex review-2 BLOCKING — without this hand-off the
+        # session could only ever kill the post-restart servers, not the
+        # original one, so a forced reboot would briefly run two model
+        # servers concurrently).
+        self._release_current = release_initial_server
         self._restarts = 0
 
     @property
@@ -606,23 +613,22 @@ class _HarnessServerSession:
         return self._restart()
 
     def _restart(self) -> tuple[bool, str | None]:
-        # Tear down whatever's left of the old serve context. The
-        # serve() finalizer SIGTERMs the process group, so even a
-        # half-alive uvicorn child gets cleaned up. On the FIRST
-        # restart ``_serve_ctx is None`` (the outer ``run_tier`` still
-        # owns the original serve context for ``boot_time_ms``
-        # accounting) — that's fine, the outer ``with`` will tear the
-        # dead original down when it exits. On later restarts we own
-        # the previous reboot's context and must drop it here.
+        # Tear down the currently-live owned server BEFORE booting the
+        # replacement. ``_release_current`` was wired by either the
+        # initial ``_serve_or_attach`` ``release_current_server`` (first
+        # restart, server still controlled by run_tier's outer ``with``)
+        # or by the previous restart's own teardown closure. Either way,
+        # this guarantees there is at most one model server alive at any
+        # time — without this the original hung-but-not-dead server and
+        # the freshly-booted replacement would coexist for the boot
+        # window, doubling GPU memory pressure (Codex review-2 BLOCKING).
         old_port = self._port
-        if self._serve_ctx is not None:
+        if self._release_current is not None:
             try:
-                self._serve_ctx.__exit__(
-                    RuntimeError, RuntimeError("server unhealthy"), None
-                )
+                self._release_current()
             except BaseException:  # noqa: BLE001 — teardown errors must not abort restart
                 pass
-            self._serve_ctx = None
+            self._release_current = None
 
         # New port — old one may still be in TIME_WAIT, and a fresh
         # port keeps lsof unambiguous if the user is watching.
@@ -641,7 +647,18 @@ class _HarnessServerSession:
             )
             return False, note
 
-        self._serve_ctx = ctx
+        released = {"done": False}
+
+        def _release_replacement() -> None:
+            if released["done"]:
+                return
+            released["done"] = True
+            try:
+                ctx.__exit__(None, None, None)
+            except BaseException:  # noqa: BLE001
+                pass
+
+        self._release_current = _release_replacement
         self._port = info["port"]
         self._base_url = _normalize_openai_base(None, self._port)
         self._restarts += 1
@@ -652,14 +669,21 @@ class _HarnessServerSession:
         return True, note
 
     def close(self) -> None:
-        """Tear down the owned server if it's still alive."""
-        if self._serve_ctx is None:
+        """Tear down the owned server if it's still alive.
+
+        Idempotent — the original ``release_current_server`` closure
+        and every subsequent restart's replacement closure are all
+        idempotent themselves (guarded by a ``done`` flag), so calling
+        ``close`` after ``_restart`` has already swapped the closure
+        is safe.
+        """
+        if self._release_current is None:
             return
         try:
-            self._serve_ctx.__exit__(None, None, None)
+            self._release_current()
         except BaseException:  # noqa: BLE001
             pass
-        self._serve_ctx = None
+        self._release_current = None
 
 
 def _run_single_profile(
@@ -924,15 +948,27 @@ def _serve_or_attach(
     base_url: str | None,
     boot_timeout_s: int = 600,
 ):
-    """Yield ``(port, owns_server, boot_time_ms)``.
+    """Yield ``(port, owns_server, boot_time_ms, release_current_server)``.
 
     If ``base_url`` is set, attach to that server — caller is responsible
     for its lifecycle and ``boot_time_ms`` is ``None`` (the user
-    already paid the boot cost, we didn't measure it). Otherwise boot
-    one on a port in ``[TIER_PORT_MIN, TIER_PORT_MAX]`` and clean it
-    up on exit; ``boot_time_ms`` is the wall-clock from spawn to first
-    healthy /health response, which feeds the schema v2
+    already paid the boot cost, we didn't measure it).
+    ``release_current_server`` is also ``None`` in the attach case
+    because we can't tear down a server we don't own.
+
+    Otherwise boot one on a port in ``[TIER_PORT_MIN, TIER_PORT_MAX]``
+    and clean it up on exit; ``boot_time_ms`` is the wall-clock from
+    spawn to first healthy /health response, which feeds the schema v2
     ``smoke_result.boot_time_ms`` field.
+    ``release_current_server`` is a zero-arg callable that the harness
+    session calls BEFORE booting a replacement so the OLD model server
+    is fully torn down first — without this, on a per-profile-timeout
+    reboot the hung-but-not-dead old server would briefly coexist with
+    the new one and double-spend GPU memory (Codex review-2 BLOCKING).
+    The callable is idempotent; the outer ``with`` block's exit-time
+    teardown after the session already released the server is a no-op
+    because ``_terminate`` polls the proc state and swallows
+    ``ProcessLookupError``.
     """
     import contextlib
 
@@ -960,7 +996,7 @@ def _serve_or_attach(
                     "Start `rapid-mlx serve <model>` on that port first, "
                     "or drop --base-url to let bench --tier boot its own."
                 )
-            yield port, False, None
+            yield port, False, None, None
             return
 
         # Boot our own. Helper lives in the bench/ package now (PR #5
@@ -975,9 +1011,33 @@ def _serve_or_attach(
 
         # log_path=None → DEVNULL; the user-facing tier output is the
         # interesting signal. For debugging, the user can re-run with
-        # `rapid-mlx serve <model> --port <port>` themselves.
-        with serve(model=model, port=port, boot_timeout_s=boot_timeout_s) as info:
-            yield info["port"], True, info.get("boot_time_ms")
+        # `rapid-mlx serve <model> --port <port>` themselves. We
+        # manually drive the ctx manager (not ``with``) so we can hand
+        # the ``release_current_server`` callable to the harness session
+        # — it needs to be able to tear down the active server BEFORE
+        # spawning a replacement on a per-profile-timeout reboot.
+        ctx = serve(model=model, port=port, boot_timeout_s=boot_timeout_s)
+        info = ctx.__enter__()
+        released = {"done": False}
+
+        def _release_current() -> None:
+            if released["done"]:
+                return
+            released["done"] = True
+            try:
+                ctx.__exit__(None, None, None)
+            except BaseException:  # noqa: BLE001 — release must not raise
+                pass
+
+        try:
+            yield (
+                info["port"],
+                True,
+                info.get("boot_time_ms"),
+                _release_current,
+            )
+        finally:
+            _release_current()
 
     return _ctx()
 
@@ -1044,6 +1104,7 @@ def run_tier(
             port,
             owns,
             boot_time_ms,
+            release_current_server,
         ):
             # Build the fully-qualified base URL ONCE. Each tier gets
             # the same string, so --base-url's scheme + host are honored
@@ -1083,6 +1144,11 @@ def run_tier(
                 # documented in #682 (codex hangs → opencode/hermes/aider/
                 # langchain all FAIL with ECONNREFUSED) re-occurs every
                 # time a model trips the timeout.
+                #
+                # Pass through ``release_current_server`` so the session
+                # tears down the LIVE server before booting a replacement
+                # on a forced-restart-after-timeout — avoids the OOM risk
+                # of two coexisting model servers (Codex review-2 BLOCKING).
                 session = _build_harness_session(
                     model=model,
                     base_url_override=base_url,
@@ -1090,16 +1156,19 @@ def run_tier(
                     current_port=port,
                     current_owns=owns,
                     current_base_url=openai_base,
+                    release_current_server=release_current_server,
                 )
                 try:
                     r = _run_harness(model, openai_base, session=session)
                 finally:
                     # If the session rebuilt the server, we own a NEW
-                    # serve context that the outer ``with`` doesn't know
-                    # about — drain it here so we don't leak a process
-                    # past run_tier's exit (the original ``with`` was
-                    # tracking the now-dead ORIGINAL server's context).
-                    if session.owns and session.restarts > 0:
+                    # serve context that the outer ``_serve_or_attach``
+                    # doesn't know about — drain it here so we don't
+                    # leak a process past run_tier's exit. ``close()`` is
+                    # idempotent so calling it when no restart happened
+                    # (the outer ``_serve_or_attach`` finally will then
+                    # tear down the still-active original) is a no-op.
+                    if session.owns:
                         session.close()
                 _print_tier_result(r)
                 results.append(r)
@@ -1119,23 +1188,17 @@ def _build_harness_session(
     current_port: int,
     current_owns: bool,
     current_base_url: str,
+    release_current_server,
 ) -> _HarnessServerSession:
     """Construct a ``_HarnessServerSession`` for the harness sweep.
 
-    Even when the caller already owns a serve() context (via the outer
-    ``_serve_or_attach`` ``with`` block in ``run_tier``), the session
-    can still reboot ON DEMAND between profiles: on a restart it calls
-    ``serve(...)`` again to spawn a fresh server, and the original
-    serve context that's still live in the outer ``with`` simply sees
-    an extra ``__exit__`` invocation when the session reboots — which
-    the bench ``serve()`` helper already handles idempotently
-    (the underlying ``proc`` is checked with ``poll()`` before signaling
-    and ``ProcessLookupError`` is swallowed by ``_terminate``).
-
-    We pass ``initial_serve_ctx=None`` for the "we own but the outer
-    with already entered it" case: the session won't try to ``__exit__``
-    a context it didn't ``__enter__``, but it CAN call ``serve(...)``
-    fresh on a restart and own the replacement.
+    ``release_current_server`` is the idempotent zero-arg teardown
+    callable yielded by ``_serve_or_attach`` (or ``None`` in attach
+    mode). The session calls it on EVERY restart BEFORE spawning a
+    fresh ``serve(...)``, so the live original server is fully torn
+    down first — this closes the Codex review-2 BLOCKING window where
+    two model servers briefly coexisted on a forced reboot after a
+    per-profile timeout.
     """
     return _HarnessServerSession(
         model=model,
@@ -1144,7 +1207,7 @@ def _build_harness_session(
         initial_port=current_port,
         initial_owns=current_owns,
         initial_base_url=current_base_url,
-        initial_serve_ctx=None,
+        release_initial_server=release_current_server,
     )
 
 
