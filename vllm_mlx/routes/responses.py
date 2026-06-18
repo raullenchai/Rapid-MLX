@@ -428,36 +428,39 @@ async def _stream_responses(
         def _account_for_reasoning(text: str) -> tuple[str, str, bool]:
             """Returns ``(kept_reasoning, overflow_content, just_hit)``.
 
-            Approximates token count via the chars-÷4 heuristic so the
-            cap matches what the OpenAI route's StreamingPostProcessor
-            does and the same effective budget applies regardless of
-            which API surface the client uses.
+            Codex round-12 BLOCKING #2: cumulative-CHARACTER accounting
+            against ``cap * 4`` (not per-chunk ceiling). The earlier
+            ``max(1, ceil(len/4))`` made fragmented reasoning deltas
+            consume more tokens than the same contiguous text, so the
+            cap fired at different points depending only on SSE chunk
+            boundaries. Now identical model output hits the cap at the
+            same character offset regardless of chunking — matches
+            ``helpers._apply_reasoning_cap`` (non-stream) AND the
+            postprocessor's cumulative-char path.
+
+            The shared ``_reasoning_tokens_emitted`` counter now holds
+            CHARACTERS post-round-12 (name kept for back-compat). The
+            cap *4 limit lives in ``_reasoning_max_chars`` captured
+            from the request via the enclosing closure.
             """
             nonlocal _reasoning_tokens_emitted, _reasoning_cap_hit
             if _reasoning_cap is None or not text:
                 return text, "", False
             if _reasoning_cap_hit:
                 return "", text, False
-            # Codex round-7 NIT #3: CEILING division so the streaming
-            # heuristic matches ``helpers._apply_reasoning_cap``'s
-            # ``cap * 4`` ceiling. Floor division let 5-7 chars pass
-            # exact-boundary checks that non-stream would have clipped.
-            delta = max(1, (len(text) + 3) // 4)
-            new_total = _reasoning_tokens_emitted + delta
-            if new_total < _reasoning_cap:
-                _reasoning_tokens_emitted = new_total
+            max_chars = _reasoning_cap * 4
+            new_total_chars = _reasoning_tokens_emitted + len(text)
+            if new_total_chars < max_chars:
+                _reasoning_tokens_emitted = new_total_chars
                 return text, "", False
-            if new_total == _reasoning_cap:
-                # Exact-boundary latch (codex round-2 BLOCKING #3):
-                # keep this chunk as reasoning but mark the cap hit so
-                # the NEXT chunk routes through the overflow branch
-                # (and the text-parser path injects ``</think>``).
-                _reasoning_tokens_emitted = new_total
+            if new_total_chars == max_chars:
+                # Exact-boundary latch (codex round-2 BLOCKING #3).
+                _reasoning_tokens_emitted = new_total_chars
                 _reasoning_cap_hit = True
                 return text, "", True
-            remaining = _reasoning_cap - _reasoning_tokens_emitted
-            keep_chars = max(0, remaining * 4)
-            _reasoning_tokens_emitted = _reasoning_cap
+            remaining_chars = max_chars - _reasoning_tokens_emitted
+            keep_chars = max(0, remaining_chars)
+            _reasoning_tokens_emitted = max_chars
             _reasoning_cap_hit = True
             return text[:keep_chars], text[keep_chars:], True
 

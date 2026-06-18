@@ -270,35 +270,6 @@ class StreamingPostProcessor:
             "nemotron" in model_name.lower() and not self.reasoning_parser
         )
 
-    @staticmethod
-    def _approx_token_count(text: str) -> int:
-        """OpenAI's documented chars-÷4 heuristic — CEILING division so
-        the streaming cap and the non-streaming
-        ``service.helpers._apply_reasoning_cap`` (which uses
-        ``cap * 4`` as a hard character ceiling) agree on the same
-        token-count contract.
-
-        Codex round-7 NIT: an earlier draft used floor division
-        (``len(text) // 4``) which let 5-7 chars count as 1 token,
-        passing the exact-boundary check in
-        ``_consume_reasoning_budget`` even though the non-stream path
-        would clip the same bytes at 4 chars + 1-3 char overflow.
-        Ceiling division (``(len + 3) // 4``) matches the
-        non-streaming clip: 5 chars → 2 tokens → overflows a 1-token
-        cap → trim to 4 reasoning chars + 1 content char.
-
-        At least 1 token for any non-empty string so a stream of
-        single characters still advances the counter — without the
-        floor a cap of N would not fire on a stream of N+ one-char
-        reasoning chunks. (Ceiling division gives 1 for any 1-4 char
-        chunk anyway, so the floor is redundant in practice but kept
-        as defense-in-depth against future zero-width / empty-string
-        edge cases.)
-        """
-        if not text:
-            return 0
-        return max(1, (len(text) + 3) // 4)
-
     def _consume_reasoning_budget(self, reasoning_text: str) -> tuple[str, str]:
         """Account for ``reasoning_text`` against the per-request cap.
 
@@ -310,9 +281,21 @@ class StreamingPostProcessor:
           re-routes it to the CONTENT channel so no model output is
           silently dropped.
 
-        Sets ``_reasoning_cap_hit`` to True the moment the running total
-        meets-or-exceeds the cap. ``_reasoning_max_tokens=None`` short-
-        circuits to "no cap" — the entire input is returned as kept.
+        Codex round-12 BLOCKING #1: cumulative-CHARACTER accounting
+        (not per-chunk ceiling). The earlier draft converted each
+        chunk to ``max(1, ceil(len/4))`` tokens, which made 4
+        one-character reasoning deltas consume 4 "tokens" while the
+        SAME 4 characters consume 1 token when chunked together. The
+        cap then depended on engine chunking — a transient SSE flush
+        could fire the cap pages earlier than expected. Fix: track
+        cumulative reasoning chars and compare against ``cap * 4``
+        (same character ceiling the non-stream
+        ``_apply_reasoning_cap`` uses). All chunking patterns yield
+        identical cap-firing positions, matching the non-stream path.
+
+        Sets ``_reasoning_cap_hit`` to True the moment the running
+        char count meets-or-exceeds ``cap * 4``.
+        ``_reasoning_max_tokens=None`` short-circuits to "no cap".
         """
         if self._reasoning_max_tokens is None or not reasoning_text:
             return reasoning_text, ""
@@ -320,31 +303,32 @@ class StreamingPostProcessor:
             # Cap already fired — anything still arriving on the
             # reasoning channel is overflow content.
             return "", reasoning_text
-        delta_tokens = self._approx_token_count(reasoning_text)
-        new_total = self._reasoning_tokens_emitted + delta_tokens
-        if new_total < self._reasoning_max_tokens:
-            self._reasoning_tokens_emitted = new_total
+        max_chars = self._reasoning_max_tokens * 4
+        # ``_reasoning_tokens_emitted`` actually stores CHARACTERS
+        # post-round-12 (the field name is kept for backward-compat
+        # with downstream usage-block consumers that grep for the
+        # symbol — the value is still divided by 4 for the
+        # ``completion_tokens_details.reasoning_tokens`` derivation).
+        new_total_chars = self._reasoning_tokens_emitted + len(reasoning_text)
+        if new_total_chars < max_chars:
+            self._reasoning_tokens_emitted = new_total_chars
             return reasoning_text, ""
-        if new_total == self._reasoning_max_tokens:
+        if new_total_chars == max_chars:
             # Exact-boundary fit: the current chunk uses up the budget
             # but doesn't overflow. Keep it as reasoning AND latch the
             # cap so the NEXT incoming chunk is rerouted / triggers the
-            # ``</think>`` injection. Codex round-2 BLOCKING #1: the
-            # earlier ``new_total <= cap`` branch left the latch clear
-            # on exact fit, so the next reasoning chunk was processed
-            # by the parser as ordinary reasoning before being
-            # rerouted, leaking one extra chunk past the cap.
-            self._reasoning_tokens_emitted = new_total
+            # ``</think>`` injection. Codex round-2 BLOCKING #1.
+            self._reasoning_tokens_emitted = new_total_chars
             self._reasoning_cap_hit = True
             return reasoning_text, ""
-        # Cap crosses inside this chunk. Compute how many characters
-        # correspond to the remaining budget (4 chars per token), keep
-        # that prefix as reasoning, route the suffix to content.
-        remaining_tokens = self._reasoning_max_tokens - self._reasoning_tokens_emitted
-        keep_chars = max(0, remaining_tokens * 4)
+        # Cap crosses inside this chunk. Split at the remaining char
+        # budget so the kept prefix stays under the ceiling and the
+        # rest spills to content.
+        remaining_chars = max_chars - self._reasoning_tokens_emitted
+        keep_chars = max(0, remaining_chars)
         kept = reasoning_text[:keep_chars]
         overflow = reasoning_text[keep_chars:]
-        self._reasoning_tokens_emitted = self._reasoning_max_tokens
+        self._reasoning_tokens_emitted = max_chars
         self._reasoning_cap_hit = True
         return kept, overflow
 

@@ -820,27 +820,88 @@ class TestTextParserReasoningCap:
         assert "x" * 40 in pp.accumulated_text
         assert "more" in pp.accumulated_text
 
-    def test_approx_token_count_uses_ceiling_division(self):
-        """Codex round-7 NIT #3: the streaming cap heuristic must use
-        CEILING division so a 5-char chunk over a 1-token cap overflows
-        (matches the non-stream ``helpers._apply_reasoning_cap``
-        ``cap * 4`` ceiling). Floor division would compute
-        ``5 // 4 == 1 token``, count as exact-boundary, and keep ALL 5
-        chars as reasoning — non-stream would have clipped at 4 chars
-        with 1 char overflow. Fix the streaming heuristic to ceiling
-        so streaming and non-streaming agree.
+    def test_cap_uses_cumulative_character_accounting(self):
+        """Codex round-12 BLOCKING #1: the streaming cap MUST use
+        cumulative-CHARACTER accounting (vs. per-chunk ceiling).
+        An earlier draft converted each chunk to
+        ``max(1, ceil(len/4))`` tokens, which made 4 one-character
+        deltas consume 4 "tokens" while the SAME 4 chars contiguous
+        consumed 1 token. The cap then depended on engine chunking.
+
+        After the fix, identical model output hits the cap at the
+        same character offset regardless of chunking. Test: fire 4
+        single-char reasoning deltas under a 1-token cap (= 4 char
+        ceiling) — assert the cap latches EXACTLY at the 4th char
+        (cumulative_chars == cap*4) and NOT after the 1st (which the
+        old per-chunk path would have done since 1 char ceiling = 1
+        token = cap).
         """
-        # 5 chars: floor=1, ceiling=2. With cap=1: ceiling overflows.
-        assert StreamingPostProcessor._approx_token_count("xxxxx") == 2
-        # 4 chars: both floor and ceiling = 1.
-        assert StreamingPostProcessor._approx_token_count("xxxx") == 1
-        # 1 char: floor and ceiling both clamp up to 1 (the ``max(1,
-        # ...)`` defense-in-depth floor).
-        assert StreamingPostProcessor._approx_token_count("x") == 1
-        # Empty: 0 (no advance).
-        assert StreamingPostProcessor._approx_token_count("") == 0
-        # 8 chars: both = 2.
-        assert StreamingPostProcessor._approx_token_count("xxxxxxxx") == 2
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, reasoning_max_tokens=1)
+        pp.reset()
+        # Char 1 under cap=4 chars: kept, latch clear.
+        events1 = pp.process_chunk(_make_output("x", channel="reasoning"))
+        assert pp._reasoning_cap_hit is False
+        assert [e for e in events1 if e.type == "content"] == []
+        assert [e.reasoning for e in events1 if e.type == "reasoning"] == ["x"]
+
+        # Chars 2-3: still under, latch clear.
+        pp.process_chunk(_make_output("x", channel="reasoning"))
+        pp.process_chunk(_make_output("x", channel="reasoning"))
+        assert pp._reasoning_cap_hit is False
+
+        # Char 4: cumulative_chars == cap*4 → exact-boundary latch.
+        events4 = pp.process_chunk(_make_output("x", channel="reasoning"))
+        assert pp._reasoning_cap_hit is True, (
+            "cap must latch at the 4th char (cumulative == cap*4), "
+            "not after the 1st (which per-chunk ceiling would have done)"
+        )
+        # The 4th char itself is still kept as reasoning (exact boundary).
+        assert [e.reasoning for e in events4 if e.type == "reasoning"] == ["x"]
+        # No content overflow on the boundary chunk.
+        assert [e for e in events4 if e.type == "content"] == []
+
+        # Char 5: now all-content because cap latched.
+        events5 = pp.process_chunk(_make_output("y", channel="reasoning"))
+        assert [e for e in events5 if e.type == "reasoning"] == []
+        assert [e.content for e in events5 if e.type == "content"] == ["y"]
+
+    def test_streaming_cap_independent_of_chunk_boundaries(self):
+        """Codex round-12 BLOCKING #1-#3: end-to-end invariant —
+        chunking must not change the cap-firing position.
+
+        Same total reasoning bytes, three different chunkings:
+          (a) one 4-char chunk
+          (b) four 1-char chunks
+          (c) two 2-char chunks
+        All three must latch the cap at the SAME char offset (4) and
+        produce the SAME total kept-reasoning chars. Locks the
+        ``cap*4 char ceiling`` invariant across SSE flush patterns.
+        """
+        cfg = _make_cfg()
+
+        def run(chunks):
+            pp = StreamingPostProcessor(cfg, reasoning_max_tokens=1)
+            pp.reset()
+            kept_chars = 0
+            for c in chunks:
+                events = pp.process_chunk(_make_output(c, channel="reasoning"))
+                for ev in events:
+                    if ev.type == "reasoning":
+                        kept_chars += len(ev.reasoning)
+            return kept_chars, pp._reasoning_cap_hit
+
+        kept_a, hit_a = run(["xxxx"])
+        kept_b, hit_b = run(["x", "x", "x", "x"])
+        kept_c, hit_c = run(["xx", "xx"])
+
+        assert kept_a == kept_b == kept_c == 4, (
+            f"chunking changed cap position: kept_a={kept_a} "
+            f"kept_b={kept_b} kept_c={kept_c}"
+        )
+        assert hit_a and hit_b and hit_c, (
+            "exact-boundary chunking variants must all latch the cap"
+        )
 
     def test_streaming_and_non_streaming_cap_agree_on_5_chars(self):
         """End-to-end agreement: a 5-char reasoning chunk over a
