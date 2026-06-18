@@ -122,7 +122,15 @@ class _ProgressTracker:
             now = time.monotonic()
             if now - self._last_emit >= _PROGRESS_HEARTBEAT_SECONDS:
                 self._last_emit = now
-                emit = (self._done, self._total)
+                # Codex R3 BLOCKING on PR #682: clamp DISPLAY at total so
+                # an oversized/corrupt R2 stream (Content-Length lies,
+                # proxy injects extra bytes) can't emit ``[bytes] 1200/1000``
+                # before the final-size-mismatch rollback runs. Internal
+                # ``_done`` stays raw so ``subtract`` continues to balance
+                # against the actual credit (rollback of raw 1200 from
+                # raw 1200 leaves _done=0 → next ``add(1000)`` from HF
+                # lands at clean 1000/1000).
+                emit = (min(self._done, self._total), self._total)
         if emit is not None:
             done, total = emit
             print(f"  [bytes] {done}/{total}", flush=True)
@@ -147,7 +155,8 @@ class _ProgressTracker:
         emit: tuple[int, int] | None = None
         with self._lock:
             if self._total > 0:
-                emit = (self._done, self._total)
+                # Clamp display at total — same rationale as ``add()``.
+                emit = (min(self._done, self._total), self._total)
         if emit is not None:
             done, total = emit
             print(f"  [bytes] {done}/{total}", flush=True)

@@ -3390,6 +3390,49 @@ def test_progress_no_double_count_on_r2_short_read_then_hf(
     assert int(matches[-1][0]) == 1000
 
 
+def test_progress_tracker_clamps_display_at_total():
+    """Direct unit test on ``_ProgressTracker``: an over-credit during
+    streaming must not emit ``done > total``.
+
+    Codex R3 BLOCKING on PR #682: rollback only fires AFTER the stream
+    completes; while streaming, an oversized/corrupt R2 response
+    (Content-Length lies, proxy injects extra bytes) can already trip
+    the heartbeat above 100% before the final-size-mismatch validation
+    catches it. Display is clamped at total; internal counter stays raw
+    so subsequent ``subtract`` correctly balances against the actual
+    credit.
+    """
+    import io
+    from contextlib import redirect_stdout
+
+    # Force every add() to emit.
+    saved = _mirror._PROGRESS_HEARTBEAT_SECONDS
+    _mirror._PROGRESS_HEARTBEAT_SECONDS = 0.0
+    try:
+        t = _mirror._ProgressTracker(total=1000)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            t.add(800)  # 800/1000
+            t.add(400)  # over-streamed: internal _done=1200, display 1000/1000
+            t.subtract(1200)  # rollback raw 1200 → internal _done=0
+            t.add(1000)  # HF fallback adds full file → 1000/1000
+            t.flush()
+        out = buf.getvalue()
+        import re
+
+        matches = re.findall(r"\[bytes\] (\d+)/(\d+)", out)
+        assert matches, f"no heartbeat: {out!r}"
+        for done_s, total_s in matches:
+            assert int(total_s) == 1000
+            assert int(done_s) <= 1000, (
+                f"display exceeded total: done={done_s} total={total_s}"
+            )
+        # Final heartbeat lands at exactly 1000.
+        assert int(matches[-1][0]) == 1000
+    finally:
+        _mirror._PROGRESS_HEARTBEAT_SECONDS = saved
+
+
 def test_safe_display_name_strips_control_chars():
     """Filenames from external HF metadata can't inject terminal escapes.
 
