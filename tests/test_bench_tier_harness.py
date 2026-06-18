@@ -725,6 +725,76 @@ def test_harness_restart_refuses_when_old_server_teardown_fails(capsys):
     )
 
 
+def test_harness_timeout_with_failed_restart_surfaces_isolation_failure(capsys):
+    """Failed force-restart after a timeout annotates the timing-out profile.
+
+    Codex review-4 BLOCKING: when ``force_restart_after_timeout`` fails
+    (e.g. because the old-server teardown raised and the session went
+    into ``_reboot_disabled`` mode), the orphaned daemon thread can
+    still race the next profile. We must surface this in the timing-
+    out profile's row so the operator sees one consolidated FAIL
+    instead of chasing a stale 'server not healthy' message into the
+    NEXT profile's row.
+    """
+    import threading
+
+    @contextlib.contextmanager
+    def _serve_failing_teardown(model, port=None, **kwargs):
+        try:
+            yield {
+                "base_url": f"http://127.0.0.1:{port}/v1",
+                "port": port,
+                "boot_time_ms": 100.0,
+            }
+        finally:
+            raise RuntimeError("simulated teardown failure")
+
+    def _free_port(lo, hi):
+        return 8500
+
+    def _runner_factory(profile, base_url, model_id=None, **kwargs):
+        r = MagicMock()
+        if profile.name == "codex":
+
+            def _hang():
+                threading.Event().wait()
+
+            r.run.side_effect = _hang
+        else:
+            r.run.return_value = _make_fake_report()
+        return r
+
+    def _fake_get_profile(name):
+        p = MagicMock()
+        p.name = name
+        p.display_name = name.title()
+        return p
+
+    with (
+        patch(
+            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            side_effect=_free_port,
+        ),
+        patch("vllm_mlx.bench._server.serve", _serve_failing_teardown),
+        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
+        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("vllm_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
+    ):
+        run_tier(model="qwen3.5-4b-4bit", tier="harness")
+
+    captured = capsys.readouterr()
+    # The codex row must mention BOTH the timeout AND the isolation
+    # failure — operators need to see them together, not split across
+    # rows.
+    assert "FAIL codex" in captured.out
+    assert "timed out" in captured.out
+    assert "server isolation FAILED" in captured.out, (
+        f"timing-out profile row must surface the failed-restart isolation "
+        f"failure; got:\n{captured.out}"
+    )
+
+
 def test_harness_profile_timeout_env_var_respected(monkeypatch):
     """``HARNESS_PROFILE_TIMEOUT_S`` env var must override the default.
 

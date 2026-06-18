@@ -911,11 +911,29 @@ def _run_harness(
             ok_restart, note = session.force_restart_after_timeout()
             if note:
                 print(f"  [server] {note}")
-            # Failed restart is non-fatal — the next iteration's
-            # ``ensure_healthy()`` will see the dead server and mark
-            # that profile as a server-not-healthy FAIL, which is the
-            # most honest signal we can give the operator.
-            _ = ok_restart
+            if not ok_restart:
+                # Codex review-4 BLOCKING: a failed forced restart means
+                # the orphaned daemon thread from the timed-out profile
+                # may still be issuing requests against whatever server
+                # state survived, AND we couldn't boot a clean
+                # replacement (most likely because the teardown raised
+                # and the session is now in ``_reboot_disabled`` state).
+                # Surface this immediately as part of the timing-out
+                # profile's own detail rather than waiting for the next
+                # ``ensure_healthy`` probe to repeat the bad news — the
+                # operator sees one consolidated FAIL row instead of
+                # chasing a stale "server not healthy" message into the
+                # NEXT profile's row. Mutate in place because the row
+                # was already appended above.
+                if per_harness:
+                    name, _ok, dur, base_detail = per_harness[-1]
+                    suffix = note or "force restart failed"
+                    per_harness[-1] = (
+                        name,
+                        False,
+                        dur,
+                        f"{base_detail} | server isolation FAILED: {suffix}",
+                    )
 
     elapsed = time.perf_counter() - t0
     all_passed = all(ok for _, ok, _, _ in per_harness)
@@ -962,6 +980,15 @@ def _serve_or_attach(
     boot_timeout_s: int = 600,
 ):
     """Yield ``(port, owns_server, boot_time_ms, release_slot)``.
+
+    PRIVATE API CHANGE — PR #684 (cascade-fail fix): pre-fix this
+    helper yielded a 3-tuple ``(port, owns_server, boot_time_ms)``.
+    The 4th element is the mutable release-slot the harness session
+    uses to hand replacement-server cleanup back to the outer ``with``.
+    Only ``run_tier`` calls this helper today (verified via
+    ``grep -rn _serve_or_attach``); the underscore prefix already
+    declared it private, so the shape break is intentional and not
+    deprecation-worthy.
 
     If ``base_url`` is set, attach to that server — caller is responsible
     for its lifecycle and ``boot_time_ms`` is ``None`` (the user
