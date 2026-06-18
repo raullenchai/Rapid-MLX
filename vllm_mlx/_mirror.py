@@ -37,6 +37,7 @@ import http.client
 import json
 import os
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -76,6 +77,75 @@ _MAX_WORKERS = 4
 # and keeps tqdm-free progress redraws coarse enough to not flood the
 # terminal.
 _CHUNK_BYTES = 8 * 1024 * 1024
+
+
+# Aggregate byte-progress heartbeat — emitted at most once every
+# ``_PROGRESS_HEARTBEAT_SECONDS`` while the R2 puller is streaming files.
+# The R2 puller's existing ``[N/M] file R2 (X MB)`` completion lines fire
+# only when a single file lands, so a multi-GB shard (60-120 s on a typical
+# home connection) leaves the UI's file-count bar pinned at e.g. 5/6 = 83%
+# while the user waits in silence. rapid-desktop #?? (v0.7.10 "stuck at
+# 83%"): emit one ``[bytes] <done>/<total>`` line per heartbeat from
+# whichever worker happens to be writing — the desktop's DownloadProgress
+# parser feeds these into ``applyDiskObservation`` / ``setTotalBytes`` so
+# the bar advances smoothly through the long single-shard window. Thread-
+# safe via ``_PROGRESS_LOCK``; reset by ``_progress_reset`` at the start
+# of each pull.
+_PROGRESS_HEARTBEAT_SECONDS = 0.5
+
+
+class _ProgressTracker:
+    """Aggregate bytes-done counter for one R2 pull.
+
+    Workers call ``add(delta)`` for each chunk they write; the call is
+    cheap (atomic int add under a lock) and at most one in every
+    ``_PROGRESS_HEARTBEAT_SECONDS`` window emits a ``[bytes] D/T``
+    line to stdout. Print is flushed eagerly so a non-TTY stdout
+    (desktop pipe) sees the line as soon as it's emitted.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._done = 0
+        self._total = 0
+        self._last_emit = 0.0
+
+    def reset(self, total: int) -> None:
+        with self._lock:
+            self._done = 0
+            self._total = max(0, int(total))
+            self._last_emit = 0.0
+
+    def add(self, delta: int) -> None:
+        if delta <= 0:
+            return
+        emit: tuple[int, int] | None = None
+        with self._lock:
+            self._done += int(delta)
+            if self._total <= 0:
+                return
+            now = time.monotonic()
+            if now - self._last_emit >= _PROGRESS_HEARTBEAT_SECONDS:
+                self._last_emit = now
+                emit = (self._done, self._total)
+        if emit is not None:
+            done, total = emit
+            print(f"  [bytes] {done}/{total}", flush=True)
+
+    def flush(self) -> None:
+        """Emit a final heartbeat at the end of a pull regardless of
+        throttle window — the last 500 ms of bytes would otherwise be
+        invisible to the UI."""
+        emit: tuple[int, int] | None = None
+        with self._lock:
+            if self._total > 0:
+                emit = (self._done, self._total)
+        if emit is not None:
+            done, total = emit
+            print(f"  [bytes] {done}/{total}", flush=True)
+
+
+_PROGRESS = _ProgressTracker()
 
 
 def _mirror_base() -> str:
@@ -452,6 +522,12 @@ def _do_r2_download(
                     if hasher is not None:
                         hasher.update(chunk)
                     read += len(chunk)
+                    # Forward chunk size into the aggregate byte tracker
+                    # so the desktop heartbeat advances smoothly inside a
+                    # single big-shard download. See ``_ProgressTracker``
+                    # docstring for the rationale (v0.7.11 fix for the
+                    # v0.7.10 "stuck at 83%" UX bug).
+                    _PROGRESS.add(len(chunk))
 
             # Short-read guard — Content-Length lied or the connection
             # dropped silently. Don't rename a truncated file into the
@@ -1074,6 +1150,16 @@ def download_with_mirror_fallback(
     else:
         _print_dim(f"  {DIM}Found {total_files_planned} files{RESET}")
 
+    # Prime the aggregate byte tracker so chunk writes inside
+    # ``_do_r2_download`` and per-file completions in the ``as_completed``
+    # loop below can emit smooth ``[bytes] D/T`` heartbeats. ``total`` is
+    # the SUM of HF-advertised sizes — if HF lied (cf. the size guards
+    # below) the tracker simply caps at 100% on the desktop side. When
+    # ``total_expected_bytes`` is 0 (HF didn't expose sizes), heartbeats
+    # are silently skipped — the existing per-file ``[N/M]`` lines remain
+    # the user-visible signal.
+    _PROGRESS.reset(total_expected_bytes)
+
     # Per-file plan: for each file, attempt R2 first (if eligible),
     # otherwise fall straight to HF. Run a small pool in parallel.
     r2_hits = 0
@@ -1335,10 +1421,20 @@ def download_with_mirror_fallback(
             elif kind == "hf":
                 hf_hits += 1
                 total_bytes += size
+                # HF fallback's tqdm doesn't feed into the R2 chunk loop,
+                # so the aggregate tracker would miss these bytes
+                # entirely. Bump it at completion so the heartbeat
+                # reflects HF-fallback files too (size known once
+                # ``hf_hub_download`` returned).
+                _PROGRESS.add(size)
             elif kind == "cached":
                 # Already present — count as r2/hf-neutral but include
                 # bytes so the summary reflects the full snapshot size.
                 total_bytes += size
+                # Cached files never enter the chunk loop — credit them
+                # to the tracker on the dispatcher thread so the
+                # heartbeat doesn't undercount a warm pull.
+                _PROGRESS.add(size)
             else:
                 misses.append(fname)
             # Issue #651 follow-up: per-file completion line so the
@@ -1370,6 +1466,13 @@ def download_with_mirror_fallback(
                 f"  {DIM}[{completed}/{total_files_planned}]{RESET} "
                 f"{_safe_display_name(fname)} {tag}"
             )
+
+    # Final heartbeat: a sub-500 ms tail of bytes can finish between the
+    # last throttle window and the loop exit. Emit one unconditional
+    # ``[bytes] D/T`` so the desktop's progress bar lands at 100% before
+    # the next phase banner ("Verifying snapshot…", "Warming up…")
+    # appears.
+    _PROGRESS.flush()
 
     if misses:
         # At least one file we couldn't get from either source. Caller

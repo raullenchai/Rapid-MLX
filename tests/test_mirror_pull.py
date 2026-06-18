@@ -3062,6 +3062,142 @@ def test_progress_file_count_matches_downloaded_files(
     assert f"Pulled {len(files)} files" in captured.out
 
 
+def test_bytes_heartbeat_emitted_during_r2_pull(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """The aggregate ``[bytes] D/T`` heartbeat must fire during an R2
+    pull and the final value must equal the planned snapshot size.
+
+    Regression guard for rapid-desktop v0.7.10's "stuck at 83%" bug:
+    without the per-chunk byte counter the desktop has no signal to
+    advance its progress bar while a multi-GB shard streams between
+    ``[N/M] file R2 (X MB)`` completion lines.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "feed" * 10
+    files = [
+        ("config.json", 100),
+        ("model.safetensors", 600),
+        ("tokenizer.json", 50),
+    ]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    for fname, size in files:
+        router.add(
+            f"https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/{fname}",
+            _FakeResponse(200, b"x" * size),
+        )
+
+    # Force at least one heartbeat to land — drop the throttle window to
+    # zero so every chunk emits. Production keeps it at 500 ms; the test
+    # only needs to verify the emission shape + final total.
+    monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    captured = capsys.readouterr()
+    import re
+
+    matches = re.findall(r"\[bytes\] (\d+)/(\d+)", captured.out)
+    assert matches, (
+        "expected at least one '[bytes] D/T' heartbeat in stdout:\n"
+        f"{captured.out}"
+    )
+    planned_total = sum(s for _, s in files)
+    # Every heartbeat uses the same denominator — the snapshot total.
+    for done_s, total_s in matches:
+        assert int(total_s) == planned_total
+        assert 0 <= int(done_s) <= planned_total
+    # Final heartbeat (flush) hits 100% of planned bytes.
+    final_done = int(matches[-1][0])
+    assert final_done == planned_total, (
+        f"final heartbeat done={final_done} != planned_total={planned_total}\n"
+        f"{captured.out}"
+    )
+    # Monotonic — no heartbeat regresses below an earlier one.
+    dones = [int(d) for d, _ in matches]
+    assert dones == sorted(dones)
+
+
+def test_bytes_heartbeat_skipped_when_total_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """When HF doesn't expose file sizes the tracker total stays at 0
+    and the heartbeat must stay silent — emitting ``[bytes] D/0`` would
+    divide-by-zero on the desktop side.
+    """
+    # Build a model_info where every sibling has ``size=None`` so
+    # ``total_expected_bytes`` stays at 0.
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "0000" * 10
+    files: list[tuple[str, int | None]] = [
+        ("config.json", None),
+        ("tokenizer.json", None),
+    ]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    for fname, _ in files:
+        # 404 → HF fallback. HF fallback path also bumps the tracker —
+        # if ``_total == 0`` the add() short-circuits without printing.
+        router.add(
+            f"https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/{fname}",
+            _FakeResponse(404, b""),
+        )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        (snap / filename).write_bytes(b"x" * 30)
+        return str(snap / filename)
+
+    monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    captured = capsys.readouterr()
+    assert "[bytes]" not in captured.out, (
+        "heartbeat must stay silent when total is unknown:\n"
+        f"{captured.out}"
+    )
+
+
 def test_safe_display_name_strips_control_chars():
     """Filenames from external HF metadata can't inject terminal escapes.
 
