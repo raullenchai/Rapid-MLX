@@ -45,6 +45,16 @@ class ManifestNotFoundError(FileNotFoundError):
     """Raised when ``read_manifest`` is called on a path without one."""
 
 
+class MalformedManifestError(ValueError):
+    """Raised when ``manifest.json`` exists but isn't a valid JSON object.
+
+    Distinct from ``ManifestNotFoundError`` (missing file) and
+    ``ManifestMismatchError`` (well-formed but fails compatibility) so
+    route handlers can map each to its correct HTTP status — malformed
+    payload is a caller error (400), missing is 404, mismatch is 409.
+    """
+
+
 class ManifestMismatchError(ValueError):
     """Raised when a manifest doesn't match caller expectations.
 
@@ -110,14 +120,31 @@ def write_manifest(root: Path, manifest: Manifest) -> Path:
 def read_manifest(root: Path) -> Manifest:
     """Read and parse ``manifest.json`` at ``root``.
 
-    Raises ``ManifestNotFoundError`` if missing — distinct from the
-    generic ``FileNotFoundError`` so route handlers can map it to a 404
-    without misclassifying other I/O failures.
+    Three distinct failure modes — each maps to a different HTTP status:
+
+    * ``ManifestNotFoundError`` — the file doesn't exist (caller picked
+      a path that hasn't been exported to). Routes → 404.
+    * ``MalformedManifestError`` — file exists but isn't valid JSON, or
+      decodes to something other than an object (a list, a string, etc.).
+      A peer could have written garbage, or an old v0 layout slipped in.
+      Routes → 400. Without this branch the JSONDecodeError / TypeError
+      would surface as a 500 and hide a caller-controlled bug.
     """
     target = root / MANIFEST_FILENAME
     if not target.is_file():
         raise ManifestNotFoundError(f"manifest.json not found in {root}")
-    return Manifest.from_dict(json.loads(target.read_text()))
+    try:
+        data = json.loads(target.read_text())
+    except json.JSONDecodeError as exc:
+        raise MalformedManifestError(
+            f"manifest.json at {root} is not valid JSON: {exc.msg}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise MalformedManifestError(
+            f"manifest.json at {root} must decode to a JSON object, "
+            f"got {type(data).__name__}"
+        )
+    return Manifest.from_dict(data)
 
 
 def default_export_root() -> Path:

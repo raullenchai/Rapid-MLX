@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from ..cache.protocol import (
     PROTOCOL_VERSION,
     InvalidExportPathError,
+    MalformedManifestError,
     ManifestMismatchError,
     ManifestNotFoundError,
     read_manifest,
@@ -124,6 +125,24 @@ def _resolve_or_400(caller_path: str | None) -> Path:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
+def _read_manifest_or_http(root: Path):
+    """Wrap ``read_manifest`` so missing/malformed surface as 404/400.
+
+    Without this, a peer-written corrupt ``manifest.json`` would escape
+    as a JSONDecodeError → FastAPI 500, hiding a caller-controlled bug
+    inside an opaque server error. Mapping the three failure modes
+    distinctly is what makes the contract usable from a client.
+    """
+    try:
+        return read_manifest(root)
+    except ManifestNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"no manifest.json at {root}"
+        ) from exc
+    except MalformedManifestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/export", status_code=501)
 async def export_cache(req: ExportRequest):
     """Export the engine's KV prefix cache to disk under the sandbox root.
@@ -166,14 +185,7 @@ async def import_cache(req: ImportRequest):
     the follow-up.
     """
     source = _resolve_or_400(req.source)
-
-    try:
-        manifest = read_manifest(source)
-    except ManifestNotFoundError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=f"no manifest.json at {source}",
-        ) from exc
+    manifest = _read_manifest_or_http(source)
 
     if manifest.protocol_version != req.expected_protocol_version:
         raise HTTPException(
@@ -227,14 +239,7 @@ async def cache_info(path: str | None = None):
     Path resolution follows the same sandbox rules as export/import.
     """
     root = _resolve_or_400(path)
-
-    try:
-        manifest = read_manifest(root)
-    except ManifestNotFoundError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=f"no manifest.json at {root}",
-        ) from exc
+    manifest = _read_manifest_or_http(root)
 
     return {
         "path": str(root),

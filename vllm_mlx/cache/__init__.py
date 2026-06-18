@@ -11,6 +11,7 @@ the engine integration follow-up.
 from .protocol import (
     PROTOCOL_VERSION,
     InvalidExportPathError,
+    MalformedManifestError,
     Manifest,
     ManifestMismatchError,
     ManifestNotFoundError,
@@ -22,6 +23,7 @@ from .protocol import (
 __all__ = [
     "PROTOCOL_VERSION",
     "InvalidExportPathError",
+    "MalformedManifestError",
     "Manifest",
     "ManifestMismatchError",
     "ManifestNotFoundError",

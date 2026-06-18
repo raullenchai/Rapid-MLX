@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from vllm_mlx.cache.protocol import (
     PROTOCOL_VERSION,
     InvalidExportPathError,
+    MalformedManifestError,
     Manifest,
     read_manifest,
     resolve_cache_dir,
@@ -127,6 +128,24 @@ def test_manifest_roundtrip(tmp_path):
     assert recovered == original
 
 
+def test_read_manifest_rejects_invalid_json(tmp_path):
+    """Malformed JSON at the manifest path surfaces a typed exception.
+
+    Without this branch the JSONDecodeError would propagate as a 500 in
+    the routes — a caller-controlled bug masquerading as a server fault.
+    """
+    (tmp_path / "manifest.json").write_text("not even close to JSON {")
+    with pytest.raises(MalformedManifestError, match="not valid JSON"):
+        read_manifest(tmp_path)
+
+
+def test_read_manifest_rejects_non_object_payload(tmp_path):
+    """A JSON list at the manifest path is structurally malformed."""
+    (tmp_path / "manifest.json").write_text('["this", "is", "a", "list"]')
+    with pytest.raises(MalformedManifestError, match="JSON object"):
+        read_manifest(tmp_path)
+
+
 def test_manifest_from_dict_drops_unknown_fields(tmp_path):
     """An older reader handling a newer writer's extra fields just ignores them."""
     payload = {
@@ -228,6 +247,38 @@ def _write_export_root(sandbox: Path, name: str, manifest: Manifest) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     write_manifest(root, manifest)
     return root
+
+
+def test_import_malformed_manifest_returns_400(cache_client):
+    """Corrupt manifest.json at the source → 400, not 500.
+
+    Without the dedicated mapping in ``_read_manifest_or_http``, the
+    underlying ``json.JSONDecodeError`` would escape and FastAPI would
+    surface it as an opaque 500 — hiding a caller-supplied bad blob
+    inside a server-fault status. Codex blocking-finding regression.
+    """
+    bad = cache_client.sandbox / "corrupt"
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text("{ not valid json")
+    resp = cache_client.client.post(
+        "/v1/cache/import",
+        json={"source": "corrupt"},
+        headers=_auth(),
+    )
+    assert resp.status_code == 400
+    assert "not valid JSON" in resp.json()["detail"]
+
+
+def test_info_malformed_manifest_returns_400(cache_client):
+    bad = cache_client.sandbox / "corrupt-info"
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text('"a bare JSON string is not an object"')
+    resp = cache_client.client.get(
+        "/v1/cache/info?path=corrupt-info",
+        headers=_auth(),
+    )
+    assert resp.status_code == 400
+    assert "JSON object" in resp.json()["detail"]
 
 
 def test_import_missing_manifest_returns_404(cache_client):
