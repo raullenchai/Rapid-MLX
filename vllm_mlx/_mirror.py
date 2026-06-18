@@ -1481,16 +1481,23 @@ def download_with_mirror_fallback(
                 # so the aggregate tracker would miss these bytes
                 # entirely. Bump it at completion so the heartbeat
                 # reflects HF-fallback files too (size known once
-                # ``hf_hub_download`` returned).
-                progress_tracker.add(size)
+                # ``hf_hub_download`` returned). Codex R4 defensive
+                # guard: skip the credit when stat() returned 0 (rare —
+                # broken symlink / disappearing snapshot path), since
+                # ``add(0)`` is a no-op anyway. Belt-and-braces against
+                # future refactors that might surface a non-int ``size``.
+                if isinstance(size, int) and size > 0:
+                    progress_tracker.add(size)
             elif kind == "cached":
                 # Already present — count as r2/hf-neutral but include
                 # bytes so the summary reflects the full snapshot size.
                 total_bytes += size
                 # Cached files never enter the chunk loop — credit them
                 # to the tracker on the dispatcher thread so the
-                # heartbeat doesn't undercount a warm pull.
-                progress_tracker.add(size)
+                # heartbeat doesn't undercount a warm pull. Same defensive
+                # guard as the HF arm above (codex R4 on PR #682).
+                if isinstance(size, int) and size > 0:
+                    progress_tracker.add(size)
             else:
                 misses.append(fname)
             # Issue #651 follow-up: per-file completion line so the
