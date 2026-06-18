@@ -1,4 +1,4 @@
-.PHONY: help smoke lint audit test stress soak release-smoke release-check-m3 clean
+.PHONY: help smoke lint audit test stress soak release-smoke release-check-m3 clean check full benchmark update-baselines
 
 # Pick the interpreter:
 #   1. Active venv ($VIRTUAL_ENV/bin/python) — wins so contributors using
@@ -61,6 +61,19 @@ stress:
 
 soak:
 	$(DEV_TEST) soak
+
+# ---------- removed targets (compat stubs) ----------
+# ``make check / full / benchmark / update-baselines`` ran the doctor
+# tier harness, which moved to ``rapid-mlx bench --tier ...`` in
+# v0.7.22. The doctor CLI has rejected the old subcommands since
+# then; these stubs preserve the migration breadcrumb so an old
+# script gets a usable error instead of GNU make's bare "No rule
+# to make target".
+check full benchmark update-baselines:
+	@echo "error: 'make $@' was removed. The doctor tier harness moved"
+	@echo "       to 'rapid-mlx bench <model> --tier smoke|speed|harness|all'"
+	@echo "       in v0.7.22. See harness/README.md."
+	@exit 2
 
 # ---------- release gate ----------
 release-smoke:
