@@ -670,20 +670,27 @@ def test_streaming_rescue_noop_when_reasoning_is_whitespace_only():
         events = _parse_sse(resp.text)
         assert events, "expected at least one SSE chunk"
 
-        # No SSE chunk may carry semantically-non-empty content.
-        # Pre-fix the terminal chunk would carry ``"   \n\t  "`` as
-        # ``delta.content``; post-fix the helper's whitespace
-        # predicate fires and no content is emitted at all.
-        streamed_content = ""
-        for ev in events:
-            for choice in ev.get("choices", []):
-                delta = choice.get("delta") or {}
-                if delta.get("content"):
-                    streamed_content += delta["content"]
-        assert not streamed_content.strip(), (
-            "#676 round-3 BLOCKING (streaming): whitespace-only "
+        # Codex round-4 BLOCKING on #676: collect EVERY ``delta.content``
+        # value without stripping, so an incorrectly-emitted
+        # whitespace-only payload (``"   \n\t  "``) is caught instead
+        # of being silently coerced to empty by ``.strip()``. Pre-fix
+        # this assertion was ``not streamed_content.strip()``, which
+        # would still pass under the exact regression we're guarding
+        # against — a self-defeating test. The new shape lists every
+        # raw ``delta.content`` value emitted on any chunk and asserts
+        # the list is empty; any emission at all (whitespace, empty
+        # string, real text) is a regression.
+        content_values = [
+            (choice.get("delta") or {}).get("content")
+            for ev in events
+            for choice in ev.get("choices", [])
+            if "content" in (choice.get("delta") or {})
+        ]
+        assert content_values == [], (
+            "#676 round-4 BLOCKING (streaming): whitespace-only "
             "accumulated reasoning must NOT promote to delta.content "
-            f"on any SSE chunk; got streamed_content={streamed_content!r}"
+            "on any SSE chunk; expected zero content emissions but "
+            f"got {content_values!r}"
         )
     finally:
         reset_config()
