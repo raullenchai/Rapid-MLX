@@ -1621,22 +1621,44 @@ def test_adapt_should_abort_handles_keyword_only_and_args_kwargs():
     assert adapted(1.5) is False
     assert captured == [1.5]
 
-    # **kwargs: must receive predicted_sec.
+    # **kwargs only: must be called BY KEYWORD as predicted_sec=...
+    # (codex PR #667 round 4 BLOCKING-1: round 3 classified **kwargs
+    # as positional-capable and raised TypeError on call). The
+    # predicate sees the value via ``kw["predicted_sec"]``.
     captured = []
 
-    def pred(**kw):
+    def kw_only_pred(**kw):
         captured.append(kw.get("predicted_sec", "no-arg"))
         return False
 
-    # The adapter passes positionally, so **kwargs alone doesn't get
-    # the value as a kwarg — but the function still gets CALLED with
-    # the right shape (no TypeError). That's the contract being
-    # pinned: no exception raised.
-    adapted = _adapt_should_abort(
-        lambda *a, **kw: captured.append(("args", a)) or False
-    )
+    adapted = _adapt_should_abort(kw_only_pred)
     assert adapted(2.5) is False
-    assert captured == [("args", (2.5,))]
+    assert captured == [2.5], (
+        f"**kwargs predicate must receive predicted_sec by keyword, got {captured}"
+    )
+
+    # Keyword-only ``predicted_sec=...`` — same routing as **kwargs.
+    captured = []
+
+    def kw_only_named(*, predicted_sec=0.0):
+        captured.append(predicted_sec)
+        return False
+
+    adapted = _adapt_should_abort(kw_only_named)
+    assert adapted(3.5) is False
+    assert captured == [3.5]
+
+    # ``*args, **kwargs`` — positional path wins (it accepts positional
+    # via the ``*args`` part).
+    captured = []
+
+    def star_args(*a, **kw):
+        captured.append(("args", a, "kw", kw))
+        return False
+
+    adapted = _adapt_should_abort(star_args)
+    assert adapted(2.5) is False
+    assert captured == [("args", (2.5,), "kw", {})]
 
 
 def test_save_prefix_cache_to_disk_zero_budget_disables_deadline(tmp_path, monkeypatch):

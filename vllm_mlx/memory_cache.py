@@ -67,25 +67,44 @@ def _adapt_should_abort(predicate):
     try:
         sig = inspect.signature(predicate)
     except (TypeError, ValueError):
-        # Builtin / C-extension / partial — assume one-arg shape
-        # (it's the contract going forward); a runtime TypeError on
-        # invocation is no worse than what callers got before.
+        # Builtin / C-extension / partial — assume positional one-arg
+        # shape (it's the contract going forward); a runtime TypeError
+        # on invocation is no worse than what callers got before.
         return lambda predicted_sec: predicate(predicted_sec)
 
-    # Does the predicate accept ANY positional / keyword arg?
-    accepts_arg = any(
-        p.kind
-        in (
+    # Classify the predicate's calling convention. Codex PR #667 round
+    # 4 BLOCKING-1: a naive "accepts ANY arg" check sent keyword-only
+    # and ``**kwargs``-only callables down the positional path, which
+    # raises ``TypeError`` on the very first call — defeating the
+    # whole point of the adapter. We have to distinguish the call
+    # shape, not just "accepts something".
+    accepts_positional = False
+    accepts_keyword_only_predicted_sec = False
+    has_var_kwargs = False
+    for p in sig.parameters.values():
+        if p.kind in (
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.KEYWORD_ONLY,
-            inspect.Parameter.VAR_KEYWORD,
-        )
-        for p in sig.parameters.values()
-    )
-    if accepts_arg:
+        ):
+            accepts_positional = True
+        elif p.kind == inspect.Parameter.KEYWORD_ONLY:
+            if p.name == "predicted_sec":
+                accepts_keyword_only_predicted_sec = True
+        elif p.kind == inspect.Parameter.VAR_KEYWORD:
+            has_var_kwargs = True
+
+    if accepts_positional:
+        # ``def pred(p)`` / ``def pred(p, **kw)`` / ``def pred(*args)``
+        # — positional is the natural shape.
         return lambda predicted_sec: predicate(predicted_sec)
+    if accepts_keyword_only_predicted_sec or has_var_kwargs:
+        # ``def pred(*, predicted_sec=0.0)`` — must use the keyword.
+        # ``def pred(**kw)`` — keyword is the only shape it accepts;
+        # the predicate may or may not look for ``predicted_sec`` in
+        # ``kw``, but passing it by name is the contract.
+        return lambda predicted_sec: predicate(predicted_sec=predicted_sec)
+    # Zero parameters → call with no args (round-1 documented shape).
     return lambda predicted_sec: predicate()
 
 
