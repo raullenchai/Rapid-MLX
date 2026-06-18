@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rapid-MLX Community Performance</title>
+<meta name="description" content="Crowdsourced inference performance on Apple Silicon — real numbers from real users.">
+<style>
+  :root {
+    --bg: #0f0f10;
+    --fg: #e7e7e8;
+    --fg-dim: #9b9b9d;
+    --accent: #f37335;
+    --row: #1a1a1c;
+    --row-alt: #161618;
+    --border: #2a2a2d;
+    --good: #5cc88e;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fafafa;
+      --fg: #1a1a1c;
+      --fg-dim: #6c6c6e;
+      --row: #fff;
+      --row-alt: #f3f3f4;
+      --border: #e0e0e3;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2rem 1.5rem;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.45;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 {
+    margin: 0 0 .5rem;
+    font-size: 1.7rem;
+    letter-spacing: -0.01em;
+  }
+  .sub {
+    color: var(--fg-dim);
+    margin: 0 0 1.5rem;
+    font-size: .95rem;
+  }
+  .meta {
+    color: var(--fg-dim);
+    font-size: .85rem;
+    margin-bottom: 1rem;
+  }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem;
+    margin-bottom: 1rem;
+  }
+  .filters label {
+    display: flex;
+    flex-direction: column;
+    gap: .25rem;
+    font-size: .8rem;
+    color: var(--fg-dim);
+  }
+  .filters select, .filters input {
+    background: var(--row);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: .4rem .6rem;
+    font: inherit;
+    font-size: .9rem;
+    min-width: 12rem;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .9rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  th, td {
+    padding: .55rem .75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    background: var(--row-alt);
+    cursor: pointer;
+    user-select: none;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  th:hover { color: var(--accent); }
+  th .arrow { color: var(--accent); margin-left: .25rem; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  td.dim { color: var(--fg-dim); font-size: .85rem; }
+  tr:nth-child(even) td { background: var(--row-alt); }
+  tr:nth-child(odd) td { background: var(--row); }
+  tr:hover td { background: rgba(243, 115, 53, 0.08); }
+  .iqr { color: var(--fg-dim); font-size: .78rem; margin-left: .4rem; }
+  .pill {
+    display: inline-block;
+    padding: .1rem .5rem;
+    border-radius: 999px;
+    background: var(--row-alt);
+    border: 1px solid var(--border);
+    font-size: .75rem;
+    color: var(--fg-dim);
+  }
+  .footer {
+    margin-top: 2rem;
+    color: var(--fg-dim);
+    font-size: .85rem;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .empty { padding: 2rem; text-align: center; color: var(--fg-dim); }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .85em; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Community Performance</h1>
+  <p class="sub">
+    Real B=1 inference numbers from real users' Apple Silicon Macs, crowdsourced via
+    <code>rapid-mlx bench &lt;model&gt; --submit</code>. Aggregated by (chip × model × Rapid-MLX version);
+    median across submissions, IQR shown for groups with multiple rows.
+  </p>
+
+  <div class="filters">
+    <label>Chip
+      <select id="filter-chip"><option value="">All chips</option></select>
+    </label>
+    <label>Model
+      <select id="filter-model"><option value="">All models</option></select>
+    </label>
+    <label>Version
+      <select id="filter-version"><option value="">All versions</option></select>
+    </label>
+    <label>Search
+      <input id="filter-search" type="search" placeholder="filter by any field…">
+    </label>
+  </div>
+
+  <div class="meta" id="meta">Loading…</div>
+
+  <table id="results">
+    <thead>
+      <tr>
+        <th data-sort="chip">Chip</th>
+        <th data-sort="model_alias">Model</th>
+        <th data-sort="rapid_mlx_version">Version</th>
+        <th data-sort="short_decode" class="num" title="Short bucket: 512 prompt → 128 output">Short decode tok/s</th>
+        <th data-sort="long_decode" class="num" title="Long bucket: 2048 prompt → 512 output">Long decode tok/s</th>
+        <th data-sort="long_ttft" class="num" title="Time to first token, long bucket">Long TTFT (ms)</th>
+        <th data-sort="row_count" class="num">Rows</th>
+      </tr>
+    </thead>
+    <tbody id="results-body">
+      <tr><td colspan="7" class="empty">Loading aggregate…</td></tr>
+    </tbody>
+  </table>
+
+  <p class="footer">
+    Source: <a href="https://github.com/raullenchai/Rapid-MLX/tree/main/community-benchmarks/submissions">community-benchmarks/submissions</a> ·
+    Raw aggregate: <a href="aggregated.json"><code>aggregated.json</code></a> ·
+    Submit yours: <code>rapid-mlx bench &lt;alias&gt; --submit</code>
+  </p>
+</div>
+
+<script>
+// Single-page reference UI: fetch aggregated.json, render sortable
+// filterable table. Intentionally framework-free so this file can be
+// dropped into any static host (GitHub Pages, rapidmlx.com, S3, …)
+// without a build step.
+
+const AGGREGATE_URL = "aggregated.json";
+
+const state = {
+  rows: [],
+  sortKey: "long_decode",
+  sortDir: "desc",
+  filters: { chip: "", model: "", version: "", search: "" },
+};
+
+function flatten(groups) {
+  // The aggregate's per-group object is nested (short.decode_tps.median);
+  // flatten the few columns we display so the sort/filter logic is one
+  // simple keyed access instead of a maze of getters.
+  return groups.map(g => ({
+    chip: g.chip,
+    model_alias: g.model_alias,
+    rapid_mlx_version: g.rapid_mlx_version,
+    row_count: g.row_count,
+    submission_ids: g.submission_ids,
+    short_decode: g.short && g.short.decode_tps && g.short.decode_tps.median,
+    short_decode_p25: g.short && g.short.decode_tps && g.short.decode_tps.p25,
+    short_decode_p75: g.short && g.short.decode_tps && g.short.decode_tps.p75,
+    long_decode: g.long && g.long.decode_tps && g.long.decode_tps.median,
+    long_decode_p25: g.long && g.long.decode_tps && g.long.decode_tps.p25,
+    long_decode_p75: g.long && g.long.decode_tps && g.long.decode_tps.p75,
+    long_ttft: g.long && g.long.ttft_ms && g.long.ttft_ms.median,
+    long_ttft_p25: g.long && g.long.ttft_ms && g.long.ttft_ms.p25,
+    long_ttft_p75: g.long && g.long.ttft_ms && g.long.ttft_ms.p75,
+  }));
+}
+
+function fmt(n, decimals = 1) {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
+function fmtCell(median, p25, p75, decimals = 1) {
+  if (median === null || median === undefined) return "—";
+  // Show IQR only when there's actually a spread (multi-row group).
+  // Singletons get the median alone — printing "(123.4 – 123.4)" is
+  // visual noise that suggests false precision.
+  if (p25 !== p75 && p25 !== undefined && p75 !== undefined) {
+    return `${fmt(median, decimals)}<span class="iqr">(${fmt(p25, decimals)}–${fmt(p75, decimals)})</span>`;
+  }
+  return fmt(median, decimals);
+}
+
+function applyFilters(rows) {
+  const { chip, model, version, search } = state.filters;
+  const s = search.toLowerCase().trim();
+  return rows.filter(r => {
+    if (chip && r.chip !== chip) return false;
+    if (model && r.model_alias !== model) return false;
+    if (version && r.rapid_mlx_version !== version) return false;
+    if (s) {
+      const hay = `${r.chip} ${r.model_alias} ${r.rapid_mlx_version}`.toLowerCase();
+      if (!hay.includes(s)) return false;
+    }
+    return true;
+  });
+}
+
+function applySort(rows) {
+  const k = state.sortKey;
+  const dir = state.sortDir === "asc" ? 1 : -1;
+  return rows.slice().sort((a, b) => {
+    const av = a[k], bv = b[k];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;       // nulls always last
+    if (bv == null) return -1;
+    if (av < bv) return -1 * dir;
+    if (av > bv) return  1 * dir;
+    return 0;
+  });
+}
+
+function populateFilters(rows) {
+  const uniq = (key) => Array.from(new Set(rows.map(r => r[key]))).sort();
+  const fill = (id, vals) => {
+    const sel = document.getElementById(id);
+    for (const v of vals) {
+      const o = document.createElement("option");
+      o.value = v; o.textContent = v;
+      sel.appendChild(o);
+    }
+  };
+  fill("filter-chip", uniq("chip"));
+  fill("filter-model", uniq("model_alias"));
+  fill("filter-version", uniq("rapid_mlx_version"));
+}
+
+function render() {
+  const filtered = applyFilters(state.rows);
+  const sorted = applySort(filtered);
+  const tbody = document.getElementById("results-body");
+
+  if (sorted.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">No rows match the current filters.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = sorted.map(r => `
+    <tr>
+      <td>${r.chip}</td>
+      <td><code>${r.model_alias}</code></td>
+      <td><span class="pill">${r.rapid_mlx_version}</span></td>
+      <td class="num">${fmtCell(r.short_decode, r.short_decode_p25, r.short_decode_p75)}</td>
+      <td class="num">${fmtCell(r.long_decode, r.long_decode_p25, r.long_decode_p75)}</td>
+      <td class="num">${fmtCell(r.long_ttft, r.long_ttft_p25, r.long_ttft_p75, 0)}</td>
+      <td class="num dim">${r.row_count}</td>
+    </tr>
+  `).join("");
+
+  // Header sort indicators
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    const k = th.getAttribute("data-sort");
+    const arrow = th.querySelector(".arrow");
+    if (arrow) arrow.remove();
+    if (k === state.sortKey) {
+      const a = document.createElement("span");
+      a.className = "arrow";
+      a.textContent = state.sortDir === "asc" ? "↑" : "↓";
+      th.appendChild(a);
+    }
+  });
+}
+
+function bindControls() {
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    th.addEventListener("click", () => {
+      const k = th.getAttribute("data-sort");
+      if (state.sortKey === k) {
+        state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.sortKey = k;
+        // Numeric columns default to descending (bigger = better);
+        // string columns default to ascending. Decode and counts are
+        // numeric; TTFT is numeric-but-smaller-is-better, so we let
+        // the user click again — defaulting it to asc would be
+        // surprising on first click for a column whose header reads
+        // like a normal metric.
+        state.sortDir = ["short_decode", "long_decode", "long_ttft", "row_count"].includes(k)
+          ? "desc"
+          : "asc";
+      }
+      render();
+    });
+  });
+
+  document.getElementById("filter-chip").addEventListener("change", e => {
+    state.filters.chip = e.target.value; render();
+  });
+  document.getElementById("filter-model").addEventListener("change", e => {
+    state.filters.model = e.target.value; render();
+  });
+  document.getElementById("filter-version").addEventListener("change", e => {
+    state.filters.version = e.target.value; render();
+  });
+  document.getElementById("filter-search").addEventListener("input", e => {
+    state.filters.search = e.target.value; render();
+  });
+}
+
+async function init() {
+  try {
+    const resp = await fetch(AGGREGATE_URL, { cache: "no-cache" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    state.rows = flatten(data.groups || []);
+    populateFilters(state.rows);
+    bindControls();
+    document.getElementById("meta").textContent =
+      `${data.source_rows} submissions · ${data.groups.length} (chip × model × version) groups · ` +
+      `aggregate generated ${new Date(data.generated_at).toUTCString()}`;
+    render();
+  } catch (e) {
+    document.getElementById("results-body").innerHTML =
+      `<tr><td colspan="7" class="empty">Failed to load aggregate: ${e.message}</td></tr>`;
+    document.getElementById("meta").textContent = "Aggregate load failed.";
+  }
+}
+
+init();
+</script>
+</body>
+</html>

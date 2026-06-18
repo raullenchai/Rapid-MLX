@@ -16,7 +16,22 @@ The CLI:
 4. On `y`, runs `git push` to your `origin` remote on GitHub, then `gh pr create` against `raullenchai/Rapid-MLX`. Both use your existing git/gh credentials — no new token required. The commit is authored by whatever git author identity your repo has configured (`git config user.name` / `user.email`); that's how PRs work and is the only contributor identity attached to the row.
 5. A GitHub Action validates the schema + sanity-checks the numbers; on green, a maintainer merges.
 
-The aggregator + website (`aggregated.json` / sortable table) is intentionally **not** in this PR — we want submissions to land in the raw store first so the aggregator can be designed against real shapes rather than speculation.
+## Aggregator + page
+
+Raw submissions are reduced to a sortable table by [`scripts/aggregate.py`](scripts/aggregate.py): groups by `(chip, model_alias, rapid_mlx_version)` — the axis the schema description names — and computes median + IQR per metric within each group. Output is the committed [`aggregated.json`](aggregated.json), which is what external consumers (the website's Performance tab; this directory's own [`index.html`](index.html)) fetch.
+
+```bash
+# Regenerate the aggregate after adding a submission
+python community-benchmarks/scripts/aggregate.py
+
+# Verify the on-disk aggregate matches what would be regenerated
+# (the CI freshness check runs exactly this)
+python community-benchmarks/scripts/aggregate.py --check
+```
+
+[`index.html`](index.html) is a single-file reference UI — no build step, no framework. Drop it (plus `aggregated.json`) onto any static host: GitHub Pages, S3, the rapidmlx.com Performance tab, anywhere. The page fetches `aggregated.json` from the same directory and renders a sortable filterable table.
+
+GitHub Action [`aggregate-bench.yml`](../.github/workflows/aggregate-bench.yml) closes the loop: on PR, it verifies the committed `aggregated.json` is fresh against the current `submissions/`; on push-to-main, it regenerates and auto-commits if any submission slipped through without a regenerate.
 
 ## What we collect
 

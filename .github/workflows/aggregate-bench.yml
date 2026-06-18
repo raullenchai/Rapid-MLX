@@ -1,0 +1,60 @@
+name: Aggregate community benchmarks
+
+on:
+  pull_request:
+    paths:
+      - "community-benchmarks/submissions/**"
+      - "community-benchmarks/scripts/aggregate.py"
+      - "community-benchmarks/aggregated.json"
+  push:
+    branches: [main]
+    paths:
+      - "community-benchmarks/submissions/**"
+      - "community-benchmarks/scripts/aggregate.py"
+
+permissions:
+  contents: write   # for the push-branch regenerate-on-main path
+
+jobs:
+  # PR path: verify the committed aggregate matches what would be
+  # regenerated from the current raw rows. Fails loudly if a
+  # contributor added a submission without re-running the aggregator.
+  freshness-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Verify aggregated.json is up-to-date
+        run: |
+          python community-benchmarks/scripts/aggregate.py --check
+
+  # main path: regenerate and commit. This is what closes the loop —
+  # a contributor merges their submission PR without touching the
+  # aggregate, this job picks it up and commits the refreshed
+  # aggregated.json so the website's static fetch always reflects
+  # what's in submissions/.
+  regenerate-on-main:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Regenerate aggregated.json
+        run: |
+          python community-benchmarks/scripts/aggregate.py
+      - name: Commit if changed
+        run: |
+          if git diff --quiet community-benchmarks/aggregated.json; then
+            echo "aggregated.json unchanged, nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add community-benchmarks/aggregated.json
+          git commit -m "chore(community-bench): refresh aggregated.json"
+          git push
