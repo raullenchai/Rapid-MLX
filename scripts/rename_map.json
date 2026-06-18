@@ -31,8 +31,6 @@
   "granite4-tiny": "granite4-tiny-4bit",
   "hermes3-8b": "hermes3-8b-4bit",
   "hermes4-70b": "hermes4-70b-4bit",
-  "kimi-48b": "kimi-48b-4bit",
-  "kimi-k2.5": "kimi-k2.5-3bit",
   "llama-3.1-8b-8bit": "llama-3.1-8b-8bit",
   "llama3-1b": "llama3-1b-4bit",
   "llama3-3b": "llama3-3b-4bit",

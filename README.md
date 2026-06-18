@@ -526,7 +526,7 @@ Decoded examples:
 | **Llama / Hermes** | `llama3-1b-4bit`, `-3b-4bit`, `llama-3.1-8b-8bit`, `hermes3-8b-4bit`, `hermes4-70b-4bit` | |
 | **GLM** | `glm4.5-air-4bit`, `glm4.7-9b-4bit` | |
 | **GPT-OSS** | `gpt-oss-20b-mxfp4-q8` | Harmony native |
-| **MiniMax / Kimi** | `minimax-m2.5-4bit`, `minimax-m2.7-mxfp4`, `kimi-48b-4bit`, `kimi-k2.5-3bit` | |
+| **MiniMax** | `minimax-m2.5-4bit`, `minimax-m2.7-mxfp4` | |
 | **Mistral / Devstral** | `mistral-24b-4bit`, `devstral-24b-4bit`, `devstral-v2-24b-4bit`, `ministral-3b-4bit` | |
 | **Other** | `phi-4-14b-4bit`, `phi-4-mini-4bit`, `smollm3-3b-4bit`, `nemotron-30b-4bit`, `bonsai-1.7b-unpacked`, `-4b-unpacked`, `-8b-unpacked`, `granite4-tiny-4bit` | |
 | 🆕 **Text-Diffusion** | `diffusion-gemma-26b-4bit`, `diffusion-gemma-26b-8bit` | Non-autoregressive (block denoising); same `/v1/chat/completions` API |

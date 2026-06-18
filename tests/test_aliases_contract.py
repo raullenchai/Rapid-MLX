@@ -508,13 +508,13 @@ def test_negative_control_dflash_missing_drafter_is_caught() -> None:
 
 def test_audit_batch_reasoning_parser_wirings() -> None:
     """Pin the Model Onboarding SOP audit fixes for reasoning_parser
-    on nemotron / kimi-k2.5-3bit / hermes4 aliases. Each was previously
+    on nemotron / hermes4 aliases. Each was previously
     ``null`` despite the model emitting ``<think>``/``</think>``
     blocks — without the parser, those blocks leak into
     ``message.content``.
 
     Parser choice rationale:
-    - nemotron-30b-4bit/nano + kimi-k2.5-3bit use a Qwen3-style template that
+    - nemotron-30b-4bit/nano use a Qwen3-style template that
       INJECTS ``<think>`` into the prompt (gated by ``enable_thinking``
       / ``thinking`` flag). ``qwen3`` parser's ``finalize_streaming``
       correction handles the "no </think> ever appeared → emit as
@@ -526,7 +526,6 @@ def test_audit_batch_reasoning_parser_wirings() -> None:
     profiles = list_profiles()
     expected = {
         "nemotron-30b-4bit": "qwen3",
-        "kimi-k2.5-3bit": "qwen3",
         "hermes4-70b-4bit": "glm4",
     }
     for alias, parser in expected.items():
@@ -650,12 +649,6 @@ def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
     ), (
         "gpt-oss-20b-mxfp4-q8 must not regress to the 404 path; current canonical "
         "upload is mlx-community/gpt-oss-20b-MXFP4-Q8."
-    )
-    # kimi-48b-4bit previously pointed at mlx-community/Kimi-K2-Instruct-Q4_0-MLX
-    # (404). The replacement Kimi-K2-Instruct-4bit is large
-    # (~540 GB) but is the actual mlx-community Kimi K2 Instruct release.
-    assert "Q4_0" not in profiles["kimi-48b-4bit"].hf_path, (
-        "kimi-48b-4bit must not regress to the Q4_0 path which 404s."
     )
 
 

@@ -642,27 +642,6 @@
     "is_hybrid": true,
     "supports_spec_decode": false
   },
-  "kimi-48b-4bit": {
-    "hf_path": "mlx-community/Kimi-K2-Instruct-4bit",
-    "tool_call_parser": "kimi",
-    "reasoning_parser": null,
-    "is_hybrid": false,
-    "supports_spec_decode": true
-  },
-  "kimi-k2.5-3bit": {
-    "hf_path": "mlx-community/Kimi-K2.5-3bit",
-    "tool_call_parser": "kimi",
-    "reasoning_parser": "qwen3",
-    "is_hybrid": false,
-    "supports_spec_decode": true
-  },
-  "kimi-k2.6-dq3-q8": {
-    "hf_path": "mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8",
-    "tool_call_parser": "kimi",
-    "reasoning_parser": "qwen3",
-    "is_hybrid": false,
-    "supports_spec_decode": true
-  },
   "ministral-3b-4bit": {
     "hf_path": "mlx-community/Ministral-3-3B-Instruct-2512-4bit",
     "tool_call_parser": "hermes",
