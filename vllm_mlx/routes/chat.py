@@ -1250,6 +1250,22 @@ async def _create_chat_completion_impl(
             if _target:
                 _names = [_tool_call_name(tc) for tc in tool_calls or []]
                 _mismatched = [n for n in _names if n != _target]
+                # Codex R1 BLOCKING (#675): defense-in-depth — never
+                # synthesise a call to a function the client did not
+                # submit. The early prompt-level validation (~line 488)
+                # already 400s when ``_target`` is absent from
+                # ``request.tools``, but a future refactor could shift
+                # or bypass that gate, and the synthesis branch must
+                # not trust ``_target`` blindly. Gate on the submitted
+                # tool-name set; on miss, raise 422 rather than
+                # fabricating a call to a tool the client never
+                # defined.
+                _submitted_tool_names = {
+                    t.function.get("name")
+                    for t in (request.tools or [])
+                    if t.type == "function"
+                }
+                _target_is_submitted = _target in _submitted_tool_names
                 # #571: when the parser returned NOTHING (``_names`` is
                 # empty), the request still has a deterministic target
                 # — the named-function form names it. Synthesise rather
@@ -1260,7 +1276,7 @@ async def _create_chat_completion_impl(
                 # surface as 422 — synthesising over a real wrong call
                 # would silently drop the model's output and is a worse
                 # client experience than the explicit failure.
-                if not _names:
+                if not _names and _target_is_submitted:
                     logger.warning(
                         "tool_choice pinned function %r on a parser-only path "
                         "produced no tool_calls; synthesising a call with "
@@ -1269,6 +1285,21 @@ async def _create_chat_completion_impl(
                         _target,
                     )
                     tool_calls = [_synthesize_forced_tool_call(_target)]
+                elif not _names and not _target_is_submitted:
+                    # Codex R1 BLOCKING (#675): named tool_choice points
+                    # at a function that is not in ``request.tools`` —
+                    # we must not fabricate a call to it. The early 400
+                    # gate normally catches this; reaching here implies
+                    # the gate was bypassed (e.g. cloud-fallback rewrite
+                    # or future refactor). Refuse rather than synthesise.
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"tool_choice pinned function {_target!r} but it is "
+                            "not present in the request's 'tools' array; refusing "
+                            "to synthesise a call to an undefined tool."
+                        ),
+                    )
                 elif _mismatched:
                     raise HTTPException(
                         status_code=422,

@@ -1112,3 +1112,100 @@ def test_synthesize_forced_tool_call_helper_shape():
     # not parse or re-serialise, matching the model-emitted shape.
     tc2 = _synthesize_forced_tool_call("calc", arguments='{"expr":"1+1"}')
     assert tc2.function.arguments == '{"expr":"1+1"}'
+
+
+def test_named_function_outside_tools_returns_422(monkeypatch):
+    """Codex R1 BLOCKING (#675): the named-function synthesis branch
+    must never fabricate a call to a tool the client did not submit.
+
+    The early prompt-level validation (~chat.py:488) already 400s when
+    ``tool_choice`` names a function absent from ``request.tools``, but
+    that gate sits hundreds of lines upstream from the post-parse
+    synthesis branch — a future refactor could shift or bypass it, at
+    which point the synthesis path would mint a call to
+    ``ghost_function`` and ship a 200 with a fabricated tool_call to a
+    tool the client never defined.
+
+    This test exercises the defense-in-depth at the synthesis branch
+    DIRECTLY by monkeypatching ``_parse_tool_calls_with_parser`` (which
+    runs between the early gate and the synthesis branch, with the
+    ``request`` object in scope) to clear ``request.tools`` and rewrite
+    ``request.tool_choice`` to a ghost target — simulating a future
+    bypass of the early 400 gate. The synthesis branch must then refuse
+    rather than fabricating, surfacing as 422.
+    """
+    from vllm_mlx.routes import chat as chat_module
+
+    synth_calls: list[str] = []
+    real_synth = chat_module._synthesize_forced_tool_call
+
+    def _spy(name, arguments="{}"):
+        synth_calls.append(name)
+        return real_synth(name, arguments)
+
+    monkeypatch.setattr(chat_module, "_synthesize_forced_tool_call", _spy)
+
+    # Simulate the BLOCKING scenario: by the time the synthesis branch
+    # runs, ``request.tools`` no longer contains ``_target``. We
+    # achieve this by hooking ``_parse_tool_calls_with_parser`` — it
+    # runs after the early gate and has the ``request`` in scope, so
+    # we can mutate ``request.tools`` and ``request.tool_choice`` to
+    # the post-bypass state. Returns ``("", None)`` to match the empty
+    # parser-output path that triggers synthesis.
+    real_parse = chat_module._parse_tool_calls_with_parser
+
+    def _bypass_then_parse(text, request, structured_tool_calls=None):
+        # Rewrite ``tool_choice`` to a ghost target while leaving
+        # ``request.tools`` intact (it still contains ``real_function``)
+        # so the synthesis branch's outer guard (line ~1212:
+        # ``request.tool_choice is not None and request.tools``) lets
+        # us in — and the new ``_target_is_submitted`` check must then
+        # fail closed (422), not synthesise.
+        request.tool_choice = {
+            "type": "function",
+            "function": {"name": "ghost_function"},
+        }
+        return real_parse(text, request, structured_tool_calls=structured_tool_calls)
+
+    monkeypatch.setattr(
+        chat_module, "_parse_tool_calls_with_parser", _bypass_then_parse
+    )
+
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "do it"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "real_function",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            # Early-gate-friendly: real_function IS in tools so the
+            # upstream 400 doesn't fire; the parser hook then rewrites
+            # state to the BLOCKING scenario.
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "real_function"},
+            },
+            "max_tokens": 32,
+        },
+    )
+    # Defense-in-depth must produce 422 — NEVER 200 with a fabricated
+    # call to ``ghost_function``.
+    assert resp.status_code == 422, resp.text
+    assert "ghost_function" in resp.text
+    # The critical assertion: the synthesis helper must NEVER be
+    # invoked with the ghost name. Without the BLOCKING fix, this
+    # would record ``["ghost_function"]`` and the response would be a
+    # 200 with a fabricated call.
+    assert "ghost_function" not in synth_calls, (
+        f"BLOCKING REGRESSION: _synthesize_forced_tool_call was called "
+        f"with ghost target; calls={synth_calls!r}"
+    )
