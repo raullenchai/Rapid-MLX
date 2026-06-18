@@ -14,6 +14,7 @@ import uuid
 
 from .anthropic_models import (
     AnthropicMessage,
+    AnthropicOutputConfig,
     AnthropicRequest,
     AnthropicResponse,
     AnthropicResponseContentBlock,
@@ -24,8 +25,22 @@ from .models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
     Message,
+    ResponseFormat,
+    ResponseFormatJsonSchema,
     ToolDefinition,
 )
+
+
+class AnthropicOutputConfigError(ValueError):
+    """Raised when ``output_config`` on a /v1/messages request is malformed.
+
+    Adapter-layer error type — the route layer (``routes/anthropic.py``)
+    converts this into ``HTTPException(400)``. Kept distinct from a plain
+    ``ValueError`` so the route can match on type without sniffing the
+    message string, and to make grep-for-callers trivial. Codex review
+    flagged the message string as the validation surface; subclassing
+    here gives both ergonomic typing AND a stable string identity.
+    """
 
 
 def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
@@ -82,6 +97,13 @@ def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
     if request.tool_choice:
         tool_choice = _convert_tool_choice(request.tool_choice)
 
+    # Translate ``output_config.format = json_schema`` (Anthropic shape,
+    # upstream vLLM PR #42396) into the OpenAI ``response_format`` shape
+    # the chat-completions guided-decode pipeline already understands.
+    # Adapter-layer validation: invalid shapes raise
+    # ``AnthropicOutputConfigError``; the route converts that to HTTP 400.
+    response_format = _convert_output_config(request.output_config)
+
     return ChatCompletionRequest(
         model=request.model,
         messages=messages,
@@ -98,6 +120,7 @@ def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
         stop=request.stop_sequences,
         tools=tools,
         tool_choice=tool_choice,
+        response_format=response_format,
     )
 
 
@@ -344,6 +367,68 @@ def _convert_tool_choice(tool_choice: dict) -> str | dict | None:
         return "none"
 
     return "auto"
+
+
+def _convert_output_config(
+    output_config: AnthropicOutputConfig | None,
+) -> ResponseFormat | None:
+    """Translate Anthropic ``output_config`` → OpenAI ``response_format``.
+
+    Backport of upstream vLLM PR #42396. Only ``format.type == "json_schema"``
+    is supported on this surface today; downstream of this call the existing
+    chat-completions guided-decode pipeline (``api/guided.py`` + outlines)
+    runs unchanged.
+
+    ``output_config.effort`` is intentionally NOT translated here — see the
+    docstring on ``AnthropicOutputConfig``. The field is accepted by the
+    Pydantic model but Pick 1 (a concurrent PR) owns wiring it through.
+
+    Raises:
+        AnthropicOutputConfigError: when ``format.type`` is not
+            ``"json_schema"`` or when the ``schema`` field is missing /
+            not a JSON object. The route layer converts this to HTTP 400.
+    """
+    if output_config is None or output_config.format is None:
+        return None
+
+    fmt = output_config.format
+    fmt_type = fmt.type
+    if fmt_type != "json_schema":
+        # Mirror the message style of routes/chat.py's 400 responses so
+        # error strings on the two surfaces look like siblings.
+        raise AnthropicOutputConfigError(
+            f"output_config.format.type={fmt_type!r} is not supported on "
+            "/v1/messages; only 'json_schema' is accepted. See upstream "
+            "vLLM PR #42396 for the backport contract."
+        )
+
+    schema = fmt.schema_
+    if schema is None:
+        raise AnthropicOutputConfigError(
+            "output_config.format.schema is required when "
+            "output_config.format.type == 'json_schema' on /v1/messages."
+        )
+    if not isinstance(schema, dict):
+        # Pydantic would have already coerced strings/lists away here for
+        # the dict-typed field, but guard explicitly so the message stays
+        # informative if a future schema type widens.
+        raise AnthropicOutputConfigError(
+            "output_config.format.schema must be a JSON object "
+            f"(got {type(schema).__name__})."
+        )
+
+    # ResponseFormatJsonSchema requires ``name`` — default to "response"
+    # to match the existing OpenAI surface's behavior when the field is
+    # absent (see api/tool_calling.build_json_system_prompt fallback).
+    return ResponseFormat(
+        type="json_schema",
+        json_schema=ResponseFormatJsonSchema(
+            name=fmt.name or "response",
+            description=fmt.description,
+            schema=schema,
+            strict=fmt.strict if fmt.strict is not None else False,
+        ),
+    )
 
 
 def _convert_stop_reason(openai_reason: str | None) -> str:

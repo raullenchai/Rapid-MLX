@@ -9,8 +9,13 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from pydantic import ValidationError
 
-from ..api.anthropic_adapter import anthropic_to_openai, openai_to_anthropic
+from ..api.anthropic_adapter import (
+    AnthropicOutputConfigError,
+    anthropic_to_openai,
+    openai_to_anthropic,
+)
 from ..api.anthropic_models import AnthropicRequest
 from ..api.models import (
     AssistantMessage,
@@ -115,7 +120,15 @@ async def create_anthropic_message(
     through the existing engine, and converts the response back.
     """
     body = await request.json()
-    anthropic_request = AnthropicRequest(**body)
+    # ``AnthropicRequest`` is constructed manually (not as a FastAPI body
+    # parameter), so Pydantic ``ValidationError`` would otherwise surface
+    # as a generic 500. Catch it explicitly to give clients a 400 with
+    # the actual validation detail — matches the ergonomics of the
+    # ``output_config`` 400 path below (PR #42396 backport).
+    try:
+        anthropic_request = AnthropicRequest(**body)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     if not (anthropic_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(anthropic_request.model)
@@ -161,8 +174,14 @@ async def create_anthropic_message(
                 cfg_for_log.model_name,
             )
 
-        # Convert Anthropic request -> OpenAI request
-        openai_request = anthropic_to_openai(anthropic_request)
+        # Convert Anthropic request -> OpenAI request. The adapter raises
+        # ``AnthropicOutputConfigError`` (a ``ValueError`` subclass) on
+        # malformed ``output_config`` payloads — backport of upstream vLLM
+        # PR #42396; map directly to HTTP 400 with the adapter's message.
+        try:
+            openai_request = anthropic_to_openai(anthropic_request)
+        except AnthropicOutputConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         if anthropic_request.stream:
             _admission_committed = True
