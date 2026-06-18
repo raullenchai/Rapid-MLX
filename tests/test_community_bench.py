@@ -390,6 +390,162 @@ def test_scheduler_batch_generator_reuse_key_includes_ignore_eos() -> None:
     )
 
 
+def test_scheduler_batch_generator_reuses_across_different_sampler_params() -> None:
+    """PR #665 perf fix — requests with different sampler params
+    (temperature, top_p, min_p, top_k) but identical stop config MUST
+    share the same BatchGenerator.
+
+    Before the fix, the reuse key included the full sampler tuple
+    (temperature, top_p, min_p, top_k, ignore_eos), so two concurrent
+    requests with different temperatures forced serial processing. A
+    33K-token agentic request (default temp) blocked a 352-token
+    concurrent request (different temp) for 115 seconds in production.
+
+    Per-request samplers are passed to ``batch_gen.insert(samplers=[...])``
+    directly, so the only generator-level invariant is stop config —
+    sampler params don't need to match for reuse.
+    """
+    pytest.importorskip("mlx")
+    from vllm_mlx.request import SamplingParams
+    from vllm_mlx.scheduler import Scheduler
+
+    sentinel = object()
+    create_calls = []
+
+    class StubScheduler:
+        batch_generator = None
+        running = False
+        memory_aware_cache = None
+        prefix_cache = None
+        _current_sampler_params = None
+
+        def _close_batch_generator(self) -> None:
+            self.batch_generator = None
+
+        def _create_batch_generator(self, sp):
+            create_calls.append(sp)
+            return sentinel
+
+    stub = StubScheduler()
+
+    # Same stop config (defaults: empty stop_token_ids, ignore_eos=False);
+    # different sampler params across every axis the old key checked.
+    p_low = SamplingParams(
+        max_tokens=512, temperature=0.0, top_p=1.0, min_p=0.0, top_k=-1
+    )
+    p_high = SamplingParams(
+        max_tokens=512, temperature=0.8, top_p=0.95, min_p=0.05, top_k=50
+    )
+
+    assert Scheduler._ensure_batch_generator(stub, p_low) is True
+    assert len(create_calls) == 1, "first request should build a generator"
+
+    assert Scheduler._ensure_batch_generator(stub, p_high) is True
+    assert len(create_calls) == 1, (
+        "two requests with different sampler params but identical stop "
+        "config MUST reuse the BatchGenerator (PR #665). Before the fix, "
+        "sampler params were in the reuse key, forcing serialization of "
+        "concurrent requests with different temperatures (115s production "
+        "stall reported by Claude Code agentic workloads)."
+    )
+
+    # Also verify reuse holds when an overlap would otherwise refuse:
+    # the previous-running guard kicks in on key MISMATCH, not on reuse.
+    stub.running = {"req-active": object()}
+    assert Scheduler._ensure_batch_generator(stub, p_high) is True
+    assert len(create_calls) == 1, (
+        "reuse on a running batch must still succeed when stop config "
+        "matches — sampler-only differences never trigger the requeue."
+    )
+
+
+def test_scheduler_batch_generator_reuse_key_includes_stop_token_ids() -> None:
+    """PR #665 correctness fix — requests with different
+    ``stop_token_ids`` must NOT share a BatchGenerator.
+
+    Before the fix, the reuse key was (temperature, top_p, min_p, top_k,
+    ignore_eos), excluding caller-supplied ``stop_token_ids``. Two
+    requests with the same sampler params but different stop sequences
+    would silently share a generator built around the first request's
+    stop set — the second request's stop tokens were ignored.
+
+    The new key folds ``frozenset(stop_token_ids)`` in, so a mismatch
+    triggers a rebuild (or, with an active batch, a requeue).
+    """
+    pytest.importorskip("mlx")
+    from vllm_mlx.request import SamplingParams
+    from vllm_mlx.scheduler import Scheduler
+
+    sentinel = object()
+    create_calls = []
+    close_calls = []
+
+    class StubScheduler:
+        batch_generator = None
+        running = False
+        memory_aware_cache = None
+        prefix_cache = None
+        _current_sampler_params = None
+
+        def _close_batch_generator(self) -> None:
+            close_calls.append(self.batch_generator)
+            self.batch_generator = None
+
+        def _create_batch_generator(self, sp):
+            create_calls.append(sp)
+            return sentinel
+
+    stub = StubScheduler()
+
+    base = dict(max_tokens=512, temperature=0.0, top_p=1.0, min_p=0.0, top_k=-1)
+    p_stop_a = SamplingParams(**base, stop_token_ids=[42])
+    p_stop_b = SamplingParams(**base, stop_token_ids=[99])
+
+    assert Scheduler._ensure_batch_generator(stub, p_stop_a) is True
+    assert len(create_calls) == 1
+
+    closes_before = len(close_calls)
+    assert Scheduler._ensure_batch_generator(stub, p_stop_b) is True
+    assert len(create_calls) == 2, (
+        "different stop_token_ids MUST rebuild the BatchGenerator — "
+        "before PR #665 the second request would silently inherit the "
+        "first request's stop set (correctness bug)."
+    )
+    assert len(close_calls) > closes_before, (
+        "the old generator must be torn down before the rebuild."
+    )
+
+    # Order-independence: the key is a frozenset, so list order of
+    # stop_token_ids must not affect reuse. [1, 2] and [2, 1] are the
+    # same stop set semantically — they must share a generator.
+    p_stop_ab = SamplingParams(**base, stop_token_ids=[1, 2])
+    p_stop_ba = SamplingParams(**base, stop_token_ids=[2, 1])
+
+    assert Scheduler._ensure_batch_generator(stub, p_stop_ab) is True
+    creates_before = len(create_calls)
+    assert Scheduler._ensure_batch_generator(stub, p_stop_ba) is True
+    assert len(create_calls) == creates_before, (
+        "stop_token_ids list order MUST NOT affect reuse — frozenset "
+        "in the key normalizes ordering."
+    )
+
+    # Overlap with running batch + different stop_token_ids → refuse
+    # (mirrors the ignore_eos requeue path; protects the same invariant).
+    stub.running = {"req-active": object()}
+    creates_pre_overlap = len(create_calls)
+    closes_pre_overlap = len(close_calls)
+    refused = Scheduler._ensure_batch_generator(
+        stub, SamplingParams(**base, stop_token_ids=[7])
+    )
+    assert refused is False, (
+        "request with mismatching stop_token_ids MUST be refused while a "
+        "previous batch is still running — otherwise it would inherit "
+        "the active batch's stop set."
+    )
+    assert len(create_calls) == creates_pre_overlap
+    assert len(close_calls) == closes_pre_overlap
+
+
 def test_standardized_config_dict_matches_schema_consts() -> None:
     """The hardcoded constants in ``config`` must equal the schema's
     ``const`` values — schema validation depends on this."""
