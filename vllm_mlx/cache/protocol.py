@@ -71,6 +71,38 @@ class ManifestMismatchError(ValueError):
         self.actual = actual
 
 
+# Field-type registry for ``Manifest.from_dict`` runtime validation.
+# Kept inline rather than reflected from the dataclass because
+# ``from __future__ import annotations`` makes ``field.type`` a string
+# at class-definition time, and runtime typing.get_type_hints would
+# need this module to be fully importable — easier to enumerate.
+_FIELD_TYPES: dict[str, type] = {
+    "protocol_version": str,
+    "model_id": str,
+    "quantization": str,
+    "paged_cache": bool,
+    "turboquant_kv": bool,
+    "index_format_version": int,
+    "entries": int,
+    "total_bytes": int,
+    "rapid_mlx_version": str,
+    "created_at": str,
+    "extra": dict,
+}
+
+
+def _is_expected_type(value: object, expected: type) -> bool:
+    """Strict isinstance check that rejects bool when int is expected.
+
+    Python's ``isinstance(True, int)`` is True (bool subclasses int), but
+    JSON ``true`` was clearly not meant as the integer 1 — so reject it.
+    Symmetric: ``isinstance(1, bool)`` is False, which is what we want.
+    """
+    if expected is int and isinstance(value, bool):
+        return False
+    return isinstance(value, expected)
+
+
 @dataclass
 class Manifest:
     """Header describing the engine-cache blob at an export root.
@@ -103,10 +135,24 @@ class Manifest:
 
     @classmethod
     def from_dict(cls, data: dict) -> Manifest:
-        # Drop any unknown keys so a future writer adding fields doesn't
-        # break an older reader — additive evolution is the whole point.
-        known = {f for f in cls.__dataclass_fields__}
-        filtered = {k: v for k, v in data.items() if k in known}
+        """Build a ``Manifest`` from a parsed JSON dict, with type checks.
+
+        Drops unknown keys (additive-evolution semantics) but rejects any
+        known key whose value is the wrong type. Without this a peer could
+        serve ``{"entries": "not-an-int"}`` and the route would return 200
+        for a structurally invalid manifest — codex round-3 BLOCKING.
+        """
+        filtered = {}
+        for key, value in data.items():
+            if key not in _FIELD_TYPES:
+                continue  # additive evolution
+            expected = _FIELD_TYPES[key]
+            if not _is_expected_type(value, expected):
+                raise MalformedManifestError(
+                    f"manifest field {key!r}: expected {expected.__name__}, "
+                    f"got {type(value).__name__}"
+                )
+            filtered[key] = value
         return cls(**filtered)
 
 
@@ -153,17 +199,23 @@ def read_manifest(root: Path) -> Manifest:
     """
     target = root / MANIFEST_FILENAME
     if not target.is_file():
-        raise ManifestNotFoundError(f"manifest.json not found in {root}")
+        # Path-free exception text — the route layer logs the resolved
+        # path server-side, but the HTTP body stays caller-oriented so a
+        # bearer-token holder can't probe the server's export-root layout
+        # by enumerating 404s. The path lives in the chained exception's
+        # `filename` for callers that want it programmatically.
+        exc = ManifestNotFoundError("manifest.json not found")
+        exc.filename = str(target)
+        raise exc
     try:
         data = json.loads(target.read_text())
     except json.JSONDecodeError as exc:
         raise MalformedManifestError(
-            f"manifest.json at {root} is not valid JSON: {exc.msg}"
+            f"manifest.json is not valid JSON: {exc.msg}"
         ) from exc
     if not isinstance(data, dict):
         raise MalformedManifestError(
-            f"manifest.json at {root} must decode to a JSON object, "
-            f"got {type(data).__name__}"
+            f"manifest.json must decode to a JSON object, got {type(data).__name__}"
         )
     return Manifest.from_dict(data)
 

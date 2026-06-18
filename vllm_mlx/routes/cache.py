@@ -132,14 +132,26 @@ def _read_manifest_or_http(root: Path):
     as a JSONDecodeError → FastAPI 500, hiding a caller-controlled bug
     inside an opaque server error. Mapping the three failure modes
     distinctly is what makes the contract usable from a client.
+
+    Response details are caller-oriented — the fully resolved local
+    filesystem path stays in the server log only, not in the HTTP body
+    where a bearer-token holder could harvest the export-root layout.
     """
     try:
         return read_manifest(root)
     except ManifestNotFoundError as exc:
+        logger.info("cache: manifest not found at %s", root)
         raise HTTPException(
-            status_code=404, detail=f"no manifest.json at {root}"
+            status_code=404,
+            detail="no manifest.json at the requested cache path",
         ) from exc
     except MalformedManifestError as exc:
+        # ``str(exc)`` is already path-free (see protocol.read_manifest).
+        # It carries the structural reason — "not valid JSON: ...",
+        # "must decode to a JSON object, got list", "manifest field
+        # 'entries': expected int, got str" — which the client needs to
+        # fix its own payload. The resolved path only lands in server logs.
+        logger.warning("cache: malformed manifest at %s: %s", root, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

@@ -181,6 +181,41 @@ def test_read_manifest_rejects_non_object_payload(tmp_path):
         read_manifest(tmp_path)
 
 
+def test_manifest_from_dict_rejects_wrong_type(tmp_path):
+    """A known field with the wrong JSON type → MalformedManifestError.
+
+    Codex round-3 BLOCKING: ``"entries": "not-an-int"`` previously
+    constructed the dataclass blindly, so a peer could serve a manifest
+    that violated its own advertised schema and the route would return
+    200 anyway. Now each known field's value is checked against its
+    expected Python type at read time.
+    """
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"protocol_version": "1", "entries": "not-an-int"})
+    )
+    with pytest.raises(MalformedManifestError, match="entries"):
+        read_manifest(tmp_path)
+
+
+def test_manifest_from_dict_rejects_bool_for_int_field(tmp_path):
+    """``isinstance(True, int)`` is True in Python — but JSON ``true`` is
+    clearly not the integer 1. The strict check rejects this."""
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"protocol_version": "1", "entries": True})
+    )
+    with pytest.raises(MalformedManifestError, match="entries"):
+        read_manifest(tmp_path)
+
+
+def test_manifest_from_dict_rejects_string_for_bool_field(tmp_path):
+    """``"paged_cache": "yes"`` is structurally wrong even if intuitive."""
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"protocol_version": "1", "paged_cache": "yes"})
+    )
+    with pytest.raises(MalformedManifestError, match="paged_cache"):
+        read_manifest(tmp_path)
+
+
 def test_manifest_from_dict_drops_unknown_fields(tmp_path):
     """An older reader handling a newer writer's extra fields just ignores them."""
     payload = {
@@ -215,6 +250,25 @@ def test_routes_require_auth(cache_client, method, path, body):
     else:
         resp = client.get(path)
     assert resp.status_code == 401, resp.text
+
+
+def test_info_requires_auth_even_with_valid_manifest(cache_client):
+    """An unauthenticated ``GET /v1/cache/info`` against a path with a
+    valid manifest must still return 401, not 200.
+
+    Codex round-3 NIT: the parametrized auth check uses an empty default
+    path, where auth-fires-before-handler is indistinguishable from
+    auth-fires-after-handler by 404 vs 401 ordering. With a real manifest
+    in place, a bypassed auth dependency would surface as a 200 — this
+    test catches that exact regression.
+    """
+    _write_export_root(
+        cache_client.sandbox,
+        "valid",
+        Manifest(protocol_version=PROTOCOL_VERSION, model_id="x", entries=1),
+    )
+    resp = cache_client.client.get("/v1/cache/info?path=valid")
+    assert resp.status_code == 401
 
 
 def test_routes_reject_wrong_bearer(cache_client):
@@ -314,6 +368,38 @@ def test_info_malformed_manifest_returns_400(cache_client):
     )
     assert resp.status_code == 400
     assert "JSON object" in resp.json()["detail"]
+
+
+def test_info_400_detail_does_not_leak_resolved_path(cache_client):
+    """The 400 body must not include the server's resolved cache root.
+
+    Codex round-3 NIT: leaking ``/Users/raullen/.cache/rapid-mlx/...`` to
+    any bearer-token holder is unnecessary information disclosure.
+    """
+    bad = cache_client.sandbox / "leak-probe"
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text("{ syntax error here")
+    resp = cache_client.client.get(
+        "/v1/cache/info?path=leak-probe",
+        headers=_auth(),
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert str(cache_client.sandbox) not in detail
+    assert "/" not in detail or "JSON" in detail  # may mention syntax but no path
+
+
+def test_info_404_detail_does_not_leak_resolved_path(cache_client):
+    """The 404 body must not include the server's resolved cache root."""
+    (cache_client.sandbox / "no-such").mkdir(parents=True)
+    resp = cache_client.client.get(
+        "/v1/cache/info?path=no-such",
+        headers=_auth(),
+    )
+    assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert str(cache_client.sandbox) not in detail
+    assert detail == "no manifest.json at the requested cache path"
 
 
 def test_import_missing_manifest_returns_404(cache_client):
