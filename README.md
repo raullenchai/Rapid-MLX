@@ -20,7 +20,12 @@
 </p>
 
 <p align="center">
-  <sub>Prefer a Mac GUI? Try <a href="https://rapidmlx.com"><b>Rapid-MLX Desktop</b></a> — same engine, no terminal.</sub>
+  <sub>
+    <a href="https://rapidmlx.com"><b>rapidmlx.com</b></a> ·
+    <a href="https://rapidmlx.com/desktop">Desktop app</a> ·
+    <a href="https://rapidmlx.com/performance/">Community benchmarks</a> ·
+    <a href="https://models.rapidmlx.com/">Model mirror</a>
+  </sub>
 </p>
 
 <p align="center">
@@ -444,6 +449,8 @@ print(message.content[0].text)
 
 The model has to fit in your Mac's RAM. If your Mac slows down or Activity Monitor shows red memory pressure, pick a smaller model from the table below.
 
+> **Browse the full catalog** at [**models.rapidmlx.com**](https://models.rapidmlx.com/) — 80+ MLX-quantised models on a free R2 mirror with resumable downloads, no HuggingFace rate limits. `rapid-mlx pull <alias>` fetches from there automatically.
+
 | Your Mac | Best Model | RAM Used | Speed (B=1) | Quality |
 |----------|-----------|---------|-------|---------|
 | **16 GB** MacBook Air/Pro | [Qwen3.5-4B 4bit](https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit) | 2.4 GB | 147 tok/s | Good for chat and simple tasks |
@@ -644,6 +651,8 @@ Aggregate throughput = sum of output tokens across all four streams ÷ wall-cloc
 ✅ Direct apples-to-apples: identical weights both sides.
 
 <sub>¹ Ollama Qwen3 base, not Qwen3.5 — DeltaNet hybrid arch isn't on llama.cpp yet. ² Closest dense Qwen3; Unsloth Qwen3.6-27B GGUF fails to load on Ollama 0.24. ³ mlx-lm 0.31.3 has no Gemma 4 loader (it lives in mlx-vlm). ⁴ Gemma 4 not yet on llama.cpp — Gemma 3 is the closest. ⁵ Closest MoE A3B available; Qwen3.5/3.6-35B-A3B don't have a llama.cpp build yet.</sub>
+
+> **Different Mac?** Numbers above are one M3 Ultra. See community-submitted runs across M1/M2/M3/M4 Apple Silicon at [**rapidmlx.com/performance**](https://rapidmlx.com/performance/) — sortable by chip × model × version. Submit your own with `rapid-mlx bench <alias> --submit`.
 
 *Full benchmark data with all models, TTFT tables, DeltaNet snapshots, and engine comparison below.*
 
