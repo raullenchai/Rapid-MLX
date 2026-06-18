@@ -500,6 +500,41 @@ class TestTextParserReasoningCap:
         assert len(content_events) == 1
         assert content_events[0].content == finalize_content
 
+    def test_finalize_emits_fallback_on_parser_exception(self):
+        """Codex round-4 NIT #3: when the parser raises on the forced
+        close-marker call in ``finalize()``, the prior implementation
+        only logged the exception — a parser bug on the cap path
+        silently degraded into a reasoning-only response. After the
+        fix, ``finalize()`` must emit a deterministic fallback content
+        event so the client is never left with a totally-silent answer
+        (and clients / tests can easily detect the degraded path).
+        """
+        parser = MagicMock()
+        parser.extract_reasoning_streaming = MagicMock(
+            side_effect=[
+                # Chunk 1 — emits reasoning over the cap.
+                MagicMock(reasoning="x" * 40, content=None),
+                # Finalize-time injection — parser bug raises.
+                RuntimeError("parser blew up on injected </think>"),
+            ]
+        )
+        parser.reset_state = MagicMock()
+
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+        pp.process_chunk(_make_output("x" * 40))
+        assert pp._reasoning_cap_hit is True
+        events = pp.finalize()
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 1, (
+            "finalize() must emit a fallback content event when the "
+            "parser raises on the forced close-marker call"
+        )
+        # Deterministic shape — matches the postprocessor / route
+        # fallback string so clients can pattern-match.
+        assert "reasoning cap hit" in content_events[0].content.lower()
+
     def test_finalize_no_op_when_close_injected_in_stream(self):
         """Idempotency: when the close-marker was already spliced
         in-stream (by the existing mid-stream injection path),

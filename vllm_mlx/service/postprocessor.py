@@ -1143,17 +1143,28 @@ class StreamingPostProcessor:
             previous_text = self.accumulated_text
             injected_delta = "</think>"
             self.accumulated_text += injected_delta
+            delta_msg = None
             try:
                 delta_msg = self.reasoning_parser.extract_reasoning_streaming(
                     previous_text, self.accumulated_text, injected_delta
                 )
             except Exception as e:
+                # Codex round-4 NIT #3: surface a deterministic
+                # fallback content event when the parser raises on the
+                # forced close path so the client never gets a totally-
+                # silent answer. Strictly better than the prior log-only
+                # path and trivially detectable by tests / clients.
                 logger.warning(
                     "finalize close-marker injection raised on %r: %s",
                     type(self.reasoning_parser).__name__,
                     e,
                 )
-                delta_msg = None
+                events.append(
+                    StreamEvent(
+                        type="content",
+                        content="[reasoning cap hit — parser flush failed]",
+                    )
+                )
             if delta_msg is not None:
                 trailing_content = getattr(delta_msg, "content", None)
                 if isinstance(trailing_content, str) and trailing_content:
