@@ -720,12 +720,29 @@ async def _stream_anthropic_messages(
                 # Text-parser cap force-close: splice ``</think>`` into the
                 # parser's incoming bytes once the cap has fired so the
                 # state machine flips to content on this chunk. Idempotent.
+                #
+                # Codex round-9 BLOCKING #3: earlier draft mutated
+                # ``delta_text`` to ``"</think>" + delta_text`` THEN ran
+                # ``accumulated_raw += delta_text``, poisoning the
+                # shared Anthropic raw buffer with the forged marker.
+                # The terminal injection / finalize_streaming path then
+                # re-parsed the mutated buffer, potentially mis-
+                # classifying the synthetic bytes. Fix: keep
+                # ``accumulated_raw`` to real model output only and
+                # build a LOCAL ``parser_current`` that includes the
+                # synthetic marker for the parser call. Shared buffer
+                # holds ``previous_raw + original_delta``; parser sees
+                # ``previous_raw + "</think>" + original_delta``.
                 if _reasoning_cap_hit and not _reasoning_close_injected:
-                    delta_text = "</think>" + delta_text
+                    parser_delta_text = "</think>" + delta_text
+                    parser_current = previous_raw + parser_delta_text
                     _reasoning_close_injected = True
+                else:
+                    parser_delta_text = delta_text
+                    parser_current = previous_raw + delta_text
                 accumulated_raw += delta_text
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
-                    previous_raw, accumulated_raw, delta_text
+                    previous_raw, parser_current, parser_delta_text
                 )
                 if delta_msg is None:
                     continue

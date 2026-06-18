@@ -461,12 +461,14 @@ class TestTextParserReasoningCap:
         scripts a parser that holds back content until it sees the
         close marker and asserts that content is emitted by finalize.
         """
-        # Chunk 1: 100 chars of reasoning (overflows the 1-token cap),
-        # then no further chunks — but the parser is sitting on
-        # "answer-bytes" that it would only release after seeing
-        # ``</think>``. Without the finalize-time injection those bytes
-        # would be lost.
-        scripted_chunks = [("x" * 40, None)]  # chunk 1 reasoning only
+        # Chunk 1 emits reasoning EXACTLY at the boundary (cap*4 = 4
+        # chars under cap=1) — latches the cap but produces no
+        # overflow, so the in-chunk flip does NOT fire (no overflow ⇒
+        # no need to force a transition mid-chunk). The parser is then
+        # sitting on "answer-bytes" that it would only release after
+        # seeing ``</think>``. Without the finalize-time injection
+        # those bytes would be lost when no further chunk arrives.
+        scripted_chunks = [("xxxx", None)]  # chunk 1: exact-boundary reasoning
 
         # finalize_inject is what the parser returns when we splice
         # ``</think>`` into it from finalize().
@@ -500,11 +502,13 @@ class TestTextParserReasoningCap:
         )
         pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
         pp.reset()
-        # Chunk 1 fires the cap.
-        pp.process_chunk(_make_output("x" * 40))
+        # Chunk 1 fires the cap at the exact boundary (4 chars = 1
+        # token under ceiling-÷4) — no overflow ⇒ no in-chunk flip.
+        pp.process_chunk(_make_output("xxxx"))
         assert pp._reasoning_cap_hit is True
         # Critical: close-marker injection has NOT fired yet (no
-        # process_chunk call after the cap).
+        # overflow to trigger the in-chunk flip, no subsequent chunk
+        # to trigger the next-chunk injection).
         assert pp._reasoning_close_injected is False
 
         # Stream ends — finalize must trigger the injection.
@@ -576,18 +580,22 @@ class TestTextParserReasoningCap:
         pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
         pp.reset()
 
-        pp.process_chunk(_make_output("x" * 40))
+        # Cap fires WITH overflow on chunk 1, so the round-9 in-chunk
+        # flip releases ``real_answer`` here (the parser's content
+        # response to the in-chunk forced ``</think>``).
+        chunk1_events = pp.process_chunk(_make_output("x" * 40))
         assert pp._reasoning_cap_hit is True
-        events = pp.finalize()
+        finalize_events = pp.finalize()
 
-        content_events = [e for e in events if e.type == "content"]
+        all_events = list(chunk1_events) + list(finalize_events)
+        content_events = [e for e in all_events if e.type == "content"]
         # Critical: the buffered answer must appear EXACTLY ONCE on the
         # wire — not zero (silent drop) and not two (duplicate-flush
-        # hazard codex round-4/5 BLOCKING).
+        # hazard codex round-4/5/9 BLOCKING).
         matching = [e for e in content_events if real_answer in e.content]
         assert len(matching) == 1, (
-            f"buffered answer must be emitted exactly once after terminal "
-            f"cap-hit; got {len(matching)} matching event(s) "
+            f"buffered answer must be emitted exactly once after cap-hit; "
+            f"got {len(matching)} matching event(s) "
             f"(all content events: {[e.content for e in content_events]})"
         )
         # The postprocessor's ``finalize()`` does NOT call
@@ -647,23 +655,32 @@ class TestTextParserReasoningCap:
 
     def test_finalize_no_op_when_close_injected_in_stream(self):
         """Idempotency: when the close-marker was already spliced
-        in-stream (by the existing mid-stream injection path),
+        in-stream (in-chunk flip OR mid-stream injection path),
         ``finalize()`` must NOT re-inject. Otherwise the parser sees
         a second forged ``</think>`` and emits trailing content twice.
+
+        Codex round-9: the in-chunk flip path (cap crosses with
+        overflow, postprocessor runs the parser a second time with
+        ``</think>`` in the same chunk) sets
+        ``_reasoning_close_injected = True`` immediately. The
+        ``finalize()`` injection then short-circuits and emits no
+        additional parser calls / content events.
         """
         from types import SimpleNamespace
 
-        finalize_calls = []
+        injection_count = 0
 
         def _extract(previous, current, delta):
+            nonlocal injection_count
             assert current == previous + delta
             if delta.startswith("</think>"):
+                injection_count += 1
                 return SimpleNamespace(reasoning=None, content="real-answer")
-            if not previous and not delta.startswith("</think>"):
-                # Chunk 1 — overflow reasoning.
+            if not previous:
+                # Chunk 1 — overflow reasoning (the cap crosses here).
                 return SimpleNamespace(reasoning="x" * 40, content=None)
-            finalize_calls.append({"previous": previous, "delta": delta})
-            return SimpleNamespace(reasoning=None, content=None)
+            # Chunk 2 — ordinary content, no marker.
+            return SimpleNamespace(reasoning=None, content="more")
 
         parser = MagicMock()
         parser.extract_reasoning_streaming = _extract
@@ -675,17 +692,24 @@ class TestTextParserReasoningCap:
         )
         pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
         pp.reset()
-        # Chunk 1: cap fires.
+        # Chunk 1: cap fires AND in-chunk flip injects ``</think>``.
         pp.process_chunk(_make_output("x" * 40))
-        # Chunk 2: in-stream injection fires here.
-        pp.process_chunk(_make_output("more-bytes"))
         assert pp._reasoning_close_injected is True
+        assert injection_count == 1, (
+            "in-chunk flip must inject </think> exactly once on cap-crossing"
+        )
+        # Chunk 2: ordinary content delta, parser sees no marker.
+        pp.process_chunk(_make_output("more"))
+        assert injection_count == 1, "second chunk must not re-inject"
         # finalize() must be a no-op for the injection path.
         events = pp.finalize()
-        assert finalize_calls == [], (
-            "finalize() injected </think> twice; idempotent latch failed"
+        assert injection_count == 1, (
+            "finalize() must NOT re-inject </think> — the in-chunk flip "
+            "already flipped the parser; a second injection would re-emit "
+            "the buffered content"
         )
-        # No content event from finalize (mid-stream already emitted).
+        # No content event from finalize (mid-stream + chunk-2 already
+        # emitted whatever was real model output).
         content_from_finalize = [e for e in events if e.type == "content"]
         assert content_from_finalize == []
 

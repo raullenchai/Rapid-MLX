@@ -928,11 +928,54 @@ class StreamingPostProcessor:
         # is rerouted to content so no model output is silently dropped
         # and the SSE stream gets a clean transition from reasoning to
         # content even when the parser hasn't actually seen ``</think>``.
+        #
+        # Codex round-9 BLOCKING #1: when overflow is produced on the
+        # cap-crossing chunk and the parser hasn't yet seen
+        # ``</think>``, the parser is still LOGICALLY mid-think.
+        # Emitting overflow as content from that state leaks
+        # still-in-thinking bytes onto the wire as
+        # ``delta.content`` on the chat stream. Symmetric with the
+        # routes-side fix (round-7 + round-8): force the parser flip
+        # in THIS same chunk with a synthetic ``</think>`` against a
+        # LOCAL ``current`` (don't pollute ``self.accumulated_text`` —
+        # round-8 invariant). Only promote overflow to content when
+        # the flip succeeds; suppress on flip failure rather than
+        # mixing channels under a broken state machine.
         if reasoning:
             kept_reasoning, overflow_content = self._consume_reasoning_budget(reasoning)
             reasoning = kept_reasoning or None
             if overflow_content:
-                content = (content or "") + overflow_content
+                flip_succeeded = self._reasoning_close_injected
+                if not self._reasoning_close_injected:
+                    self._reasoning_close_injected = True
+                    flip_previous = self.accumulated_text
+                    flip_delta = "</think>"
+                    flip_current = flip_previous + flip_delta
+                    try:
+                        flip_msg = self.reasoning_parser.extract_reasoning_streaming(
+                            flip_previous, flip_current, flip_delta
+                        )
+                        flip_succeeded = True
+                    except Exception as e:
+                        logger.warning(
+                            "postprocessor in-chunk close-marker flip raised "
+                            "on %r: %s — parser state may stay mid-think; "
+                            "suppressing %d-byte overflow on this chunk to "
+                            "avoid leaking reasoning bytes as content",
+                            type(self.reasoning_parser).__name__,
+                            e,
+                            len(overflow_content),
+                        )
+                        flip_msg = None
+                    flip_content = (
+                        getattr(flip_msg, "content", None)
+                        if flip_msg is not None
+                        else None
+                    )
+                    if isinstance(flip_content, str) and flip_content:
+                        content = (content or "") + flip_content
+                if flip_succeeded:
+                    content = (content or "") + overflow_content
 
         if reasoning:
             self.accumulated_reasoning += reasoning

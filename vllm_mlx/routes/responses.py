@@ -569,8 +569,12 @@ async def _stream_responses(
                 continue
 
             if reasoning_parser:
-                # accumulated_raw already updated above; pass current/previous
-                # to the parser's streaming extractor.
+                # ``accumulated_raw`` already had the ORIGINAL
+                # ``delta_text`` appended above. Pass current/previous
+                # to the parser's streaming extractor. Note: ``previous_raw``
+                # here is computed from the buffer minus the ORIGINAL
+                # delta (round-9 fix — keep the shared buffer clean of
+                # synthetic markers).
                 previous_raw = (
                     accumulated_raw[: -len(delta_text)]
                     if delta_text
@@ -580,23 +584,29 @@ async def _stream_responses(
                 # in front of the next chunk so the parser flips to
                 # content. Idempotent — only fires once per request.
                 #
-                # Codex round-1 BLOCKING #1: the prior implementation
-                # mutated ``delta_text`` to ``"</think>" + delta_text`` but
-                # appended ``"</think>"`` AFTER the original delta in
-                # ``accumulated_raw``. That left the parser's
-                # ``current`` argument out of sync with the (previous,
-                # delta) pair (``current != previous + delta``) and the
-                # parser saw the forced close marker AFTER the chunk's
-                # body instead of before it. Rebuild ``accumulated_raw``
-                # so the close marker sits between ``previous_raw`` and
-                # the original delta — symmetric with the postprocessor
-                # path that injects via ``_maybe_inject_reasoning_close``.
+                # Codex round-9 BLOCKING #2: the earlier
+                # ``accumulated_raw = previous_raw + delta_text`` (where
+                # ``delta_text`` had been mutated to start with
+                # ``</think>``) wrote the forged marker INTO the shared
+                # buffer. The terminal injection path then re-parsed
+                # that mutated buffer via ``finalize_streaming``,
+                # potentially mis-classifying the synthetic bytes.
+                # Fix: keep ``accumulated_raw`` to real model output
+                # only (the original ``delta_text`` was already
+                # appended above), and build a LOCAL ``parser_current``
+                # for the parser call that includes the synthetic
+                # marker. The parser sees ``previous + "</think>" +
+                # original``; the shared buffer holds ``previous +
+                # original``.
                 if _reasoning_cap_hit and not _reasoning_close_injected:
-                    delta_text = "</think>" + delta_text
-                    accumulated_raw = previous_raw + delta_text
+                    parser_delta_text = "</think>" + delta_text
+                    parser_current = previous_raw + parser_delta_text
                     _reasoning_close_injected = True
+                else:
+                    parser_delta_text = delta_text
+                    parser_current = accumulated_raw
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
-                    previous_raw, accumulated_raw, delta_text
+                    previous_raw, parser_current, parser_delta_text
                 )
                 if delta_msg is None:
                     continue
