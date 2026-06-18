@@ -658,19 +658,29 @@ async def _stream_responses(
         # so a terminal cap-hit flips the parser to content and any
         # trailing bytes are promoted to ``response.output_text.delta``.
         # Idempotent via ``_reasoning_close_injected``.
-        terminal_injection_emitted = False
+        terminal_injection_attempted = False
         if (
             reasoning_parser is not None
             and _reasoning_cap_hit
             and not _reasoning_close_injected
         ):
             _reasoning_close_injected = True
+            terminal_injection_attempted = True
+            # Codex round-6 BLOCKING #2: build the parser's
+            # ``current`` argument LOCALLY rather than mutating the
+            # shared ``accumulated_raw``. If the injection produces no
+            # content (no held bytes / parser early-returns), the
+            # subsequent ``finalize_streaming(accumulated_raw)`` would
+            # otherwise re-parse a buffer that ends with the synthetic
+            # ``</think>`` marker and could mis-classify the forged
+            # bytes as model output. Symmetric with the postprocessor
+            # fix in service/postprocessor.py.
             previous_raw = accumulated_raw
             injected_delta = "</think>"
-            accumulated_raw = previous_raw + injected_delta
+            local_current = previous_raw + injected_delta
             try:
                 final_inject = reasoning_parser.extract_reasoning_streaming(
-                    previous_raw, accumulated_raw, injected_delta
+                    previous_raw, local_current, injected_delta
                 )
             except Exception as e:
                 # Codex round-5 BLOCKING #3: an earlier draft emitted a
@@ -698,21 +708,32 @@ async def _stream_responses(
                     if filtered:
                         async for ev in _emit_text_delta(filtered):
                             yield ev
-                        terminal_injection_emitted = True
 
-        # Codex round-4 BLOCKING #1: when the terminal injection above
-        # emitted content, the parser already flushed its held buffer
-        # for the spliced-in ``</think>``. Running ``finalize_streaming``
-        # next on the now-mutated ``accumulated_raw`` (which includes
-        # the forged close marker) risks re-emitting the SAME bytes a
-        # second time — the qwen3 / deepseek parsers' ``finalize_streaming``
-        # is a non-stream re-parse of the whole accumulated buffer and
-        # cannot distinguish "content already streamed" from "content
-        # still held". Skip the finalize pass when terminal injection
-        # already produced output. (When the injection fell through
-        # without emitting — buggy parser, no held content — the
-        # finalize path still runs as a fallback.)
-        if reasoning_parser and accumulated_raw and not terminal_injection_emitted:
+        # Codex round-4 BLOCKING #1 + round-6 BLOCKING #2: when the
+        # terminal injection above ran at all (whether or not it
+        # produced content), skip the parser's non-stream finalize
+        # pass. Two distinct hazards:
+        #
+        #   1. Injection emitted content — running ``finalize_streaming``
+        #      next would re-emit the SAME bytes the streaming
+        #      extraction just released (qwen3 / deepseek parsers'
+        #      ``finalize_streaming`` re-parses the whole accumulated
+        #      buffer and can't distinguish already-streamed from
+        #      still-held content).
+        #   2. Injection produced no content — the parser already had
+        #      its chance to flush via the forced ``</think>``. Running
+        #      the non-stream finalize on the original
+        #      ``accumulated_raw`` (which excludes ``</think>`` per
+        #      the round-5/6 local-buffer fix) might still re-classify
+        #      the cap-truncated reasoning as content via the
+        #      non-stream parser's broader heuristics, double-emitting
+        #      bytes already routed past the cap.
+        #
+        # When NO terminal injection was attempted (cap never fired,
+        # or it fired and was already injected mid-stream), the
+        # finalize pass still runs as the safety net for normal
+        # parser-held content.
+        if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
             final_msg = (
                 reasoning_parser.finalize_streaming(accumulated_raw)
                 if hasattr(reasoning_parser, "finalize_streaming")

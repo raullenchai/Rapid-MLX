@@ -813,19 +813,29 @@ async def _stream_anthropic_messages(
     # the parser to content and any trailing bytes are promoted to a
     # text block before stream end. Idempotent via
     # ``_reasoning_close_injected``.
-    terminal_injection_emitted = False
+    terminal_injection_attempted = False
     if (
         reasoning_parser is not None
         and _reasoning_cap_hit
         and not _reasoning_close_injected
     ):
         _reasoning_close_injected = True
+        terminal_injection_attempted = True
+        # Codex round-6 BLOCKING #1: build the parser's ``current``
+        # argument LOCALLY rather than mutating the shared
+        # ``accumulated_raw``. If the injection produces no content
+        # (no held bytes / parser early-returns) and the subsequent
+        # ``finalize_streaming(accumulated_raw)`` were to run, it
+        # would parse a buffer that ends with the synthetic
+        # ``</think>`` marker — potentially mis-classifying the forged
+        # bytes as model output. Symmetric with the postprocessor and
+        # responses-route fixes.
         previous_raw = accumulated_raw
         injected_delta = "</think>"
-        accumulated_raw = previous_raw + injected_delta
+        local_current = previous_raw + injected_delta
         try:
             final_inject = reasoning_parser.extract_reasoning_streaming(
-                previous_raw, accumulated_raw, injected_delta
+                previous_raw, local_current, injected_delta
             )
         except Exception as e:
             # Codex round-5 BLOCKING #2: an earlier draft emitted a
@@ -856,7 +866,6 @@ async def _stream_anthropic_messages(
                     )
                     for event in events:
                         yield event
-                    terminal_injection_emitted = True
         # Close any block we opened above before falling through to the
         # finalize_streaming path.
         if current_block_type is not None:
@@ -868,15 +877,25 @@ async def _stream_anthropic_messages(
             current_block_type = None
 
     # Handle reasoning parser finalization
-    # Codex round-4 BLOCKING #2: skip the parser's non-stream finalize
-    # pass when the terminal injection above already flushed content
-    # via the spliced ``</think>`` — re-running ``finalize_streaming``
-    # on the now-mutated ``accumulated_raw`` would re-emit the same
-    # bytes a second time (the non-stream re-parse can't distinguish
-    # already-streamed content from still-held content). When the
-    # injection fell through without emitting (no held content / buggy
-    # parser fallback), this finalize pass still runs as the safety net.
-    if reasoning_parser and accumulated_raw and not terminal_injection_emitted:
+    # Codex round-4 BLOCKING #2 + round-6 BLOCKING #1: skip the
+    # parser's non-stream finalize pass when the terminal injection
+    # above ran at all (whether or not it produced content).
+    #
+    #   1. Injection emitted content — running ``finalize_streaming``
+    #      next would re-emit the SAME bytes the streaming
+    #      extraction just released (qwen3 / deepseek
+    #      ``finalize_streaming`` is a whole-buffer re-parse).
+    #   2. Injection produced no content — the parser already had
+    #      its chance to flush via the forced ``</think>``. Re-running
+    #      its non-stream pass on ``accumulated_raw`` (which excludes
+    #      the synthetic marker per the round-5/6 local-buffer fix)
+    #      could still re-classify cap-truncated reasoning as content
+    #      via the non-stream parser's broader heuristics.
+    #
+    # When NO terminal injection was attempted (cap never fired, or
+    # was already injected mid-stream), the finalize pass still runs
+    # as the safety net for normal parser-held content.
+    if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
         final_msg = (
             reasoning_parser.finalize_streaming(accumulated_raw)
             if hasattr(reasoning_parser, "finalize_streaming")

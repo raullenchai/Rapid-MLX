@@ -101,6 +101,18 @@ class AnthropicOutputConfig(BaseModel):
     plain ``str | None`` accept-but-ignore field; Pick 1 narrows it to a
     ``Literal`` so a typo like ``"hgih"`` 422s at parse time instead of
     being silently dropped through to the no-cap path.
+
+    Codex round-6 NIT: this IS an intentional API tightening — a
+    future Anthropic SDK version that adds a new effort value would
+    422 against this server until the ``Literal`` is widened AND a
+    corresponding ``ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS`` entry
+    is added. The trade-off is favorable: silently accepting unknown
+    values today (Pick 2's permissive path) means a client requesting
+    a brand-new ``"ultra"`` budget would get an uncapped response
+    that bills the user differently from what they asked for. Failing
+    loud + fast at parse time forces clients to surface the version
+    mismatch. The cost of widening is two lines (one ``Literal``
+    member + one mapping entry), so the maintenance cost is trivial.
     """
 
     format: AnthropicOutputFormat | None = None
