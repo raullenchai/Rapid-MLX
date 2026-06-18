@@ -125,6 +125,44 @@ def test_rescue_noop_when_reasoning_empty_string():
     assert rescued is None
 
 
+def test_rescue_noop_when_reasoning_is_whitespace_only():
+    """Codex round-1 NIT on #676: whitespace-only ``reasoning_text``
+    (``"   \\n\\t  "``) must NOT pass the rescue predicate.
+    Pre-fix the helper only checked truthiness, so a non-empty
+    whitespace string was promoted to ``content`` and clients saw a
+    technically-non-null but semantically-empty assistant turn.
+    Post-fix the predicate uses ``.strip()`` so semantically-empty
+    whitespace is treated identically to ``None`` / ``""`` — no
+    rescue, no fabrication; the existing empty-response path fires.
+    """
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="   \n\t  ",
+        tool_calls=None,
+    )
+    assert rescued is None, (
+        f"whitespace-only reasoning must not promote to content; got {rescued!r}"
+    )
+
+
+def test_rescue_preserves_leading_trailing_whitespace_in_rescued_content():
+    """The whitespace-only gate must use ``.strip()`` on the
+    predicate only — the assigned content stays untouched so a
+    legitimately-padded thought trace (``"  Thought.  "``) keeps its
+    original framing. The predicate sees non-empty content via
+    ``.strip()``; the returned value is the raw original.
+    """
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="  Real thought.  ",
+        tool_calls=None,
+    )
+    assert rescued == "  Real thought.  ", (
+        "predicate must use strip() but the returned value must be "
+        f"the original (un-stripped) reasoning text; got {rescued!r}"
+    )
+
+
 def test_rescue_noop_when_tool_calls_empty_list():
     """``tool_calls`` is sometimes an empty list rather than
     ``None`` (parser returned no matches). Treat it as falsy — the
@@ -551,3 +589,150 @@ def test_streaming_rescue_noop_when_content_was_streamed():
         )
     finally:
         reset_config()
+
+
+# ── response_format gate: codex round-1 BLOCKING on #676 ─────────────
+
+
+class _ReasoningOnlyChatEngine:
+    """Non-streaming engine that returns ONLY reasoning text.
+
+    Reproduces the gemma-4 stuck-thought non-streaming shape: the
+    token-level router populated ``reasoning_text`` but emitted no
+    final/content channel and no tool call. The chat route's normal
+    ``content`` extraction yields empty/None; the rescue would
+    normally surface the reasoning trace as ``content`` — but a
+    structured-output (``response_format`` = ``json_object`` /
+    ``json_schema``) request MUST keep the rescue suppressed because
+    reasoning prose is almost never valid JSON and would break the
+    OpenAI-compat structured-output contract.
+    """
+
+    preserve_native_tool_format = False
+    is_mllm = False
+    supports_guided_generation = False
+    tokenizer = None
+
+    def __init__(self, reasoning_text: str):
+        self._reasoning_text = reasoning_text
+        self.chat_calls: list[dict] = []
+
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        return "PROMPT"
+
+    async def chat(self, messages, **kwargs):
+        from vllm_mlx.engine.base import GenerationOutput
+
+        self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+        return GenerationOutput(
+            text="",
+            new_text="",
+            prompt_tokens=4,
+            completion_tokens=8,
+            finished=True,
+            finish_reason="stop",
+            channel="reasoning",
+            reasoning_text=self._reasoning_text,
+        )
+
+
+def _run_chat_route_with_response_format(response_format: dict) -> dict:
+    """Helper: drive the chat route via TestClient with a
+    reasoning-only engine and the given ``response_format``. Returns
+    the parsed JSON response body so the test can assert on
+    ``content`` / ``reasoning_content``.
+    """
+    import json as _json
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.chat import router as chat_router
+
+    cfg = reset_config()
+    cfg.engine = _ReasoningOnlyChatEngine(
+        reasoning_text="Need to think about the JSON shape the user wants",
+    )
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.reasoning_parser = None
+
+    try:
+        app = FastAPI()
+        app.include_router(chat_router)
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "stream": False,
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "give me JSON"}],
+                "response_format": response_format,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        return _json.loads(resp.text)
+    finally:
+        reset_config()
+
+
+def test_rescue_skipped_when_response_format_is_json_object():
+    """Codex round-1 BLOCKING on #676: when a client requests
+    ``response_format={"type": "json_object"}``, the route MUST NOT
+    rescue reasoning text into ``content``. Reasoning prose is
+    almost never valid JSON, so surfacing it would break the
+    OpenAI-compat structured-output contract (clients expect either
+    validated JSON or the existing empty/error path so they can
+    retry, not surprise prose).
+
+    Post-fix invariant: ``content`` is ``None`` (or empty), the
+    reasoning trace stays in ``reasoning_content`` so it isn't
+    lost, and the structured-output client sees the unchanged
+    empty path.
+    """
+    body = _run_chat_route_with_response_format({"type": "json_object"})
+
+    choice = body["choices"][0]
+    msg = choice["message"]
+    # The rescue must NOT fire — content stays None / absent.
+    assert not msg.get("content"), (
+        "#676 BLOCKING: rescue must be suppressed for "
+        f"response_format=json_object; got content={msg.get('content')!r}"
+    )
+    # Reasoning is still surfaced via reasoning_content so the
+    # trace isn't lost — operator can still debug, client gets the
+    # existing structured-output empty/error path.
+    assert "think" in (msg.get("reasoning_content") or "").lower()
+
+
+def test_rescue_skipped_when_response_format_is_json_schema():
+    """Same #676 BLOCKING contract for ``json_schema``: structured
+    output requests MUST NOT have reasoning prose surfaced as
+    ``content``. Validated JSON or the existing empty/error path —
+    never surprise prose that the client will then fail to parse
+    against the requested schema.
+    """
+    body = _run_chat_route_with_response_format(
+        {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                },
+            },
+        }
+    )
+
+    choice = body["choices"][0]
+    msg = choice["message"]
+    assert not msg.get("content"), (
+        "#676 BLOCKING: rescue must be suppressed for "
+        f"response_format=json_schema; got content={msg.get('content')!r}"
+    )
+    assert "think" in (msg.get("reasoning_content") or "").lower()

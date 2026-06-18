@@ -316,9 +316,15 @@ def _rescue_silent_drop_from_reasoning(
     * Tool-call path: ``tool_calls`` non-empty → the spec already
       requires ``content`` to be ``None`` (the tool call IS the
       response); rescue does NOT fire.
-    * Truly empty: ``reasoning_text`` empty too → nothing to rescue
-      with; ``None`` propagates. The model genuinely produced
-      nothing; we don't fabricate content.
+    * Truly empty: ``reasoning_text`` empty OR whitespace-only →
+      nothing semantically rescue-worthy; ``None`` propagates. The
+      whitespace-only check (codex round-1 NIT on #676) closes a
+      gap where ``"   \n"`` would surface as non-empty ``content``
+      while still being semantically empty to clients. The
+      ORIGINAL ``reasoning_text`` is returned untouched (no
+      ``.strip()`` on the assignment) so callers that DO want the
+      whitespace preserved still see it as-is — the strip is on
+      the predicate only.
 
     The rescue lives at the route layer (not the engine) because the
     engine's ``_route_tokens_for_channels`` has a tested contract
@@ -334,7 +340,7 @@ def _rescue_silent_drop_from_reasoning(
         return final_content
     if tool_calls:
         return final_content
-    if not reasoning_text:
+    if not reasoning_text or not reasoning_text.strip():
         return final_content
     return reasoning_text
 

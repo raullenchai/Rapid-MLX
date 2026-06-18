@@ -1265,9 +1265,24 @@ async def _create_chat_completion_impl(
     # surface the reasoning trace as ``content`` so OpenAI-compat
     # agentic clients reading only ``content``/``tool_calls`` don't
     # see an empty message.
-    final_content = _rescue_silent_drop_from_reasoning(
-        final_content, reasoning_text, tool_calls
-    )
+    #
+    # Codex round-1 BLOCKING on #676: skip the rescue when the client
+    # requested structured output (``response_format`` =
+    # ``json_object`` / ``json_schema``). Reasoning prose is almost
+    # never valid JSON, so surfacing it as ``content`` would break
+    # the OpenAI-compat structured-output contract and feed the
+    # client garbage prose instead of validated JSON. The existing
+    # empty/error path lets a structured-output client retry rather
+    # than be surprise-fed unstructured text. Agentic (no
+    # ``response_format``) clients still get the rescue.
+    rf_type = getattr(response_format, "type", None)
+    if isinstance(response_format, dict):
+        rf_type = response_format.get("type")
+    structured_output_requested = rf_type in ("json_object", "json_schema")
+    if not structured_output_requested:
+        final_content = _rescue_silent_drop_from_reasoning(
+            final_content, reasoning_text, tool_calls
+        )
 
     # Build logprobs for response if requested
     choice_logprobs = None
