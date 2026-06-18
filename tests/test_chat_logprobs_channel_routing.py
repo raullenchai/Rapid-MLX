@@ -146,8 +146,27 @@ def test_logprobs_path_without_channel_falls_back_unchanged():
     assert msg.get("reasoning_content") in (None, "")
 
 
-def test_logprobs_path_reasoning_only_keeps_content_empty():
-    """Analysis-only stream (no final channel) must NOT leak into content."""
+def test_logprobs_path_reasoning_only_surfaces_via_rescue():
+    """Analysis-only stream (no final channel) on the logprobs path.
+
+    Issue #569 updated the contract for this scenario: a reasoning-only
+    turn was previously emitted with ``content=null``, which agentic
+    OpenAI clients (Cline / Cursor / Codex CLI) reading only the
+    ``content`` field would see as an empty assistant message. The
+    route-layer ``_rescue_silent_drop_from_reasoning`` now surfaces
+    the reasoning trace as ``content`` while keeping
+    ``reasoning_content`` populated — duplication between the two
+    fields is the lesser evil vs. a silently empty response.
+
+    What this test STILL pins (the #442 contract): reasoning channel
+    text does not appear in content via the BLEED path (parser leaking
+    analysis content because the channel split failed). The text we
+    see in ``content`` here is the EXPLICIT rescue, not a regex leak —
+    the engine-level test ``test_truncated_analysis_drops_content_
+    and_recovers_reasoning`` in ``tests/test_engine_router_non_stream``
+    still asserts the engine returns ``content == ""`` on the same
+    input shape.
+    """
     chunks = [
         ("reasoning", "thinking only, no final."),
     ]
@@ -167,7 +186,11 @@ def test_logprobs_path_reasoning_only_keeps_content_empty():
     assert resp.status_code == 200, resp.text
     body = resp.json()
     msg = body["choices"][0]["message"]
-    assert not msg.get("content"), (
-        f"content must be empty when stream is reasoning-only; got {msg['content']!r}"
+    # #569: rescue fires — content carries the reasoning trace so the
+    # assistant turn isn't silently empty for OpenAI-compat clients.
+    assert msg.get("content") == "thinking only, no final.", (
+        f"#569: content must surface reasoning when otherwise empty; "
+        f"got {msg.get('content')!r}"
     )
+    # reasoning_content stays populated unchanged.
     assert msg.get("reasoning_content") == "thinking only, no final."

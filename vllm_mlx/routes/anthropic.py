@@ -39,6 +39,7 @@ from ..service.helpers import (
     _finalize_content_and_reasoning,
     _parse_tool_calls_with_parser,
     _release_admission_unless_committed,
+    _rescue_silent_drop_from_reasoning,
     _resolve_enable_thinking,
     _resolve_max_tokens,
     _resolve_temperature,
@@ -287,6 +288,17 @@ async def create_anthropic_message(
             # consider "sanitized" client-facing content. Pre-existing gap
             # flagged by codex during the #413 review.
             final_content = sanitize_output(final_content)
+
+        # Issue #569: never silently drop. Mirror the OpenAI route's
+        # rescue so the Anthropic surface gets the same protection
+        # against silently-empty assistant turns when the model gets
+        # stuck inside reasoning (gemma-4-26b-4bit multi-turn failure
+        # mode). The Anthropic adapter downstream renders the
+        # rescued ``content`` into a TextBlock; without this it would
+        # emit a completely empty ``content=[]`` Messages response.
+        final_content = _rescue_silent_drop_from_reasoning(
+            final_content, reasoning_text, tool_calls
+        )
 
         finish_reason = "tool_calls" if tool_calls else output.finish_reason
 

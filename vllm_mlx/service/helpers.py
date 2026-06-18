@@ -281,6 +281,64 @@ def _finalize_content_and_reasoning(
     return cleaned_text, reasoning_text
 
 
+def _rescue_silent_drop_from_reasoning(
+    final_content: str | None,
+    reasoning_text: str | None,
+    tool_calls: list | None,
+) -> str | None:
+    """Issue #569: never silently drop an assistant turn.
+
+    The route layer's normal ``content`` extraction can legitimately
+    produce an empty ``final_content`` when the model emits ONLY
+    reasoning tokens and never closes the reasoning channel into a
+    ``content``/``final`` channel or a tool call. The exact production
+    failure mode: ``gemma-4-26b-4bit`` multi-turn tool flows where the
+    model gets stuck inside ``<|channel>thought\\n...`` and runs out of
+    its token budget before emitting any ``<|tool_call>`` or
+    ``<|channel>content`` marker. The engine's token-level
+    ``OutputRouter`` correctly routes every token to ``reasoning`` —
+    but the route then emits an OpenAI-compat message with
+    ``content=null`` and ``tool_calls=null`` while
+    ``reasoning_content`` carries the entire stuck thought. Agentic
+    clients (Cline, Cursor, Codex CLI) read ``content`` and
+    ``tool_calls`` only, see an empty message, and either retry into
+    the same trap or stall.
+
+    Rescue rule: when ``final_content`` is empty/None AND no
+    ``tool_calls`` fired AND ``reasoning_text`` is non-empty, surface
+    ``reasoning_text`` as ``content``. ``reasoning_content`` stays
+    populated unchanged — duplication between the two fields is the
+    lesser evil vs. a silently empty response.
+
+    Cases that fall through unchanged:
+
+    * Happy path: ``final_content`` is non-empty → return as-is.
+    * Tool-call path: ``tool_calls`` non-empty → the spec already
+      requires ``content`` to be ``None`` (the tool call IS the
+      response); rescue does NOT fire.
+    * Truly empty: ``reasoning_text`` empty too → nothing to rescue
+      with; ``None`` propagates. The model genuinely produced
+      nothing; we don't fabricate content.
+
+    The rescue lives at the route layer (not the engine) because the
+    engine's ``_route_tokens_for_channels`` has a tested contract
+    (issue #442's harmony fix pins ``content == ""`` when only the
+    analysis channel fires) — flipping that at the engine level
+    would re-leak analysis text into ``content`` for the original
+    #442 case. The rescue runs AFTER tool-call parsing and AFTER the
+    reasoning/content split, as a final route-level safety net so
+    silent drops never escape to clients regardless of which model
+    family produced them.
+    """
+    if final_content:
+        return final_content
+    if tool_calls:
+        return final_content
+    if not reasoning_text:
+        return final_content
+    return reasoning_text
+
+
 def _parser_accepts_enable_thinking(reasoning_parser) -> bool:
     """Return True iff ``reasoning_parser.extract_reasoning`` declares
     an ``enable_thinking`` parameter (or ``**kwargs`` catch-all).
