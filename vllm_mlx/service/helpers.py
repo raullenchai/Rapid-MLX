@@ -345,6 +345,35 @@ def _rescue_silent_drop_from_reasoning(
     return reasoning_text
 
 
+def _is_structured_output_requested(response_format) -> bool:
+    """Codex round-2 BLOCKING on #676: shared predicate for "client
+    asked for structured output" — used by BOTH the non-streaming
+    and streaming silent-drop rescue gates in
+    ``vllm_mlx/routes/chat.py`` to decide whether to suppress the
+    reasoning→content rescue.
+
+    Returns ``True`` iff ``response_format.type`` is ``json_object``
+    or ``json_schema`` — the two OpenAI-compat shapes where surfacing
+    reasoning prose as ``content`` would feed the client unstructured
+    text instead of validated JSON (or the existing empty/error path
+    they can retry on). ``text`` (the default) and ``None`` return
+    ``False`` so agentic clients still get the rescue.
+
+    Accepts either a Pydantic ``ResponseFormat`` object (real route
+    use) or a raw ``dict`` (tests / inbound JSON). Round 1 inlined
+    this same check at the non-streaming call site only; round 2
+    pulled it into a helper after codex caught the streaming path
+    drifting — one definition, two call sites, no chance for the
+    two predicates to disagree again.
+    """
+    if response_format is None:
+        return False
+    rf_type = getattr(response_format, "type", None)
+    if isinstance(response_format, dict):
+        rf_type = response_format.get("type")
+    return rf_type in ("json_object", "json_schema")
+
+
 def _parser_accepts_enable_thinking(reasoning_parser) -> bool:
     """Return True iff ``reasoning_parser.extract_reasoning`` declares
     an ``enable_thinking`` parameter (or ``**kwargs`` catch-all).

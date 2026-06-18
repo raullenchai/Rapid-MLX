@@ -52,6 +52,7 @@ from ..service.helpers import (
     _extract_streaming_token_logprobs,
     _finalize_content_and_reasoning,
     _inject_json_instruction,
+    _is_structured_output_requested,
     _maybe_pin_system_prompt,
     _parse_tool_calls_with_parser,
     _release_admission_unless_committed,
@@ -1275,11 +1276,13 @@ async def _create_chat_completion_impl(
     # empty/error path lets a structured-output client retry rather
     # than be surprise-fed unstructured text. Agentic (no
     # ``response_format``) clients still get the rescue.
-    rf_type = getattr(response_format, "type", None)
-    if isinstance(response_format, dict):
-        rf_type = response_format.get("type")
-    structured_output_requested = rf_type in ("json_object", "json_schema")
-    if not structured_output_requested:
+    #
+    # Codex round-2 BLOCKING on #676: the predicate is now factored
+    # into ``_is_structured_output_requested`` so the streaming
+    # rescue path (chat.py:~1580) can call the SAME predicate. Round
+    # 1 inlined the check here only; codex round 2 caught the
+    # streaming path drifting because it had no gate at all.
+    if not _is_structured_output_requested(response_format):
         final_content = _rescue_silent_drop_from_reasoning(
             final_content, reasoning_text, tool_calls
         )
@@ -1574,15 +1577,30 @@ async def stream_chat_completion(
             # adds a NEW ``content`` chunk at the end (duplication of
             # the same text across the two channels is the lesser
             # evil vs. a silently empty content stream).
+            #
+            # Codex round-2 BLOCKING on #676: gate on the SAME
+            # ``_is_structured_output_requested`` predicate as the
+            # non-streaming path (chat.py:~1283). Without this, a
+            # ``stream=true`` request with
+            # ``response_format={"type": "json_object"|"json_schema"}``
+            # would still receive reasoning prose in
+            # ``delta.content`` despite the non-streaming path
+            # explicitly suppressing exactly that. Structured-output
+            # clients expect validated JSON or the existing empty
+            # path so they can retry — never surprise prose.
             already_streamed_content = bool(processor.accumulated_text)
             has_any_tool_calls = bool(fallback_tool_calls) or (
                 finish_event.finish_reason == "tool_calls"
+            )
+            structured_output_requested = _is_structured_output_requested(
+                request.response_format
             )
             if (
                 not already_streamed_content
                 and not terminal_content
                 and not has_any_tool_calls
                 and processor.accumulated_reasoning
+                and not structured_output_requested
             ):
                 terminal_content = processor.accumulated_reasoning
                 logger.info(

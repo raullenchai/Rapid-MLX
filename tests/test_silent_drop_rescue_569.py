@@ -736,3 +736,144 @@ def test_rescue_skipped_when_response_format_is_json_schema():
         f"response_format=json_schema; got content={msg.get('content')!r}"
     )
     assert "think" in (msg.get("reasoning_content") or "").lower()
+
+
+# ── streaming response_format gate: codex round-2 BLOCKING on #676 ──
+
+
+def _run_streaming_chat_route_with_response_format(response_format: dict) -> list[dict]:
+    """Helper: drive the streaming chat route via TestClient with a
+    reasoning-only streaming engine and the given ``response_format``.
+    Returns the parsed list of SSE event dicts so tests can assert
+    that the terminal chunk does NOT carry rescued ``delta.content``
+    (because structured output was requested).
+
+    Mirrors ``_run_chat_route_with_response_format`` but drives
+    ``stream=True`` — pins the streaming counterpart of the same
+    contract. Factored so the ``json_object`` and ``json_schema``
+    cases share the entire harness; only the request body differs.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.chat import router as chat_router
+
+    cfg = reset_config()
+    cfg.engine = _ReasoningOnlyStreamEngine(
+        reasoning_deltas=[
+            "Need to think about ",
+            "the JSON shape ",
+            "the user wants",
+        ]
+    )
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.reasoning_parser = None
+
+    try:
+        app = FastAPI()
+        app.include_router(chat_router)
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "stream": True,
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "give me JSON"}],
+                "response_format": response_format,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        return _parse_sse(resp.text)
+    finally:
+        reset_config()
+
+
+def test_streaming_rescue_skipped_when_response_format_is_json_object():
+    """Codex round-2 BLOCKING on #676: the SSE/streaming rescue path
+    must apply the same ``response_format`` gate as the non-streaming
+    path. Pre-fix, ``stream=true`` requests with
+    ``response_format={"type": "json_object"}`` would still get the
+    reasoning trace surfaced in ``delta.content`` on the terminal
+    chunk, breaking the OpenAI-compat structured-output contract for
+    streaming clients exactly as the non-streaming path used to
+    before round 1.
+
+    Post-fix invariant: NO SSE chunk carries reasoning prose in
+    ``delta.content``. Per-delta ``delta.reasoning_content`` chunks
+    still go out during the loop (debuggability), and the terminal
+    chunk's ``delta.content`` is empty / absent so structured-output
+    clients see the existing empty path and can retry — never
+    surprise prose.
+    """
+    events = _run_streaming_chat_route_with_response_format({"type": "json_object"})
+    assert events, "expected at least one SSE chunk"
+
+    # Aggregate every delta.content across the whole stream — none of
+    # them should carry the reasoning trace. Per-delta reasoning
+    # chunks SHOULD still flow on the reasoning_content channel so
+    # operators can debug.
+    streamed_content = ""
+    streamed_reasoning = ""
+    for ev in events:
+        for choice in ev.get("choices", []):
+            delta = choice.get("delta") or {}
+            if delta.get("content"):
+                streamed_content += delta["content"]
+            if delta.get("reasoning_content"):
+                streamed_reasoning += delta["reasoning_content"]
+
+    assert not streamed_content, (
+        "#676 BLOCKING (streaming): no SSE chunk may surface reasoning "
+        "as delta.content when response_format=json_object; "
+        f"got streamed_content={streamed_content!r}"
+    )
+    # Reasoning trace must still be preserved on the reasoning channel.
+    assert "json shape" in streamed_reasoning.lower(), (
+        "reasoning_content must still flow during the loop for "
+        f"debuggability; got reasoning={streamed_reasoning!r}"
+    )
+
+
+def test_streaming_rescue_skipped_when_response_format_is_json_schema():
+    """Same #676 BLOCKING contract for ``json_schema`` on the
+    streaming path: structured output requests MUST NOT have
+    reasoning prose surfaced as ``delta.content`` on the terminal
+    chunk. Validated JSON or the existing empty path — never
+    surprise prose the client will fail to parse against the
+    requested schema.
+    """
+    events = _run_streaming_chat_route_with_response_format(
+        {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                },
+            },
+        }
+    )
+    assert events, "expected at least one SSE chunk"
+
+    streamed_content = ""
+    streamed_reasoning = ""
+    for ev in events:
+        for choice in ev.get("choices", []):
+            delta = choice.get("delta") or {}
+            if delta.get("content"):
+                streamed_content += delta["content"]
+            if delta.get("reasoning_content"):
+                streamed_reasoning += delta["reasoning_content"]
+
+    assert not streamed_content, (
+        "#676 BLOCKING (streaming): no SSE chunk may surface reasoning "
+        "as delta.content when response_format=json_schema; "
+        f"got streamed_content={streamed_content!r}"
+    )
+    assert "json shape" in streamed_reasoning.lower()
