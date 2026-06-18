@@ -951,6 +951,12 @@ class StreamingPostProcessor:
         # the flip succeeds; suppress on flip failure rather than
         # mixing channels under a broken state machine.
         if reasoning:
+            # Capture the FULL original reasoning text the parser
+            # returned BEFORE the cap truncates it. We need this to
+            # position the synthetic ``</think>`` marker at the
+            # CAP BOUNDARY (between kept and overflow) on the flip
+            # call below — not after the full over-budget chunk.
+            full_reasoning = reasoning
             kept_reasoning, overflow_content = self._consume_reasoning_budget(reasoning)
             reasoning = kept_reasoning or None
             if overflow_content:
@@ -963,7 +969,20 @@ class StreamingPostProcessor:
                     # it forever — otherwise a transient parser bug
                     # leaves the parser permanently mid-think for the
                     # rest of the request.
-                    flip_previous = self.accumulated_text
+                    #
+                    # Codex round-13 BLOCKING #1: position the
+                    # synthetic ``</think>`` AT THE CAP BOUNDARY (not
+                    # after the full over-budget chunk). The earlier
+                    # draft built ``flip_previous = self.accumulated_text``
+                    # which included the OVERFLOW bytes — the parser
+                    # was asked to close AFTER the over-budget bytes
+                    # rather than at the kept-reasoning boundary,
+                    # which would let stateful parsers mis-classify
+                    # the overflow as still-in-thinking. Build the
+                    # flip from ``previous_text + kept_reasoning`` —
+                    # this represents the model output "up to the cap
+                    # firing point" from the parser's POV.
+                    flip_previous = previous_text + kept_reasoning
                     flip_delta = "</think>"
                     flip_current = flip_previous + flip_delta
                     try:
@@ -992,6 +1011,9 @@ class StreamingPostProcessor:
                         content = (content or "") + flip_content
                 if flip_succeeded:
                     content = (content or "") + overflow_content
+            # ``full_reasoning`` only needed within this block; release
+            # the reference to drop the temporary view.
+            del full_reasoning
 
         if reasoning:
             self.accumulated_reasoning += reasoning

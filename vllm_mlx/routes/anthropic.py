@@ -779,7 +779,17 @@ async def _stream_anthropic_messages(
                                 # the latch AFTER success only — if
                                 # the parser raises, next chunk
                                 # retries the forced transition.
-                                flip_previous = accumulated_raw
+                                # Codex round-13 BLOCKING #3:
+                                # position ``</think>`` at the CAP
+                                # BOUNDARY using ``previous_raw +
+                                # kept`` — not ``accumulated_raw``
+                                # (which would put the marker AFTER
+                                # the over-budget bytes). Stateful
+                                # parsers must see the close at the
+                                # exact kept-reasoning boundary so
+                                # the overflow bytes are
+                                # unambiguously past-cap content.
+                                flip_previous = previous_raw + kept
                                 flip_delta = "</think>"
                                 flip_current = flip_previous + flip_delta
                                 try:

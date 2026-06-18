@@ -713,6 +713,66 @@ class TestTextParserReasoningCap:
         content_from_finalize = [e for e in events if e.type == "content"]
         assert content_from_finalize == []
 
+    def test_in_chunk_flip_positions_close_marker_at_cap_boundary(self):
+        """Codex round-13 BLOCKING #1 + NIT #4: the synthetic
+        ``</think>`` injected on the in-chunk flip must sit AT THE
+        CAP BOUNDARY (between kept reasoning and overflow), not after
+        the full over-budget chunk. Stateful parsers (qwen3 /
+        deepseek) read ``previous`` to backtrack; if the marker is
+        positioned after the over-budget bytes, the parser thinks
+        the WHOLE chunk was reasoning and may flush the overflow as
+        held-content on the next streaming call — duplicating bytes
+        already routed past the cap.
+
+        Test: record the parser's ``(previous, current, delta)`` on
+        the flip call and assert the prefix immediately before the
+        delta ends with the KEPT reasoning chars and NOT the overflow.
+        """
+        from types import SimpleNamespace
+
+        flip_records = []
+
+        def _extract(previous, current, delta):
+            assert current == previous + delta
+            if delta == "</think>":
+                # The flip call. Record the positioning so the test
+                # can assert against the cap boundary.
+                flip_records.append({"previous": previous, "delta": delta})
+                return SimpleNamespace(reasoning=None, content=None)
+            # Initial reasoning extraction — return the chunk's full
+            # bytes as reasoning so the postprocessor will cap-truncate.
+            return SimpleNamespace(reasoning=delta, content=None)
+
+        parser = MagicMock()
+        parser.extract_reasoning_streaming = _extract
+        parser.reset_state = MagicMock()
+
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        # cap = 1 token = 4 chars. Chunk = 10 chars: 4 kept, 6 overflow.
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+        pp.process_chunk(_make_output("0123456789"))
+
+        assert len(flip_records) == 1, (
+            f"in-chunk flip must have run exactly once on the cap-"
+            f"crossing chunk; got {len(flip_records)} flip(s)"
+        )
+        flip = flip_records[0]
+        # The parser's ``previous`` (the model output before the
+        # synthetic ``</think>``) must end with the KEPT reasoning
+        # chars ("0123") — NOT include the overflow ("456789"). The
+        # round-12 cap-boundary positioning ensures stateful parsers
+        # treat the overflow bytes as past-cap content.
+        assert flip["previous"].endswith("0123"), (
+            f"flip previous must end with kept reasoning chars; "
+            f"got previous={flip['previous']!r}"
+        )
+        assert "456789" not in flip["previous"], (
+            f"flip previous must NOT contain overflow chars (round-13 "
+            f"BLOCKING — close marker positioned at cap boundary, not "
+            f"after over-budget chunk); got previous={flip['previous']!r}"
+        )
+
     def test_failed_in_chunk_flip_does_not_latch_close_marker(self):
         """Codex round-10 BLOCKING #1: if the parser raises on the
         in-chunk forced ``</think>`` flip, the close-injected latch

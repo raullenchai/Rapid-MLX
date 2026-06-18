@@ -638,13 +638,25 @@ async def _stream_responses(
                     # ``current`` (don't mutate ``accumulated_raw`` —
                     # the round-6 local-buffer invariant applies here
                     # too).
-                    _, overflow, _ = _account_for_reasoning(delta_msg.reasoning)
+                    kept_reasoning, overflow, _ = _account_for_reasoning(
+                        delta_msg.reasoning
+                    )
                     flip_succeeded = _reasoning_close_injected
                     if overflow and not _reasoning_close_injected:
                         # Codex round-10 BLOCKING #2: flip the latch
                         # AFTER success only — if the parser raises,
                         # next chunk retries the forced transition.
-                        flip_previous = accumulated_raw
+                        # Codex round-13 BLOCKING #2: position the
+                        # synthetic ``</think>`` AT THE CAP BOUNDARY
+                        # (not after the full over-budget chunk).
+                        # ``previous_raw`` is the buffer before THIS
+                        # delta arrived; ``previous_raw +
+                        # kept_reasoning`` represents the model output
+                        # up to the cap firing point. Without the
+                        # boundary positioning, stateful parsers
+                        # would see ``</think>`` AFTER the over-budget
+                        # bytes and potentially mis-classify them.
+                        flip_previous = previous_raw + kept_reasoning
                         flip_delta = "</think>"
                         flip_current = flip_previous + flip_delta
                         try:
