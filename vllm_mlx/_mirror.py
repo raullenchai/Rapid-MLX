@@ -493,6 +493,35 @@ def _do_r2_download(
         _safe_unlink(tmp)
         return False, f"final-size-mismatch:{final_size}!={expected_size}"
 
+    # Issue #?? — defensive 0-byte rejection when HF didn't tell us a
+    # size. Without this, an R2 worker that hits an unexpected error
+    # path and returns ``200 OK`` with ``Content-Length: 0`` (instead of
+    # the correct 404) is treated as a successful download of a real
+    # 0-byte file — the puller writes an empty file at the snapshot
+    # path, reports ``kind="r2", size=0`` to the summary logger, and the
+    # user sees ``[N/M] file R2 (0 MB)`` for a file that genuinely
+    # wasn't on the mirror. Downstream the file looks "cached" (it
+    # exists, size matches the empty cached_size on the next pull) so
+    # the silent failure can survive multiple warm pulls before the
+    # real model code chokes on the empty file.
+    #
+    # When ``expected_size is not None`` the size-mismatch checks above
+    # already catch this — a real 100-byte ``config.json`` returned as
+    # 0 bytes fails ``final-size-mismatch:0!=100``. The unprotected case
+    # is files where HF's ``siblings`` metadata doesn't expose a size
+    # (some non-LFS files in older repos, or repos whose ``model_info``
+    # call ran without ``files_metadata=True``). For those the empty
+    # response would otherwise look like a legit empty file.
+    #
+    # A genuine 0-byte file (e.g. an empty ``.gitkeep``) is always
+    # listed by HF with ``size == 0`` (not ``None``), so this check
+    # doesn't reject the legitimate case — only the silent-failure case
+    # where the mirror returns an empty body for a file we have no
+    # canonical size for.
+    if expected_size is None and final_size == 0:
+        _safe_unlink(tmp)
+        return False, "empty-response-no-size"
+
     # Issue #652: for LFS files (``expected_sha256`` known) land the
     # verified bytes at ``repo_root/blobs/<sha>`` and symlink the
     # snapshot path at it — matches HF's own layout exactly so the

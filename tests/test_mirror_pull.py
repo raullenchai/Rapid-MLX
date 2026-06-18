@@ -1508,6 +1508,177 @@ def test_zero_byte_file_handled_correctly(
 
 
 # ---------------------------------------------------------------------------
+# Issue #?? — silent empty-response misclassification.
+#
+# An R2 worker that returns ``200 OK`` with ``Content-Length: 0`` (instead
+# of the correct 404) for a file HF didn't expose a size for would
+# otherwise be accepted as a legitimate empty file: the puller writes
+# an empty file at the snapshot path, the summary logger prints
+# ``[N/M] file R2 (0 MB)`` (looks like success), and downstream the file
+# looks "cached" forever — the next pull sees ``cached_size == 0`` and
+# skips it, propagating the silent failure. Force the puller to fall
+# through to HF for the file so the real bytes land.
+#
+# This is the empty-mirror-response counterpart to the 404 path. The
+# difference: the worker did NOT raise 404, so ``urlopen`` returns a
+# normal 200 response with empty body. Without a size from HF we have
+# no way to assert the bytes are correct, so the safe move is to refuse
+# the empty response and let HF re-fetch.
+#
+# When HF DID expose a size (the common case), the
+# ``final-size-mismatch`` check at the bottom of ``_do_r2_download``
+# catches the 0-byte response before this guard fires. This test
+# exercises the size-unknown case explicitly.
+# ---------------------------------------------------------------------------
+
+
+def test_r2_empty_response_without_expected_size_falls_back_to_hf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """R2 returns 200 + Content-Length: 0 for a file whose size HF didn't
+    tell us → puller must fall back to HF, NOT accept the empty file as
+    a successful R2 hit.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "ffff" * 10
+    # ``model.safetensors.index.json`` — picked deliberately to match
+    # the user-reported regression filename. HF's ``model_info`` doesn't
+    # expose a size for it (passed as None here).
+    files = [("model.safetensors.index.json", None), ("config.json", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # R2 returns 200 OK with empty body for the index.json — this is
+    # the silent-failure path the bug filed against: a worker bug
+    # returns 200 instead of the correct 404, and without a size from
+    # HF the puller was previously accepting the empty file.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors.index.json",
+        _FakeResponse(200, b""),
+    )
+    # config.json works normally.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+
+    # Track HF fallback calls so we can assert the index.json was
+    # re-fetched from HF (not silently accepted as R2 success).
+    hf_calls: list[str] = []
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        hf_calls.append(filename)
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        target = snap / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Mirror HF returning real bytes for the index.json — small
+        # plausible payload.
+        if filename == "model.safetensors.index.json":
+            target.write_bytes(b'{"metadata":{}}')
+        else:
+            target.write_bytes(b"h" * 100)
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok, "pull should succeed via HF fallback when R2 returns empty body"
+    # The index.json MUST have come from HF — that's the bug fix. If
+    # production code accepted the empty R2 body as a legit file, this
+    # assertion fails (hf_calls would be empty for the index.json).
+    assert "model.safetensors.index.json" in hf_calls, (
+        "model.safetensors.index.json must fall back to HF when R2 returns "
+        "empty body without an expected_size from HF — silent acceptance is "
+        "the user-reported '[6/12] R2 (0 MB)' bug."
+    )
+    # And the real bytes landed on disk.
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    assert (snap / "model.safetensors.index.json").read_bytes() == b'{"metadata":{}}'
+
+
+def test_r2_empty_response_with_expected_size_still_falls_back_via_size_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Belt-and-braces: when HF DID tell us a size for the file, the
+    existing ``final-size-mismatch`` check (line 492 in ``_do_r2_download``)
+    already catches the 0-byte response. Pin that path too so a future
+    refactor doesn't accidentally rely on the empty-response guard
+    alone — both guards must coexist.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "eeee" * 10
+    # Same shape as the bug, but HF exposes a size (100 bytes).
+    files = [("model.safetensors.index.json", 100), ("config.json", 50)]
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(
+            200, json.dumps(_catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])).encode()
+        ),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors.index.json",
+        _FakeResponse(200, b""),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 50),
+    )
+
+    hf_calls: list[str] = []
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        hf_calls.append(filename)
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        target = snap / filename
+        expected_size = next(s for n, s in files if n == filename)
+        target.write_bytes(b"h" * expected_size)
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    # The size-mismatch path forces HF fallback for the index.json.
+    assert "model.safetensors.index.json" in hf_calls
+
+
+# ---------------------------------------------------------------------------
 # Codex round-9 NIT #4 — when the catalog endpoint raises ``HTTPError``
 # directly (which is what real ``urlopen`` does for HTTP 4xx/5xx), the
 # production code's ``except urllib.error.HTTPError`` branch must still
