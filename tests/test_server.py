@@ -800,6 +800,166 @@ class TestRateLimiterHTTPResponse:
         # new_client should still be present
         assert "new_client" in limiter._requests
 
+    def test_rate_limiter_cleanup_preserves_active_entries(self):
+        """Cleanup never deletes a client whose timestamps are still inside the window.
+
+        Regression for issue #195: the stale-entry sweep used to walk every
+        entry on every request once the dict held >100 clients and could
+        clobber the entry of the very client whose request triggered it.
+        """
+        import time
+
+        from vllm_mlx.server import RateLimiter
+
+        limiter = RateLimiter(requests_per_minute=10, enabled=True)
+
+        now = time.time()
+        recent = now - 5.0  # well inside the 60s window
+        with limiter._lock:
+            # 50 active clients (recent), 60 stale clients (expired).
+            for i in range(50):
+                key = f"active_{i}"
+                limiter._requests[key] = [recent]
+                limiter._last_seen[key] = recent
+            old = now - 120.0
+            for i in range(60):
+                key = f"stale_{i}"
+                limiter._requests[key] = [old]
+                limiter._last_seen[key] = old
+
+        # 110 entries total — over the 100 threshold, so a sweep will run.
+        assert len(limiter._requests) == 110
+
+        # Drive an active client. The sweep MUST keep its entry and all other
+        # active entries.
+        allowed, _ = limiter.is_allowed("active_0")
+        assert allowed is True
+
+        for i in range(50):
+            assert f"active_{i}" in limiter._requests, (
+                f"active client active_{i} was incorrectly reaped"
+            )
+
+        # Stale entries should be gone.
+        for i in range(60):
+            assert f"stale_{i}" not in limiter._requests
+
+    def test_rate_limiter_cleanup_amortized_constant_time(self, monkeypatch):
+        """Cleanup cost is amortized — not run on every request when dict is large.
+
+        Regression for issue #195: previously every request walked the full
+        dict (and the per-entry timestamp list) once size > 100, giving
+        quadratic worst-case work over a burst of requests. The fix throttles
+        the sweep to at most once per window, so back-to-back requests after
+        a sweep must not retrigger it.
+
+        The monotonic clock is patched so this is independent of wall time
+        and won't flake on slow/suspended CI workers.
+        """
+        import time
+
+        from vllm_mlx.middleware import auth as auth_mod
+        from vllm_mlx.server import RateLimiter
+
+        # Hold the monotonic clock steady so the throttle window cannot
+        # silently elapse mid-test.
+        fake_mono = [1000.0]
+        monkeypatch.setattr(auth_mod.time, "monotonic", lambda: fake_mono[0])
+
+        limiter = RateLimiter(requests_per_minute=1000, enabled=True)
+
+        now = time.time()
+        recent = now - 5.0
+        with limiter._lock:
+            for i in range(200):
+                key = f"client_{i}"
+                limiter._requests[key] = [recent]
+                limiter._last_seen[key] = recent
+
+        # First call triggers a sweep and stamps _last_cleanup_mono.
+        limiter.is_allowed("client_0")
+        first_cleanup = limiter._last_cleanup_mono
+        assert first_cleanup > 0, "first call should have run cleanup"
+
+        # The very next call (no monotonic-clock advance) must NOT retrigger.
+        limiter.is_allowed("client_1")
+        assert limiter._last_cleanup_mono == first_cleanup, (
+            "cleanup ran twice within the same window — amortization broken"
+        )
+
+        # Hammer the limiter many times; cleanup must remain pinned even if
+        # the clock crawls forward slightly (still inside the 60s throttle).
+        fake_mono[0] += 10.0  # < window_size
+        for i in range(50):
+            limiter.is_allowed(f"client_{i % 200}")
+        assert limiter._last_cleanup_mono == first_cleanup
+
+        # Advance past the throttle window — now a sweep is allowed again.
+        fake_mono[0] += limiter.window_size + 1.0
+        limiter.is_allowed("client_2")
+        assert limiter._last_cleanup_mono > first_cleanup
+
+    def test_rate_limiter_first_cleanup_never_throttled(self, monkeypatch):
+        """The very first eligible sweep must run regardless of monotonic-clock value.
+
+        Regression for codex round-2 NIT on PR #610: a freshly-booted system
+        can have ``time.monotonic()`` smaller than ``window_size``, so a
+        zero-initialized throttle would incorrectly suppress the first sweep.
+        Initializing to ``-inf`` guarantees the first sweep always runs.
+        """
+        import time
+
+        from vllm_mlx.middleware import auth as auth_mod
+        from vllm_mlx.server import RateLimiter
+
+        # Pin monotonic clock to a small value (simulates fresh boot).
+        monkeypatch.setattr(auth_mod.time, "monotonic", lambda: 1.0)
+
+        limiter = RateLimiter(requests_per_minute=10, enabled=True)
+
+        # Seed >100 stale entries.
+        old = time.time() - 120.0
+        with limiter._lock:
+            for i in range(101):
+                key = f"stale_{i}"
+                limiter._requests[key] = [old]
+                limiter._last_seen[key] = old
+
+        assert len(limiter._requests) == 101
+        # First call must actually sweep, not be silently throttled.
+        limiter.is_allowed("fresh_client")
+        assert len(limiter._requests) < 101, (
+            "first sweep was throttled despite monotonic() < window_size"
+        )
+
+    def test_rate_limiter_cleanup_does_not_evict_current_client(self):
+        """The client whose request triggers the sweep is never evicted.
+
+        Even if its only recorded timestamp would qualify it as stale, the
+        sweep must not remove its bucket out from under it, because the
+        caller is about to read/write that bucket immediately afterwards.
+        """
+        import time
+
+        from vllm_mlx.server import RateLimiter
+
+        limiter = RateLimiter(requests_per_minute=10, enabled=True)
+
+        now = time.time()
+        old = now - 120.0  # outside the 60s window
+        with limiter._lock:
+            for i in range(101):
+                key = f"client_{i}"
+                limiter._requests[key] = [old]
+                limiter._last_seen[key] = old
+
+        # Drive the same key whose recorded data looks stale. It must end
+        # up tracked with the new timestamp, not silently dropped.
+        allowed, _ = limiter.is_allowed("client_0")
+        assert allowed is True
+        assert "client_0" in limiter._requests
+        assert len(limiter._requests["client_0"]) == 1
+
 
 # =============================================================================
 # Integration Tests (require running server)
