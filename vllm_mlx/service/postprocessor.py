@@ -1123,6 +1123,48 @@ class StreamingPostProcessor:
         """
         events = []
 
+        # Codex round-3 BLOCKING #1: when the per-request reasoning cap
+        # latches on the LAST reasoning chunk of the stream (model stops
+        # immediately at the budget, or stops within the exact-boundary
+        # chunk), no subsequent ``process_chunk`` call ever runs the
+        # ``</think>`` injection — the parser is left mid-think, any
+        # held content past the cap stays buffered, and the client sees
+        # a reasoning-only response with no visible answer. Force the
+        # injection here so a terminal cap-hit still flips the parser
+        # to content and any held bytes are flushed as a final content
+        # delta. Idempotent via ``_reasoning_close_injected`` so a
+        # mid-stream injection on a normal chunk doesn't double-fire.
+        if (
+            self.reasoning_parser is not None
+            and self._reasoning_cap_hit
+            and not self._reasoning_close_injected
+        ):
+            self._reasoning_close_injected = True
+            previous_text = self.accumulated_text
+            injected_delta = "</think>"
+            self.accumulated_text += injected_delta
+            try:
+                delta_msg = self.reasoning_parser.extract_reasoning_streaming(
+                    previous_text, self.accumulated_text, injected_delta
+                )
+            except Exception as e:
+                logger.warning(
+                    "finalize close-marker injection raised on %r: %s",
+                    type(self.reasoning_parser).__name__,
+                    e,
+                )
+                delta_msg = None
+            if delta_msg is not None:
+                trailing_content = getattr(delta_msg, "content", None)
+                if isinstance(trailing_content, str) and trailing_content:
+                    trailing_content = sanitize_output(
+                        strip_special_tokens(trailing_content)
+                    )
+                    if trailing_content:
+                        events.append(
+                            StreamEvent(type="content", content=trailing_content)
+                        )
+
         # Fallback tool call detection: streaming parser missed a tool call
         # that the non-stream parser can recover. The streaming code path of
         # each parser is necessarily simpler than ``extract_tool_calls`` —

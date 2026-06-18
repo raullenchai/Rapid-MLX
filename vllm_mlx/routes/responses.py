@@ -648,6 +648,44 @@ async def _stream_responses(
                     async for ev in _emit_text_delta(piece):
                         yield ev
 
+        # Codex round-3 BLOCKING #3: if the reasoning cap latched on the
+        # last engine chunk of the stream (terminal exact-boundary case
+        # OR the model stopped immediately after overflow), the
+        # ``</think>`` close marker was never spliced into the parser —
+        # so any held content past the cap stays buffered and the
+        # client sees a silent reasoning-only response with no
+        # ``output_text.delta`` ever emitted. Force the injection here
+        # so a terminal cap-hit flips the parser to content and any
+        # trailing bytes are promoted to ``response.output_text.delta``.
+        # Idempotent via ``_reasoning_close_injected``.
+        if (
+            reasoning_parser is not None
+            and _reasoning_cap_hit
+            and not _reasoning_close_injected
+        ):
+            _reasoning_close_injected = True
+            previous_raw = accumulated_raw
+            injected_delta = "</think>"
+            accumulated_raw = previous_raw + injected_delta
+            try:
+                final_inject = reasoning_parser.extract_reasoning_streaming(
+                    previous_raw, accumulated_raw, injected_delta
+                )
+            except Exception as e:
+                logger.warning(
+                    "responses terminal close-marker injection raised on %r: %s",
+                    type(reasoning_parser).__name__,
+                    e,
+                )
+                final_inject = None
+            if final_inject is not None and getattr(final_inject, "content", None):
+                content = strip_special_tokens(final_inject.content)
+                if content:
+                    filtered = tool_filter.process(content)
+                    if filtered:
+                        async for ev in _emit_text_delta(filtered):
+                            yield ev
+
         if reasoning_parser and accumulated_raw:
             final_msg = (
                 reasoning_parser.finalize_streaming(accumulated_raw)

@@ -103,14 +103,34 @@ class ResponsesRequest(BaseModel):
     # (upstream vLLM PRs #20859 / #42396 / #43402 backport).
     reasoning_max_tokens: int | None = None
 
-    @model_validator(mode="after")
-    def _validate_reasoning_max_tokens(self) -> "ResponsesRequest":
-        if self.reasoning_max_tokens is not None and self.reasoning_max_tokens < 1:
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_reasoning_max_tokens_raw(cls, data):
+        """Strict type-and-range check on ``reasoning_max_tokens``
+        BEFORE Pydantic coercion. Mirror of the same validator on
+        ``ChatCompletionRequest`` so the three API surfaces
+        (/v1/chat/completions, /v1/responses, /v1/messages) share one
+        contract — codex round-3 NIT #5. See the ChatCompletionRequest
+        validator for the full rationale.
+        """
+        if not isinstance(data, dict):
+            return data
+        if "reasoning_max_tokens" not in data:
+            return data
+        v = data["reasoning_max_tokens"]
+        if v is None:
+            return data
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError(
+                "reasoning_max_tokens must be an integer when set "
+                f"(got {type(v).__name__})."
+            )
+        if v < 1:
             raise ValueError(
                 "reasoning_max_tokens must be >= 1 when set; pass "
                 "enable_thinking=false to disable reasoning entirely."
             )
-        return self
+        return data
 
 
 # =============================================================================

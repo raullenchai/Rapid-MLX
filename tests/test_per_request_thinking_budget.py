@@ -86,6 +86,46 @@ class TestResponsesRequestValidation:
         assert "reasoning_max_tokens" in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        "100",  # JSON-stringified int — silent-coerce hazard
+        "0",
+        1.5,  # float
+        True,  # bool subclass of int — must be rejected explicitly
+        False,
+        [],
+        {},
+    ],
+)
+class TestStrictReasoningMaxTokensValidation:
+    """Codex round-3 NIT #4-#5: tighten the OpenAI-surface validators
+    so they reject the same wire-value classes the Anthropic-surface
+    ``thinking.budget_tokens`` validator already rejects. Without
+    ``mode="before"`` + an explicit type guard, Pydantic v2 silently
+    coerces ``"100"`` to 100 and ``True`` to 1 — turning client-side
+    type bugs into silently-accepted caps. Both the
+    ``/v1/chat/completions`` and ``/v1/responses`` validators must
+    raise; the contract is symmetrical across the three streaming
+    surfaces.
+    """
+
+    def test_chat_completion_request_rejects(self, bad_value):
+        with pytest.raises(Exception):
+            ChatCompletionRequest(
+                messages=[{"role": "user", "content": "hi"}],
+                reasoning_max_tokens=bad_value,
+            )
+
+    def test_responses_request_rejects(self, bad_value):
+        with pytest.raises(Exception):
+            ResponsesRequest(
+                model="gpt-5",
+                input="hi",
+                reasoning_max_tokens=bad_value,
+            )
+
+
 # ---------------------------------------------------------------------------
 # 2) Anthropic output_config.effort mapping (upstream PR #42396)
 # ---------------------------------------------------------------------------
@@ -384,6 +424,125 @@ class TestTextParserReasoningCap:
         # Idempotent — chunk 3 must NOT re-inject.
         pp.process_chunk(_make_output("more"))
         assert not parser.calls[2]["delta"].startswith("</think>")
+
+    def test_finalize_injects_close_marker_after_terminal_cap_hit(self):
+        """Codex round-3 BLOCKING #1: if the reasoning cap latches on
+        the LAST chunk of the stream (model stops immediately at the
+        budget, or stops within the cap-firing chunk), no subsequent
+        ``process_chunk`` call ever runs the ``</think>`` injection.
+        The parser is left mid-think, any buffered content past the cap
+        is dropped, and the client sees a reasoning-only response with
+        no visible answer.
+
+        After the fix, ``finalize()`` must inject ``</think>`` once
+        when ``_reasoning_cap_hit and not _reasoning_close_injected``,
+        and flush whatever content the parser releases. This test
+        scripts a parser that holds back content until it sees the
+        close marker and asserts that content is emitted by finalize.
+        """
+        # Chunk 1: 100 chars of reasoning (overflows the 1-token cap),
+        # then no further chunks — but the parser is sitting on
+        # "answer-bytes" that it would only release after seeing
+        # ``</think>``. Without the finalize-time injection those bytes
+        # would be lost.
+        scripted_chunks = [("x" * 40, None)]  # chunk 1 reasoning only
+
+        # finalize_inject is what the parser returns when we splice
+        # ``</think>`` into it from finalize().
+        finalize_content = "buffered-answer"
+
+        from types import SimpleNamespace
+
+        finalize_calls = []
+
+        def _extract(previous, current, delta):
+            # Maintain the stream invariant on every call so a buggy
+            # accumulated_text update fails this test.
+            assert current == previous + delta
+            if scripted_chunks:
+                reasoning, content = scripted_chunks.pop(0)
+                return SimpleNamespace(reasoning=reasoning, content=content)
+            # Terminal injection: parser sees ``</think>`` and releases
+            # its buffered content.
+            finalize_calls.append({"previous": previous, "delta": delta})
+            if delta == "</think>":
+                return SimpleNamespace(reasoning=None, content=finalize_content)
+            return SimpleNamespace(reasoning=None, content=None)
+
+        parser = MagicMock()
+        parser.extract_reasoning_streaming = _extract
+        parser.reset_state = MagicMock()
+
+        cfg = _make_cfg(
+            reasoning_parser=parser,
+            reasoning_parser_name=None,
+        )
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+        # Chunk 1 fires the cap.
+        pp.process_chunk(_make_output("x" * 40))
+        assert pp._reasoning_cap_hit is True
+        # Critical: close-marker injection has NOT fired yet (no
+        # process_chunk call after the cap).
+        assert pp._reasoning_close_injected is False
+
+        # Stream ends — finalize must trigger the injection.
+        events = pp.finalize()
+        assert pp._reasoning_close_injected is True, (
+            "finalize() must inject </think> when terminal cap-hit "
+            "left the parser mid-think"
+        )
+        # The parser saw exactly one finalize-time call carrying </think>.
+        assert len(finalize_calls) == 1
+        assert finalize_calls[0]["delta"] == "</think>"
+        # The buffered content was released as a content event.
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 1
+        assert content_events[0].content == finalize_content
+
+    def test_finalize_no_op_when_close_injected_in_stream(self):
+        """Idempotency: when the close-marker was already spliced
+        in-stream (by the existing mid-stream injection path),
+        ``finalize()`` must NOT re-inject. Otherwise the parser sees
+        a second forged ``</think>`` and emits trailing content twice.
+        """
+        from types import SimpleNamespace
+
+        finalize_calls = []
+
+        def _extract(previous, current, delta):
+            assert current == previous + delta
+            if delta.startswith("</think>"):
+                return SimpleNamespace(reasoning=None, content="real-answer")
+            if not previous and not delta.startswith("</think>"):
+                # Chunk 1 — overflow reasoning.
+                return SimpleNamespace(reasoning="x" * 40, content=None)
+            finalize_calls.append({"previous": previous, "delta": delta})
+            return SimpleNamespace(reasoning=None, content=None)
+
+        parser = MagicMock()
+        parser.extract_reasoning_streaming = _extract
+        parser.reset_state = MagicMock()
+
+        cfg = _make_cfg(
+            reasoning_parser=parser,
+            reasoning_parser_name=None,
+        )
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+        # Chunk 1: cap fires.
+        pp.process_chunk(_make_output("x" * 40))
+        # Chunk 2: in-stream injection fires here.
+        pp.process_chunk(_make_output("more-bytes"))
+        assert pp._reasoning_close_injected is True
+        # finalize() must be a no-op for the injection path.
+        events = pp.finalize()
+        assert finalize_calls == [], (
+            "finalize() injected </think> twice; idempotent latch failed"
+        )
+        # No content event from finalize (mid-stream already emitted).
+        content_from_finalize = [e for e in events if e.type == "content"]
+        assert content_from_finalize == []
 
     def test_text_parser_force_close_exact_boundary(self):
         """Codex round-2 BLOCKING #4: the cap-fired tests above use

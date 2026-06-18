@@ -274,19 +274,49 @@ class ChatCompletionRequest(BaseModel):
             self.max_tokens = self.max_completion_tokens
         return self
 
-    @model_validator(mode="after")
-    def _validate_reasoning_max_tokens(self) -> "ChatCompletionRequest":
-        """Reject non-positive ``reasoning_max_tokens`` (upstream vLLM
-        PR #43402). ``None`` means "no cap" and is the default; a
-        client that supplies the field must give a positive integer.
-        Zero / negative would be ambiguous (interpret as "no thinking
-        at all" via ``enable_thinking=False``, not via this cap)."""
-        if self.reasoning_max_tokens is not None and self.reasoning_max_tokens < 1:
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_reasoning_max_tokens_raw(cls, data):
+        """Strict type-and-range check on ``reasoning_max_tokens``
+        BEFORE Pydantic coercion (codex round-3 NIT #4).
+
+        Without ``mode="before"`` plus an explicit type guard, Pydantic
+        v2 silently coerces JSON-string ints (``"100"``) and booleans
+        (``True`` → 1) onto the field — same wire-value hazard the
+        Anthropic ``thinking.budget_tokens`` validator already covers,
+        so this surface must match. ``StrictInt`` was rejected because
+        it also rejects perfectly-fine wire ints (Pydantic strict-mode
+        chokes on ``int`` vs ``StrictInt`` cross-pollination from
+        nested models). A manual mode=before validator hits the same
+        contract without touching the typed field declaration.
+
+        Rules (mirror ``AnthropicRequest._validate_thinking_budget``):
+        * Absent / ``None`` → no cap (default).
+        * ``int`` with value ``>= 1`` → accepted.
+        * Anything else (str, float, bool, list, dict) → 422.
+        """
+        if not isinstance(data, dict):
+            return data
+        # Pydantic v2 also accepts the field alias; the JSON wire name
+        # IS ``reasoning_max_tokens`` (no alias), so only one lookup.
+        if "reasoning_max_tokens" not in data:
+            return data
+        v = data["reasoning_max_tokens"]
+        if v is None:
+            return data
+        # Booleans are an int subclass in Python — reject explicitly so
+        # ``True``/``False`` don't slip in as 1/0.
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError(
+                "reasoning_max_tokens must be an integer when set "
+                f"(got {type(v).__name__})."
+            )
+        if v < 1:
             raise ValueError(
                 "reasoning_max_tokens must be >= 1 when set; pass "
                 "enable_thinking=false to disable reasoning entirely."
             )
-        return self
+        return data
 
     @model_validator(mode="after")
     def _normalize_legacy_functions(self) -> "ChatCompletionRequest":

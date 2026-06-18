@@ -802,6 +802,57 @@ async def _stream_anthropic_messages(
         yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
         block_index += 1
 
+    # Codex round-3 BLOCKING #2: if the reasoning cap latched on the
+    # last engine chunk of the stream (terminal exact-boundary case OR
+    # the model stopped immediately after overflow), the ``</think>``
+    # close marker was never spliced into the parser. The thinking
+    # block stays open in the Anthropic SSE shape — the
+    # ``content_block_stop`` for the thinking index never gets a
+    # matching text block, and any parser-held content past the cap is
+    # lost. Force the injection here so a terminal cap-hit still flips
+    # the parser to content and any trailing bytes are promoted to a
+    # text block before stream end. Idempotent via
+    # ``_reasoning_close_injected``.
+    if (
+        reasoning_parser is not None
+        and _reasoning_cap_hit
+        and not _reasoning_close_injected
+    ):
+        _reasoning_close_injected = True
+        previous_raw = accumulated_raw
+        injected_delta = "</think>"
+        accumulated_raw = previous_raw + injected_delta
+        try:
+            final_inject = reasoning_parser.extract_reasoning_streaming(
+                previous_raw, accumulated_raw, injected_delta
+            )
+        except Exception as e:
+            logger.warning(
+                "anthropic terminal close-marker injection raised on %r: %s",
+                type(reasoning_parser).__name__,
+                e,
+            )
+            final_inject = None
+        if final_inject is not None and getattr(final_inject, "content", None):
+            inject_content = strip_special_tokens(final_inject.content)
+            if inject_content:
+                filtered = tool_filter.process(inject_content)
+                if filtered:
+                    events, current_block_type, block_index = _emit_content_pieces(
+                        [("text", filtered)], current_block_type, block_index
+                    )
+                    for event in events:
+                        yield event
+        # Close any block we opened above before falling through to the
+        # finalize_streaming path.
+        if current_block_type is not None:
+            yield (
+                f"event: content_block_stop\ndata: "
+                f"{json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+            )
+            block_index += 1
+            current_block_type = None
+
     # Handle reasoning parser finalization
     if reasoning_parser and accumulated_raw:
         final_msg = (
