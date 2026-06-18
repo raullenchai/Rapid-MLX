@@ -377,6 +377,41 @@ def test_check_mode_fails_when_aggregate_is_missing(tmp_path, capsys):
 # ---------------------------------------------------------------------------
 
 
+def test_main_rejects_unknown_args(capsys):
+    """Typos like ``--chek`` must exit non-zero, not silently regenerate.
+
+    Before the round-2 fix, ``"--check" in argv[1:]`` silently routed
+    any typo to the regenerate branch — a CI gate that runs
+    ``aggregate.py --chek`` would clobber the artifact in CI instead
+    of failing as the operator intended (codex PR #666 round-2 NIT).
+    """
+    rc = AGG.main(["aggregate.py", "--chek"])
+    assert rc == 2, f"unknown arg must exit 2, got {rc}"
+    captured = capsys.readouterr()
+    assert "unrecognized" in captured.err.lower()
+    assert "usage" in captured.err.lower()
+
+
+def test_main_accepts_no_args_and_check(tmp_path, monkeypatch):
+    """The two valid forms (no args / ``--check``) keep working after the
+    strict-arg tightening. Drives ``main()`` against a tmp submissions
+    dir to avoid touching the real artifact."""
+    rows = [_row(sub_id="a1" * 6)]
+    sub_dir = _write_rows(tmp_path, rows)
+    out = tmp_path / "aggregated.json"
+
+    monkeypatch.setattr(AGG, "SUBMISSIONS_DIR", sub_dir)
+    monkeypatch.setattr(AGG, "AGGREGATE_PATH", out)
+    # main() prints AGGREGATE_PATH.relative_to(REPO_ROOT) on success —
+    # patch REPO_ROOT too so the tmp_path-based path stays inside the
+    # patched root.
+    monkeypatch.setattr(AGG, "REPO_ROOT", tmp_path)
+
+    assert AGG.main(["aggregate.py"]) == 0
+    assert out.exists()
+    assert AGG.main(["aggregate.py", "--check"]) == 0
+
+
 def test_real_corpus_committed_aggregate_is_fresh():
     """The on-disk ``community-benchmarks/aggregated.json`` matches the
     current ``submissions/`` directory. This catches the case where a

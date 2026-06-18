@@ -304,15 +304,38 @@ def _check_freshness(submissions_dir: Path, output_path: Path) -> int:
     return 1
 
 
+_USAGE = (
+    "usage: aggregate.py [--check]\n"
+    "  (no args)  regenerate aggregated.json from submissions/\n"
+    "  --check    verify the on-disk aggregate matches current submissions"
+)
+
+
 def main(argv: list[str]) -> int:
-    if "--check" in argv[1:]:
+    # Explicit allowlist of args. The previous "if --check in argv"
+    # form silently ignored typos like ``--chek``, which would then
+    # regenerate the artifact instead of failing the CI gate the
+    # operator meant to run (codex PR #666 round-2 NIT).
+    args = argv[1:]
+    if args == []:
+        # Pass module-level paths explicitly rather than letting
+        # write_aggregate's default args resolve them — defaults bind at
+        # function-definition time, so tests that monkeypatch
+        # SUBMISSIONS_DIR / AGGREGATE_PATH would otherwise be ignored
+        # here and would clobber the committed artifact.
+        data = write_aggregate(SUBMISSIONS_DIR, AGGREGATE_PATH)
+        try:
+            shown = AGGREGATE_PATH.relative_to(REPO_ROOT)
+        except ValueError:
+            shown = AGGREGATE_PATH
+        print(
+            f"Wrote {shown}: {data['source_rows']} rows → {len(data['groups'])} groups"
+        )
+        return 0
+    if args == ["--check"]:
         return _check_freshness(SUBMISSIONS_DIR, AGGREGATE_PATH)
-    data = write_aggregate()
-    print(
-        f"Wrote {AGGREGATE_PATH.relative_to(REPO_ROOT)}: "
-        f"{data['source_rows']} rows → {len(data['groups'])} groups"
-    )
-    return 0
+    print(f"ERROR: unrecognized argument(s): {args!r}\n{_USAGE}", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

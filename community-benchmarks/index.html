@@ -379,8 +379,21 @@ async function init() {
       `aggregate generated ${new Date(data.generated_at).toUTCString()}`;
     render();
   } catch (e) {
-    document.getElementById("results-body").innerHTML =
-      `<tr><td colspan="7" class="empty">Failed to load aggregate: ${e.message}</td></tr>`;
+    // ``e.message`` could be anything — a remote 404 with HTML in the
+    // body, a JSON parse error citing the bad token verbatim — so it
+    // must be escaped before reaching innerHTML the same as the row
+    // data is. Easier: use textContent on a fresh cell so no string
+    // ever transits innerHTML for the error path (codex PR #666
+    // round-2 BLOCKING).
+    const body = document.getElementById("results-body");
+    body.replaceChildren();
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 7;
+    td.className = "empty";
+    td.textContent = `Failed to load aggregate: ${e.message}`;
+    tr.appendChild(td);
+    body.appendChild(tr);
     document.getElementById("meta").textContent = "Aggregate load failed.";
   }
 }
