@@ -969,6 +969,7 @@ async def init_mcp(config_path: str):
 # =============================================================================
 from .routes.anthropic import router as _anthropic_router
 from .routes.audio import router as _audio_router
+from .routes.cache import router as _cache_router
 from .routes.chat import router as _chat_router
 from .routes.completions import router as _completions_router
 from .routes.embeddings import router as _embeddings_router
@@ -988,6 +989,7 @@ app.include_router(_responses_router)
 app.include_router(_embeddings_router)
 app.include_router(_mcp_router)
 app.include_router(_audio_router)
+app.include_router(_cache_router)
 
 
 # =============================================================================
