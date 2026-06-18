@@ -26,6 +26,16 @@ logger = logging.getLogger(__name__)
 # behavior — useful for offline CLI saves where no signal is coming).
 _DEFAULT_SHUTDOWN_BUDGET_SEC = 3.5
 
+# Headroom reserved after the per-entry loop exits for the atomic
+# rename + ``index.json`` write + stale ``.old`` cleanup. Without it a
+# perfectly-budgeted save could finish a write at T = deadline and then
+# get SIGKILL'd during the commit — leaving ``cache_dir.new/`` orphaned
+# anyway (the exact failure mode this whole gate exists to prevent).
+# 400 ms is comfortably above the observed commit cost across all
+# entry-count fixtures + leaves ~600 ms of slack under a 5 s SIGTERM
+# grace for ``engine.stop()`` and uvicorn teardown.
+_COMMIT_HEADROOM_SEC = 0.4
+
 
 def _shutdown_budget_sec() -> float:
     raw = os.environ.get("RAPID_MLX_PREFIX_CACHE_SHUTDOWN_BUDGET")
@@ -76,26 +86,77 @@ def save_prefix_cache_to_disk(budget_sec: float | None = None) -> None:
         return
     if budget_sec is None:
         budget_sec = _shutdown_budget_sec()
-    deadline = time.monotonic() + budget_sec if budget_sec > 0 else None
-    should_abort = (
-        (lambda dl=deadline: time.monotonic() >= dl) if deadline is not None else None
-    )
+    should_abort = _make_should_abort(budget_sec) if budget_sec > 0 else None
     try:
         d = get_cache_dir()
-        if deadline is not None:
+        if should_abort is not None:
             logger.info(
                 f"[lifespan] Saving prefix cache to {d} "
-                f"(shutdown budget {budget_sec:.1f}s)"
+                f"(shutdown budget {budget_sec:.1f}s, "
+                f"commit headroom {_COMMIT_HEADROOM_SEC:.1f}s)"
             )
         else:
             logger.info(f"[lifespan] Saving prefix cache to {d} (no shutdown budget)")
-        saved = cfg.engine.save_cache_to_disk(d, should_abort=should_abort)
+        saved = _call_save_cache_to_disk(cfg.engine, d, should_abort)
         if saved:
             logger.info(f"[lifespan] Saved prefix cache to {d}")
         else:
             logger.info("[lifespan] No cache to save")
     except Exception as e:
         logger.warning(f"[lifespan] Failed to save cache to disk: {e}", exc_info=True)
+
+
+def _make_should_abort(budget_sec: float):
+    """Build a forward-looking deadline predicate.
+
+    Returns a callable ``predicate(predicted_sec=0.0)`` that returns
+    ``True`` when starting an operation of ``predicted_sec`` duration
+    would push wall-clock past ``deadline - _COMMIT_HEADROOM_SEC``.
+
+    The forward-looking shape is what codex flagged on PR #667 round 1:
+    the previous predicate ``time.monotonic() >= deadline`` only fired
+    BEFORE an entry's write started, so a single ``save_prompt_cache``
+    call running past the budget would still get SIGKILL'd mid-write
+    and leave ``cache_dir.new/`` orphaned — the exact failure this PR
+    claims to fix. Callers (currently ``MemoryAwarePrefixCache.save_to
+    _disk``) pass an estimated duration for the NEXT operation and the
+    predicate decides whether to start it or commit-what-we-have.
+    """
+    deadline = time.monotonic() + budget_sec
+    safe_deadline = deadline - _COMMIT_HEADROOM_SEC
+
+    def predicate(predicted_sec: float = 0.0) -> bool:
+        return time.monotonic() + predicted_sec >= safe_deadline
+
+    return predicate
+
+
+def _call_save_cache_to_disk(engine, cache_dir: str, should_abort):
+    """Invoke ``engine.save_cache_to_disk`` with backwards-compat fallback.
+
+    Internal engines (``BatchedEngine``, ``EngineCore``, ``Scheduler``)
+    all accept the ``should_abort`` kwarg as of this PR, but external
+    or third-party engine implementations may still expose the legacy
+    one-argument signature. Without the fallback the kwarg would raise
+    ``TypeError`` and the entire save would be lost — strictly worse
+    than no-deadline persistence. So we try the deadline-aware path
+    first and fall back to the legacy signature if the kwarg isn't
+    accepted.
+    """
+    try:
+        return engine.save_cache_to_disk(cache_dir, should_abort=should_abort)
+    except TypeError as e:
+        # Only fall back when the rejection is specifically about the
+        # new kwarg. Any other TypeError (e.g. wrong path type) should
+        # surface to the caller unchanged.
+        if "should_abort" not in str(e):
+            raise
+        logger.warning(
+            "[lifespan] engine.save_cache_to_disk does not accept "
+            "should_abort kwarg — falling back to legacy signature "
+            "(no deadline awareness for this engine)"
+        )
+        return engine.save_cache_to_disk(cache_dir)
 
 
 def get_cache_dir() -> str:

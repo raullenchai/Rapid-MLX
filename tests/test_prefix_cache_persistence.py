@@ -1180,9 +1180,13 @@ def test_save_to_disk_partial_commit_on_abort(tmp_path):
 
     calls = {"n": 0}
 
-    def predicate():
+    def predicate(predicted_sec=0.0):
         # Fire from the second invocation onward so entry 0 lands but
-        # entries 1 and 2 are skipped.
+        # entries 1 and 2 are skipped. Accepts ``predicted_sec`` to
+        # match the forward-looking predicate contract added in PR
+        # #667 round 2 — production callers pass an estimated per-
+        # entry write duration; this test ignores it and gates on
+        # call count for deterministic single-vs-multi-entry behavior.
         calls["n"] += 1
         return calls["n"] > 1
 
@@ -1220,7 +1224,13 @@ def test_save_to_disk_aborts_before_first_entry_returns_false(tmp_path):
     cache = fresh_cache()
     cache.store(list(range(11)), make_kvcache(num_tokens=11))
 
-    assert cache.save_to_disk(str(cache_dir), should_abort=lambda: True) is False
+    assert (
+        cache.save_to_disk(
+            str(cache_dir),
+            should_abort=lambda predicted_sec=0.0: True,
+        )
+        is False
+    )
     assert not cache_dir.exists()
     assert not (tmp_path / "snap.new").exists()
 
@@ -1242,26 +1252,35 @@ def test_save_to_disk_predicate_none_preserves_full_flush(tmp_path):
     assert (cache_dir / "entry_1.safetensors").exists()
 
 
-def test_save_prefix_cache_to_disk_runs_off_event_loop(tmp_path, monkeypatch):
-    """Regression for the lifespan shutdown bug: ``save_prefix_cache_to_disk``
-    must be wrapped in ``asyncio.to_thread`` so the asyncio loop stays
-    responsive while the multi-GB flush streams to disk.
+def test_shutdown_save_prefix_cache_runs_off_event_loop(tmp_path, monkeypatch):
+    """Regression for the lifespan shutdown bug, pinned at the production
+    callsite.
 
-    Shape: pretend the engine takes 1 second to flush. Drive a tiny
-    coroutine that fires the save AND, on the same loop, polls a
-    monotonic counter every 50ms. Assert the counter advances multiple
-    times concurrently with the save — i.e. the loop wasn't blocked.
+    Drives ``server._shutdown_save_prefix_cache`` directly — NOT a
+    test-local ``asyncio.to_thread`` wrapper around the save function.
+    Codex flagged PR #667 round 1 because the prior shape wrapped
+    ``to_thread`` test-side, so a regression that dropped the wrapper
+    from the lifespan helper would still pass. This version exercises
+    the helper that's literally what ``lifespan`` awaits — if anyone
+    replaces the ``await asyncio.to_thread(...)`` line in
+    ``_shutdown_save_prefix_cache`` with a direct call, the slow fake
+    engine below blocks the loop and the ticker count drops to 1.
+
+    Shape: pretend the engine takes ~600ms to flush. Drive the helper
+    AND a 50ms ticker concurrently. Assert the ticker advances
+    multiple times — i.e. the loop wasn't blocked.
     """
     import asyncio
     import time as _time
 
     from vllm_mlx import config as _config_mod
+    from vllm_mlx import server as _server_mod
     from vllm_mlx.runtime import cache as _cache_mod
 
     class _SlowEngine:
         def save_cache_to_disk(self, cache_dir, should_abort=None):
-            # Block for ~600ms on the worker thread — caller is supposed
-            # to wrap us in asyncio.to_thread so the loop keeps spinning.
+            # Block for ~600ms on the worker thread — production wrap
+            # is asyncio.to_thread so the loop stays responsive.
             _time.sleep(0.6)
             return True
 
@@ -1272,6 +1291,11 @@ def test_save_prefix_cache_to_disk_runs_off_event_loop(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_cache_mod, "get_config", lambda: _FakeCfg())
     monkeypatch.setattr(_config_mod, "get_config", lambda: _FakeCfg())
+    # ``_shutdown_save_prefix_cache`` checks ``_engine is not None``
+    # AND ``hasattr(_engine, "save_cache_to_disk")`` before delegating
+    # to the runtime save. Substitute a stub that satisfies both so
+    # the helper actually runs.
+    monkeypatch.setattr(_server_mod, "_engine", _SlowEngine())
 
     async def _drive():
         ticks: list[float] = []
@@ -1282,22 +1306,36 @@ def test_save_prefix_cache_to_disk_runs_off_event_loop(tmp_path, monkeypatch):
                 ticks.append(_time.monotonic() - t0)
                 await asyncio.sleep(0.05)
 
-        # Mimic the lifespan shutdown call shape exactly.
+        # Drive the production lifespan helper as-is. Don't wrap it
+        # in asyncio.to_thread out here — that would re-introduce the
+        # original bug the test exists to catch.
         await asyncio.gather(
-            asyncio.to_thread(_cache_mod.save_prefix_cache_to_disk),
+            _server_mod._shutdown_save_prefix_cache(),
             _ticker(),
         )
         return ticks
 
     ticks = asyncio.run(_drive())
-    # If the save was running on the loop thread, the ticker wouldn't
-    # have produced more than a single tick before the save returned;
-    # with asyncio.to_thread the ticker advances every ~50ms.
     assert len(ticks) >= 5, (
         f"event loop was blocked during cache flush — only saw {len(ticks)} "
-        f"ticks in 600ms (expected ≥5). Did the lifespan shutdown lose its "
-        f"asyncio.to_thread wrap?"
+        f"ticks in 600ms (expected ≥5). Did _shutdown_save_prefix_cache "
+        f"lose its asyncio.to_thread wrap?"
     )
+
+
+def test_shutdown_save_prefix_cache_no_op_when_engine_missing(monkeypatch):
+    """Companion guard: when ``server._engine`` is None (no model loaded
+    yet at shutdown, or already torn down), the helper returns silently
+    instead of blowing up with AttributeError. This is the production
+    failure mode for ``rapid-mlx serve --help`` lifecycle interruption
+    where shutdown lands before startup finished.
+    """
+    import asyncio
+
+    from vllm_mlx import server as _server_mod
+
+    monkeypatch.setattr(_server_mod, "_engine", None)
+    asyncio.run(_server_mod._shutdown_save_prefix_cache())  # must not raise
 
 
 def test_save_prefix_cache_to_disk_respects_budget(tmp_path, monkeypatch):
@@ -1334,6 +1372,180 @@ def test_save_prefix_cache_to_disk_respects_budget(tmp_path, monkeypatch):
         "save_prefix_cache_to_disk must pass a should_abort predicate"
     )
     assert pred() is True, "deadline-backed predicate should be tripped after sleep"
+
+
+def test_save_prefix_cache_to_disk_predicate_is_forward_looking(tmp_path, monkeypatch):
+    """Codex PR #667 round 1 BLOCKING-2 regression.
+
+    The predicate must accept a ``predicted_sec`` argument and return
+    True when starting that operation would push past the budget — not
+    just when wall-clock has already crossed the deadline. Without
+    this shape, a single 300 MB ``save_prompt_cache`` call lasting 2 s
+    can straddle a 3.5 s budget and get SIGKILL'd mid-write, leaving
+    ``cache_dir.new/`` orphaned. We exercise the contract directly so
+    a regression that drops the kwarg fails locally instead of
+    presenting as "rare orphan dir on shutdown" in production.
+    """
+    import time as _time
+
+    from vllm_mlx import config as _config_mod
+    from vllm_mlx.runtime import cache as _cache_mod
+
+    captured = {"pred": None}
+
+    class _Engine:
+        def save_cache_to_disk(self, cache_dir, should_abort=None):
+            captured["pred"] = should_abort
+            return False
+
+    class _FakeCfg:
+        engine = _Engine()
+        model_path = "fake/model"
+        model_name = None
+
+    monkeypatch.setattr(_cache_mod, "get_config", lambda: _FakeCfg())
+    monkeypatch.setattr(_config_mod, "get_config", lambda: _FakeCfg())
+
+    # 2 s budget — comfortably under the headroom-padded deadline (so
+    # the at-deadline check is False) but a 5 s predicted operation
+    # blows past it.
+    _cache_mod.save_prefix_cache_to_disk(budget_sec=2.0)
+    pred = captured["pred"]
+    assert pred is not None
+    assert pred(predicted_sec=0.0) is False, (
+        "predicate fires too eagerly — a 2s budget shouldn't trip at t=0 "
+        "with no predicted duration"
+    )
+    assert pred(predicted_sec=5.0) is True, (
+        "predicate must look forward: starting a 5s op under a 2s budget "
+        "should abort BEFORE the op begins, not let it straddle the deadline"
+    )
+    # Sanity: the no-arg call shape (legacy `should_abort()`) also still
+    # works thanks to the default arg, but should NOT trip at t=0.
+    # This keeps tests / callers that don't yet pass predicted_sec
+    # compatible during the transition.
+    _ = pred()
+    # Wait past the deadline (minus headroom) — at-now check should now trip.
+    _time.sleep(2.0)
+    assert pred() is True, "at-now check should trip after wall-clock past deadline"
+
+
+def test_save_prefix_cache_to_disk_fallback_for_legacy_engine_signature(monkeypatch):
+    """Codex PR #667 round 1 BLOCKING-1 regression.
+
+    External / third-party engine implementations may still expose the
+    legacy one-argument ``save_cache_to_disk(cache_dir)`` signature.
+    The runtime helper unconditionally passes ``should_abort=`` which
+    would raise ``TypeError`` against those engines, losing the entire
+    save. The fallback retries the call with the legacy positional
+    shape — losing deadline awareness, but preserving the save.
+    """
+    from vllm_mlx import config as _config_mod
+    from vllm_mlx.runtime import cache as _cache_mod
+
+    calls = []
+
+    class _LegacyEngine:
+        # Note: no ``should_abort`` kwarg — emulates a pre-#667 plugin.
+        def save_cache_to_disk(self, cache_dir):
+            calls.append(cache_dir)
+            return True
+
+    class _FakeCfg:
+        engine = _LegacyEngine()
+        model_path = "fake/model"
+        model_name = None
+
+    monkeypatch.setattr(_cache_mod, "get_config", lambda: _FakeCfg())
+    monkeypatch.setattr(_config_mod, "get_config", lambda: _FakeCfg())
+
+    # Must not raise. Must reach the engine. Must not crash the
+    # lifespan shutdown.
+    _cache_mod.save_prefix_cache_to_disk(budget_sec=1.0)
+    assert len(calls) == 1, (
+        "legacy engine should be invoked once after the deadline-aware "
+        "call's TypeError is caught + fallback retried"
+    )
+
+
+def test_save_prefix_cache_to_disk_other_typeerror_surfaces(monkeypatch):
+    """The fallback above is gated on the TypeError message mentioning
+    ``should_abort``. Other TypeErrors (e.g. a buggy engine passing
+    wrong positional types) should propagate up so they're visible in
+    logs/CI, not silently swallowed via the legacy retry path.
+    """
+    from vllm_mlx import config as _config_mod
+    from vllm_mlx.runtime import cache as _cache_mod
+
+    class _BuggyEngine:
+        def save_cache_to_disk(self, cache_dir, should_abort=None):
+            raise TypeError("some unrelated type error in inner save")
+
+    class _FakeCfg:
+        engine = _BuggyEngine()
+        model_path = "fake/model"
+        model_name = None
+
+    monkeypatch.setattr(_cache_mod, "get_config", lambda: _FakeCfg())
+    monkeypatch.setattr(_config_mod, "get_config", lambda: _FakeCfg())
+
+    # The runtime wrapper's try/except swallows ``Exception`` for
+    # ``Failed to save cache to disk`` logging — assert via no-raise
+    # behavior + log capture would be flakier than just asserting the
+    # fallback wasn't taken. Use an attribute counter for that.
+    calls = {"n": 0}
+    orig = _BuggyEngine.save_cache_to_disk
+
+    def counting(self, cache_dir, should_abort=None):
+        calls["n"] += 1
+        return orig(self, cache_dir, should_abort=should_abort)
+
+    monkeypatch.setattr(_BuggyEngine, "save_cache_to_disk", counting)
+
+    _cache_mod.save_prefix_cache_to_disk(budget_sec=1.0)
+    assert calls["n"] == 1, (
+        "fallback must NOT retry on a TypeError that's not about the "
+        f"should_abort kwarg, got {calls['n']} calls"
+    )
+
+
+def test_save_to_disk_skips_entry_when_predicted_write_exceeds_budget(tmp_path):
+    """Codex PR #667 round 1 BLOCKING-2 — at the ``save_to_disk`` layer.
+
+    The per-entry loop must consult the predicate WITH a
+    ``predicted_sec`` estimate so a large entry that would straddle
+    the deadline never starts its (uninterruptible) ``save_prompt_cache``
+    write. Without this, the failure mode the deadline gate exists to
+    prevent — SIGKILL-during-entry-write → orphaned ``cache_dir.new/``
+    — survives the fix.
+    """
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    # Three entries; predicate fires only when predicted_sec > 0 so
+    # the loop's forward-looking check is what trips it (not the
+    # at-now check).
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+    cache.store(list(range(20, 31)), make_kvcache(num_tokens=11, fill=2.0))
+    cache.store(list(range(50, 61)), make_kvcache(num_tokens=11, fill=3.0))
+
+    seen_predicted = []
+
+    def predicate(predicted_sec=0.0):
+        seen_predicted.append(predicted_sec)
+        # Trip whenever the caller passes a non-zero estimate — proves
+        # the per-entry loop is feeding the estimator forward.
+        return predicted_sec > 0
+
+    assert cache.save_to_disk(str(cache_dir), should_abort=predicate) is False
+    assert seen_predicted, (
+        "the per-entry loop must call should_abort(predicted_sec=...) "
+        "at least once — codex PR #667 BLOCKING-2: without the "
+        "predicted_sec arg the loop can straddle the deadline"
+    )
+    assert seen_predicted[0] > 0, (
+        f"first call should pass a non-zero predicted_sec (bootstrap "
+        f"estimate from the floor throughput), got {seen_predicted[0]}"
+    )
 
 
 def test_save_prefix_cache_to_disk_zero_budget_disables_deadline(tmp_path, monkeypatch):

@@ -1237,7 +1237,34 @@ class MemoryAwarePrefixCache:
         saved = 0
         aborted_early = False
         total_entries = len(self._entries)
+        # Track observed disk throughput so we can predict whether the
+        # NEXT entry's write will fit within the shutdown budget. The
+        # predicate fires forward-looking — if we don't predict, a
+        # single in-flight ``save_prompt_cache`` call can run past the
+        # deadline and get SIGKILL'd mid-write (leaves ``cache_dir.new/``
+        # orphaned; this is the bug the deadline gate exists to prevent).
+        #
+        # Floor of 50 MB/s reflects the worst sustained NVMe rate we've
+        # observed on Apple Silicon under thermal pressure / disk-cache
+        # full. Real M-series SSDs do 500-1000 MB/s peak, but we'd
+        # rather skip a borderline entry than orphan a staging dir.
+        _FLOOR_BYTES_PER_SEC = 50 * _BYTES_PER_MB
+        total_bytes_written = 0
+        total_write_seconds = 0.0
         for i, (tokens_key, entry) in enumerate(self._entries.items()):
+            # Predict this entry's write duration. Use observed
+            # bytes/sec from completed entries once we have any sample;
+            # bootstrap on the conservative floor for entry 0. Scaling
+            # by ``entry.memory_bytes`` (not the EMA-of-seconds the
+            # prior round used) means very different entry sizes get
+            # individually-correct predictions instead of averaging
+            # toward a single point estimate.
+            observed_bps = (
+                total_bytes_written / total_write_seconds
+                if total_write_seconds > 0
+                else _FLOOR_BYTES_PER_SEC
+            )
+            predicted_sec = entry.memory_bytes / observed_bps
             # Deadline-aware early exit: the lifespan handler installs a
             # ``should_abort`` predicate driven by the SIGTERM-grace budget.
             # Once it trips we stop persisting NEW entries but still run
@@ -1246,15 +1273,19 @@ class MemoryAwarePrefixCache:
             # rather than left in ``cache_dir.new/``. ``saved >= 1`` is
             # the gate that controls whether the rename happens —
             # nothing else changes from the full-flush path.
-            if should_abort is not None and should_abort():
+            if should_abort is not None and should_abort(predicted_sec):
                 aborted_early = True
                 logger.warning(
-                    f"[cache_persist] shutdown budget exhausted at entry "
-                    f"{i}/{total_entries} — committing {saved} entries "
-                    f"that finished before deadline"
+                    f"[cache_persist] shutdown budget would not fit "
+                    f"entry {i}/{total_entries} "
+                    f"(predicted {predicted_sec * 1000:.0f}ms write at "
+                    f"{observed_bps / _BYTES_PER_MB:.0f}MB/s) — "
+                    f"committing {saved} entries that finished before "
+                    f"deadline"
                 )
                 break
             entry_path, tokens_path = _entry_paths(i)
+            entry_t0 = _time.monotonic()
             try:
                 # Dequantize QuantizedKVCache layers before saving.
                 # save_prompt_cache requires .state and .meta_state which
@@ -1298,6 +1329,14 @@ class MemoryAwarePrefixCache:
                     }
                 )
                 saved += 1
+                # Feed the throughput estimator. We measure including
+                # both the safetensors write and the tokens sidecar so
+                # the next entry's prediction reflects the full per-
+                # entry cost, not just the KV blob.
+                elapsed = _time.monotonic() - entry_t0
+                if elapsed > 0:
+                    total_bytes_written += entry.memory_bytes
+                    total_write_seconds += elapsed
                 logger.info(
                     f"[cache_persist] saved entry {i}: "
                     f"{len(tokens_key)} tokens, "

@@ -242,6 +242,31 @@ from .runtime.cache import (
 )
 
 
+async def _shutdown_save_prefix_cache() -> None:
+    """Lifespan shutdown step: persist prefix cache off the event loop.
+
+    The synchronous ``_save_prefix_cache_to_disk`` call streams 200-300
+    MB per entry through ``save_prompt_cache`` under the GIL. Calling
+    it on the asyncio loop thread (which is what the lifespan handler
+    runs on) starves any other coroutine waiting on the same loop for
+    tens of seconds — ``/healthz`` polls from supervisors that still
+    consider us "stopping" hang, graceful-shutdown HTTP responses
+    never flush, etc.
+
+    Extracted from inline-in-lifespan so tests can pin the
+    ``asyncio.to_thread`` wrapper at its production callsite. Codex
+    flagged PR #667 round 1 because the previous test wrapped
+    ``to_thread`` itself — a regression that dropped the wrapper from
+    the lifespan would not have been caught. The test now drives THIS
+    function and watches whether the loop stays responsive during the
+    save; if anyone in the future replaces the ``await asyncio.to_thread
+    (...)`` line below with a direct call, the regression fires.
+    """
+    if _engine is None or not hasattr(_engine, "save_cache_to_disk"):
+        return
+    await asyncio.to_thread(_save_prefix_cache_to_disk)
+
+
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager
@@ -364,17 +389,12 @@ async def lifespan(app: FastAPI):
 
     # Shutdown: Save cache to disk BEFORE stopping engine.
     #
-    # Run on a worker thread so the asyncio loop stays responsive while
-    # the multi-GB save streams to disk — uvicorn's lifespan task is the
-    # only thing waiting on us, but anything else attached to the loop
-    # (graceful-shutdown HTTP responses, /healthz polls from supervisors
-    # that still consider us "stopping") gets to make progress instead
-    # of being starved for tens of seconds. The save itself respects a
-    # wall-clock SIGTERM-grace budget (see runtime/cache.py) and commits
-    # whatever finished via the atomic rename even if the deadline trips
-    # — so a downstream SIGKILL never leaves ``<cache_dir>.new/`` orphaned.
-    if _engine is not None and hasattr(_engine, "save_cache_to_disk"):
-        await asyncio.to_thread(_save_prefix_cache_to_disk)
+    # Delegates to ``_shutdown_save_prefix_cache`` which wraps the
+    # synchronous save in ``asyncio.to_thread`` — see that function's
+    # docstring for the rationale. Extracted so the regression test
+    # pins the wrapper at the production callsite rather than wrapping
+    # ``to_thread`` test-side (codex PR #667 round 1 BLOCKING-3).
+    await _shutdown_save_prefix_cache()
 
     # Shutdown: Close MCP connections and stop engine
     if _mcp_manager is not None:
