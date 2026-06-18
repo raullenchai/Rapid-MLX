@@ -120,6 +120,43 @@ def _tool_call_name(tc) -> str | None:
     return getattr(tc, "name", None)
 
 
+def _synthesize_forced_tool_call(name: str, arguments: str = "{}"):
+    """Build a single ``ToolCall`` for a forced ``tool_choice`` whose
+    text parser surfaced no calls (#571).
+
+    Text-parser paths (hermes / qwen3_coder / minimax / glm47 / …) only
+    surface a tool_call when the model emits the parser's wire markers.
+    Channel-routed paths (harmony / gemma4) bypass the text parser
+    entirely — the ``OutputRouter`` extracts structured tool_calls
+    directly. The two surfaces therefore diverge on the same request:
+    a forced ``tool_choice`` succeeds on harmony because the model
+    produced the structured channel, but 422s on hermes when the model
+    produced text that the parser failed to recognise.
+
+    The OpenAI ``tool_choice`` contract is parser-agnostic: when the
+    client forces a tool call, the response MUST carry one. To restore
+    symmetry we synthesise a tool_call server-side when the target tool
+    is unambiguous (named-function, or ``"required"`` with a single
+    tool). Arguments default to ``"{}"`` because we have no signal
+    about what the model intended to pass; downstream
+    ``_validate_tool_call_params`` logs a warning when required
+    parameters are missing, mirroring the diagnostic surface clients
+    already see for model-generated calls with bad arguments. The
+    contract guarantee is "a tool_call is present", not "the arguments
+    are correct".
+    """
+    # Lazy import — ToolCall / FunctionCall live alongside the request
+    # model in ``api.models``. The lazy form keeps the synthesis path
+    # scoped to forced-choice requests; the common case pays nothing.
+    from ..api.models import FunctionCall, ToolCall
+
+    return ToolCall(
+        id=f"call_{uuid.uuid4().hex[:8]}",
+        type="function",
+        function=FunctionCall(name=name, arguments=arguments),
+    )
+
+
 def _engine_supports_channel_routed_tool_calls(engine) -> bool:
     """Probe whether the engine's tokenizer yields a channel-routed
     streaming path that can emit structured tool calls without a text
@@ -1143,28 +1180,60 @@ async def _create_chat_completion_impl(
     if tool_calls and len(tool_calls) > 1 and request.parallel_tool_calls is False:
         tool_calls = tool_calls[:1]
 
-    # ``tool_choice="required"`` post-parse enforcement (#468). The system
-    # suffix injected above (``_TOOL_USE_REQUIRED_SUFFIX``) makes the model
-    # overwhelmingly likely to comply, but local inference has no
-    # decoder-level guarantee. When the parser comes back empty we 422
-    # rather than ship a contract-violating response (OpenAI spec: a
-    # tool_call is GUARANTEED present in the response when ``required``
-    # is set). For the named-function form we also verify the right tool
-    # fired. Streaming path is best-effort prompt-injection only; once
-    # SSE chunks are out we can't 422 mid-flight.
+    # ``tool_choice="required"`` post-parse enforcement (#468 / #571).
+    # The system suffix injected above (``_TOOL_USE_REQUIRED_SUFFIX``)
+    # makes the model overwhelmingly likely to comply, but local
+    # inference has no decoder-level guarantee.
+    #
+    # Channel-routed engines (harmony / gemma4) bypass the text parser
+    # entirely: the ``OutputRouter`` lifts structured tool_calls out of
+    # a dedicated channel, so a forced ``tool_choice`` is satisfied
+    # whenever the model fires the tool — the parser path is irrelevant.
+    #
+    # Text-parser engines (hermes / qwen3_coder / minimax / glm47 / …)
+    # only surface a tool_call when the model emits the parser's wire
+    # markers. The same model behaviour that produces a structured call
+    # on harmony can produce text that the hermes regex fails to
+    # recognise — and pre-#571 the 422 here fired for hermes while
+    # harmony returned 200, breaking parser-agnostic contracts.
+    #
+    # The OpenAI ``tool_choice`` contract is parser-agnostic: when the
+    # client forces a tool call, the response MUST carry one. To
+    # restore symmetry we synthesise a tool_call server-side when the
+    # target tool is unambiguous — named-function form (the name is
+    # the choice), or ``"required"`` with a single tool entry (the
+    # name is unique). When ``"required"`` is paired with multiple
+    # tools and the parser returned nothing, we genuinely cannot pick
+    # — fall back to 422 with a message that points to the
+    # ``{type:"function",function:{name:X}}`` form as the escape
+    # hatch, matching pre-#571 wording for that diagnostic.
+    # Streaming path is best-effort prompt-injection only; once SSE
+    # chunks are out we can't 422 mid-flight.
     if request.tool_choice is not None and request.tools:
         if request.tool_choice == "required" and not tool_calls:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    'tool_choice="required" but the model returned a text response '
-                    "with no tool_calls. Local inference has no decoder-level "
-                    "constraint; the system-prompt enforcement was insufficient "
-                    "for this prompt. Retry with a more concrete user message or "
-                    'use tool_choice={"type":"function","function":{"name":...}} '
-                    "to pin a specific tool."
-                ),
-            )
+            if len(request.tools) == 1:
+                _solo_name = request.tools[0].function.get("name")
+                if _solo_name:
+                    logger.warning(
+                        "tool_choice='required' on a parser-only path produced "
+                        "no tool_calls; synthesising a call to the sole "
+                        "available tool %r with empty arguments to honor the "
+                        "OpenAI tool_call-guaranteed contract (#571).",
+                        _solo_name,
+                    )
+                    tool_calls = [_synthesize_forced_tool_call(_solo_name)]
+            if not tool_calls:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        'tool_choice="required" but the model returned a text response '
+                        "with no tool_calls. Local inference has no decoder-level "
+                        "constraint; the system-prompt enforcement was insufficient "
+                        "for this prompt. Retry with a more concrete user message or "
+                        'use tool_choice={"type":"function","function":{"name":...}} '
+                        "to pin a specific tool."
+                    ),
+                )
         if (
             isinstance(request.tool_choice, dict)
             and request.tool_choice.get("type") == "function"
@@ -1181,12 +1250,31 @@ async def _create_chat_completion_impl(
             if _target:
                 _names = [_tool_call_name(tc) for tc in tool_calls or []]
                 _mismatched = [n for n in _names if n != _target]
-                if not _names or _mismatched:
+                # #571: when the parser returned NOTHING (``_names`` is
+                # empty), the request still has a deterministic target
+                # — the named-function form names it. Synthesise rather
+                # than 422 so hermes matches harmony on the same input.
+                # A non-empty-but-wrong list (the model called a
+                # different tool) is a different failure mode: the
+                # model actively defied the choice, which we still
+                # surface as 422 — synthesising over a real wrong call
+                # would silently drop the model's output and is a worse
+                # client experience than the explicit failure.
+                if not _names:
+                    logger.warning(
+                        "tool_choice pinned function %r on a parser-only path "
+                        "produced no tool_calls; synthesising a call with "
+                        "empty arguments to honor the OpenAI tool_call-"
+                        "guaranteed contract (#571).",
+                        _target,
+                    )
+                    tool_calls = [_synthesize_forced_tool_call(_target)]
+                elif _mismatched:
                     raise HTTPException(
                         status_code=422,
                         detail=(
                             f"tool_choice pinned function {_target!r} but the model "
-                            f"emitted calls to {_mismatched or 'no tool'}. Local "
+                            f"emitted calls to {_mismatched}. Local "
                             "inference cannot decoder-enforce a specific function; "
                             "retry with a more direct user message."
                         ),

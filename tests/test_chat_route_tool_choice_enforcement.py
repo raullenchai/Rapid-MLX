@@ -932,3 +932,183 @@ def test_tool_call_name_returns_none_when_no_name_anywhere():
     """
     assert _tool_call_name({}) is None
     assert _tool_call_name(object()) is None
+
+
+# ======================================================================
+# Issue #571 — parser-path symmetry for forced ``tool_choice``
+#
+# Pre-#571: text-parser engines (hermes / qwen3_coder / minimax / glm47)
+# 422'd on ``tool_choice="required"`` and on the named-function form
+# whenever the model produced text the parser didn't recognise.
+# Channel-routed engines (harmony / gemma4) succeeded on identical
+# requests because the ``OutputRouter`` lifts structured tool_calls out
+# of a dedicated channel. The asymmetry broke clients (Cline, Codex,
+# OpenAI SDKs) that hard-code a forced ``tool_choice``: same wire
+# format, parser-dependent outcome.
+#
+# Fix: synthesise a tool_call server-side when the target tool is
+# unambiguous — named-function names it, or ``"required"`` paired with
+# a single tool entry resolves it. ``"required"`` with multiple tools
+# is genuinely ambiguous and still 422s with the pre-#571 message.
+# ======================================================================
+
+
+def test_required_with_single_tool_synthesizes_when_parser_empty():
+    """#571: ``tool_choice="required"`` with EXACTLY ONE tool and a
+    parser that returned no tool_calls must synthesise a call to that
+    sole tool. Without this, hermes-class engines 422 on the same
+    request that harmony returns 200 for, breaking OpenAI's
+    parser-agnostic ``tool_choice`` contract.
+    """
+    engine = _RecordingEngine()  # parser path returns empty
+    client = _make_client(engine)
+    single_tool = [_TOOLS_FIXTURE[0]]  # just get_weather
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hi."}],
+            "tools": single_tool,
+            "tool_choice": "required",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    tcs = body["choices"][0]["message"].get("tool_calls") or []
+    assert len(tcs) == 1, f"expected 1 synthesized tool_call, got {len(tcs)}"
+    assert tcs[0]["function"]["name"] == "get_weather"
+    # Arguments default to ``"{}"`` — the contract guarantee is "a
+    # tool_call is present", not "the arguments are correct".
+    assert tcs[0]["function"]["arguments"] == "{}"
+
+
+def test_required_with_multiple_tools_still_422_when_parser_empty():
+    """#571: ``tool_choice="required"`` with MULTIPLE tools and an
+    empty parser output is genuinely ambiguous — the route can't pick
+    a winner, so the pre-#571 422 still fires. Pins the boundary so
+    future refactors don't silently default to ``tools[0]``.
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hi."}],
+            "tools": _TOOLS_FIXTURE,  # two tools
+            "tool_choice": "required",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "required" in resp.text.lower()
+
+
+def test_named_function_synthesizes_when_parser_empty():
+    """#571: ``tool_choice={"type":"function","function":{"name":X}}``
+    with an empty parser output must synthesise a call to X. The
+    target tool is named in the request — there's no ambiguity. This
+    is the precise case from issue #571's repro
+    (``tool_choice={type:function,function:{name:web_search}}`` →
+    422 on hermes, 200 on harmony).
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hi."}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "function", "function": {"name": "get_time"}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    tcs = body["choices"][0]["message"].get("tool_calls") or []
+    assert len(tcs) == 1
+    assert tcs[0]["function"]["name"] == "get_time"
+    assert tcs[0]["function"]["arguments"] == "{}"
+
+
+def test_named_function_wrong_call_still_422_after_571():
+    """#571 regression: synthesis fires ONLY when the parser returned
+    NOTHING. When the model actively defied the choice and called a
+    different tool, the route must still 422 — silently dropping the
+    model's real output and substituting our synthesised stub would
+    be a worse client experience than the explicit failure.
+    """
+    # Engine returns get_time even though tool_choice pins get_weather.
+    engine = _ToolCallingEngine(fn_name="get_time", arguments='{"city":"Tokyo"}')
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Pick a function"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "get_time" in resp.text
+
+
+def test_harmony_path_unchanged_by_571(monkeypatch):
+    """#571 regression: the harmony / channel-routed path already
+    succeeded by emitting structured tool_calls — synthesis must NOT
+    fire there (it would double the response). Verified by feeding
+    the route an engine that surfaces ``GenerationOutput.tool_calls``
+    directly (the harmony surface) and asserting the result carries
+    exactly one call with the engine's name + arguments, not the
+    synthesised ``"{}"`` stub.
+    """
+    # ``_ToolCallingEngine`` already surfaces structured tool_calls
+    # via ``GenerationOutput.tool_calls`` — the same passthrough
+    # ``HarmonyStreamingRouter`` uses (#515).
+    engine = _ToolCallingEngine(fn_name="get_weather", arguments='{"city":"Tokyo"}')
+    # No text parser configured — exact harmony shape on the route's
+    # perspective: structured surface, parser path bypassed.
+    client = _make_client(engine, tool_call_parser=None)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    tcs = body["choices"][0]["message"].get("tool_calls") or []
+    assert len(tcs) == 1
+    # Engine-emitted, NOT synthesised — args must carry the engine's
+    # payload, not the ``"{}"`` stub.
+    assert tcs[0]["function"]["name"] == "get_weather"
+    assert tcs[0]["function"]["arguments"] == '{"city":"Tokyo"}'
+
+
+def test_synthesize_forced_tool_call_helper_shape():
+    """Pin the synthesised wire shape: id prefix, type=function,
+    function.name = target, function.arguments = string (JSON-encoded).
+    Stops future refactors from accidentally emitting ``arguments`` as
+    a dict (the OpenAI ToolCall spec uses a JSON string).
+    """
+    from vllm_mlx.routes.chat import _synthesize_forced_tool_call
+
+    tc = _synthesize_forced_tool_call("get_weather")
+    assert tc.id.startswith("call_")
+    assert tc.type == "function"
+    assert tc.function.name == "get_weather"
+    assert isinstance(tc.function.arguments, str)
+    assert tc.function.arguments == "{}"
+
+    # Custom arguments are passed through verbatim — the helper does
+    # not parse or re-serialise, matching the model-emitted shape.
+    tc2 = _synthesize_forced_tool_call("calc", arguments='{"expr":"1+1"}')
+    assert tc2.function.arguments == '{"expr":"1+1"}'
