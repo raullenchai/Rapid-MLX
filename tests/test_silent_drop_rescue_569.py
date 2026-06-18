@@ -145,6 +145,33 @@ def test_rescue_noop_when_reasoning_is_whitespace_only():
     )
 
 
+def test_rescue_noop_when_final_content_is_whitespace_only():
+    """Codex round-3 NIT on #676: whitespace-only ``final_content``
+    (``"   \\n"``) is semantically empty to OpenAI-compat clients —
+    the assistant turn shows as blank even though the field is a
+    non-empty string. Pre-fix the helper's early-exit predicate was
+    a plain truthiness check (``if final_content: return …``), so a
+    whitespace-only string blocked the rescue and the client saw an
+    empty assistant turn despite the engine having produced a
+    legitimate reasoning trace.
+
+    Post-fix the predicate strips before returning: whitespace-only
+    ``final_content`` is treated identically to ``None`` / ``""``,
+    so the rescue FIRES and the reasoning trace surfaces as content.
+    Pins the contract: any ``final_content`` that ``.strip()``s to
+    empty must NOT block the rescue when reasoning is present.
+    """
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content="   \n",
+        reasoning_text="Real reasoning trace that should be rescued",
+        tool_calls=None,
+    )
+    assert rescued == "Real reasoning trace that should be rescued", (
+        "whitespace-only final_content must be treated as semantically "
+        f"absent so rescue can fire; got {rescued!r}"
+    )
+
+
 def test_rescue_preserves_leading_trailing_whitespace_in_rescued_content():
     """The whitespace-only gate must use ``.strip()`` on the
     predicate only — the assigned content stays untouched so a
@@ -586,6 +613,77 @@ def test_streaming_rescue_noop_when_content_was_streamed():
         assert streamed_content == "Hello world.", (
             f"happy path content stream must equal engine output; "
             f"got {streamed_content!r}"
+        )
+    finally:
+        reset_config()
+
+
+def test_streaming_rescue_noop_when_reasoning_is_whitespace_only():
+    """Codex round-3 BLOCKING on #676: the streaming rescue used to
+    promote ``processor.accumulated_reasoning`` directly into
+    ``delta.content`` on the terminal chunk, bypassing the helper's
+    whitespace guard. A reasoning-only stream of ``"   \\n"`` would
+    then emit a semantically empty ``delta.content`` while the
+    non-streaming path correctly suppressed it via the helper.
+
+    Post-fix the streaming rescue routes through
+    ``_rescue_silent_drop_from_reasoning`` so both paths share the
+    same predicate (whitespace + content + tool-call absence). A
+    whitespace-only reasoning stream therefore yields NO
+    ``delta.content`` on any chunk — same shape the non-streaming
+    counterpart pins at the unit level. Mirrors
+    ``test_rescue_noop_when_reasoning_is_whitespace_only`` for the
+    SSE surface so the streaming/non-streaming parity is locked in.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.chat import router as chat_router
+
+    cfg = reset_config()
+    # Reasoning deltas that concatenate to whitespace-only — the
+    # exact stuck-thought edge case where the helper's guard must
+    # suppress the streaming rescue identically to non-streaming.
+    cfg.engine = _ReasoningOnlyStreamEngine(
+        reasoning_deltas=["   ", "\n", "\t  "],
+    )
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.reasoning_parser = None
+
+    try:
+        app = FastAPI()
+        app.include_router(chat_router)
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "stream": True,
+                "max_tokens": 32,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        events = _parse_sse(resp.text)
+        assert events, "expected at least one SSE chunk"
+
+        # No SSE chunk may carry semantically-non-empty content.
+        # Pre-fix the terminal chunk would carry ``"   \n\t  "`` as
+        # ``delta.content``; post-fix the helper's whitespace
+        # predicate fires and no content is emitted at all.
+        streamed_content = ""
+        for ev in events:
+            for choice in ev.get("choices", []):
+                delta = choice.get("delta") or {}
+                if delta.get("content"):
+                    streamed_content += delta["content"]
+        assert not streamed_content.strip(), (
+            "#676 round-3 BLOCKING (streaming): whitespace-only "
+            "accumulated reasoning must NOT promote to delta.content "
+            f"on any SSE chunk; got streamed_content={streamed_content!r}"
         )
     finally:
         reset_config()

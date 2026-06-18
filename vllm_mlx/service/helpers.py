@@ -312,7 +312,15 @@ def _rescue_silent_drop_from_reasoning(
 
     Cases that fall through unchanged:
 
-    * Happy path: ``final_content`` is non-empty → return as-is.
+    * Happy path: ``final_content`` is non-empty AND has at least one
+      non-whitespace char → return as-is. Whitespace-only
+      ``final_content`` (``"   \n"``) is treated as semantically
+      absent for rescue purposes (codex round-3 NIT on #676): an
+      OpenAI-compat client still sees an empty assistant turn, so
+      the rescue must be allowed to fire when reasoning is present.
+      The strip is on the predicate only — the original
+      ``final_content`` propagates back on the happy path so callers
+      that DO want the whitespace preserved still see it as-is.
     * Tool-call path: ``tool_calls`` non-empty → the spec already
       requires ``content`` to be ``None`` (the tool call IS the
       response); rescue does NOT fire.
@@ -335,8 +343,19 @@ def _rescue_silent_drop_from_reasoning(
     reasoning/content split, as a final route-level safety net so
     silent drops never escape to clients regardless of which model
     family produced them.
+
+    Codex round-3 BLOCKING on #676: this helper is now the SINGLE
+    predicate for both the non-streaming AND streaming rescue paths
+    (chat.py:~1285 and chat.py:~1605). The streaming path used to
+    promote ``processor.accumulated_reasoning`` directly into
+    ``delta.content`` without the whitespace guard, so a
+    reasoning-only stream of ``"   \n"`` would emit a semantically
+    empty ``delta.content`` while non-streaming correctly suppressed
+    it. Routing both call sites through this helper closes that
+    asymmetry — the predicate cannot drift between the two paths
+    because there's only one of it.
     """
-    if final_content:
+    if final_content and final_content.strip():
         return final_content
     if tool_calls:
         return final_content

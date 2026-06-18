@@ -1588,6 +1588,22 @@ async def stream_chat_completion(
             # explicitly suppressing exactly that. Structured-output
             # clients expect validated JSON or the existing empty
             # path so they can retry — never surprise prose.
+            #
+            # Codex round-3 BLOCKING on #676: route the streaming
+            # rescue through ``_rescue_silent_drop_from_reasoning``
+            # instead of promoting ``processor.accumulated_reasoning``
+            # directly. The previous direct-promotion branch bypassed
+            # the helper's whitespace guard, so a reasoning-only
+            # stream of ``"   \n"`` would emit a semantically empty
+            # ``delta.content`` while non-streaming correctly
+            # suppressed it. Funneling both paths through the same
+            # helper means the predicate (whitespace + content
+            # presence + tool-call absence) is defined ONCE and the
+            # two paths cannot drift. The structured-output gate
+            # stays here at the call site (parallel to non-streaming
+            # at chat.py:~1285), because it depends on per-request
+            # ``response_format`` which the rescue helper has no
+            # access to.
             already_streamed_content = bool(processor.accumulated_text)
             has_any_tool_calls = bool(fallback_tool_calls) or (
                 finish_event.finish_reason == "tool_calls"
@@ -1597,17 +1613,38 @@ async def stream_chat_completion(
             )
             if (
                 not already_streamed_content
-                and not terminal_content
                 and not has_any_tool_calls
-                and processor.accumulated_reasoning
                 and not structured_output_requested
             ):
-                terminal_content = processor.accumulated_reasoning
-                logger.info(
-                    "[SSE-RESCUE-#569] terminal chunk content empty + no tool "
-                    "calls; surfacing %d-char reasoning trace as content",
-                    len(terminal_content),
+                # Pass ``terminal_content or None`` so the helper
+                # sees the same "empty vs whitespace vs real"
+                # distinction the non-streaming path does. Pass
+                # ``None`` for ``tool_calls`` because we've already
+                # checked ``has_any_tool_calls`` above — the helper's
+                # tool-call branch would never fire here regardless,
+                # but keeping the call symmetric with non-streaming
+                # is the point.
+                rescued_content = _rescue_silent_drop_from_reasoning(
+                    terminal_content or None,
+                    processor.accumulated_reasoning,
+                    None,
                 )
+                # The helper returns the rescued reasoning ONLY when
+                # all four predicates pass (empty/whitespace content,
+                # no tool calls, non-empty/non-whitespace reasoning).
+                # Otherwise it returns the original input — for our
+                # pass it returns ``terminal_content or None``. We
+                # only want to overwrite when the helper actually
+                # promoted reasoning to content, i.e. the returned
+                # value differs from what we passed in.
+                if rescued_content and rescued_content != (terminal_content or None):
+                    terminal_content = rescued_content
+                    logger.info(
+                        "[SSE-RESCUE-#569] terminal chunk content empty + no "
+                        "tool calls; surfacing %d-char reasoning trace as "
+                        "content",
+                        len(terminal_content),
+                    )
             final_chunk = ChatCompletionChunk(
                 id=response_id,
                 created=_sse_created,
