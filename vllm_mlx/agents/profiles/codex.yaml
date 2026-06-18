@@ -69,3 +69,4 @@ known_issues:
   - "`previous_response_id` is not implemented (openai/codex#3841) and the rapid-mlx shim is stateless — Codex re-sends the full conversation in `input[]` each turn, which is what makes the local backend work."
   - "Codex hardcodes `stream: true`; rapid-mlx's /v1/responses emits the 7 SSE events Codex parses (response.created, response.output_text.delta, response.function_call_arguments.delta, response.completed, etc.)."
   - "Codex's `reasoning.effort` field is accepted but not yet mapped to enable_thinking — set thinking via `rapid-mlx serve --enable-thinking` instead."
+  - "gemma-4-12b-it (any quant) hangs Codex ~60% of trials on tool-use prompts due to a model-side `thought\\n…` degenerate loop — model bug filed at huggingface.co/google/gemma-4-12B-it/discussions/41 (downstream tracking issue #686 closed). Use qwen3.5/3.6 models for Codex CLI agent workflows."
