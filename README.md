@@ -510,10 +510,10 @@ Decoded examples:
 
 ### Full model lineup
 
-72 explicit aliases across 13 families ship today. Run `rapid-mlx models` for the live list with parser, hybrid / MoE flags, and DFlash eligibility.
+81 explicit aliases across 13 families ship today. Run `rapid-mlx models` for the live list with parser, hybrid / MoE flags, and DFlash eligibility.
 
 <details>
-<summary><strong>Show all 72 aliases by family</strong></summary>
+<summary><strong>Show all 81 aliases by family</strong></summary>
 
 | Family | Aliases | Notable |
 |---|---|---|
@@ -787,6 +787,17 @@ Large-context requests auto-route to a cloud LLM (GPT-5, Claude, etc.) when loca
 
 Vision, audio (STT/TTS), video understanding, and text embeddings — all through the same OpenAI-compatible API.
 
+### PFlash Prefill Acceleration
+
+Long prompts are slow to *start* — the first token waits on the whole context to prefill, and on Apple Silicon that prefill is the bottleneck. PFlash scores a long prompt and prefills only the tokens that matter (the attention sink, the recent tail, and the query-relevant middle), cutting **cold-start TTFT by 3.87–8.5×** on 32K+ prompts with full needle-in-a-haystack recall. Pure-Python, no extra dependencies, and **on by default** for verified models.
+
+```bash
+rapid-mlx serve qwen3.5-9b-4bit          # PFlash auto-on for verified aliases
+rapid-mlx serve <model> --pflash always  # force it on for any model
+```
+
+PFlash speeds up the prompt going *in*; **DFlash** speeds up the tokens coming *out*.
+
 ### DFlash Speculative Decoding (single-user)
 
 z-lab's block-diffusion drafter (via mlx-vlm) accelerates single-stream generation on validated Qwen3.5/3.6 27B aliases. Opt in with `--enable-dflash`:
@@ -802,11 +813,11 @@ rapid-mlx info qwen3.5-27b-8bit       # check per-gate eligibility
 rapid-mlx serve qwen3.5-27b-8bit --enable-dflash
 ```
 
-**Workload sensitivity**: speedup varies by entropy. Coding / math / summarization typically see **1.5-2.7×**; high-entropy creative writing and long-form chat can dip to **0.6-0.9×** because the drafter's training distribution diverges from open-ended generation. This is a known pattern in spec-decode literature ([arXiv 2604.14682](https://arxiv.org/abs/2604.14682), [AdaEDL](https://arxiv.org/abs/2410.18351)) — not a bug. Other Qwen3.5/3.6 sizes (35B-A3B MoE, 122B-A10B MoE) were benched and rejected because their average speedup was below the gate.
+**Best on coding, math, and summarization** (typically **1.5–2.7×**); open-ended creative writing can dip below 1×, so DFlash is gated to the aliases where it reliably wins.
 
 **v1 limitations**: DFlash mode runs a dedicated single-user server (mlx-vlm doesn't expose a batched DFlash kernel yet). Tool calling, MCP, and embeddings aren't available in DFlash mode — restart without `--enable-dflash` for those.
 
-Also: logprobs API, structured JSON output (`response_format`), continuous batching, KV cache quantization (`--kv-cache-quantization`), and [3300+ tests](tests/).
+Also: a fused single-kernel sampler (faster than mlx-vlm's, identical sampling math), logprobs API, structured JSON output (`response_format`), continuous batching, KV cache quantization (`--kv-cache-quantization`), and [3300+ tests](tests/).
 
 ---
 

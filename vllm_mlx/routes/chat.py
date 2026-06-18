@@ -426,7 +426,6 @@ async def _create_chat_completion_impl(
         total_chars += len(content)
         if m.role == "user":
             last_user_preview = content[:300]
-    has_tools = bool(request.tools)
     n_tools = len(request.tools) if request.tools else 0
     logger.info(
         f"[REQUEST] POST /v1/chat/completions stream={request.stream} "

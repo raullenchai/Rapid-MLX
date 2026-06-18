@@ -1599,8 +1599,6 @@ class MLXMultimodalLM:
                 logger.warning(f"Cache fetch failed: {e}")
 
         # Generate - use KV cache if available from previous identical request
-        start_time = time.time()
-
         # Create or reuse prompt cache for prefix caching speedup
         prompt_cache = None
         skip_prompt_processing = False

@@ -7,7 +7,7 @@ and supports text, images, and video files.
 
 Usage:
     # First start the server with a multimodal model:
-    rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+    rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 
     # Then run this app:
     rapid-mlx-chat
@@ -275,7 +275,7 @@ Examples:
     rapid-mlx-chat --share
 
 Note: Make sure the rapid-mlx server is running with a multimodal model:
-    rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+    rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
         """,
     )
     parser.add_argument(
