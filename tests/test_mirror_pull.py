@@ -3116,8 +3116,7 @@ def test_bytes_heartbeat_emitted_during_r2_pull(
 
     matches = re.findall(r"\[bytes\] (\d+)/(\d+)", captured.out)
     assert matches, (
-        "expected at least one '[bytes] D/T' heartbeat in stdout:\n"
-        f"{captured.out}"
+        f"expected at least one '[bytes] D/T' heartbeat in stdout:\n{captured.out}"
     )
     planned_total = sum(s for _, s in files)
     # Every heartbeat uses the same denominator — the snapshot total.
@@ -3193,8 +3192,7 @@ def test_bytes_heartbeat_skipped_when_total_unknown(
     assert ok
     captured = capsys.readouterr()
     assert "[bytes]" not in captured.out, (
-        "heartbeat must stay silent when total is unknown:\n"
-        f"{captured.out}"
+        f"heartbeat must stay silent when total is unknown:\n{captured.out}"
     )
 
 
