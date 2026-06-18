@@ -342,7 +342,7 @@ _MAX_TOOL_BUFFER_BYTES = 1_048_576  # 1 MB
 # register_tool_call_tag() or by passing extra_tags to StreamingToolCallFilter.
 _TOOL_CALL_TAGS: list[tuple[str, str]] = [
     ("<minimax:tool_call>", "</minimax:tool_call>"),
-    ("<tool_call>", "</tool_call>"),                # hermes, qwen3
+    ("<tool_call>", "</tool_call>"),  # hermes, qwen3
     ("<function=", "</function>"),
     ("[TOOL_CALL]", "[/TOOL_CALL]"),
     # Gemma 4 native wire-format markers (asymmetric: opener has no closing

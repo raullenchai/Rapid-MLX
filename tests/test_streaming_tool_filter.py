@@ -230,7 +230,7 @@ class TestStreamingToolCallFilterGemma4(unittest.TestCase):
         """Model emits opener but never the closer — flush must NOT leak
         the partial body, and the buffer cap must keep memory bounded."""
         f = StreamingToolCallFilter()
-        f.process("<|tool_call>call:exec_command{cmd:<|\"|>rm -rf")
+        f.process('<|tool_call>call:exec_command{cmd:<|"|>rm -rf')
         # Flush mid-stream: unterminated block is discarded entirely.
         assert f.flush() == ""
 
