@@ -139,24 +139,41 @@ def _call_save_cache_to_disk(engine, cache_dir: str, should_abort):
     or third-party engine implementations may still expose the legacy
     one-argument signature. Without the fallback the kwarg would raise
     ``TypeError`` and the entire save would be lost — strictly worse
-    than no-deadline persistence. So we try the deadline-aware path
-    first and fall back to the legacy signature if the kwarg isn't
-    accepted.
+    than no-deadline persistence.
+
+    Detection is signature-based (``inspect.signature``) rather than
+    catch-and-retry-on-TypeError: codex PR #667 round 2 flagged that a
+    compatible engine raising ``TypeError`` mid-execution with the
+    ``should_abort`` substring would cause an unintended SECOND call
+    via the legacy path, doubling any side effects (writes / index
+    increments / metric counters). Inspecting the signature up front
+    has zero chance of misclassifying an internal exception as a
+    signature mismatch.
     """
+    import inspect
+
     try:
+        sig = inspect.signature(engine.save_cache_to_disk)
+    except (TypeError, ValueError):
+        # Builtin / C-extension methods may not expose a Python
+        # signature. Conservatively call the deadline-aware path —
+        # the engine almost certainly accepts the kwarg if it's been
+        # updated. We don't fall back here because a fallback retry
+        # is exactly the double-call hazard codex flagged.
         return engine.save_cache_to_disk(cache_dir, should_abort=should_abort)
-    except TypeError as e:
-        # Only fall back when the rejection is specifically about the
-        # new kwarg. Any other TypeError (e.g. wrong path type) should
-        # surface to the caller unchanged.
-        if "should_abort" not in str(e):
-            raise
-        logger.warning(
-            "[lifespan] engine.save_cache_to_disk does not accept "
-            "should_abort kwarg — falling back to legacy signature "
-            "(no deadline awareness for this engine)"
-        )
-        return engine.save_cache_to_disk(cache_dir)
+
+    accepts_should_abort = "should_abort" in sig.parameters or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
+    if accepts_should_abort:
+        return engine.save_cache_to_disk(cache_dir, should_abort=should_abort)
+
+    logger.warning(
+        "[lifespan] engine.save_cache_to_disk does not accept "
+        "should_abort kwarg — calling legacy signature "
+        "(no deadline awareness for this engine)"
+    )
+    return engine.save_cache_to_disk(cache_dir)
 
 
 def get_cache_dir() -> str:

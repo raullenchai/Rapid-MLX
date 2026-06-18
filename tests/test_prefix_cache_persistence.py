@@ -1468,18 +1468,31 @@ def test_save_prefix_cache_to_disk_fallback_for_legacy_engine_signature(monkeypa
     )
 
 
-def test_save_prefix_cache_to_disk_other_typeerror_surfaces(monkeypatch):
-    """The fallback above is gated on the TypeError message mentioning
-    ``should_abort``. Other TypeErrors (e.g. a buggy engine passing
-    wrong positional types) should propagate up so they're visible in
-    logs/CI, not silently swallowed via the legacy retry path.
+def test_save_prefix_cache_to_disk_no_retry_on_internal_typeerror(monkeypatch):
+    """Codex PR #667 round 2 BLOCKING-2 regression.
+
+    The round-1 fallback caught any ``TypeError`` whose message
+    mentioned ``should_abort`` and retried via the legacy signature —
+    a compatible engine raising that error AFTER partial side effects
+    (write to disk, metric increment) would be invoked TWICE, doubling
+    the side effects.
+
+    Round-2 detection is signature-based (``inspect.signature``) up
+    front, so an internal TypeError raised by the engine method body
+    propagates without retry. We assert exactly one call.
     """
     from vllm_mlx import config as _config_mod
     from vllm_mlx.runtime import cache as _cache_mod
 
+    calls = {"n": 0}
+
     class _BuggyEngine:
+        # Signature DOES accept should_abort — so detection passes,
+        # call proceeds, error raised internally must NOT trigger a
+        # legacy-signature retry.
         def save_cache_to_disk(self, cache_dir, should_abort=None):
-            raise TypeError("some unrelated type error in inner save")
+            calls["n"] += 1
+            raise TypeError("internal failure mentioning should_abort somewhere")
 
     class _FakeCfg:
         engine = _BuggyEngine()
@@ -1489,41 +1502,29 @@ def test_save_prefix_cache_to_disk_other_typeerror_surfaces(monkeypatch):
     monkeypatch.setattr(_cache_mod, "get_config", lambda: _FakeCfg())
     monkeypatch.setattr(_config_mod, "get_config", lambda: _FakeCfg())
 
-    # The runtime wrapper's try/except swallows ``Exception`` for
-    # ``Failed to save cache to disk`` logging — assert via no-raise
-    # behavior + log capture would be flakier than just asserting the
-    # fallback wasn't taken. Use an attribute counter for that.
-    calls = {"n": 0}
-    orig = _BuggyEngine.save_cache_to_disk
-
-    def counting(self, cache_dir, should_abort=None):
-        calls["n"] += 1
-        return orig(self, cache_dir, should_abort=should_abort)
-
-    monkeypatch.setattr(_BuggyEngine, "save_cache_to_disk", counting)
-
     _cache_mod.save_prefix_cache_to_disk(budget_sec=1.0)
     assert calls["n"] == 1, (
-        "fallback must NOT retry on a TypeError that's not about the "
-        f"should_abort kwarg, got {calls['n']} calls"
+        f"engine method must be invoked exactly once even on internal "
+        f"TypeError — round-1 fallback double-called via legacy path, "
+        f"got {calls['n']} calls"
     )
 
 
 def test_save_to_disk_skips_entry_when_predicted_write_exceeds_budget(tmp_path):
-    """Codex PR #667 round 1 BLOCKING-2 — at the ``save_to_disk`` layer.
+    """Codex PR #667 round 1 BLOCKING-2 + round 2 BLOCKING-1.
 
     The per-entry loop must consult the predicate WITH a
     ``predicted_sec`` estimate so a large entry that would straddle
     the deadline never starts its (uninterruptible) ``save_prompt_cache``
-    write. Without this, the failure mode the deadline gate exists to
-    prevent — SIGKILL-during-entry-write → orphaned ``cache_dir.new/``
-    — survives the fix.
+    write. Round 2 refines: entry 0 always passes ``predicted_sec=0``
+    (no observed sample → don't lock ourselves out before saving
+    anything; the round 1 50 MB/s bootstrap floor over-predicted a
+    typical 300 MB entry at 6 s and tripped the budget immediately).
+    Entry 1+ then carries a non-zero forward-looking estimate built
+    from observed bytes/sec.
     """
     cache_dir = tmp_path / "snap"
     cache = fresh_cache()
-    # Three entries; predicate fires only when predicted_sec > 0 so
-    # the loop's forward-looking check is what trips it (not the
-    # at-now check).
     cache.store(list(range(11)), make_kvcache(num_tokens=11))
     cache.store(list(range(20, 31)), make_kvcache(num_tokens=11, fill=2.0))
     cache.store(list(range(50, 61)), make_kvcache(num_tokens=11, fill=3.0))
@@ -1532,19 +1533,62 @@ def test_save_to_disk_skips_entry_when_predicted_write_exceeds_budget(tmp_path):
 
     def predicate(predicted_sec=0.0):
         seen_predicted.append(predicted_sec)
-        # Trip whenever the caller passes a non-zero estimate — proves
-        # the per-entry loop is feeding the estimator forward.
+        # Trip on the first NON-zero call — entry 0 passes 0
+        # (bootstrap), entry 1+ passes the observed-throughput
+        # estimate. The transition from 0 → >0 is what proves the
+        # forward-looking machinery is in place.
         return predicted_sec > 0
 
-    assert cache.save_to_disk(str(cache_dir), should_abort=predicate) is False
-    assert seen_predicted, (
-        "the per-entry loop must call should_abort(predicted_sec=...) "
-        "at least once — codex PR #667 BLOCKING-2: without the "
-        "predicted_sec arg the loop can straddle the deadline"
+    # Entry 0 saves (predicted=0 → predicate False), entry 1 trips
+    # (predicted>0 → predicate True), commit. saved=1 → returns True.
+    assert cache.save_to_disk(str(cache_dir), should_abort=predicate) is True
+    assert len(seen_predicted) >= 2, (
+        f"loop should call predicate for entry 0 AND entry 1, got {seen_predicted}"
     )
-    assert seen_predicted[0] > 0, (
-        f"first call should pass a non-zero predicted_sec (bootstrap "
-        f"estimate from the floor throughput), got {seen_predicted[0]}"
+    assert seen_predicted[0] == 0.0, (
+        f"entry 0 should receive predicted_sec=0 (no observed sample "
+        f"yet — round 2 BLOCKING-1 fix), got {seen_predicted[0]}"
+    )
+    assert seen_predicted[1] > 0, (
+        f"entry 1 should receive predicted_sec>0 from observed "
+        f"throughput — proves the loop is updating its rate estimate "
+        f"between entries, got {seen_predicted[1]}"
+    )
+    # Entry 0 was committed via atomic rename.
+    assert not (tmp_path / "snap.new").exists()
+    assert (cache_dir / "index.json").exists()
+    index = json.loads((cache_dir / "index.json").read_text())
+    assert index["num_entries"] == 1
+
+
+def test_save_to_disk_entry_zero_attempts_when_no_observed_throughput(tmp_path):
+    """Codex PR #667 round 2 BLOCKING-1 regression, pinned at the layer
+    where the bug lived.
+
+    Direct proof that the round-1 bootstrap floor regression is gone:
+    with a generous 60 s budget and a predicate that fires ONLY when
+    the predicate receives a non-zero ``predicted_sec``, the previous
+    code (50 MB/s bootstrap) would have predicted entry 0 at a few
+    hundred ms (well within budget) and saved it anyway — so a
+    targeted test catches the FAILURE mode (saves nothing because
+    bootstrap over-predicts) only by pinning the "predicted_sec is 0
+    for entry 0" invariant directly.
+    """
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+
+    seen_predicted = []
+
+    def predicate(predicted_sec=0.0):
+        seen_predicted.append(predicted_sec)
+        return False  # never trip — we just want to record the calls
+
+    cache.save_to_disk(str(cache_dir), should_abort=predicate)
+    assert seen_predicted == [0.0], (
+        f"entry 0 must be called with predicted_sec=0 — the round-1 "
+        f"50 MB/s bootstrap floor over-predicted typical entries and "
+        f"tripped budget before any save. Got {seen_predicted}"
     )
 
 

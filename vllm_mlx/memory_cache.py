@@ -1244,27 +1244,28 @@ class MemoryAwarePrefixCache:
         # deadline and get SIGKILL'd mid-write (leaves ``cache_dir.new/``
         # orphaned; this is the bug the deadline gate exists to prevent).
         #
-        # Floor of 50 MB/s reflects the worst sustained NVMe rate we've
-        # observed on Apple Silicon under thermal pressure / disk-cache
-        # full. Real M-series SSDs do 500-1000 MB/s peak, but we'd
-        # rather skip a borderline entry than orphan a staging dir.
-        _FLOOR_BYTES_PER_SEC = 50 * _BYTES_PER_MB
+        # Entry 0 gets ``predicted_sec=0`` — no observed sample yet,
+        # and a conservative bootstrap floor (the round-1 50 MB/s try)
+        # over-predicted a typical 300 MB entry at 6 s, tripping the
+        # default 3.5 s budget BEFORE saving anything and preserving
+        # zero cache. Strictly worse than letting entry 0 attempt and
+        # letting the next-launch orphan-cleanup recover if it
+        # overshoots (codex PR #667 round 2 BLOCKING-1). Entry 1+
+        # then has real measured throughput to predict from.
         total_bytes_written = 0
         total_write_seconds = 0.0
         for i, (tokens_key, entry) in enumerate(self._entries.items()):
-            # Predict this entry's write duration. Use observed
-            # bytes/sec from completed entries once we have any sample;
-            # bootstrap on the conservative floor for entry 0. Scaling
-            # by ``entry.memory_bytes`` (not the EMA-of-seconds the
-            # prior round used) means very different entry sizes get
-            # individually-correct predictions instead of averaging
-            # toward a single point estimate.
-            observed_bps = (
-                total_bytes_written / total_write_seconds
-                if total_write_seconds > 0
-                else _FLOOR_BYTES_PER_SEC
-            )
-            predicted_sec = entry.memory_bytes / observed_bps
+            if total_write_seconds > 0:
+                observed_bps = total_bytes_written / total_write_seconds
+                predicted_sec = entry.memory_bytes / observed_bps
+            else:
+                # Bootstrap: no observed sample yet → let entry 0 try.
+                # The at-now component of the predicate (wall-clock vs
+                # safe_deadline) still applies, so a late-arriving
+                # SIGTERM that already exhausted the budget before
+                # entry 0 even started will still abort.
+                observed_bps = 0.0
+                predicted_sec = 0.0
             # Deadline-aware early exit: the lifespan handler installs a
             # ``should_abort`` predicate driven by the SIGTERM-grace budget.
             # Once it trips we stop persisting NEW entries but still run
@@ -1275,11 +1276,18 @@ class MemoryAwarePrefixCache:
             # nothing else changes from the full-flush path.
             if should_abort is not None and should_abort(predicted_sec):
                 aborted_early = True
+                if observed_bps > 0:
+                    detail = (
+                        f"(predicted {predicted_sec * 1000:.0f}ms write at "
+                        f"{observed_bps / _BYTES_PER_MB:.0f}MB/s)"
+                    )
+                else:
+                    # Entry 0: no observed throughput; the at-now check
+                    # is what tripped, not a forward-looking estimate.
+                    detail = "(wall-clock already past shutdown deadline)"
                 logger.warning(
                     f"[cache_persist] shutdown budget would not fit "
-                    f"entry {i}/{total_entries} "
-                    f"(predicted {predicted_sec * 1000:.0f}ms write at "
-                    f"{observed_bps / _BYTES_PER_MB:.0f}MB/s) — "
+                    f"entry {i}/{total_entries} {detail} — "
                     f"committing {saved} entries that finished before "
                     f"deadline"
                 )
