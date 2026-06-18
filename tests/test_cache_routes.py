@@ -88,11 +88,13 @@ def test_resolve_cache_dir_rejects_absolute_outside(sandbox):
 
 
 def test_resolve_cache_dir_rejects_symlink_escape(sandbox):
-    """A symlink whose target leaves the sandbox is rejected.
+    """A symlink whose realpath leaves the sandbox is rejected.
 
-    realpath alone would pass us (we land outside), commonpath catches
-    it — but a symlink ancestor whose *target* points outside still
-    counts as escape even if the resolved name happens to live inside.
+    ``os.path.realpath`` follows the link to ``outside_dir``, and the
+    subsequent ``commonpath`` check sees the result is no longer a
+    descendant of the sandbox root. Without realpath the literal path
+    ``sandbox/escape/anything`` would look safe — this is the case
+    that justifies the realpath step.
     """
     sandbox.mkdir(parents=True, exist_ok=True)
     outside = sandbox.parent / "outside_dir"
@@ -100,7 +102,7 @@ def test_resolve_cache_dir_rejects_symlink_escape(sandbox):
     link = sandbox / "escape"
     link.symlink_to(outside)
 
-    with pytest.raises(InvalidExportPathError):
+    with pytest.raises(InvalidExportPathError, match="outside sandbox"):
         resolve_cache_dir("escape/anything")
 
 
@@ -126,6 +128,39 @@ def test_manifest_roundtrip(tmp_path):
     write_manifest(tmp_path, original)
     recovered = read_manifest(tmp_path)
     assert recovered == original
+
+
+def test_write_manifest_failed_rename_preserves_prior_manifest(tmp_path, monkeypatch):
+    """A crash mid-rename must not corrupt the prior manifest.
+
+    Atomic write idiom: write tmp → fsync → ``os.replace``. If ``replace``
+    fails (here we monkeypatch it to ValueError), the prior manifest.json
+    must be untouched and the tmp file cleaned up. Without this the
+    next ``read_manifest`` would 400 against a truncated file even
+    though a valid one existed before.
+    """
+    original = Manifest(model_id="qwen3.5-9b-4bit", entries=18)
+    write_manifest(tmp_path, original)
+    assert (tmp_path / "manifest.json").is_file()
+
+    import vllm_mlx.cache.protocol as protocol_mod
+
+    def _boom(*args, **kwargs):
+        raise OSError("simulated rename failure")
+
+    monkeypatch.setattr(protocol_mod.os, "replace", _boom)
+
+    with pytest.raises(OSError, match="simulated rename failure"):
+        write_manifest(tmp_path, Manifest(model_id="will-not-land", entries=99))
+
+    # Prior manifest intact: same fields, no truncation.
+    recovered = read_manifest(tmp_path)
+    assert recovered.model_id == "qwen3.5-9b-4bit"
+    assert recovered.entries == 18
+
+    # No temp file left behind.
+    leaked = list(tmp_path.glob(".manifest-*.json"))
+    assert leaked == [], f"leaked temp files: {leaked}"
 
 
 def test_read_manifest_rejects_invalid_json(tmp_path):

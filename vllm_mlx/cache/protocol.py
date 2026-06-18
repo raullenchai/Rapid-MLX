@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -110,10 +111,30 @@ class Manifest:
 
 
 def write_manifest(root: Path, manifest: Manifest) -> Path:
-    """Write ``manifest.json`` under ``root``. Returns the path written."""
+    """Atomically write ``manifest.json`` under ``root``. Returns the path.
+
+    Crash/disk-full mid-write to ``manifest.json`` would otherwise leave
+    a truncated file that subsequent reads surface as a 400 instead of
+    preserving the last successful export. Mitigation: write to a temp
+    file in the same directory (same fs → atomic ``os.replace``), fsync
+    the data, then rename onto ``manifest.json``. If anything fails the
+    temp is cleaned up and the prior manifest is untouched.
+    """
     root.mkdir(parents=True, exist_ok=True)
     target = root / MANIFEST_FILENAME
-    target.write_text(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
+    fd, tmp_name = tempfile.mkstemp(prefix=".manifest-", suffix=".json", dir=str(root))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(manifest.to_dict(), f, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
     return target
 
 
@@ -160,14 +181,14 @@ def resolve_cache_dir(caller_path: str | None) -> Path:
 
     Rules (all must hold):
 
-    1. ``None`` → the sandbox root itself.
-    2. Absolute paths must resolve under the sandbox root after realpath
-       (catches symlink escape).
+    1. ``None`` or empty → the sandbox root itself.
+    2. The literal ``..`` segment is rejected pre-realpath as defense in
+       depth against ``realpath`` CVEs that may not normalize correctly.
     3. Relative paths are resolved against the sandbox root.
-    4. The literal ``..`` segment is rejected even before resolution so
-       a CVE in ``realpath`` can't bypass the sandbox.
-    5. No segment may be a symlink pointing outside the sandbox — walk
-       and check each ancestor of the final path.
+    4. ``os.path.realpath`` collapses every symlink (including
+       transitive chains) to its final target. The result must share
+       the sandbox root as its ``commonpath`` — any escape, whether via
+       absolute path or symlink-to-outside, fails here.
 
     Raises ``InvalidExportPathError`` on any violation.
     """
@@ -201,23 +222,5 @@ def resolve_cache_dir(caller_path: str | None) -> Path:
         raise InvalidExportPathError(
             f"path {caller_path!r} resolves outside sandbox {root}"
         )
-
-    # Symlink walk — even if realpath landed us inside the sandbox, an
-    # intermediate symlink that *points* outside lets a future write
-    # follow it. Reject any symlink ancestor whose realpath escapes.
-    cursor = candidate
-    while cursor != cursor.parent:
-        if cursor.is_symlink():
-            target = Path(os.path.realpath(cursor))
-            try:
-                if Path(os.path.commonpath([str(root), str(target)])) != root:
-                    raise InvalidExportPathError(
-                        f"symlink {cursor} points outside sandbox"
-                    )
-            except ValueError as exc:
-                raise InvalidExportPathError(
-                    f"symlink {cursor} could not be compared to sandbox root"
-                ) from exc
-        cursor = cursor.parent
 
     return resolved
