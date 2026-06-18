@@ -143,7 +143,7 @@ def test_run_tier_returns_payload_when_requested():
             payload=dict(_SMOKE_PAYLOAD),
         )
 
-    def _harness_stub(model, base_url):
+    def _harness_stub(model, base_url, **kwargs):
         return TierResult(
             name="harness",
             passed=True,
@@ -257,7 +257,7 @@ def test_run_tier_skip_speed_avoids_lightweight_probe():
         calls.append("speed")
         return TierResult(name="speed", passed=True, duration_s=0.1)
 
-    def _harness_stub(model, base_url):
+    def _harness_stub(model, base_url, **kwargs):
         calls.append("harness")
         return TierResult(
             name="harness",

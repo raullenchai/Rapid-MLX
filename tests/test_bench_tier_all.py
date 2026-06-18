@@ -62,7 +62,7 @@ def test_all_runs_smoke_speed_harness_in_order(patch_serve_only, capsys):
             name="speed", passed=True, duration_s=10.0, detail="PASS tps=42.0"
         )
 
-    def _harness_stub(model, base_url):
+    def _harness_stub(model, base_url, **kwargs):
         call_order.append("harness")
         return TierResult(
             name="harness", passed=True, duration_s=30.0, detail="5/5 pass"
@@ -103,7 +103,7 @@ def test_all_aborts_after_smoke_failure(patch_serve_only, capsys):
             name="speed", passed=True, duration_s=10.0, detail="should not run"
         )
 
-    def _harness_should_not_run(model, base_url):
+    def _harness_should_not_run(model, base_url, **kwargs):
         call_order.append("harness")
         return TierResult(
             name="harness",
@@ -143,7 +143,7 @@ def test_all_continues_past_speed_failure(patch_serve_only, capsys):
             name="speed", passed=False, duration_s=10.0, detail="FAIL HTTP 500"
         )
 
-    def _harness_stub(model, base_url):
+    def _harness_stub(model, base_url, **kwargs):
         call_order.append("harness")
         return TierResult(name="harness", passed=True, duration_s=30.0)
 
@@ -184,7 +184,7 @@ def test_all_boots_server_exactly_once(capsys):
     def _speed_stub(model, base_url, sampled=False):
         return TierResult(name="speed", passed=True, duration_s=0.1)
 
-    def _harness_stub(model, base_url):
+    def _harness_stub(model, base_url, **kwargs):
         return TierResult(name="harness", passed=True, duration_s=0.1)
 
     with (
@@ -223,7 +223,7 @@ def test_all_with_base_url_skips_server_boot(capsys):
     def _speed_stub(model, base_url, sampled=False):
         return TierResult(name="speed", passed=True, duration_s=0.1)
 
-    def _harness_stub(model, base_url):
+    def _harness_stub(model, base_url, **kwargs):
         return TierResult(name="harness", passed=True, duration_s=0.1)
 
     # Stub the urlopen call so the attach health-check passes.
