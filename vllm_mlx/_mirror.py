@@ -88,9 +88,10 @@ _CHUNK_BYTES = 8 * 1024 * 1024
 # 83%"): emit one ``[bytes] <done>/<total>`` line per heartbeat from
 # whichever worker happens to be writing — the desktop's DownloadProgress
 # parser feeds these into ``applyDiskObservation`` / ``setTotalBytes`` so
-# the bar advances smoothly through the long single-shard window. Thread-
-# safe via ``_PROGRESS_LOCK``; reset by ``_progress_reset`` at the start
-# of each pull.
+# the bar advances smoothly through the long single-shard window. Each
+# ``download_with_mirror_fallback`` call instantiates its own tracker so
+# concurrent pulls in the same process don't trample each other's totals
+# (codex R1 BLOCKING on PR #682).
 _PROGRESS_HEARTBEAT_SECONDS = 0.5
 
 
@@ -104,17 +105,11 @@ class _ProgressTracker:
     (desktop pipe) sees the line as soon as it's emitted.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, total: int = 0) -> None:
         self._lock = threading.Lock()
         self._done = 0
-        self._total = 0
+        self._total = max(0, int(total))
         self._last_emit = 0.0
-
-    def reset(self, total: int) -> None:
-        with self._lock:
-            self._done = 0
-            self._total = max(0, int(total))
-            self._last_emit = 0.0
 
     def add(self, delta: int) -> None:
         if delta <= 0:
@@ -143,9 +138,6 @@ class _ProgressTracker:
         if emit is not None:
             done, total = emit
             print(f"  [bytes] {done}/{total}", flush=True)
-
-
-_PROGRESS = _ProgressTracker()
 
 
 def _mirror_base() -> str:
@@ -321,6 +313,7 @@ def _download_one_from_r2(
     sidecar_dir: Path,
     sidecar_key: str,
     repo_root: Path | None = None,
+    progress_tracker: "_ProgressTracker | None" = None,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
 
@@ -376,6 +369,7 @@ def _download_one_from_r2(
             expected_size,
             expected_sha256=expected_sha256,
             repo_root=repo_root,
+            progress_tracker=progress_tracker,
         )
     finally:
         _release_part_lock(lock_fh, lock_path)
@@ -389,6 +383,7 @@ def _do_r2_download(
     *,
     expected_sha256: str | None = None,
     repo_root: Path | None = None,
+    progress_tracker: "_ProgressTracker | None" = None,
 ) -> tuple[bool, str]:
     """Inner R2 download body — runs with the per-file lock held.
 
@@ -522,12 +517,13 @@ def _do_r2_download(
                     if hasher is not None:
                         hasher.update(chunk)
                     read += len(chunk)
-                    # Forward chunk size into the aggregate byte tracker
+                    # Forward chunk size into the per-pull byte tracker
                     # so the desktop heartbeat advances smoothly inside a
                     # single big-shard download. See ``_ProgressTracker``
                     # docstring for the rationale (v0.7.11 fix for the
                     # v0.7.10 "stuck at 83%" UX bug).
-                    _PROGRESS.add(len(chunk))
+                    if progress_tracker is not None:
+                        progress_tracker.add(len(chunk))
 
             # Short-read guard — Content-Length lied or the connection
             # dropped silently. Don't rename a truncated file into the
@@ -1150,15 +1146,17 @@ def download_with_mirror_fallback(
     else:
         _print_dim(f"  {DIM}Found {total_files_planned} files{RESET}")
 
-    # Prime the aggregate byte tracker so chunk writes inside
+    # Per-pull aggregate byte tracker so chunk writes inside
     # ``_do_r2_download`` and per-file completions in the ``as_completed``
     # loop below can emit smooth ``[bytes] D/T`` heartbeats. ``total`` is
     # the SUM of HF-advertised sizes — if HF lied (cf. the size guards
     # below) the tracker simply caps at 100% on the desktop side. When
     # ``total_expected_bytes`` is 0 (HF didn't expose sizes), heartbeats
     # are silently skipped — the existing per-file ``[N/M]`` lines remain
-    # the user-visible signal.
-    _PROGRESS.reset(total_expected_bytes)
+    # the user-visible signal. Per-call (not module-global) so two
+    # concurrent ``download_with_mirror_fallback`` calls in one process
+    # don't trample each other's totals (codex R1 BLOCKING on PR #682).
+    progress_tracker = _ProgressTracker(total=total_expected_bytes)
 
     # Per-file plan: for each file, attempt R2 first (if eligible),
     # otherwise fall straight to HF. Run a small pool in parallel.
@@ -1348,6 +1346,7 @@ def download_with_mirror_fallback(
                 sidecar_dir=sidecar_dir,
                 sidecar_key=_sidecar_key_for(fname),
                 repo_root=repo_root,
+                progress_tracker=progress_tracker,
             )
             if ok:
                 try:
@@ -1426,7 +1425,7 @@ def download_with_mirror_fallback(
                 # entirely. Bump it at completion so the heartbeat
                 # reflects HF-fallback files too (size known once
                 # ``hf_hub_download`` returned).
-                _PROGRESS.add(size)
+                progress_tracker.add(size)
             elif kind == "cached":
                 # Already present — count as r2/hf-neutral but include
                 # bytes so the summary reflects the full snapshot size.
@@ -1434,7 +1433,7 @@ def download_with_mirror_fallback(
                 # Cached files never enter the chunk loop — credit them
                 # to the tracker on the dispatcher thread so the
                 # heartbeat doesn't undercount a warm pull.
-                _PROGRESS.add(size)
+                progress_tracker.add(size)
             else:
                 misses.append(fname)
             # Issue #651 follow-up: per-file completion line so the
@@ -1472,7 +1471,7 @@ def download_with_mirror_fallback(
     # ``[bytes] D/T`` so the desktop's progress bar lands at 100% before
     # the next phase banner ("Verifying snapshot…", "Warming up…")
     # appears.
-    _PROGRESS.flush()
+    progress_tracker.flush()
 
     if misses:
         # At least one file we couldn't get from either source. Caller

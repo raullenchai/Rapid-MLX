@@ -3196,6 +3196,124 @@ def test_bytes_heartbeat_skipped_when_total_unknown(
     )
 
 
+def test_progress_tracker_is_per_pull_not_global(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two concurrent pulls must NOT share a tracker.
+
+    Codex R1 BLOCKING on PR #682: an earlier draft used a module-global
+    ``_PROGRESS = _ProgressTracker()`` instance. Two simultaneous calls
+    to ``download_with_mirror_fallback`` would overwrite each other's
+    ``_total`` and emit byte heartbeats with the wrong denominator,
+    making the desktop bar stuck at >100% or capped early. Fixed by
+    instantiating a fresh tracker inside each call; this test pins that
+    by running two pulls in parallel threads on differently-sized repos
+    and asserting each one's final heartbeat matches its OWN planned
+    total (the cross-pull contamination would shift one side).
+    """
+    import re
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+
+    # Two pulls with very different total sizes — if a global tracker
+    # were still in play, the smaller pull's final flush would emit
+    # ``done=small/total=large`` or vice-versa.
+    files_a = [("config.json", 100), ("model.safetensors", 900)]  # 1000
+    files_b = [("config.json", 50), ("model.safetensors", 250)]  # 300
+    repo_a, repo_b = "mlx-community/A", "mlx-community/B"
+    rev_a, rev_b = "a" * 40, "b" * 40
+
+    catalog = _catalog_payload(
+        [
+            ("a", repo_a, "mirrored"),
+            ("b", repo_b, "mirrored"),
+        ]
+    )
+
+    router = _UrlRouter()
+    # Factory closures so each urlopen call gets a fresh BytesIO — the
+    # two parallel pulls would otherwise drain a shared buffer.
+    catalog_bytes = json.dumps(catalog).encode()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        lambda req: _FakeResponse(200, catalog_bytes),
+    )
+    for fname, size in files_a:
+        body = b"x" * size
+        router.add(
+            f"https://models.rapidmlx.com/{repo_a}/{fname}",
+            lambda req, body=body: _FakeResponse(200, body),
+        )
+    for fname, size in files_b:
+        body = b"y" * size
+        router.add(
+            f"https://models.rapidmlx.com/{repo_b}/{fname}",
+            lambda req, body=body: _FakeResponse(200, body),
+        )
+
+    # Capture each pull's stdout in isolation by routing prints through
+    # a thread-local sink installed via monkeypatching ``builtins.print``.
+    local = threading.local()
+    real_print = print
+
+    def routed_print(*args, **kwargs):
+        sink = getattr(local, "sink", None)
+        if sink is None:
+            return real_print(*args, **kwargs)
+        sink.append(" ".join(str(a) for a in args))
+
+    monkeypatch.setattr("builtins.print", routed_print)
+
+    # Dispatch model_info by repo_id so two parallel pulls each get
+    # their own files list. ``unittest.mock.patch`` isn't thread-safe at
+    # context exit, so install the mocks once at the test scope and
+    # leave the per-thread variation to the side_effect.
+    by_repo = {repo_a: (rev_a, files_a), repo_b: (rev_b, files_b)}
+
+    def _fake_model_info(repo_id, **kwargs):
+        rev, fs = by_repo[repo_id]
+        return _mk_model_info(rev, fs)
+
+    def _pull(repo: str, cache: Path) -> list[str]:
+        local.sink = []
+        try:
+            ok = _mirror.download_with_mirror_fallback(repo, cache_dir=cache)
+            assert ok
+            return list(local.sink)
+        finally:
+            local.sink = None
+
+    cache_a = tmp_path / "a"
+    cache_b = tmp_path / "b"
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch("huggingface_hub.model_info", side_effect=_fake_model_info),
+        patch("huggingface_hub.hf_hub_download"),
+        ThreadPoolExecutor(max_workers=2) as ex,
+    ):
+        fut_a = ex.submit(_pull, repo_a, cache_a)
+        fut_b = ex.submit(_pull, repo_b, cache_b)
+        out_a = fut_a.result(timeout=30)
+        out_b = fut_b.result(timeout=30)
+
+    def _final_total(lines: list[str]) -> int:
+        matches = [
+            m for line in lines for m in re.findall(r"\[bytes\] \d+/(\d+)", line)
+        ]
+        assert matches, f"no heartbeat in pull stdout:\n{lines}"
+        # Every heartbeat from one pull must use that pull's denominator.
+        denoms = {int(m) for m in matches}
+        assert len(denoms) == 1, f"mixed denominators leaked across pulls: {denoms}"
+        return int(matches[-1])
+
+    assert _final_total(out_a) == sum(s for _, s in files_a)  # 1000
+    assert _final_total(out_b) == sum(s for _, s in files_b)  # 300
+
+
 def test_safe_display_name_strips_control_chars():
     """Filenames from external HF metadata can't inject terminal escapes.
 
