@@ -884,11 +884,34 @@ class StreamingPostProcessor:
         # If the reasoning cap fired on a prior chunk, splice ``</think>``
         # into the parser's view of the stream so it flips to content on
         # this call. Idempotent — only fires once per request.
-        delta_text = self._maybe_inject_reasoning_close(delta_text)
+        #
+        # Codex round-8 BLOCKING #1: keep the synthetic ``</think>``
+        # marker OUT of the shared ``self.accumulated_text``. The
+        # earlier draft mutated ``delta_text`` to ``"</think>" +
+        # delta_text`` and then appended that mutated value to
+        # ``self.accumulated_text`` — poisoning the buffer with forged
+        # model bytes that downstream (usage chars-÷4 in chat.py, the
+        # ``finalize()`` tool-call fallback) would see and account
+        # against. Build the parser's ``current`` argument LOCALLY
+        # from the (true) ``previous_text`` + the injected marker +
+        # the ORIGINAL ``delta_text``. The shared buffer only ever
+        # holds real model output. Symmetric with the routes-side
+        # local-buffer pattern (round-6 fix).
+        original_delta_text = delta_text
         previous_text = self.accumulated_text
-        self.accumulated_text += delta_text
+        parser_delta_text = self._maybe_inject_reasoning_close(original_delta_text)
+        if parser_delta_text is original_delta_text:
+            # No injection — common path. Keep the shared buffer
+            # update minimal.
+            self.accumulated_text += original_delta_text
+            parser_current = self.accumulated_text
+        else:
+            # Injection fired this chunk: parser sees ``</think>`` +
+            # ``original_delta``; shared buffer only gets the original.
+            self.accumulated_text += original_delta_text
+            parser_current = previous_text + parser_delta_text
         delta_msg = self.reasoning_parser.extract_reasoning_streaming(
-            previous_text, self.accumulated_text, delta_text
+            previous_text, parser_current, parser_delta_text
         )
 
         if delta_msg is None:

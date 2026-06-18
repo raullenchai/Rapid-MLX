@@ -615,6 +615,7 @@ async def _stream_responses(
                     # the round-6 local-buffer invariant applies here
                     # too).
                     _, overflow, _ = _account_for_reasoning(delta_msg.reasoning)
+                    flip_succeeded = _reasoning_close_injected
                     if overflow and not _reasoning_close_injected:
                         _reasoning_close_injected = True
                         flip_previous = accumulated_raw
@@ -624,13 +625,27 @@ async def _stream_responses(
                             flip_msg = reasoning_parser.extract_reasoning_streaming(
                                 flip_previous, flip_current, flip_delta
                             )
+                            flip_succeeded = True
                         except Exception as e:
+                            # Codex round-8 BLOCKING #2: when the flip
+                            # raises, the parser may still be mid-think.
+                            # Emitting ``overflow`` here would leak
+                            # reasoning bytes onto the wire as
+                            # ``response.output_text.delta`` even though
+                            # the parser hasn't transitioned. Suppress
+                            # overflow on flip failure; log so operators
+                            # can see the parser bug. Worst case the
+                            # client sees a slightly-truncated response,
+                            # strictly preferable to mixing reasoning
+                            # into content under a failed transition.
                             logger.warning(
                                 "responses in-chunk close-marker flip raised "
-                                "on %r: %s — parser state may stay mid-think "
-                                "for the rest of this request",
+                                "on %r: %s — parser state may stay mid-think; "
+                                "suppressing %d-byte overflow on this chunk "
+                                "to avoid leaking reasoning bytes as content",
                                 type(reasoning_parser).__name__,
                                 e,
+                                len(overflow),
                             )
                             flip_msg = None
                         # Whatever content the flip released stays
@@ -644,10 +659,13 @@ async def _stream_responses(
                         )
                         if isinstance(flip_content, str) and flip_content:
                             delta_msg.content = (delta_msg.content or "") + flip_content
-                    if overflow:
-                        # Now safe: parser has flipped (or the flip
-                        # attempt was logged), so the overflow bytes
-                        # carry semantically as content.
+                    if overflow and flip_succeeded:
+                        # Safe to promote overflow: either the flip
+                        # this iteration succeeded, OR the parser
+                        # already transitioned on a PRIOR chunk
+                        # (``_reasoning_close_injected`` was already
+                        # True on entry, captured in ``flip_succeeded``
+                        # via the initial assignment above).
                         delta_msg.content = (delta_msg.content or "") + overflow
                 if delta_msg.content:
                     content = strip_special_tokens(delta_msg.content)

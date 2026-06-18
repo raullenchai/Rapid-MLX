@@ -747,6 +747,7 @@ async def _stream_anthropic_messages(
                             # extractor with a synthetic ``</think>``
                             # against a LOCAL ``current`` (don't mutate
                             # ``accumulated_raw`` — round-6 invariant).
+                            flip_succeeded = _reasoning_close_injected
                             if not _reasoning_close_injected:
                                 _reasoning_close_injected = True
                                 flip_previous = accumulated_raw
@@ -758,14 +759,29 @@ async def _stream_anthropic_messages(
                                             flip_previous, flip_current, flip_delta
                                         )
                                     )
+                                    flip_succeeded = True
                                 except Exception as e:
+                                    # Codex round-8 BLOCKING #3: when
+                                    # the flip raises, the parser may
+                                    # still be mid-think. Emitting
+                                    # ``overflow`` as a TEXT
+                                    # content_block would visibly mix
+                                    # reasoning bytes into the
+                                    # assistant message under a failed
+                                    # transition. Suppress overflow on
+                                    # flip failure and log; the client
+                                    # may see a slightly-truncated
+                                    # response — strictly better than
+                                    # semantically-invalid content.
                                     logger.warning(
                                         "anthropic in-chunk close-marker flip "
                                         "raised on %r: %s — parser state may "
-                                        "stay mid-think for the rest of this "
-                                        "request",
+                                        "stay mid-think; suppressing %d-byte "
+                                        "overflow on this chunk to avoid "
+                                        "leaking reasoning bytes as content",
                                         type(reasoning_parser).__name__,
                                         e,
+                                        len(overflow),
                                     )
                                     flip_msg = None
                                 flip_content = (
@@ -777,9 +793,10 @@ async def _stream_anthropic_messages(
                                     filtered_flip = tool_filter.process(flip_content)
                                     if filtered_flip:
                                         pieces.append(("text", filtered_flip))
-                            filtered = tool_filter.process(overflow)
-                            if filtered:
-                                pieces.append(("text", filtered))
+                            if flip_succeeded:
+                                filtered = tool_filter.process(overflow)
+                                if filtered:
+                                    pieces.append(("text", filtered))
                 if delta_msg.content:
                     content = strip_special_tokens(delta_msg.content)
                     if content:

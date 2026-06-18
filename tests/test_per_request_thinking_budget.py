@@ -22,6 +22,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from vllm_mlx.api.anthropic_adapter import (
     _resolve_reasoning_max_tokens,
@@ -55,7 +56,13 @@ class TestChatRequestValidation:
         assert r.reasoning_max_tokens == 128
 
     def test_zero_rejected(self):
-        with pytest.raises(Exception) as exc:
+        # Codex round-8 NIT #4: ``pytest.raises(Exception)`` is too
+        # broad — any construction failure (e.g. an unrelated field
+        # added in the future) would pass. Anchor to
+        # ``ValidationError`` AND check the error message names
+        # ``reasoning_max_tokens`` so a regression in the validator
+        # itself can't pass silently.
+        with pytest.raises(ValidationError) as exc:
             ChatCompletionRequest(
                 messages=[{"role": "user", "content": "hi"}],
                 reasoning_max_tokens=0,
@@ -63,7 +70,7 @@ class TestChatRequestValidation:
         assert "reasoning_max_tokens" in str(exc.value)
 
     def test_negative_rejected(self):
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(ValidationError) as exc:
             ChatCompletionRequest(
                 messages=[{"role": "user", "content": "hi"}],
                 reasoning_max_tokens=-1,
@@ -81,7 +88,7 @@ class TestResponsesRequestValidation:
         assert r.reasoning_max_tokens == 64
 
     def test_zero_rejected(self):
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(ValidationError) as exc:
             ResponsesRequest(model="gpt-5", input="hi", reasoning_max_tokens=0)
         assert "reasoning_max_tokens" in str(exc.value)
 
@@ -111,19 +118,24 @@ class TestStrictReasoningMaxTokensValidation:
     """
 
     def test_chat_completion_request_rejects(self, bad_value):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError) as exc:
             ChatCompletionRequest(
                 messages=[{"role": "user", "content": "hi"}],
                 reasoning_max_tokens=bad_value,
             )
+        # Codex round-8 NIT #4: anchor on the field name so a
+        # regression that drops the validator (and the model
+        # construction fails on something unrelated) can't pass.
+        assert "reasoning_max_tokens" in str(exc.value)
 
     def test_responses_request_rejects(self, bad_value):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError) as exc:
             ResponsesRequest(
                 model="gpt-5",
                 input="hi",
                 reasoning_max_tokens=bad_value,
             )
+        assert "reasoning_max_tokens" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -222,14 +234,19 @@ class TestAnthropicEffortMapping:
         assert _resolve_reasoning_max_tokens(req) == 2048
 
     def test_thinking_budget_tokens_negative_rejected(self):
-        with pytest.raises(Exception) as exc:
+        # Codex round-8 NIT #5: anchor on ``ValidationError`` AND on
+        # the field path so a regression that drops the validator
+        # itself (and the model construction fails on something
+        # unrelated) can't pass silently.
+        with pytest.raises(ValidationError) as exc:
             AnthropicRequest(
                 model="claude-3-5-sonnet",
                 messages=[{"role": "user", "content": "hi"}],
                 max_tokens=100,
                 thinking={"budget_tokens": -10},
             )
-        assert "budget" in str(exc.value).lower()
+        # ``budget_tokens`` is in the validator error message.
+        assert "budget_tokens" in str(exc.value).lower()
 
     @pytest.mark.parametrize(
         "bad_value",
@@ -248,13 +265,17 @@ class TestAnthropicEffortMapping:
         through, were ignored by the adapter helper, and silently
         turned a client-requested cap into no cap. Validate the type
         too so any non-int / non-positive value 422s at parse time."""
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError) as exc:
             AnthropicRequest(
                 model="claude-3-5-sonnet",
                 messages=[{"role": "user", "content": "hi"}],
                 max_tokens=100,
                 thinking={"budget_tokens": bad_value},
             )
+        # Anchor the assertion to the validator's error so a
+        # regression that drops the type guard can't pass silently
+        # via an unrelated construction error.
+        assert "budget_tokens" in str(exc.value).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +688,51 @@ class TestTextParserReasoningCap:
         # No content event from finalize (mid-stream already emitted).
         content_from_finalize = [e for e in events if e.type == "content"]
         assert content_from_finalize == []
+
+    def test_postprocessor_does_not_pollute_accumulated_text_with_close_marker(self):
+        """Codex round-8 BLOCKING #1: ``_process_with_reasoning``
+        previously mutated ``self.accumulated_text`` with the synthetic
+        ``</think>`` marker after the cap fired, poisoning the shared
+        buffer that downstream usage accounting + finalize tool-call
+        fallback read. After the fix, the marker only enters the
+        parser's LOCAL ``current`` argument — the shared buffer
+        holds real model output only.
+        """
+        from types import SimpleNamespace
+
+        # Cap fires on chunk 1 (40 chars over 1-token cap).
+        scripted = [
+            ("x" * 40, None),  # chunk 1 reasoning
+            (None, "answer"),  # chunk 2 content (after marker injected)
+        ]
+
+        recorded = []
+
+        def _extract(previous, current, delta):
+            recorded.append({"previous": previous, "current": current, "delta": delta})
+            assert current == previous + delta
+            if not scripted:
+                return SimpleNamespace(reasoning=None, content=None)
+            reasoning, content = scripted.pop(0)
+            return SimpleNamespace(reasoning=reasoning, content=content)
+
+        parser = MagicMock()
+        parser.extract_reasoning_streaming = _extract
+        parser.reset_state = MagicMock()
+
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+        pp.process_chunk(_make_output("x" * 40))  # cap fires
+        pp.process_chunk(_make_output("more"))  # close marker injected
+        # The PARSER saw ``</think>`` in its delta on chunk 2.
+        assert recorded[1]["delta"].startswith("</think>")
+        # But the SHARED accumulated_text does NOT contain the
+        # synthetic marker — only the raw model deltas.
+        assert "</think>" not in pp.accumulated_text
+        # Sanity: it contains both raw chunks.
+        assert "x" * 40 in pp.accumulated_text
+        assert "more" in pp.accumulated_text
 
     def test_approx_token_count_uses_ceiling_division(self):
         """Codex round-7 NIT #3: the streaming cap heuristic must use
