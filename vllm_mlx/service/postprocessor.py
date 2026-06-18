@@ -1142,28 +1142,41 @@ class StreamingPostProcessor:
             self._reasoning_close_injected = True
             previous_text = self.accumulated_text
             injected_delta = "</think>"
-            self.accumulated_text += injected_delta
+            # Codex round-5 BLOCKING #1: build the parser's view of
+            # ``current`` LOCALLY rather than mutating
+            # ``self.accumulated_text``. Downstream (routes/chat.py
+            # post-finalize usage assembly) reads ``accumulated_text``
+            # to compute the chars-÷4 reasoning split for the usage
+            # block. Appending the forged ``</think>`` to the shared
+            # buffer would (a) make the usage tokens differ by 2 from
+            # what was actually streamed, and (b) — more importantly —
+            # if any future code path runs the parser's non-stream
+            # ``finalize_streaming`` over ``accumulated_text``, it
+            # would re-emit the same buffered bytes the in-finalize
+            # injection just released. Keep the mutation scoped.
+            local_current = previous_text + injected_delta
             delta_msg = None
             try:
                 delta_msg = self.reasoning_parser.extract_reasoning_streaming(
-                    previous_text, self.accumulated_text, injected_delta
+                    previous_text, local_current, injected_delta
                 )
             except Exception as e:
-                # Codex round-4 NIT #3: surface a deterministic
-                # fallback content event when the parser raises on the
-                # forced close path so the client never gets a totally-
-                # silent answer. Strictly better than the prior log-only
-                # path and trivially detectable by tests / clients.
+                # Codex round-5 BLOCKING #2 / #3: a parser exception on
+                # the forced close path is an INTERNAL server failure,
+                # not a model answer. The earlier draft emitted a
+                # diagnostic string ``"[reasoning cap hit — parser
+                # flush failed]"`` directly into ``content``, which
+                # leaks server implementation details into the
+                # assistant message. Drop the fabrication and log only;
+                # the client sees an empty completion if the cap path
+                # fails (the route's existing error semantics handle
+                # truly catastrophic failures via 5xx).
                 logger.warning(
-                    "finalize close-marker injection raised on %r: %s",
+                    "finalize close-marker injection raised on %r: %s — "
+                    "trailing reasoning content (if any) will not be "
+                    "promoted to content for this request",
                     type(self.reasoning_parser).__name__,
                     e,
-                )
-                events.append(
-                    StreamEvent(
-                        type="content",
-                        content="[reasoning cap hit — parser flush failed]",
-                    )
                 )
             if delta_msg is not None:
                 trailing_content = getattr(delta_msg, "content", None)

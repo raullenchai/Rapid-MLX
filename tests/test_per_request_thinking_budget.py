@@ -500,14 +500,102 @@ class TestTextParserReasoningCap:
         assert len(content_events) == 1
         assert content_events[0].content == finalize_content
 
-    def test_finalize_emits_fallback_on_parser_exception(self):
-        """Codex round-4 NIT #3: when the parser raises on the forced
-        close-marker call in ``finalize()``, the prior implementation
-        only logged the exception — a parser bug on the cap path
-        silently degraded into a reasoning-only response. After the
-        fix, ``finalize()`` must emit a deterministic fallback content
-        event so the client is never left with a totally-silent answer
-        (and clients / tests can easily detect the degraded path).
+    def test_finalize_does_not_emit_close_marker_through_parser_twice(self):
+        """Codex round-5 NIT #4: a real reasoning parser's
+        ``finalize_streaming()`` (qwen3 / deepseek non-stream
+        re-parse path) can re-emit the SAME buffered answer the
+        in-stream forced-close extraction just released, leading to
+        duplicated content events on the wire.
+
+        The fix is two-layer: (a) the routes
+        (responses._stream_responses, anthropic._stream_anthropic_messages)
+        skip ``finalize_streaming`` when terminal injection already
+        emitted content, and (b) the postprocessor builds its
+        ``</think>`` view LOCALLY rather than mutating the shared
+        ``accumulated_text`` buffer, so any future code path that
+        re-parses the buffer doesn't see the forged marker. This test
+        scripts a parser double whose ``extract_reasoning_streaming``
+        returns content on the injection AND a separate
+        ``finalize_streaming`` that would re-release the same bytes
+        if called against the mutated buffer — asserts the buffered
+        bytes appear exactly once on the wire.
+        """
+        from types import SimpleNamespace
+
+        # The "real answer" the model produced past the cap. Both the
+        # forced-close streaming extraction AND a hypothetical
+        # non-stream finalize re-parse would yield this same content.
+        real_answer = "the-buffered-answer"
+
+        finalize_streaming_calls = []
+
+        def _extract(previous, current, delta):
+            assert current == previous + delta
+            if delta == "</think>":
+                # Forced close: release the held content.
+                return SimpleNamespace(reasoning=None, content=real_answer)
+            # Initial reasoning chunk.
+            return SimpleNamespace(reasoning="x" * 40, content=None)
+
+        def _finalize_streaming(text):
+            """Real-parser-style non-stream re-parse: when called on a
+            buffer that ends with ``</think>...<real-answer>``, it
+            would naturally return the same content the streaming
+            extract just released. Track every call so the test can
+            assert the gating skipped it."""
+            finalize_streaming_calls.append(text)
+            return SimpleNamespace(reasoning=None, content=real_answer)
+
+        parser = MagicMock()
+        parser.extract_reasoning_streaming = _extract
+        parser.finalize_streaming = _finalize_streaming
+        parser.reset_state = MagicMock()
+
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        pp.process_chunk(_make_output("x" * 40))
+        assert pp._reasoning_cap_hit is True
+        events = pp.finalize()
+
+        content_events = [e for e in events if e.type == "content"]
+        # Critical: the buffered answer must appear EXACTLY ONCE on the
+        # wire — not zero (silent drop) and not two (duplicate-flush
+        # hazard codex round-4/5 BLOCKING).
+        matching = [e for e in content_events if real_answer in e.content]
+        assert len(matching) == 1, (
+            f"buffered answer must be emitted exactly once after terminal "
+            f"cap-hit; got {len(matching)} matching event(s) "
+            f"(all content events: {[e.content for e in content_events]})"
+        )
+        # The postprocessor's ``finalize()`` does NOT call
+        # ``finalize_streaming`` (the parser-finalize re-parse only
+        # exists in the route-level paths). Document the contract so a
+        # future refactor adding that call gets caught here.
+        assert finalize_streaming_calls == [], (
+            "StreamingPostProcessor.finalize() must NOT call "
+            "parser.finalize_streaming — the duplicate-emission "
+            "hazard is gated at the route level (responses + anthropic)"
+        )
+        # The forged ``</think>`` was kept OFF the shared accumulated
+        # buffer (codex round-5 BLOCKING #1 — downstream usage chars-÷4
+        # would otherwise drift by 8 chars).
+        assert "</think>" not in pp.accumulated_text
+
+    def test_finalize_swallows_parser_exception_without_fabricating_content(self):
+        """Codex round-5 BLOCKING #2-#3: an earlier draft emitted a
+        diagnostic string (``"[reasoning cap hit — parser flush
+        failed]"``) directly into ``content`` when the parser raised
+        on the forced close-marker call. That fabricated assistant
+        text from an INTERNAL server failure — the client would see an
+        "answer" that the model never produced.
+
+        After the fix, the exception is logged and NO content event is
+        emitted from the failure path (the route's existing 5xx /
+        disconnect-guard semantics handle catastrophic failures
+        upstream). The latch still flips so a subsequent ``finalize()``
+        call is idempotent.
         """
         parser = MagicMock()
         parser.extract_reasoning_streaming = MagicMock(
@@ -526,14 +614,15 @@ class TestTextParserReasoningCap:
         pp.process_chunk(_make_output("x" * 40))
         assert pp._reasoning_cap_hit is True
         events = pp.finalize()
+        # No content event was fabricated from the parser exception.
         content_events = [e for e in events if e.type == "content"]
-        assert len(content_events) == 1, (
-            "finalize() must emit a fallback content event when the "
-            "parser raises on the forced close-marker call"
+        assert content_events == [], (
+            "finalize() must NOT fabricate assistant content when the "
+            "parser raises on the forced close-marker call — that leaks "
+            "server implementation details into the model response"
         )
-        # Deterministic shape — matches the postprocessor / route
-        # fallback string so clients can pattern-match.
-        assert "reasoning cap hit" in content_events[0].content.lower()
+        # Latch still flipped — second finalize is a no-op.
+        assert pp._reasoning_close_injected is True
 
     def test_finalize_no_op_when_close_injected_in_stream(self):
         """Idempotency: when the close-marker was already spliced

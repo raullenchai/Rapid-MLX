@@ -673,22 +673,24 @@ async def _stream_responses(
                     previous_raw, accumulated_raw, injected_delta
                 )
             except Exception as e:
-                # Codex round-4 NIT #3: the buggy-parser fallback used
-                # to silently drop trailing content here. Instead,
-                # surface a deterministic fallback delta so the client
-                # is never left with a totally-silent answer — strictly
-                # better than a bare reasoning-only response and easier
-                # for tests / clients to detect than a swallowed log.
+                # Codex round-5 BLOCKING #3: an earlier draft emitted a
+                # diagnostic string ``"[reasoning cap hit — parser
+                # flush failed]"`` as ``response.output_text.delta``,
+                # which fabricates assistant content from an INTERNAL
+                # server failure — clients see an "answer" that the
+                # model never produced. Log the parser failure and
+                # leave the assistant content empty. The route's
+                # existing 5xx / disconnect-guard semantics handle
+                # truly catastrophic failures upstream; a single
+                # reasoning-cap parser bug must not invent text.
                 logger.warning(
-                    "responses terminal close-marker injection raised on %r: %s",
+                    "responses terminal close-marker injection raised on %r: %s — "
+                    "trailing reasoning content (if any) will not be "
+                    "promoted to output_text.delta for this request",
                     type(reasoning_parser).__name__,
                     e,
                 )
                 final_inject = None
-                fallback = "[reasoning cap hit — parser flush failed]"
-                async for ev in _emit_text_delta(fallback):
-                    yield ev
-                terminal_injection_emitted = True
             if final_inject is not None and getattr(final_inject, "content", None):
                 content = strip_special_tokens(final_inject.content)
                 if content:

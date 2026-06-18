@@ -828,25 +828,24 @@ async def _stream_anthropic_messages(
                 previous_raw, accumulated_raw, injected_delta
             )
         except Exception as e:
-            # Codex round-4 NIT #3: surface a deterministic fallback
-            # delta on parser-bug paths instead of silently degrading
-            # to a reasoning-only response. The fallback text is short
-            # so it's easy to diff in tests / client logs.
+            # Codex round-5 BLOCKING #2: an earlier draft emitted a
+            # diagnostic string ``"[reasoning cap hit — parser flush
+            # failed]"`` as an Anthropic text content_block, which
+            # fabricates assistant content from an INTERNAL server
+            # failure — clients see an "answer" that the model never
+            # produced. Log the parser failure and leave the assistant
+            # content empty. The route's existing 5xx / disconnect-
+            # guard semantics handle truly catastrophic failures
+            # upstream; a single reasoning-cap parser bug must not
+            # invent text.
             logger.warning(
-                "anthropic terminal close-marker injection raised on %r: %s",
+                "anthropic terminal close-marker injection raised on %r: %s — "
+                "trailing reasoning content (if any) will not be promoted "
+                "to a text block for this request",
                 type(reasoning_parser).__name__,
                 e,
             )
             final_inject = None
-            fallback_pieces: list[tuple[str, str]] = [
-                ("text", "[reasoning cap hit — parser flush failed]")
-            ]
-            events, current_block_type, block_index = _emit_content_pieces(
-                fallback_pieces, current_block_type, block_index
-            )
-            for event in events:
-                yield event
-            terminal_injection_emitted = True
         if final_inject is not None and getattr(final_inject, "content", None):
             inject_content = strip_special_tokens(final_inject.content)
             if inject_content:
