@@ -1341,6 +1341,9 @@ async def _create_chat_completion_impl(
         enable_thinking=_effective_enable_thinking(
             resolved_thinking, cfg.model_path or cfg.model_name
         ),
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # None → back-compat no-op.
+        reasoning_max_tokens=getattr(request, "reasoning_max_tokens", None),
     )
 
     # Process response_format if specified (after reasoning parser cleaned the text)
@@ -1527,6 +1530,9 @@ async def stream_chat_completion(
                 and getattr(request.response_format, "type", "text") != "text"
             ),
             request=request_dict,
+            # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+            # When None the postprocessor is a no-op for the cap path.
+            reasoning_max_tokens=getattr(request, "reasoning_max_tokens", None),
         )
         processor.set_thinking_model(request.model)
         processor.reset()

@@ -77,10 +77,39 @@ class StreamingPostProcessor:
         enable_thinking: bool | None = None,
         json_mode: bool = False,
         request: dict | None = None,
+        reasoning_max_tokens: int | None = None,
     ):
         self.cfg = cfg
         self.tools_requested = tools_requested
         self.json_mode = json_mode
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # When set and the model is still emitting on the reasoning
+        # channel after this many tokens, the processor force-closes
+        # the channel: text-parser engines see an injected ``</think>``
+        # marker on the next chunk so subsequent text routes to content;
+        # channel-routed engines (gemma4 / harmony) reclassify further
+        # reasoning deltas as content. ``None`` means "no cap" and is
+        # the documented default.
+        self._reasoning_max_tokens = reasoning_max_tokens
+        # Approximate count of reasoning tokens we've emitted so far.
+        # Engine deltas don't always carry per-channel token counts, so
+        # we approximate from the text length divided by 4 (the OpenAI
+        # spec's documented chars→tokens heuristic — same constant
+        # ``_build_usage`` uses in helpers.py for the reasoning_tokens
+        # split). This intentionally tracks EMITTED reasoning, not the
+        # raw model output, so the cap counts what the client sees.
+        self._reasoning_tokens_emitted = 0
+        # Flag: cap was hit. Set once the running count crosses the
+        # threshold; once True, the channel-routed branch reclassifies
+        # subsequent reasoning chunks as content and the text-parser
+        # branch injects ``</think>`` into the parser stream so it
+        # flips to content. Single-bit latch — never reset within a
+        # request (the cap is monotonic).
+        self._reasoning_cap_hit = False
+        # Whether the text-parser injection has already fired. Idempotent
+        # guard so we don't keep stuffing ``</think>`` into every
+        # subsequent chunk after the cap fired.
+        self._reasoning_close_injected = False
         # Forwarded to streaming tool parsers — qwen3_coder needs request.tools
         # for schema-driven type conversion (#171). Without it, raw XML leaks
         # into delta.content instead of structured tool_calls deltas.
@@ -240,6 +269,83 @@ class StreamingPostProcessor:
         self._is_thinking_model = (
             "nemotron" in model_name.lower() and not self.reasoning_parser
         )
+
+    @staticmethod
+    def _approx_token_count(text: str) -> int:
+        """OpenAI's documented chars-÷4 heuristic (matches
+        ``helpers._build_usage`` so the streaming cap and the usage
+        block agree on what "a reasoning token" is when no per-channel
+        engine count is available).
+
+        At least 1 token for any non-empty string so a stream of single
+        characters still advances the counter — without the floor a
+        cap of N would not fire on a stream of N+ one-char reasoning
+        chunks.
+        """
+        if not text:
+            return 0
+        return max(1, len(text) // 4)
+
+    def _consume_reasoning_budget(self, reasoning_text: str) -> tuple[str, str]:
+        """Account for ``reasoning_text`` against the per-request cap.
+
+        Returns ``(reasoning_kept, content_overflow)``:
+
+        * ``reasoning_kept`` — the portion that fits under the cap; this
+          is emitted as ``reasoning_content`` to the client.
+        * ``content_overflow`` — the portion past the cap; the caller
+          re-routes it to the CONTENT channel so no model output is
+          silently dropped.
+
+        Sets ``_reasoning_cap_hit`` to True the moment the running total
+        meets-or-exceeds the cap. ``_reasoning_max_tokens=None`` short-
+        circuits to "no cap" — the entire input is returned as kept.
+        """
+        if self._reasoning_max_tokens is None or not reasoning_text:
+            return reasoning_text, ""
+        if self._reasoning_cap_hit:
+            # Cap already fired — anything still arriving on the
+            # reasoning channel is overflow content.
+            return "", reasoning_text
+        delta_tokens = self._approx_token_count(reasoning_text)
+        new_total = self._reasoning_tokens_emitted + delta_tokens
+        if new_total <= self._reasoning_max_tokens:
+            self._reasoning_tokens_emitted = new_total
+            return reasoning_text, ""
+        # Cap crosses inside this chunk. Compute how many characters
+        # correspond to the remaining budget (4 chars per token), keep
+        # that prefix as reasoning, route the suffix to content.
+        remaining_tokens = self._reasoning_max_tokens - self._reasoning_tokens_emitted
+        keep_chars = max(0, remaining_tokens * 4)
+        kept = reasoning_text[:keep_chars]
+        overflow = reasoning_text[keep_chars:]
+        self._reasoning_tokens_emitted = self._reasoning_max_tokens
+        self._reasoning_cap_hit = True
+        return kept, overflow
+
+    def _maybe_inject_reasoning_close(self, delta_text: str) -> str:
+        """Inject ``</think>`` once into the next model-text chunk when
+        the cap fires on a text-parser engine.
+
+        Text-parser engines (hermes / qwen3 / glm47) emit
+        ``<think>...</think>`` themselves and rely on the streaming
+        reasoning parser to split content from reasoning. Once the cap
+        fires, we forge the close marker so the parser flips to content
+        on the very next call to ``extract_reasoning_streaming`` —
+        mirrors the channel-routed engines' force-close behavior so the
+        client-visible semantic is identical across parser families.
+        Idempotent: only injects on the first text chunk after the cap
+        hits.
+        """
+        if not self._reasoning_cap_hit or self._reasoning_close_injected:
+            return delta_text
+        if self.reasoning_parser is None:
+            # Standard / channel-routed path doesn't need the injection.
+            return delta_text
+        self._reasoning_close_injected = True
+        # Prepend the marker so the parser sees ``</think>`` BEFORE the
+        # next body bytes, transitioning state to content immediately.
+        return "</think>" + delta_text
 
     def _parallel_tool_calls_allowed(self) -> bool:
         """Return False iff the request explicitly opted out of
@@ -491,6 +597,12 @@ class StreamingPostProcessor:
         self._no_index_admitted_id = None
         self._no_index_admitted_name = None
         self._no_index_last_dropped = False
+        # Per-request reasoning-cap counters reset to baseline. The
+        # configured cap itself (``self._reasoning_max_tokens``) is
+        # immutable — it was set at __init__ from the request.
+        self._reasoning_tokens_emitted = 0
+        self._reasoning_cap_hit = False
+        self._reasoning_close_injected = False
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
@@ -620,6 +732,19 @@ class StreamingPostProcessor:
         else:
             content, reasoning = delta_text, None
 
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # When the reasoning budget is exhausted, route the overflow
+        # portion of the current chunk — and every subsequent reasoning
+        # chunk — to the content channel instead of dropping it.
+        # Channel-routed engines (gemma4 / harmony) DON'T need a
+        # ``</think>`` injection since channels are tracked at the
+        # token level upstream; reclassifying the chunk is enough.
+        if reasoning is not None:
+            kept_reasoning, overflow_content = self._consume_reasoning_budget(reasoning)
+            reasoning = kept_reasoning or None
+            if overflow_content:
+                content = (content or "") + overflow_content
+
         # Tool call detection on content
         if self.tool_parser and content:
             result = self._detect_tool_calls(content)
@@ -731,6 +856,10 @@ class StreamingPostProcessor:
         self, delta_text: str, output: GenerationOutput
     ) -> list[StreamEvent]:
         """Handle models with text-based reasoning parsers."""
+        # If the reasoning cap fired on a prior chunk, splice ``</think>``
+        # into the parser's view of the stream so it flips to content on
+        # this call. Idempotent — only fires once per request.
+        delta_text = self._maybe_inject_reasoning_close(delta_text)
         previous_text = self.accumulated_text
         self.accumulated_text += delta_text
         delta_msg = self.reasoning_parser.extract_reasoning_streaming(
@@ -745,6 +874,17 @@ class StreamingPostProcessor:
 
         content = delta_msg.content
         reasoning = delta_msg.reasoning
+
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # Account for any reasoning bytes this chunk produced. Overflow
+        # is rerouted to content so no model output is silently dropped
+        # and the SSE stream gets a clean transition from reasoning to
+        # content even when the parser hasn't actually seen ``</think>``.
+        if reasoning:
+            kept_reasoning, overflow_content = self._consume_reasoning_budget(reasoning)
+            reasoning = kept_reasoning or None
+            if overflow_content:
+                content = (content or "") + overflow_content
 
         if reasoning:
             self.accumulated_reasoning += reasoning

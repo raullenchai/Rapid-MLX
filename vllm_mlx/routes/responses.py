@@ -254,6 +254,10 @@ async def _non_stream(
         enable_thinking=_effective_enable_thinking(
             resolved_thinking, cfg.model_path or cfg.model_name
         ),
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # Forwarded from ``ResponsesRequest.reasoning_max_tokens`` via
+        # the Responses → OpenAI adapter. None → no cap (back-compat).
+        reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
     )
 
     final_content = None
@@ -409,6 +413,42 @@ async def _stream_responses(
         if reasoning_parser:
             reasoning_parser.reset_state()
 
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # Responses SSE drops reasoning to the floor (Codex doesn't read
+        # ``response.reasoning_text.delta`` in v1) so the cap's primary
+        # job here is to RECLASSIFY: once the budget is exhausted, any
+        # further reasoning bytes become ``response.output_text.delta``
+        # so the user actually sees a reply instead of an infinite
+        # silent thinking block.
+        _reasoning_cap = getattr(responses_request, "reasoning_max_tokens", None)
+        _reasoning_tokens_emitted = 0
+        _reasoning_cap_hit = False
+        _reasoning_close_injected = False
+
+        def _account_for_reasoning(text: str) -> tuple[str, str, bool]:
+            """Returns ``(kept_reasoning, overflow_content, just_hit)``.
+
+            Approximates token count via the chars-÷4 heuristic so the
+            cap matches what the OpenAI route's StreamingPostProcessor
+            does and the same effective budget applies regardless of
+            which API surface the client uses.
+            """
+            nonlocal _reasoning_tokens_emitted, _reasoning_cap_hit
+            if _reasoning_cap is None or not text:
+                return text, "", False
+            if _reasoning_cap_hit:
+                return "", text, False
+            delta = max(1, len(text) // 4)
+            new_total = _reasoning_tokens_emitted + delta
+            if new_total <= _reasoning_cap:
+                _reasoning_tokens_emitted = new_total
+                return text, "", False
+            remaining = _reasoning_cap - _reasoning_tokens_emitted
+            keep_chars = max(0, remaining * 4)
+            _reasoning_tokens_emitted = _reasoning_cap
+            _reasoning_cap_hit = True
+            return text[:keep_chars], text[keep_chars:], True
+
         async def _open_message_item() -> str:
             """Emit response.output_item.added for the assistant message.
 
@@ -498,6 +538,21 @@ async def _stream_responses(
                         if filtered:
                             async for ev in _emit_text_delta(filtered):
                                 yield ev
+                elif output_channel == "reasoning":
+                    # Reasoning-cap reclassification: once the per-request
+                    # cap fires, route the overflow portion of this and
+                    # every subsequent reasoning chunk to ``content`` so
+                    # the user actually sees a reply instead of an
+                    # unending silent reasoning stream. Without the cap
+                    # the chunk drops as before (v1 Responses contract).
+                    _, overflow, _ = _account_for_reasoning(delta_text)
+                    if overflow:
+                        content = strip_special_tokens(overflow)
+                        if content:
+                            filtered = tool_filter.process(content)
+                            if filtered:
+                                async for ev in _emit_text_delta(filtered):
+                                    yield ev
                 # ``reasoning`` and unknown channels are dropped for v1.
                 continue
 
@@ -509,11 +564,27 @@ async def _stream_responses(
                     if delta_text
                     else accumulated_raw
                 )
+                # Text-parser path: once the cap fires, splice ``</think>``
+                # in front of the next chunk so the parser flips to
+                # content. Idempotent — only fires once per request.
+                if _reasoning_cap_hit and not _reasoning_close_injected:
+                    delta_text = "</think>" + delta_text
+                    accumulated_raw += "</think>"
+                    _reasoning_close_injected = True
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, accumulated_raw, delta_text
                 )
                 if delta_msg is None:
                     continue
+                if delta_msg.reasoning:
+                    # Account for reasoning bytes. Overflow becomes
+                    # content; the next stream iteration will emit the
+                    # forged ``</think>`` so the parser cleanly transitions.
+                    _, overflow, _ = _account_for_reasoning(delta_msg.reasoning)
+                    if overflow:
+                        # Promote overflow to content alongside any content
+                        # the parser produced this delta.
+                        delta_msg.content = (delta_msg.content or "") + overflow
                 if delta_msg.content:
                     content = strip_special_tokens(delta_msg.content)
                     if content:

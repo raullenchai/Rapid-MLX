@@ -8,9 +8,9 @@ Claude Code to communicate with rapid-mlx.
 """
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # =============================================================================
 # Request Models
@@ -86,23 +86,43 @@ class AnthropicOutputFormat(BaseModel):
 class AnthropicOutputConfig(BaseModel):
     """Output-side configuration for an Anthropic Messages request.
 
-    Backport of upstream vLLM PR #42396 (v0.22.0). Mirrors the Anthropic
-    SDK's ``output_config`` shape so SDKs can request structured output
-    via ``output_config.format = json_schema`` without falling back to
-    tool-call-emulated structured output.
+    Backport of upstream vLLM PR #42396 (v0.22.0). Two fields are wired:
 
-    ``effort`` is accepted but intentionally NOT acted on here — it is
-    part of a separate concurrent backport (Pick 1, reasoning-effort).
-    Declaring the field today prevents the two PRs from racing on the
-    same model shape during merge; the Pick 1 PR wires the value into
-    the sampling cascade. Until then, any value the client supplies
-    (low / medium / high / xhigh / max) is silently ignored.
+    * ``format`` — native structured output (Pick 2, PR #683).
+      ``format = json_schema`` is translated to OpenAI ``response_format``
+      by the adapter so the existing guided-decode pipeline applies.
+    * ``effort`` — coarse-grained reasoning-token budget (Pick 1, this PR
+      — upstream vLLM PR #20859 + #42396 backport). Translated to a
+      concrete ``reasoning_max_tokens`` value on the OpenAI side via the
+      ``ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS`` mapping below.
+      ``max`` means "no cap" (uncapped — Anthropic default).
+
+    Tightening note on ``effort``: Pick 2 originally landed this as a
+    plain ``str | None`` accept-but-ignore field; Pick 1 narrows it to a
+    ``Literal`` so a typo like ``"hgih"`` 422s at parse time instead of
+    being silently dropped through to the no-cap path.
     """
 
     format: AnthropicOutputFormat | None = None
-    # Accepted-but-ignored: see class docstring. Pick 1 (separate PR)
-    # will wire this into the sampling cascade.
-    effort: str | None = None
+    # Pick 1 (this PR) — wired into the reasoning-cap pipeline via
+    # ``ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS`` + the adapter helper
+    # ``_resolve_reasoning_max_tokens``. Literal-typed so unknown
+    # values are rejected at parse time.
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+
+
+# Per-Anthropic-spec mapping from ``effort`` to a concrete reasoning
+# token budget (upstream vLLM PR #42396 / Anthropic SDK v0.22). Kept
+# module-scoped so tests can import + assert against the same mapping
+# the adapter uses. ``None`` means "no cap" (the default Anthropic
+# behavior when the client omits ``output_config`` entirely).
+ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS: dict[str, int | None] = {
+    "low": 512,
+    "medium": 2048,
+    "high": 8192,
+    "xhigh": 24000,
+    "max": None,
+}
 
 
 class AnthropicRequest(BaseModel):
@@ -121,10 +141,32 @@ class AnthropicRequest(BaseModel):
     metadata: dict | None = None
     top_k: int | None = None
     # Upstream vLLM PR #42396 (v0.22.0) — native structured output on
-    # /v1/messages via ``output_config.format = json_schema``. Optional;
-    # absence preserves the pre-existing free-form text path so existing
-    # SDK callers see no behavior change.
+    # /v1/messages via ``output_config.format = json_schema`` AND
+    # reasoning budget via ``output_config.effort`` (Pick 1, this PR;
+    # upstream PR #20859 + #42396 backport). Optional; absence preserves
+    # the pre-existing free-form-text + no-cap path so existing SDK
+    # callers see no behavior change.
     output_config: AnthropicOutputConfig | None = None
+    # Legacy Anthropic ``thinking`` field (v0.20+) — mirrors the same
+    # idea but as a ``{"type": "enabled", "budget_tokens": N}`` shape.
+    # The adapter consults ``thinking.budget_tokens`` only when
+    # ``output_config.effort`` is unset (newer surface wins).
+    thinking: dict | None = None
+
+    @model_validator(mode="after")
+    def _validate_thinking_budget(self) -> "AnthropicRequest":
+        """Reject non-positive ``thinking.budget_tokens`` when the field
+        is present. Mirrors the OpenAI-side validation on
+        ``ChatCompletionRequest.reasoning_max_tokens`` so the same 400
+        shape surfaces whether the client uses the OpenAI or Anthropic
+        surface (upstream vLLM PR #43402)."""
+        if isinstance(self.thinking, dict):
+            budget = self.thinking.get("budget_tokens")
+            if budget is not None and isinstance(budget, int) and budget < 1:
+                raise ValueError(
+                    "thinking.budget_tokens must be >= 1 when set."
+                )
+        return self
 
 
 # =============================================================================

@@ -16,7 +16,7 @@ client).
 import uuid
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # =============================================================================
 # Request Models
@@ -95,6 +95,22 @@ class ResponsesRequest(BaseModel):
     max_output_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
+    # Per-request cap on reasoning tokens — see ``ChatCompletionRequest``
+    # for the full semantic. ``None`` = no cap. Validated >= 1 by the
+    # post-init validator below; the Responses route forwards this to
+    # the underlying ChatCompletionRequest so the streaming SSE pipeline
+    # and the non-streaming finalize path apply the same enforcement
+    # (upstream vLLM PRs #20859 / #42396 / #43402 backport).
+    reasoning_max_tokens: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_reasoning_max_tokens(self) -> "ResponsesRequest":
+        if self.reasoning_max_tokens is not None and self.reasoning_max_tokens < 1:
+            raise ValueError(
+                "reasoning_max_tokens must be >= 1 when set; pass "
+                "enable_thinking=false to disable reasoning entirely."
+            )
+        return self
 
 
 # =============================================================================

@@ -248,6 +248,15 @@ class ChatCompletionRequest(BaseModel):
     # accepted (no Pydantic drop) but not yet forwarded — see
     # ``_resolve_enable_thinking`` in service/helpers.py for precedence.
     chat_template_kwargs: dict | None = None
+    # Per-request cap on reasoning tokens (upstream vLLM PR #20859 backport).
+    # Semantic: force-close the ``<think>`` channel after N reasoning tokens
+    # are emitted; subsequent model output is routed to the final/content
+    # channel. DIFFERENT from the global ``thinking_token_budget`` which
+    # additively extends ``max_tokens`` headroom for reasoning models — this
+    # is a SUBTRACTIVE cap that gates how long the model is allowed to
+    # think before answering. Distinct from ``max_tokens`` (which caps the
+    # overall completion length). ``None`` = no cap, model decides.
+    reasoning_max_tokens: int | None = None
     # Number of completions (only n=1 supported)
     n: int | None = None
 
@@ -263,6 +272,20 @@ class ChatCompletionRequest(BaseModel):
                     "different values; use max_completion_tokens only."
                 )
             self.max_tokens = self.max_completion_tokens
+        return self
+
+    @model_validator(mode="after")
+    def _validate_reasoning_max_tokens(self) -> "ChatCompletionRequest":
+        """Reject non-positive ``reasoning_max_tokens`` (upstream vLLM
+        PR #43402). ``None`` means "no cap" and is the default; a
+        client that supplies the field must give a positive integer.
+        Zero / negative would be ambiguous (interpret as "no thinking
+        at all" via ``enable_thinking=False``, not via this cap)."""
+        if self.reasoning_max_tokens is not None and self.reasoning_max_tokens < 1:
+            raise ValueError(
+                "reasoning_max_tokens must be >= 1 when set; pass "
+                "enable_thinking=false to disable reasoning entirely."
+            )
         return self
 
     @model_validator(mode="after")

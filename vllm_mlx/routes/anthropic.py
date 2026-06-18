@@ -297,6 +297,12 @@ async def create_anthropic_message(
             enable_thinking=_effective_enable_thinking(
                 resolved_thinking, cfg.model_path or cfg.model_name
             ),
+            # Per-request reasoning cap (upstream vLLM PR #20859 / #42396
+            # backport). The adapter translated ``output_config.effort``
+            # or legacy ``thinking.budget_tokens`` into this field on
+            # the OpenAI-side request, so it propagates uniformly across
+            # all three API surfaces.
+            reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
         )
 
         final_content = None
@@ -556,6 +562,38 @@ async def _stream_anthropic_messages(
     if reasoning_parser:
         reasoning_parser.reset_state()
 
+    # Per-request reasoning cap (upstream vLLM PR #20859 / #42396 backport).
+    # Same chars-÷4 heuristic the OpenAI route uses so the same effective
+    # budget applies regardless of which API surface the client picked.
+    _reasoning_cap = getattr(openai_request, "reasoning_max_tokens", None)
+    _reasoning_tokens_emitted = 0
+    _reasoning_cap_hit = False
+    _reasoning_close_injected = False
+
+    def _account_for_reasoning(text: str) -> tuple[str, str]:
+        """``(kept_reasoning, overflow_content)``.
+
+        Identical accounting to the Responses-route helper so the
+        three surfaces stay byte-for-byte consistent on the cap path.
+        Overflow is rerouted to the content channel so a Claude-Code
+        client never sees an empty assistant turn after the cap fires.
+        """
+        nonlocal _reasoning_tokens_emitted, _reasoning_cap_hit
+        if _reasoning_cap is None or not text:
+            return text, ""
+        if _reasoning_cap_hit:
+            return "", text
+        delta = max(1, len(text) // 4)
+        new_total = _reasoning_tokens_emitted + delta
+        if new_total <= _reasoning_cap:
+            _reasoning_tokens_emitted = new_total
+            return text, ""
+        remaining = _reasoning_cap - _reasoning_tokens_emitted
+        keep_chars = max(0, remaining * 4)
+        _reasoning_tokens_emitted = _reasoning_cap
+        _reasoning_cap_hit = True
+        return text[:keep_chars], text[keep_chars:]
+
     async for output in engine.stream_chat(messages=messages, **chat_kwargs):
         delta_text = output.new_text
 
@@ -616,7 +654,17 @@ async def _stream_anthropic_messages(
                 if output_channel == "reasoning":
                     reasoning = strip_special_tokens(delta_text)
                     if reasoning:
-                        pieces_routed.append(("thinking", reasoning))
+                        # Per-request reasoning cap — split into kept
+                        # (thinking) and overflow (text) so Claude-Code
+                        # eventually sees a final answer instead of an
+                        # endless thinking_delta stream.
+                        kept, overflow = _account_for_reasoning(reasoning)
+                        if kept:
+                            pieces_routed.append(("thinking", kept))
+                        if overflow:
+                            filtered = tool_filter.process(overflow)
+                            if filtered:
+                                pieces_routed.append(("text", filtered))
                 elif output_channel in ("content", "tool_call"):
                     # ``content`` and ``tool_call`` both render as
                     # user-facing text deltas; tool detection still
@@ -655,6 +703,12 @@ async def _stream_anthropic_messages(
                 # here and emit reasoning/content as their own block types
                 # directly.
                 previous_raw = accumulated_raw
+                # Text-parser cap force-close: splice ``</think>`` into the
+                # parser's incoming bytes once the cap has fired so the
+                # state machine flips to content on this chunk. Idempotent.
+                if _reasoning_cap_hit and not _reasoning_close_injected:
+                    delta_text = "</think>" + delta_text
+                    _reasoning_close_injected = True
                 accumulated_raw += delta_text
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, accumulated_raw, delta_text
@@ -665,7 +719,16 @@ async def _stream_anthropic_messages(
                 if delta_msg.reasoning:
                     reasoning = strip_special_tokens(delta_msg.reasoning)
                     if reasoning:
-                        pieces.append(("thinking", reasoning))
+                        kept, overflow = _account_for_reasoning(reasoning)
+                        if kept:
+                            pieces.append(("thinking", kept))
+                        if overflow:
+                            # Overflow becomes content (text); next iteration
+                            # of the loop will see the forged ``</think>``
+                            # so subsequent reasoning routes through content.
+                            filtered = tool_filter.process(overflow)
+                            if filtered:
+                                pieces.append(("text", filtered))
                 if delta_msg.content:
                     content = strip_special_tokens(delta_msg.content)
                     if content:

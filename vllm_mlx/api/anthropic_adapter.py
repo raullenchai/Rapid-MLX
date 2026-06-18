@@ -13,6 +13,7 @@ import re
 import uuid
 
 from .anthropic_models import (
+    ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS,
     AnthropicMessage,
     AnthropicOutputConfig,
     AnthropicRequest,
@@ -121,7 +122,40 @@ def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
         tools=tools,
         tool_choice=tool_choice,
         response_format=response_format,
+        # Pick 1 (this PR) — upstream vLLM PR #20859 + #42396 backport.
+        # Translates ``output_config.effort`` (or legacy
+        # ``thinking.budget_tokens``) into a per-request reasoning cap
+        # on the OpenAI surface.
+        reasoning_max_tokens=_resolve_reasoning_max_tokens(request),
     )
+
+
+def _resolve_reasoning_max_tokens(request: AnthropicRequest) -> int | None:
+    """Pick the reasoning cap from the Anthropic-side fields.
+
+    Precedence (first wins):
+      1. ``output_config.effort`` — newer Anthropic SDK shape (v0.22,
+         upstream vLLM PR #42396). ``max`` and unset both mean "no cap".
+      2. ``thinking.budget_tokens`` — legacy v0.20 shape (upstream vLLM
+         PR #20859). Verbatim integer budget.
+      3. ``None`` — no cap, model decides.
+
+    Returning ``None`` keeps the OpenAI-side request unchanged so the
+    existing global ``cfg.thinking_token_budget`` semantic (additive
+    max_tokens headroom for reasoning models) keeps applying — these
+    two budgets are independent dials.
+    """
+    if request.output_config is not None and request.output_config.effort is not None:
+        # ``max`` → None (no cap) via the canonical mapping; other
+        # values resolve to a concrete integer cap.
+        return ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS.get(
+            request.output_config.effort
+        )
+    if isinstance(request.thinking, dict):
+        budget = request.thinking.get("budget_tokens")
+        if isinstance(budget, int) and budget >= 1:
+            return budget
+    return None
 
 
 def openai_to_anthropic(

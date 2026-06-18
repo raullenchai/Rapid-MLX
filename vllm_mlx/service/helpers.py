@@ -135,6 +135,7 @@ def _finalize_content_and_reasoning(
     reasoning_parser,
     engine_reasoning_text: str = "",
     enable_thinking: bool | None = None,
+    reasoning_max_tokens: int | None = None,
 ) -> tuple[str, str | None]:
     """Compute final ``content`` + ``reasoning_text`` after tool parsing.
 
@@ -180,9 +181,11 @@ def _finalize_content_and_reasoning(
     # the parser. (No reasoning_parser is still a short-circuit
     # below.) Issue #442.
     if engine_reasoning_text:
-        return cleaned_text, engine_reasoning_text
+        return _apply_reasoning_cap(
+            cleaned_text, engine_reasoning_text, reasoning_max_tokens
+        )
     if reasoning_parser is None:
-        return cleaned_text, reasoning_text
+        return _apply_reasoning_cap(cleaned_text, reasoning_text, reasoning_max_tokens)
     # #575 — thread the request-level ``enable_thinking`` so the
     # underlying ``BaseThinkingReasoningParser.extract_reasoning``
     # can apply its symmetric-with-streaming Case-4 fallback when
@@ -278,7 +281,40 @@ def _finalize_content_and_reasoning(
         # MUST survive (codex R2 BLOCKING).
         if enable_thinking is True and first_parse_was_case4:
             cleaned_text = ""
-    return cleaned_text, reasoning_text
+    return _apply_reasoning_cap(cleaned_text, reasoning_text, reasoning_max_tokens)
+
+
+def _apply_reasoning_cap(
+    cleaned_text: str,
+    reasoning_text: str | None,
+    reasoning_max_tokens: int | None,
+) -> tuple[str, str | None]:
+    """Truncate ``reasoning_text`` to the per-request cap and reroute
+    the overflow into ``cleaned_text`` (upstream vLLM PR #20859
+    backport).
+
+    Non-stream equivalent of
+    ``StreamingPostProcessor._consume_reasoning_budget``:
+    ``None`` short-circuits to a no-op so back-compat callers behave
+    exactly as before. Uses the same chars-÷4 heuristic as
+    ``_build_usage`` and the streaming postprocessor — single source
+    of truth for "how many tokens does this text approximate" so the
+    OpenAI usage block, the streaming SSE deltas, and this non-stream
+    finalize all agree on a single token count.
+    """
+    if (
+        reasoning_max_tokens is None
+        or not reasoning_text
+        or not isinstance(reasoning_text, str)
+    ):
+        return cleaned_text, reasoning_text
+    max_chars = reasoning_max_tokens * 4
+    if len(reasoning_text) <= max_chars:
+        return cleaned_text, reasoning_text
+    overflow = reasoning_text[max_chars:]
+    truncated = reasoning_text[:max_chars]
+    cleaned_text = (cleaned_text or "") + overflow
+    return cleaned_text, truncated
 
 
 def _rescue_silent_drop_from_reasoning(

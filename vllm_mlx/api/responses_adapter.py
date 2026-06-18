@@ -101,6 +101,10 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
         tool_choice=tool_choice,
         parallel_tool_calls=request.parallel_tool_calls,
         response_format=response_format,
+        # Forward the per-request reasoning cap so the same enforcement
+        # path used by /v1/chat/completions and /v1/messages applies on
+        # /v1/responses (upstream vLLM PR #20859 backport).
+        reasoning_max_tokens=request.reasoning_max_tokens,
     )
 
 
