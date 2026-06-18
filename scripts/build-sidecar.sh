@@ -154,6 +154,40 @@ python3.12 -m pip install \
     --upgrade \
     "$REPO_ROOT"
 
+# ----- step 2.5: bundle mlx-vlm --no-deps + Pillow ---------------------
+#
+# Even though we skip the [vision] extras to stay under rapid-desktop's
+# 500 MB CI gate, the gemma-4 family (12 aliases on the curated catalog —
+# gemma-4-12b-4bit, -12b-qat-4bit/8bit, -26b-4bit, -26b-qat-4bit,
+# -31b-{4,8}bit, -31b-qat-{4,8}bit, and friends) NEEDS the
+# ``mlx_vlm.models.gemma4_unified`` architecture classes to load, even
+# in text-only mode. v0.7.7 shipped without this and every gemma-4
+# server start crashed with::
+#
+#     ImportError: Gemma 4 models require the optional
+#         `mlx-vlm` dependency for the model architecture classes.
+#
+# ``--no-deps`` keeps the mlx-vlm install at ~9 MB (just the Python
+# classes) instead of pulling torch + cv2 + torchvision (~322 MB
+# cascade) the way ``[vision]`` extras would. mlx-vlm's __init__.py
+# eagerly chains ``from .convert import convert`` → ``.utils`` → ``PIL``,
+# so ``import mlx_vlm`` fails without Pillow even on the text-only path.
+# All other eager deps (transformers, requests, huggingface_hub,
+# safetensors, numpy, mlx) are already bundled by rapid-mlx's own
+# install above, so Pillow is the only additional dep we need.
+# We pin to the same ``>=0.6.3`` floor pyproject.toml's [vision] extras
+# pin so the bundled mlx-vlm tracks the DiffusionGemma + gemma4_unified
+# architecture support the loader needs.
+echo "==> bundling mlx-vlm --no-deps + Pillow (gemma-4 + DiffusionGemma loader path)"
+python3.12 -m pip install \
+    --target "$STAGE/site-packages" \
+    --no-warn-script-location \
+    --no-compile \
+    --no-deps \
+    --upgrade \
+    'mlx-vlm>=0.6.3' \
+    'Pillow>=10.0'
+
 # ----- step 3: strip dev / unused artifacts ----------------------------
 
 echo "==> stripping dev artifacts"
