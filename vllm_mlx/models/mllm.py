@@ -1559,8 +1559,6 @@ class MLXMultimodalLM:
 
         # Prefix caching with vision embedding support
         # Following LMCache approach: cache vision embeddings to skip encoder on hit
-        import time
-
         from mlx_vlm.models import cache as vlm_cache
 
         # use_cache was already popped near the top of chat() — don't re-pop
