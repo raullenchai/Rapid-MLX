@@ -191,6 +191,31 @@ class TestAnthropicEffortMapping:
             )
         assert "budget" in str(exc.value).lower()
 
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            "100",  # JSON-stringified int — silent-coerce hazard
+            "0",
+            1.5,  # float
+            True,  # bool subclass of int — must be rejected explicitly
+            [],
+            {},
+        ],
+    )
+    def test_thinking_budget_tokens_wrong_type_rejected(self, bad_value):
+        """Codex round-1 BLOCKING #2: an earlier draft only rejected
+        non-positive INTS. String wire values like ``"100"`` slipped
+        through, were ignored by the adapter helper, and silently
+        turned a client-requested cap into no cap. Validate the type
+        too so any non-int / non-positive value 422s at parse time."""
+        with pytest.raises(Exception):
+            AnthropicRequest(
+                model="claude-3-5-sonnet",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=100,
+                thinking={"budget_tokens": bad_value},
+            )
+
 
 # ---------------------------------------------------------------------------
 # 3) Streaming postprocessor enforcement
@@ -293,12 +318,32 @@ class TestTextParserReasoningCap:
         """Returns a mock parser whose ``extract_reasoning_streaming`` is
         scripted: each call pops the next ``(reasoning, content)`` pair
         from the list and returns a SimpleNamespace with those fields.
+
+        Codex round-1 NIT: assert the stream-state invariant
+        ``current.endswith(delta)`` on every call so a buggy splice
+        that leaves ``accumulated_raw`` out of sync with the (previous,
+        delta) pair fails this test even though the scripted parser
+        doesn't actually use the bytes. The invariant must hold for
+        every reasoning-parser contract in the codebase (see how the
+        real qwen3 / deepseek parsers read ``current`` for backtracking
+        on Case-3 / Case-4 fallbacks).
         """
         from types import SimpleNamespace
 
         calls = []
 
         def _extract(previous, current, delta):
+            # State-consistency invariants. ``current = previous + delta``
+            # is the parser contract — every real parser in
+            # ``vllm_mlx/reasoning/`` reads ``current`` for backtracking.
+            assert current.endswith(delta), (
+                f"current does not end with delta — splice bug? "
+                f"previous={previous!r} current={current!r} delta={delta!r}"
+            )
+            assert current == previous + delta, (
+                f"current != previous + delta — accumulated_raw drift! "
+                f"previous={previous!r} delta={delta!r} current={current!r}"
+            )
             calls.append({"previous": previous, "current": current, "delta": delta})
             if not scripted_deltas:
                 return SimpleNamespace(reasoning=None, content=None)
@@ -324,9 +369,7 @@ class TestTextParserReasoningCap:
             reasoning_parser=parser,
             reasoning_parser_name=None,  # use injected mock
         )
-        pp = StreamingPostProcessor(
-            cfg, enable_thinking=True, reasoning_max_tokens=2
-        )
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=2)
         pp.reset()
         # Chunk 1: 40-char reasoning, cap fires
         pp.process_chunk(_make_output("xxxxxxxx" * 5))
@@ -421,7 +464,9 @@ class TestStreamingTerminalChunkShape:
         assert pp._reasoning_cap_hit is True
         # Final chunk — ``finished=True`` triggers the merged finish path.
         events = pp.process_chunk(
-            _make_output("done.", channel="content", finished=True, finish_reason="stop")
+            _make_output(
+                "done.", channel="content", finished=True, finish_reason="stop"
+            )
         )
         finish = [e for e in events if e.type == "finish"]
         assert len(finish) == 1

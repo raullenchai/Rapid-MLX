@@ -155,17 +155,33 @@ class AnthropicRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_thinking_budget(self) -> "AnthropicRequest":
-        """Reject non-positive ``thinking.budget_tokens`` when the field
-        is present. Mirrors the OpenAI-side validation on
+        """Reject malformed ``thinking.budget_tokens`` when the field is
+        present. Mirrors the OpenAI-side validation on
         ``ChatCompletionRequest.reasoning_max_tokens`` so the same 400
         shape surfaces whether the client uses the OpenAI or Anthropic
-        surface (upstream vLLM PR #43402)."""
+        surface (upstream vLLM PR #43402).
+
+        Codex round-1 BLOCKING #2: an earlier draft only rejected
+        non-positive INTS — wire values like ``"0"`` or ``"100"`` (string
+        coercion mistakes from JSON-typed clients) were silently
+        accepted and then ignored by ``_resolve_reasoning_max_tokens``,
+        turning a requested cap into no cap. Now reject any non-int
+        type AND any int < 1 so the contract is symmetrical with the
+        OpenAI-side Literal-checked ``reasoning_max_tokens`` validator.
+        Booleans are an int subclass in Python — reject explicitly
+        because ``True`` would otherwise count as 1.
+        """
         if isinstance(self.thinking, dict):
             budget = self.thinking.get("budget_tokens")
-            if budget is not None and isinstance(budget, int) and budget < 1:
+            if budget is None:
+                return self
+            if not isinstance(budget, int) or isinstance(budget, bool):
                 raise ValueError(
-                    "thinking.budget_tokens must be >= 1 when set."
+                    "thinking.budget_tokens must be an integer when set "
+                    f"(got {type(budget).__name__})."
                 )
+            if budget < 1:
+                raise ValueError("thinking.budget_tokens must be >= 1 when set.")
         return self
 
 

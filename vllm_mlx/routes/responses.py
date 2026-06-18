@@ -567,9 +567,21 @@ async def _stream_responses(
                 # Text-parser path: once the cap fires, splice ``</think>``
                 # in front of the next chunk so the parser flips to
                 # content. Idempotent — only fires once per request.
+                #
+                # Codex round-1 BLOCKING #1: the prior implementation
+                # mutated ``delta_text`` to ``"</think>" + delta_text`` but
+                # appended ``"</think>"`` AFTER the original delta in
+                # ``accumulated_raw``. That left the parser's
+                # ``current`` argument out of sync with the (previous,
+                # delta) pair (``current != previous + delta``) and the
+                # parser saw the forced close marker AFTER the chunk's
+                # body instead of before it. Rebuild ``accumulated_raw``
+                # so the close marker sits between ``previous_raw`` and
+                # the original delta — symmetric with the postprocessor
+                # path that injects via ``_maybe_inject_reasoning_close``.
                 if _reasoning_cap_hit and not _reasoning_close_injected:
                     delta_text = "</think>" + delta_text
-                    accumulated_raw += "</think>"
+                    accumulated_raw = previous_raw + delta_text
                     _reasoning_close_injected = True
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, accumulated_raw, delta_text
