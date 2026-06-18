@@ -3417,11 +3417,7 @@ def test_progress_resumed_r2_credits_existing_prefix(
     # Pre-seed a 400-byte ``.part`` so R2's request goes out with
     # ``Range: bytes=400-`` and the server returns 206 with the suffix.
     # The sidecar layout matches what ``_do_file`` computes.
-    sidecar = (
-        tmp_path
-        / f"models--{repo_id.replace('/', '--')}"
-        / ".rapid-mlx-mirror"
-    )
+    sidecar = tmp_path / f"models--{repo_id.replace('/', '--')}" / ".rapid-mlx-mirror"
     sidecar.mkdir(parents=True)
     part_key = _mirror._sidecar_key_for("model.safetensors")
     (sidecar / f"{part_key}.part").write_bytes(b"x" * 400)
