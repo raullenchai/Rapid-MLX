@@ -21,6 +21,7 @@ existing freeform ``bench`` (no --tier, no --submit) path and the
 
 from __future__ import annotations
 
+import os
 import socket
 import sys
 import time
@@ -48,16 +49,44 @@ HARNESS_PROFILES: tuple[str, ...] = (
 TIER_PORT_MIN = 8500
 TIER_PORT_MAX = 8599
 
+def _resolve_harness_profile_timeout() -> int:
+    """Read the per-profile harness timeout from the environment.
+
+    300s default is wide enough that a healthy harness on a 30B+ model
+    still finishes (release-check observed ~120s p95 for codex on
+    qwen3.5-9b) but tight enough that a true hang gets caught in well
+    under the gauntlet's overall 10-min/model budget.
+
+    Reading at MODULE LOAD honors the documented ``HARNESS_PROFILE_TIMEOUT_S``
+    override without needing every caller to thread a kwarg through.
+    Invalid / non-positive values fall back to 300 with a stderr warning
+    rather than silently using the user's broken value (e.g. ``-1`` would
+    cause every harness to "time out" on the very first thread.join()).
+    """
+    raw = os.environ.get("HARNESS_PROFILE_TIMEOUT_S")
+    if raw is None:
+        return 300
+    try:
+        val = int(raw)
+        if val <= 0:
+            raise ValueError(f"must be positive, got {val}")
+        return val
+    except ValueError as exc:
+        print(
+            f"  Warning: ignoring invalid HARNESS_PROFILE_TIMEOUT_S={raw!r} "
+            f"({exc}); using 300s default",
+            file=sys.stderr,
+        )
+        return 300
+
+
 # Per-profile wall-clock cap for the harness sweep. One bad harness
 # (e.g. a codex e2e_file_read hang at 156s on a slow model) was taking
 # down the in-process server and cascading FAIL to every later profile
-# with ECONNREFUSED / "Rapid-MLX server not running". 300s is wide
-# enough that a healthy harness on a 30B+ model still finishes (release-
-# check observed ~120s p95 for codex on qwen3.5-9b) but tight enough
-# that a true hang gets caught in well under the gauntlet's overall
-# 10-min/model budget. Override via ``HARNESS_PROFILE_TIMEOUT_S`` env
-# var for slow boxes / future bigger models.
-HARNESS_PROFILE_TIMEOUT_S = 300
+# with ECONNREFUSED / "Rapid-MLX server not running". Override via
+# ``HARNESS_PROFILE_TIMEOUT_S`` env var for slow boxes / future bigger
+# models. Resolved at module-load via ``_resolve_harness_profile_timeout``.
+HARNESS_PROFILE_TIMEOUT_S = _resolve_harness_profile_timeout()
 
 # Server health-probe timeout used between harness profiles. The probe
 # is a single GET /health — we don't want it to itself hang and look
@@ -551,6 +580,31 @@ class _HarnessServerSession:
         # We own it — tear down and reboot.
         return self._restart()
 
+    def force_restart_after_timeout(self) -> tuple[bool, str | None]:
+        """Reboot the server unconditionally after a per-profile timeout.
+
+        The orphaned daemon thread from a timed-out profile may still be
+        mid-request against the current server (an httpx call that hasn't
+        returned, a subprocess that hasn't finished). If we let the NEXT
+        profile share that same server, the orphan's late response would
+        race against the new profile's measurements / failure modes.
+        Force a fresh server so the next profile starts on a clean slate.
+
+        No-op (returns ``(True, None)``) when we don't own the server —
+        we can't restart what the user is hosting, so the next profile
+        will simply contend with whatever ghost requests the orphan
+        emits. Surface a clear note in that case so the gauntlet
+        operator knows the next profile's numbers are suspect.
+        """
+        if not self._owns:
+            return (
+                True,
+                "profile timed out and --base-url is attached — "
+                "subsequent profile measurements may be polluted by the "
+                "orphaned worker",
+            )
+        return self._restart()
+
     def _restart(self) -> tuple[bool, str | None]:
         # Tear down whatever's left of the old serve context. The
         # serve() finalizer SIGTERMs the process group, so even a
@@ -613,11 +667,13 @@ def _run_single_profile(
     profile,
     base_url: str,
     timeout_s: int,
-) -> tuple[bool, float, str]:
+) -> tuple[bool, float, str, bool]:
     """Run ONE harness profile with a wall-clock cap. Never raises.
 
-    Returns ``(ok, elapsed_s, detail)`` so the caller can fold the row
-    into ``per_harness`` exactly as the inline body used to.
+    Returns ``(ok, elapsed_s, detail, timed_out)`` — the trailing flag
+    lets the caller force a server restart after a timeout so the
+    orphaned daemon thread can't pollute the next profile's
+    measurements with late-arriving requests.
 
     The runner is dispatched on a worker thread and joined with a
     ``timeout_s`` deadline. On timeout we abandon the thread (Python
@@ -674,9 +730,17 @@ def _run_single_profile(
     result_container: dict[str, object] = {}
 
     def _runner_target() -> None:
+        # Catch ``Exception`` (NOT ``BaseException``): leaking
+        # ``KeyboardInterrupt`` / ``SystemExit`` here would let process
+        # termination signals propagate through the worker thread up to
+        # the bench CLI's signal handler, instead of being silently
+        # demoted to a benchmark FAIL row. Worker threads can't actually
+        # receive those signals (Python delivers them to the main
+        # thread), but the symmetric exception handling is a Codex
+        # review-2 NIT worth honoring.
         try:
             result_container["ok"], result_container["detail"] = _run()
-        except BaseException as exc:  # noqa: BLE001 — captured for the joiner
+        except Exception as exc:  # noqa: BLE001 — captured for the joiner
             result_container["exc"] = exc
 
     worker = threading.Thread(
@@ -690,12 +754,15 @@ def _run_single_profile(
     if worker.is_alive():
         # Hang — abandon the daemon thread to die when (if ever) its
         # blocking call returns. Process exit will reap it because of
-        # ``daemon=True``.
+        # ``daemon=True``. Return ``timed_out=True`` so the caller
+        # forces a server restart before the next profile, isolating
+        # the orphan's late requests from the next profile's measurements.
         h_elapsed = time.perf_counter() - h_t0
         return (
             False,
             h_elapsed,
             f"timed out after {timeout_s}s (per-profile cap)",
+            True,
         )
 
     h_elapsed = time.perf_counter() - h_t0
@@ -705,11 +772,13 @@ def _run_single_profile(
             False,
             h_elapsed,
             f"crashed: {type(exc).__name__}: {exc}",
+            False,
         )
     return (
         bool(result_container["ok"]),
         h_elapsed,
         str(result_container["detail"]),
+        False,
     )
 
 
@@ -787,13 +856,29 @@ def _run_harness(
                 )
                 continue
 
-        ok, h_elapsed, detail = _run_single_profile(
+        ok, h_elapsed, detail, timed_out = _run_single_profile(
             profile_name,
             profile,
             profile_base_url,
             timeout_s,
         )
         per_harness.append((profile_name, ok, h_elapsed, detail))
+
+        # Per-profile timeout → the orphaned daemon thread may still be
+        # mid-request against this server. If we re-use the server for
+        # the next profile, the orphan's response could land DURING the
+        # next profile's measurements and corrupt the supposedly
+        # independent result. Force a fresh server so each profile
+        # starts on a clean slate. Codex review-2 BLOCKING-2.
+        if timed_out and session is not None:
+            ok_restart, note = session.force_restart_after_timeout()
+            if note:
+                print(f"  [server] {note}")
+            # Failed restart is non-fatal — the next iteration's
+            # ``ensure_healthy()`` will see the dead server and mark
+            # that profile as a server-not-healthy FAIL, which is the
+            # most honest signal we can give the operator.
+            _ = ok_restart
 
     elapsed = time.perf_counter() - t0
     all_passed = all(ok for _, ok, _, _ in per_harness)

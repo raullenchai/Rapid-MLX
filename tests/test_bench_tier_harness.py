@@ -468,3 +468,114 @@ def test_harness_profile_timeout_does_not_block_next_profile(capsys):
     assert "FAIL codex" in captured.out
     # Tier exits 1 because of the codex FAIL.
     assert rc == 1
+
+
+def test_harness_timeout_forces_server_restart_isolation(capsys):
+    """After a per-profile timeout, the server is restarted before the next profile.
+
+    Codex review-2 BLOCKING-2: the orphaned daemon thread from a
+    timed-out profile may still be issuing requests against the same
+    server when the next profile starts, polluting that profile's
+    measurements / failure modes. Enforce that ``run_tier`` calls
+    ``serve(...)`` a second time after a timeout so the next profile
+    starts on a clean server.
+    """
+    import threading
+
+    serve_calls: list[int] = []
+
+    @contextlib.contextmanager
+    def _serve_recording(model, port=None, **kwargs):
+        serve_calls.append(port)
+        yield {
+            "base_url": f"http://127.0.0.1:{port}/v1",
+            "port": port,
+            "boot_time_ms": 100.0,
+        }
+
+    def _free_port(lo, hi):
+        _free_port.calls += 1
+        return 8500 + _free_port.calls
+
+    _free_port.calls = 0  # type: ignore[attr-defined]
+
+    def _runner_factory(profile, base_url, model_id=None, **kwargs):
+        r = MagicMock()
+        if profile.name == "codex":
+
+            def _hang():
+                threading.Event().wait()  # blocks forever
+
+            r.run.side_effect = _hang
+        else:
+            r.run.return_value = _make_fake_report()
+        return r
+
+    def _fake_get_profile(name):
+        p = MagicMock()
+        p.name = name
+        p.display_name = name.title()
+        return p
+
+    with (
+        patch(
+            "vllm_mlx.bench.tier_runner._find_free_port_in_range",
+            side_effect=_free_port,
+        ),
+        patch("vllm_mlx.bench._server.serve", _serve_recording),
+        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
+        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        # /health stays True throughout — we're testing the FORCED
+        # restart-after-timeout path, not the dead-server-detected path.
+        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("vllm_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
+    ):
+        run_tier(model="qwen3.5-4b-4bit", tier="harness")
+
+    # serve() must have been called AT LEAST twice: once for the initial
+    # boot, then again immediately after the codex timeout to give the
+    # remaining profiles a fresh server.
+    assert len(serve_calls) >= 2, (
+        f"expected initial boot + at least one post-timeout restart; "
+        f"got {len(serve_calls)} serve() calls"
+    )
+    captured = capsys.readouterr()
+    # The restart notice surfaces in the tier output so operators know
+    # the next profile's numbers are on a fresh server.
+    assert "rebooted" in captured.out or "restart" in captured.out.lower(), (
+        f"expected server restart announcement after timeout; got:\n{captured.out}"
+    )
+
+
+def test_harness_profile_timeout_env_var_respected(monkeypatch):
+    """``HARNESS_PROFILE_TIMEOUT_S`` env var must override the default.
+
+    Codex review-2 BLOCKING-1: the docstring promised an env-var override
+    but the constant was hard-coded to 300 at the module level. Resolver
+    at module-load now reads the env var; this test forces a re-import
+    with the env var set to 42 and asserts the new module value.
+    """
+    import importlib
+
+    import vllm_mlx.bench.tier_runner as tr
+
+    monkeypatch.setenv("HARNESS_PROFILE_TIMEOUT_S", "42")
+    importlib.reload(tr)
+    try:
+        assert tr.HARNESS_PROFILE_TIMEOUT_S == 42, (
+            f"env var must override default; got {tr.HARNESS_PROFILE_TIMEOUT_S}"
+        )
+
+        # Invalid values fall back to 300 with a stderr warning.
+        monkeypatch.setenv("HARNESS_PROFILE_TIMEOUT_S", "not-a-number")
+        importlib.reload(tr)
+        assert tr.HARNESS_PROFILE_TIMEOUT_S == 300
+
+        monkeypatch.setenv("HARNESS_PROFILE_TIMEOUT_S", "-5")
+        importlib.reload(tr)
+        assert tr.HARNESS_PROFILE_TIMEOUT_S == 300
+    finally:
+        # Restore module state so later tests in the same session see
+        # the default (other tests monkeypatch this constant).
+        monkeypatch.delenv("HARNESS_PROFILE_TIMEOUT_S", raising=False)
+        importlib.reload(tr)
