@@ -1390,7 +1390,26 @@ class DiffusionEngine(BaseEngine):
         if cancel_event.is_set():
             return
 
-        for result in stream_diffusion_generate(
+        # Hoist the generator out of the for-loop so we can close() it
+        # on every exit path. issue #698: when the loop exits early via
+        # ``break`` (cancel) or ``return`` (finish_reason), Python's
+        # for-statement does NOT call ``gen.close()`` — it relies on
+        # cyclic GC to eventually reclaim the generator's frame. That
+        # frame holds mlx-vlm's denoising state (noise schedule
+        # buffers, intermediate logits/embeddings, KV cache) sized
+        # proportional to ``max_tokens``. One ``max_tokens=1024``
+        # request leaves ~10-15 GB of MLX tensors rooted to the
+        # un-GC'd frame; the persistent worker thread then accumulates
+        # subsequent requests' allocations on top, sending RSS into
+        # swap and latency from ~4 s to 560 s by req ~27 in the Tier 4
+        # soak.
+        #
+        # Wrapping the for-loop in try/finally with an explicit
+        # ``gen.close()`` raises ``GeneratorExit`` into the mlx-vlm
+        # frame, which unwinds its locals immediately — MLX tensors
+        # are refcounted, so they free as soon as the frame's last
+        # reference goes away. No global GC pause needed.
+        gen = stream_diffusion_generate(
             self._model,
             self._processor,
             tokenizer,
@@ -1398,66 +1417,74 @@ class DiffusionEngine(BaseEngine):
             None,  # pixel_values — text-only path
             None,  # attention_mask — auto from input_ids
             **kwargs,
-        ):
-            # Cancellation point — stream_chat sets this on an early
-            # stop-sequence match or on disconnect so the worker
-            # doesn't keep burning GPU up to ``max_tokens`` after the
-            # caller has stopped consuming output. codex round 3 [P2]:
-            # without this, a stop in the first block left the worker
-            # generating hundreds of tokens before it could pick up
-            # the next queued request.
-            if cancel_event.is_set():
-                break
-            if getattr(result, "is_draft", False):
-                # Mid-canvas denoising preview; ignore for SSE.
-                continue
+        )
+        try:
+            for result in gen:
+                # Cancellation point — stream_chat sets this on an early
+                # stop-sequence match or on disconnect so the worker
+                # doesn't keep burning GPU up to ``max_tokens`` after the
+                # caller has stopped consuming output. codex round 3 [P2]:
+                # without this, a stop in the first block left the worker
+                # generating hundreds of tokens before it could pick up
+                # the next queued request.
+                if cancel_event.is_set():
+                    break
+                if getattr(result, "is_draft", False):
+                    # Mid-canvas denoising preview; ignore for SSE.
+                    continue
 
-            if getattr(result, "prompt_tokens", 0):
-                last_prompt_tokens = result.prompt_tokens
-            if getattr(result, "generation_tokens", 0):
-                last_completion_tokens = result.generation_tokens
-            # codex pr_validate r5 NIT: ``... or last_token`` silently
-            # swallows token id 0 (Gemma's <pad>, plus countless other
-            # tokenizers' sentinel tokens) — keep the previous token id
-            # only when the result truly omits the field.
-            _tok = getattr(result, "token", None)
-            if _tok is not None:
-                last_token = int(_tok)
+                if getattr(result, "prompt_tokens", 0):
+                    last_prompt_tokens = result.prompt_tokens
+                if getattr(result, "generation_tokens", 0):
+                    last_completion_tokens = result.generation_tokens
+                # codex pr_validate r5 NIT: ``... or last_token`` silently
+                # swallows token id 0 (Gemma's <pad>, plus countless other
+                # tokenizers' sentinel tokens) — keep the previous token id
+                # only when the result truly omits the field.
+                _tok = getattr(result, "token", None)
+                if _tok is not None:
+                    last_token = int(_tok)
 
-            text_piece = result.text or ""
-            if text_piece:
-                block_parts.append(text_piece)
+                text_piece = result.text or ""
+                if text_piece:
+                    block_parts.append(text_piece)
 
-            block_complete = bool(getattr(result, "diffusion_block_complete", False))
-            finish_reason = getattr(result, "finish_reason", None)
+                block_complete = bool(
+                    getattr(result, "diffusion_block_complete", False)
+                )
+                finish_reason = getattr(result, "finish_reason", None)
 
-            if block_complete or finish_reason:
-                joined = "".join(block_parts)
-                block_parts.clear()
-                if not first_block_emitted and joined:
-                    # Strip a leaked Gemma diffusion channel header.
-                    # No-op for plain content; saves the chat client
-                    # from seeing ``thought\n`` as the model's first
-                    # words on prompts that triggered the thought
-                    # channel.
-                    joined = _strip_leading_channel_header(joined)
-                if joined or finish_reason:
-                    if joined:
-                        first_block_emitted = True
-                    out_q.put(
-                        GenerationOutput(
-                            text="",
-                            new_text=joined,
-                            tokens=[last_token],
-                            prompt_tokens=last_prompt_tokens,
-                            completion_tokens=last_completion_tokens,
-                            finish_reason=(finish_reason if finish_reason else None),
-                            finished=bool(finish_reason),
-                            channel="content",
+                if block_complete or finish_reason:
+                    joined = "".join(block_parts)
+                    block_parts.clear()
+                    if not first_block_emitted and joined:
+                        # Strip a leaked Gemma diffusion channel header.
+                        # No-op for plain content; saves the chat client
+                        # from seeing ``thought\n`` as the model's first
+                        # words on prompts that triggered the thought
+                        # channel.
+                        joined = _strip_leading_channel_header(joined)
+                    if joined or finish_reason:
+                        if joined:
+                            first_block_emitted = True
+                        out_q.put(
+                            GenerationOutput(
+                                text="",
+                                new_text=joined,
+                                tokens=[last_token],
+                                prompt_tokens=last_prompt_tokens,
+                                completion_tokens=last_completion_tokens,
+                                finish_reason=(
+                                    finish_reason if finish_reason else None
+                                ),
+                                finished=bool(finish_reason),
+                                channel="content",
+                            )
                         )
-                    )
-                if finish_reason:
-                    return
+                    if finish_reason:
+                        return
+        finally:
+            gen.close()
 
         # Generator exited without an explicit finish_reason — treat
         # as a hard stop. We ALWAYS emit a finish chunk here even when
