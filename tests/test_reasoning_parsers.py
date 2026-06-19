@@ -950,6 +950,74 @@ class TestMultiBlockThinkStreaming:
         # documents the analogous limitation.)
         assert "R2" not in content
 
+    def test_standalone_second_opener_immediately_after_first_close_seeds_phase(
+        self,
+    ):
+        """Codex r4 BLOCKING on PR #722: when the SECOND ``<think>``
+        opener arrives as a stand-alone SSE delta IMMEDIATELY after
+        the first ``</think>`` (no intermediate content delta to
+        trigger the multi-block router), ``_streaming_phase`` was
+        still ``None`` because the single-block streaming path never
+        sets it. The early-skip branch in
+        ``extract_reasoning_streaming`` skipped the tag but did NOT
+        seed the phase — so the next reasoning chunk entered the
+        router with ``in_reasoning_prev = False`` (the documented
+        fall-through when ``_streaming_phase is None``) and leaked
+        the second reasoning block into ``content``.
+
+        Fix: when the bare ``<think>`` delta arrives and the prior
+        text already contains a ``</think>``, seed
+        ``_streaming_phase = "reasoning"`` so the next delta routes
+        the bytes back into reasoning. Symmetric seeding for the
+        bare ``</think>`` after an opener.
+        """
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        # Exact codex repro shape: tags as their OWN deltas with no
+        # answer content between the first close and the second
+        # opener.
+        chunks = [
+            "<think>",
+            "R1",
+            "</think>",
+            "<think>",
+            "R2_secret",
+            "</think>",
+            "tail",
+        ]
+        reasoning, content = self._run_stream(parser, chunks)
+        # The second reasoning block MUST land in reasoning, not
+        # content.
+        assert "R2_secret" in reasoning
+        assert "R2_secret" not in content
+        # First-block reasoning still routed correctly.
+        assert "R1" in reasoning
+        # Trailing answer surfaces in content.
+        assert "tail" in content
+
+    def test_standalone_tags_phase_seed_does_not_affect_single_block(self):
+        """Negative control for the codex r4 seed: in a NORMAL
+        single-block streaming run (one ``<think>...</think>``
+        followed by answer), the new seed must not flip the phase
+        prematurely or alter the output. The seed only fires when
+        the delta is the BARE tag — a typical reasoning chunk that
+        merely contains the tag substring elsewhere is unaffected.
+        """
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        chunks = ["<think>", "thoughts", "</think>", "answer here"]
+        reasoning, content = self._run_stream(parser, chunks)
+        assert "thoughts" in reasoning
+        assert "thoughts" not in content
+        assert "answer here" in content
+        assert "answer here" not in reasoning
+
 
 class TestResidualThinkTagSweep:
     """Multi-block ``<think>`` sweep (2026-06-19 round-1 fuzz repro).

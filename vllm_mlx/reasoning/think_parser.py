@@ -194,13 +194,43 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # scanned from ``prev_len - held``, so a tag that arrived as
         # a stand-alone delta would otherwise be missed and the
         # phase would lie on the following delta.
+        #
+        # Codex r4 BLOCKING follow-up on PR #722: ALSO seed the phase
+        # when ``_streaming_phase is None``. The single-block path
+        # (``_handle_explicit_think`` before ``end_in_prev``) never
+        # writes ``_streaming_phase`` — it stays None right up until
+        # the multi-block router fires for the first time. If the
+        # SECOND ``<think>`` block arrives as a stand-alone delta
+        # IMMEDIATELY after the first ``</think>`` (no intermediate
+        # content delta to trigger the router), the early-skip below
+        # would leave the phase at None — and the next reasoning
+        # delta would enter the router with ``in_reasoning_prev =
+        # False`` (the documented fall-through), causing the second
+        # reasoning block to leak into ``content``. Seeding the
+        # phase here when ``previous_text`` already contains a
+        # structural closer (resp. opener) closes that hole without
+        # breaking the literal-tag-in-text known-limitation contract
+        # — the seed only fires when the delta IS the bare tag
+        # (overwhelmingly structural in practice; the whole-history
+        # count drift codex r3 documented is bounded here to this
+        # single-delta event).
         stripped_delta = delta_text.strip()
         if stripped_delta == self.start_token:
             if self._streaming_phase is not None:
                 self._streaming_phase = "reasoning"
+            elif self.end_token in previous_text:
+                # Standalone opener after the first ``</think>`` —
+                # this is the second-block opener; seed the phase so
+                # the next delta's router call routes reasoning bytes
+                # correctly.
+                self._streaming_phase = "reasoning"
             return None
         if stripped_delta == self.end_token:
             if self._streaming_phase is not None:
+                self._streaming_phase = "content"
+            elif self.start_token in previous_text:
+                # Standalone closer after an opener — seed to content
+                # so trailing answer bytes don't get misrouted.
                 self._streaming_phase = "content"
             return None
 
