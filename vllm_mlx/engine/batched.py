@@ -1069,6 +1069,11 @@ class BatchedEngine(BaseEngine):
         # the safe (un-protected) values.
         has_tools = bool(kwargs.pop("has_tools", False))
         requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
+        # Forced-tool-call prefix injected by ``chat()`` when the OpenAI
+        # ``tool_choice`` is a forced function; the engine generates only
+        # the continuation, so we prepend the prefix to the response text
+        # below before the tool parser scans it.
+        assistant_text_prefix = kwargs.pop("_assistant_text_prefix", "") or ""
         output = await self._engine.generate(
             prompt=prompt,
             sampling_params=sampling_params,
@@ -1077,6 +1082,11 @@ class BatchedEngine(BaseEngine):
             requires_prompt_integrity=requires_prompt_integrity,
         )
 
+        if assistant_text_prefix:
+            # Prepend the forced prefix to the raw text so the tool
+            # parser sees the complete wire envelope.
+            output_text = assistant_text_prefix + (output.output_text or "")
+            output.output_text = output_text
         text = clean_output_text(output.output_text)
         # Token-level channel extraction via ``OutputRouter`` — the SAME
         # state machine the streaming path already uses
@@ -1289,6 +1299,25 @@ class BatchedEngine(BaseEngine):
             num_images=len(all_images),
             enable_thinking=enable_thinking,
         )
+
+        # ``forced_assistant_prefix`` — OpenAI-spec ``tool_choice`` forced
+        # mode (#673). The route layer builds a parser-shaped prefix
+        # (e.g. ``<tool_call>\n{"name": "X", "arguments":``) and we
+        # append it directly to the rendered prompt. The model continues
+        # from there, completing the tool call body in the parser's wire
+        # format. This is the assistant-turn pre-injection lever
+        # described in the OpenAI tool_choice contract — works on EVERY
+        # text-parser path (hermes / qwen3coder / llama / kimi / glm47)
+        # because the same wire opener is what each parser expects.
+        forced_assistant_prefix = kwargs.pop("forced_assistant_prefix", None)
+        if forced_assistant_prefix:
+            prompt = prompt + forced_assistant_prefix
+            # When we prefix the assistant turn ourselves, the response
+            # surface lacks the prefix bytes (the model only emits the
+            # continuation). The tool parser needs to see the full
+            # assistant body — propagate the prefix down to the engine
+            # so it can prepend it to ``output.text`` before returning.
+            kwargs["_assistant_text_prefix"] = forced_assistant_prefix
 
         # Compute prefix boundary for hybrid-model cache reuse (#427).
         # Must run on the NON-streaming path too — pydantic_ai / smolagents /
@@ -1766,6 +1795,17 @@ class BatchedEngine(BaseEngine):
             enable_thinking=enable_thinking,
         )
 
+        # ``forced_assistant_prefix`` — see ``chat()`` for the rationale.
+        # On the streaming path the prefix is also injected into the
+        # prompt so the model continuation begins inside the parser's
+        # wire envelope. The first streamed chunk gets a synthetic
+        # ``new_text`` carrying the prefix bytes so route-layer
+        # streaming tool-call parsers (hermes / qwen3coder) see the
+        # complete envelope from the very first delta.
+        forced_assistant_prefix = kwargs.pop("forced_assistant_prefix", None)
+        if forced_assistant_prefix:
+            prompt = prompt + forced_assistant_prefix
+
         # Compute prefix boundary for cache — hybrid-only gate, see
         # ``chat()`` for the rationale. Path parity: stream and non-stream
         # must apply the same gating condition so a future change can't
@@ -1790,6 +1830,18 @@ class BatchedEngine(BaseEngine):
             videos=all_videos if all_videos else None,
             **kwargs,
         )
+        # On the streaming path inject the forced prefix as a synthetic
+        # first chunk so the route layer's streaming tool-call parser
+        # sees the wire envelope opener from the very first delta.
+        if forced_assistant_prefix:
+            yield GenerationOutput(
+                text=forced_assistant_prefix,
+                new_text=forced_assistant_prefix,
+                prompt_tokens=0,
+                completion_tokens=0,
+                finished=False,
+                finish_reason=None,
+            )
         async for output in self._stream_with_output_router(stream, router):
             yield output
 

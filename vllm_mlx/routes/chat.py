@@ -123,6 +123,64 @@ def _tool_call_name(tc) -> str | None:
     return getattr(tc, "name", None)
 
 
+def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str | None:
+    """Build the assistant-turn prefix string that the model continues
+    when ``tool_choice`` forces a named function.
+
+    Returns ``None`` for parsers where prefix injection isn't a known
+    win (e.g. channel-routed harmony / gemma4: those publish tool calls
+    via the OutputRouter's tool-call channel directly, so the model
+    already produces a structured call when prompted — and pre-pending
+    the wire opener would actually CONFUSE the channel state machine).
+    For parser-only families (hermes / qwen3coder / llama / kimi /
+    glm47 / mistral / minimax / deepseek / nemotron / xlam / functionary)
+    the wire opener is unambiguous; insert ``<tool_call>\\n{"name":
+    "X", "arguments":`` so the model continues with the arguments object
+    and the closer.
+
+    This is the OpenAI ``tool_choice`` forced-function lever — pure
+    prefix injection, parser-shape-agnostic of the underlying alias.
+    """
+    if not function_name:
+        return None
+    # The hermes / qwen3coder wire is identical at the opener
+    # (``<tool_call>\\n{"name": "X", "arguments":`` ). Nemotron-XML
+    # variants accept this as an alternate path (the parser tries both
+    # JSON and XML body shapes). Same opener works for llama / kimi /
+    # glm47 because their parsers ALSO recognise ``<tool_call>`` as
+    # one of their primary shapes (or accept bare JSON, which the
+    # opener also satisfies). The empty-arguments default is "{}"; the
+    # model will overwrite it with a real object as part of the JSON
+    # continuation.
+    hermes_family = {
+        "hermes",
+        "qwen3coder",
+        "qwen3_coder",
+        "qwen3_coder_xml",
+        "llama",
+        "kimi",
+        "glm47",
+        "minimax",
+        "mistral",
+        "deepseek",
+        "deepseekv31",
+        "nemotron",
+        "xlam",
+        "functionary",
+        "granite",
+        "qwen",
+        "seed_oss",
+    }
+    if parser_name in hermes_family:
+        # JSON envelope opener — model continues with the arguments
+        # object body. Leave a trailing space so the model picks up
+        # immediately with ``{...}``.
+        return f'<tool_call>\n{{"name": "{function_name}", "arguments": '
+    # Channel-routed (harmony / gemma4) and unknown parsers: no prefix
+    # injection. The post-parse synthesis path remains as a fallback.
+    return None
+
+
 def _synthesize_forced_tool_call(name: str, arguments: str = "{}"):
     """Build a single ``ToolCall`` for a forced ``tool_choice`` whose
     text parser surfaced no calls (#571).
@@ -719,6 +777,35 @@ async def _create_chat_completion_impl(
     # Add tools if provided
     if request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(request.tools)
+
+    # OpenAI ``tool_choice`` forced-function — assistant-turn prefix
+    # injection. The chat-template renderer (and the engine's
+    # ``chat()``/``stream_chat()``) accept ``forced_assistant_prefix``;
+    # when set, the rendered prompt is suffixed with the parser's wire-
+    # envelope opener and the model continues from inside the tool
+    # call. The text parser then recovers the call in the normal flow.
+    # No per-model regex, no per-alias config — the prefix is derived
+    # solely from ``cfg.tool_call_parser`` and the requested function
+    # name. See ``_forced_tool_call_prefix`` for the parser-shape
+    # taxonomy.
+    _forced_prefix = None
+    if request.tools and request.tool_choice is not None:
+        _forced_name: str | None = None
+        if (
+            isinstance(request.tool_choice, dict)
+            and request.tool_choice.get("type") == "function"
+        ):
+            _forced_name = (request.tool_choice.get("function") or {}).get("name")
+        elif request.tool_choice == "required" and len(request.tools) == 1:
+            # OpenAI spec: ``required`` with a single tool is unambiguous
+            # — same forcing semantics as a named choice.
+            _forced_name = request.tools[0].function.get("name")
+        if _forced_name:
+            _forced_prefix = _forced_tool_call_prefix(
+                cfg.tool_call_parser, _forced_name
+            )
+    if _forced_prefix:
+        chat_kwargs["forced_assistant_prefix"] = _forced_prefix
 
     # PFlash routing (#287): structured-output prompts are
     # prompt-integrity-sensitive — lossy compression would corrupt the
