@@ -81,6 +81,55 @@ def _resolve_harness_profile_timeout() -> int:
         return 300
 
 
+def _resolve_harness_profiles_filter() -> tuple[str, ...] | None:
+    """Read an optional ``RAPID_MLX_HARNESS_PROFILES_FILTER`` env var.
+
+    Comma-separated list of profile names to scope the harness sweep to
+    (e.g. ``"codex,aider"`` runs only those two and skips
+    opencode/hermes/langchain). Used by ``scripts/release_check_m3_random.py``
+    (G12) to randomly subset the sweep per (model × harness) pick
+    without ballooning gauntlet wall-clock.
+
+    Returns ``None`` (no filter) when the env var is absent. When set:
+    * Unknown profile names → stderr warning + dropped from the run.
+    * All names unknown → stderr warning + None (no filter — abort the
+      filter rather than silently sweep nothing).
+    * Empty value or whitespace-only → stderr warning + None.
+
+    Reading at MODULE LOAD mirrors the timeout env above so callers
+    don't have to thread a kwarg through ``--tier harness``.
+    """
+    raw = os.environ.get("RAPID_MLX_HARNESS_PROFILES_FILTER")
+    if raw is None:
+        return None
+    requested = tuple(name.strip() for name in raw.split(",") if name.strip())
+    if not requested:
+        print(
+            "  Warning: RAPID_MLX_HARNESS_PROFILES_FILTER is empty/whitespace; "
+            "ignoring filter and running all profiles.",
+            file=sys.stderr,
+        )
+        return None
+    known = set(HARNESS_PROFILES)
+    valid = tuple(name for name in requested if name in known)
+    invalid = tuple(name for name in requested if name not in known)
+    if invalid:
+        print(
+            f"  Warning: RAPID_MLX_HARNESS_PROFILES_FILTER includes "
+            f"unknown profile(s) {invalid!r}; valid profiles are "
+            f"{HARNESS_PROFILES}.",
+            file=sys.stderr,
+        )
+    if not valid:
+        print(
+            "  Warning: RAPID_MLX_HARNESS_PROFILES_FILTER matched zero "
+            "valid profiles; ignoring filter and running all profiles.",
+            file=sys.stderr,
+        )
+        return None
+    return valid
+
+
 # Per-profile wall-clock cap for the harness sweep. One bad harness
 # (e.g. a codex e2e_file_read hang at 156s on a slow model) was taking
 # down the in-process server and cascading FAIL to every later profile
@@ -88,6 +137,12 @@ def _resolve_harness_profile_timeout() -> int:
 # ``HARNESS_PROFILE_TIMEOUT_S`` env var for slow boxes / future bigger
 # models. Resolved at module-load via ``_resolve_harness_profile_timeout``.
 HARNESS_PROFILE_TIMEOUT_S = _resolve_harness_profile_timeout()
+
+# Optional comma-separated subset of ``HARNESS_PROFILES`` to scope a
+# sweep to. None = no filter (sweep all 5). Resolved at module-load via
+# ``_resolve_harness_profiles_filter``. See that helper for env-var
+# semantics and edge-case handling.
+HARNESS_PROFILES_FILTER: tuple[str, ...] | None = _resolve_harness_profiles_filter()
 
 # Server health-probe timeout used between harness profiles. The probe
 # is a single GET /health — we don't want it to itself hang and look
@@ -881,7 +936,13 @@ def _run_harness(
     t0 = time.perf_counter()
     per_harness: list[tuple[str, bool, float, str]] = []
 
-    for profile_name in HARNESS_PROFILES:
+    # Optional subset filter — see ``_resolve_harness_profiles_filter``
+    # for env-var semantics. Iterating over the filtered list (not
+    # HARNESS_PROFILES) preserves the documented order while skipping
+    # profiles not in the active sweep. G12 (random-coverage) uses this
+    # to scope to e.g. 2 of the 5 harnesses per (model × round) pick.
+    profiles_to_run = HARNESS_PROFILES_FILTER or HARNESS_PROFILES
+    for profile_name in profiles_to_run:
         profile = get_profile(profile_name)
         if profile is None:
             per_harness.append(
@@ -967,6 +1028,14 @@ def _run_harness(
     # schema's ``additionalProperties: false`` plus ``required`` of all
     # 5 keys means this stays in lock-step with HARNESS_PROFILES (a
     # mismatch is a schema-validation failure at submission time).
+    #
+    # When ``HARNESS_PROFILES_FILTER`` is active, ``per_harness`` only
+    # contains entries for the filtered profiles — the resulting payload
+    # is NOT submission-safe (missing keys). The submit flow rejects
+    # ``--base-url`` (the only path that combines tier + submit) AND the
+    # filter env is only set by G12, which never passes ``--submit``.
+    # Adding a hard refusal in ``_run_tier_submit_flow`` would be belt-
+    # and-braces — see release_check_m3_random.py for the only caller.
     payload = {
         name: {
             "passed": ok,

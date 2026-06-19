@@ -347,6 +347,50 @@ echo "  G8 — parser microbench (extract_tool_calls × 10000)"
 line
 "$PY" scripts/microbench_parsers.py
 
+#-------------------- G12 random-coverage -------------------------
+# Randomized sweep across small/medium aliases × harnesses × rounds.
+# Catches model-specific regressions that the fixed gauntlet (one
+# model — qwen3.5-9b-4bit) by construction cannot see. PR #687
+# (gemma-4 ``<|tool_call>`` wire-marker leak) is exactly the kind of
+# bug this gate would have caught at release time instead of after.
+#
+# Seed: today's UTC date YYYYMMDD → reproducible per release day.
+# Cleanup: each sampled model's HF cache is removed after testing so
+# successive release cuts don't fill the disk.
+#
+# Set RAPID_MLX_SKIP_G12=1 to skip this gate (e.g. when iterating on
+# the bump PR itself without re-running the full sweep). The CI-side
+# preflight ALSO runs G1+G10+G11, so a single local skip-of-G12 still
+# leaves multiple gates covering the bump-PR diff.
+if [ "${RAPID_MLX_SKIP_G12:-0}" = "1" ]; then
+  line
+  echo "  G12 — random-coverage [SKIPPED via RAPID_MLX_SKIP_G12=1]"
+  line
+else
+  line
+  echo "  G12 — random-coverage (sampled models × harnesses × rounds)"
+  line
+  # Free the gauntlet's main server so G12 owns the port + GPU.
+  # ``cleanup`` is the trap-installed teardown defined at the top of
+  # this script — calling it manually here releases the PID file too.
+  cleanup
+  sleep 2
+  # Wait for the port to actually free (cleanup sends TERM; the server
+  # then runs PR #667's deadline-aware prefix-cache flush on shutdown).
+  for _ in $(seq 1 10); do
+    if ! lsof -i ":$PORT" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  "$PY" scripts/release_check_m3_random.py \
+    --port "$PORT" \
+    --models "${G12_MODELS:-2}" \
+    --harnesses "${G12_HARNESSES:-2}" \
+    --rounds "${G12_ROUNDS:-3}" \
+    --report /tmp/release-check-m3-random.log
+fi
+
 #-------------------- Done ----------------------------------------
 line
 echo "  release-check-m3: ALL gates green for $MODEL"

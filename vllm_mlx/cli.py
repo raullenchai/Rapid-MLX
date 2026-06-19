@@ -1358,6 +1358,25 @@ def _run_tier_submit_flow(args) -> int:
     # The narrow --tier (no --submit) --base-url path is still
     # supported — that's the gauntlet/release_check use case where
     # we WANT to validate against an already-running server.
+    # Belt-and-braces: an active ``RAPID_MLX_HARNESS_PROFILES_FILTER``
+    # produces a partial harness payload (only the filtered keys), which
+    # would fail the schema-v2 ``required`` set at submission time
+    # downstream. The G12 gauntlet path only sets this env when calling
+    # ``--tier harness --base-url`` (no --submit) — but a future caller
+    # combining ``--submit`` with the filter would silently break here.
+    # Refuse loudly instead.
+    if os.environ.get("RAPID_MLX_HARNESS_PROFILES_FILTER"):
+        print(
+            "  Error: --submit is incompatible with "
+            "RAPID_MLX_HARNESS_PROFILES_FILTER. The filter scopes the "
+            "sweep to a subset of harnesses, producing a payload that "
+            "would fail the community-bench schema's required-keys check "
+            "(all 5 harnesses must be present). Unset the env var or "
+            "drop --submit.",
+            file=sys.stderr,
+        )
+        return 2
+
     if getattr(args, "base_url", None):
         print(
             "  Error: --base-url is incompatible with --submit. "
