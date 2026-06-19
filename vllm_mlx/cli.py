@@ -1199,17 +1199,21 @@ def serve_command(args):
     if getattr(args, "listen_fd", None) is None:
         import socket
 
-        _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            _sock.bind((args.host, args.port))
-            _sock.close()
-        except OSError:
-            print(f"\n  Error: Port {args.port} is already in use.")
-            print(
-                f"  Try a different port: rapid-mlx serve {args.model} --port {args.port + 1}"
-            )
-            sys.exit(1)
+        # ``with`` here guarantees the preflight socket is closed on every
+        # exit path — including OSError during ``bind``. The previous form
+        # called ``_sock.close()`` only on the success branch, which leaked
+        # the fd whenever the bind raised (e.g. when running under a test
+        # harness that catches ``SystemExit``).
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+            _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                _sock.bind((args.host, args.port))
+            except OSError:
+                print(f"\n  Error: Port {args.port} is already in use.")
+                print(
+                    f"  Try a different port: rapid-mlx serve {args.model} --port {args.port + 1}"
+                )
+                sys.exit(1)
 
     # Check disk space before downloading model
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
