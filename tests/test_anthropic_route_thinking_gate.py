@@ -576,19 +576,19 @@ def test_stream_route_wire_format_event_prefix_and_terminator():
 
     for raw in _split_raw_sse(body):
         lines = raw.splitlines()
-        # Each event block we emit has 2 lines: ``event: ...`` and
-        # ``data: ...``. (No comments / multi-line data.)
-        assert len(lines) == 2, (
-            f"unexpected SSE chunk shape (expected 2 lines): {lines!r}"
-        )
+        # Required framing (codex r4 NIT — relaxed from "exactly 2
+        # lines" to avoid over-pinning today's emitters): each chunk
+        # MUST start with an ``event:`` line and MUST contain a JSON-
+        # parseable ``data:`` line. Comments (``:`` lines) and
+        # multi-line ``data:`` framing remain valid SSE shapes that a
+        # future legitimate change might introduce.
+        assert lines, f"empty SSE chunk: {raw!r}"
         assert lines[0].startswith("event: "), (
             f"first SSE line must start with 'event: ': {lines[0]!r}"
         )
-        assert lines[1].startswith("data: "), (
-            f"second SSE line must start with 'data: ': {lines[1]!r}"
-        )
-        # data must be JSON-parseable
-        json.loads(lines[1].removeprefix("data: "))
+        data_line = next((line for line in lines if line.startswith("data: ")), None)
+        assert data_line is not None, f"SSE chunk missing 'data:' line: {lines!r}"
+        json.loads(data_line.removeprefix("data: "))
 
 
 def test_stream_route_wire_format_exactly_one_text_block_for_demoted_stream():
@@ -737,5 +737,125 @@ def test_stream_route_drops_whitespace_only_reasoning_delta():
     assert assembled == "answer", (
         f"expected 'answer' to surface; got {assembled!r} from {text_deltas!r}"
     )
+
+    reset_config()
+
+
+class _StreamingEngineInterleavedThinking:
+    """Engine that streams `<think>first\n\nsecond</think>` to exercise
+    the codex r4 MAJOR fix: intra-thinking whitespace separators must
+    survive the gate so the rendered thinking block is `first\n\nsecond`
+    (a paragraph break) and not `firstsecond` (visually concatenated).
+    """
+
+    preserve_native_tool_format = False
+    is_mllm = False
+    supports_guided_generation = False
+    tokenizer = None
+
+    def __init__(self):
+        self.stream_calls: list[dict[str, Any]] = []
+
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        return "PROMPT"
+
+    async def stream_chat(self, messages, **kwargs):
+        self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+        # Emit content in three reasoning-channel deltas: "first",
+        # whitespace separator, "second", then a content delta.
+        yield GenerationOutput(
+            text="first",
+            new_text="first",
+            tokens=[1],
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=False,
+            finish_reason=None,
+            channel="reasoning",
+        )
+        yield GenerationOutput(
+            text="first\n\n",
+            new_text="\n\n",
+            tokens=[1, 2],
+            prompt_tokens=4,
+            completion_tokens=2,
+            finished=False,
+            finish_reason=None,
+            channel="reasoning",
+        )
+        yield GenerationOutput(
+            text="first\n\nsecond",
+            new_text="second",
+            tokens=[1, 2, 3],
+            prompt_tokens=4,
+            completion_tokens=3,
+            finished=False,
+            finish_reason=None,
+            channel="reasoning",
+        )
+        yield GenerationOutput(
+            text="first\n\nsecondANSWER",
+            new_text="ANSWER",
+            tokens=[1, 2, 3, 4],
+            prompt_tokens=4,
+            completion_tokens=4,
+            finished=True,
+            finish_reason="stop",
+            channel="content",
+        )
+
+
+def test_stream_route_preserves_intra_thinking_whitespace():
+    """Codex r4 MAJOR: whitespace between two non-empty thinking
+    chunks must NOT be dropped by the gate — it is an intra-thinking
+    paragraph separator the model emitted on purpose. The fix made
+    ``_gate_thinking_pieces`` state-aware (current_block_type) so a
+    whitespace piece is dropped only when it would OPEN a blank
+    thinking block.
+    """
+    cfg = reset_config()
+    engine = _StreamingEngineInterleavedThinking()
+    cfg.engine = engine
+    cfg.model_name = "thinking-model"
+    cfg.model_registry = None
+    cfg.reasoning_parser = object()
+    cfg.reasoning_parser_name = "hermes"
+    cfg.tool_parser = None
+
+    app = FastAPI()
+    app.include_router(anthropic_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "thinking-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+
+    # Assemble the full thinking content from thinking_delta events.
+    thinking_text = "".join(
+        e["delta"]["thinking"]
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "thinking_delta"
+    )
+    assert thinking_text == "first\n\nsecond", (
+        "intra-thinking whitespace separator was dropped — "
+        f"got {thinking_text!r}, expected 'first\\n\\nsecond'"
+    )
+    # And the answer still surfaces in a text block.
+    text_text = "".join(
+        e["delta"]["text"]
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    )
+    assert text_text == "ANSWER", f"answer text missing or wrong: got {text_text!r}"
 
     reset_config()
