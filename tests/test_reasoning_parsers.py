@@ -892,14 +892,17 @@ class TestMultiBlockThinkStreaming:
             "<think>R</think>The user said: <think>is literal</think> tag"
         )
         assert reasoning == "R"
-        # Closed literal ``<think>is literal</think>`` survives the
-        # parser sweep — downstream ``strip_thinking_tags`` will
-        # strip the tag wrapper, leaving ``"The user said:  tag"``
-        # (which is still wrong but no worse than pre-PR; the
-        # operator can spot the literal-tag bug by setting
-        # ``reasoning_parser=None`` for that alias).
-        assert "The user said:" in (content or "")
-        assert "tag" in (content or "")
+        # Codex r4 BLOCKING on PR #722: the test must pin the EXACT
+        # content so a future tightening of the conservative sweep
+        # that strips the closed literal block fails this test
+        # immediately. The parser leaves the closed literal block
+        # verbatim — downstream ``strip_thinking_tags`` will strip
+        # the tag wrapper but that is the operator-visible step,
+        # not the parser-level contract this test pins.
+        assert content == ("The user said: <think>is literal</think> tag"), (
+            "literal closed <think>is literal</think> must survive "
+            f"the conservative sweep verbatim: {content!r}"
+        )
 
     def test_streaming_phase_uses_explicit_state_not_history_counts(self):
         """Codex r3 BLOCKING on PR #722: the multi-block router
@@ -1121,6 +1124,43 @@ class TestResidualThinkTagSweep:
             assert "</think>" in content[last_open + 7 :], (
                 f"trailing unclosed <think> survived the sweep: content={content!r}"
             )
+
+    def test_answer_text_before_trailing_unclosed_think_preserved(self):
+        """Codex r4 BLOCKING on PR #722 (finding 1): codex flagged
+        that the conservative sweep ``treats the last unclosed
+        <think> in content as structural unconditionally``,
+        claiming an answer like
+        ``<think>R</think>The literal token is <think>``
+        ``loses user-visible answer text``.
+
+        This test pins the actual behaviour: the answer text BEFORE
+        the trailing unclosed opener (``"The literal token is"``)
+        IS preserved in content. Only the text AFTER the opener is
+        rerouted to reasoning — that is the documented trade-off
+        for fixing the production-observed phi-4-mini-reasoning
+        leak (a real model emits a trailing ``<think>`` opener
+        after the answer when ``reasoning_max_tokens`` truncates
+        mid-thought; preserving those trailing bytes in content
+        was the original bug). The trade-off favours the
+        production case over the theoretical literal-tag case.
+        """
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = parser.extract_reasoning(
+            "<think>R</think>The literal token is <think>"
+        )
+        # First-pair reasoning preserved.
+        assert reasoning == "R"
+        # Answer text BEFORE the trailing unclosed opener is
+        # preserved in content — rebuts the codex r4 finding-1
+        # claim that user-visible answer text is lost.
+        assert content == "The literal token is", (
+            "answer text before the trailing unclosed opener must "
+            f"survive in content: {content!r}"
+        )
 
     def test_orphan_closer_left_for_downstream(self):
         """Codex r3-final scope (PR #722): a stray ``</think>``
