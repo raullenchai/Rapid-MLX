@@ -3390,17 +3390,28 @@ class Scheduler:
             # was silently dropping ``request.stop`` until #354 / regression
             # tests 1, 2, 4, 5 surfaced the gap.
             #
-            # Known limitations (carried over from MLLMScheduler; proper
-            # fix needs a streaming lookahead buffer — out of scope here):
-            # if the stop marker straddles the previous-token boundary,
-            # the prefix that landed in the streamed surface has already
-            # been sent to the client. ``output_text`` is correctly
-            # truncated; streaming clients see the prefix.
+            # Surface choice: the IncrementalDecoder's ``get_full_text()`` is
+            # the AUTHORITATIVE surface for stop matching — it is what the
+            # client sees on the streaming path, byte-for-byte. The previous
+            # implementation called ``self._decode_tokens()`` (a fresh
+            # ``tokenizer.decode(token_ids)`` with the wrapper's default
+            # ``skip_special_tokens=True``), which on tokenizer families
+            # whose default decoding strips text the streaming detokenizer
+            # preserves (Phi-3.5 / Gemma-3n SentencePiece variants surfaced
+            # in the 2026-06-18 fuzz battery) produced a window that did
+            # NOT contain the literal stop string the user was looking
+            # for — even though the streamed surface DID contain it. Using
+            # the incremental decoder closes this skew at the sampler
+            # layer without tokenizer-family-specific casing.
             finish_reason = response.finish_reason
             stop_trimmed = False
             stop_params = request.sampling_params.stop or []
             if finish_reason is None and stop_params:
-                decoded_so_far = self._decode_tokens(request.output_token_ids)
+                decoder = getattr(request, "_decoder", None)
+                if decoder is not None:
+                    decoded_so_far = decoder.get_full_text()
+                else:
+                    decoded_so_far = self._decode_tokens(request.output_token_ids)
                 for stop_str in stop_params:
                     if stop_str and stop_str in decoded_so_far:
                         finish_reason = "stop"
@@ -3410,7 +3421,27 @@ class Scheduler:
                         stop_trimmed = True
                         # Adjust new_text so streaming clients only see the
                         # valid prefix, never the stop marker itself.
-                        prev_text = self._decode_tokens(request.output_token_ids[:-1])
+                        # Pre-token streaming surface ≡ the decoder's
+                        # ``prev_text``  — what the client has seen so
+                        # far. Computing it as ``decoded_so_far -
+                        # new_text`` is fragile: when the incremental
+                        # decoder holds back a U+FFFD-incomplete
+                        # sequence ``new_text == ""`` but
+                        # ``decoded_so_far`` grew, so the subtraction
+                        # math reset to the wrong boundary and could
+                        # leak or drop text on multibyte streams
+                        # (codex r8 BLOCKING). Falling back to
+                        # ``decoded_so_far - new_text`` only when no
+                        # decoder is attached (text-only paths that
+                        # decode in bulk).
+                        if decoder is not None:
+                            prev_text = decoder.prev_text
+                        else:
+                            prev_text = (
+                                decoded_so_far[: -len(new_text)]
+                                if new_text
+                                else decoded_so_far
+                            )
                         if len(trimmed_total) > len(prev_text):
                             output.new_text = trimmed_total[len(prev_text) :]
                         else:

@@ -220,6 +220,67 @@ class StreamingPostProcessor:
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
 
+        # Forced ``tool_choice`` assistant-prefix replay swallow (PR #716
+        # codex r9 BLOCKING #1). When the route layer forces a function via
+        # the OpenAI ``tool_choice`` contract (#673), the chat-template
+        # renderer suffixes the prompt with a parser-shaped wire opener
+        # (e.g. ``<tool_call>\n{"name": "X", "arguments":``) and
+        # ``BatchedEngine.stream_chat`` yields that prefix back as a
+        # SYNTHETIC first chunk so plain-text consumers (and parser state)
+        # see the full envelope from the very first delta. Without the
+        # swallow below, the postprocessor would route that synthetic chunk
+        # through the reasoning parser (``BaseThinkingReasoningParser``
+        # Case-3 ``no <think> seen yet → classify as reasoning``),
+        # polluting ``accumulated_reasoning`` with the prefix bytes and —
+        # on every chunk-boundary edge case the MiniMax-style tool-markup
+        # redirect (``_process_with_reasoning`` lines ~1045) doesn't cover
+        # (split tag across chunks, future parser variants) — risking a
+        # raw-``<tool_call>``-byte leak into ``delta.reasoning_content``.
+        #
+        # ``seed_forced_assistant_prefix(prefix)`` is called by the
+        # streaming route BEFORE ``process_chunk`` ever fires. It primes
+        # the tool-parser state with the prefix (so the parser sees the
+        # complete opener as already-accumulated context) and arms a
+        # one-shot match buffer that swallows the synthetic chunk(s) from
+        # ``process_chunk`` BEFORE they hit reasoning routing. The buffer
+        # is BYTE-COUNT stateful so partial-chunk splits (synthetic chunk
+        # shorter than prefix) drain incrementally across calls; overshoot
+        # (chunk carries prefix + tail bytes) emits the post-prefix tail
+        # through the normal pipeline. ``None`` / empty string ≡ not
+        # armed; once drained to zero the swallow is inert.
+        self._forced_prefix_pending: str = ""
+
+    def seed_forced_assistant_prefix(self, prefix: str | None) -> None:
+        """Prime tool-parser state with the forced ``tool_choice`` prefix.
+
+        The streaming chat route calls this when the engine's
+        ``chat_kwargs`` carry ``forced_assistant_prefix``. The prefix
+        bytes are appended to ``tool_accumulated_text`` so the hermes /
+        qwen3coder streaming parsers see the full wire envelope before
+        the first model continuation chunk arrives, AND the same prefix
+        is stored in ``_forced_prefix_pending`` so ``process_chunk`` can
+        swallow the synthetic-replay chunk(s) without re-routing them
+        through the reasoning parser (see ``__init__`` for the BLOCKING
+        leak rationale).
+
+        Safe to call with ``None`` / empty string — a no-op. Idempotent
+        within a request: the second call REPLACES the buffer (the
+        route never sets two distinct prefixes in one request, but
+        replacement matches the ``__init__`` semantics).
+        """
+        if not prefix:
+            self._forced_prefix_pending = ""
+            return
+        # Seed parser context. ``tool_accumulated_text`` is the buffer
+        # the parser's ``previous_text`` argument is read from on the
+        # first ``_detect_tool_calls`` call — without this seeding,
+        # the parser would see ``previous_text=""`` and ``current_text
+        # = prefix + first_model_chunk`` on chunk 1 (which works for
+        # ``<tool_call>``-counting parsers like hermes; but for parsers
+        # that look at ``delta_text`` boundaries it leaks).
+        self.tool_accumulated_text = prefix
+        self._forced_prefix_pending = prefix
+
     @staticmethod
     def _create_reasoning_parser(cfg: ServerConfig):
         """Create a per-request reasoning parser instance."""
@@ -608,6 +669,13 @@ class StreamingPostProcessor:
         self._think_prefix_sent = False
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
+        # Forced-prefix swallow buffer reset to baseline. The route layer
+        # re-seeds via ``seed_forced_assistant_prefix`` after ``reset()``
+        # when the request carries ``forced_assistant_prefix``; without
+        # the explicit clear here, a reused processor instance (legacy
+        # singleton path) would carry stale swallow bytes into the next
+        # request and corrupt the first non-forced chunk.
+        self._forced_prefix_pending = ""
         self._structured_tool_call_count = 0
         self._admitted_tool_call_indices = set()
         self._no_index_call_admitted = False
@@ -637,6 +705,47 @@ class StreamingPostProcessor:
             if output.finished:
                 return [self._make_finish_event(output)]
             return []
+
+        # Forced ``tool_choice`` synthetic-prefix replay swallow (codex
+        # r9 BLOCKING #1). See ``seed_forced_assistant_prefix`` for the
+        # full rationale. The engine yields the prefix as a synthetic
+        # first chunk so plain-text consumers see the wire envelope; the
+        # tool-parser state was already seeded with the same bytes by
+        # the route, so feeding this chunk through the reasoning parser
+        # would (a) double-count the prefix in ``accumulated_reasoning``
+        # and (b) risk a raw-byte leak into ``delta.reasoning_content``
+        # on parser variants that don't currently hit the MiniMax tool-
+        # markup redirect.
+        #
+        # Drain the swallow buffer byte-by-byte across chunks: if the
+        # synthetic chunk is shorter than the pending prefix (engine
+        # split the prefix across multiple yields), consume what's here
+        # and wait for more; if the chunk is longer (engine merged the
+        # prefix with a trailing token), strip the prefix and forward
+        # the tail through the normal pipeline. ``finished`` chunks
+        # still need their finish event emitted even when the body is
+        # fully swallowed.
+        if self._forced_prefix_pending and delta_text.startswith(
+            self._forced_prefix_pending[: len(delta_text)]
+        ):
+            consumed = min(len(delta_text), len(self._forced_prefix_pending))
+            self._forced_prefix_pending = self._forced_prefix_pending[consumed:]
+            tail = delta_text[consumed:]
+            if not tail:
+                if output.finished:
+                    return [self._make_finish_event(output)]
+                return []
+            # Overshoot: rewrite ``new_text`` (and ``text`` if present) to
+            # the post-prefix tail in place and fall through so reasoning
+            # / tool parsing run on the GENUINE model bytes only. We
+            # avoid ``dataclasses.replace`` so the swallow stays
+            # compatible with MagicMock outputs used in unit tests AND
+            # with the real ``GenerationOutput`` dataclass — both expose
+            # writable ``new_text`` / ``text`` attributes.
+            output.new_text = tail
+            if hasattr(output, "text"):
+                output.text = tail
+            delta_text = tail
 
         # Step 1: Separate content from reasoning
         if output.channel is not None:

@@ -123,6 +123,76 @@ def _tool_call_name(tc) -> str | None:
     return getattr(tc, "name", None)
 
 
+def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str | None:
+    """Build the assistant-turn prefix string that the model continues
+    when ``tool_choice`` forces a named function.
+
+    Returns ``None`` for parsers where prefix injection isn't a known
+    win (e.g. channel-routed harmony / gemma4: those publish tool calls
+    via the OutputRouter's tool-call channel directly, so the model
+    already produces a structured call when prompted — and pre-pending
+    the wire opener would actually CONFUSE the channel state machine).
+    For parser-only families (hermes / qwen3coder / llama / kimi /
+    glm47 / mistral / minimax / deepseek / nemotron / xlam / functionary)
+    the wire opener is unambiguous; insert ``<tool_call>\\n{"name":
+    "X", "arguments":`` so the model continues with the arguments object
+    and the closer.
+
+    This is the OpenAI ``tool_choice`` forced-function lever — pure
+    prefix injection, parser-shape-agnostic of the underlying alias.
+    """
+    if not function_name:
+        return None
+    # Verified parsers that explicitly recognise the hermes ``<tool_call>``
+    # JSON-body wire shape in their primary path (both non-streaming
+    # ``extract_tool_calls`` regex AND the streaming state-machine
+    # sentinel set). Each one's source was audited against this opener
+    # before being added:
+    #   - ``hermes`` (vllm_mlx/tool_parsers/hermes_tool_parser.py):
+    #     ``TOOL_CALL_PATTERN = <tool_call>{JSON}</tool_call>``;
+    #     ``_STREAMING_SENTINELS = ("<tool_call>", "<function=")``
+    #
+    # Parsers EXCLUDED on purpose because their primary wire is NOT
+    # the JSON ``<tool_call>`` body shape — even when the OPENER
+    # matches, the body shape conflicts with the parser's
+    # expectations (codex r1 + r3 P2 on this PR):
+    #   - ``qwen3coder`` / ``qwen3_coder_xml`` — same ``<tool_call>``
+    #     opener but the body uses XML ``<function=NAME>...`` markers,
+    #     NOT JSON. ``Qwen3CoderToolParser.extract_tool_calls`` looks
+    #     for ``<function=`` after the opener and would miss a JSON
+    #     body entirely.
+    #   - ``minimax``  → ``<minimax:tool_call>`` / ``<invoke name="...">``
+    #   - ``mistral``  → ``[TOOL_CALLS]``
+    #   - ``deepseek`` → ``<｜tool▁calls▁begin｜>``
+    #   - ``llama``    → ``<|python_tag|>`` / bare JSON (its own opener)
+    #   - ``kimi``     → ``<|tool_calls_section_begin|>``
+    #   - ``glm47``    → ``<tool_call>...<arg_key>...</arg_value>``
+    #     (XML body, NOT JSON — same body-shape conflict as
+    #     qwen3coder above)
+    #   - ``granite``, ``xlam``, ``functionary``, ``nemotron``,
+    #     ``seed_oss`` — distinct wire formats; defer to the
+    #     post-parse synthesis fallback rather than risk a wrong
+    #     opener.
+    _verified_json_tool_call_parsers = {
+        "hermes",
+    }
+    if parser_name in _verified_json_tool_call_parsers:
+        # JSON envelope opener — model continues with the arguments
+        # object body. Leave a trailing space so the model picks up
+        # immediately with ``{...}``.
+        #
+        # ``json.dumps(function_name)`` escapes any quoted / backslash /
+        # control character in the function name so a hostile tool
+        # spec (``{"name": "x\\\\\\", \\"arguments\\": ..."}``) cannot
+        # corrupt the wire envelope or inject extra fields. Codex r4
+        # BLOCKING — direct f-string interpolation was vulnerable.
+        return f'<tool_call>\n{{"name": {json.dumps(function_name)}, "arguments": '
+    # Channel-routed (harmony / gemma4) and parsers whose wire shape
+    # we have NOT audited: no prefix injection. The post-parse
+    # synthesis path remains as a fallback (``_synthesize_forced_tool_call``).
+    return None
+
+
 def _synthesize_forced_tool_call(name: str, arguments: str = "{}"):
     """Build a single ``ToolCall`` for a forced ``tool_choice`` whose
     text parser surfaced no calls (#571).
@@ -720,6 +790,35 @@ async def _create_chat_completion_impl(
     if request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(request.tools)
 
+    # OpenAI ``tool_choice`` forced-function — assistant-turn prefix
+    # injection. The chat-template renderer (and the engine's
+    # ``chat()``/``stream_chat()``) accept ``forced_assistant_prefix``;
+    # when set, the rendered prompt is suffixed with the parser's wire-
+    # envelope opener and the model continues from inside the tool
+    # call. The text parser then recovers the call in the normal flow.
+    # No per-model regex, no per-alias config — the prefix is derived
+    # solely from ``cfg.tool_call_parser`` and the requested function
+    # name. See ``_forced_tool_call_prefix`` for the parser-shape
+    # taxonomy.
+    _forced_prefix = None
+    if request.tools and request.tool_choice is not None:
+        _forced_name: str | None = None
+        if (
+            isinstance(request.tool_choice, dict)
+            and request.tool_choice.get("type") == "function"
+        ):
+            _forced_name = (request.tool_choice.get("function") or {}).get("name")
+        elif request.tool_choice == "required" and len(request.tools) == 1:
+            # OpenAI spec: ``required`` with a single tool is unambiguous
+            # — same forcing semantics as a named choice.
+            _forced_name = request.tools[0].function.get("name")
+        if _forced_name:
+            _forced_prefix = _forced_tool_call_prefix(
+                cfg.tool_call_parser, _forced_name
+            )
+    if _forced_prefix:
+        chat_kwargs["forced_assistant_prefix"] = _forced_prefix
+
     # PFlash routing (#287): structured-output prompts are
     # prompt-integrity-sensitive — lossy compression would corrupt the
     # JSON schema context, and there is no user-facing opt-out for
@@ -1099,6 +1198,25 @@ async def _create_chat_completion_impl(
                     output,
                     text="".join(routed_content_parts),
                     reasoning_text="".join(routed_reasoning_parts),
+                )
+            # Forced-tool prefix on the logprobs path: the stream
+            # yields a synthetic first chunk carrying the prefix
+            # bytes for the SSE postprocessor, but THIS internal
+            # consumer only retains the last chunk. Fold the prefix
+            # into ``output.text`` so the downstream tool parser sees
+            # the full ``<tool_call>{"name":...,"arguments":...}``
+            # envelope and recovers the model-generated arguments
+            # instead of falling through to ``_synthesize_forced_tool_call``'s
+            # empty-args default (codex r1 P2 on this PR).
+            _forced_prefix_value = chat_kwargs.get("forced_assistant_prefix")
+            if (
+                _forced_prefix_value
+                and output is not None
+                and not (output.text or "").startswith(_forced_prefix_value)
+            ):
+                output = _dc_replace(
+                    output,
+                    text=_forced_prefix_value + (output.text or ""),
                 )
         elif use_guided and json_schema:
             try:
@@ -1586,6 +1704,24 @@ async def stream_chat_completion(
         )
         processor.set_thinking_model(request.model)
         processor.reset()
+
+        # Forced ``tool_choice`` synthetic-prefix replay swallow (PR #716
+        # codex r9 BLOCKING #1). When the upstream chat_kwargs builder
+        # set ``forced_assistant_prefix`` (the route's
+        # ``_forced_tool_call_prefix`` branch), the engine's
+        # ``stream_chat`` yields the prefix back as a synthetic first
+        # chunk so plain-text consumers see the wire envelope. Seed the
+        # postprocessor with the same bytes so it can swallow that
+        # synthetic chunk BEFORE the reasoning parser sees it — without
+        # this, the prefix bytes route through ``Case-3 → reasoning``
+        # in ``BaseThinkingReasoningParser``, polluting
+        # ``accumulated_reasoning`` AND risking a raw-byte leak into
+        # ``delta.reasoning_content`` on parser variants the MiniMax
+        # tool-markup redirect doesn't catch (chunk-boundary splits,
+        # future parsers). See ``StreamingPostProcessor.__init__`` for
+        # the swallow-buffer state machine. No-op when the prefix is
+        # absent.
+        processor.seed_forced_assistant_prefix(kwargs.get("forced_assistant_prefix"))
 
         # Track token counts for usage reporting
         prompt_tokens = 0

@@ -62,6 +62,21 @@ class IncrementalDecoder:
         """Read-only access to accumulated token IDs."""
         return self._token_ids
 
+    @property
+    def prev_text(self) -> str:
+        """Streaming surface as of the LAST emitted delta.
+
+        Equals the running concatenation of all non-empty ``add_token``
+        returns — i.e. exactly what the client has seen so far. Differs
+        from ``get_full_text()`` when the decoder is currently holding
+        back a U+FFFD-incomplete byte sequence.
+
+        Used by the scheduler's stop-string trim path so a hold-back
+        step doesn't slice against the wrong surface boundary
+        (codex r8 BLOCKING).
+        """
+        return self._prev_text
+
     def reset(self):
         """Reset state for a new sequence."""
         self._token_ids.clear()

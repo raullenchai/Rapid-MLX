@@ -943,8 +943,43 @@ class MLXMultimodalLM:
 
         # Use HF processor's chat template (handles timestamp interleaving)
         template_kwargs: dict = {}
+
+        # Neutralise chat-template role markers in user-supplied
+        # content before passing to the processor's template — same
+        # sanitisation layer as ``utils.chat_template.apply_chat_template``
+        # so this bespoke video path doesn't bypass the prompt-injection
+        # defence.
+        #
+        # Defence-in-depth: if the registry-driven sanitiser fails (an
+        # unusual processor quirk), fall back to the literal baseline
+        # marker set instead of letting raw input reach the tokenizer.
+        # Codex r4 BLOCKING — silently swallowing the exception would
+        # reopen the prompt-injection bypass on any quirk that trips
+        # the sanitiser.
+        from ..utils.chat_template import (
+            _baseline_sanitize_messages,
+            _baseline_sanitize_tools,
+            _sanitize_messages_for_template,
+            _sanitize_tools_for_template,
+        )
+
+        try:
+            native_messages = _sanitize_messages_for_template(
+                native_messages, self.processor
+            )
+        except Exception:
+            native_messages = _baseline_sanitize_messages(native_messages)
+
+        # Tool definitions are also client-controlled and reach the
+        # processor via ``template_kwargs["tools"]`` — sanitise them
+        # with the same fail-closed semantics or the marker bypass is
+        # still open for video requests (codex r8 BLOCKING).
         if tools:
-            template_kwargs["tools"] = tools
+            try:
+                sanitised_tools = _sanitize_tools_for_template(tools, self.processor)
+            except Exception:
+                sanitised_tools = _baseline_sanitize_tools(tools)
+            template_kwargs["tools"] = sanitised_tools
 
         text = self.processor.apply_chat_template(
             native_messages,

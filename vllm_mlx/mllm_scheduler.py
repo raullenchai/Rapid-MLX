@@ -584,6 +584,16 @@ class MLLMScheduler:
 
             # output_token_ids is a live reference (not a defensive copy):
             # consumers read it synchronously; the per-decode list() was O(n).
+            #
+            # ``logprobs`` is wired through from the MLLMBatchResponse so a
+            # ``logprobs=true, top_logprobs=K`` chat request gets the same
+            # per-token data the text-only AR path produces. Pre-fix the
+            # MLLM path silently dropped the field — every chunk reached
+            # the route with ``logprobs=None`` and the OpenAI ``choices[0].
+            # logprobs`` slot serialised as ``null``. The shape matches the
+            # text path's ``RequestOutput.logprobs`` field exactly so the
+            # downstream ``_extract_streaming_token_logprobs`` extractor
+            # works unmodified for both paths.
             output = RequestOutput(
                 request_id=request_id,
                 new_token_ids=[response.token],
@@ -591,15 +601,25 @@ class MLLMScheduler:
                 output_token_ids=request.output_tokens,
                 prompt_tokens=request.num_prompt_tokens,
                 completion_tokens=request.num_output_tokens,
+                logprobs=getattr(response, "logprobs", None),
             )
 
-            # Check text-based stop sequences
+            # Check text-based stop sequences against the full decoded
+            # output. ``tokenizer.decode(request.output_tokens)`` re-
+            # decodes the entire token list each step (O(T) per step) —
+            # equivalent to the text scheduler's IncrementalDecoder-
+            # backed surface, but built up from the cumulative token
+            # list. The MLLM streaming detokenizer
+            # (``NaiveStreamingDetokenizer``) only carries the
+            # current-segment slice in its ``.text`` property, so it
+            # is NOT equivalent to a fresh full decode — the stop
+            # check must use the full decode.
             finish_reason = response.finish_reason
             stop_trimmed = False
             if finish_reason is None and request.stop:
                 decoded_so_far = tokenizer.decode(request.output_tokens)
                 for stop_str in request.stop:
-                    if stop_str in decoded_so_far:
+                    if stop_str and stop_str in decoded_so_far:
                         finish_reason = "stop"
                         # Trim output at stop string
                         idx = decoded_so_far.index(stop_str)

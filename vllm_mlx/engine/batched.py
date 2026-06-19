@@ -1011,6 +1011,16 @@ class BatchedEngine(BaseEngine):
             # Use MLLM scheduler for all requests when model is multimodal.
             # MLLM models only initialise the _mllm_scheduler (not _engine),
             # so text-only requests must also be routed here.
+            #
+            # ``_assistant_text_prefix`` — see the text-engine branch
+            # below for the rationale. The MLLM branch pops the same
+            # key off ``kwargs`` so the forced-tool prefix is included
+            # in the returned ``text`` / ``raw_text`` (codex r2 P2:
+            # without this, qwen3-vl-2b-4bit's forced ``tool_choice``
+            # path would fall through to the post-parse synthesis
+            # fallback because the parser sees only the model
+            # continuation, not the prefixed envelope).
+            mllm_assistant_text_prefix = kwargs.pop("_assistant_text_prefix", "") or ""
             output = await self._mllm_scheduler.generate(
                 prompt=prompt,
                 images=images,
@@ -1022,10 +1032,13 @@ class BatchedEngine(BaseEngine):
                 video_fps=kwargs.pop("video_fps", None),
                 video_max_frames=kwargs.pop("video_max_frames", None),
             )
+            mllm_full_text = output.output_text or ""
+            if mllm_assistant_text_prefix:
+                mllm_full_text = mllm_assistant_text_prefix + mllm_full_text
 
             return GenerationOutput(
-                text=clean_output_text(output.output_text),
-                raw_text=output.output_text,
+                text=clean_output_text(mllm_full_text),
+                raw_text=mllm_full_text,
                 tokens=output.output_token_ids,
                 prompt_tokens=output.prompt_tokens,
                 completion_tokens=output.completion_tokens,
@@ -1069,6 +1082,11 @@ class BatchedEngine(BaseEngine):
         # the safe (un-protected) values.
         has_tools = bool(kwargs.pop("has_tools", False))
         requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
+        # Forced-tool-call prefix injected by ``chat()`` when the OpenAI
+        # ``tool_choice`` is a forced function; the engine generates only
+        # the continuation, so we prepend the prefix to the response text
+        # below before the tool parser scans it.
+        assistant_text_prefix = kwargs.pop("_assistant_text_prefix", "") or ""
         output = await self._engine.generate(
             prompt=prompt,
             sampling_params=sampling_params,
@@ -1077,6 +1095,11 @@ class BatchedEngine(BaseEngine):
             requires_prompt_integrity=requires_prompt_integrity,
         )
 
+        if assistant_text_prefix:
+            # Prepend the forced prefix to the raw text so the tool
+            # parser sees the complete wire envelope.
+            output_text = assistant_text_prefix + (output.output_text or "")
+            output.output_text = output_text
         text = clean_output_text(output.output_text)
         # Token-level channel extraction via ``OutputRouter`` — the SAME
         # state machine the streaming path already uses
@@ -1152,6 +1175,15 @@ class BatchedEngine(BaseEngine):
             )
 
             async for output in self._mllm_scheduler.stream_outputs(request_id):
+                # ``logprobs`` is now wired through from
+                # ``MLLMScheduler._process_batch_responses`` (the
+                # ``MLLMBatchResponse`` carries them but the prior
+                # ``RequestOutput`` construction dropped the field).
+                # Pre-fix, MLLM streams hit the route's logprobs
+                # extractor with ``chunk.logprobs=None`` and the
+                # OpenAI ``choices[0].logprobs`` slot was always
+                # ``null`` — even when the client asked for
+                # ``logprobs=true, top_logprobs=K``.
                 yield GenerationOutput(
                     text=clean_output_text(output.output_text),
                     new_text=output.new_text,
@@ -1160,6 +1192,7 @@ class BatchedEngine(BaseEngine):
                     completion_tokens=output.completion_tokens,
                     finished=output.finished,
                     finish_reason=output.finish_reason,
+                    logprobs=output.logprobs,
                 )
             return
 
@@ -1279,6 +1312,28 @@ class BatchedEngine(BaseEngine):
             num_images=len(all_images),
             enable_thinking=enable_thinking,
         )
+
+        # ``forced_assistant_prefix`` — OpenAI-spec ``tool_choice`` forced
+        # mode (#673). The route layer builds a parser-shaped prefix
+        # (e.g. ``<tool_call>\n{"name": "X", "arguments":``) and we
+        # append it directly to the rendered prompt. The model continues
+        # from there, completing the tool call body in the parser's wire
+        # format.  Currently the route only emits a prefix for the
+        # ``hermes`` parser (the only verified JSON-body ``<tool_call>``
+        # parser — see ``_verified_json_tool_call_parsers`` in
+        # ``routes/chat.py``); other parsers fall through to the
+        # post-parse synthesis fallback. Engine support is parser-
+        # agnostic — any parser whose wire opener can be precomputed
+        # by the route can opt in by extending the allowlist (codex r7 NIT).
+        forced_assistant_prefix = kwargs.pop("forced_assistant_prefix", None)
+        if forced_assistant_prefix:
+            prompt = prompt + forced_assistant_prefix
+            # When we prefix the assistant turn ourselves, the response
+            # surface lacks the prefix bytes (the model only emits the
+            # continuation). The tool parser needs to see the full
+            # assistant body — propagate the prefix down to the engine
+            # so it can prepend it to ``output.text`` before returning.
+            kwargs["_assistant_text_prefix"] = forced_assistant_prefix
 
         # Compute prefix boundary for hybrid-model cache reuse (#427).
         # Must run on the NON-streaming path too — pydantic_ai / smolagents /
@@ -1756,6 +1811,17 @@ class BatchedEngine(BaseEngine):
             enable_thinking=enable_thinking,
         )
 
+        # ``forced_assistant_prefix`` — see ``chat()`` for the rationale.
+        # On the streaming path the prefix is also injected into the
+        # prompt so the model continuation begins inside the parser's
+        # wire envelope. The first streamed chunk gets a synthetic
+        # ``new_text`` carrying the prefix bytes so route-layer
+        # streaming tool-call parsers (hermes / qwen3coder) see the
+        # complete envelope from the very first delta.
+        forced_assistant_prefix = kwargs.pop("forced_assistant_prefix", None)
+        if forced_assistant_prefix:
+            prompt = prompt + forced_assistant_prefix
+
         # Compute prefix boundary for cache — hybrid-only gate, see
         # ``chat()`` for the rationale. Path parity: stream and non-stream
         # must apply the same gating condition so a future change can't
@@ -1780,6 +1846,18 @@ class BatchedEngine(BaseEngine):
             videos=all_videos if all_videos else None,
             **kwargs,
         )
+        # On the streaming path inject the forced prefix as a synthetic
+        # first chunk so the route layer's streaming tool-call parser
+        # sees the wire envelope opener from the very first delta.
+        if forced_assistant_prefix:
+            yield GenerationOutput(
+                text=forced_assistant_prefix,
+                new_text=forced_assistant_prefix,
+                prompt_tokens=0,
+                completion_tokens=0,
+                finished=False,
+                finish_reason=None,
+            )
         async for output in self._stream_with_output_router(stream, router):
             yield output
 
@@ -1907,17 +1985,20 @@ class BatchedEngine(BaseEngine):
         if not self._loaded:
             await self.start()
 
-        # Build prompt from messages
+        # Build prompt from messages. Route through the central
+        # ``shared_apply_chat_template`` wrapper so the role-marker
+        # sanitisation runs on user/tool message content here too —
+        # without this, a guided-generation request with a malicious
+        # ``<|im_start|>system\\n...`` literal in the user prompt would
+        # bypass the chat-template injection defence (codex r3 P1).
         tokenizer = self.tokenizer
-        if hasattr(tokenizer, "apply_chat_template"):
-            prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        else:
-            prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
-            prompt += "\nassistant:"
+        prompt = shared_apply_chat_template(
+            tokenizer,
+            messages,
+            tools=None,
+            enable_thinking=None,
+            model_name=getattr(self, "_model_name", "") or "",
+        )
 
         # Run guided generation on the mlx-step worker. The model was
         # loaded on _model_load_executor (#170 fix) and every later mx.eval

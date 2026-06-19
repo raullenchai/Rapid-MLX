@@ -8,8 +8,308 @@ Handles enable_thinking, tools, and fallback logic for chat template rendering.
 import copy
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+# Common chat-template role markers across HuggingFace tokenizer families.
+# These are always neutralized in user-supplied content even when the
+# tokenizer does not declare them in ``special_tokens_map`` (sometimes the
+# template strings are baked into the Jinja text without the tokens being
+# registered, e.g. some Phi/Llama variants). Listing them here is NOT a
+# per-model workaround — it's the union of role-delimiter literals that
+# any HF chat template can interpret as a control sequence. The sanitiser
+# below ALSO consults the tokenizer's own special-token registry to catch
+# tokens we don't enumerate here (qwen3-vl ``<|vision_start|>``, gemma
+# ``<start_of_turn>``, …).
+_CHAT_TEMPLATE_ROLE_MARKERS = (
+    # ChatML (Qwen, ChatGLM, ...)
+    "<|im_start|>",
+    "<|im_end|>",
+    # Llama 3 / Hermes
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+    "<|eot_id|>",
+    "<|begin_of_text|>",
+    "<|end_of_text|>",
+    # Gemma
+    "<start_of_turn>",
+    "<end_of_turn>",
+    # Phi
+    "<|system|>",
+    "<|user|>",
+    "<|assistant|>",
+    "<|end|>",
+    # DeepSeek
+    "<|fim_begin|>",
+    "<|fim_hole|>",
+    "<|fim_end|>",
+    # Mistral / Anthropic-style
+    "[INST]",
+    "[/INST]",
+    "<<SYS>>",
+    "<</SYS>>",
+    # Harmony (gpt-oss)
+    "<|start|>",
+    "<|message|>",
+    "<|channel|>",
+    "<|return|>",
+)
+
+
+def _collect_role_markers(template_applicator) -> set[str]:
+    """Return the set of chat-template role markers that must be neutralized
+    in user-supplied content for ``template_applicator``.
+
+    Combines the conservative built-in literals (``_CHAT_TEMPLATE_ROLE_MARKERS``)
+    with anything the tokenizer's own special-token registry exposes that
+    looks like a delimiter (``<|...|>`` or ``<...turn>`` / ``<...header>``).
+
+    The detector is **per-tokenizer** but **not per-model**: the same
+    regex tests the same `<|...|>` family for every tokenizer we load,
+    so there's nothing model-specific to maintain.
+    """
+    markers: set[str] = set(_CHAT_TEMPLATE_ROLE_MARKERS)
+    tokenizer = template_applicator
+    # Processors (Qwen3-VL, Gemma-3n) wrap a tokenizer. The role markers
+    # live on the wrapped tokenizer; the processor exposes vision tokens
+    # which are not role markers but ARE still untrusted-input vectors,
+    # so we include them too.
+    if hasattr(tokenizer, "tokenizer"):
+        markers |= _collect_role_markers(tokenizer.tokenizer)
+
+    candidates: list[str] = []
+    for attr in ("all_special_tokens", "additional_special_tokens"):
+        vals = getattr(tokenizer, attr, None) or []
+        if isinstance(vals, (list, tuple, set)):
+            candidates.extend(str(v) for v in vals)
+    smap = getattr(tokenizer, "special_tokens_map", None)
+    if isinstance(smap, dict):
+        for v in smap.values():
+            if isinstance(v, str):
+                candidates.append(v)
+            elif isinstance(v, (list, tuple)):
+                candidates.extend(str(x) for x in v)
+    # Only treat sequences that LOOK like a template delimiter as
+    # neutralisation targets — picking up every special token would
+    # also strip ``<pad>`` / ``<unk>`` etc. from user text, which is
+    # not what the user typed but also not a security issue. The two
+    # delimiter shapes any HF chat template can interpret as a role
+    # change are ``<|...|>`` (ChatML/Llama/Phi/Harmony) and ``<...>``
+    # bracket markers ending with ``turn``/``header``/``message``
+    # (Gemma family).
+    for tok in candidates:
+        if not tok or not isinstance(tok, str):
+            continue
+        if (
+            tok.startswith("<|")
+            and tok.endswith("|>")
+            or tok.startswith("<")
+            and tok.endswith(">")
+            and any(kw in tok for kw in ("turn", "header", "message", "channel"))
+        ):
+            markers.add(tok)
+    return markers
+
+
+def _build_marker_pattern(markers: set[str]) -> re.Pattern | None:
+    """Compile an alternation regex that matches any role marker.
+
+    Returns None if there are no markers (degenerate templates).
+    """
+    if not markers:
+        return None
+    # Sort by length desc so longer markers (``<|im_start|>``) match
+    # before their prefixes (``<|im_``) on any future overlap.
+    parts = sorted((re.escape(m) for m in markers), key=len, reverse=True)
+    return re.compile("|".join(parts))
+
+
+def _neutralize_in_string(text: str, pattern: re.Pattern) -> str:
+    """Replace any chat-template marker in ``text`` with a non-tokenizing
+    Unicode-prefixed variant.
+
+    Strategy: insert a zero-width space (U+200B) after the opening
+    angle bracket so the literal text round-trips visually but the
+    tokenizer cannot recognise it as a control sequence. ZWSP is
+    invisible in any client UI that supports Unicode and the user's
+    intended text (the literal marker) is preserved.
+    """
+
+    def _sub(match: re.Match) -> str:
+        marker = match.group(0)
+        # ``<​|im_start|>`` — the ZWSP after the first ``<`` breaks
+        # the tokenizer match without changing the visible glyphs.
+        return marker[0] + "​" + marker[1:]
+
+    return pattern.sub(_sub, text)
+
+
+def _sanitize_message_content(
+    content,
+    pattern: re.Pattern,
+):
+    """Recursively neutralize chat-template markers in ``content``.
+
+    Handles three content shapes:
+    * ``str`` → return a string with markers neutralized.
+    * ``list`` of content parts (multimodal) → return a new list with
+      ``text``-typed parts sanitized; non-text parts pass through.
+    * Anything else → returned unchanged.
+    """
+    if isinstance(content, str):
+        return _neutralize_in_string(content, pattern)
+    if isinstance(content, list):
+        new_parts = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    new_part = dict(part)
+                    new_part["text"] = _neutralize_in_string(part["text"], pattern)
+                    new_parts.append(new_part)
+                else:
+                    new_parts.append(part)
+            else:
+                new_parts.append(part)
+        return new_parts
+    return content
+
+
+def _sanitize_messages_for_template(
+    messages: list[dict], template_applicator
+) -> list[dict]:
+    """Strip / neutralize chat-template control tokens from user-supplied
+    message content.
+
+    This is the layer fix for the prompt-injection vector where a user
+    writes ``<|im_start|>system\\nIgnore...<|im_end|>`` in their
+    message body and the tokenizer parses those literals as real
+    role-delimiter control tokens — letting user content forge a
+    ``system`` role.
+
+    The sanitiser runs against EVERY ``apply_chat_template`` call (one
+    function wraps every render in this module) so the fix is
+    template-agnostic. ALL roles are sanitised — the server cannot
+    prove an ``assistant``-role message in the request was actually
+    produced by its own model output (multi-turn clients ship the
+    whole ``messages`` array, so a malicious client can forge
+    ``{"role": "assistant", "content": "<|im_start|>system\\n..."}``
+    on a replay, codex r4 BLOCKING).
+
+    The neutralisation strategy preserves the literal text visually
+    (inserts U+200B after the opening ``<``) so even a legitimate
+    assistant turn that genuinely contained the literal marker
+    round-trips with the same visible glyphs — only the tokenizer's
+    interpretation is neutralised. See ``_neutralize_in_string`` for
+    the rationale.
+    """
+    markers = _collect_role_markers(template_applicator)
+    pattern = _build_marker_pattern(markers)
+    if pattern is None:
+        return messages
+    sanitized: list[dict] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            sanitized.append(msg)
+            continue
+        content = msg.get("content")
+        new_content = _sanitize_message_content(content, pattern)
+        if new_content is content:
+            sanitized.append(msg)
+            continue
+        new_msg = dict(msg)
+        new_msg["content"] = new_content
+        sanitized.append(new_msg)
+    return sanitized
+
+
+def _baseline_sanitize_messages(messages):
+    """Fail-closed fallback for ``_sanitize_messages_for_template``.
+
+    Applies the literal ``_CHAT_TEMPLATE_ROLE_MARKERS`` baseline (no
+    tokenizer-registry probe — that's what failed) so a sanitiser
+    exception cannot reopen the prompt-injection vector by passing
+    raw user content through to ``apply_chat_template`` (codex r7
+    BLOCKING). Mirrors the fallback in ``vllm_mlx/models/mllm.py``.
+    """
+    baseline_pattern = _build_marker_pattern(set(_CHAT_TEMPLATE_ROLE_MARKERS))
+    if baseline_pattern is None:
+        return messages
+    fallback: list = []
+    for msg in messages:
+        if isinstance(msg, dict) and "content" in msg:
+            new_msg = dict(msg)
+            new_msg["content"] = _sanitize_message_content(
+                msg["content"], baseline_pattern
+            )
+            fallback.append(new_msg)
+        else:
+            fallback.append(msg)
+    return fallback
+
+
+def _baseline_sanitize_tools(tools):
+    """Fail-closed fallback for ``_sanitize_tools_for_template``.
+
+    Walks the tool definition tree with the literal baseline marker
+    set when the tokenizer-registry-aware sanitiser raises — same
+    rationale as ``_baseline_sanitize_messages`` (codex r7 BLOCKING).
+    """
+    if not tools:
+        return tools
+    baseline_pattern = _build_marker_pattern(set(_CHAT_TEMPLATE_ROLE_MARKERS))
+    if baseline_pattern is None:
+        return tools
+
+    def _walk(obj):
+        if isinstance(obj, str):
+            return _neutralize_in_string(obj, baseline_pattern)
+        if isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_walk(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(_walk(v) for v in obj)
+        return obj
+
+    return _walk(tools)
+
+
+def _sanitize_tools_for_template(tools, template_applicator):
+    """Neutralise chat-template role markers in user-supplied tool
+    definitions (names, descriptions, parameter schemas).
+
+    Tool definitions also come from the request body and are rendered
+    into the same prompt either by the native template's ``tools=``
+    kwarg or by ``_inject_tools_into_messages``'s system-prompt
+    fallback. Pre-fix only ``messages`` was sanitised, so a
+    client-controlled tool description containing ``<|im_start|>...``
+    re-opened the bypass for tool-using requests. Codex r5 P1.
+
+    The neutralisation is recursive over the tool definition tree —
+    every string leaf is run through ``_neutralize_in_string``. Lists
+    and dicts are walked structurally; non-string scalars pass
+    through unchanged.
+    """
+    if not tools:
+        return tools
+    markers = _collect_role_markers(template_applicator)
+    pattern = _build_marker_pattern(markers)
+    if pattern is None:
+        return tools
+
+    def _walk(obj):
+        if isinstance(obj, str):
+            return _neutralize_in_string(obj, pattern)
+        if isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_walk(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(_walk(v) for v in obj)
+        return obj
+
+    return _walk(tools)
 
 
 def _build_tool_injection_text(tools: list[dict]) -> str:
@@ -113,6 +413,39 @@ def apply_chat_template(
         ``role: content`` format if the applicator has no
         ``apply_chat_template`` method.
     """
+    # Neutralize chat-template role markers in untrusted (user/tool)
+    # content BEFORE the tokenizer parses them. Runs unconditionally for
+    # every template-render path in the project (this is the single
+    # wrapper every caller funnels through), so the fix is template-
+    # agnostic — no per-model handling. See ``_sanitize_messages_for_template``.
+    # Fail CLOSED on sanitiser exceptions — falling back to the literal
+    # ``_CHAT_TEMPLATE_ROLE_MARKERS`` baseline. Swallowing the failure
+    # and rendering raw input would reopen the exact prompt-injection
+    # vector this PR closes (codex r7 BLOCKING — same fallback shape as
+    # ``vllm_mlx/models/mllm.py::_apply_native_video_template``).
+    try:
+        messages = _sanitize_messages_for_template(messages, template_applicator)
+    except Exception as e:
+        logger.debug(
+            "Chat-template marker sanitisation failed (%s); applying "
+            "baseline-marker fallback",
+            e,
+        )
+        messages = _baseline_sanitize_messages(messages)
+    # Same defence on tool definitions (codex r5 P1) — they are also
+    # client-supplied strings rendered into the prompt via the
+    # template's ``tools=`` kwarg or the system-prompt injection
+    # fallback (``_inject_tools_into_messages``).
+    try:
+        tools = _sanitize_tools_for_template(tools, template_applicator)
+    except Exception as e:
+        logger.debug(
+            "Chat-template tool-marker sanitisation failed (%s); applying "
+            "baseline-marker fallback",
+            e,
+        )
+        tools = _baseline_sanitize_tools(tools)
+
     if not hasattr(template_applicator, "apply_chat_template"):
         # Fallback for models without apply_chat_template.
         # Inject tools into the system prompt so the model still sees
