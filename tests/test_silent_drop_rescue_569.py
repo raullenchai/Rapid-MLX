@@ -1152,3 +1152,79 @@ def test_streaming_rescue_still_fires_for_gemma4_stuck_thought_shape():
     assert rescued == trace, (
         f"gemma-4 #569 failure mode must still rescue — got rescued={rescued!r}"
     )
+
+
+# Bug C / Bug 3 cross-cut: PR #715 bundle live-test repro for
+# ``reasoning_is_case4``.
+
+
+def test_rescue_skipped_when_reasoning_is_case4_and_length():
+    """PR #715 bundle, fuzz finding C / VibeThinker live-test repro:
+    when the parser's Case-4 fallback fired (no tags in raw_text,
+    ``enable_thinking=True``, parser routed the whole output to
+    reasoning, helper blanked cleaned_text=""), the rescue MUST NOT
+    surface that reasoning as content.
+
+    Without this gate, the route mistakes the post-Case-4 empty
+    content for a #569 silent drop and feeds the client byte-
+    identical content + reasoning_content (live-test repro: model
+    answered "What is 2+2?" with plain prose, no ``<think>`` token
+    emitted at all, raw_text did NOT start with ``<think>`` — so the
+    original narrow opener gate missed it).
+    """
+    trace = (
+        'First, the user asked "What is 2+2?" This seems like a '
+        "simple arithmetic question. Let me think..."
+    )
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text=trace,
+        tool_calls=None,
+        finish_reason="length",
+        # No ``<think>`` literal — model emitted plain prose. Without
+        # the case4 gate the rescue would surface the trace.
+        raw_text=trace,
+        reasoning_is_case4=True,
+    )
+    assert rescued is None, (
+        f"Case-4 length-truncated reasoning must NOT be surfaced as "
+        f"content — got rescued={rescued!r}"
+    )
+
+
+def test_rescue_fires_when_case4_but_finish_is_stop():
+    """Counter-test: the Case-4 gate is specifically for the
+    ``length`` x case4 INTERSECTION. A model that voluntarily ended
+    after emitting only reasoning (no ``<think>`` token, finish=stop)
+    is a genuine silent drop — rescue still fires.
+
+    Uncommon but real (a chatty model that "talks itself out" of the
+    final answer). The same shape #569 was originally written for
+    on gemma-4."""
+    trace = "thought trace that ended cleanly without a final answer"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text=trace,
+        tool_calls=None,
+        finish_reason="stop",
+        raw_text=trace,
+        reasoning_is_case4=True,
+    )
+    assert rescued == trace
+
+
+def test_rescue_fires_when_length_but_not_case4():
+    """Counter-test: ``finish_reason="length"`` without the Case-4
+    signal AND without the ``<think>`` opener still rescues — the
+    original #569 gemma-4 stuck-thought failure shape. The case4
+    gate is additive, not replacing, the narrow opener gate."""
+    trace = "gemma-4 analysis channel content"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text=trace,
+        tool_calls=None,
+        finish_reason="length",
+        raw_text=trace,
+        reasoning_is_case4=False,
+    )
+    assert rescued == trace
