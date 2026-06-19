@@ -448,6 +448,59 @@ def test_get_request_is_not_capped():
     assert resp.status_code == 200
 
 
+def test_oversized_body_returns_413_before_auth_check():
+    """Codex r3 F3: pin the deliberate ordering choice — the body-size
+    cap runs at the ASGI layer (``add_middleware`` is the outermost
+    Starlette middleware stack), while bearer-token auth is a FastAPI
+    ``Depends(verify_api_key)`` at the route level. So an oversized
+    unauthenticated POST is rejected with 413, NOT 401 — denying
+    unauthenticated clients the cap-probing reconnaissance channel.
+
+    This is the deliberate design (reject DoS payloads cheapest, before
+    any per-request work including auth). The test exists to make the
+    ordering load-bearing — anyone moving the body cap *behind* the
+    auth dependency will fail it and have to think about it.
+    """
+    from vllm_mlx.config.server_config import get_config
+    from vllm_mlx.middleware.body_size import install_request_body_limit_middleware
+
+    get_config().max_request_bytes = 1024  # 1 KiB cap
+
+    app = FastAPI()
+
+    auth_calls = {"n": 0}
+
+    async def _fake_auth():
+        # Simulates a bearer check that would 401 if reached. The
+        # 413 must trip before we ever land here.
+        auth_calls["n"] += 1
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=401, detail="Missing bearer")
+
+    from fastapi import Depends
+
+    @app.post("/v1/chat/completions", dependencies=[Depends(_fake_auth)])
+    async def _gated(payload: dict):  # noqa: ARG001
+        return {"ok": True}
+
+    install_request_body_limit_middleware(app)
+    client = TestClient(app)
+
+    oversized = {"messages": [{"role": "user", "content": "x" * 4096}]}
+    resp = client.post(
+        "/v1/chat/completions",
+        json=oversized,
+        # No Authorization header — auth would normally 401.
+    )
+    assert resp.status_code == 413, (
+        f"expected 413 (body cap before auth), got {resp.status_code}"
+    )
+    assert auth_calls["n"] == 0, (
+        "auth dependency ran before the body cap — ordering regressed"
+    )
+
+
 def test_cli_flag_overrides_config_default():
     """The ``--max-request-bytes`` flag is wired through
     ``vllm_mlx.server._max_request_bytes`` and ``_sync_config`` into

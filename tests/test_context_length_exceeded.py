@@ -283,6 +283,126 @@ def test_enforce_tolerates_none_max_tokens():
     enforce_context_length(eng, prompt_tokens=2048, max_tokens=None)  # equal → ok
 
 
+# ─── enforce_context_length_for_messages: build_prompt failure paths ─
+
+
+def test_enforce_for_messages_template_error_raises_400():
+    """Codex r3 F7: when ``build_prompt`` raises a chat-template /
+    malformed-tools-schema error, the helper must surface it as a
+    clean HTTP 400 instead of silently dropping the preflight token
+    gate (which previously let the request fall through to the engine
+    which then re-rendered the same template and re-emitted the same
+    400 from a deeper layer).
+
+    Fail-fast saves a wasted engine.chat() round trip and pins the
+    error shape so the structured-envelope handler can attach the
+    OpenAI-style ``invalid_request_error`` envelope.
+    """
+    from fastapi import HTTPException
+
+    from vllm_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _TemplateErrorEngine:
+        is_mllm = False
+
+        def build_prompt(self, messages, tools=None):  # noqa: ARG002
+            # Mirrors the error shape Jinja raises when a chat template
+            # references an undefined variable like ``user``.
+            raise ValueError(
+                "TemplateError: 'user' is undefined in chat template"
+            )
+
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _TemplateErrorEngine(),
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    exc = excinfo.value
+    assert exc.status_code == 400
+    assert "Chat template error" in str(exc.detail)
+
+
+def test_enforce_for_messages_template_error_lowercase_match():
+    """Some Jinja errors come through as plain ``ValueError`` whose
+    class name doesn't carry ``TemplateError`` but whose message does
+    (e.g. ``"Unknown template tag"``). The sniff must catch the
+    lowercase ``template`` substring too, matching the route-level
+    handler at ``routes/chat.py``.
+    """
+    from fastapi import HTTPException
+
+    from vllm_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _LowercaseTemplateEngine:
+        is_mllm = False
+
+        def build_prompt(self, messages, tools=None):  # noqa: ARG002
+            raise RuntimeError("Unknown template tag at line 42")
+
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _LowercaseTemplateEngine(),
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    assert excinfo.value.status_code == 400
+
+
+def test_enforce_for_messages_non_template_exception_silent_fallthrough():
+    """Other ``build_prompt`` failure modes (engine half-loaded,
+    tokenizer crash, transient state) keep the original silent-
+    fallthrough behavior so the downstream scheduler / engine.chat()
+    path still has a chance to run. The body-size middleware remains
+    the last DoS line.
+
+    Without this distinction a TOCTOU between the engine warm-up and
+    a chat request would 500 every preflight when the previous
+    behavior would 200 once the engine completed loading.
+    """
+    from vllm_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _GenericFailureEngine:
+        is_mllm = False
+
+        def build_prompt(self, messages, tools=None):  # noqa: ARG002
+            raise AttributeError(
+                "'BatchedEngine' object has no attribute '_model'"
+            )
+
+    # No exception — fall through silently. Caller (route) goes on to
+    # invoke engine.chat() where the real loaded-state check fires.
+    enforce_context_length_for_messages(
+        _GenericFailureEngine(),
+        messages=[{"role": "user", "content": "hi"}],
+    )
+
+
+def test_enforce_for_messages_http_exception_passes_through():
+    """If ``build_prompt`` itself raises an ``HTTPException`` (e.g. the
+    engine surfaces a structured 503 because the model isn't loaded),
+    the helper must NOT shadow it with a 400 sniff — the engine's
+    deliberate HTTP status must win.
+    """
+    from fastapi import HTTPException
+
+    from vllm_mlx.service.helpers import enforce_context_length_for_messages
+
+    class _HttpEngine:
+        is_mllm = False
+
+        def build_prompt(self, messages, tools=None):  # noqa: ARG002
+            raise HTTPException(status_code=503, detail="model not loaded")
+
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(
+            _HttpEngine(),
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    assert excinfo.value.status_code == 503
+
+
 # ─── End-to-end shape: structured handler passes envelope through ───
 
 

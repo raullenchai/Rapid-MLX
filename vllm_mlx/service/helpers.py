@@ -1649,10 +1649,26 @@ def enforce_context_length_for_messages(
         prompt = build_prompt(messages, tools=tools)
     except HTTPException:
         raise
-    except Exception:
-        # Chat-template errors surface as 400 downstream where the
-        # route handler can render a user-facing message — re-raising
-        # here would swallow that context.
+    except Exception as exc:
+        # Chat-template / malformed-tools-schema failures are user-
+        # facing config errors. Fail fast with a clean 400 here so the
+        # route doesn't waste cycles re-rendering the same template
+        # downstream just to surface the same diagnosis (codex r3 F7).
+        # Other exception shapes (tokenizer 500s, engine half-loaded
+        # races) keep their original silent-fallthrough so the
+        # scheduler's own validation has a chance to run — the
+        # body-size middleware is still the last DoS line.
+        err_msg = str(exc)
+        err_type = type(exc).__name__
+        if (
+            "TemplateError" in err_type
+            or "template" in err_msg.lower()
+            or ("user" in err_msg.lower() and "found" in err_msg.lower())
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Chat template error: {err_msg}",
+            )
         return
     if not prompt:
         return
