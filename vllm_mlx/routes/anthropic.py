@@ -515,18 +515,38 @@ async def _stream_anthropic_messages(
     # ``thinking`` content block — Anthropic's public API doesn't
     # emit one for non-extended-thinking models, so any client that
     # branches on ``content_block.type == "thinking"`` would
-    # mis-detect capability. Resolved through
-    # ``_resolve_reasoning_enabled`` so it consults the per-request
-    # registry entry first (multi-model mode) instead of the
-    # process-global ``cfg.reasoning_parser_name`` (codex r1 BLOCKING
-    # on PR #705). Applied via ``_gate_thinking_pieces`` below to
-    # every place this function constructs ``("thinking", ...)``
-    # pieces: channel-routed (engine OutputRouter), reasoning-parser
-    # delta split, and the raw ``<think>`` think_router heuristic.
-    # When the gate fires the reasoning bytes are demoted to a
-    # ``text`` piece so the assistant turn still surfaces the model's
-    # output (silent drop is the worse failure mode, #569).
-    _reasoning_enabled = _resolve_reasoning_enabled(anthropic_request.model)
+    # mis-detect capability. Applied via ``_gate_thinking_pieces``
+    # below to every place this function constructs
+    # ``("thinking", ...)`` pieces: channel-routed (engine
+    # OutputRouter), reasoning-parser delta split, and the raw
+    # ``<think>`` think_router heuristic. When the gate fires the
+    # reasoning bytes are demoted to a ``text`` piece so the
+    # assistant turn still surfaces the model's output (silent drop
+    # is the worse failure mode, #569).
+    #
+    # Resolution: consult the per-request registry entry first
+    # (multi-model mode), fall back to the global parser pair in
+    # single-model mode (codex r1 BLOCKING on PR #705). Inlined here
+    # so the predicate consumes the SAME ``cfg`` object the rest of
+    # this function already reads — sharing avoids a second
+    # ``get_config()`` call that test fixtures patching
+    # ``anthropic_route.get_config`` would miss.
+    _reasoning_enabled = False
+    if cfg.model_registry:
+        try:
+            _entry = cfg.model_registry.get_entry(anthropic_request.model)
+        except KeyError:
+            _entry = None
+        if _entry is not None:
+            _reasoning_enabled = bool(getattr(_entry, "reasoning_parser", None))
+        else:
+            _reasoning_enabled = cfg.reasoning_parser is not None or bool(
+                cfg.reasoning_parser_name
+            )
+    else:
+        _reasoning_enabled = cfg.reasoning_parser is not None or bool(
+            cfg.reasoning_parser_name
+        )
 
     def _gate_thinking_pieces(
         pieces: list[tuple[str, str]],
@@ -618,6 +638,21 @@ async def _stream_anthropic_messages(
     # up the work, and `_should_start_in_thinking` already returns False
     # for enable_thinking=False, so the answer streams as text.
     if chat_kwargs.get("enable_thinking") is False:
+        reasoning_parser = None
+    # Issue #702 codex r2 BLOCKING: when the per-request alias is NOT
+    # reasoning-capable, also bypass the parser entirely. Implicit-mode
+    # parsers (Qwen3 / hermes) classify ordinary chunks as reasoning
+    # until ``finalize_streaming`` emits a correction at end-of-stream
+    # — and the finalize correction is emitted as plain ``text``
+    # without going through ``_gate_thinking_pieces``. If we only
+    # gated the per-delta pieces, a non-thinking alias served beside a
+    # thinking global would stream the demoted reasoning bytes as
+    # text AND then the finalize correction would emit the SAME bytes
+    # again — visible duplication. Dropping the parser here puts the
+    # stream on the ``think_router`` path which only opens thinking
+    # blocks on literal ``<think>`` tags in the raw stream (and is
+    # itself gated by ``_gate_thinking_pieces`` below).
+    if not _reasoning_enabled:
         reasoning_parser = None
     if reasoning_parser:
         reasoning_parser.reset_state()

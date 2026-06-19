@@ -309,3 +309,142 @@ def test_stream_route_demotes_reasoning_channel_for_non_thinking_alias():
     assert text_starts, (
         f"expected at least one text content_block_start; got events={events!r}"
     )
+
+
+class _StreamingEngineNoChannelTags:
+    """Engine that streams plain text deltas with NO ``channel`` tag.
+
+    This exercises the codex r2 BLOCKING path: a non-thinking alias is
+    served beside a thinking GLOBAL parser (Qwen3 / hermes), so
+    ``cfg.reasoning_parser_name`` is set. Without the parser-bypass
+    fix, implicit-mode parsers would classify each delta as
+    ``reasoning`` until ``finalize_streaming`` emits a correction at
+    end-of-stream. The gate would demote per-delta pieces to text but
+    the finalize emission goes through a separate code path
+    (``content_block_start type='text'``) — same bytes would then
+    appear twice in the stream.
+    """
+
+    preserve_native_tool_format = False
+    is_mllm = False
+    supports_guided_generation = False
+    tokenizer = None
+
+    def __init__(self):
+        self.stream_calls: list[dict[str, Any]] = []
+
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        return "PROMPT"
+
+    async def stream_chat(self, messages, **kwargs):
+        self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+        # Plain text answer, no channel tag, no <think> markers — a
+        # non-thinking alias's normal output.
+        yield GenerationOutput(
+            text="hello ",
+            new_text="hello ",
+            tokens=[1],
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=False,
+            finish_reason=None,
+            channel=None,
+        )
+        yield GenerationOutput(
+            text="hello world",
+            new_text="world",
+            tokens=[1, 2],
+            prompt_tokens=4,
+            completion_tokens=2,
+            finished=True,
+            finish_reason="stop",
+            channel=None,
+        )
+
+
+def test_stream_route_bypasses_implicit_parser_for_non_thinking_alias():
+    """Codex r2 BLOCKING on #702: when the alias is non-thinking but
+    ``cfg.reasoning_parser_name`` is set (thinking global default), the
+    streaming path must bypass the reasoning parser entirely so an
+    implicit-mode parser's ``finalize_streaming`` correction can't
+    re-emit the demoted reasoning bytes as a second text block —
+    visible duplication. The route must instead stream each delta
+    through ``think_router`` (no <think> tags → all text), single
+    block, no finalize re-emission.
+    """
+    engine = _StreamingEngineNoChannelTags()
+    # Override the single-model fallback to "thinking global default".
+    # The route must STILL gate because the per-request alias
+    # (model_name="non-thinking-alias") is non-thinking via the
+    # registry.
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "thinking-default"
+    cfg.reasoning_parser = object()
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.tool_parser = None
+
+    registry = ModelRegistry()
+    registry.add(
+        ModelEntry(
+            engine=engine,
+            model_name="thinking-default",
+            model_path="thinking-default",
+            reasoning_parser="qwen3",
+        ),
+        is_default=True,
+    )
+    registry.add(
+        ModelEntry(
+            engine=engine,
+            model_name="non-thinking-alias",
+            model_path="non-thinking-alias",
+            reasoning_parser=None,
+        ),
+    )
+    cfg.model_registry = registry
+
+    app = FastAPI()
+    app.include_router(anthropic_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "non-thinking-alias",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    events = _parse_sse_events(resp.text)
+    # No thinking block opens.
+    starts = [e for e in events if e.get("type") == "content_block_start"]
+    for start in starts:
+        block = start.get("content_block", {})
+        assert block.get("type") != "thinking", (
+            "non-thinking alias must NOT open a thinking content block "
+            f"in the SSE stream; got {start!r}"
+        )
+    # And the model bytes appear EXACTLY ONCE in the stream — not
+    # duplicated by finalize_streaming. Collect all text_delta payloads
+    # and confirm the concatenation equals what the engine emitted.
+    text_deltas = [
+        e["delta"]["text"]
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    ]
+    assembled = "".join(text_deltas)
+    # The engine emitted ``"hello "`` + ``"world"`` (two new_text
+    # chunks). After the gate, each chunk emerges as one text_delta;
+    # finalize_streaming MUST NOT re-emit the same bytes a second time
+    # (the codex r2 BLOCKING regression shape).
+    assert assembled == "hello world", (
+        f"expected exactly 'hello world' (one copy); got {assembled!r} "
+        f"from text_deltas={text_deltas!r}"
+    )
+
+    reset_config()
