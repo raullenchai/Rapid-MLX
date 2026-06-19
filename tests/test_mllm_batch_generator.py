@@ -555,12 +555,8 @@ def test_resolve_mllm_prefill_step_size_bumps_text_default_to_mllm_default():
     from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
     from vllm_mlx.scheduler import SchedulerConfig
 
-    text_default = SchedulerConfig.__dataclass_fields__[
-        "prefill_step_size"
-    ].default
-    mllm_default = MLLMSchedulerConfig.__dataclass_fields__[
-        "prefill_step_size"
-    ].default
+    text_default = SchedulerConfig.__dataclass_fields__["prefill_step_size"].default
+    mllm_default = MLLMSchedulerConfig.__dataclass_fields__["prefill_step_size"].default
 
     # The MLLM default must exceed the text default — otherwise the
     # bump is a no-op — and must cover a typical 1920×1080 screenshot.
