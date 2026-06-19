@@ -30,6 +30,7 @@ from ..service.helpers import (
     _validate_model_name,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    enforce_context_length_for_prompt,
     get_engine,
     get_usage,
 )
@@ -78,6 +79,17 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             f"max_tokens={request.max_tokens} temp={request.temperature} "
             f"prompt_chars={prompt_len} prompt_preview={prompt_preview!r}"
         )
+
+        # Context-length pre-check — same DoS gate the chat/anthropic/
+        # responses routes enforce. Raw-prompt API skips chat templating
+        # but the prompt-token budget still applies. Iterate the list
+        # form because each entry hits prefill independently. See
+        # ``service/helpers.py::enforce_context_length_for_prompt``.
+        _resolved_max = _resolve_max_tokens(request.max_tokens)
+        for _p in prompts:
+            enforce_context_length_for_prompt(
+                engine, _p, max_tokens=_resolved_max
+            )
 
         if request.stream:
             _admission_committed = True

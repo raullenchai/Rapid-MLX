@@ -52,6 +52,7 @@ from ..service.helpers import (
     _validate_model_name,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    enforce_context_length_for_messages,
     get_engine,
 )
 
@@ -182,6 +183,30 @@ async def create_anthropic_message(
             openai_request = anthropic_to_openai(anthropic_request)
         except AnthropicOutputConfigError as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+        # Context-length pre-check — same DoS gate the chat/completions/
+        # responses routes enforce. Render the prompt through the engine's
+        # chat template, count tokens, raise 400 ``context_length_exceeded``
+        # if over the model cap. Runs BEFORE the stream/non-stream branch
+        # so streaming clients can't bypass the gate by setting
+        # ``stream: true``. See service/helpers.py for rationale.
+        try:
+            _ctx_messages, _, _ = extract_multimodal_content(
+                openai_request.messages,
+                preserve_native_format=engine.preserve_native_tool_format,
+            )
+        except Exception:
+            _ctx_messages = None
+        if _ctx_messages is not None:
+            enforce_context_length_for_messages(
+                engine,
+                _ctx_messages,
+                tools=openai_request.tools,
+                max_tokens=_resolve_max_tokens(
+                    openai_request.max_tokens,
+                    _resolve_enable_thinking(openai_request),
+                ),
+            )
 
         if anthropic_request.stream:
             _admission_committed = True

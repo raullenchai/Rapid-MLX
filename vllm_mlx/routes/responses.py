@@ -60,6 +60,7 @@ from ..service.helpers import (
     _validate_model_name,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    enforce_context_length_for_messages,
     get_engine,
 )
 
@@ -164,6 +165,27 @@ async def create_response(request: Request):
             )
 
         openai_request = responses_to_openai(responses_request)
+
+        # Context-length pre-check — same DoS gate the chat/completions/
+        # anthropic routes enforce. Runs BEFORE the stream branch so
+        # streaming clients can't bypass by setting ``stream: true``.
+        try:
+            _ctx_messages, _, _ = extract_multimodal_content(
+                openai_request.messages,
+                preserve_native_format=engine.preserve_native_tool_format,
+            )
+        except Exception:
+            _ctx_messages = None
+        if _ctx_messages is not None:
+            enforce_context_length_for_messages(
+                engine,
+                _ctx_messages,
+                tools=openai_request.tools,
+                max_tokens=_resolve_max_tokens(
+                    openai_request.max_tokens,
+                    _resolve_enable_thinking(openai_request),
+                ),
+            )
 
         if responses_request.stream:
             _admission_committed = True

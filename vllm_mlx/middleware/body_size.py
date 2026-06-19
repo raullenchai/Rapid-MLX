@@ -55,6 +55,20 @@ logger = logging.getLogger(__name__)
 # skip the receive-wrapper overhead for them.
 _GUARDED_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+
+class _BodyTooLargeError(Exception):
+    """Sentinel raised from ``bounded_receive`` when the running tally
+    exceeds the cap. Caught at the middleware boundary so we emit
+    exactly one 413 from outside the downstream app — this prevents
+    the codex round-1 BLOCKING #2 fragile-double-response shape, where
+    ``http.disconnect`` from receive lets the downstream app emit a
+    "client closed" response AND we then emit a 413 on top.
+    """
+
+    def __init__(self, streamed_bytes: int) -> None:
+        super().__init__(f"streamed {streamed_bytes} bytes over body cap")
+        self.streamed_bytes = streamed_bytes
+
 # Path prefixes the cap applies to. We deliberately scope to ``/v1/``
 # (and ``/internal/`` for parity) so internal probes like
 # ``/docs``/``/openapi.json``/``/metrics`` are never gated — those
@@ -140,68 +154,63 @@ class RequestBodyLimitMiddleware:
         # the cap. We do NOT trust the Content-Length even when it's
         # under the cap — a lying client could advertise 1 KB and then
         # stream 100 MB, so the tally guards both.
-        tripped = {"value": False}
+        #
+        # Design (codex round-1 BLOCKING #2): raise ``_BodyTooLargeError``
+        # from ``bounded_receive`` the moment the tally trips. This
+        # propagates through Starlette's request-handling — JSON parser,
+        # multipart parser, body-reading coroutines all surface the
+        # exception cleanly — and we catch it at the boundary below
+        # to emit exactly ONE 413 from outside the downstream app.
+        # The previous "synthetic http.disconnect + guarded_send 413"
+        # shape was fragile because a downstream handler could emit
+        # its own response between the trip and our wrapper noticing,
+        # leading to a 413 colliding with an in-flight 200/499.
         total = {"bytes": 0}
+        downstream_started_response = {"value": False}
 
         async def bounded_receive():
-            if tripped["value"]:
-                # Signal disconnect so Starlette's JSON parser exits
-                # cleanly. This is the same shape AudioBodyLimitMiddleware
-                # uses — confirmed empirically that fastapi's
-                # ``Request.json()`` raises ``ClientDisconnect`` when
-                # receive yields disconnect, which the wrap-send below
-                # turns into our documented 413.
-                return {"type": "http.disconnect"}
             msg = await receive()
             if msg.get("type") == "http.request":
                 body_len = len(msg.get("body", b"") or b"")
                 total["bytes"] += body_len
                 if total["bytes"] > limit:
-                    tripped["value"] = True
-                    return {"type": "http.disconnect"}
+                    raise _BodyTooLargeError(total["bytes"])
             return msg
 
-        sent_413 = {"value": False}
-
         async def guarded_send(msg):
-            if tripped["value"] and not sent_413["value"]:
-                sent_413["value"] = True
-                await _send_413(
-                    send,
-                    advertised=None,
-                    limit=limit,
-                    streaming=True,
-                    streamed=total["bytes"],
-                )
-                return
-            if sent_413["value"]:
-                # Downstream tried to send after we already wrote 413;
-                # drop the message to avoid double-write.
-                return
+            # Track whether the downstream app has begun writing its own
+            # response. If the cap trips AFTER the start frame is on the
+            # wire we cannot safely emit a 413 (would corrupt the stream)
+            # — log and let the response complete naturally. This window
+            # is tiny in practice: a chat handler reads the body BEFORE
+            # emitting a response start, so trip→raise happens long
+            # before any send.
+            if msg.get("type") == "http.response.start":
+                downstream_started_response["value"] = True
             await send(msg)
 
         try:
             await self.app(scope, bounded_receive, guarded_send)
-        except Exception:
-            # If we tripped the cap, the downstream app raised because
-            # of the synthetic disconnect we injected — translate that
-            # into the documented 413. Anything else is a real error;
-            # surface it normally.
-            if not tripped["value"]:
-                raise
-
-        # Fallback 413 emission: catches the silent-drop-on-disconnect
-        # path where Starlette returns without sending a response at
-        # all after seeing our disconnect, and the swallowed-exception
-        # path above.
-        if tripped["value"] and not sent_413["value"]:
-            sent_413["value"] = True
+        except _BodyTooLargeError as exc:
+            if downstream_started_response["value"]:
+                # Cannot inject a 413 mid-stream without writing
+                # ill-formed HTTP — the response frame has already been
+                # flushed. Log and let the connection close. In practice
+                # this is unreachable: handlers consume the full body
+                # before emitting any response.
+                logger.warning(
+                    "request body cap (%d) tripped after downstream "
+                    "began writing response; %d bytes streamed",
+                    limit,
+                    exc.streamed_bytes,
+                )
+                return
             await _send_413(
                 send,
                 advertised=None,
                 limit=limit,
                 streaming=True,
-                streamed=total["bytes"],
+                streamed=exc.streamed_bytes,
             )
 
 

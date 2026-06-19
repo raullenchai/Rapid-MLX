@@ -20,19 +20,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-# Same skip rationale as test_audio_upload_size_limit.py — the audio
-# import is light (no model load) but the middleware module itself
-# pulls in ``vllm_mlx.config`` which transitively imports mlx-lm.
-pytest.importorskip(
-    "mlx.core",
-    reason="middleware imports transitively pull in mlx; "
-    "runs on Apple Silicon / dev, not minimal Linux CI runners",
-)
-pytest.importorskip(
-    "mlx_lm",
-    reason="middleware imports transitively pull in mlx_lm; "
-    "runs on Apple Silicon / dev, not minimal Linux CI runners",
-)
+# NIT from codex round 1: ``RequestBodyLimitMiddleware`` is pure ASGI
+# logic with no mlx-lm import path — ``vllm_mlx.middleware.body_size``
+# only pulls in ``vllm_mlx.config.server_config`` (a dataclass) and
+# stdlib. Empirically verified: the module loads under an import hook
+# that blocks ``mlx*``. So we no longer ``importorskip("mlx.core")``
+# here — the security gate gets exercised on every runner, including
+# the minimal Linux pr-validate CI matrix.
 
 
 @pytest.fixture(autouse=True)
@@ -340,6 +334,83 @@ def test_chunked_streaming_body_aborts_mid_stream():
     assert received_count["n"] <= 6, (
         f"middleware over-read: {received_count['n']} chunks of "
         f"{chunk_size} B vs limit 1024"
+    )
+
+
+def test_no_double_response_when_handler_already_sent_headers():
+    """Codex round-1 BLOCKING #2 regression: if a downstream handler
+    has already emitted ``http.response.start`` BEFORE the cap trips
+    (e.g. a streaming handler that reads body lazily after first
+    flushing 200 OK headers), the middleware must NOT inject a 413
+    on top of the in-flight response — that would corrupt the wire.
+
+    Test design: build an inner app that emits ``http.response.start``
+    BEFORE reading the body, then reads chunks. The cap trips inside
+    the read loop; the middleware catches ``_BodyTooLargeError`` and must
+    silently let the response complete (logged warning, no double 413).
+    """
+    from vllm_mlx.config.server_config import get_config
+    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+
+    get_config().max_request_bytes = 1024
+
+    async def _start_then_read_inner(scope, receive, send):
+        # Emit response start BEFORE reading body — this is the
+        # codex-flagged window where a 413 from the middleware would
+        # collide with an in-flight 200.
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        # Now read body — middleware will raise _BodyTooLargeError here.
+        while True:
+            msg = await receive()
+            if not msg.get("more_body"):
+                break
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    middleware = RequestBodyLimitMiddleware(_start_then_read_inner)
+
+    body = b"X" * 4096
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/chat/completions",
+        "raw_path": b"/v1/chat/completions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"application/json"),
+            (b"transfer-encoding", b"chunked"),
+        ],
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 12345),
+    }
+
+    asyncio.run(middleware(scope, receive, send))
+
+    # Exactly one http.response.start frame on the wire — no 413
+    # injected after the 200 went out. This is the load-bearing
+    # assertion that the codex BLOCKING was about.
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    assert len(starts) == 1, sent
+    assert starts[0]["status"] == 200, (
+        "middleware injected a 413 on top of an in-flight 200 — "
+        "double-response regression"
     )
 
 

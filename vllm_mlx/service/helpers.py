@@ -1485,9 +1485,7 @@ def get_model_max_context(engine) -> int:
                 return direct
             text_cfg = getattr(args, "text_config", None)
             if text_cfg is not None:
-                nested = _maybe_int(
-                    getattr(text_cfg, "max_position_embeddings", None)
-                )
+                nested = _maybe_int(getattr(text_cfg, "max_position_embeddings", None))
                 if nested is not None:
                     return nested
         config = getattr(model, "config", None)
@@ -1497,13 +1495,13 @@ def get_model_max_context(engine) -> int:
                 return cfg_direct
             text_cfg = getattr(config, "text_config", None)
             if text_cfg is not None:
-                nested = _maybe_int(
-                    getattr(text_cfg, "max_position_embeddings", None)
-                )
+                nested = _maybe_int(getattr(text_cfg, "max_position_embeddings", None))
                 if nested is not None:
                     return nested
 
-    tokenizer = getattr(engine, "tokenizer", None) or getattr(engine, "_tokenizer", None)
+    tokenizer = getattr(engine, "tokenizer", None) or getattr(
+        engine, "_tokenizer", None
+    )
     if tokenizer is not None:
         tok_max = getattr(tokenizer, "model_max_length", None)
         if tok_max is not None:
@@ -1525,7 +1523,9 @@ def count_prompt_tokens(engine, prompt: str) -> int:
     caller falls through to engine-side validation rather than 500-ing
     on a metadata edge case.
     """
-    tokenizer = getattr(engine, "tokenizer", None) or getattr(engine, "_tokenizer", None)
+    tokenizer = getattr(engine, "tokenizer", None) or getattr(
+        engine, "_tokenizer", None
+    )
     if tokenizer is None:
         return 0
     try:
@@ -1579,3 +1579,72 @@ def enforce_context_length(
             }
         },
     )
+
+
+def enforce_context_length_for_messages(
+    engine,
+    messages: list,
+    *,
+    tools: list | None = None,
+    max_tokens: int | None = None,
+) -> None:
+    """Run the context-length gate for a chat-style request.
+
+    Renders the prompt through the engine's chat template (same path
+    used by ``BatchedEngine.build_prompt``), counts the tokens, then
+    delegates to :func:`enforce_context_length`. Wraps the template /
+    tokenization step in a permissive try-except so a metadata edge
+    case (e.g. unloaded engine on a route stub) doesn't 500 — the
+    downstream scheduler still has its own validation.
+
+    Scoped to text-only engines: MLLM models accept image / video /
+    audio inputs whose token cost is computed by the multimodal
+    processor and tracked separately by ``MLLMScheduler``. The
+    body-size middleware still bounds the wire-level payload for
+    those routes.
+
+    Used by chat, anthropic, and responses routes so the same DoS gate
+    applies regardless of which compatibility surface the client uses.
+    """
+    if getattr(engine, "is_mllm", False):
+        return
+    build_prompt = getattr(engine, "build_prompt", None)
+    if build_prompt is None:
+        return
+    try:
+        prompt = build_prompt(messages, tools=tools)
+    except HTTPException:
+        raise
+    except Exception:
+        # Chat-template errors surface as 400 downstream where the
+        # route handler can render a user-facing message — re-raising
+        # here would swallow that context.
+        return
+    if not prompt:
+        return
+    prompt_tokens = count_prompt_tokens(engine, prompt)
+    if prompt_tokens <= 0:
+        return
+    enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
+
+
+def enforce_context_length_for_prompt(
+    engine,
+    prompt: str,
+    *,
+    max_tokens: int | None = None,
+) -> None:
+    """Run the context-length gate for a raw-prompt completion request.
+
+    Same shape as :func:`enforce_context_length_for_messages` but for
+    routes that already hold a raw text prompt (``/v1/completions``).
+    No chat template applied — the client provided the string verbatim.
+    """
+    if getattr(engine, "is_mllm", False):
+        return
+    if not prompt:
+        return
+    prompt_tokens = count_prompt_tokens(engine, prompt)
+    if prompt_tokens <= 0:
+        return
+    enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
