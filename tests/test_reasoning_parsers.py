@@ -546,6 +546,26 @@ class TestThinkParserSSEBoundary:
         assert reasoning == "x > 5 and y < 10"
         assert content == "done"
 
+    def test_split_opener_completed_with_reasoning_no_duplication(self):
+        """Codex r2 P2 follow-up: when the start tag straddles SSE
+        chunks AND the completing chunk also carries reasoning bytes
+        (``['<thi', 'nk>Okay', ' more']``), the held suffix from the
+        prior ``<thi`` delta must be cleared after consumption. A
+        leftover held value caused the next ``start_in_prev`` delta to
+        compute ``already_emitted_after_opener`` as if the held bytes
+        were un-emitted reasoning, re-emitting the just-sent text and
+        duplicating streamed reasoning."""
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            ["<thi", "nk>Okay", " more", "</think>", "done"],
+        )
+        assert reasoning == "Okay more", (
+            f"split opener + reasoning in same delta must not duplicate "
+            f"reasoning on subsequent deltas — got reasoning={reasoning!r}"
+        )
+        assert content == "done"
+
 
 # ---------------------------------------------------------------------------
 # GptOssReasoningParser

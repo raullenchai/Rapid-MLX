@@ -375,6 +375,17 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # old ``return DeltaMessage(content=delta_text)`` fallback and
         # leak literally into ``content`` — the original live-fuzz
         # bug shape on phi-4-mini-reasoning / nanbeige4.1.
+        #
+        # Codex r2 P2 follow-up: clear ``_held_tag_suffix_len`` after
+        # consuming the straddle. The held bytes were part of the
+        # start tag (not pending reasoning) and on the NEXT delta the
+        # ``start_in_prev`` branch's emit-by-position bookkeeping uses
+        # the held value to compute ``already_emitted_after_opener``.
+        # Leaving it non-zero would cause the bookkeeping to treat
+        # the just-emitted reasoning bytes as "still un-emitted" and
+        # re-emit them, duplicating the streamed reasoning (codex
+        # caught this with the ``['<thi', 'nk>Okay', ' more']`` repro).
+        self._held_tag_suffix_len = 0
         start_idx_cur = current_text.find(self.start_token)
         prev_len = len(current_text) - len(delta_text)
         # Bytes of delta_text BEFORE the start_token's last char —
