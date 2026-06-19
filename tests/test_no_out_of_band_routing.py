@@ -188,6 +188,16 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # bearer-token holder could write arbitrary files. Pure filesystem
         # sandbox knob; never consulted by the engine or scheduler.
         "RAPID_MLX_CACHE_EXPORT_DIR",
+        # G12 release-gauntlet random-coverage gate
+        # (``scripts/release_check_m3_random.py``) sets this to a single
+        # harness name (or comma-separated subset) when running a scoped
+        # sweep against a booted server. ``tier_runner._resolve_harness_
+        # profiles_filter`` consumes it to whittle the harness loop down
+        # to just the picked names. Test/CI knob — never consulted by the
+        # engine, scheduler, or any routing layer. ``vllm_mlx.cli``
+        # refuses ``--submit`` while it's set so a scoped sweep can't
+        # silently produce a schema-incomplete community-bench payload.
+        "RAPID_MLX_HARNESS_PROFILES_FILTER",
     }
 )
 

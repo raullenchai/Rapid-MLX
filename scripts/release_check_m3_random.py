@@ -87,6 +87,21 @@ SERVE_READY_TIMEOUT_S = 600  # 10 minutes
 ROUND_TIMEOUT_S = 360
 
 
+# Match a parameter-count token bounded by name separators (``-``,
+# ``_``, ``.``, start, or end) followed by ``b``/``B`` and another
+# separator/end. Rejects the quantization suffix ``-4bit`` (the ``b``
+# is followed by ``it``) and the version-number-only names like
+# ``glm4.5-air`` (no ``b`` after the digits at all). Parsing the
+# parameter count from the **hf_path's repo segment** is more reliable
+# than from the alias slug — repo names by upstream convention spell
+# the size as ``\d+(\.\d+)?B`` (Qwen3.5-9B, Llama-3.2-1B, gemma-4-12B)
+# whereas alias slugs sometimes encode model version instead of size.
+# Fail-closed: if no size token is found, the alias is skipped rather
+# than guessed at — guessing landed us with ``glm4.5-air-4bit`` parsing
+# as a 4 B model and slipping past the disk-budget filter.
+_SIZE_TOKEN_RE = re.compile(r"(?:^|[-_.])(\d+(?:\.\d+)?)[bB](?=[-_.]|$)")
+
+
 def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
     """Return ``[(alias_name, hf_repo_path), ...]`` after applying the
     eligibility filter documented in the module docstring.
@@ -108,16 +123,20 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
             # Known-bad: model-side ``thought\n…`` loop on agent prompts.
             # See issue #686 + HF discussion google/gemma-4-12B-it#41.
             continue
-        match = re.search(r"(\d+(?:\.\d+)?)b", name.lower())
-        if not match:
-            continue
-        size_b = float(match.group(1))
-        if not (4.0 <= size_b <= 12.0):
-            continue
         # Use .get() — a future schema change that omits ``hf_path``
         # should silently skip the entry, not crash the gauntlet.
         hf_path = entry.get("hf_path") if isinstance(entry, dict) else None
         if not hf_path:
+            continue
+        repo_name = hf_path.split("/")[-1]
+        match = _SIZE_TOKEN_RE.search(repo_name)
+        if not match:
+            # Fail closed: cannot parse a real parameter count from the
+            # repo name — skip rather than guess and risk admitting an
+            # oversized model into the sweep.
+            continue
+        size_b = float(match.group(1))
+        if not (4.0 <= size_b <= 12.0):
             continue
         out.append((size_b, name, hf_path))
     out.sort()
@@ -130,23 +149,59 @@ def _free_disk_gb(path: Path) -> float:
     return usage.free / (1024**3)
 
 
+def _hf_cache_root() -> Path:
+    """Resolve the HuggingFace Hub cache root, mirroring
+    ``huggingface_hub.constants.HF_HUB_CACHE`` lookup order:
+
+      1. ``HF_HUB_CACHE`` (modern)
+      2. ``HUGGINGFACE_HUB_CACHE`` (legacy)
+      3. ``$HF_HOME/hub`` (when HF_HOME is set)
+      4. ``~/.cache/huggingface/hub`` (default)
+
+    Hard-coding ``~/.cache/huggingface/hub`` meant installs that point
+    HF elsewhere (CI runners, multi-disk dev rigs) would download into
+    one place and have G12 try to clean another, ballooning disk usage
+    across release cycles. The cleanup must target the actual snapshot
+    tree this run's download landed in.
+    """
+    for env in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        v = os.environ.get(env)
+        if v:
+            return Path(v).expanduser()
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return Path(hf_home).expanduser() / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
 def _hf_cache_dir(hf_repo_path: str) -> Path:
     """Path of the HuggingFace cache entry for ``hf_repo_path``."""
-    return (
-        Path.home()
-        / ".cache"
-        / "huggingface"
-        / "hub"
-        / f"models--{hf_repo_path.replace('/', '--')}"
-    )
+    return _hf_cache_root() / f"models--{hf_repo_path.replace('/', '--')}"
 
 
-def _wait_for_server(port: int, deadline_s: float, log_path: Path) -> bool:
-    """Poll ``/v1/models`` until the server responds 200 or the
-    deadline expires. Returns True on success, False on timeout."""
+def _wait_for_server(
+    proc: subprocess.Popen, port: int, deadline_s: float, log_path: Path
+) -> bool:
+    """Poll ``/v1/models`` until the server responds 200, the child
+    exits, or the deadline expires. Returns True on success, False
+    otherwise.
+
+    Watching ``proc.poll()`` matters: if ``rapid-mlx serve`` aborts at
+    import time (missing alias, port collision raced past the
+    pre-flight, mlx-lm import error on a clean venv), there is no port
+    that will ever come up. Without this check we'd burn the full 600 s
+    deadline polling a dead child.
+    """
     url = f"http://127.0.0.1:{port}/v1/models"
     start = time.monotonic()
     while time.monotonic() - start < deadline_s:
+        rc = proc.poll()
+        if rc is not None:
+            print(
+                f"  serve process exited early (rc={rc}) before reaching ready state",
+                file=sys.stderr,
+            )
+            break
         try:
             with urllib.request.urlopen(url, timeout=3) as resp:
                 if resp.status == 200:
@@ -294,6 +349,32 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # ===== Argument bounds =====
+    # ``random.sample(population, k)`` raises ``ValueError`` for k > len.
+    # We want an actionable release-gate error instead of a Python
+    # traceback when someone passes ``G12_HARNESSES=6`` or
+    # ``G12_MODELS=0`` from the shell wrapper.
+    if args.models < 1:
+        print(
+            f"  Error: --models must be ≥1 (got {args.models}).",
+            file=sys.stderr,
+        )
+        return 2
+    if not (1 <= args.harnesses <= len(HARNESS_PROFILES)):
+        print(
+            f"  Error: --harnesses must be 1..{len(HARNESS_PROFILES)} "
+            f"(got {args.harnesses}); the registry has "
+            f"{len(HARNESS_PROFILES)} harness profile(s).",
+            file=sys.stderr,
+        )
+        return 2
+    if args.rounds < 1:
+        print(
+            f"  Error: --rounds must be ≥1 (got {args.rounds}).",
+            file=sys.stderr,
+        )
+        return 2
+
     # ===== Pre-flight =====
     if not _port_free(args.port):
         print(
@@ -376,7 +457,7 @@ def main() -> int:
                 cwd=REPO_ROOT,
             )
         try:
-            if not _wait_for_server(args.port, SERVE_READY_TIMEOUT_S, log_path):
+            if not _wait_for_server(proc, args.port, SERVE_READY_TIMEOUT_S, log_path):
                 msg = f"{alias}: server did not respond within {SERVE_READY_TIMEOUT_S}s"
                 print(f"  FAIL  {msg}", file=sys.stderr)
                 with report_path.open("a") as fh:
