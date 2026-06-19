@@ -3559,3 +3559,91 @@ def test_safe_display_name_strips_control_chars():
     out = _mirror._safe_display_name(long, max_len=40)
     assert len(out) <= 40
     assert out.endswith("_TAIL.bin") or "TAIL" in out
+
+
+def test_progress_tracker_flush_runs_even_when_worker_raises_unwhitelisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Regression for issue #689 (PR #682 follow-up).
+
+    The per-pull ``_ProgressTracker.flush()`` call lived AFTER the
+    ``with ThreadPoolExecutor(...)`` block but OUTSIDE any try/finally.
+    If a worker raised a non-whitelisted exception (e.g. ``TypeError``
+    from a programmer error or future refactor — only ``OSError`` /
+    ``TimeoutError`` / ``URLError`` / ``HTTPError`` / HF error shapes
+    are converted to a silent miss), the exception propagated past
+    ``pool.__exit__`` and ``flush()`` never ran. Result: the desktop
+    progress bar plateaus short of 100% before the failure banner.
+
+    The fix wraps the pool block in ``try: ... finally: flush()`` so
+    the final heartbeat always lands. This test pins that:
+
+    * Monkeypatch ``_download_one_from_r2`` to raise ``TypeError``,
+      which propagates out of the per-file worker (``_do_file``).
+    * Spy on ``_ProgressTracker.flush`` to count invocations.
+    * Assert the exception still propagates (the fix must NOT swallow
+      it — programmer errors should still surface a real stack trace).
+    * Assert ``flush()`` ran exactly once despite the failure path.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "dead" * 10
+    files = [
+        ("config.json", 100),
+        ("model.safetensors", 600),
+    ]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+
+    # Spy on flush() at the class level so we catch the call regardless
+    # of which per-pull instance ran. The original is restored by
+    # monkeypatch teardown.
+    flush_calls: list[int] = []
+    real_flush = _mirror._ProgressTracker.flush
+
+    def _spy_flush(self):
+        flush_calls.append(1)
+        return real_flush(self)
+
+    monkeypatch.setattr(_mirror._ProgressTracker, "flush", _spy_flush)
+
+    # Make the per-file R2 worker raise a non-whitelisted exception.
+    # ``_do_file`` calls ``_download_one_from_r2`` on the R2 path and
+    # does NOT catch ``TypeError``, so it propagates out of the worker;
+    # ``fut.result()`` in the dispatcher loop re-raises it, the
+    # whitelisted ``except`` clause doesn't match, and the exception
+    # leaves the ``with`` block. Without the fix, the post-with
+    # ``progress_tracker.flush()`` is skipped.
+    def _boom(*_args, **_kwargs):
+        raise TypeError("simulated programmer error in R2 worker")
+
+    monkeypatch.setattr(_mirror, "_download_one_from_r2", _boom)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+        pytest.raises(TypeError, match="simulated programmer error"),
+    ):
+        _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    # The exception must propagate AND flush() must still have fired.
+    # Exactly one call: one ``_ProgressTracker`` instance per pull, one
+    # ``finally`` clause, one flush. More than one would suggest a
+    # double-flush regression (e.g. someone added an inner flush inside
+    # the ``with`` body without removing the outer one).
+    assert flush_calls == [1], (
+        f"expected exactly one _ProgressTracker.flush() call after the "
+        f"unwhitelisted worker exception, got {len(flush_calls)}. "
+        f"The post-with flush is gated by a try/finally so the desktop "
+        f"progress bar lands at 100% even on the failure path."
+    )

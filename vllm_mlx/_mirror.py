@@ -1464,92 +1464,102 @@ def download_with_mirror_fallback(
     # summary so users see throughput, not just total bytes.
     pull_started = time.monotonic()
     completed = 0
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
-        futures = {pool.submit(_do_file, item): item[0] for item in files}
-        for fut in as_completed(futures):
-            fname = futures[fut]
-            # Codex round-3 NIT #1: narrow the worker exception net.
-            # Only convert expected network / filesystem / HF errors into
-            # a silent "miss". Programmer errors (TypeError, etc.) and
-            # HF validation errors propagate so misuse surfaces a real
-            # stack trace instead of disappearing into the fallback.
-            try:
-                _, kind, size = fut.result()
-            except (
-                OSError,
-                TimeoutError,
-                urllib.error.URLError,
-                urllib.error.HTTPError,
-                EntryNotFoundError,
-                RepositoryNotFoundError,
-                HfHubHTTPError,
-            ):
-                kind, size = "miss", 0
-            if kind == "r2":
-                r2_hits += 1
-                total_bytes += size
-            elif kind == "hf":
-                hf_hits += 1
-                total_bytes += size
-                # HF fallback's tqdm doesn't feed into the R2 chunk loop,
-                # so the aggregate tracker would miss these bytes
-                # entirely. Bump it at completion so the heartbeat
-                # reflects HF-fallback files too (size known once
-                # ``hf_hub_download`` returned). Codex R4 defensive
-                # guard: skip the credit when stat() returned 0 (rare —
-                # broken symlink / disappearing snapshot path), since
-                # ``add(0)`` is a no-op anyway. Belt-and-braces against
-                # future refactors that might surface a non-int ``size``.
-                if isinstance(size, int) and size > 0:
-                    progress_tracker.add(size)
-            elif kind == "cached":
-                # Already present — count as r2/hf-neutral but include
-                # bytes so the summary reflects the full snapshot size.
-                total_bytes += size
-                # Cached files never enter the chunk loop — credit them
-                # to the tracker on the dispatcher thread so the
-                # heartbeat doesn't undercount a warm pull. Same defensive
-                # guard as the HF arm above (codex R4 on PR #682).
-                if isinstance(size, int) and size > 0:
-                    progress_tracker.add(size)
-            else:
-                misses.append(fname)
-            # Issue #651 follow-up: per-file completion line so the
-            # user sees forward progress while multi-GB shards stream.
-            # We emit one line per file at the point it lands — printing
-            # from the ``as_completed`` loop in the main thread avoids
-            # needing a stdout lock, even though the underlying workers
-            # finish in non-deterministic order. Misses are logged too
-            # so the user understands why we'll fall back to
-            # ``snapshot_download`` further down.
-            completed += 1
-            # Only the size-bearing kinds need a MB readout. ``size``
-            # is always an int (workers return 0 on miss) but keeping
-            # the divide inside the branches that use it makes it
-            # obvious that the miss tag never depends on bytes — codex
-            # round-1 NIT on PR #657.
-            if kind == "r2":
-                tag = f"{DIM}R2 ({size / 1e6:.0f} MB){RESET}"
-            elif kind == "hf":
-                tag = f"{DIM}HF ({size / 1e6:.0f} MB, fallback){RESET}"
-            elif kind == "cached":
-                tag = f"{DIM}cached ({size / 1e6:.0f} MB){RESET}"
-            else:
-                # ``miss`` / sanitized failure — surface the reason so
-                # users aren't surprised when the outer caller falls
-                # back to ``snapshot_download``.
-                tag = f"{DIM}miss (will retry via HF snapshot_download){RESET}"
-            _print_dim(
-                f"  {DIM}[{completed}/{total_files_planned}]{RESET} "
-                f"{_safe_display_name(fname)} {tag}"
-            )
-
-    # Final heartbeat: a sub-500 ms tail of bytes can finish between the
-    # last throttle window and the loop exit. Emit one unconditional
-    # ``[bytes] D/T`` so the desktop's progress bar lands at 100% before
-    # the next phase banner ("Verifying snapshot…", "Warming up…")
-    # appears.
-    progress_tracker.flush()
+    # Issue #689: wrap the pool block in try/finally so the final
+    # ``progress_tracker.flush()`` always fires — even when a worker
+    # raises a non-whitelisted exception (e.g. ``TypeError`` from a
+    # future refactor) and the exception propagates past
+    # ``pool.__exit__``. Without this guard the desktop progress bar
+    # plateaus short of 100% before the failure banner. The exception
+    # still propagates; we just guarantee the heartbeat lands first.
+    try:
+        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+            futures = {pool.submit(_do_file, item): item[0] for item in files}
+            for fut in as_completed(futures):
+                fname = futures[fut]
+                # Codex round-3 NIT #1: narrow the worker exception net.
+                # Only convert expected network / filesystem / HF errors into
+                # a silent "miss". Programmer errors (TypeError, etc.) and
+                # HF validation errors propagate so misuse surfaces a real
+                # stack trace instead of disappearing into the fallback.
+                try:
+                    _, kind, size = fut.result()
+                except (
+                    OSError,
+                    TimeoutError,
+                    urllib.error.URLError,
+                    urllib.error.HTTPError,
+                    EntryNotFoundError,
+                    RepositoryNotFoundError,
+                    HfHubHTTPError,
+                ):
+                    kind, size = "miss", 0
+                if kind == "r2":
+                    r2_hits += 1
+                    total_bytes += size
+                elif kind == "hf":
+                    hf_hits += 1
+                    total_bytes += size
+                    # HF fallback's tqdm doesn't feed into the R2 chunk loop,
+                    # so the aggregate tracker would miss these bytes
+                    # entirely. Bump it at completion so the heartbeat
+                    # reflects HF-fallback files too (size known once
+                    # ``hf_hub_download`` returned). Codex R4 defensive
+                    # guard: skip the credit when stat() returned 0 (rare —
+                    # broken symlink / disappearing snapshot path), since
+                    # ``add(0)`` is a no-op anyway. Belt-and-braces against
+                    # future refactors that might surface a non-int ``size``.
+                    if isinstance(size, int) and size > 0:
+                        progress_tracker.add(size)
+                elif kind == "cached":
+                    # Already present — count as r2/hf-neutral but include
+                    # bytes so the summary reflects the full snapshot size.
+                    total_bytes += size
+                    # Cached files never enter the chunk loop — credit them
+                    # to the tracker on the dispatcher thread so the
+                    # heartbeat doesn't undercount a warm pull. Same defensive
+                    # guard as the HF arm above (codex R4 on PR #682).
+                    if isinstance(size, int) and size > 0:
+                        progress_tracker.add(size)
+                else:
+                    misses.append(fname)
+                # Issue #651 follow-up: per-file completion line so the
+                # user sees forward progress while multi-GB shards stream.
+                # We emit one line per file at the point it lands — printing
+                # from the ``as_completed`` loop in the main thread avoids
+                # needing a stdout lock, even though the underlying workers
+                # finish in non-deterministic order. Misses are logged too
+                # so the user understands why we'll fall back to
+                # ``snapshot_download`` further down.
+                completed += 1
+                # Only the size-bearing kinds need a MB readout. ``size``
+                # is always an int (workers return 0 on miss) but keeping
+                # the divide inside the branches that use it makes it
+                # obvious that the miss tag never depends on bytes — codex
+                # round-1 NIT on PR #657.
+                if kind == "r2":
+                    tag = f"{DIM}R2 ({size / 1e6:.0f} MB){RESET}"
+                elif kind == "hf":
+                    tag = f"{DIM}HF ({size / 1e6:.0f} MB, fallback){RESET}"
+                elif kind == "cached":
+                    tag = f"{DIM}cached ({size / 1e6:.0f} MB){RESET}"
+                else:
+                    # ``miss`` / sanitized failure — surface the reason so
+                    # users aren't surprised when the outer caller falls
+                    # back to ``snapshot_download``.
+                    tag = f"{DIM}miss (will retry via HF snapshot_download){RESET}"
+                _print_dim(
+                    f"  {DIM}[{completed}/{total_files_planned}]{RESET} "
+                    f"{_safe_display_name(fname)} {tag}"
+                )
+    finally:
+        # Final heartbeat: a sub-500 ms tail of bytes can finish between the
+        # last throttle window and the loop exit. Emit one unconditional
+        # ``[bytes] D/T`` so the desktop's progress bar lands at 100% before
+        # the next phase banner ("Verifying snapshot…", "Warming up…")
+        # appears. The ``finally`` clause (issue #689) ensures this also
+        # runs on the exception path so the bar doesn't plateau short of
+        # 100% before the failure banner.
+        progress_tracker.flush()
 
     if misses:
         # At least one file we couldn't get from either source. Caller
