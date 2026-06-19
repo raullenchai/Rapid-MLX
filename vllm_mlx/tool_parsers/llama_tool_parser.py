@@ -401,9 +401,12 @@ class LlamaToolParser(ToolParser):
             begin, end = span
             tool = _parse_json_tool_call(model_output[begin:end])
             if tool is None:
-                # Not a tool call — keep the JSON as residual content
-                # and move past it. The python_tag opener (if any) is
-                # silently dropped — it was a stray control token.
+                # Not a tool call — preserve the entire range
+                # ``[i, end)`` (preface + any ``<|python_tag|>`` opener
+                # + the JSON object) as residual content so the client
+                # doesn't lose any bytes. The ``.strip()`` at the end
+                # of the scan trims leading/trailing whitespace from
+                # ``cleaned_text``.
                 out_parts.append(model_output[i:end])
                 i = end
                 continue
