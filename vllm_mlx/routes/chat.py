@@ -1685,6 +1685,26 @@ async def stream_chat_completion(
         processor.set_thinking_model(request.model)
         processor.reset()
 
+        # Forced ``tool_choice`` synthetic-prefix replay swallow (PR #716
+        # codex r9 BLOCKING #1). When the upstream chat_kwargs builder
+        # set ``forced_assistant_prefix`` (the route's
+        # ``_forced_tool_call_prefix`` branch), the engine's
+        # ``stream_chat`` yields the prefix back as a synthetic first
+        # chunk so plain-text consumers see the wire envelope. Seed the
+        # postprocessor with the same bytes so it can swallow that
+        # synthetic chunk BEFORE the reasoning parser sees it — without
+        # this, the prefix bytes route through ``Case-3 → reasoning``
+        # in ``BaseThinkingReasoningParser``, polluting
+        # ``accumulated_reasoning`` AND risking a raw-byte leak into
+        # ``delta.reasoning_content`` on parser variants the MiniMax
+        # tool-markup redirect doesn't catch (chunk-boundary splits,
+        # future parsers). See ``StreamingPostProcessor.__init__`` for
+        # the swallow-buffer state machine. No-op when the prefix is
+        # absent.
+        processor.seed_forced_assistant_prefix(
+            kwargs.get("forced_assistant_prefix")
+        )
+
         # Track token counts for usage reporting
         prompt_tokens = 0
         completion_tokens = 0
