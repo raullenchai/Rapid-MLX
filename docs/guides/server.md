@@ -777,11 +777,17 @@ import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.bind(("127.0.0.1", 8000))
 s.listen(128)
-os.set_inheritable(s.fileno(), True)
 
-# Pass the bound fd to rapid-mlx as fd 3 (the systemd / launchd
-# convention for the first inherited socket).
+# Move the listening socket to fd 3 (the systemd / launchd convention
+# for the first inherited socket). Order matters:
+#   1. ``dup2(src, 3)`` clones src onto fd 3 (and clears CLOEXEC on 3).
+#   2. Mark ONLY fd 3 inheritable — the child should see the listener
+#      via fd 3 and nothing else.
+#   3. Close the original fd so it isn't leaked across ``execvpe`` as
+#      a duplicate listening socket on a non-conventional fd number.
 os.dup2(s.fileno(), 3)
+os.set_inheritable(3, True)
+s.close()
 os.execvpe(
     "rapid-mlx",
     [

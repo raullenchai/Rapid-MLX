@@ -100,6 +100,44 @@ def _listen_fd_arg(value: str) -> int:
     return fd
 
 
+def _run_uvicorn(app, args, log_level: str) -> None:
+    """Dispatch into ``uvicorn.run`` with the kwargs that match the
+    current ``--listen-fd`` / ``--host``/``--port`` mode.
+
+    Extracted so the call-site contract is unit-testable WITHOUT booting
+    the heavy ``serve_command`` prologue (version check, model download,
+    server import). The companion bytecode test in
+    ``tests/test_serve_listen_fd.py`` pins that ``serve_command``
+    actually references this helper so a future refactor that drops the
+    dispatch silently is caught — that's the regression-detection codex
+    round-1 PR #696 review was after.
+    """
+    import uvicorn
+
+    listen_fd = getattr(args, "listen_fd", None)
+    if listen_fd is not None:
+        # ``fd=`` overrides ``host``/``port``: uvicorn skips its own
+        # ``socket.bind()`` and adopts the inherited fd directly. This
+        # is the close of the bind→auth TOCTOU window — the supervisor
+        # bound + validated the auth secret BEFORE execve'ing, and the
+        # FastAPI ``app`` (with route auth dependencies) is fully
+        # constructed at module load before this call.
+        uvicorn.run(
+            app,
+            fd=listen_fd,
+            log_level=log_level,
+            timeout_keep_alive=30,
+        )
+    else:
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level=log_level,
+            timeout_keep_alive=30,
+        )
+
+
 def _chat_config_dir() -> str:
     """Directory for first-launch tip markers (and future per-user chat
     state). Honors ``RAPID_MLX_CONFIG_HOME`` override; otherwise falls back
@@ -657,8 +695,6 @@ def serve_command(args):
     import logging
     import os
     import sys
-
-    import uvicorn
 
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors
@@ -1323,33 +1359,21 @@ def serve_command(args):
 
     # Stash host/port so the lifespan hook can print the real "Ready:" banner
     # after warmup. ServerConfig.bind_host/bind_port → used in server.lifespan().
+    #
+    # In the inherited-fd branch the user-passed ``--host``/``--port`` values
+    # are NOT the bound address (the supervisor's ``getsockname`` is the
+    # source of truth, which we don't probe). Stamping bind_host/bind_port
+    # from ignored CLI args would make any status/introspection report a
+    # phantom address. Leave them at ``None`` (the default) so the lifespan
+    # banner prints the fd form. Codex round-1 PR #696 review.
     from vllm_mlx.config import get_config
 
     _cfg = get_config()
-    _cfg.bind_host = host_display
-    _cfg.bind_port = args.port
+    if listen_fd is None:
+        _cfg.bind_host = host_display
+        _cfg.bind_port = args.port
 
-    if listen_fd is not None:
-        # ``fd=`` overrides ``host``/``port``: uvicorn skips its own
-        # ``socket.bind()`` and adopts the inherited fd directly. This
-        # is the close of the bind→auth TOCTOU window — the supervisor
-        # bound + validated the auth secret BEFORE execve'ing, and the
-        # FastAPI ``app`` (with route auth dependencies) is fully
-        # constructed at module load before this call.
-        uvicorn.run(
-            app,
-            fd=listen_fd,
-            log_level=uvicorn_log_level,
-            timeout_keep_alive=30,
-        )
-    else:
-        uvicorn.run(
-            app,
-            host=args.host,
-            port=args.port,
-            log_level=uvicorn_log_level,
-            timeout_keep_alive=30,
-        )
+    _run_uvicorn(app, args, uvicorn_log_level)
 
 
 def _run_tier_submit_flow(args) -> int:

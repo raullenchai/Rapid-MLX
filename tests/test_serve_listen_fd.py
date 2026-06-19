@@ -162,51 +162,36 @@ def _minimal_serve_ns(**overrides):
     return captured[0]
 
 
-def test_serve_command_passes_fd_to_uvicorn_when_listen_fd_set(monkeypatch):
-    """When ``--listen-fd N`` is set, ``serve_command`` must invoke
-    ``uvicorn.run(app, fd=N, ...)`` — NOT pass ``host``/``port``.
+def test_run_uvicorn_passes_fd_when_listen_fd_set(monkeypatch):
+    """When ``args.listen_fd`` is an int, ``_run_uvicorn`` MUST invoke
+    ``uvicorn.run(app, fd=N, ...)`` and MUST NOT pass ``host``/``port``.
 
     This is the load-bearing assertion for Leg 2: a regression that
-    forgets to switch the call site to the ``fd=`` form would silently
-    reopen the bind window.
+    silently re-introduces ``host=``/``port=`` in the fd branch reopens
+    the bind→auth window. The companion bytecode test below pins that
+    ``serve_command`` actually invokes this helper so the contract
+    can't drift from the call site.
 
-    We bypass the heavy model-loading / config-validation prologue of
-    ``serve_command`` by calling ``uvicorn.run`` directly through a
-    minimal harness — the goal here is to pin the call-site contract,
-    not to boot the engine.
+    Round-1 PR #696 codex review: the prior version reimplemented the
+    branch inside the test, so it passed even if the production call
+    site were deleted. This version exercises the real
+    ``cli._run_uvicorn`` and patches ``uvicorn.run`` to capture kwargs.
     """
-    # Capture all uvicorn.run kwargs and short-circuit so we don't
-    # actually start a server.
     captured_kwargs: dict = {}
 
     def fake_run(app, **kwargs):
         captured_kwargs["app"] = app
         captured_kwargs.update(kwargs)
 
-    # Simulate the relevant slice of serve_command that builds the
-    # uvicorn.run call. This is what the patched call site does
-    # post-merge:
     import uvicorn
 
     monkeypatch.setattr(uvicorn, "run", fake_run)
 
-    # Hand-craft args matching the serve_command call site.
     ns = _minimal_serve_ns(listen_fd=7, port=9000, host="127.0.0.1")
-    listen_fd = getattr(ns, "listen_fd", None)
-    assert listen_fd == 7, "argparse should have surfaced --listen-fd"
+    sentinel_app = object()
+    cli._run_uvicorn(sentinel_app, ns, "info")
 
-    # Mimic the post-merge call shape in cli.serve_command.
-    if listen_fd is not None:
-        uvicorn.run(object(), fd=listen_fd, log_level="info", timeout_keep_alive=30)
-    else:
-        uvicorn.run(
-            object(),
-            host=ns.host,
-            port=ns.port,
-            log_level="info",
-            timeout_keep_alive=30,
-        )
-
+    assert captured_kwargs.get("app") is sentinel_app
     assert captured_kwargs.get("fd") == 7, (
         f"expected fd=7 in uvicorn.run kwargs, got {captured_kwargs!r}"
     )
@@ -216,11 +201,16 @@ def test_serve_command_passes_fd_to_uvicorn_when_listen_fd_set(monkeypatch):
     assert "port" not in captured_kwargs, (
         f"port must NOT be passed when fd is set, got {captured_kwargs!r}"
     )
+    assert captured_kwargs.get("log_level") == "info"
+    assert captured_kwargs.get("timeout_keep_alive") == 30
 
 
-def test_serve_command_passes_host_port_when_listen_fd_unset(monkeypatch):
+def test_run_uvicorn_passes_host_port_when_listen_fd_unset(monkeypatch):
     """The default path is unchanged: ``host``/``port`` flow through and
-    ``fd`` is NOT passed."""
+    ``fd`` is NOT passed. Same anti-regression shape as the listen-fd
+    case — exercises the real ``cli._run_uvicorn`` rather than
+    reimplementing the branch in the test body.
+    """
     captured_kwargs: dict = {}
 
     def fake_run(app, **kwargs):
@@ -232,23 +222,68 @@ def test_serve_command_passes_host_port_when_listen_fd_unset(monkeypatch):
     monkeypatch.setattr(uvicorn, "run", fake_run)
 
     ns = _minimal_serve_ns(port=9000, host="127.0.0.1")
-    listen_fd = getattr(ns, "listen_fd", None)
-    assert listen_fd is None
+    assert getattr(ns, "listen_fd", None) is None
+    sentinel_app = object()
+    cli._run_uvicorn(sentinel_app, ns, "info")
 
-    if listen_fd is not None:
-        uvicorn.run(object(), fd=listen_fd, log_level="info", timeout_keep_alive=30)
-    else:
-        uvicorn.run(
-            object(),
-            host=ns.host,
-            port=ns.port,
-            log_level="info",
-            timeout_keep_alive=30,
-        )
-
+    assert captured_kwargs.get("app") is sentinel_app
     assert captured_kwargs.get("host") == "127.0.0.1"
     assert captured_kwargs.get("port") == 9000
     assert "fd" not in captured_kwargs
+    assert captured_kwargs.get("log_level") == "info"
+    assert captured_kwargs.get("timeout_keep_alive") == 30
+
+
+def test_serve_command_wires_run_uvicorn_helper():
+    """``serve_command`` must actually invoke ``_run_uvicorn`` — without
+    this, the unit tests above are tautological (a regression that
+    deletes the helper call from ``serve_command`` would not be
+    caught).
+
+    Bytecode inspection mirrors the established pattern in
+    ``tests/test_memory_capacity_check.py::
+    test_check_is_wired_into_serve_and_bench``. Comments / docstrings
+    are stripped at compile time, so only real references survive.
+    """
+    import dis
+
+    refs = {
+        ins.argval
+        for ins in dis.get_instructions(cli.serve_command)
+        if ins.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_DEREF")
+    }
+    assert "_run_uvicorn" in refs, (
+        "serve_command must reference _run_uvicorn — a regression that "
+        "inlines uvicorn.run back into the function body would silently "
+        "decouple the dispatch from the unit-tested helper"
+    )
+
+
+def test_serve_command_does_not_inline_uvicorn_run():
+    """Companion to the wiring test: assert ``serve_command`` does NOT
+    call ``uvicorn.run`` directly. Belt-and-braces against a refactor
+    that adds back an inline call while still keeping the helper
+    invocation around — the inline path would skip the unit-tested
+    dispatch logic entirely.
+    """
+    import dis
+
+    seq = list(dis.get_instructions(cli.serve_command))
+    # Look for ``uvicorn`` global followed by a ``run`` attribute lookup.
+    for i, ins in enumerate(seq):
+        if ins.opname == "LOAD_GLOBAL" and ins.argval == "uvicorn":
+            attr = next(
+                (
+                    s
+                    for s in seq[i + 1 : i + 4]
+                    if s.opname in ("LOAD_ATTR", "LOAD_METHOD")
+                ),
+                None,
+            )
+            assert attr is None or attr.argval != "run", (
+                "serve_command must dispatch through _run_uvicorn — found "
+                "inline uvicorn.run reference"
+            )
 
 
 # ---------------------------------------------------------------------------
