@@ -556,6 +556,28 @@ class TestCodexR3Regressions:
         # Plain text — definitely not pending.
         assert not parser.has_pending_tool_call("Hello world")
 
+    def test_has_pending_on_prose_with_whitespace_before_name(
+        self, parser: LlamaToolParser
+    ):
+        """Codex r5 MAJOR: ``has_pending_tool_call`` must also catch
+        closed prose-prefixed tool JSON where the model emitted
+        whitespace / newlines between ``{`` and ``"name"`` (real
+        formatting drift). The pre-fix literal ``{"name"`` substring
+        check missed this and the fast-path leaked the whole
+        ``Let me check. { "name": ...}`` payload as content."""
+        # Whitespace after ``{``.
+        assert parser.has_pending_tool_call(
+            'Let me check. { "name": "search", "parameters": {}}'
+        )
+        # Newline + indent (LLM pretty-print drift).
+        assert parser.has_pending_tool_call(
+            'Calling tool:\n{\n  "name": "search",\n  "parameters": {}\n}'
+        )
+        # Extra key before ``"name"`` — still a Llama tool call.
+        assert parser.has_pending_tool_call(
+            '{"type": "function", "name": "search", "parameters": {}}'
+        )
+
     def test_streaming_postprocessor_invariant_violation(self, parser: LlamaToolParser):
         """Codex r3 NIT: when ``current_text`` does not start with
         ``previous_text`` (a postprocessor bug), the parser must not

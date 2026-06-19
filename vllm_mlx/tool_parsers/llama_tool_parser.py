@@ -286,8 +286,22 @@ class LlamaToolParser(ToolParser):
         if unclosed and depth > 0:
             return True
         # Closed ``{...}`` JSON object that looks like a Llama tool
-        # call — still pending if not yet emitted.
-        return '{"name"' in text
+        # call — still pending if not yet emitted. Use a full scan
+        # rather than the literal ``{"name"`` substring so that
+        # whitespace / newlines / extra keys between ``{`` and
+        # ``"name"`` (model formatting drift) don't slip through the
+        # fast-path (codex r5 MAJOR — ``{ "name": ...}`` with a
+        # leading space leaked as content).
+        i = 0
+        while i < len(text):
+            span = _find_top_level_json_object(text, i)
+            if span is None:
+                break
+            jb, je = span
+            if _parse_json_tool_call(text[jb:je]) is not None:
+                return True
+            i = je
+        return False
 
     @classmethod
     def _safe_content_prefix(cls, text: str) -> str:
