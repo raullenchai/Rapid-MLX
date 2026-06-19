@@ -223,6 +223,43 @@ def _sanitize_messages_for_template(
     return sanitized
 
 
+def _sanitize_tools_for_template(tools, template_applicator):
+    """Neutralise chat-template role markers in user-supplied tool
+    definitions (names, descriptions, parameter schemas).
+
+    Tool definitions also come from the request body and are rendered
+    into the same prompt either by the native template's ``tools=``
+    kwarg or by ``_inject_tools_into_messages``'s system-prompt
+    fallback. Pre-fix only ``messages`` was sanitised, so a
+    client-controlled tool description containing ``<|im_start|>...``
+    re-opened the bypass for tool-using requests. Codex r5 P1.
+
+    The neutralisation is recursive over the tool definition tree —
+    every string leaf is run through ``_neutralize_in_string``. Lists
+    and dicts are walked structurally; non-string scalars pass
+    through unchanged.
+    """
+    if not tools:
+        return tools
+    markers = _collect_role_markers(template_applicator)
+    pattern = _build_marker_pattern(markers)
+    if pattern is None:
+        return tools
+
+    def _walk(obj):
+        if isinstance(obj, str):
+            return _neutralize_in_string(obj, pattern)
+        if isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_walk(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(_walk(v) for v in obj)
+        return obj
+
+    return _walk(tools)
+
+
 def _build_tool_injection_text(tools: list[dict]) -> str:
     """Build a compact tool definition string for system prompt injection.
 
@@ -333,6 +370,14 @@ def apply_chat_template(
         messages = _sanitize_messages_for_template(messages, template_applicator)
     except Exception as e:  # never let sanitisation break a render
         logger.debug("Chat-template marker sanitisation failed: %s", e)
+    # Same defence on tool definitions (codex r5 P1) — they are also
+    # client-supplied strings rendered into the prompt via the
+    # template's ``tools=`` kwarg or the system-prompt injection
+    # fallback (``_inject_tools_into_messages``).
+    try:
+        tools = _sanitize_tools_for_template(tools, template_applicator)
+    except Exception as e:  # never let sanitisation break a render
+        logger.debug("Chat-template tool-marker sanitisation failed: %s", e)
 
     if not hasattr(template_applicator, "apply_chat_template"):
         # Fallback for models without apply_chat_template.
