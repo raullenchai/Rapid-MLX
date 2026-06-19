@@ -384,9 +384,7 @@ def test_serve_command_skips_port_preflight_when_listen_fd_set(
         blocker.listen(1)
         blocked_port = blocker.getsockname()[1]
 
-        ns = _minimal_serve_ns(
-            listen_fd=11, host="127.0.0.1", port=blocked_port
-        )
+        ns = _minimal_serve_ns(listen_fd=11, host="127.0.0.1", port=blocked_port)
         # If the preflight runs, this raises SystemExit(1) before reaching
         # the uvicorn.run stub. The test passes only when the preflight
         # is correctly skipped in the listen-fd branch.
