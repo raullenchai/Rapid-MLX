@@ -171,6 +171,21 @@ def test_hf_cache_dir_shape(g12, monkeypatch):
     assert p.parent.parent.name == "huggingface"
 
 
+def test_free_disk_gb_walks_to_existing_ancestor(g12, tmp_path):
+    """``_free_disk_gb`` must tolerate a non-existent leaf — the cache
+    root may be on a custom mount whose ``models--owner--repo`` leaf
+    hasn't been created until the first download. Without the ancestor
+    walk, ``shutil.disk_usage`` raises ``FileNotFoundError`` on a
+    brand-new ``HF_HUB_CACHE=/data/hf-cache`` rig where ``/data/``
+    exists but ``hf-cache`` doesn't. Codex round-2 PR #693 review.
+    """
+    missing_leaf = tmp_path / "nonexistent" / "deeper" / "still-missing"
+    assert not missing_leaf.exists()
+    # Should return a real positive number, not raise.
+    free_gb = g12._free_disk_gb(missing_leaf)
+    assert free_gb > 0
+
+
 def test_hf_cache_root_honors_env_vars(g12, tmp_path, monkeypatch):
     """``_hf_cache_root`` must respect ``HF_HUB_CACHE``,
     ``HUGGINGFACE_HUB_CACHE`` and ``HF_HOME`` in the same precedence

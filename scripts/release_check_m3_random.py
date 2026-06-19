@@ -144,8 +144,24 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
 
 
 def _free_disk_gb(path: Path) -> float:
-    """Free space in GB on the filesystem holding ``path``."""
-    usage = shutil.disk_usage(path)
+    """Free space in GB on the filesystem holding ``path``.
+
+    Walks up to the nearest existing ancestor when ``path`` itself
+    doesn't exist yet — the cache root may be on a custom mount whose
+    leaf hasn't been created until the first model is downloaded.
+    ``shutil.disk_usage`` errors on missing paths, which would block
+    G12 from starting on a brand-new ``HF_HUB_CACHE=/data/hf-cache``
+    rig where ``/data/`` exists but the leaf doesn't.
+    """
+    p = path
+    while not p.exists():
+        parent = p.parent
+        if parent == p:
+            # Walked all the way to the root and still nothing exists.
+            # Let shutil.disk_usage raise — something is very wrong.
+            break
+        p = parent
+    usage = shutil.disk_usage(p)
     return usage.free / (1024**3)
 
 
@@ -384,12 +400,18 @@ def main() -> int:
         )
         return 2
 
-    free_gb = _free_disk_gb(Path.home() / ".cache")
+    # Check free space on the disk that ACTUALLY holds the HF cache —
+    # an install with ``HF_HUB_CACHE=/data/hf-cache`` may have plenty of
+    # space on ``/data`` while ``~/.cache`` is tight (or vice-versa).
+    # Codex round-2 PR #693 caught this — ``~/.cache`` is wrong for any
+    # non-default HF install.
+    cache_root = _hf_cache_root()
+    free_gb = _free_disk_gb(cache_root)
     if free_gb < MIN_FREE_DISK_GB:
         print(
-            f"  Error: only {free_gb:.1f} GB free on the HF cache disk; "
-            f"refusing to start (need {MIN_FREE_DISK_GB} GB). Clear caches "
-            f"and retry.",
+            f"  Error: only {free_gb:.1f} GB free on the HF cache disk "
+            f"({cache_root}); refusing to start (need {MIN_FREE_DISK_GB} GB). "
+            f"Clear caches and retry.",
             file=sys.stderr,
         )
         return 2
