@@ -191,14 +191,7 @@ class TestDeepSeekNoTagComparison:
         """DeepSeek-R1 correctly switches to content after threshold."""
         parser.reset_state()
 
-        # Generate text longer than NO_TAG_CONTENT_THRESHOLD (1024 chars)
-        # to exercise the mid-stream flip from reasoning → content. The
-        # threshold was bumped from 64 → 1024 to accommodate VibeThinker
-        # preambles before ``<think>`` (2026-06-17 live test).
-        text = (
-            "This is a regular response without any thinking tags. It should be content. "
-            * 20
-        )
+        text = "This is a regular response without any thinking tags. It should be content. "
         assert len(text) > parser.NO_TAG_CONTENT_THRESHOLD, (
             "test fixture must exceed threshold to exercise the flip"
         )
@@ -217,33 +210,43 @@ class TestDeepSeekNoTagComparison:
                     reasoning_parts.append(result.reasoning)
 
         full_content = "".join(content_parts)
-        # Once past the threshold (now 1024), DeepSeek-R1 starts treating
-        # no-tag deltas as content.
+        # Once past the threshold, DeepSeek-R1 starts treating no-tag
+        # deltas as content.
         assert len(full_content) > 0, "DeepSeek should have content for no-tag output"
 
-    def test_vibethinker_preamble_before_think_routes_reasoning_correctly(
-        self, parser
-    ):
+    def test_vibethinker_preamble_before_think_routes_reasoning_correctly(self):
         """VibeThinker live-test regression (2026-06-17): the model emits a
         chatty multi-sentence preamble (~13 tokens, ~80 chars) BEFORE its
-        ``<think>`` opener. With the old 64-char threshold, streaming
+        ``<think>`` opener. With the base 64-char threshold, streaming
         flipped routing to ``content`` mid-preamble; by the time the
-        literal ``<think>`` arrived, the whole reasoning trace leaked into
-        ``content`` deltas. The 1024-char threshold gives the preamble
-        room to land inside the reasoning buffer; once ``<think>``
-        arrives, the standard ``_handle_explicit_think`` path routes
-        subsequent tokens to reasoning, and the final answer after
-        ``</think>`` lands in ``content``.
+        literal ``<think>`` arrived, the whole reasoning trace leaked
+        into ``content`` deltas.
+
+        The fix is the ``vibethinker`` parser — a ``DeepSeekR1ReasoningParser``
+        subclass with a 1024-char threshold (codex r2 P2 scoped narrowly
+        to the VibeThinker family). The base ``deepseek_r1`` parser keeps
+        its 64-char threshold to avoid widening the reasoning-buffer
+        window globally for distilled-on-Qwen aliases that open with
+        ``<think>`` immediately.
+
+        This test pins the new ``vibethinker`` parser end-to-end through
+        the parser registry so a future refactor that loses the
+        registration trips here.
         """
-        parser.reset_state()
+        vibethinker_parser = get_parser("vibethinker")()
+        vibethinker_parser.reset_state()
+        assert vibethinker_parser.NO_TAG_CONTENT_THRESHOLD == 1024, (
+            "vibethinker parser must register the larger 1024-char threshold"
+        )
 
         # 80-char preamble (~13 tokens), then ``<think>...</think>``,
         # then the final answer. Mirrors the failing merge_intervals
         # case from the live test.
         preamble = "Okay, let me think about this carefully and work through it step by step.\n\n"
-        assert 64 < len(preamble) < parser.NO_TAG_CONTENT_THRESHOLD, (
-            "preamble must straddle the OLD 64-char threshold (fail-on-main "
-            "guarantee) and stay under the NEW threshold."
+        assert 64 < len(preamble) < vibethinker_parser.NO_TAG_CONTENT_THRESHOLD, (
+            "preamble must straddle the base 64-char threshold (fail-on-base "
+            "guarantee) and stay under the vibethinker subclass's 1024-char "
+            "threshold."
         )
         reasoning_body = "<think>\nStep 1: scan the intervals. Step 2: merge overlaps.\n</think>"
         answer = "def merge_intervals(intervals):\n    return sorted(intervals)"
@@ -256,7 +259,9 @@ class TestDeepSeekNoTagComparison:
         for char in full_text:
             prev = accumulated
             accumulated += char
-            result = parser.extract_reasoning_streaming(prev, accumulated, char)
+            result = vibethinker_parser.extract_reasoning_streaming(
+                prev, accumulated, char
+            )
             if result is None:
                 continue
             if result.content:

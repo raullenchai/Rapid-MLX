@@ -633,9 +633,11 @@ def test_vibethinker_family_wires_deepseek_r1_reasoning_parser(alias: str) -> No
     """
     profiles = list_profiles()
     assert alias in profiles, f"{alias} missing from aliases.json"
-    assert profiles[alias].reasoning_parser == "deepseek_r1", (
-        f"{alias}: reasoning_parser must be 'deepseek_r1' (VibeThinker emits "
-        f"`<think>` blocks autonomously). Got {profiles[alias].reasoning_parser!r}."
+    assert profiles[alias].reasoning_parser == "vibethinker", (
+        f"{alias}: reasoning_parser must be 'vibethinker' — a DeepSeek-R1 "
+        f"variant with NO_TAG_CONTENT_THRESHOLD=1024 (vs base 64) to handle "
+        f"the documented preamble-before-`<think>` shape (codex r2 P2). "
+        f"Got {profiles[alias].reasoning_parser!r}."
     )
     assert profiles[alias].tool_call_parser == "hermes", (
         f"{alias}: tool_call_parser must be 'hermes' — VibeThinker is "

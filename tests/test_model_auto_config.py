@@ -196,7 +196,9 @@ class TestDetectModelConfig:
     def test_vibethinker(self, model_path):
         cfg = detect_model_config(model_path)
         assert cfg is not None
-        assert cfg.reasoning_parser == "deepseek_r1"
+        # ``vibethinker`` parser — DeepSeek-R1 variant with a larger
+        # no-tag threshold for preamble-before-``<think>`` (codex r2 P2).
+        assert cfg.reasoning_parser == "vibethinker"
         assert cfg.tool_call_parser == "hermes"
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is True

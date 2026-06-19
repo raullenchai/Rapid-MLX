@@ -158,7 +158,12 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         re.compile(r"vibethinker", re.IGNORECASE),
         ModelConfig(
             tool_call_parser="hermes",
-            reasoning_parser="deepseek_r1",
+            # ``vibethinker`` parser — DeepSeek-R1 variant with a 1024-char
+            # no-tag threshold for the preamble-before-``<think>`` shape
+            # (codex r2 P2 — keeps the base ``deepseek_r1`` threshold at 64
+            # for distilled-on-Qwen aliases that DO open with ``<think>``
+            # immediately).
+            reasoning_parser="vibethinker",
         ),
     ),
     # Qwen3-Coder-Next / Qwen3-Next — hybrid linear attention, BEFORE
