@@ -3174,10 +3174,7 @@ class TestGeneratorClosedOnEveryExit:
                 # _run_generator's per-iteration cancel check fires
                 # at the TOP of the next iteration, so the break
                 # exits before consuming any further yields.
-                if (
-                    cancel_at_yield is not None
-                    and state["yielded"] >= cancel_at_yield
-                ):
+                if cancel_at_yield is not None and state["yielded"] >= cancel_at_yield:
                     cancel_event.set()
                 return item
 
