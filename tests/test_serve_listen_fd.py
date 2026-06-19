@@ -234,80 +234,172 @@ def test_run_uvicorn_passes_host_port_when_listen_fd_unset(monkeypatch):
     assert captured_kwargs.get("timeout_keep_alive") == 30
 
 
-def test_serve_command_wires_run_uvicorn_helper():
-    """``serve_command`` must actually invoke ``_run_uvicorn`` — without
-    this, the unit tests above are tautological (a regression that
-    deletes the helper call from ``serve_command`` would not be
-    caught).
+@pytest.fixture
+def stub_heavy_serve_deps(monkeypatch):
+    """Stub the heavyweight prologue of ``serve_command`` so a behavioral
+    test can drive it through to the ``uvicorn.run`` call site without
+    actually downloading a model, importing mlx, or booting an engine.
 
-    Bytecode inspection mirrors the established pattern in
-    ``tests/test_memory_capacity_check.py::
-    test_check_is_wired_into_serve_and_bench``. Comments / docstrings
-    are stripped at compile time, so only real references survive.
+    Each stub is the minimum no-op that lets serve_command's control
+    flow reach the ``uvicorn`` dispatch. A new heavy step added to
+    serve_command will surface as an ImportError / AttributeError in
+    the tests below; extend this fixture rather than working around it
+    so the test stays faithful to the real execution path.
     """
-    import dis
+    from vllm_mlx import _version_check
+    from vllm_mlx import cli as cli_mod
+    from vllm_mlx import server as server_mod
 
-    refs = {
-        ins.argval
-        for ins in dis.get_instructions(cli.serve_command)
-        if ins.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_DEREF")
-    }
-    assert "_run_uvicorn" in refs, (
-        "serve_command must reference _run_uvicorn — a regression that "
-        "inlines uvicorn.run back into the function body would silently "
-        "decouple the dispatch from the unit-tested helper"
+    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
+    monkeypatch.setattr(_version_check, "print_staleness_warning_if_any", lambda: None)
+    monkeypatch.setattr(cli_mod, "_ensure_model_downloaded", lambda model: None)
+    monkeypatch.setattr(cli_mod, "_check_memory_capacity", lambda *a, **kw: None)
+    monkeypatch.setattr(cli_mod, "_check_disk_space", lambda *a, **kw: None)
+    monkeypatch.setattr(server_mod, "configure_logging", lambda level: "info")
+    monkeypatch.setattr(server_mod, "load_model", lambda *a, **kw: None)
+    # ``serve_command`` calls ``server.configure_cors`` which does an
+    # ``app.add_middleware``. That fails with "Cannot add middleware
+    # after an application has started" if a prior test in the suite
+    # has already booted a ``TestClient`` against ``vllm_mlx.server.app``
+    # — order-dependent flake. Stub it to a no-op for these tests; the
+    # CORS plumbing has its own dedicated tests.
+    monkeypatch.setattr(server_mod, "configure_cors", lambda origins: None)
+    # Some serve_command branches touch the rate-limiter wiring.
+    from vllm_mlx.middleware import auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "configure_rate_limiter", lambda *a, **kw: None)
+    return monkeypatch
+
+
+def _free_tcp_port() -> int:
+    """Bind a real socket to an OS-assigned port, then release it. The
+    port may race with another listener before the test rebinds, but
+    for the few ms between the test's ``socket.bind`` preflight and
+    ``uvicorn.run`` stub return that's acceptable.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _capture_uvicorn_run(monkeypatch):
+    """Patch ``uvicorn.run`` to record kwargs and return without
+    actually starting a server. Returns the dict the test asserts on.
+    """
+    captured: dict = {}
+
+    def fake_run(app, **kwargs):
+        captured["app"] = app
+        captured.update(kwargs)
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    return captured
+
+
+def test_serve_command_dispatches_uvicorn_with_fd_when_listen_fd_set(
+    stub_heavy_serve_deps,
+):
+    """End-to-end behavioral test: with ``--listen-fd N`` set, driving
+    the real ``cli.serve_command(ns)`` through its full prologue must
+    land on ``uvicorn.run(app, fd=N, ...)`` — no ``host``/``port``.
+
+    Round-5 codex PR #696 review pushed this from a bytecode-name
+    pinning into a behavioral pin: a correct refactor that inlines or
+    renames the ``_run_uvicorn`` helper while preserving the
+    user-visible kwargs must KEEP passing. The only way that's true is
+    to assert on the actual ``uvicorn.run`` call.
+    """
+    captured = _capture_uvicorn_run(stub_heavy_serve_deps)
+    ns = _minimal_serve_ns(listen_fd=7)
+    cli.serve_command(ns)
+
+    assert captured.get("fd") == 7, (
+        f"expected fd=7 in the real uvicorn.run call, got {captured!r}"
+    )
+    assert "host" not in captured, (
+        f"host must NOT be passed in the listen-fd branch, got {captured!r}"
+    )
+    assert "port" not in captured, (
+        f"port must NOT be passed in the listen-fd branch, got {captured!r}"
+    )
+    # And the Ready-banner source of truth must be wired up.
+    from vllm_mlx.config import get_config
+
+    cfg = get_config()
+    assert cfg.bind_listen_fd == 7
+    assert cfg.bind_host is None
+    assert cfg.bind_port is None
+
+
+def test_serve_command_dispatches_uvicorn_with_host_port_when_listen_fd_unset(
+    stub_heavy_serve_deps,
+):
+    """Default path: ``host``/``port`` flow into ``uvicorn.run`` and
+    ``fd`` is not passed. Same end-to-end shape as the listen-fd case.
+    """
+    captured = _capture_uvicorn_run(stub_heavy_serve_deps)
+    port = _free_tcp_port()
+    ns = _minimal_serve_ns(host="127.0.0.1", port=port)
+    cli.serve_command(ns)
+
+    assert captured.get("host") == "127.0.0.1"
+    assert captured.get("port") == port
+    assert "fd" not in captured
+
+    from vllm_mlx.config import get_config
+
+    cfg = get_config()
+    assert cfg.bind_host == "127.0.0.1"
+    assert cfg.bind_port == port
+    assert cfg.bind_listen_fd is None
+
+
+def test_serve_command_resets_stale_bind_fields_between_invocations(
+    stub_heavy_serve_deps,
+):
+    """The singleton ``ServerConfig`` persists across in-process
+    ``serve_command`` calls (test harnesses, embedded usage). A prior
+    host/port stash MUST NOT leak into a subsequent listen-fd run (and
+    vice-versa) — otherwise the lifespan banner reports a phantom
+    listener.
+
+    Round-4 codex PR #696 review prompted the explicit reset of all
+    three fields at the top of the stash block. This test pins that
+    behavior end-to-end.
+    """
+    captured = _capture_uvicorn_run(stub_heavy_serve_deps)
+
+    # First call: host/port.
+    port_a = _free_tcp_port()
+    cli.serve_command(_minimal_serve_ns(host="127.0.0.1", port=port_a))
+    from vllm_mlx.config import get_config
+
+    cfg = get_config()
+    assert (cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd) == (
+        "127.0.0.1",
+        port_a,
+        None,
     )
 
+    # Second call: listen-fd. The prior host/port must be cleared.
+    captured.clear()
+    cli.serve_command(_minimal_serve_ns(listen_fd=11))
+    assert (cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd) == (None, None, 11)
 
-def test_serve_command_stashes_bind_listen_fd_for_ready_banner():
-    """The lifespan "Ready:" banner switches on whether
-    ``_cfg.bind_host``/``bind_port`` OR ``_cfg.bind_listen_fd`` is set
-    (see ``vllm_mlx/server.py``). Without ``bind_listen_fd`` stamped in
-    the fd branch, the banner falls through to silent — round-3 codex
-    PR #696 flagged this as a missing source of truth. Bytecode
-    inspection asserts ``serve_command`` references
-    ``bind_listen_fd`` so a refactor that drops the stash silently is
-    caught by the unit suite.
-    """
-    import dis
-
-    refs = {
-        ins.argval
-        for ins in dis.get_instructions(cli.serve_command)
-        if ins.opname in ("LOAD_ATTR", "STORE_ATTR", "LOAD_GLOBAL", "LOAD_NAME")
-    }
-    assert "bind_listen_fd" in refs, (
-        "serve_command must stash listen_fd into ServerConfig.bind_listen_fd "
-        "so the lifespan Ready banner has a source of truth in the "
-        "socket-activation branch"
+    # Third call: back to host/port. The prior fd must be cleared.
+    captured.clear()
+    port_b = _free_tcp_port()
+    cli.serve_command(_minimal_serve_ns(host="0.0.0.0", port=port_b))
+    # ``host_display`` rewrites 0.0.0.0 → "localhost" for the banner.
+    assert (cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd) == (
+        "localhost",
+        port_b,
+        None,
     )
-
-
-def test_serve_command_does_not_inline_uvicorn_run():
-    """Companion to the wiring test: assert ``serve_command`` does NOT
-    call ``uvicorn.run`` directly. Belt-and-braces against a refactor
-    that adds back an inline call while still keeping the helper
-    invocation around — the inline path would skip the unit-tested
-    dispatch logic entirely.
-    """
-    import dis
-
-    seq = list(dis.get_instructions(cli.serve_command))
-    # Look for ``uvicorn`` global followed by a ``run`` attribute lookup.
-    for i, ins in enumerate(seq):
-        if ins.opname == "LOAD_GLOBAL" and ins.argval == "uvicorn":
-            attr = next(
-                (
-                    s
-                    for s in seq[i + 1 : i + 4]
-                    if s.opname in ("LOAD_ATTR", "LOAD_METHOD")
-                ),
-                None,
-            )
-            assert attr is None or attr.argval != "run", (
-                "serve_command must dispatch through _run_uvicorn — found "
-                "inline uvicorn.run reference"
-            )
 
 
 # ---------------------------------------------------------------------------

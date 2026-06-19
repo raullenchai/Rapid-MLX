@@ -173,25 +173,108 @@ def test_no_api_key_keeps_dev_path_anonymous():
         _restore_cfg(orig)
 
 
-def test_models_router_has_auth_dependency_declared_statically():
-    """Static check: ``verify_api_key`` is attached as a route dependency
-    at IMPORT TIME, not lazily during startup.
+# ---------------------------------------------------------------------------
+# Static checks across every protected router
+# ---------------------------------------------------------------------------
 
-    This is the structural reason there is no bind→auth window. We do
-    this with a route inspection rather than a runtime probe so a
-    refactor that moves the dependency into a lifespan hook fails
-    explicitly here, not just by accident at the runtime test above.
+# Every router that ``vllm_mlx/server.py`` mounts with the OpenAI-shape
+# contract (chat, embeddings, audio, etc.) AND must reject anonymous
+# requests when ``cfg.api_key`` is set. Health-probe endpoints
+# (``/healthz``, ``/readyz``) are deliberately NOT in this list — they
+# answer the liveness contract anonymously by design.
+#
+# Codex round-5 PR #696 broadened the auth-ordering test from
+# ``models`` alone to every protected router so a regression that
+# accidentally drops ``Depends(verify_api_key)`` from any single router
+# (e.g. a future ``audio`` rewrite) fails the gate explicitly. The
+# membership of this list IS the public contract — add a new entry
+# whenever a new protected router lands, remove one only if it's
+# moved to anonymous-by-design (and document why).
+PROTECTED_ROUTER_MODULES = (
+    "vllm_mlx.routes.anthropic",
+    "vllm_mlx.routes.audio",
+    "vllm_mlx.routes.cache",
+    "vllm_mlx.routes.chat",
+    "vllm_mlx.routes.completions",
+    "vllm_mlx.routes.embeddings",
+    "vllm_mlx.routes.mcp_routes",
+    "vllm_mlx.routes.models",
+    "vllm_mlx.routes.responses",
+)
+
+
+def _route_paths_with_auth(router):
+    """Yield ``(path, has_auth_dep)`` for every concrete route on
+    ``router`` that has a ``dependant`` (i.e. excludes ``Mount`` /
+    ``WebSocketRoute`` plumbing without dependency graphs).
+
+    A route counts as auth-gated if it declares ANY dependency from the
+    ``verify_api_key*`` family — currently:
+
+    * ``verify_api_key`` — OpenAI-style bearer-token gate used by
+      chat/completions/embeddings/audio/cache/health/mcp/models/responses.
+    * ``verify_api_key_or_x_api_key`` — same gate, additionally
+      accepting Anthropic-native ``x-api-key`` header. Used by the
+      ``/v1/messages*`` routes that mirror Anthropic's API shape.
+
+    Both gates run BEFORE the route handler executes; either is
+    structurally equivalent for the bind→auth ordering invariant.
     """
-    from vllm_mlx.middleware.auth import verify_api_key
-    from vllm_mlx.routes.models import router
+    from vllm_mlx.middleware import auth as auth_mod
 
-    models_routes = [r for r in router.routes if getattr(r, "path", "") == "/v1/models"]
-    assert models_routes, "expected GET /v1/models on models router"
-    route = models_routes[0]
-    # FastAPI flattens dependencies into ``route.dependant.dependencies``.
-    dep_calls = [d.call for d in route.dependant.dependencies]
-    assert verify_api_key in dep_calls, (
-        "regression: GET /v1/models no longer declares verify_api_key as "
-        "a route dependency. The bind→auth ordering guarantee depends on "
-        "auth being attached at app-construction time, not lazily."
+    auth_funcs = {
+        getattr(auth_mod, name)
+        for name in dir(auth_mod)
+        if name.startswith("verify_api_key")
+    }
+    for r in router.routes:
+        dep = getattr(r, "dependant", None)
+        if dep is None:
+            continue
+        dep_calls = {d.call for d in dep.dependencies}
+        yield (
+            getattr(r, "path", "<unknown>"),
+            bool(dep_calls & auth_funcs),
+        )
+
+
+import pytest  # noqa: E402  (kept near the parametrize'd test for locality)
+
+
+@pytest.mark.parametrize("module_name", PROTECTED_ROUTER_MODULES)
+def test_every_protected_router_declares_verify_api_key_statically(module_name):
+    """Each protected router MUST declare ``verify_api_key`` as a static
+    route dependency at IMPORT TIME — not lazily during startup.
+
+    This is the structural reason there is no bind→auth window: by the
+    time ``uvicorn.run(app, ...)`` is called, every protected route's
+    dependant graph is already wired. We parameterize across the public
+    contract so a regression that drops auth from ANY single router
+    (e.g. a refactor of ``audio`` that forgets the ``dependencies=``
+    kwarg) fails this gate by name, not just by accident.
+
+    Codex round-5 PR #696: the prior single-router version of this
+    invariant could pass while auth was accidentally dropped from
+    chat/embeddings/audio/etc. — this loop closes that gap.
+    """
+    import importlib
+
+    router = importlib.import_module(module_name).router
+
+    routes_seen = list(_route_paths_with_auth(router))
+    assert routes_seen, (
+        f"{module_name}.router exposes no inspectable routes — has the "
+        f"module's surface been refactored into Mounts? Update this "
+        f"test to follow the new structure."
+    )
+
+    missing = [path for path, has_auth in routes_seen if not has_auth]
+    assert not missing, (
+        f"{module_name} router has route(s) missing verify_api_key as a "
+        f"static dependency: {missing}. The bind→auth ordering guarantee "
+        f"depends on auth being attached at app-construction time, not "
+        f"lazily. Either re-add ``Depends(verify_api_key)`` to those "
+        f"endpoints or, if the endpoint is intentionally anonymous, "
+        f"split it into its own router and remove that router from "
+        f"PROTECTED_ROUTER_MODULES with a comment explaining why."
     )
