@@ -562,6 +562,23 @@ class MLLMScheduler:
             if request is None:
                 continue
 
+            # Stamp prompt-token count on the request once the batch
+            # generator has actually preprocessed the prompt (vision
+            # encoding includes image-patch token expansion, so the
+            # count can only be known AFTER ``_process_prompts``). Pre-
+            # fix this field was never assigned, so MLLM responses always
+            # reported ``usage.prompt_tokens=0``. The check is "only set
+            # once" semantics: the first response carries the real count
+            # and we memoise it on the ``MLLMRequest`` so every later
+            # streaming chunk + the final response inherit it. ``> 0``
+            # filters out the default-zero responses from corner cases
+            # (text-only fallback that somehow lands here with no
+            # preprocessing) so we don't overwrite a real count with 0.
+            if request.num_prompt_tokens == 0:
+                resp_pt = getattr(response, "prompt_tokens", 0) or 0
+                if resp_pt > 0:
+                    request.num_prompt_tokens = resp_pt
+
             # Append token to request
             request.output_tokens.append(response.token)
             request.num_output_tokens = len(request.output_tokens)

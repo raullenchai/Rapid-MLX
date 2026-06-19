@@ -72,6 +72,14 @@ class MLLMBatchRequest:
     # Generation state
     num_tokens: int = 0  # Tokens generated so far
     output_tokens: list[int] = field(default_factory=list)
+    # Prompt-token count snapshotted from ``input_ids.size`` at the end of
+    # ``_process_prompts`` (before ``input_ids`` is released to free
+    # buffers). Stamped onto every ``MLLMBatchResponse.prompt_tokens`` so
+    # the scheduler can populate ``MLLMRequest.num_prompt_tokens`` without
+    # re-tokenising the prompt or guessing at the vision-token expansion.
+    # 0 means "not yet processed" — the field is set in ``_process_prompts``
+    # once preprocessing has run.
+    num_prompt_tokens: int = 0
 
     # Vision state (populated after initial VLM forward pass)
     vision_encoded: bool = False
@@ -93,6 +101,21 @@ class MLLMBatchResponse:
     logprobs: mx.array  # Log probabilities
     finish_reason: str | None = None  # "stop", "length", or None
     prompt_cache: list[Any] | None = None  # Extracted cache for finished requests
+    # Prompt-token count for the request that produced this token. Stamped
+    # by ``_next()`` from ``req.input_ids.size`` so the scheduler can wire
+    # it through to ``RequestOutput.prompt_tokens`` → ``GenerationOutput``
+    # → OpenAI ``usage.prompt_tokens``. Pre-fix, the MLLM path always
+    # reported ``prompt_tokens=0`` because ``MLLMRequest.num_prompt_tokens``
+    # had no producer (text path uses ``len(tokenizer.encode(prompt))`` —
+    # MLLM can't, because vision-token expansion happens inside the
+    # processor). Same shape as the text path's ``RequestOutput.
+    # prompt_tokens`` so downstream ``_build_usage`` / ``get_usage`` work
+    # unmodified for both paths.  0 means "not stamped" — only fresh
+    # ``_next()`` responses set it; the scheduler then memoises onto
+    # ``MLLMRequest.num_prompt_tokens`` so subsequent streaming responses
+    # inherit the count without us having to thread it through every
+    # decode step.
+    prompt_tokens: int = 0
 
 
 @dataclass
@@ -710,6 +733,21 @@ class MLLMBatchGenerator:
         for req in requests:
             self._preprocess_request(req)
 
+        # Snapshot per-request prompt-token counts BEFORE any later step
+        # nulls out ``input_ids`` to release Metal buffers (line ~822 in
+        # this method also nulls ``pixel_values`` / ``attention_mask`` /
+        # ``image_grid_thw`` for the same reason). We stash the count on
+        # the request so ``_next()`` can stamp it onto every
+        # ``MLLMBatchResponse.prompt_tokens`` and the scheduler can wire
+        # it through to ``RequestOutput.prompt_tokens`` →
+        # ``GenerationOutput`` → OpenAI ``usage.prompt_tokens``. Without
+        # this, MLLM responses always reported ``prompt_tokens=0`` even
+        # though the prompt was real (text + image-patch tokens).
+        for req in requests:
+            req.num_prompt_tokens = (
+                int(req.input_ids.size) if req.input_ids is not None else 0
+            )
+
         total_prompt_tokens = sum(
             req.input_ids.size if req.input_ids is not None else 1 for req in requests
         )
@@ -1033,6 +1071,12 @@ class MLLMBatchGenerator:
                     logprobs=outgoing_logprobs[i],
                     finish_reason=finish_reason,
                     prompt_cache=prompt_cache,
+                    # ``num_prompt_tokens`` was snapshotted in
+                    # ``_process_prompts`` from ``input_ids.size`` before
+                    # the per-request buffers got released, so it's safe
+                    # to read here (``req.input_ids`` itself may now be
+                    # None to free memory).
+                    prompt_tokens=req.num_prompt_tokens,
                 )
             )
 
