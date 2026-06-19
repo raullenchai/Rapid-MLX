@@ -1701,9 +1701,7 @@ async def stream_chat_completion(
         # future parsers). See ``StreamingPostProcessor.__init__`` for
         # the swallow-buffer state machine. No-op when the prefix is
         # absent.
-        processor.seed_forced_assistant_prefix(
-            kwargs.get("forced_assistant_prefix")
-        )
+        processor.seed_forced_assistant_prefix(kwargs.get("forced_assistant_prefix"))
 
         # Track token counts for usage reporting
         prompt_tokens = 0
