@@ -504,6 +504,58 @@ class TestCodexR3Regressions:
         # No held bytes — flush returns empty so no spurious event.
         assert parser.flush_held_content("hello world") == ""
 
+    def test_mixed_content_and_tool_in_one_delta_returns_both(
+        self, parser: LlamaToolParser
+    ):
+        """Codex r4 BLOCKING (1/2): when a single delta carries both a
+        prose preface AND a closed tool span, the parser MUST return
+        both channels in one dict so the postprocessor can emit the
+        content event before the tool_call event. Returning only
+        tool_calls drops the preface, because the postprocessor sets
+        ``tool_calls_detected=True`` and short-circuits the finalize
+        cross-format fallback."""
+        cur = 'Let me check. {"name": "search", "parameters": {}}'
+        r = parser.extract_tool_calls_streaming(
+            previous_text="", current_text=cur, delta_text=cur
+        )
+        assert r is not None
+        assert r.get("content") == "Let me check. "
+        assert "tool_calls" in r
+        assert r["tool_calls"][0]["function"]["name"] == "search"
+        assert r["tool_calls"][0]["index"] == 0
+
+    def test_mixed_tool_then_trailing_content_in_one_delta(
+        self, parser: LlamaToolParser
+    ):
+        """Codex r4 BLOCKING (2/2): when a single delta carries a
+        closed tool span followed by trailing prose, the trailing
+        bytes MUST also be returned in the same dict — they would
+        otherwise be lost (postprocessor sees ``tool_calls_detected``
+        and stops calling the streaming parser)."""
+        cur = '{"name": "a", "parameters": {}} tail'
+        r = parser.extract_tool_calls_streaming(
+            previous_text="", current_text=cur, delta_text=cur
+        )
+        assert r is not None
+        assert "tool_calls" in r
+        assert r["tool_calls"][0]["function"]["name"] == "a"
+        assert r.get("content") == " tail"
+
+    def test_has_pending_on_prose_with_unclosed_brace(self, parser: LlamaToolParser):
+        """Codex r4 MAJOR: ``has_pending_tool_call`` must recognise a
+        prose preface followed by ``{`` (with no ``"name"`` yet) as
+        pending. The postprocessor fast-path at postprocessor.py:1490
+        skips the full streaming branch when ``has_pending`` returns
+        False, so before the fix the lonely ``{`` after the preface
+        leaked as content."""
+        assert parser.has_pending_tool_call("Let me check. {")
+        assert parser.has_pending_tool_call('Let me check. {"na')
+        # Closed prose JSON (no ``"name"`` key) stays non-pending so
+        # plain-prose streams don't pay the streaming-branch cost.
+        assert not parser.has_pending_tool_call('Result: {"x": 1}')
+        # Plain text — definitely not pending.
+        assert not parser.has_pending_tool_call("Hello world")
+
     def test_streaming_postprocessor_invariant_violation(self, parser: LlamaToolParser):
         """Codex r3 NIT: when ``current_text`` does not start with
         ``previous_text`` (a postprocessor bug), the parser must not

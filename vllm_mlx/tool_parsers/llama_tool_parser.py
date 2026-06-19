@@ -47,12 +47,24 @@ class _StreamState:
     """The "what should have been emitted by now" snapshot computed
     from a model-output prefix during streaming.
 
+    ``content_chunks`` is a list of ``(text_start, text_end)`` byte
+    ranges in the original text that, concatenated in order, equal the
+    content delta a client would have seen for this text. Tool-span
+    bytes are intentionally NOT included — those bytes ride the
+    ``tool_calls`` channel.
+
+    ``content_emitted_chars`` is the running total length of the
+    content channel so subsequent calls can diff "characters emitted
+    so far" without having to re-concatenate ``content_chunks`` from
+    scratch.
+
     Used by ``LlamaToolParser._emitted_state`` to derive a stateless
     diff between consecutive ``previous_text`` / ``current_text``
     streaming calls.
     """
 
-    emitted_content_end: int = 0
+    content_chunks: list[tuple[int, int]] = field(default_factory=list)
+    content_emitted_chars: int = 0
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -239,13 +251,42 @@ class LlamaToolParser(ToolParser):
         # first token onward — otherwise the partial ``{`` / ``{"na`` /
         # ``{"name"`` prefix leaks as assistant content before the JSON
         # closes (streaming false-negative — P1 / codex r1).
-        #
-        # We also recognise ``{"name"`` anywhere in the text so a prose
-        # preface followed by the tool-call JSON (``Let me check.
-        # {"name": ...}``) is correctly suppressed once the JSON opener
-        # arrives — P2 / codex r2.
         if text.lstrip().startswith("{"):
             return True
+        # A prose preface followed by the tool-call JSON
+        # (``Let me check. {"name": ...}``) must also be suppressed
+        # once the opener arrives. We treat ANY unclosed ``{`` as
+        # pending so the postprocessor falls through to the full
+        # streaming branch before the ``"name"`` key arrives — codex
+        # r4 MAJOR: the prior ``{"name"`` substring check missed the
+        # window between the opening brace and the ``"name"`` key,
+        # leaking the bare ``{`` as content.
+        unclosed = False
+        depth = 0
+        in_str = False
+        escape = False
+        for ch in text:
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                    unclosed = True
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        unclosed = False
+        if unclosed and depth > 0:
+            return True
+        # Closed ``{...}`` JSON object that looks like a Llama tool
+        # call — still pending if not yet emitted.
         return '{"name"' in text
 
     @classmethod
@@ -400,36 +441,56 @@ class LlamaToolParser(ToolParser):
         instance state. Compares the "should-have-emitted" prefix of
         ``previous_text`` and ``current_text`` and returns the delta
         between them on the appropriate channel (content vs tool_calls).
+
+        Return shape:
+          - ``None``                       → buffer still open, nothing
+                                              new to emit this round
+          - ``{"content": ...}``           → plain content delta
+          - ``{"tool_calls": [...]}``      → tool-call delta only
+          - ``{"content": ...,
+                "tool_calls": [...]}``     → BOTH channels in one call.
+                                              The postprocessor's
+                                              ``_detect_tool_calls``
+                                              caller treats this as
+                                              "emit content event,
+                                              THEN tool_call event"
+                                              (codex r4 BLOCKING — see
+                                              postprocessor.py:1501).
         """
         prev_state = self._emitted_state(previous_text)
         cur_state = self._emitted_state(current_text)
 
-        # New tool calls discovered in ``current_text`` that weren't
-        # already in ``previous_text``. Emit them once and stop —
-        # subsequent calls on the same prefix won't re-emit because the
-        # ``previous_text`` state will have caught up. This is the
-        # codex-r3 BLOCKING fix: previously every later delta re-ran
-        # ``_buffered_region_start`` from position 0 and re-emitted the
-        # already-flushed tool call (or duplicated it).
+        # Diff content first so that a delta carrying ``preface +
+        # tool_close`` can emit BOTH channels in one return: the
+        # postprocessor caller emits the content event before the
+        # tool_call event, preserving wire order and not dropping the
+        # preface even when finalize doesn't run (codex r4 BLOCKING).
+        new_content: str | None = None
+        if cur_state.content_emitted_chars > prev_state.content_emitted_chars:
+            prev_content = self._materialize_content(previous_text, prev_state)
+            cur_content = self._materialize_content(current_text, cur_state)
+            # Under the postprocessor invariant ``prev_content`` is a
+            # strict prefix of ``cur_content`` (monotonic state-machine
+            # over a monotonic input). Defensive suffix-diff if not.
+            diff_start = (
+                len(prev_content) if cur_content.startswith(prev_content) else 0
+            )
+            slice_ = cur_content[diff_start:]
+            if slice_:
+                new_content = slice_
+
         start_index = len(prev_state.tool_calls)
         new_tool_calls = cur_state.tool_calls[start_index:]
+
+        out: dict[str, Any] = {}
+        if new_content is not None:
+            out["content"] = new_content
         if new_tool_calls:
-            return self._format_tool_calls_delta(
-                new_tool_calls, start_index=start_index
+            out.update(
+                self._format_tool_calls_delta(new_tool_calls, start_index=start_index)
             )
 
-        # New content bytes — slice the safely-emittable region of
-        # ``current_text`` against the same region in ``previous_text``.
-        if cur_state.emitted_content_end > prev_state.emitted_content_end:
-            new_content = current_text[
-                prev_state.emitted_content_end : cur_state.emitted_content_end
-            ]
-            if new_content:
-                return {"content": new_content}
-
-        # Nothing to emit yet — still buffering an open anchor or a
-        # held sentinel prefix.
-        return None
+        return out if out else None
 
     # ------------------------------------------------------------------
     # _emitted_state — the heart of the streaming state machine.
@@ -440,12 +501,12 @@ class LlamaToolParser(ToolParser):
         *should* have emitted up to this point.
 
         Returns a ``_StreamState`` describing:
-          - ``emitted_content_end``: the index in ``text`` such that
-            ``text[:emitted_content_end]`` has been streamed to the
-            client as content. Bytes between this index and the end
-            of ``text`` are either (a) inside an open buffered anchor
-            (held pending the close decision) or (b) the sentinel-
-            prefix held suffix.
+          - ``content_chunks``: list of ``(start, end)`` byte ranges in
+            ``text`` that, concatenated, equal the cumulative content
+            channel emitted so far. Tool-span bytes are explicitly
+            excluded.
+          - ``content_emitted_chars``: total length of the content
+            channel (sum of chunk widths).
           - ``tool_calls``: the complete list of tool calls that have
             been (or should have been) emitted in tool_calls channel
             events. Order matches their appearance in ``text``.
@@ -456,31 +517,38 @@ class LlamaToolParser(ToolParser):
         """
         n = len(text)
         cursor = 0  # bytes already classified (either emitted content or tool span)
-        emitted_content_end = 0
+        content_chunks: list[tuple[int, int]] = []
+        content_emitted_chars = 0
         tool_calls: list[dict[str, Any]] = []
+
+        def _emit_content(begin: int, end: int) -> None:
+            nonlocal content_emitted_chars
+            if end <= begin:
+                return
+            content_chunks.append((begin, end))
+            content_emitted_chars += end - begin
+
         while cursor < n:
             anchor = self._next_anchor_from(text, cursor)
             if anchor is None:
                 # No more anchors. Everything from cursor onward is
                 # safe content modulo the sentinel-prefix hold.
                 safe = self._safe_content_prefix(text[cursor:])
-                emitted_content_end = cursor + len(safe)
+                if safe:
+                    _emit_content(cursor, cursor + len(safe))
                 cursor = n
                 break
 
-            # The bytes between ``cursor`` and ``anchor`` are plain
-            # content (no anchor matched in there). They are safe to
-            # emit because the anchor IS the next sentinel — bytes
-            # before it can't be the start of a longer opener.
+            # Bytes between ``cursor`` and ``anchor`` are plain content
+            # (no anchor matched there). Safe because the anchor IS the
+            # next sentinel — bytes before it can't be the start of a
+            # longer opener.
             if anchor > cursor:
-                emitted_content_end = anchor
+                _emit_content(cursor, anchor)
 
             closed_span = self._anchor_span(text, anchor)
             if closed_span is None:
-                # Open anchor — buffer everything from ``anchor`` to
-                # end of text. ``emitted_content_end`` stays at
-                # ``anchor`` (any leading prose has already been
-                # accounted for above).
+                # Open anchor — buffer from anchor to end of text.
                 cursor = n
                 break
 
@@ -492,27 +560,27 @@ class LlamaToolParser(ToolParser):
                 # flush the whole span as content. The python_tag
                 # opener / unbalanced wrapper bytes are included so
                 # the client doesn't lose them.
-                emitted_content_end = span_end
+                _emit_content(anchor, span_end)
             else:
-                # Tool call decision. The preface (cursor..anchor) was
-                # already added to ``emitted_content_end`` above —
-                # those bytes are emitted as content in a prior round.
-                # The span itself (anchor..span_end) is emitted via the
-                # tool_calls channel, NOT the content channel. Advance
-                # the content "next-byte-to-emit" cursor past the span
-                # so subsequent prose deltas (in this same scan or in
-                # later ``extract_tool_calls_streaming`` calls) are
-                # diffed against this boundary, not against a stale
-                # pre-span boundary — codex r3 BLOCKING.
-                emitted_content_end = span_end
+                # Tool call. The span (anchor..span_end) goes to the
+                # tool_calls channel — NOT the content channel — so we
+                # don't add it to ``content_chunks``. Subsequent prose
+                # past ``span_end`` will be picked up on the next loop
+                # iteration.
                 tool_calls.append(tool)
 
             cursor = span_end
 
         return _StreamState(
-            emitted_content_end=emitted_content_end,
+            content_chunks=content_chunks,
+            content_emitted_chars=content_emitted_chars,
             tool_calls=tool_calls,
         )
+
+    def _materialize_content(self, text: str, state: "_StreamState") -> str:
+        """Concatenate the content chunks in ``state`` into the
+        cumulative content channel for ``text``."""
+        return "".join(text[b:e] for b, e in state.content_chunks)
 
     def _next_anchor_from(self, text: str, start: int) -> int | None:
         """Return the index of the next tool-call anchor at or after

@@ -801,14 +801,27 @@ class StreamingPostProcessor:
                         ]
                     return []
                 self.tool_calls_detected = True
-                return [
+                # When the streaming parser carries BOTH a content
+                # delta AND a tool-call delta in one return (one
+                # delta carried ``preface + tool_close`` — codex r4
+                # BLOCKING on llama parser), emit the content event
+                # before the tool_call event so wire order matches
+                # what the client would see if the two had arrived
+                # in separate deltas. Other parsers that return only
+                # one channel are unaffected.
+                mixed_content = result.get("content")
+                events: list[StreamEvent] = []
+                if isinstance(mixed_content, str) and mixed_content:
+                    events.append(StreamEvent(type="content", content=mixed_content))
+                events.append(
                     StreamEvent(
                         type="tool_call",
                         tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
-                ]
+                )
+                return events
             content = result.get("content", "")
 
         if self.tool_calls_detected:
@@ -1065,14 +1078,21 @@ class StreamingPostProcessor:
                         ]
                     return []
                 self.tool_calls_detected = True
-                return [
+                # Mixed content+tool delta — emit content event before
+                # tool_call event (codex r4 BLOCKING on llama parser).
+                mixed_content = result.get("content")
+                events: list[StreamEvent] = []
+                if isinstance(mixed_content, str) and mixed_content:
+                    events.append(StreamEvent(type="content", content=mixed_content))
+                events.append(
                     StreamEvent(
                         type="tool_call",
                         tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
-                ]
+                )
+                return events
             content = result.get("content", "")
 
         if self.tool_calls_detected:
@@ -1182,14 +1202,25 @@ class StreamingPostProcessor:
                         ]
                     return []
                 self.tool_calls_detected = True
-                return [
+                # Mixed content+tool delta — emit content before
+                # tool_call (codex r4 BLOCKING on llama parser).
+                mixed_content = result.get("content")
+                events: list[StreamEvent] = []
+                if isinstance(mixed_content, str) and mixed_content:
+                    mixed_content = strip_special_tokens(mixed_content)
+                    if mixed_content:
+                        events.append(
+                            StreamEvent(type="content", content=mixed_content)
+                        )
+                events.append(
                     StreamEvent(
                         type="tool_call",
                         tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
-                ]
+                )
+                return events
             content = strip_special_tokens(result.get("content", ""))
 
         if self.tool_calls_detected:
