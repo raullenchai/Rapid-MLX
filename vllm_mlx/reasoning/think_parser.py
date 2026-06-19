@@ -248,37 +248,48 @@ class BaseThinkingReasoningParser(ReasoningParser):
     ) -> tuple[str, str]:
         """Strip any residual ``<think>…</think>`` blocks left in
         ``content`` after the first-pair partition, and reroute
-        unclosed trailing thoughts into ``reasoning``.
+        the TRAILING unclosed thought into ``reasoning``.
 
         2026-06-19 round-1 fuzz repro (phi-4-mini-reasoning-4bit):
-        when the model emits two ``<think>`` blocks (an inner
-        closed one before the answer and a SECOND opener after the
-        answer that ``reasoning_max_tokens`` / ``max_tokens``
-        truncates before its closing tag), the naive
-        ``partition(<think>)`` + ``partition(</think>)`` in
-        ``extract_reasoning`` Case 1 consumes ONLY the first pair.
-        The trailing ``<think>thought2…`` opener was leaking
-        verbatim into ``message.content`` — neither
-        ``strip_thinking_tags`` (matches closed blocks only) nor
-        ``sanitize_output`` (matches a stray ``</think>`` only)
-        catch an orphan ``<think>`` opener, so the tag bytes
-        survived all the way to the wire.
+        when the model emits multiple ``<think>`` blocks (closed
+        inner ones before the answer and a TRAILING opener after
+        the answer that ``reasoning_max_tokens`` / ``max_tokens``
+        truncates before its closing tag), the naive first-pair
+        ``partition`` in ``extract_reasoning`` Case 1 consumes
+        ONLY the first pair. The trailing ``<think>thought_N…``
+        opener was leaking verbatim into ``message.content`` —
+        neither ``strip_thinking_tags`` (matches closed blocks
+        only) nor ``sanitize_output`` (matches a stray
+        ``</think>`` only) catch an orphan ``<think>`` opener,
+        so the tag bytes survived all the way to the wire.
 
-        Sweep algorithm (operates on ``content`` only — ``reasoning``
-        is already authoritative from the first partition):
+        Codex r3 BLOCKING on PR #722: an earlier draft of this
+        sweep stripped EVERY closed ``<think>…</think>`` block
+        from content too. That broke a documented but rare case
+        — answers that legitimately contain a literal ``<think>``
+        substring in the text (e.g. ``"The user said: <think>
+        is literal"``) — by silently reclassifying the literal
+        text as a structural reasoning block. Pre-PR behaviour
+        preserved that text in content (the first-pair partition
+        only ate one pair and ``strip_thinking_tags`` only
+        matches CLOSED blocks, which DO get cleaned but the
+        unclosed literal opener stays in content as the user
+        sees it). The conservative scope below restores that
+        pre-PR behaviour for closed blocks while STILL closing
+        the actual round-1 leak (trailing unclosed opener).
 
-        * Iteratively strip any complete ``<think>…</think>`` block
-          and accumulate its body into ``reasoning`` (preserves
-          ordering: appears AFTER the first thought, which matches
-          the model's emission order).
-        * If a trailing unclosed ``<think>…`` remains, append its
-          body to ``reasoning`` and drop everything from the
-          opener onward from ``content`` (matches the Case 3
-          "no end tag → reasoning" semantics).
-        * Strip any orphan ``</think>`` left after step 1 — these
-          appear when the model emits a stray closer with no
-          matching opener (or when downstream regex passes have
-          already eaten the opener but left the closer).
+        Sweep scope (codex r3-final, conservative):
+
+        * Closed ``<think>…</think>`` blocks left in content are
+          UNTOUCHED here — downstream ``strip_thinking_tags`` /
+          ``sanitize_output`` handles them, AND if any remain
+          they were legitimate literal text the user intended.
+        * Only the TRAILING unclosed ``<think>…`` (the round-1
+          leak shape) gets routed into ``reasoning``. The opener
+          must have NO matching ``</think>`` AFTER it for this
+          branch to fire.
+        * Stray ``</think>`` closers with no preceding opener
+          in content are LEFT for ``sanitize_output`` to strip.
 
         The fix lives in the base class so every thinking-tag
         parser (DeepSeek-R1, Qwen3, VibeThinker, …) benefits
@@ -290,53 +301,36 @@ class BaseThinkingReasoningParser(ReasoningParser):
         """
         if not content:
             return reasoning, content
-        # Step 1: strip closed blocks left-to-right, accumulating
-        # their bodies into ``reasoning`` in emission order. Cap the
-        # loop at the actual occurrence count so a pathological
-        # input (no further tags) doesn't loop. ``find`` returns -1
-        # on miss so the ``while`` exits cleanly.
-        max_passes = content.count(self.start_token) + 1
-        passes = 0
-        while passes < max_passes:
-            start_idx = content.find(self.start_token)
-            if start_idx < 0:
-                break
-            after_start = content[start_idx + len(self.start_token) :]
-            end_idx = after_start.find(self.end_token)
-            if end_idx < 0:
-                # Unclosed trailing ``<think>…`` — append the body
-                # to reasoning and truncate content at the opener.
-                trailing_reasoning = after_start.rstrip()
-                if trailing_reasoning:
-                    reasoning = (
-                        (reasoning.rstrip() + "\n" + trailing_reasoning)
-                        if reasoning
-                        else trailing_reasoning
-                    )
-                content = content[:start_idx].rstrip()
-                break
-            # Closed block: pull body into reasoning, splice the
-            # block out of content.
-            block_body = after_start[:end_idx]
-            if block_body:
-                reasoning = (
-                    (reasoning.rstrip() + "\n" + block_body)
-                    if reasoning
-                    else block_body
-                )
-            block_end = (
-                start_idx + len(self.start_token) + end_idx + len(self.end_token)
+        # Locate the LAST ``<think>`` opener in content. If it has
+        # NO matching ``</think>`` after it, it's the trailing
+        # unclosed block from the round-1 leak shape — route to
+        # reasoning. Otherwise leave content untouched so any
+        # closed ``<think>…</think>`` blocks (potentially literal
+        # text) survive the sweep and reach the downstream
+        # ``strip_thinking_tags`` / ``sanitize_output`` stages
+        # unaltered.
+        last_open = content.rfind(self.start_token)
+        if last_open < 0:
+            return reasoning, content
+        after_last_open = content[last_open + len(self.start_token) :]
+        if self.end_token in after_last_open:
+            # The last opener has a matching closer — it's a fully
+            # formed block (closed OR contains a closer). Leave
+            # content alone; the downstream regex strippers will
+            # remove the structural form, and a literal-text form
+            # stays as-is.
+            return reasoning, content
+        # Trailing unclosed opener — route its body to reasoning,
+        # truncate content at the opener. Matches Case 3
+        # "no end tag → reasoning" semantics.
+        trailing_reasoning = after_last_open.rstrip()
+        if trailing_reasoning:
+            reasoning = (
+                (reasoning.rstrip() + "\n" + trailing_reasoning)
+                if reasoning
+                else trailing_reasoning
             )
-            content = content[:start_idx] + content[block_end:]
-            passes += 1
-        # Step 2: strip any orphan ``</think>`` closers left in
-        # content. These would otherwise survive
-        # ``sanitize_output``'s stray-closer strip ONLY if the input
-        # is empty after stripping (the helper collapses empty
-        # results to ``None``), so belt-and-braces here keeps the
-        # bytes off the wire when content remains non-empty.
-        if self.end_token in content:
-            content = content.replace(self.end_token, "")
+        content = content[:last_open].rstrip()
         return reasoning, content
 
     def _held_partial_tag_len(self, current_text: str) -> int:

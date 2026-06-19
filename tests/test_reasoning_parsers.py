@@ -202,20 +202,27 @@ class TestBaseThinkExtractReasoning:
         assert "Line 3" in reasoning
         assert content == "Answer"
 
-    def test_multiple_think_tags_merges_all_into_reasoning(self):
-        # Pre-2026-06-19 behaviour: partition consumed only the first
-        # pair and left the second ``<think>second</think>`` literal in
-        # ``content`` (the source of the round-1 fuzz repro on phi-4-
-        # mini-reasoning-4bit). The sweep added in
-        # ``_sweep_residual_think_tags`` now pulls every closed block
-        # into ``reasoning`` and rejoins the inter-block content
-        # segments, so no tag bytes survive on either channel.
+    def test_multiple_think_tags_uses_first_partition_only(self):
+        # Codex r3-final scope (PR #722): the parser-level sweep only
+        # handles the TRAILING unclosed ``<think>`` opener — the
+        # round-1 fuzz repro shape on phi-4-mini-reasoning-4bit.
+        # CLOSED ``<think>…</think>`` blocks in content are LEFT for
+        # the downstream ``strip_thinking_tags`` regex which already
+        # matches them (see ``vllm_mlx/api/utils.py::THINK_PATTERN``).
+        # This preserves pre-PR behaviour for the rare case of an
+        # answer that legitimately contains literal
+        # ``<think>…</think>`` text.
         text = "<think>first</think>middle<think>second</think>end"
         reasoning, content = self.parser.extract_reasoning(text)
-        assert reasoning == "first\nsecond"
-        assert content == "middleend"
-        assert "<think>" not in (content or "")
-        assert "</think>" not in (content or "")
+        # First-pair partition: reasoning = the first thought only.
+        assert reasoning == "first"
+        # Second closed block survives the parser sweep — the
+        # downstream ``strip_thinking_tags`` (called from
+        # ``routes/chat.py`` after the helper) is the right layer
+        # to strip closed blocks. The first-partition leaves it
+        # in content as ``"middle<think>second</think>end"``.
+        assert "middle" in (content or "")
+        assert "end" in (content or "")
 
 
 # ---------------------------------------------------------------------------
@@ -855,72 +862,44 @@ class TestMultiBlockThinkStreaming:
             f"false partial bytes not released cleanly: {content!r}"
         )
 
-    def test_literal_think_in_answer_text_is_known_limitation(self):
-        """Codex r2 second BLOCKING on PR #722: a literal ``<think>``
-        substring inside the model's answer text (e.g. ``The user
-        said: <think> is a tag``) is reclassified as a structural
-        opener by both this PR's streaming router AND the existing
-        non-streaming ``partition`` path. This is a SHARED pre-
-        existing limitation of the tag-based protocol — the parser
-        has no out-of-band signal to tell a structural tag from a
-        literal substring, so the wire format itself is ambiguous.
+    def test_literal_closed_think_in_answer_preserved_non_streaming(self):
+        """Codex r3 BLOCKING on PR #722: the conservative
+        parser-level sweep MUST preserve a literal closed
+        ``<think>…</think>`` substring inside the model's answer
+        text. The pre-PR ``partition`` path already left such
+        text in content (and the downstream ``strip_thinking_tags``
+        regex stripped it), so this PR must not regress that
+        behaviour.
 
-        The test pins the streaming behaviour to match the non-
-        streaming behaviour so the two paths stay in lock-step: any
-        future fix (e.g. tokenizer-level structural-tag-id check)
-        will land in the base class and be picked up by both. Until
-        then, callers that need to ship literal ``<think>`` text
-        should escape it client-side or use a different reasoning-
-        parser-disabled alias.
+        Note: the STREAMING router does still reclassify a literal
+        ``<think>`` opener inside content as a structural opener —
+        the streaming protocol has no closure-lookahead, so the
+        bug is fundamental to text-based streaming. This
+        non-streaming test pins the conservative scope for the
+        path that DOES have closure lookahead.
 
-        Pre-fix (single-block streaming partition) already had the
-        same bug — there's no behaviour regression here, only a
-        pinned documentation test."""
+        Streaming may regress this edge case but the round-1 fuzz
+        repro (trailing unclosed opener after the answer) is the
+        production-observed bug; literal ``<think>…</think>`` in
+        content is a theoretical edge case the operator can
+        observe via the existing ``strip_thinking_tags`` output."""
         from vllm_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
-        parser_s = DeepSeekR1ReasoningParser()
-        s_reasoning, s_content = self._run_stream(
-            parser_s,
-            [
-                "<think>",
-                "R1",
-                "</think>",
-                "The user said: <think> is a tag. Use it carefully.",
-            ],
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = parser.extract_reasoning(
+            "<think>R</think>The user said: <think>is literal</think> tag"
         )
-        # Streaming path: ``<think>`` substring inside answer text
-        # is mis-parsed as a structural opener — everything after
-        # it lands in reasoning. This matches the non-streaming
-        # path below so the bug surface is symmetric.
-        parser_n = DeepSeekR1ReasoningParser()
-        n_reasoning, n_content = parser_n.extract_reasoning(
-            "<think>R1</think>The user said: <think> is a tag. Use it carefully."
-        )
-
-        # Both paths reclassify the literal ``<think>`` substring as
-        # a structural opener and route everything after it into
-        # reasoning. The two paths diverge in whitespace handling
-        # (non-streaming ``.strip()``s + ``\n``-joins blocks; streaming
-        # emits as-is), but the SEMANTIC equivalence — same payload
-        # bytes modulo whitespace — is what matters for the
-        # symmetric-fix invariant. A future fix (e.g. tokenizer-id
-        # check) lands once in the base class and benefits both
-        # paths.
-        def _norm(s):
-            return ("".join((s or "").split())).strip()
-
-        assert _norm(s_content) == _norm(n_content), (
-            f"streaming/non-streaming literal-tag CONTENT diverged on "
-            f"payload (not just whitespace): streaming={s_content!r} "
-            f"non-streaming={n_content!r}"
-        )
-        assert _norm(s_reasoning) == _norm(n_reasoning), (
-            f"streaming/non-streaming literal-tag REASONING diverged on "
-            f"payload (not just whitespace): streaming={s_reasoning!r} "
-            f"non-streaming={n_reasoning!r}"
-        )
+        assert reasoning == "R"
+        # Closed literal ``<think>is literal</think>`` survives the
+        # parser sweep — downstream ``strip_thinking_tags`` will
+        # strip the tag wrapper, leaving ``"The user said:  tag"``
+        # (which is still wrong but no worse than pre-PR; the
+        # operator can spot the literal-tag bug by setting
+        # ``reasoning_parser=None`` for that alias).
+        assert "The user said:" in (content or "")
+        assert "tag" in (content or "")
 
 
 class TestResidualThinkTagSweep:
@@ -995,40 +974,64 @@ class TestResidualThinkTagSweep:
             expected_in_reasoning=["thought1", "thought2"],
         )
 
-    def test_three_closed_blocks_all_merged(self):
-        """Three closed ``<think>…</think>`` blocks with content
-        segments in between — all blocks fold into ``reasoning``
-        and the inter-block content rejoins as content."""
+    def test_three_closed_blocks_no_trailing_unclosed(self):
+        """Three closed ``<think>…</think>`` blocks all closed cleanly
+        — the parser-level sweep is a NO-OP (no trailing unclosed
+        opener) and the closed blocks reach downstream
+        ``strip_thinking_tags`` which strips them. Codex r3-final
+        scope: the parser deliberately does NOT touch closed blocks
+        in content so a literal ``<think>…</think>`` substring (rare
+        but possible in answer prose) is preserved at the parser
+        layer."""
         from vllm_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
 
         parser = DeepSeekR1ReasoningParser()
         text = "<think>t1</think>A<think>t2</think>B<think>t3</think>C"
-        self._check(
-            parser,
-            text,
-            expected_content="ABC",
-            expected_in_reasoning=["t1", "t2", "t3"],
-        )
+        reasoning, content = parser.extract_reasoning(text)
+        # First-pair partition: reasoning is just t1.
+        assert reasoning == "t1"
+        # Remaining closed blocks survive in content for the
+        # downstream regex to strip. The KEY invariant for this PR
+        # is: no UNCLOSED ``<think>`` opener survives. Closed blocks
+        # are downstream's responsibility.
+        assert content is not None
+        # No trailing unclosed opener at the parser layer (every
+        # ``<think>`` in content has a matching ``</think>`` after it).
+        last_open = content.rfind("<think>")
+        if last_open >= 0:
+            assert "</think>" in content[last_open + 7 :], (
+                "trailing unclosed <think> survived the sweep: "
+                f"content={content!r}"
+            )
 
-    def test_orphan_closer_in_content_stripped(self):
-        """A stray ``</think>`` with no matching opener (model
-        artefact / decoder glitch) must be stripped from content —
-        otherwise it survives ``strip_thinking_tags`` (which needs a
-        matching opener) and gets to the wire via
-        ``sanitize_output`` only when the whole content collapses."""
+    def test_orphan_closer_left_for_downstream(self):
+        """Codex r3-final scope (PR #722): a stray ``</think>``
+        with no matching opener is LEFT for ``sanitize_output``
+        (which already strips stray ``</think>`` via
+        ``_FINAL_SANITIZER``). Earlier draft stripped it at the
+        parser layer; codex r3 BLOCKING #2 pointed out that this
+        layered guarantee was already in place downstream, and the
+        parser layer doing it again risked obscuring an orphan
+        closer that was actually a model artefact the operator
+        wanted to debug. The parser leaves it for the sanitizer."""
         from vllm_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
+        from vllm_mlx.api.utils import sanitize_output
 
         parser = DeepSeekR1ReasoningParser()
         text = "<think>thought</think>part1</think>part2"
-        self._check(
-            parser,
-            text,
-            expected_content="part1part2",
-            expected_in_reasoning=["thought"],
+        reasoning, content = parser.extract_reasoning(text)
+        assert reasoning == "thought"
+        # Stray </think> survives the parser sweep (intentional —
+        # see the conservative scope note above).
+        assert "</think>" in (content or "")
+        # ``sanitize_output`` (the last-mile route filter) strips it.
+        final = sanitize_output(content or "")
+        assert "</think>" not in (final or ""), (
+            f"downstream sanitiser failed to strip orphan closer: {final!r}"
         )
 
     def test_qwen3_inherits_sweep(self):
@@ -1078,29 +1081,30 @@ class TestResidualThinkTagSweep:
         assert reasoning == "thinking"
         assert content == "final answer"
 
-    def test_case2_implicit_think_orphan_closer_in_content_sweep(self):
+    def test_case2_implicit_think_orphan_closer_left_for_downstream(self):
         """Case 2 (chat template injects ``<think>`` so only
         ``</think>`` appears in output) plus a stray secondary
-        ``</think>`` later in the content — the sweep must strip the
-        secondary closer so the tag bytes don't reach the wire.
-
-        Realistic Case 2 — a multi-block ``<think>…</think>`` AFTER
-        the initial implicit-mode close would re-enter Case 1
-        (``<think>`` IS in the text) and be tested by the Case 1
-        path. The interesting Case-2 leak is an ORPHAN ``</think>``
-        with no matching opener after the answer."""
+        ``</think>`` later in the content — the orphan closer is
+        LEFT for ``sanitize_output`` (the last-mile route filter),
+        matching the codex r3-final conservative scope."""
         from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+        from vllm_mlx.api.utils import sanitize_output
 
         parser = Qwen3ReasoningParser()
         # Note: no leading <think> — it was injected in the prompt.
         text = "implicit reasoning</think>answer</think>tail"
         reasoning, content = parser.extract_reasoning(text)
         assert "<think>" not in (content or "")
-        assert "</think>" not in (content or ""), (
-            f"orphan </think> leaked into content: {content!r}"
-        )
         assert "implicit reasoning" in (reasoning or "")
-        assert content == "answertail"
+        # Stray </think> survives the parser; downstream sanitizer
+        # strips it. After ``sanitize_output`` the content reads
+        # cleanly without tag bytes.
+        final = sanitize_output(content or "")
+        assert "</think>" not in (final or ""), (
+            f"downstream sanitiser failed to strip orphan closer: {final!r}"
+        )
+        assert "answer" in (final or "")
+        assert "tail" in (final or "")
 
     def test_reasoning_max_tokens_cap_no_tag_leak(self):
         """End-to-end through the route helper: when
