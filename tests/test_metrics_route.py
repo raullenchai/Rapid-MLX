@@ -180,9 +180,7 @@ def test_metrics_build_info_labels_carry_version_and_model(metrics_client):
 
     # Find the build_info sample line (HELP/TYPE excluded).
     sample_line = next(
-        line
-        for line in body.splitlines()
-        if line.startswith("rapid_mlx_build_info{")
+        line for line in body.splitlines() if line.startswith("rapid_mlx_build_info{")
     )
     assert 'model="qwen3.5-4b"' in sample_line
     assert 'version="' in sample_line
