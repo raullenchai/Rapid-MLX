@@ -511,6 +511,41 @@ class TestThinkParserSSEBoundary:
         assert reasoning == "plain answer"
         assert content == ""
 
+    def test_false_partial_tag_inside_think_block_flushed(self):
+        """Codex r1 P2 follow-up: when a ``<`` appears mid-reasoning
+        and the next delta resolves it to non-tag content, the held
+        ``<`` must be flushed back into reasoning. Without the
+        recovery the byte was silently dropped — reasoning text
+        ``2 < 5`` would render as ``2  5`` (the comparison operator
+        eaten by the partial-tag withhold).
+
+        This case fires inside an OPEN ``<think>`` block
+        (``start_in_prev`` True), distinct from the Case-3 fallback
+        path the prior tests cover. Codex flagged the asymmetry
+        before merge."""
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            ["<think>2 ", "<", " 5</think>", "ans"],
+        )
+        assert reasoning == "2 < 5", (
+            f"false partial tag inside <think> block must flush — got "
+            f"reasoning={reasoning!r}"
+        )
+        assert content == "ans"
+
+    def test_in_think_block_with_lt_and_gt_chars(self):
+        """Counter-test: reasoning that includes both ``<`` and ``>``
+        characters mid-text (common in math / code) must not be
+        garbled by the partial-tag withhold."""
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            ["<think>x > 5 and y < 10", "</think>", "done"],
+        )
+        assert reasoning == "x > 5 and y < 10"
+        assert content == "done"
+
 
 # ---------------------------------------------------------------------------
 # GptOssReasoningParser
