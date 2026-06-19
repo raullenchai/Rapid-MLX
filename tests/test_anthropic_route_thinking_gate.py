@@ -189,8 +189,7 @@ def test_non_stream_route_suppresses_thinking_for_non_thinking_alias():
     body = resp.json()
     block_types = [b["type"] for b in body["content"]]
     assert "thinking" not in block_types, (
-        "non-thinking alias must NOT emit a thinking block; "
-        f"got blocks={block_types!r}"
+        f"non-thinking alias must NOT emit a thinking block; got blocks={block_types!r}"
     )
     # Text block survives so the assistant turn isn't silently empty.
     text_blocks = [b for b in body["content"] if b["type"] == "text"]
