@@ -308,9 +308,7 @@ def test_enforce_for_messages_template_error_raises_400():
         def build_prompt(self, messages, tools=None):  # noqa: ARG002
             # Mirrors the error shape Jinja raises when a chat template
             # references an undefined variable like ``user``.
-            raise ValueError(
-                "TemplateError: 'user' is undefined in chat template"
-            )
+            raise ValueError("TemplateError: 'user' is undefined in chat template")
 
     with pytest.raises(HTTPException) as excinfo:
         enforce_context_length_for_messages(
@@ -366,9 +364,7 @@ def test_enforce_for_messages_non_template_exception_silent_fallthrough():
         is_mllm = False
 
         def build_prompt(self, messages, tools=None):  # noqa: ARG002
-            raise AttributeError(
-                "'BatchedEngine' object has no attribute '_model'"
-            )
+            raise AttributeError("'BatchedEngine' object has no attribute '_model'")
 
     # No exception — fall through silently. Caller (route) goes on to
     # invoke engine.chat() where the real loaded-state check fires.
