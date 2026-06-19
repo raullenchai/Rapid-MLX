@@ -566,6 +566,27 @@ class TestThinkParserSSEBoundary:
         )
         assert content == "done"
 
+    def test_split_opener_completes_with_partial_end_tag_no_leak(self):
+        """Codex r4 P2 follow-up: when the same chunk that completes a
+        split opener ALSO ends with a partial ``</think>``, the recovery
+        branch must withhold the partial-end-tag suffix from the emit
+        so the next chunk can complete the close. Otherwise the literal
+        ``</thi`` bytes leak into ``reasoning_content`` and the client
+        sees stray closing-tag bytes (live-fuzz repro shape:
+        ``['<thi', 'nk>OK</thi', 'nk>ans']``)."""
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            ["<thi", "nk>OK</thi", "nk>ans"],
+        )
+        assert reasoning == "OK", (
+            f"split opener + split closer in same completing delta must "
+            f"not leak partial-end-tag bytes — got reasoning={reasoning!r}"
+        )
+        assert content == "ans", (
+            f"content after split closer must be clean — got content={content!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # GptOssReasoningParser
