@@ -531,6 +531,13 @@ async def _stream_anthropic_messages(
     # this function already reads — sharing avoids a second
     # ``get_config()`` call that test fixtures patching
     # ``anthropic_route.get_config`` would miss.
+    #
+    # Capability is captured ONCE at request entry and frozen in the
+    # ``_gate_thinking_pieces`` closure for the entire SSE response.
+    # A hot-reload that mutates ``cfg.model_registry`` mid-stream
+    # MUST NOT change the gating behavior partway through one
+    # response — clients expect a single coherent SSE contract per
+    # request (codex r3 NIT probe 4).
     _reasoning_enabled = False
     if cfg.model_registry:
         try:
@@ -558,16 +565,36 @@ async def _stream_anthropic_messages(
         False. The rewrite preserves order so the SSE block stream
         still matches what the model actually emitted; downstream
         ``_emit_content_pieces`` merges consecutive same-type pieces
-        into a single content block. No-op (return input unchanged)
-        when the alias IS reasoning-capable, so this is a zero-cost
-        wrapper on the happy path.
+        into a single content block.
+
+        Additionally drops whitespace-only ``thinking`` pieces regardless
+        of ``_reasoning_enabled`` so the streaming surface matches the
+        non-stream ``openai_to_anthropic`` predicate at
+        ``anthropic_adapter.py`` (``reasoning_text.strip() != ""``).
+        Anthropic's public API does not emit empty content blocks; the
+        per-site guards above filter common cases (cap-split kept-bytes
+        + reasoning_parser-emitted whitespace deltas) but ``think_router``
+        can still emerge with a ``("thinking", "   ")`` piece when a
+        ``<think>...</think>`` literal contains only whitespace. Codex
+        r3 MAJOR (probe 1).
         """
         if _reasoning_enabled:
-            return pieces
-        return [
-            ("text", text) if block_type == "thinking" else (block_type, text)
-            for block_type, text in pieces
-        ]
+            return [
+                piece
+                for piece in pieces
+                if not (piece[0] == "thinking" and not piece[1].strip())
+            ]
+        out: list[tuple[str, str]] = []
+        for block_type, text in pieces:
+            if block_type == "thinking":
+                # Demote to text; if the demoted text is also pure
+                # whitespace we still drop it (no value emitting an
+                # empty text_delta to the client).
+                if text.strip():
+                    out.append(("text", text))
+            else:
+                out.append((block_type, text))
+        return out
 
     # Emit message_start
     message_start = {
@@ -767,7 +794,18 @@ async def _stream_anthropic_messages(
                         # eventually sees a final answer instead of an
                         # endless thinking_delta stream.
                         kept, overflow = _account_for_reasoning(reasoning)
-                        if kept:
+                        # Codex r3 MAJOR (probe 1): mirror the non-stream
+                        # whitespace guard at
+                        # ``anthropic_adapter.openai_to_anthropic`` — never
+                        # open a ``thinking`` block for purely whitespace
+                        # reasoning (Anthropic spec: don't emit empty
+                        # content blocks). Without this guard a
+                        # channel="reasoning" delta carrying just
+                        # ``"   \n"`` would open a thinking
+                        # ``content_block_start`` + whitespace
+                        # ``thinking_delta`` that Claude Code surfaces as
+                        # a blank thought bubble.
+                        if kept and kept.strip():
                             pieces_routed.append(("thinking", kept))
                         if overflow:
                             filtered = tool_filter.process(overflow)
@@ -869,7 +907,16 @@ async def _stream_anthropic_messages(
                     reasoning = strip_special_tokens(delta_msg.reasoning)
                     if reasoning:
                         kept, overflow = _account_for_reasoning(reasoning)
-                        if kept:
+                        # Codex r3 MAJOR (probe 1): same whitespace
+                        # guard as the channel-routed branch above and
+                        # the non-stream ``openai_to_anthropic``
+                        # predicate. Reasoning parsers can emit a
+                        # delta whose ``.reasoning`` is whitespace
+                        # only (e.g. qwen3 splitting on a newline
+                        # boundary); opening a thinking block here
+                        # would surface a blank thought bubble in
+                        # Claude Code.
+                        if kept and kept.strip():
                             pieces.append(("thinking", kept))
                         if overflow:
                             # Codex round-7 BLOCKING #1: emitting

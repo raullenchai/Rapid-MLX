@@ -447,3 +447,295 @@ def test_stream_route_bypasses_implicit_parser_for_non_thinking_alias():
     )
 
     reset_config()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Codex r3 MAJOR (probe 5): wire-format byte-level pinning.
+#
+# The five tests above parse SSE payloads into Python objects via
+# ``_parse_sse_events`` and then check semantic invariants. That misses
+# wire-format regressions Anthropic SDKs are sensitive to:
+#   * spurious ``content_block_start`` for ``type="thinking"`` even when
+#     no thinking delta follows (clients enter "extended thinking" UI);
+#   * empty ``text_delta`` events (``"delta":{"text":""}``) — Anthropic's
+#     reference client treats these as noise and some downstream tools
+#     interrupt rendering;
+#   * missing or duplicated ``content_block_stop`` for the demoted text
+#     block.
+#
+# The tests below pin the raw event prefix bytes and assert exact
+# framing so future regressions on the streaming gate (or on
+# ``_emit_content_pieces``) surface immediately.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _split_raw_sse(body: str) -> list[str]:
+    """Return raw ``event: ... \ndata: ...`` blocks (no trailing \n\n)."""
+    return [chunk for chunk in body.split("\n\n") if chunk.strip()]
+
+
+def test_stream_route_wire_format_no_thinking_start_byte_level():
+    """No ``event: content_block_start`` byte sequence whose data
+    payload contains ``"type": "thinking"`` may appear in the raw
+    bytes. Stronger than the parsed-object check: a regression that
+    emits a malformed JSON payload (e.g. wrong field order or extra
+    keys) would still trip this assertion because we grep the data
+    line directly.
+    """
+    engine = _StreamingEngineEmittingReasoningChannel()
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+
+    # Every event block carrying ``content_block_start`` must NOT
+    # contain ``"thinking"`` ANYWHERE in its data line.
+    for raw in _split_raw_sse(body):
+        if "content_block_start" not in raw:
+            continue
+        data_line = next(
+            (line for line in raw.splitlines() if line.startswith("data: ")),
+            "",
+        )
+        assert '"type":"thinking"' not in data_line.replace(" ", ""), (
+            f"non-thinking alias leaked a thinking content_block_start "
+            f"into raw SSE: {raw!r}"
+        )
+
+
+def test_stream_route_wire_format_no_empty_text_delta():
+    """No ``text_delta`` event in the raw stream may carry an empty
+    string. Codex r3 MAJOR (probe 1) — strip-whitespace guards must
+    prevent the streaming surface from opening an empty content
+    block or emitting an empty delta to the client.
+    """
+    engine = _StreamingEngineEmittingReasoningChannel()
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+
+    for raw in _split_raw_sse(body):
+        if "content_block_delta" not in raw:
+            continue
+        data_line = next(
+            (line for line in raw.splitlines() if line.startswith("data: ")),
+            "",
+        )
+        if "text_delta" not in data_line:
+            continue
+        payload = json.loads(data_line.removeprefix("data: "))
+        delta_text = payload.get("delta", {}).get("text", None)
+        assert delta_text != "", f"empty text_delta leaked into SSE stream: raw={raw!r}"
+
+
+def test_stream_route_wire_format_event_prefix_and_terminator():
+    """Each non-empty event chunk must follow the ``event: <name>\n``
+    ``data: <json>\n\n`` shape exactly. Anthropic SDKs parse on this
+    framing; a missing ``\n\n`` terminator or extra whitespace would
+    silently break clients.
+    """
+    engine = _StreamingEngineEmittingReasoningChannel()
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+
+    # The body must end with a terminator. Trailing-newline tolerance
+    # mirrors what Anthropic's reference SSE parser expects.
+    assert body.endswith("\n\n"), (
+        f"SSE body missing trailing terminator: tail={body[-20:]!r}"
+    )
+
+    for raw in _split_raw_sse(body):
+        lines = raw.splitlines()
+        # Each event block we emit has 2 lines: ``event: ...`` and
+        # ``data: ...``. (No comments / multi-line data.)
+        assert len(lines) == 2, (
+            f"unexpected SSE chunk shape (expected 2 lines): {lines!r}"
+        )
+        assert lines[0].startswith("event: "), (
+            f"first SSE line must start with 'event: ': {lines[0]!r}"
+        )
+        assert lines[1].startswith("data: "), (
+            f"second SSE line must start with 'data: ': {lines[1]!r}"
+        )
+        # data must be JSON-parseable
+        json.loads(lines[1].removeprefix("data: "))
+
+
+def test_stream_route_wire_format_exactly_one_text_block_for_demoted_stream():
+    """When the engine emits two reasoning deltas on a non-thinking
+    alias the gate demotes them to text. The raw stream must contain
+    exactly ONE ``content_block_start`` ``type="text"`` (consecutive
+    same-type pieces merge in ``_emit_content_pieces``) and exactly
+    ONE matching ``content_block_stop``. Catches regressions that
+    would emit ``start/stop/start/stop`` instead.
+    """
+    engine = _StreamingEngineEmittingReasoningChannel()
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+
+    text_starts = 0
+    text_stops = 0
+    open_text_index: int | None = None
+    for raw in _split_raw_sse(body):
+        data_line = next(
+            (line for line in raw.splitlines() if line.startswith("data: ")),
+            "",
+        )
+        if not data_line:
+            continue
+        payload = json.loads(data_line.removeprefix("data: "))
+        if payload.get("type") == "content_block_start":
+            block_type = payload.get("content_block", {}).get("type")
+            if block_type == "text":
+                text_starts += 1
+                open_text_index = payload.get("index")
+        elif payload.get("type") == "content_block_stop":
+            # Match against the most-recently-opened text block.
+            if open_text_index is not None and payload.get("index") == open_text_index:
+                text_stops += 1
+                open_text_index = None
+
+    assert text_starts == 1, (
+        f"expected exactly 1 text content_block_start (merged); "
+        f"got {text_starts} in body={body!r}"
+    )
+    assert text_stops == 1, (
+        f"expected exactly 1 matching content_block_stop; "
+        f"got {text_stops} in body={body!r}"
+    )
+
+
+def test_stream_route_drops_whitespace_only_reasoning_delta():
+    """Codex r3 MAJOR (probe 1): a channel="reasoning" delta carrying
+    pure whitespace must NOT open a thinking content_block_start, nor
+    emit an empty/whitespace thinking_delta. Mirrors the non-stream
+    ``openai_to_anthropic`` predicate (``reasoning_text.strip() != ""``).
+    """
+
+    class _ReasoningChannelWhitespaceOnly:
+        preserve_native_tool_format = False
+        is_mllm = False
+        supports_guided_generation = False
+        tokenizer = None
+
+        def __init__(self):
+            self.stream_calls: list[dict[str, Any]] = []
+
+        def build_prompt(self, messages, tools=None, enable_thinking=None):
+            return "PROMPT"
+
+        async def stream_chat(self, messages, **kwargs):
+            self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+            # Whitespace-only reasoning — must be filtered.
+            yield GenerationOutput(
+                text="   \n",
+                new_text="   \n",
+                tokens=[1],
+                prompt_tokens=4,
+                completion_tokens=1,
+                finished=False,
+                finish_reason=None,
+                channel="reasoning",
+            )
+            yield GenerationOutput(
+                text="   \nanswer",
+                new_text="answer",
+                tokens=[1, 2],
+                prompt_tokens=4,
+                completion_tokens=2,
+                finished=True,
+                finish_reason="stop",
+                channel="content",
+            )
+
+    # Switch to a thinking-capable alias so the gate is the no-op
+    # branch — we want to confirm the WHITESPACE-DROP guard fires
+    # even when the alias IS reasoning-capable.
+    cfg = reset_config()
+    engine = _ReasoningChannelWhitespaceOnly()
+    cfg.engine = engine
+    cfg.model_name = "thinking-model"
+    cfg.model_registry = None
+    cfg.reasoning_parser = object()
+    cfg.reasoning_parser_name = "hermes"
+    cfg.tool_parser = None
+
+    app = FastAPI()
+    app.include_router(anthropic_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "thinking-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+    thinking_starts = [
+        e
+        for e in events
+        if e.get("type") == "content_block_start"
+        and e.get("content_block", {}).get("type") == "thinking"
+    ]
+    assert thinking_starts == [], (
+        f"whitespace-only reasoning leaked a thinking content block; "
+        f"got starts={thinking_starts!r}"
+    )
+    # The content delta still surfaces.
+    text_deltas = [
+        e["delta"]["text"]
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    ]
+    assembled = "".join(text_deltas)
+    assert assembled == "answer", (
+        f"expected 'answer' to surface; got {assembled!r} from {text_deltas!r}"
+    )
+
+    reset_config()
