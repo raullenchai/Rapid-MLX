@@ -513,7 +513,7 @@ Decoded examples:
 81 explicit aliases across 13 families ship today. Run `rapid-mlx models` for the live list with parser, hybrid / MoE flags, and DFlash eligibility.
 
 <details>
-<summary><strong>Show all 81 aliases by family</strong></summary>
+<summary><strong>Show all 82 aliases by family</strong></summary>
 
 | Family | Aliases | Notable |
 |---|---|---|
@@ -528,7 +528,7 @@ Decoded examples:
 | **GPT-OSS** | `gpt-oss-20b-mxfp4-q8` | Harmony native |
 | **MiniMax** | `minimax-m2.5-4bit`, `minimax-m2.7-mxfp4` | |
 | **Mistral / Devstral** | `mistral-24b-4bit`, `devstral-24b-4bit`, `devstral-v2-24b-4bit`, `ministral-3b-4bit` | |
-| **Other** | `phi-4-14b-4bit`, `phi-4-mini-4bit`, `smollm3-3b-4bit`, `nemotron-30b-4bit`, `bonsai-1.7b-unpacked`, `-4b-unpacked`, `-8b-unpacked`, `granite4-tiny-4bit` | |
+| **Other** | `phi-4-14b-4bit`, `phi-4-mini-4bit`, `smollm3-3b-4bit`, `nemotron-30b-4bit`, `bonsai-1.7b-unpacked`, `-4b-unpacked`, `-8b-unpacked`, `granite4-tiny-4bit`, `vibethinker-3b-8bit` | Weibo VibeThinker 3B reasoning (MIT) |
 | 🆕 **Text-Diffusion** | `diffusion-gemma-26b-4bit`, `diffusion-gemma-26b-8bit` | Non-autoregressive (block denoising); same `/v1/chat/completions` API |
 
 ✨ = DFlash speculative decoding supported (opt in with `--enable-dflash`). `rapid-mlx info <alias>` shows per-alias capabilities.

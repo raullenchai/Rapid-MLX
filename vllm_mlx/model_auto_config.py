@@ -134,6 +134,24 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             supports_spec_decode=False,
         ),
     ),
+    # VibeThinker (Weibo AI reasoning derivative, base = Qwen2.5-Coder-3B).
+    # Pure-attention Qwen2 architecture; chat template does NOT inject
+    # ``<think>`` — the model emits ``<think>...</think>`` autonomously on
+    # every response. ``deepseek_r1`` parser handles that "model decides"
+    # contract (same as DeepSeek-R1 distill on Qwen base). Model card
+    # explicitly states tool calling is unsupported even though the
+    # inherited Qwen2 vocab carries ``<tool_call>`` tokens, so leave
+    # ``tool_call_parser=None``. Placed before the generic ``qwen`` regex
+    # would have been (there is none today) — this pattern is the only
+    # signal for full-HF-path serves of ``WeiboAI/VibeThinker-3B`` or
+    # ``mlx-community/VibeThinker-3B-*`` that miss the alias lookup.
+    (
+        re.compile(r"vibethinker", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser=None,
+            reasoning_parser="deepseek_r1",
+        ),
+    ),
     # Qwen3-Coder-Next / Qwen3-Next — hybrid linear attention, BEFORE
     # the generic Qwen3-Coder regex (which would otherwise win and tag
     # this as pure-attention by mistake).
