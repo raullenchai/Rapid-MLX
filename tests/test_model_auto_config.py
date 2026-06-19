@@ -16,10 +16,14 @@ class TestDetectModelConfig:
     """Test detect_model_config with various model paths."""
 
     # Qwen family (non-Coder) — covers the original Qwen3 line, the
-    # Qwen3.5 family, Qwen3-4B-Thinking/Instruct-2507 small variants,
-    # and Qwen3-VL-2B (the 2025/2026 VL slot below the existing 4B
-    # entry). The ``qwen3`` regex resolves all of these to the same
-    # ``hermes`` + ``qwen3`` parser pair.
+    # Qwen3.5 family, and the Qwen3-4B-Thinking-2507 small variant.
+    # The ``qwen3`` regex resolves all of these to the same ``hermes``
+    # + ``qwen3`` parser pair.
+    #
+    # Qwen3-4B-Instruct-2507 and Qwen3-VL-2B-Instruct deliberately NOT
+    # listed here — they are NON-thinking variants and have their own
+    # auto-config regex (above the generic ``qwen3``) that clears the
+    # reasoning parser. See ``test_qwen3_non_thinking_variants`` below.
     @pytest.mark.parametrize(
         "model_path",
         [
@@ -27,10 +31,7 @@ class TestDetectModelConfig:
             "mlx-community/Qwen3-0.6B-MLX-4bit",
             "/Users/someone/.lmstudio/models/mlx-community/Qwen3.5-122B-A10B-8bit",
             "mlx-community/Qwen3-4B-Thinking-2507-4bit",
-            "mlx-community/Qwen3-4B-Instruct-2507-4bit",
             "Qwen/Qwen3-4B-Thinking-2507",
-            "mlx-community/Qwen3-VL-2B-Instruct-4bit",
-            "Qwen/Qwen3-VL-2B-Instruct",
         ],
     )
     def test_qwen_family(self, model_path):
@@ -38,6 +39,34 @@ class TestDetectModelConfig:
         assert config is not None
         assert config.tool_call_parser == "hermes"
         assert config.reasoning_parser == "qwen3"
+
+    # Qwen3 non-thinking variants — Instruct-2507 and VL-2B. These do
+    # NOT emit ``<think>...</think>`` autonomously; wiring the qwen3
+    # reasoning parser duplicates the response into BOTH content and
+    # reasoning_content when the client passes ``enable_thinking=True``
+    # (PR #715 bundle, fuzz finding A). The dedicated regex MUST win
+    # over the generic ``qwen3`` regex.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+            "Qwen/Qwen3-4B-Instruct-2507",
+            "mlx-community/Qwen3-VL-2B-Instruct-4bit",
+            "Qwen/Qwen3-VL-2B-Instruct",
+        ],
+    )
+    def test_qwen3_non_thinking_variants(self, model_path):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser == "hermes", (
+            f"{model_path}: tool_call_parser stays 'hermes'. "
+            f"Got {cfg.tool_call_parser!r}."
+        )
+        assert cfg.reasoning_parser is None, (
+            f"{model_path}: reasoning_parser must be None — non-thinking "
+            f"Qwen3 variant. Did the specific regex get demoted below the "
+            f"generic 'qwen3' regex? Got {cfg.reasoning_parser!r}."
+        )
 
     # GLM family
     @pytest.mark.parametrize(
@@ -291,17 +320,11 @@ class TestDetectModelConfig:
         assert config.tool_call_parser == "kimi"
         assert config.reasoning_parser is None
 
-    # Gemma — covers Gemma 3 family AND Gemma 3n on-device multimodal
-    # (the ``gemma`` regex catches both; gemma-3n config.json reports
-    # model_type=gemma3n but the family default at the alias layer is
-    # the same hermes/no-reasoning wiring).
+    # Gemma 3 (non-3n) — text-only family; carries hermes tool format.
     @pytest.mark.parametrize(
         "model_path",
         [
             "mlx-community/gemma-3-12b-it-4bit",
-            "mlx-community/gemma-3n-E2B-it-4bit",
-            "lmstudio-community/gemma-3n-E4B-it-MLX-4bit",
-            "google/gemma-3n-E2B-it",
         ],
     )
     def test_gemma(self, model_path):
@@ -310,15 +333,38 @@ class TestDetectModelConfig:
         assert config.tool_call_parser == "hermes"
         assert config.reasoning_parser is None
 
-    # Phi (non-reasoning) — covers Phi-4-mini-instruct and Phi-3.5-mini
-    # which share the same ``phi[-_]?[34]`` regex → hermes / no-reasoning
-    # default.
+    # Gemma 3n — on-device multimodal (text+image+audio). Chat
+    # template defines no tool-call special tokens; pin
+    # ``tool_call_parser=None`` so HF-path serves don't advertise tool
+    # capability the model can't honour (PR #715 bundle, fuzz
+    # finding D).
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "mlx-community/gemma-3n-E2B-it-4bit",
+            "lmstudio-community/gemma-3n-E4B-it-MLX-4bit",
+            "google/gemma-3n-E2B-it",
+        ],
+    )
+    def test_gemma_3n_no_tool_calls(self, model_path):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser is None, (
+            f"{model_path}: tool_call_parser must be None — Gemma 3n chat "
+            f"template carries no tool-call tokens (PR #715 fuzz finding "
+            f"D). Did the gemma-3n regex get demoted below the generic "
+            f"'gemma' regex? Got {cfg.tool_call_parser!r}."
+        )
+        assert cfg.reasoning_parser is None
+
+    # Phi-4-mini-instruct (non-reasoning) — the only remaining Phi
+    # family member with hermes tool calls. Phi-3.5-mini moved to
+    # ``test_phi_3_5_no_tool_calls`` (no tool support) and
+    # Phi-4-mini-reasoning has its own test below (deepseek_r1 parser).
     @pytest.mark.parametrize(
         "model_path",
         [
             "mlx-community/Phi-4-mini-instruct-4bit",
-            "microsoft/Phi-3.5-mini-instruct",
-            "mlx-community/Phi-3.5-mini-instruct-4bit",
         ],
     )
     def test_phi(self, model_path):
@@ -326,6 +372,28 @@ class TestDetectModelConfig:
         assert config is not None
         assert config.tool_call_parser == "hermes"
         assert config.reasoning_parser is None
+
+    # Phi-3.5-mini — chat template defines no ``<tool_call>`` special
+    # token; the model ignores tool prompts (PR #715 bundle, fuzz
+    # finding D). Pin ``tool_call_parser=None``. The dedicated regex
+    # MUST win over the generic ``phi[-_]?[34]`` regex.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "microsoft/Phi-3.5-mini-instruct",
+            "mlx-community/Phi-3.5-mini-instruct-4bit",
+        ],
+    )
+    def test_phi_3_5_no_tool_calls(self, model_path):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser is None, (
+            f"{model_path}: tool_call_parser must be None — Phi-3.5-mini "
+            f"chat template carries no tool tokens (PR #715 fuzz finding "
+            f"D). Did the phi-3.5 regex get demoted below the generic "
+            f"'phi' regex? Got {cfg.tool_call_parser!r}."
+        )
+        assert cfg.reasoning_parser is None
 
     # Phi-4-mini-reasoning — Microsoft's math-tuned reasoning variant.
     # Smoke-verified to emit autonomous ``<think>...</think>`` blocks

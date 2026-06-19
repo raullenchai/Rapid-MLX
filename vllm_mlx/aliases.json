@@ -891,7 +891,7 @@
   "qwen3-4b-instruct-2507-4bit": {
     "hf_path": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
     "tool_call_parser": "hermes",
-    "reasoning_parser": "qwen3",
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": true
@@ -926,7 +926,7 @@
   },
   "phi-3.5-mini-4bit": {
     "hf_path": "mlx-community/Phi-3.5-mini-instruct-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
@@ -935,14 +935,14 @@
   "qwen3-vl-2b-4bit": {
     "hf_path": "mlx-community/Qwen3-VL-2B-Instruct-4bit",
     "tool_call_parser": "hermes",
-    "reasoning_parser": "qwen3",
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": true
   },
   "gemma-3n-e2b-4bit": {
     "hf_path": "mlx-community/gemma-3n-E2B-it-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
@@ -955,7 +955,7 @@
   },
   "gemma-3n-e4b-4bit": {
     "hf_path": "lmstudio-community/gemma-3n-E4B-it-MLX-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,

@@ -549,9 +549,7 @@ def test_vibethinker_truncated_think_no_duplicate_content_reasoning():
     assert "Step 3" in reasoning
     # Content explicitly blanked — must NOT duplicate the reasoning
     # trace (the live-test bug signature).
-    assert not cleaned, (
-        f"truncated <think> trace leaked into content: {cleaned!r}"
-    )
+    assert not cleaned, f"truncated <think> trace leaked into content: {cleaned!r}"
     # Defensive: the trace must not appear in content.
     assert "Step 1" not in (cleaned or "")
 
@@ -769,3 +767,82 @@ def test_engine_routed_truncated_think_with_cap_does_not_leak_overflow():
     assert len(reasoning) == 40
     assert cleaned == ""
     assert "thinking out loud" not in (cleaned or "")
+
+
+# ---------------------------------------------------------------------------
+# Bug B (PR #715 fuzz bundle): the truncated-``<think>`` leak plug must
+# fire for ALL reasoning parsers whose ``extract_reasoning`` returns
+# ``(reasoning, None)`` on unclosed-``<think>`` input — including the
+# Qwen3 parser used by ``qwen3-4b-thinking-2507-4bit``. The plug lives in
+# the shared ``_finalize_content_and_reasoning`` helper so coverage
+# should be parser-agnostic; pinning here so a parser-specific override
+# can't silently regress.
+# ---------------------------------------------------------------------------
+
+
+def test_qwen3_truncated_think_no_duplicate_content_reasoning():
+    """Same bug shape as the VibeThinker repro above, but via the
+    ``Qwen3ReasoningParser`` (the parser wired for
+    ``qwen3-4b-thinking-2507-4bit`` and the rest of the Qwen3
+    thinking family). The fuzz battery confirmed
+    ``finish_reason=length`` mid-``<think>`` on Qwen3-4B-Thinking-2507
+    produced byte-identical content + reasoning_content before the
+    leak plug landed.
+
+    Since the plug fires on the parser's ``(reasoning, None)`` return
+    shape rather than the parser class, this test would FAIL if a
+    future PR routed Qwen3 truncated-think through a different
+    branch that bypasses the plug.
+    """
+    raw = _VIBETHINKER_TRUNCATED_THINK
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+    )
+    assert reasoning is not None
+    assert "Step 3" in reasoning
+    assert not cleaned, (
+        f"qwen3 truncated <think> trace leaked into content: {cleaned!r}"
+    )
+
+
+def test_qwen3_truncated_think_with_enable_thinking_true():
+    """Qwen3 + ``enable_thinking=True`` — the explicit-thinking signal
+    must NOT cause the plug to mis-fire and also must NOT double-clear
+    cleaned_text in a way that breaks the existing #575 Case-4 path."""
+    raw = _VIBETHINKER_TRUNCATED_THINK
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=True,
+    )
+    assert reasoning is not None
+    assert "Step 3" in reasoning
+    assert not cleaned
+
+
+def test_qwen3_engine_routed_truncated_think_no_duplicate():
+    """Engine-routed path with Qwen3 parser wired (the typical
+    Qwen3-4B-Thinking-2507 production shape: OutputRouter handles the
+    ``<think>`` token boundary, then helper finalizes)."""
+    raw = "<think>Let me solve this. 7 * 12 = 84, then I need to..."
+    engine_reasoning = "Let me solve this. 7 * 12 = 84, then I need to..."
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text=engine_reasoning,
+        enable_thinking=None,
+    )
+    assert reasoning == engine_reasoning
+    assert not cleaned, (
+        f"qwen3 engine-routed truncated <think> trace leaked: {cleaned!r}"
+    )

@@ -661,42 +661,80 @@ def test_vibethinker_family_wires_deepseek_r1_reasoning_parser(alias: str) -> No
     )
 
 
-@pytest.mark.parametrize(
-    "alias",
-    [
-        "qwen3-4b-thinking-2507-4bit",
-        "qwen3-4b-instruct-2507-4bit",
-        "qwen3-vl-2b-4bit",
-    ],
-)
-def test_qwen3_small_models_batch_wires_qwen3_parsers(alias: str) -> None:
-    """The Qwen3 ≤5B additions (Thinking-2507, Instruct-2507, VL-2B)
-    must all carry the Qwen3 family parser pair (``hermes`` for tool
-    calls + ``qwen3`` for reasoning).
+def test_qwen3_4b_thinking_2507_wires_qwen3_reasoning_parser() -> None:
+    """The Qwen3-4B-Thinking-2507 variant emits ``<think>...</think>``
+    blocks autonomously on every response; it MUST carry the
+    ``qwen3`` reasoning parser so the trace lands in
+    ``reasoning_content`` instead of leaking into ``content``.
 
-    The ``qwen3`` reasoning parser is the right pick even for the
-    non-thinking ``Instruct`` variant — the parser stays inert on
-    output that contains no ``<think>...</think>`` blocks and never
-    swallows content; pinning it keeps the wiring uniform across the
-    whole Qwen3 family and matches existing entries like
-    ``qwen3-4b-8bit`` / ``qwen3-vl-4b-4bit``.
-
-    Pinning here so a future PR can't silently revert the Thinking-2507
-    entry to ``reasoning_parser=null`` (which would leak ``<think>``
-    blocks into ``content``) or downgrade the Instruct-2507 entry away
-    from the family default (which would create a parser-mismatch hop
-    for clients that round-robin across Qwen3 sizes).
+    Pinned separately from the non-thinking siblings (Instruct-2507
+    + VL-2B) because the non-thinking variants must NOT carry the
+    parser — see the docstring on
+    ``test_qwen3_small_non_thinking_variants_have_no_reasoning_parser``
+    for the fuzz-evidence rationale (PR #715 bundle).
     """
     profiles = list_profiles()
+    alias = "qwen3-4b-thinking-2507-4bit"
     assert alias in profiles, f"{alias} missing from aliases.json"
     assert profiles[alias].tool_call_parser == "hermes", (
         f"{alias}: tool_call_parser must be 'hermes' (Qwen3 family default). "
         f"Got {profiles[alias].tool_call_parser!r}."
     )
     assert profiles[alias].reasoning_parser == "qwen3", (
-        f"{alias}: reasoning_parser must be 'qwen3' — the parser is inert "
-        f"on outputs without `<think>` blocks, so it's safe for both the "
-        f"Thinking and Instruct variants. Got {profiles[alias].reasoning_parser!r}."
+        f"{alias}: reasoning_parser must be 'qwen3' — the Thinking-2507 "
+        f"variant emits `<think>` blocks autonomously. "
+        f"Got {profiles[alias].reasoning_parser!r}."
+    )
+    assert profiles[alias].is_hybrid is False, (
+        f"{alias}: Qwen3-4B is pure-attention, not hybrid."
+    )
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "qwen3-4b-instruct-2507-4bit",
+        "qwen3-vl-2b-4bit",
+    ],
+)
+def test_qwen3_small_non_thinking_variants_have_no_reasoning_parser(
+    alias: str,
+) -> None:
+    """The Qwen3-4B-Instruct-2507 and Qwen3-VL-2B-Instruct aliases are
+    NON-thinking variants — their model cards explicitly state no
+    ``<think>`` emission and the 2026-06-18 fuzz battery against PR
+    #714 confirmed the symptom: with ``reasoning_parser=qwen3`` wired
+    AND the client passing ``enable_thinking=True`` (or the parser's
+    Case-4 fallback firing on a no-tag output) the entire response
+    is duplicated into BOTH ``content`` AND ``reasoning_content``,
+    leaving a confusing assistant turn for the caller.
+
+    The qwen3 parser's Case-4 "no tags AND enable_thinking=True →
+    everything is reasoning" path is the load-bearing addition for
+    #575 — it's correct for actual thinking models but a footgun for
+    non-thinking variants that never produce ``<think>`` regardless
+    of the kwarg. Setting ``reasoning_parser=null`` short-circuits
+    the whole reasoning path so output flows directly to ``content``
+    as the non-thinking variants intend.
+
+    Pinning here so a future PR can't silently re-wire the qwen3
+    parser on the strength of "but the family default is qwen3" — the
+    Thinking-2507 sibling keeps the family parser (see
+    ``test_qwen3_4b_thinking_2507_wires_qwen3_reasoning_parser``).
+    """
+    profiles = list_profiles()
+    assert alias in profiles, f"{alias} missing from aliases.json"
+    assert profiles[alias].tool_call_parser == "hermes", (
+        f"{alias}: tool_call_parser stays 'hermes' (the model can emit "
+        f"hermes-style tool calls via the Qwen3 vocab; only the reasoning "
+        f"parser is being cleared). Got {profiles[alias].tool_call_parser!r}."
+    )
+    assert profiles[alias].reasoning_parser is None, (
+        f"{alias}: reasoning_parser must be None — this is a NON-thinking "
+        f"Qwen3 variant and the qwen3 parser's Case-4 fallback duplicates "
+        f"the whole output into both content + reasoning_content when the "
+        f"client passes enable_thinking=True. See PR #715 bundle (fuzz "
+        f"finding A). Got {profiles[alias].reasoning_parser!r}."
     )
     assert profiles[alias].is_hybrid is False, (
         f"{alias}: Qwen3 (2B / 4B / VL) is pure-attention, not hybrid. "
@@ -824,6 +862,84 @@ def test_gemma_3n_multimodal_aliases_share_family_sampling() -> None:
         assert sampling.get("top_k") == 64, (
             f"{alias}: top_k must be 64. Got {sampling.get('top_k')!r}."
         )
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "phi-3.5-mini-4bit",
+        "gemma-3n-e2b-4bit",
+        "gemma-3n-e4b-4bit",
+    ],
+)
+def test_no_tool_call_support_aliases_have_null_tool_call_parser(
+    alias: str,
+) -> None:
+    """Models whose chat templates can't emit hermes-style tool grammar
+    must carry ``tool_call_parser=null`` so the route doesn't
+    advertise tools the model can't fulfil.
+
+    The 2026-06-18 fuzz battery against PR #714 sent tool-call prompts
+    to each ≤5B alias and recorded whether the model emitted a parseable
+    ``<tool_call>...</tool_call>`` envelope:
+
+    * ``phi-3.5-mini-4bit`` (Microsoft Phi-3.5) — chat template only
+      defines ``<|user|>`` / ``<|assistant|>`` / ``<|end|>``; no
+      ``<tool_call>`` special tokens. Tool-call attempts get ignored.
+    * ``gemma-3n-e2b-4bit`` / ``gemma-3n-e4b-4bit`` (Google Gemma 3n
+      multimodal) — chat template injects no tool-call markers; model
+      replies with plain prose when asked to use a tool.
+
+    With ``tool_call_parser=hermes`` (the prior wiring carried over
+    from the family-default seed) the route still SCANS for hermes
+    markup and returns ``tool_calls=[]`` + raw text in ``content`` —
+    not a crash, but it advertises ``tools`` capability in the
+    OpenAI surface that the model can't honour, which clients
+    consuming the ``/v1/models`` capability discovery treat as a
+    bug. Setting ``tool_call_parser=null`` is the honest signal.
+
+    ``phi-4-mini-reasoning-4bit`` is deliberately NOT in this list —
+    Phi-4-mini-reasoning CAN emit tool calls (the parser works), it
+    just spends most of its 256-token default budget on thinking
+    first. Users bump ``max_tokens=1024+`` for tool use; the alias
+    config stays at ``tool_call_parser=hermes``.
+
+    Pinned here so a future PR can't silently re-wire ``hermes``
+    on the strength of "but the family default is hermes" — the
+    family default is correct for the chat-format families that
+    ship tool tokens, and wrong for these three that don't.
+    """
+    profiles = list_profiles()
+    assert alias in profiles, f"{alias} missing from aliases.json"
+    assert profiles[alias].tool_call_parser is None, (
+        f"{alias}: tool_call_parser must be None — the model's chat "
+        f"template can't emit hermes-style tool grammar (PR #715 fuzz "
+        f"finding D). Got {profiles[alias].tool_call_parser!r}."
+    )
+
+
+def test_phi_4_mini_reasoning_keeps_hermes_tool_call_parser() -> None:
+    """Counter-pin to ``test_no_tool_call_support_aliases_have_null_tool_call_parser``:
+    ``phi-4-mini-reasoning-4bit`` MUST stay at ``tool_call_parser=hermes``.
+
+    The Phi-4-mini-reasoning variant CAN emit tool calls (the hermes
+    parser successfully extracts them when the model gets enough
+    decode budget) — it just spends most of its 256-token default
+    budget on its autonomous ``<think>...</think>`` block before
+    producing the tool call. Users need ``max_tokens=1024+`` for
+    reliable tool use; the parser wiring itself is correct.
+
+    Pinned separately so a "let's clean up tool_call_parser on
+    phi family" sweep can't silently flip this entry to ``null``
+    on the strength of pattern-matching to phi-3.5.
+    """
+    profile = list_profiles()["phi-4-mini-reasoning-4bit"]
+    assert profile.tool_call_parser == "hermes", (
+        f"phi-4-mini-reasoning-4bit: tool_call_parser must stay 'hermes' — "
+        f"the model CAN tool-call (parser works), it just needs more "
+        f"max_tokens for the thinking block. See PR #715 bundle. "
+        f"Got {profile.tool_call_parser!r}."
+    )
 
 
 def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:

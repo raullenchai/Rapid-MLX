@@ -207,6 +207,28 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
         ),
     ),
+    # Qwen3 non-thinking variants — these explicitly DO NOT emit
+    # ``<think>...</think>`` and the qwen3 reasoning parser's Case-4
+    # fallback ("no tags + ``enable_thinking=True`` → all output is
+    # reasoning", #575) duplicates the entire response into BOTH
+    # ``content`` and ``reasoning_content`` when the client passes
+    # ``enable_thinking=True``. The 2026-06-18 fuzz battery against PR
+    # #714 caught this on the Qwen3-VL-2B-Instruct and
+    # Qwen3-4B-Instruct-2507 4-bit MLX repacks.
+    #
+    # MUST come BEFORE the generic ``qwen3`` regex below. The Thinking
+    # sibling (Qwen3-4B-Thinking-2507) takes the family default since
+    # ``thinking`` won't match either of these.
+    (
+        re.compile(
+            r"qwen3[-_]?(?:vl[-_]?2b|4b[-_]?instruct)",
+            re.IGNORECASE,
+        ),
+        ModelConfig(
+            tool_call_parser="hermes",
+            reasoning_parser=None,
+        ),
+    ),
     # Qwen3 (pure attention, the original Qwen3 line)
     (
         re.compile(r"qwen3", re.IGNORECASE),
@@ -271,6 +293,20 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         ModelConfig(
             tool_call_parser="gemma4",
             reasoning_parser="gemma4",
+        ),
+    ),
+    # Gemma 3n — on-device multimodal (text+image+audio). The chat
+    # template does NOT define tool-call special tokens, and the 2026-
+    # 06-18 fuzz battery against PR #714 confirmed the model ignores
+    # tool prompts entirely (returns prose, not a parseable envelope).
+    # ``tool_call_parser=hermes`` advertised tool capability the model
+    # cannot honour. Match BEFORE the generic ``gemma`` regex so the
+    # 3n variants resolve to ``tool_call_parser=None``.
+    (
+        re.compile(r"gemma[-_]?3n", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser=None,
+            reasoning_parser=None,
         ),
     ),
     # Gemma 2/3 (hermes format)
@@ -339,6 +375,21 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         ModelConfig(
             tool_call_parser="hermes",
             reasoning_parser="deepseek_r1",
+        ),
+    ),
+    # Phi-3.5-mini — the chat template only defines ``<|user|>`` /
+    # ``<|assistant|>`` / ``<|end|>`` (no ``<tool_call>`` special token);
+    # the 2026-06-18 fuzz battery against PR #714 confirmed the model
+    # ignores tool prompts. Pin ``tool_call_parser=None`` BEFORE the
+    # generic ``phi`` regex so the bare-HF-path serves don't advertise
+    # tool capability the model cannot honour. The Phi-4 family (which
+    # CAN tool-call) and Phi-4-mini-reasoning (handled above) are
+    # unaffected.
+    (
+        re.compile(r"phi[-_]?3\.?5", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser=None,
+            reasoning_parser=None,
         ),
     ),
     # Phi
