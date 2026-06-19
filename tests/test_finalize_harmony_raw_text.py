@@ -708,3 +708,64 @@ def test_truncated_think_with_pre_think_content_preserves_preamble():
     # Defensive: the raw thought must NOT survive in content.
     assert "truncated thought" not in cleaned
     assert "<think>" not in cleaned
+
+
+# Codex r3 P2 — reasoning cap must not re-leak truncated thought.
+
+
+def test_truncated_think_with_reasoning_cap_does_not_leak_overflow():
+    """Codex r3 P2: ``_apply_reasoning_cap`` prepends over-cap reasoning
+    into ``cleaned_text`` so the wire ordering matches the model's
+    emission. That's correct for closed ``<think>...</think>answer``
+    splits but WRONG for truncated thoughts — the overflow IS the
+    leaked thought trace.
+
+    The fix routes the truncated-``<think>`` paths through
+    ``_truncate_reasoning_only`` which caps reasoning but does NOT
+    rewrite ``cleaned_text``. Without this, a client setting
+    ``reasoning_max_tokens=100`` against a 4000-char truncated
+    thought would still see ~3600 chars of reasoning prose in
+    ``content``.
+
+    Both branches (engine-routed and parser-routed) of
+    ``_finalize_content_and_reasoning`` must use the
+    reasoning-only cap when the plug fires.
+    """
+    # Long enough that the cap (default chars≈max_tokens*4) bites.
+    long_thought = "<think>" + ("step by step reasoning " * 100)
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=long_thought,
+        cleaned_text=long_thought,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+        reasoning_max_tokens=10,  # 40 chars
+    )
+    # Reasoning capped at 40 chars.
+    assert reasoning is not None
+    assert len(reasoning) == 40
+    # The overflow MUST NOT be written into cleaned_text — the
+    # client setting a small cap explicitly asked for thought
+    # truncation, not for the overflow to surface as content.
+    assert cleaned == ""
+    assert "step by step reasoning" not in (cleaned or "")
+
+
+def test_engine_routed_truncated_think_with_cap_does_not_leak_overflow():
+    """Same as above but for the engine-routed short-circuit branch."""
+    raw = "<think>" + ("the model is thinking out loud " * 100)
+    engine_reasoning = "the model is thinking out loud " * 100
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text=engine_reasoning,
+        enable_thinking=None,
+        reasoning_max_tokens=10,  # 40 chars
+    )
+    assert reasoning is not None
+    assert len(reasoning) == 40
+    assert cleaned == ""
+    assert "thinking out loud" not in (cleaned or "")

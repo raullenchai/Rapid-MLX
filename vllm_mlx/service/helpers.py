@@ -205,8 +205,23 @@ def _finalize_content_and_reasoning(
         # intro BEFORE ``<think>``, then truncates mid-thought) —
         # ``partition`` handles both the start-aligned (math row) and
         # preamble (live-test merge_intervals streaming) cases.
-        if cleaned_text and "<think>" in cleaned_text and "</think>" not in cleaned_text:
+        truncated_think = (
+            cleaned_text
+            and "<think>" in cleaned_text
+            and "</think>" not in cleaned_text
+        )
+        if truncated_think:
             cleaned_text = cleaned_text.partition("<think>")[0].rstrip()
+            # Codex r3 P2: ``_apply_reasoning_cap`` prepends the
+            # over-cap reasoning suffix back into ``cleaned_text`` so
+            # the wire ordering matches the model's emission order —
+            # but for a truncated thought the overflow IS the leaked
+            # thought, which is exactly what we just trimmed. Use the
+            # reasoning-only cap so cleaned_text stays blanked / preamble-
+            # only and the overflow does NOT re-leak into ``content``.
+            return cleaned_text, _truncate_reasoning_only(
+                engine_reasoning_text, reasoning_max_tokens
+            )
         return _apply_reasoning_cap(
             cleaned_text, engine_reasoning_text, reasoning_max_tokens
         )
@@ -361,8 +376,44 @@ def _finalize_content_and_reasoning(
         # for the merge_intervals streaming row it preserves the
         # ~80-char chatty intro the model emitted before ``<think>``.
         if first_parse_was_truncated_think:
-            cleaned_text = cleaned_text.partition("<think>")[0].rstrip()
+            cleaned_text = (cleaned_text or "").partition("<think>")[0].rstrip()
+            # Codex r3 P2: bypass the cleaned_text overflow prepend
+            # path of ``_apply_reasoning_cap`` for truncated thoughts
+            # — see the engine-routed branch above for the rationale.
+            return cleaned_text, _truncate_reasoning_only(
+                reasoning_text, reasoning_max_tokens
+            )
     return _apply_reasoning_cap(cleaned_text, reasoning_text, reasoning_max_tokens)
+
+
+def _truncate_reasoning_only(
+    reasoning_text: str | None,
+    reasoning_max_tokens: int | None,
+) -> str | None:
+    """Cap ``reasoning_text`` to the per-request budget WITHOUT
+    rerouting the overflow into ``content``.
+
+    Used by the truncated-``<think>`` plug paths
+    (``first_parse_was_truncated_think`` and the engine-routed
+    branch) where the reasoning trace is an in-progress thought,
+    not the final answer. ``_apply_reasoning_cap``'s default
+    behaviour of prepending overflow into ``cleaned_text`` would
+    re-introduce exactly the leak the plug is trying to prevent —
+    codex r3 P2.
+
+    Uses the same chars-÷4 heuristic as ``_apply_reasoning_cap``
+    so the OpenAI usage block stays consistent across both paths.
+    """
+    if (
+        reasoning_max_tokens is None
+        or not reasoning_text
+        or not isinstance(reasoning_text, str)
+    ):
+        return reasoning_text
+    max_chars = reasoning_max_tokens * 4
+    if len(reasoning_text) <= max_chars:
+        return reasoning_text
+    return reasoning_text[:max_chars]
 
 
 def _apply_reasoning_cap(

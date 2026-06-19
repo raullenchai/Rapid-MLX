@@ -1098,3 +1098,58 @@ def test_rescue_skipped_when_closed_think_block_truncated_after():
     # </think> is in raw_text, so the gate does NOT fire → rescue runs
     # normally and surfaces the reasoning.
     assert rescued == "complete thought"
+
+
+# Codex r3 P1 — streaming rescue must skip truncated `<think>`.
+
+
+def test_streaming_rescue_gate_skips_synthetic_truncated_think():
+    """Codex r3 P1: when streaming, the parser consumes ``<think>``
+    as a state transition so ``accumulated_reasoning`` doesn't carry
+    the literal opener. The route synthesises a ``raw_text`` of
+    ``"<think>" + accumulated_reasoning`` when the parser's
+    ``_saw_any_tag`` flag indicates an unclosed opener was seen, then
+    feeds that to the rescue. The rescue's existing
+    ``finish=length + raw_text.lstrip().startswith("<think>") +
+    "</think>" not in raw_text`` gate then suppresses the rescue
+    uniformly with the non-streaming path.
+
+    Pin the gate semantics: synthetic ``"<think>" + trace`` with
+    ``finish="length"`` MUST suppress the rescue.
+    """
+    trace = "the model is in the middle of thinking..."
+    synthetic_raw = "<think>" + trace
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text=trace,
+        tool_calls=None,
+        finish_reason="length",
+        raw_text=synthetic_raw,
+    )
+    assert rescued is None, (
+        "streaming truncated-<think> path must suppress rescue — got "
+        f"rescued={rescued!r}"
+    )
+
+
+def test_streaming_rescue_still_fires_for_gemma4_stuck_thought_shape():
+    """Counter-test: gemma-4 stuck-thought streaming shape — the
+    original #569 failure — has no ``<think>`` opener in the
+    accumulated reasoning. The route DOES NOT synthesise a
+    ``<think>`` prefix for it (``_saw_any_tag`` is False on a
+    non-``<think>`` parser like gemma4), so the rescue's gate stays
+    OFF and the rescue still fires. Pin that path against drift."""
+    trace = "the model is stuck inside the analysis channel"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text=trace,
+        tool_calls=None,
+        finish_reason="length",
+        # No ``<think>`` prefix — the route did not synthesise one
+        # because ``_saw_any_tag`` was False on the (non-think) parser.
+        raw_text=trace,
+    )
+    assert rescued == trace, (
+        "gemma-4 #569 failure mode must still rescue — got "
+        f"rescued={rescued!r}"
+    )

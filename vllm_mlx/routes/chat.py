@@ -1778,23 +1778,42 @@ async def stream_chat_completion(
                 # tool-call branch would never fire here regardless,
                 # but keeping the call symmetric with non-streaming
                 # is the point.
-                # Streaming: deliberately do NOT pass the truncated-
-                # ``<think>`` gate (``finish_reason`` / ``raw_text``)
-                # here. Streaming routes ``<think>`` directly to the
-                # reasoning channel so ``accumulated_reasoning`` never
-                # carries the literal ``<think>`` opener — the gate
-                # would never fire usefully. Streaming clients rely
-                # on per-delta channel signalling and the
-                # ``finish_reason="length"`` chunk to detect
-                # truncation, so the silent-drop rescue stays opt-in
-                # via the existing predicates. (Non-streaming sees
-                # the literal ``<think>`` in ``output.raw_text`` and
-                # gates on that — see chat.py:~1420 for the symmetric
-                # gated call site.)
+                # Codex r3 P1: streaming rescue must skip the
+                # truncated-``<think>`` case. The streaming reasoning
+                # parser consumes the literal ``<think>`` token as a
+                # state transition, so ``accumulated_reasoning`` never
+                # carries it — but the parser's ``_saw_any_tag`` flag
+                # records that a ``<think>``/``</think>`` boundary was
+                # crossed. When the model truncated mid-thought
+                # (``finish_reason="length"`` AND the parser saw the
+                # opener AND never saw the closer), the reasoning
+                # trace is NOT the final answer and promoting it to
+                # ``content`` re-introduces the leak the non-streaming
+                # gate now suppresses. Synthesise a ``raw_text`` with
+                # an unclosed ``<think>`` opener so the rescue's
+                # existing finish=length-with-unclosed-think gate
+                # fires uniformly across both paths.
+                rp = processor.reasoning_parser
+                saw_open_no_close = bool(
+                    rp
+                    and getattr(rp, "_saw_any_tag", False)
+                    and "</think>"
+                    not in (
+                        processor.accumulated_reasoning
+                        + processor.accumulated_text
+                    )
+                )
+                synthetic_raw = (
+                    "<think>" + processor.accumulated_reasoning
+                    if saw_open_no_close
+                    else processor.accumulated_reasoning or ""
+                )
                 rescued_content = _rescue_silent_drop_from_reasoning(
                     terminal_content or None,
                     processor.accumulated_reasoning,
                     None,
+                    finish_reason=finish_event.finish_reason,
+                    raw_text=synthetic_raw,
                 )
                 # The helper returns the rescued reasoning ONLY when
                 # all four predicates pass (empty/whitespace content,
