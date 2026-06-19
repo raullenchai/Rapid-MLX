@@ -45,10 +45,7 @@ class TestXmlWrapperShape:
         assert json.loads(result.tool_calls[0]["arguments"]) == {"x": 3, "y": 4}
 
     def test_multiple_calls(self, parser: LlamaToolParser):
-        text = (
-            '<function=add>{"a": 1}</function>'
-            '<function=multiply>{"x": 3}</function>'
-        )
+        text = '<function=add>{"a": 1}</function><function=multiply>{"x": 3}</function>'
         result = parser.extract_tool_calls(text)
         assert result.tools_called
         assert [tc["name"] for tc in result.tool_calls] == ["add", "multiply"]
@@ -67,10 +64,7 @@ class TestXmlWrapperShape:
 
 class TestPythonTagShape:
     def test_basic(self, parser: LlamaToolParser):
-        text = (
-            '<|python_tag|>{"name": "web_search", '
-            '"parameters": {"query": "你好"}}'
-        )
+        text = '<|python_tag|>{"name": "web_search", "parameters": {"query": "你好"}}'
         result = parser.extract_tool_calls(text)
         assert result.tools_called
         assert result.tool_calls[0]["name"] == "web_search"
@@ -79,7 +73,7 @@ class TestPythonTagShape:
 
     def test_tag_with_preceding_prose(self, parser: LlamaToolParser):
         text = (
-            'Sure, let me search.<|python_tag|>'
+            "Sure, let me search.<|python_tag|>"
             '{"name": "web_search", "parameters": {"query": "weather"}}'
         )
         result = parser.extract_tool_calls(text)
@@ -89,10 +83,7 @@ class TestPythonTagShape:
     def test_tag_with_arguments_alias(self, parser: LlamaToolParser):
         # Some quantizations drift to OpenAI's "arguments" key under
         # fine-tuning. We accept both so users don't lose tool routing.
-        text = (
-            '<|python_tag|>{"name": "get_weather", '
-            '"arguments": {"city": "Tokyo"}}'
-        )
+        text = '<|python_tag|>{"name": "get_weather", "arguments": {"city": "Tokyo"}}'
         result = parser.extract_tool_calls(text)
         assert result.tools_called
         assert json.loads(result.tool_calls[0]["arguments"]) == {"city": "Tokyo"}
@@ -122,9 +113,7 @@ class TestBareJsonShape:
         assert result.tools_called
         assert json.loads(result.tool_calls[0]["arguments"]) == {"n": 5}
 
-    def test_bare_json_no_arg_uses_empty_parameters(
-        self, parser: LlamaToolParser
-    ):
+    def test_bare_json_no_arg_uses_empty_parameters(self, parser: LlamaToolParser):
         # No-arg tool calls render an explicit ``"parameters": {}`` in
         # the Llama 3.1/3.2 chat template (``arguments | tojson`` on an
         # empty dict). Bare ``{"name": "X"}`` with no args key is *not*
@@ -146,7 +135,7 @@ class TestBareJsonShape:
 
     def test_bare_json_preserves_prefix_content(self, parser: LlamaToolParser):
         text = (
-            'Let me look that up. '
+            "Let me look that up. "
             '{"name": "web_search", "parameters": {"query": "weather"}}'
         )
         result = parser.extract_tool_calls(text)
@@ -159,9 +148,7 @@ class TestBareJsonShape:
         text = '{"name": "echo", "parameters": {"msg": "hello } world"}}'
         result = parser.extract_tool_calls(text)
         assert result.tools_called
-        assert json.loads(result.tool_calls[0]["arguments"]) == {
-            "msg": "hello } world"
-        }
+        assert json.loads(result.tool_calls[0]["arguments"]) == {"msg": "hello } world"}
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +205,7 @@ class TestNoFalsePositives:
 
 
 class TestStreaming:
-    def test_bare_json_streams_content_until_close(
-        self, parser: LlamaToolParser
-    ):
+    def test_bare_json_streams_content_until_close(self, parser: LlamaToolParser):
         # Mid-stream fragments must not emit tool_calls yet.
         partial = '{"name": "web_search", "parameters": {"query": "wea'
         result = parser.extract_tool_calls_streaming(
@@ -230,9 +215,7 @@ class TestStreaming:
         )
         assert result is None or "tool_calls" not in result
 
-    def test_first_brace_token_is_pending_not_content(
-        self, parser: LlamaToolParser
-    ):
+    def test_first_brace_token_is_pending_not_content(self, parser: LlamaToolParser):
         """Regression for codex r1 P1: the very first ``{`` token of a
         streamed bare-JSON tool call must be treated as pending — we
         cannot wait for the ``"name"`` key to appear because that would
@@ -280,9 +263,7 @@ class TestStreaming:
         assert "content" in final
         assert final["content"] == current
 
-    def test_bare_json_emits_tool_calls_on_close(
-        self, parser: LlamaToolParser
-    ):
+    def test_bare_json_emits_tool_calls_on_close(self, parser: LlamaToolParser):
         previous = '{"name": "web_search", "parameters": {"query": "weather"'
         delta = "}}"
         current = previous + delta
@@ -297,8 +278,7 @@ class TestStreaming:
 
     def test_python_tag_emits_on_close(self, parser: LlamaToolParser):
         previous = (
-            '<|python_tag|>{"name": "web_search", '
-            '"parameters": {"query": "weather"'
+            '<|python_tag|>{"name": "web_search", "parameters": {"query": "weather"'
         )
         delta = "}}"
         current = previous + delta
@@ -333,9 +313,7 @@ class TestStreaming:
         )
         assert result == {"content": delta}
 
-    def test_prose_prefix_then_bare_json_tool_call(
-        self, parser: LlamaToolParser
-    ):
+    def test_prose_prefix_then_bare_json_tool_call(self, parser: LlamaToolParser):
         """Regression for codex r2 P2 (1/2): a streamed response of
         ``Let me check. {"name": "X", "parameters": {}}`` must NOT leak
         the JSON tail as content. Earlier prose chunks pass through; the

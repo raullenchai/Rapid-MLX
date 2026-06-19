@@ -346,9 +346,7 @@ class LlamaToolParser(ToolParser):
             # through to the close-decision branch.
             if not self._buffer_closes_in(current_text, cur_buffered_start):
                 return {"content": preface} if preface else None
-            decision = self._resolve_buffered_close(
-                current_text, cur_buffered_start
-            )
+            decision = self._resolve_buffered_close(current_text, cur_buffered_start)
             if preface and decision and "content" in decision:
                 decision = {"content": preface + decision["content"]}
             elif preface:
@@ -366,7 +364,9 @@ class LlamaToolParser(ToolParser):
 
         # We were buffering before this delta. ``cur_buffered_start``
         # should match ``buffered_start``.
-        anchor = cur_buffered_start if cur_buffered_start is not None else buffered_start
+        anchor = (
+            cur_buffered_start if cur_buffered_start is not None else buffered_start
+        )
         assert anchor is not None
         if not self._buffer_closes_in(current_text, anchor):
             return None
@@ -433,9 +433,7 @@ class LlamaToolParser(ToolParser):
             start = brace
         return _find_top_level_json_object(text, start) is not None
 
-    def _resolve_buffered_close(
-        self, text: str, anchor: int
-    ) -> dict[str, Any] | None:
+    def _resolve_buffered_close(self, text: str, anchor: int) -> dict[str, Any] | None:
         """Called when the buffered region beginning at ``anchor`` has
         just closed in ``text``. Returns a tool_calls delta if it parses
         as a tool call, otherwise a content delta that flushes the
