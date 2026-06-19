@@ -584,6 +584,16 @@ class MLLMScheduler:
 
             # output_token_ids is a live reference (not a defensive copy):
             # consumers read it synchronously; the per-decode list() was O(n).
+            #
+            # ``logprobs`` is wired through from the MLLMBatchResponse so a
+            # ``logprobs=true, top_logprobs=K`` chat request gets the same
+            # per-token data the text-only AR path produces. Pre-fix the
+            # MLLM path silently dropped the field — every chunk reached
+            # the route with ``logprobs=None`` and the OpenAI ``choices[0].
+            # logprobs`` slot serialised as ``null``. The shape matches the
+            # text path's ``RequestOutput.logprobs`` field exactly so the
+            # downstream ``_extract_streaming_token_logprobs`` extractor
+            # works unmodified for both paths.
             output = RequestOutput(
                 request_id=request_id,
                 new_token_ids=[response.token],
@@ -591,6 +601,7 @@ class MLLMScheduler:
                 output_token_ids=request.output_tokens,
                 prompt_tokens=request.num_prompt_tokens,
                 completion_tokens=request.num_output_tokens,
+                logprobs=getattr(response, "logprobs", None),
             )
 
             # Check text-based stop sequences

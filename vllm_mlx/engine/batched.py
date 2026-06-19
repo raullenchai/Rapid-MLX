@@ -1152,6 +1152,15 @@ class BatchedEngine(BaseEngine):
             )
 
             async for output in self._mllm_scheduler.stream_outputs(request_id):
+                # ``logprobs`` is now wired through from
+                # ``MLLMScheduler._process_batch_responses`` (the
+                # ``MLLMBatchResponse`` carries them but the prior
+                # ``RequestOutput`` construction dropped the field).
+                # Pre-fix, MLLM streams hit the route's logprobs
+                # extractor with ``chunk.logprobs=None`` and the
+                # OpenAI ``choices[0].logprobs`` slot was always
+                # ``null`` — even when the client asked for
+                # ``logprobs=true, top_logprobs=K``.
                 yield GenerationOutput(
                     text=clean_output_text(output.output_text),
                     new_text=output.new_text,
@@ -1160,6 +1169,7 @@ class BatchedEngine(BaseEngine):
                     completion_tokens=output.completion_tokens,
                     finished=output.finished,
                     finish_reason=output.finish_reason,
+                    logprobs=output.logprobs,
                 )
             return
 
