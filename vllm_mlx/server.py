@@ -374,12 +374,19 @@ async def lifespan(app: FastAPI):
 
     # Print the real "Ready:" banner now — only here is the port truly
     # accepting connections AND the engine warmed up. The CLI's earlier
-    # "Starting server …" line is replaced by this. If bind_host/bind_port
-    # weren't stashed (e.g. embedded usage where uvicorn is owned elsewhere),
-    # fall back silently.
+    # "Starting server …" line is replaced by this. If neither the
+    # host/port nor inherited-fd source of truth was stashed (e.g.
+    # embedded usage where uvicorn is owned elsewhere), fall back silently.
     if _cfg.bind_host and _cfg.bind_port:
         print(f"  Ready: http://{_cfg.bind_host}:{_cfg.bind_port}/v1")
         print(f"  Docs:  http://{_cfg.bind_host}:{_cfg.bind_port}/docs")
+        print()
+    elif _cfg.bind_listen_fd is not None:
+        # Socket-activation branch: the supervisor's ``getsockname`` is the
+        # source of truth for the bind address (we don't probe it). Print
+        # the fd shape so log readers can match it to the supervisor's
+        # ``LISTEN_FDS=1`` handoff record.
+        print(f"  Ready: inherited fd {_cfg.bind_listen_fd}")
         print()
 
     yield

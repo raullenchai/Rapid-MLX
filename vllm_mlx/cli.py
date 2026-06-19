@@ -1357,21 +1357,24 @@ def serve_command(args):
     print_staleness_warning_if_any()
     print()
 
-    # Stash host/port so the lifespan hook can print the real "Ready:" banner
-    # after warmup. ServerConfig.bind_host/bind_port → used in server.lifespan().
+    # Stash the source of truth for the lifespan "Ready:" banner —
+    # which shape depends on the bind mode:
     #
-    # In the inherited-fd branch the user-passed ``--host``/``--port`` values
-    # are NOT the bound address (the supervisor's ``getsockname`` is the
-    # source of truth, which we don't probe). Stamping bind_host/bind_port
-    # from ignored CLI args would make any status/introspection report a
-    # phantom address. Leave them at ``None`` (the default) so the lifespan
-    # banner prints the fd form. Codex round-1 PR #696 review.
+    #   * Default (host+port): stamp ``bind_host``/``bind_port`` so the
+    #     banner prints ``Ready: http://host:port/v1``.
+    #   * ``--listen-fd``: stamp ``bind_listen_fd`` instead. The
+    #     supervisor's ``getsockname`` is the only honest source for the
+    #     address — stamping ``args.host``/``args.port`` here would lie
+    #     to log readers (the supervisor might have bound to a different
+    #     address). Codex rounds 1+3 PR #696 review.
     from vllm_mlx.config import get_config
 
     _cfg = get_config()
     if listen_fd is None:
         _cfg.bind_host = host_display
         _cfg.bind_port = args.port
+    else:
+        _cfg.bind_listen_fd = listen_fd
 
     _run_uvicorn(app, args, uvicorn_log_level)
 
@@ -4140,10 +4143,11 @@ Examples:
     #
     # When ``--listen-fd`` is set, ``--host``/``--port`` are IGNORED:
     # the supervisor controls the bind address. The "Ready:" banner
-    # still prints with the user-supplied host/port for log readability
-    # but no fresh bind happens. Setting both ``--listen-fd`` and a
-    # non-default ``--port`` is allowed (the latter is just for log
-    # display); the active listener is the inherited fd.
+    # prints the inherited fd shape (``Ready: inherited fd N``) — NOT
+    # the user-supplied host/port, since those don't reflect the
+    # supervisor's actual bind. Setting both ``--listen-fd`` and a
+    # non-default ``--port`` is allowed but the port has no effect;
+    # the active listener is the inherited fd.
     serve_parser.add_argument(
         "--listen-fd",
         type=_listen_fd_arg,

@@ -42,8 +42,14 @@ class ServerConfig:
     # AFTER warmup completes (and the port is actually bound). Without this
     # the banner prints before uvicorn binds the port, and a user who curls
     # immediately gets a connection-refused.
+    #
+    # In the ``--listen-fd`` socket-activation branch, the supervisor owns
+    # the bound address; the CLI populates ``bind_listen_fd`` instead, and
+    # the lifespan banner prints the fd form. Mutually exclusive with the
+    # host/port pair — see ``cli._run_uvicorn``.
     bind_host: str | None = None
     bind_port: int | None = None
+    bind_listen_fd: int | None = None
 
     # --- Defaults ---
     default_max_tokens: int = 4096

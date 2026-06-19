@@ -259,6 +259,30 @@ def test_serve_command_wires_run_uvicorn_helper():
     )
 
 
+def test_serve_command_stashes_bind_listen_fd_for_ready_banner():
+    """The lifespan "Ready:" banner switches on whether
+    ``_cfg.bind_host``/``bind_port`` OR ``_cfg.bind_listen_fd`` is set
+    (see ``vllm_mlx/server.py``). Without ``bind_listen_fd`` stamped in
+    the fd branch, the banner falls through to silent — round-3 codex
+    PR #696 flagged this as a missing source of truth. Bytecode
+    inspection asserts ``serve_command`` references
+    ``bind_listen_fd`` so a refactor that drops the stash silently is
+    caught by the unit suite.
+    """
+    import dis
+
+    refs = {
+        ins.argval
+        for ins in dis.get_instructions(cli.serve_command)
+        if ins.opname in ("LOAD_ATTR", "STORE_ATTR", "LOAD_GLOBAL", "LOAD_NAME")
+    }
+    assert "bind_listen_fd" in refs, (
+        "serve_command must stash listen_fd into ServerConfig.bind_listen_fd "
+        "so the lifespan Ready banner has a source of truth in the "
+        "socket-activation branch"
+    )
+
+
 def test_serve_command_does_not_inline_uvicorn_run():
     """Companion to the wiring test: assert ``serve_command`` does NOT
     call ``uvicorn.run`` directly. Belt-and-braces against a refactor
