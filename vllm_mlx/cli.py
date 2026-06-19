@@ -1192,19 +1192,24 @@ def serve_command(args):
     # previous rapid-mlx process exited), even though uvicorn would happily
     # bind it. Caused spurious "port in use" errors for back-to-back server
     # starts in the validation pipeline.
-    import socket
+    #
+    # Skip in --listen-fd mode: the supervisor has already bound the socket
+    # and handed us the fd. There is no host/port for us to check, and any
+    # bind we attempt here would race or collide with the inherited socket.
+    if getattr(args, "listen_fd", None) is None:
+        import socket
 
-    _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        _sock.bind((args.host, args.port))
-        _sock.close()
-    except OSError:
-        print(f"\n  Error: Port {args.port} is already in use.")
-        print(
-            f"  Try a different port: rapid-mlx serve {args.model} --port {args.port + 1}"
-        )
-        sys.exit(1)
+        _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            _sock.bind((args.host, args.port))
+            _sock.close()
+        except OSError:
+            print(f"\n  Error: Port {args.port} is already in use.")
+            print(
+                f"  Try a different port: rapid-mlx serve {args.model} --port {args.port + 1}"
+            )
+            sys.exit(1)
 
     # Check disk space before downloading model
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
