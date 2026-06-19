@@ -650,6 +650,171 @@ def test_vibethinker_family_wires_deepseek_r1_reasoning_parser(alias: str) -> No
     )
 
 
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "qwen3-4b-thinking-2507-4bit",
+        "qwen3-4b-instruct-2507-4bit",
+        "qwen3-vl-2b-4bit",
+    ],
+)
+def test_qwen3_small_models_batch_wires_qwen3_parsers(alias: str) -> None:
+    """The Qwen3 ≤5B additions (Thinking-2507, Instruct-2507, VL-2B)
+    must all carry the Qwen3 family parser pair (``hermes`` for tool
+    calls + ``qwen3`` for reasoning).
+
+    The ``qwen3`` reasoning parser is the right pick even for the
+    non-thinking ``Instruct`` variant — the parser stays inert on
+    output that contains no ``<think>...</think>`` blocks and never
+    swallows content; pinning it keeps the wiring uniform across the
+    whole Qwen3 family and matches existing entries like
+    ``qwen3-4b-8bit`` / ``qwen3-vl-4b-4bit``.
+
+    Pinning here so a future PR can't silently revert the Thinking-2507
+    entry to ``reasoning_parser=null`` (which would leak ``<think>``
+    blocks into ``content``) or downgrade the Instruct-2507 entry away
+    from the family default (which would create a parser-mismatch hop
+    for clients that round-robin across Qwen3 sizes).
+    """
+    profiles = list_profiles()
+    assert alias in profiles, f"{alias} missing from aliases.json"
+    assert profiles[alias].tool_call_parser == "hermes", (
+        f"{alias}: tool_call_parser must be 'hermes' (Qwen3 family default). "
+        f"Got {profiles[alias].tool_call_parser!r}."
+    )
+    assert profiles[alias].reasoning_parser == "qwen3", (
+        f"{alias}: reasoning_parser must be 'qwen3' — the parser is inert "
+        f"on outputs without `<think>` blocks, so it's safe for both the "
+        f"Thinking and Instruct variants. Got {profiles[alias].reasoning_parser!r}."
+    )
+    assert profiles[alias].is_hybrid is False, (
+        f"{alias}: Qwen3 (2B / 4B / VL) is pure-attention, not hybrid. "
+        f"Mis-tagging as hybrid disables spec-decode for no reason."
+    )
+
+
+def test_granite4_h_micro_inherits_family_hybrid_gates() -> None:
+    """``granite4-h-micro-4bit`` is a 3B variant of IBM's hybrid
+    Mamba2+Transformer family. It MUST carry the same hybrid +
+    no-spec-decode + no-reasoning-parser wiring as the existing
+    ``granite4-tiny-4bit`` entry — Granite 4 does not emit
+    ``<think>...</think>`` (model_auto_config has the matching
+    comment on the family regex), and the hybrid Mamba2 state breaks
+    spec-decode drafters.
+    """
+    profiles = list_profiles()
+    micro = profiles["granite4-h-micro-4bit"]
+    tiny = profiles["granite4-tiny-4bit"]
+    assert micro.tool_call_parser == tiny.tool_call_parser == "hermes", (
+        "granite4-h-micro-4bit must match granite4-tiny-4bit on "
+        "tool_call_parser; the family shares the same template."
+    )
+    assert micro.reasoning_parser is None and tiny.reasoning_parser is None, (
+        "Granite 4 does NOT emit `<think>` blocks; setting a reasoning "
+        "parser would route all output into reasoning_content."
+    )
+    assert micro.is_hybrid and tiny.is_hybrid, (
+        "Granite 4 is hybrid Mamba2+Transformer — is_hybrid must be True."
+    )
+    assert not micro.supports_spec_decode, (
+        "granite4-h-micro-4bit: hybrid arch + supports_spec_decode=True "
+        "is a forbidden combination (see test_hybrid_disables_spec_decode)."
+    )
+
+
+def test_nanbeige_4_1_3b_uses_hermes_not_llama_tool_parser() -> None:
+    """``nanbeige4.1-3b-4bit`` has ``model_type=llama`` in its config but
+    is NOT a Meta-LLaMA-3 chat checkpoint — chat template + tool format
+    are upstream-Nanbeige. The matching ``nanbeige`` regex in
+    ``model_auto_config.py`` must win over the generic ``llama`` regex
+    so HF-path serves don't pick up ``tool_call_parser=llama`` (which
+    would silently fail to parse the Nanbeige tool-call envelope).
+
+    Pin here so a regex re-ordering can't quietly demote the entry to
+    the LLaMA tool parser.
+    """
+    profile = list_profiles()["nanbeige4.1-3b-4bit"]
+    assert profile.tool_call_parser == "hermes", (
+        f"nanbeige4.1-3b-4bit: tool_call_parser must be 'hermes' (Nanbeige "
+        f"is not vanilla LLaMA-3 despite model_type=llama). "
+        f"Got {profile.tool_call_parser!r}."
+    )
+    # The 3B preview emits autonomous ``<think>...</think>`` blocks on
+    # every response (verified by a local smoke test during the batch
+    # landing). With ``reasoning_parser=null`` the raw block leaks into
+    # ``choices[0].message.content`` and clients lose ``reasoning_content``.
+    # ``deepseek_r1`` handles the "model decides" contract — same as
+    # VibeThinker / R1-distill on a non-DeepSeek base.
+    assert profile.reasoning_parser == "deepseek_r1", (
+        f"nanbeige4.1-3b-4bit: reasoning_parser must be 'deepseek_r1' — "
+        f"the model emits `<think>` blocks autonomously. Got "
+        f"{profile.reasoning_parser!r}."
+    )
+
+
+def test_phi_4_mini_reasoning_wires_deepseek_r1_reasoning_parser() -> None:
+    """``phi-4-mini-reasoning-4bit`` is Microsoft's math-tuned reasoning
+    variant of Phi-4-mini. The chat template does NOT inject a
+    ``<think>`` tag (the only special tokens are ``<|user|>`` /
+    ``<|assistant|>`` / ``<|end|>`` / ``<|tool_call|>``), but the model
+    emits ``<think>...</think>`` autonomously on every response —
+    smoke-verified during this PR with ``reasoning_parser=null``:
+    a ``Say hi in three words.`` prompt returned ``<think>\\nOkay,
+    so the user wants me to say...`` as the raw ``content`` of the
+    assistant message, leaking the chain-of-thought to clients.
+
+    Pin ``reasoning_parser=deepseek_r1`` so the block lands in
+    ``reasoning_content`` instead. This matches the same "model decides"
+    contract used by VibeThinker, R1-distill, and Nanbeige4.1 — none of
+    those templates inject a ``<think>`` open tag either, and they all
+    rely on the deepseek_r1 parser's "stay-in-reasoning-until-we-see-
+    </think>" state machine.
+
+    Verified format source: smoke test on the 4-bit lmstudio-community
+    repack; tokenizer special tokens enumerated from
+    ``microsoft/Phi-4-mini-reasoning/tokenizer_config.json``.
+    """
+    profiles = list_profiles()
+    alias = "phi-4-mini-reasoning-4bit"
+    assert alias in profiles, f"{alias} missing from aliases.json"
+    assert profiles[alias].reasoning_parser == "deepseek_r1", (
+        f"{alias}: reasoning_parser must be 'deepseek_r1' — Phi-4-mini-"
+        f"reasoning emits `<think>` blocks autonomously (smoke-verified). "
+        f"Got {profiles[alias].reasoning_parser!r}."
+    )
+    assert profiles[alias].tool_call_parser == "hermes", (
+        f"{alias}: tool_call_parser must be 'hermes' (Phi family default)."
+    )
+
+
+def test_gemma_3n_multimodal_aliases_share_family_sampling() -> None:
+    """Gemma 3n E2B / E4B are Google's on-device multimodal family
+    (text + image + audio share the same model). They MUST inherit the
+    Gemma 3 sampling defaults (temperature=1.0, top_p=0.95, top_k=64
+    per Google's chat-tuned guidance) — upstream
+    ``generation_config.json`` ships an empty stub, so dropping the
+    curated values would fall through to global defaults that are
+    wrong for the family.
+
+    Audio path is recognised by ``multimodal_processor.py`` (model_type
+    ``gemma3n``); these aliases ship with the text+image surface and
+    audio rides the same lane when an audio attachment is present.
+    """
+    for alias in ("gemma-3n-e2b-4bit", "gemma-3n-e4b-4bit"):
+        profile = list_profiles()[alias]
+        sampling = dict(profile.recommended_sampling or ())
+        assert sampling.get("temperature") == 1.0, (
+            f"{alias}: temperature must be 1.0 per Google's Gemma chat "
+            f"sampling guidance. Got {sampling.get('temperature')!r}."
+        )
+        assert sampling.get("top_p") == 0.95, (
+            f"{alias}: top_p must be 0.95. Got {sampling.get('top_p')!r}."
+        )
+        assert sampling.get("top_k") == 64, (
+            f"{alias}: top_k must be 64. Got {sampling.get('top_k')!r}."
+        )
+
+
 def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
     """Pin replacement paths for aliases that previously pointed at HF
     repos that no longer exist (or never existed).
@@ -733,6 +898,14 @@ _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     "gemma3-1b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma3-4b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     "gemma3-27b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    # Gemma 3n family (E2B / E4B) — on-device multimodal (text + image +
+    # audio). Same chat-tuning recipe as Gemma 3, so Google's sampling
+    # guidance applies unchanged. ``google/gemma-3n-E{2,4}B-it`` ship a
+    # near-empty ``generation_config.json`` (the upstream HF page 401s
+    # for the raw config under WebFetch; the MLX repacks under
+    # ``mlx-community`` / ``lmstudio-community`` preserve the stub).
+    "gemma-3n-e2b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
+    "gemma-3n-e4b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # Gemma 4 — official Google sampling guidance hasn't been
     # published yet at the time of writing; we extrapolate from the
     # Gemma 3 family card. Revisit when an official Gemma 4 doc lands.

@@ -275,6 +275,28 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
         ),
     ),
+    # Nanbeige 4.x (Nanbeige LLM Lab) — model_type=llama under the hood
+    # at the 3B preview, but the model is NOT a vanilla LLaMA-3 chat
+    # checkpoint: its chat template + tool format are upstream-Nanbeige,
+    # not Meta-Llama. Letting the bare HF path fall through to the
+    # generic ``llama`` regex below would mis-tag ``tool_call_parser=llama``
+    # and silently break tool calls. Pin to the safer ``hermes`` fallback.
+    # Smoke test (PR #715 batch): Nanbeige4.1-3B emits autonomous
+    # ``<think>...</think>`` blocks on every response — verified by a
+    # local ``rapid-mlx serve nanbeige4.1-3b-4bit`` + chat completion
+    # where the assistant content opened with ``<think>\n...`` despite
+    # no template-level injection. Use ``deepseek_r1`` reasoning parser
+    # (same "model decides" contract as VibeThinker / DeepSeek-R1
+    # distill on a Qwen base) so the block lands in
+    # ``reasoning_content`` instead of leaking into ``content``.
+    # MUST come BEFORE the ``llama`` regex below — first-match-wins.
+    (
+        re.compile(r"nanbeige", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="hermes",
+            reasoning_parser="deepseek_r1",
+        ),
+    ),
     # Llama (Llama 3.x and earlier)
     # Note: Llama 4 Scout/Maverick (109B/400B params) deliberately NOT added —
     # too large to run on the typical Mac the project targets, so the
@@ -284,6 +306,25 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         ModelConfig(
             tool_call_parser="llama",
             reasoning_parser=None,
+        ),
+    ),
+    # Phi-4-mini-reasoning — Microsoft's math-tuned 3.8B reasoning
+    # variant of Phi-4-mini. The chat template does NOT inject any
+    # ``<think>`` tag (the only special tokens are ``<|user|>`` /
+    # ``<|assistant|>`` / ``<|end|>`` / ``<|tool_call|>`` — verified
+    # via tokenizer_config.json), but the model emits
+    # ``<think>...</think>`` autonomously on every response (smoke-
+    # verified: ``Say hi`` returned ``<think>\nOkay, I need to say hi
+    # in three words...`` as the assistant content with the deepseek_r1
+    # parser disabled). Use ``deepseek_r1`` — same "model decides"
+    # contract as VibeThinker / R1-distill / Nanbeige4.1 — so the block
+    # lands in ``reasoning_content`` instead of leaking into ``content``.
+    # MUST come BEFORE the generic ``phi[-_]?[34]`` regex below.
+    (
+        re.compile(r"phi[-_]?4[-_]?mini[-_]?reasoning", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="hermes",
+            reasoning_parser="deepseek_r1",
         ),
     ),
     # Phi

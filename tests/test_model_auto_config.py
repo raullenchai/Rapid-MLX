@@ -15,13 +15,22 @@ from vllm_mlx.model_auto_config import (
 class TestDetectModelConfig:
     """Test detect_model_config with various model paths."""
 
-    # Qwen family (non-Coder)
+    # Qwen family (non-Coder) — covers the original Qwen3 line, the
+    # Qwen3.5 family, Qwen3-4B-Thinking/Instruct-2507 small variants,
+    # and Qwen3-VL-2B (the 2025/2026 VL slot below the existing 4B
+    # entry). The ``qwen3`` regex resolves all of these to the same
+    # ``hermes`` + ``qwen3`` parser pair.
     @pytest.mark.parametrize(
         "model_path",
         [
             "mlx-community/Qwen3.5-9B-4bit",
             "mlx-community/Qwen3-0.6B-MLX-4bit",
             "/Users/someone/.lmstudio/models/mlx-community/Qwen3.5-122B-A10B-8bit",
+            "mlx-community/Qwen3-4B-Thinking-2507-4bit",
+            "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+            "Qwen/Qwen3-4B-Thinking-2507",
+            "mlx-community/Qwen3-VL-2B-Instruct-4bit",
+            "Qwen/Qwen3-VL-2B-Instruct",
         ],
     )
     def test_qwen_family(self, model_path):
@@ -138,7 +147,9 @@ class TestDetectModelConfig:
         [
             "mlx-community/granite-4.0-h-small-4bit",
             "mlx-community/granite-4.0-h-tiny-4bit",
+            "mlx-community/granite-4.0-h-micro-4bit",
             "ibm-granite/granite-4.0-h-small",
+            "ibm-granite/granite-4.0-h-micro",
         ],
     )
     def test_granite4_hybrid(self, model_path):
@@ -183,6 +194,36 @@ class TestDetectModelConfig:
         assert cfg is not None
         assert cfg.reasoning_parser == "deepseek_r1"
         assert cfg.tool_call_parser is None
+        assert cfg.is_hybrid is False
+        assert cfg.supports_spec_decode is True
+
+    # Nanbeige 4.x (Nanbeige LLM Lab) — model_type=llama in config.json
+    # but NOT a vanilla Meta-LLaMA-3 chat checkpoint. Pinned ahead of
+    # the generic ``llama`` regex in model_auto_config.py so a bare HF
+    # path serve picks up the upstream-Nanbeige tool/reasoning shape
+    # (hermes + None) instead of the LLaMA tool parser.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "nanbeige4.1-3b-4bit",
+            "mlx-community/Nanbeige4.1-3B-4bit",
+            "Nanbeige/Nanbeige4.1-3B",
+        ],
+    )
+    def test_nanbeige(self, model_path):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        # The Nanbeige regex must win — `tool_call_parser="llama"` here
+        # would mean the generic LLaMA regex misfired, and tool calls
+        # would silently fail at runtime.
+        assert cfg.tool_call_parser == "hermes", (
+            f"{model_path}: tool_call_parser must be 'hermes', got "
+            f"{cfg.tool_call_parser!r} — did the regex order change?"
+        )
+        # Nanbeige4.1-3B emits autonomous ``<think>...</think>`` blocks
+        # (smoke-verified). ``deepseek_r1`` parser routes the block into
+        # ``reasoning_content`` so it doesn't leak into ``content``.
+        assert cfg.reasoning_parser == "deepseek_r1"
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is True
 
@@ -242,19 +283,34 @@ class TestDetectModelConfig:
         assert config.tool_call_parser == "kimi"
         assert config.reasoning_parser is None
 
-    # Gemma
-    def test_gemma(self):
-        config = detect_model_config("mlx-community/gemma-3-12b-it-4bit")
+    # Gemma — covers Gemma 3 family AND Gemma 3n on-device multimodal
+    # (the ``gemma`` regex catches both; gemma-3n config.json reports
+    # model_type=gemma3n but the family default at the alias layer is
+    # the same hermes/no-reasoning wiring).
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "mlx-community/gemma-3-12b-it-4bit",
+            "mlx-community/gemma-3n-E2B-it-4bit",
+            "lmstudio-community/gemma-3n-E4B-it-MLX-4bit",
+            "google/gemma-3n-E2B-it",
+        ],
+    )
+    def test_gemma(self, model_path):
+        config = detect_model_config(model_path)
         assert config is not None
         assert config.tool_call_parser == "hermes"
         assert config.reasoning_parser is None
 
-    # Phi
+    # Phi (non-reasoning) — covers Phi-4-mini-instruct and Phi-3.5-mini
+    # which share the same ``phi[-_]?[34]`` regex → hermes / no-reasoning
+    # default.
     @pytest.mark.parametrize(
         "model_path",
         [
             "mlx-community/Phi-4-mini-instruct-4bit",
             "microsoft/Phi-3.5-mini-instruct",
+            "mlx-community/Phi-3.5-mini-instruct-4bit",
         ],
     )
     def test_phi(self, model_path):
@@ -262,6 +318,32 @@ class TestDetectModelConfig:
         assert config is not None
         assert config.tool_call_parser == "hermes"
         assert config.reasoning_parser is None
+
+    # Phi-4-mini-reasoning — Microsoft's math-tuned reasoning variant.
+    # Smoke-verified to emit autonomous ``<think>...</think>`` blocks
+    # despite the chat template not injecting one. The dedicated regex
+    # MUST win over the generic ``phi[-_]?[34]`` regex so the block
+    # lands in ``reasoning_content`` instead of leaking into
+    # ``content`` (which is what happens with reasoning_parser=None).
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "phi-4-mini-reasoning-4bit",
+            "lmstudio-community/Phi-4-mini-reasoning-MLX-4bit",
+            "microsoft/Phi-4-mini-reasoning",
+        ],
+    )
+    def test_phi_4_mini_reasoning(self, model_path):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser == "hermes"
+        assert cfg.reasoning_parser == "deepseek_r1", (
+            f"{model_path}: reasoning_parser must be 'deepseek_r1' — "
+            f"Phi-4-mini-reasoning emits `<think>` blocks autonomously, "
+            f"smoke-verified. Got {cfg.reasoning_parser!r}. Did the "
+            f"phi-4-mini-reasoning regex get demoted below the generic "
+            f"phi regex?"
+        )
 
     # Unknown model → None
     def test_unknown_model(self):
