@@ -120,15 +120,26 @@ def test_mllm_logprobs_field_present_even_when_response_lacks_attr():
 # logprob slice non-lazy before it crosses thread boundaries.
 
 
-def test_mllm_batch_generator_uses_worker_default_stream(monkeypatch):
-    """The class-level ``_stream`` must be the worker's DEFAULT stream
-    (process-wide, materialisable from any thread), NOT a freshly created
-    ``mx.new_stream`` (thread-local under mlx-lm 0.31.3+).
+class _RecordingVLMModel:
+    """Minimal VLM stub that exposes a ``language_model`` attribute and
+    accepts ``__call__`` so ``MLLMBatchGenerator.__init__`` succeeds.
+    """
 
-    Pre-fix this was ``mx.new_stream(mx.default_device())`` and the array
-    tagged with that stream crashed the server worker the moment the
-    route handler thread tried to ``np.array(...)`` it for top-k
-    extraction.
+    def __init__(self):
+        # Real VLMs set ``language_model`` on the wrapper — the generator
+        # picks it up to route text-only steps through the LM directly.
+        self.language_model = object()
+
+
+def test_mllm_batch_generator_init_does_not_call_new_stream(monkeypatch):
+    """The real ``MLLMBatchGenerator.__init__`` path must NOT call
+    ``mx.new_stream(...)`` and must leave ``_stream`` pointing at the
+    worker's process-wide default stream.
+
+    Codex r1 caught the original version of this test bypassing
+    ``__init__``: this revision exercises the real constructor and
+    monkey-patches ``mx.new_stream`` to immediately fail, so any
+    reintroduction of the buggy allocation pattern blows up the test.
     """
     import mlx.core as mx
 
@@ -139,109 +150,154 @@ def test_mllm_batch_generator_uses_worker_default_stream(monkeypatch):
     monkeypatch.setattr(MLLMBatchGenerator, "_stream", None)
 
     new_stream_calls: list[object] = []
-    orig_new_stream = mx.new_stream
 
-    def _record_new_stream(device):
+    def _trap_new_stream(device):
+        # Record + fail loudly. The fix replaced ``mx.new_stream`` with
+        # ``mx.default_stream`` — if anyone reintroduces the legacy
+        # allocation, ``__init__`` raises here and the test fails with
+        # a clear marker rather than silently regressing.
         new_stream_calls.append(device)
-        return orig_new_stream(device)
+        raise AssertionError(
+            "MLLMBatchGenerator.__init__ called mx.new_stream — under "
+            "mlx-lm 0.31.3+ the resulting stream is bound to the "
+            "constructing thread and the logprobs mx.array crashes the "
+            "route-handler thread on cross-thread np.array(...). "
+            "Use mx.default_stream(mx.default_device()) instead."
+        )
 
-    monkeypatch.setattr(mx, "new_stream", _record_new_stream)
+    monkeypatch.setattr(mx, "new_stream", _trap_new_stream)
 
-    _make_scheduler()  # constructing the scheduler does not build a generator,
-    # but the next assertion pins the generator's behaviour directly.
-
-    # Construct the generator just like the engine does.
-    gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
-    # Replicate the minimal subset of __init__ that touches the stream.
-    # (Bypass model / processor wiring to keep the test hermetic.)
-    if MLLMBatchGenerator._stream is None:
-        # The CODE UNDER TEST — must NOT call mx.new_stream.
-        MLLMBatchGenerator._stream = mx.default_stream(mx.default_device())
-
-    expected = mx.default_stream(mx.default_device())
-    assert MLLMBatchGenerator._stream is not None
-    assert MLLMBatchGenerator._stream == expected, (
-        "MLLM batch generator stream must be the worker default stream "
-        "(process-wide, evaluable from any thread). A fresh "
-        "mx.new_stream(...) is thread-local under mlx-lm 0.31.3+ and "
-        "crashes the route handler thread on logprobs cross-thread "
-        "np.array(...) materialisation."
-    )
-    # Sanity: the construction path did NOT call mx.new_stream — that's
-    # the legacy behaviour we are guarding against.
-    assert new_stream_calls == [], (
-        "MLLMBatchGenerator must not allocate a fresh mx.new_stream for "
-        "its generation stream — mlx-lm 0.31.3+ binds those to the "
-        "constructing thread and the logprobs array crashes on "
-        "cross-thread materialisation. Use mx.default_stream(...) "
-        "instead. Saw mx.new_stream calls: " + repr(new_stream_calls)
+    # Build the generator through the real constructor.
+    gen = MLLMBatchGenerator(
+        model=_RecordingVLMModel(),
+        processor=object(),
+        mm_processor=None,
+        enable_vision_cache=False,
     )
 
-    # Cleanup the singleton so other tests start clean.
-    MLLMBatchGenerator._stream = None
-    del gen
+    try:
+        assert new_stream_calls == [], (
+            "Construction must not allocate a new mx.stream. "
+            "Saw mx.new_stream calls: " + repr(new_stream_calls)
+        )
+        # And the stream must equal the worker's process-wide default.
+        expected = mx.default_stream(mx.default_device())
+        assert MLLMBatchGenerator._stream is not None
+        assert MLLMBatchGenerator._stream == expected, (
+            "MLLMBatchGenerator._stream must be the worker default "
+            "stream (process-wide, materialisable from any thread). "
+            f"Got: {MLLMBatchGenerator._stream!r}, expected: {expected!r}"
+        )
+    finally:
+        # Cleanup the singleton so other tests start clean.
+        MLLMBatchGenerator._stream = None
 
 
-def test_mllm_next_evals_logprobs_before_yielding_responses(monkeypatch):
-    """``_next()`` must call ``mx.eval`` on the outgoing per-step logprobs
-    before they ride into ``MLLMBatchResponse``.
+def test_mllm_next_evals_outgoing_logprobs_before_response(monkeypatch):
+    """``_next()`` must call ``mx.eval`` on the EXACT
+    ``outgoing_logprobs`` array whose slice rides into
+    ``MLLMBatchResponse``.
 
-    Even with the worker-default-stream fix in place, an unmaterialised
-    (lazy) ``mx.array`` could in principle stage work onto a stream that
-    a consumer thread doesn't own. Explicitly evaluating before the
-    response leaves the worker thread makes the downstream
-    ``np.array(logprobs_array)`` in the route handler a pure CPU copy,
-    eliminating the cross-thread stream hop entirely.
-
-    The test inspects the source of ``_next`` to confirm the eval is
-    wired in — an ``ast`` inspection is the simplest robust check that
-    does not require booting Metal.
+    Codex r1 caught the original version of this test only checking the
+    static source for ``mx.eval(logprobs)`` — that would pass even if
+    ``_next`` evaluated an unrelated variable. This revision drives the
+    real ``_next()`` method with a stubbed batch, intercepts
+    ``mlx.core.eval`` to record every object passed, and asserts the
+    intercept saw the same array object that was attached to the
+    response's ``logprobs`` field.
     """
-    import ast
-    import inspect
-    import textwrap
+    import mlx.core as mx
 
-    from vllm_mlx.mllm_batch_generator import MLLMBatchGenerator
-
-    # ``inspect.getsource`` keeps the method's class-level indent — dedent
-    # so ``ast.parse`` accepts it as a standalone snippet.
-    src = textwrap.dedent(inspect.getsource(MLLMBatchGenerator._next))
-    tree = ast.parse(src)
-
-    # Walk the function and collect every ``mx.eval(...)`` call.
-    eval_calls: list[ast.Call] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            func = node.func
-            if (
-                isinstance(func, ast.Attribute)
-                and func.attr == "eval"
-                and isinstance(func.value, ast.Name)
-                and func.value.id == "mx"
-            ):
-                eval_calls.append(node)
-
-    assert eval_calls, (
-        "MLLMBatchGenerator._next() must call mx.eval(...) on the "
-        "outgoing per-step logprobs before they are attached to "
-        "MLLMBatchResponse. Without this, the lazy mx.array crosses "
-        "thread boundaries and crashes the consumer thread under "
-        "mlx-lm 0.31.3+ thread-local stream rules."
+    from vllm_mlx.mllm_batch_generator import (
+        MLLMBatch,
+        MLLMBatchGenerator,
+        MLLMBatchRequest,
+        MLLMBatchStats,
     )
 
-    # At least one mx.eval call must reference ``logprobs``.
-    refs_logprobs = False
-    for call in eval_calls:
-        for arg in call.args:
-            if isinstance(arg, ast.Name) and arg.id == "logprobs":
-                refs_logprobs = True
-                break
-        if refs_logprobs:
-            break
-    assert refs_logprobs, (
-        "MLLMBatchGenerator._next() calls mx.eval but not on "
-        "``logprobs`` — the regression target is specifically the "
-        "outgoing per-step logprob slice that rides into "
-        "MLLMBatchResponse and across the worker → route-handler "
-        "thread boundary."
+    # ---- Build a minimal generator that bypasses Metal + vision wiring.
+    gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    gen._stats = MLLMBatchStats()
+    gen.stop_tokens = set()
+    gen.unprocessed_requests = []
+    gen._shared_batch_sampler = None
+    gen.completion_batch_size = 16
+    gen.prefill_batch_size = 4
+    gen.prefill_step_size = 1024
+    gen.sampler = lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
+
+    # ``_step`` returns (sampled_tokens, list_of_logprobs_rows). Stub it
+    # so we don't need the real language model — the regression target
+    # is the eval / response-assembly logic, not the forward pass.
+    next_step_logprobs = [mx.zeros((4,)) for _ in range(2)]
+
+    def _fake_step(input_tokens, cache, requests):
+        return (
+            mx.zeros((input_tokens.shape[0],), dtype=mx.uint32),
+            next_step_logprobs,
+        )
+
+    gen._step = _fake_step
+
+    # ---- Wire an active batch carrying a SENTINEL previous-step
+    # ``logprobs`` array. ``_next()`` should pop this array into
+    # ``outgoing_logprobs`` and pass it to ``mx.eval`` before slicing
+    # it into the per-request responses.
+    sentinel_prev_logprobs = [mx.zeros((4,)), mx.zeros((4,))]
+    request_a = MLLMBatchRequest(uid=0, request_id="ra", prompt="x", max_tokens=8)
+    request_b = MLLMBatchRequest(uid=1, request_id="rb", prompt="y", max_tokens=8)
+    gen.active_batch = MLLMBatch(
+        uids=[0, 1],
+        request_ids=["ra", "rb"],
+        y=mx.zeros((2,), dtype=mx.uint32),
+        logprobs=sentinel_prev_logprobs,
+        max_tokens=[8, 8],
+        num_tokens=[0, 0],
+        cache=[],
+        requests=[request_a, request_b],
     )
+
+    # ---- Intercept ``mx.eval`` so the test can verify which object was
+    # actually evaluated. ``mx.async_eval`` happens earlier on
+    # ``batch.y`` / ``batch.logprobs`` (the NEXT step's outputs); the
+    # regression target is the explicit ``mx.eval(outgoing_logprobs)``
+    # call this fix added.
+    eval_args: list[tuple] = []
+    orig_eval = mx.eval
+
+    def _record_eval(*args, **kwargs):
+        eval_args.append(args)
+        return orig_eval(*args, **kwargs)
+
+    monkeypatch.setattr(mx, "eval", _record_eval)
+
+    # ---- Drive a single step.
+    responses = gen._next()
+
+    # ---- mx.eval was called and one of the calls was on the same
+    # ``logprobs`` list that the responses sliced from.
+    assert eval_args, (
+        "_next() did not invoke mx.eval at all — the fix that forces "
+        "the outgoing per-step logprobs array to materialise on the "
+        "worker thread is missing."
+    )
+    # Find the call whose single positional arg matches the sentinel
+    # we wired into the batch. Identity check — slicing
+    # ``sentinel_prev_logprobs[i]`` would still share the same outer
+    # list object that mx.eval was handed.
+    matched = any(
+        len(args) == 1 and args[0] is sentinel_prev_logprobs for args in eval_args
+    )
+    assert matched, (
+        "_next() called mx.eval but NOT on the outgoing logprobs array "
+        "that gets sliced into MLLMBatchResponse. The regression "
+        "target is the cross-thread crash on the exact per-step "
+        "logprob slice — evaluating a different variable does not "
+        "close the bug. Recorded mx.eval call args: "
+        + repr([[type(a).__name__ for a in args] for args in eval_args])
+    )
+
+    # ---- And the responses' logprobs slice from that exact array.
+    assert len(responses) == 2
+    assert responses[0].logprobs is sentinel_prev_logprobs[0]
+    assert responses[1].logprobs is sentinel_prev_logprobs[1]

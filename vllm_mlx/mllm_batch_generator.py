@@ -951,22 +951,29 @@ class MLLMBatchGenerator:
         if batch is None:
             return []
 
-        y, logprobs = batch.y, batch.logprobs
+        # ``y`` / ``outgoing_logprobs`` capture the PREVIOUS step's
+        # sampled tokens + per-token logprobs distribution (one row per
+        # active request). ``MLLMBatchResponse.logprobs`` for the
+        # responses we are about to build below at
+        # ``logprobs=outgoing_logprobs[i]`` slices from THIS array, so
+        # ``outgoing_logprobs`` is the exact object that crosses the
+        # worker → route-handler thread boundary.
+        y, outgoing_logprobs = batch.y, batch.logprobs
         batch.y, batch.logprobs = self._step(y[:, None], batch.cache, batch.requests)
         mx.async_eval(batch.y, batch.logprobs)
 
         # Force evaluation of the OUTGOING per-step logprobs on the
-        # worker thread before they are handed off to ``MLLMBatchResponse``
+        # worker thread before they are sliced into ``MLLMBatchResponse``
         # (and consumed by the route handler thread for ``np.array`` /
-        # top-k extraction). ``mx.async_eval`` above only queues work —
-        # any residual laziness on the response slice would otherwise be
-        # resolved on the consumer thread, which under mlx-lm 0.31.3+
-        # thread-local-stream rules crashes with ``There is no Stream(...)
-        # in current thread``. Pairs with the worker-default-stream
-        # adoption in ``__init__`` so logprobs survive a cross-thread
-        # ``np.array(...)`` even if ``MLLMBatchGenerator._stream`` is
-        # ever re-pointed.
-        mx.eval(logprobs)
+        # top-k extraction in ``service.helpers._extract_token_logprob``).
+        # ``mx.async_eval`` above only schedules work — any residual
+        # laziness on the response slice would otherwise be resolved on
+        # the consumer thread, which under mlx-lm 0.31.3+ thread-local-
+        # stream rules crashes with ``There is no Stream(...) in current
+        # thread``. Pairs with the worker-default-stream adoption in
+        # ``__init__`` so logprobs survive a cross-thread ``np.array(...)``
+        # even if ``MLLMBatchGenerator._stream`` is ever re-pointed.
+        mx.eval(outgoing_logprobs)
 
         y = y.tolist()
         toc = time.perf_counter()
@@ -1019,7 +1026,11 @@ class MLLMBatchGenerator:
                     uid=uid,
                     request_id=request_id,
                     token=token,
-                    logprobs=logprobs[i],
+                    # ``outgoing_logprobs[i]`` is the exact slice we
+                    # eval'd above on the worker thread; the consumer
+                    # thread's ``np.array(...)`` is therefore a pure
+                    # CPU copy with no stream lookup.
+                    logprobs=outgoing_logprobs[i],
                     finish_reason=finish_reason,
                     prompt_cache=prompt_cache,
                 )
