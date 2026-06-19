@@ -1431,7 +1431,11 @@ async def _create_chat_completion_impl(
     # streaming path drifting because it had no gate at all.
     if not _is_structured_output_requested(response_format):
         final_content = _rescue_silent_drop_from_reasoning(
-            final_content, reasoning_text, tool_calls
+            final_content,
+            reasoning_text,
+            tool_calls,
+            finish_reason=finish_reason,
+            raw_text=output.raw_text or output.text,
         )
 
     # Build logprobs for response if requested
@@ -1774,6 +1778,19 @@ async def stream_chat_completion(
                 # tool-call branch would never fire here regardless,
                 # but keeping the call symmetric with non-streaming
                 # is the point.
+                # Streaming: deliberately do NOT pass the truncated-
+                # ``<think>`` gate (``finish_reason`` / ``raw_text``)
+                # here. Streaming routes ``<think>`` directly to the
+                # reasoning channel so ``accumulated_reasoning`` never
+                # carries the literal ``<think>`` opener — the gate
+                # would never fire usefully. Streaming clients rely
+                # on per-delta channel signalling and the
+                # ``finish_reason="length"`` chunk to detect
+                # truncation, so the silent-drop rescue stays opt-in
+                # via the existing predicates. (Non-streaming sees
+                # the literal ``<think>`` in ``output.raw_text`` and
+                # gates on that — see chat.py:~1420 for the symmetric
+                # gated call site.)
                 rescued_content = _rescue_silent_drop_from_reasoning(
                     terminal_content or None,
                     processor.accumulated_reasoning,

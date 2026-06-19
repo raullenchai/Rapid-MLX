@@ -307,7 +307,11 @@ class TestDeepSeekR1:
         assert self.parser.end_token == "</think>"
 
     def test_no_tag_threshold_constant(self):
-        assert self.parser.NO_TAG_CONTENT_THRESHOLD == 64
+        # Bumped from 64 → 1024 chars (2026-06-17 VibeThinker live test)
+        # to give Qwen2-derived reasoning models room to emit a chatty
+        # preamble before the ``<think>`` opener. See class docstring
+        # in ``DeepSeekR1ReasoningParser`` for rationale.
+        assert self.parser.NO_TAG_CONTENT_THRESHOLD == 1024
 
     def test_no_start_only_end(self):
         """DeepSeek-R1 handles implicit start tag."""
@@ -331,7 +335,10 @@ class TestDeepSeekR1:
     def test_streaming_no_tag_past_threshold(self):
         """After threshold chars without tags, treat as content."""
         self.parser.reset_state()
-        long_text = "x" * 100
+        # Use a length well past the new 1024-char threshold so the
+        # streaming branch routes to ``content`` regardless of future
+        # threshold tweaks.
+        long_text = "x" * 2000
         result = self.parser.extract_reasoning_streaming("", long_text, long_text)
         assert result.content == long_text
 
@@ -354,7 +361,9 @@ class TestDeepSeekR1:
         """Long output without tags: no correction (already handled by threshold)."""
         self.parser.reset_state()
         self.parser._saw_any_tag = False
-        result = self.parser.finalize_streaming("x" * 100)
+        # Past the 1024-char threshold ⇒ already routed to ``content``
+        # mid-stream, so ``finalize_streaming`` has nothing to correct.
+        result = self.parser.finalize_streaming("x" * 2000)
         assert result is None
 
     def test_finalize_with_tags_no_correction(self):

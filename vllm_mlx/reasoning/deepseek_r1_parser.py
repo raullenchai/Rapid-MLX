@@ -81,9 +81,25 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
 
     # Character threshold for no-tag content detection.
     # If no think tags are seen after this many characters, treat output as
-    # content rather than reasoning. Real reasoning models emit <think> within
-    # the first few tokens; 64 chars (~15-20 tokens) is a safe threshold.
-    NO_TAG_CONTENT_THRESHOLD = 64
+    # content rather than reasoning. DeepSeek-R1 always emits ``<think>`` as
+    # the first generated token, so the original 64-char window (~15-20
+    # tokens) was generous for that model — but the 2026-06-17 VibeThinker
+    # live test surfaced a Qwen2-derived reasoning model that emits a
+    # chatty preamble ("Okay, let me think about this carefully...") for
+    # 13+ tokens BEFORE its ``<think>`` opener. The 64-char threshold
+    # flipped streaming routing to ``content`` mid-preamble; by the time
+    # the literal ``<think>`` arrived, the reasoning trace was already
+    # leaking into ``content`` deltas.
+    #
+    # Bumping to 1024 chars (~250-300 tokens) gives the model room to
+    # produce a multi-sentence preamble before ``<think>`` while still
+    # protecting against unbounded buffering of genuinely no-think
+    # responses — ``finalize_streaming`` below issues the
+    # reasoning → content correction at end-of-stream for short no-tag
+    # outputs that stay under the threshold for the entire response.
+    # Defined as a class attribute so subclasses or per-alias adapters
+    # can override without forking the base implementation.
+    NO_TAG_CONTENT_THRESHOLD = 1024
 
     def extract_reasoning_streaming(
         self,

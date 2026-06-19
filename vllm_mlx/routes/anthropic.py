@@ -354,11 +354,14 @@ async def create_anthropic_message(
         # mode). The Anthropic adapter downstream renders the
         # rescued ``content`` into a TextBlock; without this it would
         # emit a completely empty ``content=[]`` Messages response.
-        final_content = _rescue_silent_drop_from_reasoning(
-            final_content, reasoning_text, tool_calls
-        )
-
         finish_reason = "tool_calls" if tool_calls else output.finish_reason
+        final_content = _rescue_silent_drop_from_reasoning(
+            final_content,
+            reasoning_text,
+            tool_calls,
+            finish_reason=finish_reason,
+            raw_text=output.raw_text or output.text,
+        )
 
         openai_response = ChatCompletionResponse(
             model=cfg.model_name or openai_request.model,

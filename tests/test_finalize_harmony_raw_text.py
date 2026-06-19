@@ -28,6 +28,7 @@ the retry branch.
 
 from __future__ import annotations
 
+from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1ReasoningParser
 from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
 from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from vllm_mlx.service.helpers import _finalize_content_and_reasoning
@@ -497,3 +498,176 @@ def test_575_r2_qwen3_case4_still_clears_when_thinking_on():
     )
     assert reasoning == _QWEN3_TRUNCATED_THOUGHT.strip()
     assert not cleaned
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-17 VibeThinker live-test regression: truncated ``<think>`` opener
+# without ``</think>`` (``finish_reason=length`` mid-thought) used to leak
+# the byte-identical reasoning trace into BOTH ``content`` AND
+# ``reasoning_content``. The helper now clears ``cleaned_text`` when the
+# parser returns ``(reasoning, None)`` AND ``cleaned_text`` opens with an
+# unclosed ``<think>``. See ``first_parse_was_truncated_think`` in
+# ``vllm_mlx/service/helpers.py``.
+# ---------------------------------------------------------------------------
+
+_VIBETHINKER_TRUNCATED_THINK = (
+    "<think>\nStep 1: Let's analyze the problem.\n"
+    "Step 2: Apply the formula.\n"
+    "Step 3: We need to compute 7 * 12 = 84.\n"
+    "Step 4: Then we add 5 to get 89.\n"
+    "Step 5: Let me double-check by another method"
+    # NO ``</think>`` — finish_reason=length truncated mid-thought.
+)
+
+
+def test_vibethinker_truncated_think_no_duplicate_content_reasoning():
+    """2026-06-17 VibeThinker live-test repro: ``<think>...`` truncated
+    with no ``</think>`` used to surface the whole trace identically in
+    BOTH ``content`` and ``reasoning_content`` (live-test math row:
+    content_len == reasoning_len == 5449, byte-identical). The fix
+    clears ``cleaned_text`` when the parser returns ``(reasoning,
+    None)`` AND ``cleaned_text`` opens with an unclosed ``<think>``.
+
+    This test would FAIL on main because the leak plug in
+    ``_finalize_content_and_reasoning`` only fires on Case-4 (no tag at
+    all) — Case-3 (unclosed ``<think>`` opener) falls through and the
+    raw text echoes into both fields.
+    """
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_VIBETHINKER_TRUNCATED_THINK,
+        cleaned_text=_VIBETHINKER_TRUNCATED_THINK,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        # No ``enable_thinking`` signal from the caller — the literal
+        # ``<think>`` token in the output is the model's own evidence
+        # of thinking, so the fix must NOT be gated on this flag.
+        enable_thinking=None,
+    )
+    # Reasoning trace recovered
+    assert reasoning is not None
+    assert "Step 3" in reasoning
+    # Content explicitly blanked — must NOT duplicate the reasoning
+    # trace (the live-test bug signature).
+    assert not cleaned, (
+        f"truncated <think> trace leaked into content: {cleaned!r}"
+    )
+    # Defensive: the trace must not appear in content.
+    assert "Step 1" not in (cleaned or "")
+
+
+def test_vibethinker_truncated_think_with_thinking_enabled_explicit():
+    """Same as the test above but with the caller passing
+    ``enable_thinking=True``. The plug must also fire on this path
+    (was already implicitly covered by the Case-4 ``enable_thinking=True``
+    branch, but Case-3 is gated independently — pin both paths)."""
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_VIBETHINKER_TRUNCATED_THINK,
+        cleaned_text=_VIBETHINKER_TRUNCATED_THINK,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=True,
+    )
+    assert reasoning is not None
+    assert "Step 3" in reasoning
+    assert not cleaned
+
+
+def test_normal_closed_think_block_still_splits_correctly():
+    """Counter-test: a normal ``<think>...</think>answer`` shape with
+    BOTH tags present must still split into reasoning + content. The
+    new leak-plug gate requires ``</think>`` to be ABSENT, so this
+    well-formed case must be unaffected."""
+    raw = "<think>step by step reasoning</think>The answer is 42."
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+    )
+    assert reasoning == "step by step reasoning"
+    assert cleaned == "The answer is 42."
+
+
+def test_vibethinker_truncated_think_engine_routed_no_duplicate():
+    """2026-06-17 VibeThinker live-test repro — engine-routed path.
+
+    When ``engine_reasoning_text`` is non-empty the helper short-
+    circuits to ``_apply_reasoning_cap`` BEFORE the reasoning-parser
+    branch runs. In that path the leak-plug below the parser never
+    fires, so a truncated ``<think>`` opener in ``cleaned_text``
+    leaks straight into the client's ``content`` field (live-test
+    math row: content_starts_with='<think>We need to find...').
+
+    The fix blanks ``cleaned_text`` in the engine-routed branch too
+    when ``cleaned_text`` opens with an unclosed ``<think>``,
+    mirroring the post-parser plug.
+    """
+    raw = "<think>Let me work through this step by step. 7 * 12 ="
+    engine_reasoning = "Let me work through this step by step. 7 * 12 ="
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        # Any parser will do — the engine-reasoning short-circuit
+        # bypasses the parser entirely.
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text=engine_reasoning,
+        enable_thinking=None,
+    )
+    # Reasoning comes from the engine (router-routed).
+    assert reasoning == engine_reasoning
+    # Content explicitly blanked — must NOT duplicate the trace
+    # (the live-test bug signature).
+    assert not cleaned, (
+        f"truncated <think> trace leaked into engine-routed content: {cleaned!r}"
+    )
+
+
+def test_engine_routed_closed_think_block_passes_through():
+    """Counter-test for the engine-routed branch: a normal closed
+    ``<think>...</think>answer`` shape in ``cleaned_text`` MUST be
+    preserved. The new gate requires the opening tag at lstrip-start
+    AND no closing tag, so a well-formed block is unaffected."""
+    raw = "<think>reasoning</think>The answer is 42."
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="reasoning",
+        enable_thinking=None,
+    )
+    assert reasoning == "reasoning"
+    # cleaned_text passed through intact — both ``<think>`` and
+    # ``</think>`` are present, the gate is OFF.
+    assert cleaned == raw
+
+
+def test_truncated_think_with_pre_think_content_is_conservatively_preserved():
+    """Defensive corner: if the model emits some content BEFORE
+    ``<think>`` and is then truncated, the leading-position check
+    (``text_to_parse.lstrip().startswith("<think>")``) protects that
+    pre-think content from being silently dropped — instead it falls
+    through to the default behaviour. The point is to avoid the leak
+    plug overshooting on cases the live test didn't cover."""
+    raw = "Here is some content\n<think>truncated thought"
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+    )
+    # Parser extracts the post-``<think>`` portion as reasoning.
+    assert reasoning == "truncated thought"
+    # Cleaned_text is NOT blanked — leading text is preserved (even if
+    # the ``<think>`` tag itself is also present; downstream sanitisers
+    # handle that). This is conservative; an aggressive variant might
+    # try to extract "Here is some content" but the live test repro
+    # doesn't require it.
+    assert cleaned == raw

@@ -616,11 +616,17 @@ def test_vibethinker_family_wires_deepseek_r1_reasoning_parser(alias: str) -> No
     the chain-of-thought.
 
     Pin the wiring so a future PR can't silently revert it to ``null``
-    for either size. Also pins ``tool_call_parser=None`` — the model
-    card explicitly states tool calling is unsupported even though the
-    inherited Qwen2 vocab carries ``<tool_call>`` tokens (community
-    reports confirm the model reasons about the template instead of
-    emitting tool calls).
+    for either size. Also pins ``tool_call_parser="hermes"`` — the
+    inherited Qwen2 vocab carries ``<tool_call>`` / ``</tool_call>``
+    tokens and the 2026-06-17 VibeThinker-3B-8bit live test confirmed
+    the model emits BOTH ``<tool_call>{"name": ...}</tool_call>`` and
+    bare ``<function=name>...</function>`` wire shapes for tool calls.
+    With ``tool_call_parser=null`` the OutputRouter's token-level
+    fallback caught the ``<tool_call>`` shape "by accident" but the
+    bare ``<function>`` shape leaked into ``content`` as raw text.
+    Hermes parser handles both shapes natively (see
+    ``HermesToolParser.TOOL_CALL_PATTERN`` and
+    ``BARE_FUNCTION_PATTERN``).
     Verified format sources:
     https://huggingface.co/mlx-community/VibeThinker-3B-8bit
     https://huggingface.co/mlx-community/VibeThinker-1.5B-mlx-4bit
@@ -631,9 +637,12 @@ def test_vibethinker_family_wires_deepseek_r1_reasoning_parser(alias: str) -> No
         f"{alias}: reasoning_parser must be 'deepseek_r1' (VibeThinker emits "
         f"`<think>` blocks autonomously). Got {profiles[alias].reasoning_parser!r}."
     )
-    assert profiles[alias].tool_call_parser is None, (
-        f"{alias}: tool_call_parser must be None — VibeThinker is not "
-        f"trained for tool calling per the upstream model card. "
+    assert profiles[alias].tool_call_parser == "hermes", (
+        f"{alias}: tool_call_parser must be 'hermes' — VibeThinker is "
+        f"Qwen2-derived and emits both <tool_call>{{...}}</tool_call> and "
+        f"bare <function=name>...</function> shapes. The 2026-06-17 live "
+        f"test confirmed the bare-function shape leaks into content "
+        f"without the hermes parser. "
         f"Got {profiles[alias].tool_call_parser!r}."
     )
     # Reasoning-model sampling guidance: temperature=1.0, top_p=0.95

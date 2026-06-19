@@ -176,8 +176,12 @@ class TestDetectModelConfig:
     # regex fallback (WeiboAI/VibeThinker-{1.5B,3B}, served by full repo id
     # without an alias) wire ``deepseek_r1`` reasoning parser so
     # ``<think>...</think>`` blocks land in ``reasoning_content`` not
-    # ``content``. ``tool_call_parser`` stays None — model card explicitly
-    # disowns tool calling.
+    # ``content``. ``tool_call_parser`` is ``hermes`` after the
+    # 2026-06-17 live test confirmed the model emits both
+    # ``<tool_call>{...}</tool_call>`` and bare
+    # ``<function=name>...</function>`` shapes — see
+    # ``test_aliases_contract.test_vibethinker_family_wires_deepseek_r1_reasoning_parser``
+    # for the full rationale.
     @pytest.mark.parametrize(
         "model_path",
         [
@@ -193,7 +197,7 @@ class TestDetectModelConfig:
         cfg = detect_model_config(model_path)
         assert cfg is not None
         assert cfg.reasoning_parser == "deepseek_r1"
-        assert cfg.tool_call_parser is None
+        assert cfg.tool_call_parser == "hermes"
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is True
 

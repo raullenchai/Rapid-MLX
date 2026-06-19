@@ -982,3 +982,119 @@ def test_streaming_rescue_skipped_when_response_format_is_json_schema():
         f"got streamed_content={streamed_content!r}"
     )
     assert "json shape" in streamed_reasoning.lower()
+
+
+# ── 2026-06-17 VibeThinker truncated-``<think>`` rescue gate ──────────
+
+
+def test_rescue_skipped_when_truncated_think_with_finish_length():
+    """2026-06-17 VibeThinker live-test repro: when ``finish_reason="length"``
+    AND ``raw_text`` opens with an unclosed ``<think>``, the rescue must
+    NOT fire. The reasoning trace is an in-progress thought, not a
+    final answer — surfacing it as ``content`` would feed clients the
+    SAME bytes as ``reasoning_content`` and break the "content is the
+    final answer" contract.
+
+    Live-test signature: content_len == reasoning_len (modulo the
+    ``<think>`` opener), byte-identical. After fix: content stays
+    ``None`` so clients can detect "model ran out of budget" via
+    ``finish_reason="length"``.
+    """
+    raw = "<think>The user wants me to compute 17 * 23. Step 1: 17 * 20 = 340"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="The user wants me to compute 17 * 23. Step 1: 17 * 20 = 340",
+        tool_calls=None,
+        finish_reason="length",
+        raw_text=raw,
+    )
+    assert rescued is None, (
+        "rescue must NOT fire on truncated-<think> + finish_reason=length; "
+        f"got rescued={rescued!r}"
+    )
+
+
+def test_rescue_skipped_when_truncated_think_with_leading_whitespace():
+    """The leading-position check uses ``lstrip().startswith`` so the
+    gate still fires when ``raw_text`` opens with whitespace before
+    ``<think>`` (the chat-template may emit a leading newline)."""
+    raw = "\n  <think>thinking truncated"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="thinking truncated",
+        tool_calls=None,
+        finish_reason="length",
+        raw_text=raw,
+    )
+    assert rescued is None
+
+
+def test_rescue_still_fires_on_length_when_raw_text_lacks_open_think():
+    """Counter-test for the new gate: a ``finish_reason="length"``
+    response WITHOUT an unclosed ``<think>`` opener (e.g. gemma-4
+    stuck inside ``<|channel>thought\\n…`` — the original #569
+    failure mode) must STILL rescue. The new gate only blocks the
+    rescue when the model's raw text explicitly carries an unclosed
+    ``<think>`` opener."""
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="reasoning that got truncated",
+        tool_calls=None,
+        finish_reason="length",
+        raw_text="reasoning that got truncated",  # no <think> opener
+    )
+    assert rescued == "reasoning that got truncated", (
+        "rescue MUST fire for #569 gemma-4 failure mode even when "
+        "finish_reason=length, when raw_text does not start with <think>"
+    )
+
+
+def test_rescue_still_fires_on_truncated_think_when_finish_is_stop():
+    """Counter-test: ``raw_text`` opens with unclosed ``<think>`` but
+    ``finish_reason`` is ``stop`` (model voluntarily ended without
+    producing a final answer). The new gate is specifically the
+    ``length`` x truncated-think INTERSECTION — other shapes still
+    rescue. This protects models that emit only a thought block then
+    stop (uncommon but possible)."""
+    raw = "<think>just a thought"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="just a thought",
+        tool_calls=None,
+        finish_reason="stop",
+        raw_text=raw,
+    )
+    assert rescued == "just a thought"
+
+
+def test_rescue_still_fires_on_truncated_think_when_finish_unknown():
+    """Counter-test: when ``finish_reason`` is ``None`` (legacy caller
+    that doesn't thread the kwarg), the gate is conservative and
+    rescue still fires. The kwarg defaults to ``None`` for back-
+    compat with existing callers."""
+    raw = "<think>just a thought"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="just a thought",
+        tool_calls=None,
+    )
+    assert rescued == "just a thought"
+
+
+def test_rescue_skipped_when_closed_think_block_truncated_after():
+    """Edge case: ``raw_text`` contains a CLOSED ``<think>...</think>``
+    block plus partial answer truncated at length. The gate uses
+    ``"</think>" not in raw_text`` so the closed block bypasses the
+    rescue-skip and the rescue fires normally (the rescue's normal
+    predicates still gate it appropriately)."""
+    raw = "<think>complete thought</think>The ans"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="complete thought",
+        tool_calls=None,
+        finish_reason="length",
+        raw_text=raw,
+    )
+    # </think> is in raw_text, so the gate does NOT fire → rescue runs
+    # normally and surfaces the reasoning.
+    assert rescued == "complete thought"

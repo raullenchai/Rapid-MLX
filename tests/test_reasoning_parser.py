@@ -933,8 +933,11 @@ class TestDeepSeekNoTagThreshold:
         """Long output without any tags should become content after threshold."""
         parser.reset_state()
 
-        # Generate text longer than 64 chars without any think tags
-        text = "This is a regular response without any thinking tags. " * 3
+        # Generate text longer than NO_TAG_CONTENT_THRESHOLD (1024 chars,
+        # bumped from 64 in 2026-06-17 VibeThinker fix) without any
+        # think tags.
+        text = "This is a regular response without any thinking tags. " * 25
+        assert len(text) > parser.NO_TAG_CONTENT_THRESHOLD
         accumulated = ""
         content_parts = []
         reasoning_parts = []
@@ -1013,7 +1016,8 @@ class TestDeepSeekNoTagThreshold:
         """finalize_streaming should not correct long no-tag output (already content)."""
         parser.reset_state()
 
-        text = "A" * 100  # Over threshold
+        # Over threshold (bumped from 64 → 1024, 2026-06-17 VibeThinker fix).
+        text = "A" * (parser.NO_TAG_CONTENT_THRESHOLD + 50)
         accumulated = ""
 
         for char in text:
