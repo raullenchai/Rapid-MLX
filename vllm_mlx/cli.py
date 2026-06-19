@@ -1369,7 +1369,16 @@ def serve_command(args):
     #     address). Codex rounds 1+3 PR #696 review.
     from vllm_mlx.config import get_config
 
+    # Always reset BOTH source-of-truth fields before stamping the
+    # active branch — the singleton config persists across in-process
+    # ``serve_command`` invocations (test harnesses, embedded usage), so
+    # a prior host/port stash would otherwise take precedence over a
+    # subsequent fd stash (and vice-versa) and the Ready banner would
+    # lie about which listener is live. Codex round-4 PR #696 review.
     _cfg = get_config()
+    _cfg.bind_host = None
+    _cfg.bind_port = None
+    _cfg.bind_listen_fd = None
     if listen_fd is None:
         _cfg.bind_host = host_display
         _cfg.bind_port = args.port
