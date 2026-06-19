@@ -1011,6 +1011,18 @@ class BatchedEngine(BaseEngine):
             # Use MLLM scheduler for all requests when model is multimodal.
             # MLLM models only initialise the _mllm_scheduler (not _engine),
             # so text-only requests must also be routed here.
+            #
+            # ``_assistant_text_prefix`` — see the text-engine branch
+            # below for the rationale. The MLLM branch pops the same
+            # key off ``kwargs`` so the forced-tool prefix is included
+            # in the returned ``text`` / ``raw_text`` (codex r2 P2:
+            # without this, qwen3-vl-2b-4bit's forced ``tool_choice``
+            # path would fall through to the post-parse synthesis
+            # fallback because the parser sees only the model
+            # continuation, not the prefixed envelope).
+            mllm_assistant_text_prefix = (
+                kwargs.pop("_assistant_text_prefix", "") or ""
+            )
             output = await self._mllm_scheduler.generate(
                 prompt=prompt,
                 images=images,
@@ -1022,10 +1034,13 @@ class BatchedEngine(BaseEngine):
                 video_fps=kwargs.pop("video_fps", None),
                 video_max_frames=kwargs.pop("video_max_frames", None),
             )
+            mllm_full_text = output.output_text or ""
+            if mllm_assistant_text_prefix:
+                mllm_full_text = mllm_assistant_text_prefix + mllm_full_text
 
             return GenerationOutput(
-                text=clean_output_text(output.output_text),
-                raw_text=output.output_text,
+                text=clean_output_text(mllm_full_text),
+                raw_text=mllm_full_text,
                 tokens=output.output_token_ids,
                 prompt_tokens=output.prompt_tokens,
                 completion_tokens=output.completion_tokens,
