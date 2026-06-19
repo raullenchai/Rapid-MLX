@@ -385,7 +385,6 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # the just-emitted reasoning bytes as "still un-emitted" and
         # re-emit them, duplicating the streamed reasoning (codex
         # caught this with the ``['<thi', 'nk>Okay', ' more']`` repro).
-        self._held_tag_suffix_len = 0
         start_idx_cur = current_text.find(self.start_token)
         prev_len = len(current_text) - len(delta_text)
         # Bytes of delta_text BEFORE the start_token's last char —
@@ -403,10 +402,31 @@ class BaseThinkingReasoningParser(ReasoningParser):
             if end_idx >= 0:
                 content_part = reasoning_part[end_idx + len(self.end_token) :]
                 reasoning_part = reasoning_part[:end_idx]
+                self._held_tag_suffix_len = 0
                 return DeltaMessage(
                     reasoning=reasoning_part or None,
                     content=content_part or None,
                 )
+        # Codex r4 P2 follow-up: when the same chunk that completes a
+        # split opener ALSO ends with a partial ``</think>`` (e.g.
+        # chunks ``"<thi"``, ``"nk>OK</thi"``, ``"nk>ans"``), we must
+        # withhold the trailing partial-end-tag bytes so they don't
+        # leak literally into ``reasoning_content``. Reuse the same
+        # ``_held_partial_tag_len`` machinery as the Case-3 / start_in_prev
+        # branches so the next delta's ``start_in_prev`` path can
+        # complete the close cleanly.
+        held = self._held_partial_tag_len(current_text)
+        self._held_tag_suffix_len = held
+        if held > 0 and reasoning_part:
+            # Strip the trailing partial-tag bytes from this emit.
+            # The withhold is measured on ``current_text``; convert to
+            # a slice on ``reasoning_part`` (which is the suffix of
+            # delta_text after the opener overlap).
+            safe_end_in_current = len(current_text) - held
+            # Position in current_text where reasoning_part starts:
+            reasoning_start_in_current = prev_len + tag_overlap
+            keep = max(0, safe_end_in_current - reasoning_start_in_current)
+            reasoning_part = reasoning_part[:keep]
         return DeltaMessage(reasoning=reasoning_part or None)
 
     def _handle_implicit_think(
