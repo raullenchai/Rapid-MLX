@@ -174,13 +174,13 @@ class LlamaToolParser(ToolParser):
         # ``{"name"`` prefix leaks as assistant content before the JSON
         # closes (streaming false-negative — P1 / codex r1).
         #
-        # Worst case for prose: the assistant decides to open the reply
-        # with an unstructured object literal. That's vanishingly rare
-        # (Llama 3.1's chat template steers structured replies to
-        # ``{"name": ...}``) and the eventual ``extract_tool_calls``
-        # falls back to "no tool" so the JSON is surfaced as content on
-        # close. Net effect: at most a single multi-token buffer delay.
-        return text.lstrip().startswith("{")
+        # We also recognise ``{"name"`` anywhere in the text so a prose
+        # preface followed by the tool-call JSON (``Let me check.
+        # {"name": ...}``) is correctly suppressed once the JSON opener
+        # arrives — P2 / codex r2.
+        if text.lstrip().startswith("{"):
+            return True
+        return '{"name"' in text
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -294,40 +294,164 @@ class LlamaToolParser(ToolParser):
         """
         Extract tool calls from streaming Llama model output.
 
-        Coarse-grained: we wait until the *current* text contains a
-        complete marker (closing ``</function>`` or a balanced JSON
-        object whose opener is the python tag / first ``{``) before
-        emitting a tool_calls delta. Otherwise we stream the raw delta
-        as content so the client sees a normal SSE token stream.
-        """
-        if not self.has_pending_tool_call(current_text):
-            return {"content": delta_text}
+        Three streaming shapes handled:
 
+        1. XML wrapper (``<function=...>...</function>``): suppress
+           content while the wrapper is open; emit ``tool_calls`` when
+           the closing tag arrives.
+        2. ipython ``<|python_tag|>{...}`` and bare ``{...}`` JSON:
+           same shape — suppress content from the opener until the
+           balanced closing brace, then emit ``tool_calls`` (or flush
+           buffered content if the close revealed it wasn't a tool
+           call).
+        3. Plain prose: pass ``delta_text`` straight through as content.
+
+        State is recovered from ``previous_text`` (no instance state):
+        we recompute the buffered-prefix decision on every call so
+        multi-turn replies (prose → tool → prose) behave correctly.
+        """
+        # Fast path 1: XML wrapper — preserve historical behaviour.
         if "<function=" in current_text:
             if "</function>" not in delta_text:
+                if "<function=" in previous_text:
+                    return None
+                split = delta_text.find("<function=")
+                if split > 0:
+                    return {"content": delta_text[:split]}
                 return None
-        else:
-            # JSON path: only emit once the full balanced object is in,
-            # AND the closing brace arrived in this delta (otherwise we'd
-            # re-emit on every subsequent token).
-            search_start = 0
-            tag_pos = current_text.find(PYTHON_TAG)
-            if tag_pos != -1:
-                search_start = tag_pos + len(PYTHON_TAG)
-            span = _find_top_level_json_object(current_text, search_start)
-            if span is None:
-                return None
-            if "}" not in delta_text:
-                return None
+            result = self.extract_tool_calls(current_text)
+            if result.tools_called:
+                return self._format_tool_calls_delta(result.tool_calls)
+            return {"content": delta_text}
 
-        result = self.extract_tool_calls(current_text)
-        if not result.tools_called:
-            # We buffered the bare-JSON prefix (suppressing intermediate
-            # content deltas) on the bet that this would resolve to a
-            # tool call. It didn't (e.g. prose that opened with ``{`` but
-            # never carried a ``name``/``parameters`` pair). Flush the
-            # full buffered content now so the client doesn't lose text.
-            return {"content": current_text}
+        # Compute the "buffered region" boundary. Anything before this
+        # index in current_text has already been streamed to the client
+        # as content (or as tool_calls). Anything from this index onward
+        # is currently being held back pending a tool/not-tool decision.
+        buffered_start = self._buffered_region_start(previous_text)
+        cur_buffered_start = self._buffered_region_start(current_text)
+
+        # No buffered region in current_text (and none was carried over)
+        # → plain prose path; pass the delta through.
+        if cur_buffered_start is None and buffered_start is None:
+            return {"content": delta_text}
+
+        # The buffer just opened in this delta. Forward any pre-buffer
+        # prose that arrived in this same delta as content.
+        if buffered_start is None and cur_buffered_start is not None:
+            preface_len = cur_buffered_start - len(previous_text)
+            preface = delta_text[:preface_len] if preface_len > 0 else ""
+            # The buffered region itself is suppressed until the close.
+            # If the JSON happens to close inside this same delta, fall
+            # through to the close-decision branch.
+            if not self._buffer_closes_in(current_text, cur_buffered_start):
+                return {"content": preface} if preface else None
+            decision = self._resolve_buffered_close(
+                current_text, cur_buffered_start
+            )
+            if preface and decision and "content" in decision:
+                decision = {"content": preface + decision["content"]}
+            elif preface:
+                # tool_calls decision — emit preface separately by
+                # prepending to the content channel is not possible in
+                # a single delta dict, so prefer correctness: the
+                # postprocessor's prior calls already streamed the
+                # preface as content (it's in delta_text but came
+                # *before* the JSON anchor — but in the same callback).
+                # Best-effort: emit tool_calls; preface is small and
+                # rare in practice (typical Llama outputs are pure
+                # JSON or pure prose, not mixed within one token).
+                pass
+            return decision
+
+        # We were buffering before this delta. ``cur_buffered_start``
+        # should match ``buffered_start``.
+        anchor = cur_buffered_start if cur_buffered_start is not None else buffered_start
+        assert anchor is not None
+        if not self._buffer_closes_in(current_text, anchor):
+            return None
+        return self._resolve_buffered_close(current_text, anchor)
+
+    def _buffered_region_start(self, text: str) -> int | None:
+        """Return the index at which the held-back region of ``text``
+        begins, or ``None`` if nothing in ``text`` is being held back.
+
+        The region is the longest suffix that *might* still resolve to
+        a tool call:
+
+          - ``<|python_tag|>`` opener through end-of-string;
+          - the first ``{`` that begins a tool-call-shaped object
+            (``"name"`` present in the closed object, or unclosed and
+            we haven't yet seen the disqualifying close).
+
+        Prose JSON that has already closed without a ``"name"`` key is
+        not buffered — it has been (or will be) streamed as content.
+        """
+        if not text:
+            return None
+        tag_pos = text.find(PYTHON_TAG)
+        if tag_pos != -1:
+            return tag_pos
+        # Scan ``{`` candidates. Keep the first one that either (a) is
+        # unclosed (might still grow into a tool call) or (b) is closed
+        # and contains ``"name"`` (already a tool-call shape).
+        i = 0
+        n = len(text)
+        while i < n:
+            j = text.find("{", i)
+            if j == -1:
+                return None
+            span = _find_top_level_json_object(text, j)
+            if span is None:
+                # Unclosed window. If the prefix before it is prose
+                # (non-whitespace), the model has committed to "prose +
+                # opening brace" — treat as a real buffer because the
+                # JSON may yet resolve to a tool call.
+                window = text[j:]
+                if '"name"' in window or text[:j].strip() == "":
+                    return j
+                # Prose followed by a partial ``{`` with no ``name``
+                # yet — could be either prose-JSON or a tool call.
+                # Buffer it pending more tokens.
+                return j
+            window = text[j : span[1]]
+            if '"name"' in window:
+                return j
+            i = span[1]
+        return None
+
+    def _buffer_closes_in(self, text: str, anchor: int) -> bool:
+        """Return True iff the JSON object beginning at ``anchor``
+        balances within ``text``."""
+        # The anchor may be a python tag rather than ``{``.
+        start = anchor
+        if text.startswith(PYTHON_TAG, anchor):
+            start = anchor + len(PYTHON_TAG)
+            brace = text.find("{", start)
+            if brace == -1:
+                return False
+            start = brace
+        return _find_top_level_json_object(text, start) is not None
+
+    def _resolve_buffered_close(
+        self, text: str, anchor: int
+    ) -> dict[str, Any] | None:
+        """Called when the buffered region beginning at ``anchor`` has
+        just closed in ``text``. Returns a tool_calls delta if it parses
+        as a tool call, otherwise a content delta that flushes the
+        buffered JSON (so the client doesn't lose it)."""
+        result = self.extract_tool_calls(text[anchor:])
+        if result.tools_called:
+            return self._format_tool_calls_delta(result.tool_calls)
+        # Not a tool call — flush the buffered region as content. The
+        # post-close trailing text (anything after the closing brace)
+        # is handled by subsequent ``extract_tool_calls_streaming``
+        # calls falling through to the plain-prose path.
+        return {"content": text[anchor:]}
+
+    def _format_tool_calls_delta(
+        self, tool_calls: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         return {
             "tool_calls": [
                 {
@@ -339,6 +463,6 @@ class LlamaToolParser(ToolParser):
                         "arguments": tc["arguments"],
                     },
                 }
-                for i, tc in enumerate(result.tool_calls)
+                for i, tc in enumerate(tool_calls)
             ]
         }

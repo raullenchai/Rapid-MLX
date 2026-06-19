@@ -333,6 +333,54 @@ class TestStreaming:
         )
         assert result == {"content": delta}
 
+    def test_prose_prefix_then_bare_json_tool_call(
+        self, parser: LlamaToolParser
+    ):
+        """Regression for codex r2 P2 (1/2): a streamed response of
+        ``Let me check. {"name": "X", "parameters": {}}`` must NOT leak
+        the JSON tail as content. Earlier prose chunks pass through; the
+        JSON anchor onward is buffered and emitted as ``tool_calls``."""
+        # Step 1: prose preface — passes through.
+        d1 = "Let me check. "
+        r1 = parser.extract_tool_calls_streaming(
+            previous_text="", current_text=d1, delta_text=d1
+        )
+        assert r1 == {"content": d1}
+
+        # Step 2: opening brace + name/params arrive in one go.
+        d2 = '{"name": "search", "parameters": {}}'
+        cur = d1 + d2
+        r2 = parser.extract_tool_calls_streaming(
+            previous_text=d1, current_text=cur, delta_text=d2
+        )
+        # The JSON closes in this delta → tool_calls emitted, no leak.
+        assert r2 is not None
+        assert "tool_calls" in r2
+        assert r2["tool_calls"][0]["function"]["name"] == "search"
+
+    def test_post_json_content_streams_through(self, parser: LlamaToolParser):
+        """Regression for codex r2 P2 (2/2): after a (non-tool) JSON
+        object is flushed as content, subsequent prose deltas MUST
+        continue to stream through. Previously the parser kept seeing
+        the buffered ``{`` prefix and returned ``None`` for every
+        trailing token, dropping the rest of the reply."""
+        # Step 1: closed prose JSON — flushed as content on close.
+        d1 = '{"city": "Tokyo"}'
+        r1 = parser.extract_tool_calls_streaming(
+            previous_text="", current_text=d1, delta_text=d1
+        )
+        assert r1 is not None
+        assert "content" in r1
+        assert r1["content"] == d1
+
+        # Step 2: trailing prose — must pass through.
+        d2 = " is nice."
+        cur = d1 + d2
+        r2 = parser.extract_tool_calls_streaming(
+            previous_text=d1, current_text=cur, delta_text=d2
+        )
+        assert r2 == {"content": d2}
+
 
 # ---------------------------------------------------------------------------
 # Wire-format declaration — keep ``test_tool_parser_wire_formats`` happy
