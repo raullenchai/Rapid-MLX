@@ -946,6 +946,20 @@ class MLXMultimodalLM:
         if tools:
             template_kwargs["tools"] = tools
 
+        # Neutralise chat-template role markers in user-supplied
+        # content before passing to the processor's template — same
+        # sanitisation layer as ``utils.chat_template.apply_chat_template``
+        # so this bespoke video path doesn't bypass the prompt-injection
+        # defence.
+        from ..utils.chat_template import _sanitize_messages_for_template
+
+        try:
+            native_messages = _sanitize_messages_for_template(
+                native_messages, self.processor
+            )
+        except Exception:
+            pass
+
         text = self.processor.apply_chat_template(
             native_messages,
             tokenize=False,
