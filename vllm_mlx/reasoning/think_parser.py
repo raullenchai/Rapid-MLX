@@ -603,6 +603,20 @@ class BaseThinkingReasoningParser(ReasoningParser):
         helper only fires when ``start_in_prev AND end_in_prev``
         (i.e. at least one full ``<think>…</think>`` pair has
         already been streamed).
+
+        Known limitation (codex r2 finding on PR #722): a literal
+        ``<think>`` substring inside the model's answer text
+        (e.g. ``"The user said: <think> is a tag"``) is
+        reclassified as a structural opener and subsequent bytes
+        flow to reasoning. The non-streaming
+        ``extract_reasoning`` ``partition`` path has the SAME
+        behaviour — there's no out-of-band signal in the tag-based
+        protocol to distinguish a structural tag from a literal
+        substring. The router preserves the existing semantic
+        (streaming ↔ non-streaming parity, pinned by
+        ``test_literal_think_in_answer_text_is_known_limitation``)
+        so any future fix (e.g. tokenizer-id-level structural-tag
+        detection) lands once and benefits both paths.
         """
         prev_len = len(current_text) - len(delta_text)
         # Phase at the END OF PREVIOUS DELTA (start of this delta).

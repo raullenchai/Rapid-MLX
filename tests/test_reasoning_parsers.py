@@ -815,6 +815,113 @@ class TestMultiBlockThinkStreaming:
         assert reasoning == "R1R2"
         assert content == "answertail"
 
+    def test_post_close_false_partial_opener_released_as_content(self):
+        """Codex r2 NIT on PR #722: when held bytes from the prior
+        chunk turn out to NOT complete a tag (e.g. prev ended with
+        ``<thi`` but the next chunk is ``x tail`` not ``nk>``), the
+        withheld bytes must be FLUSHED as content — not silently
+        dropped. Regression for the held-suffix backtracking in
+        ``_handle_multi_block_after_close``.
+
+        The risky path: post-close phase, prev chunk's
+        ``_held_partial_tag_len`` matched ``<thi`` as a potential
+        ``<think>`` prefix, but the next chunk's first byte is ``x``
+        so the partial-tag is a false alarm. Backtracking the scan
+        window to ``prev_len - prev_held`` and starting ``cursor``
+        there means the trailing-emit segment now spans those
+        withheld bytes too — they flow back to the wire as
+        content phase, matching what the user sees in the answer."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            [
+                "<think>",
+                "R1",
+                "</think>",
+                "answer ",
+                "<thi",  # partial-tag withheld
+                "x tail",  # turns out NOT to be a tag — flush
+            ],
+        )
+        assert reasoning == "R1"
+        # The withheld ``<thi`` is released as content alongside the
+        # following ``x tail`` so the client doesn't see truncated
+        # answer text.
+        assert content == "answer <thix tail", (
+            f"false partial bytes not released cleanly: {content!r}"
+        )
+
+    def test_literal_think_in_answer_text_is_known_limitation(self):
+        """Codex r2 second BLOCKING on PR #722: a literal ``<think>``
+        substring inside the model's answer text (e.g. ``The user
+        said: <think> is a tag``) is reclassified as a structural
+        opener by both this PR's streaming router AND the existing
+        non-streaming ``partition`` path. This is a SHARED pre-
+        existing limitation of the tag-based protocol — the parser
+        has no out-of-band signal to tell a structural tag from a
+        literal substring, so the wire format itself is ambiguous.
+
+        The test pins the streaming behaviour to match the non-
+        streaming behaviour so the two paths stay in lock-step: any
+        future fix (e.g. tokenizer-level structural-tag-id check)
+        will land in the base class and be picked up by both. Until
+        then, callers that need to ship literal ``<think>`` text
+        should escape it client-side or use a different reasoning-
+        parser-disabled alias.
+
+        Pre-fix (single-block streaming partition) already had the
+        same bug — there's no behaviour regression here, only a
+        pinned documentation test."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser_s = DeepSeekR1ReasoningParser()
+        s_reasoning, s_content = self._run_stream(
+            parser_s,
+            [
+                "<think>",
+                "R1",
+                "</think>",
+                "The user said: <think> is a tag. Use it carefully.",
+            ],
+        )
+        # Streaming path: ``<think>`` substring inside answer text
+        # is mis-parsed as a structural opener — everything after
+        # it lands in reasoning. This matches the non-streaming
+        # path below so the bug surface is symmetric.
+        parser_n = DeepSeekR1ReasoningParser()
+        n_reasoning, n_content = parser_n.extract_reasoning(
+            "<think>R1</think>The user said: <think> is a tag. Use it carefully."
+        )
+
+        # Both paths reclassify the literal ``<think>`` substring as
+        # a structural opener and route everything after it into
+        # reasoning. The two paths diverge in whitespace handling
+        # (non-streaming ``.strip()``s + ``\n``-joins blocks; streaming
+        # emits as-is), but the SEMANTIC equivalence — same payload
+        # bytes modulo whitespace — is what matters for the
+        # symmetric-fix invariant. A future fix (e.g. tokenizer-id
+        # check) lands once in the base class and benefits both
+        # paths.
+        def _norm(s):
+            return ("".join((s or "").split())).strip()
+
+        assert _norm(s_content) == _norm(n_content), (
+            f"streaming/non-streaming literal-tag CONTENT diverged on "
+            f"payload (not just whitespace): streaming={s_content!r} "
+            f"non-streaming={n_content!r}"
+        )
+        assert _norm(s_reasoning) == _norm(n_reasoning), (
+            f"streaming/non-streaming literal-tag REASONING diverged on "
+            f"payload (not just whitespace): streaming={s_reasoning!r} "
+            f"non-streaming={n_reasoning!r}"
+        )
+
 
 class TestResidualThinkTagSweep:
     """Multi-block ``<think>`` sweep (2026-06-19 round-1 fuzz repro).
