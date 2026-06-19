@@ -196,18 +196,17 @@ def _finalize_content_and_reasoning(
         #
         # ``strip_thinking_tags`` (the downstream sanitiser) only
         # matches **closed** ``<think>…</think>`` blocks, so the
-        # unclosed opener falls through. Detect the pattern here and
-        # blank ``cleaned_text`` — symmetric with the
-        # ``first_parse_was_truncated_think`` plug below for the no-
-        # engine-routing path. The literal ``<think>`` token in the
-        # cleaned text is the model's own evidence that thinking was
-        # active for this turn, so the leak plug runs unconditionally.
-        if (
-            cleaned_text
-            and cleaned_text.lstrip().startswith("<think>")
-            and "</think>" not in cleaned_text
-        ):
-            cleaned_text = ""
+        # unclosed opener falls through. Trim everything from the
+        # ``<think>`` opener onward — preserves any pre-think preamble
+        # ("Okay, let me think...\n<think>...") as legitimate
+        # ``content`` while dropping the leaked thought trace.
+        # Codex r1 P2: the previous ``startswith`` check missed the
+        # documented VibeThinker preamble shape (model emits a chatty
+        # intro BEFORE ``<think>``, then truncates mid-thought) —
+        # ``partition`` handles both the start-aligned (math row) and
+        # preamble (live-test merge_intervals streaming) cases.
+        if cleaned_text and "<think>" in cleaned_text and "</think>" not in cleaned_text:
+            cleaned_text = cleaned_text.partition("<think>")[0].rstrip()
         return _apply_reasoning_cap(
             cleaned_text, engine_reasoning_text, reasoning_max_tokens
         )
@@ -271,7 +270,7 @@ def _finalize_content_and_reasoning(
         # reasoning_len == 5449, byte-identical).
         #
         # Signal: parser returned reasoning-only AND ``text_to_parse``
-        # *starts with* an unclosed ``<think>`` opener (so the parser's
+        # contains an unclosed ``<think>`` opener (so the parser's
         # ``(reasoning, None)`` was Case-3, not Case-4, not the
         # harmony-style ``(None, None)`` rescued by the retry above).
         # Unlike the #575 plug, this branch is NOT gated on
@@ -279,22 +278,22 @@ def _finalize_content_and_reasoning(
         # output is the model's own evidence that thinking was active
         # for this turn, irrespective of what the caller passed.
         #
-        # The leading-position check (``lstrip().startswith``) is the
-        # conservatism knob: a truncated ``<think>`` mid-text could
-        # also produce ``(reasoning, None)`` from the parser, but in
-        # that case the text BEFORE ``<think>`` was legitimate content
-        # that the client should still see. Restricting the clear to
-        # the "everything is thinking" shape protects that hypothetical
-        # case from being silently dropped. The live-test repro
-        # (VibeThinker math row, content_len == reasoning_len == 5449)
-        # always opens with ``<think>`` so the leading check still
-        # catches it.
+        # Codex r1 P2: the previous ``lstrip().startswith("<think>")``
+        # gate missed the documented VibeThinker preamble shape (the
+        # model emits a chatty intro BEFORE ``<think>``, then truncates
+        # mid-thought). The fix below uses ``partition("<think>")[0]``
+        # so a preamble like ``"Okay, let me think...\n<think>..."``
+        # has the preamble preserved as ``content`` while the unclosed
+        # thought trace is dropped (the trace is already carried in
+        # ``reasoning_text``). Catches BOTH the live-test math row
+        # (``<think>`` at lstrip-start) and the merge_intervals
+        # streaming row (preamble before ``<think>``).
         first_parse_was_truncated_think = (
             new_reasoning is not None
             and new_cleaned is None
             and bool(text_to_parse)
+            and "<think>" in text_to_parse
             and "</think>" not in text_to_parse
-            and text_to_parse.lstrip().startswith("<think>")
         )
         # Harmony retry: the engine's ``clean_output_text`` strips
         # ``<|channel|>analysis<|message|>…`` markers before the route
@@ -354,8 +353,15 @@ def _finalize_content_and_reasoning(
         # signal independent of ``enable_thinking`` — see the
         # ``first_parse_was_truncated_think`` definition for the
         # full rationale and the live-test repro.
+        #
+        # ``partition`` keeps any pre-think preamble (legitimate
+        # content) and drops the unclosed thought trace (already
+        # carried in ``reasoning_text``). For the live-test math
+        # row the preamble is empty so this collapses to ``""``;
+        # for the merge_intervals streaming row it preserves the
+        # ~80-char chatty intro the model emitted before ``<think>``.
         if first_parse_was_truncated_think:
-            cleaned_text = ""
+            cleaned_text = cleaned_text.partition("<think>")[0].rstrip()
     return _apply_reasoning_cap(cleaned_text, reasoning_text, reasoning_max_tokens)
 
 

@@ -647,13 +647,48 @@ def test_engine_routed_closed_think_block_passes_through():
     assert cleaned == raw
 
 
-def test_truncated_think_with_pre_think_content_is_conservatively_preserved():
-    """Defensive corner: if the model emits some content BEFORE
-    ``<think>`` and is then truncated, the leading-position check
-    (``text_to_parse.lstrip().startswith("<think>")``) protects that
-    pre-think content from being silently dropped — instead it falls
-    through to the default behaviour. The point is to avoid the leak
-    plug overshooting on cases the live test didn't cover."""
+def test_engine_routed_truncated_think_preserves_preamble():
+    """Same as the engine-routed test above, but with a chatty
+    preamble before the unclosed ``<think>``. ``partition`` preserves
+    the preamble as content while dropping the leaked trace."""
+    raw = (
+        "Okay, let me think about this carefully and step by step.\n\n"
+        "<think>I should compute 7 * 12 = 84, then add 5..."
+    )
+    engine_reasoning = "I should compute 7 * 12 = 84, then add 5..."
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text=engine_reasoning,
+        enable_thinking=None,
+    )
+    assert reasoning == engine_reasoning
+    # Preamble preserved, leaked thought dropped.
+    assert cleaned == "Okay, let me think about this carefully and step by step."
+    assert "compute 7 * 12" not in cleaned
+    assert "<think>" not in cleaned
+
+
+def test_truncated_think_with_pre_think_content_preserves_preamble():
+    """Codex r1 P2 follow-up: when the model emits a preamble BEFORE
+    ``<think>`` and is then truncated, the trim must preserve the
+    preamble as content while dropping the unclosed thought trace.
+
+    The original VibeThinker bug report explicitly calls out this
+    shape (the merge_intervals streaming case — model emits a chatty
+    multi-sentence intro before its ``<think>`` opener). The first
+    iteration of this fix used a conservative
+    ``lstrip().startswith("<think>")`` gate that LEAKED the trace
+    into content for this case; codex r1 flagged it.
+
+    The fix uses ``partition("<think>")[0]`` so:
+      * Start-aligned (math row): preamble == "" → cleaned == ""
+      * Preamble shape (merge_intervals): preamble preserved →
+        content stays semantically meaningful while the leaked thought
+        is dropped.
+    """
     raw = "Here is some content\n<think>truncated thought"
     cleaned, reasoning = _finalize_content_and_reasoning(
         raw_text=raw,
@@ -665,9 +700,11 @@ def test_truncated_think_with_pre_think_content_is_conservatively_preserved():
     )
     # Parser extracts the post-``<think>`` portion as reasoning.
     assert reasoning == "truncated thought"
-    # Cleaned_text is NOT blanked — leading text is preserved (even if
-    # the ``<think>`` tag itself is also present; downstream sanitisers
-    # handle that). This is conservative; an aggressive variant might
-    # try to extract "Here is some content" but the live test repro
-    # doesn't require it.
-    assert cleaned == raw
+    # The preamble is preserved; the unclosed ``<think>`` opener and
+    # the leaked trace are dropped. (Trailing whitespace before
+    # ``<think>`` is also stripped by ``.rstrip()`` for clean
+    # downstream rendering.)
+    assert cleaned == "Here is some content"
+    # Defensive: the raw thought must NOT survive in content.
+    assert "truncated thought" not in cleaned
+    assert "<think>" not in cleaned
