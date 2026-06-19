@@ -781,13 +781,16 @@ s.listen(128)
 # Move the listening socket to fd 3 (the systemd / launchd convention
 # for the first inherited socket). Order matters:
 #   1. ``dup2(src, 3)`` clones src onto fd 3 (and clears CLOEXEC on 3).
+#      When ``s.fileno() == 3`` already, ``dup2`` is a no-op.
 #   2. Mark ONLY fd 3 inheritable — the child should see the listener
 #      via fd 3 and nothing else.
-#   3. Close the original fd so it isn't leaked across ``execvpe`` as
-#      a duplicate listening socket on a non-conventional fd number.
-os.dup2(s.fileno(), 3)
+#   3. Close the original fd ONLY when it isn't already 3, otherwise
+#      we'd close the inherited fd out from under ``execvpe``.
+src_fd = s.fileno()
+os.dup2(src_fd, 3)
 os.set_inheritable(3, True)
-s.close()
+if src_fd != 3:
+    s.close()
 os.execvpe(
     "rapid-mlx",
     [
