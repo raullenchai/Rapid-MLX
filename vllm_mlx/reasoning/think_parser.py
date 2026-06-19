@@ -264,49 +264,84 @@ class BaseThinkingReasoningParser(ReasoningParser):
         start_in_delta = self.start_token in delta_text
 
         if start_in_prev:
-            # We're after the start token
-            if end_in_delta:
-                # Transition: end token in this delta
-                idx = delta_text.find(self.end_token)
-                reasoning_part = delta_text[:idx]
-                content_part = delta_text[idx + len(self.end_token) :]
-                return DeltaMessage(
-                    reasoning=reasoning_part if reasoning_part else None,
-                    content=content_part if content_part else None,
-                )
-            elif end_in_prev:
-                # Already past reasoning phase - pure content
+            # We're after the start token. Use emit-by-position
+            # bookkeeping uniformly so held partial-tag bytes from
+            # previous deltas (PR #715 bundle, fuzz finding C — codex
+            # r1 P2 follow-up) are correctly flushed whether the end
+            # tag arrives in this delta, straddles it, or is still
+            # pending.
+            #
+            # ``emitted_so_far`` is the position in ``current_text``
+            # up through which we've already emitted reasoning bytes
+            # on prior deltas. We compute it from the position right
+            # after the start tag (so the ``<think>`` opener bytes
+            # are never counted) PLUS however many bytes after the
+            # opener were already emitted on prior deltas (i.e.
+            # previous_text minus the held-suffix region). When the
+            # opener completed on the previous delta, previous_text
+            # ends exactly at or before the end of ``<think>`` and the
+            # ``max()`` keeps emitted_so_far at the post-opener start.
+            start_idx_cur = current_text.find(self.start_token)
+            after_start_in_current = start_idx_cur + len(self.start_token)
+            prev_held = self._held_tag_suffix_len
+            already_emitted_after_opener = max(
+                0, len(previous_text) - prev_held - after_start_in_current
+            )
+            emitted_so_far = after_start_in_current + already_emitted_after_opener
+            if end_in_prev:
+                # Already past reasoning phase - pure content. No
+                # held bookkeeping (we're outside the reasoning
+                # region); just emit the delta.
+                self._held_tag_suffix_len = 0
                 return DeltaMessage(content=delta_text)
-            else:
-                # SSE-boundary end-tag recovery (PR #715 bundle, fuzz
-                # finding C): when ``end_token`` straddles previous_text
-                # + delta_text (e.g. delta=``nk>`` after prev ending
-                # with ``</thi``), ``end_in_delta`` is False even though
-                # the close tag is now complete in ``current_text``.
-                # Detect via the indexes and split delta_text on the
-                # tag boundary — otherwise the trailing ``nk>`` would
-                # leak into ``reasoning_content``.
-                end_idx_cur = current_text.find(self.end_token)
+            # End tag may be in current_text (delta or straddle) or
+            # still pending.
+            end_idx_cur = current_text.find(self.end_token)
+            if end_idx_cur >= 0:
+                # End tag is complete in current_text. Emit all
+                # un-emitted reasoning bytes up to the end tag, then
+                # any post-tag bytes as content.
+                self._held_tag_suffix_len = 0
+                # Reasoning portion: everything from emitted_so_far up
+                # to the start of the end tag, but clipped so we don't
+                # re-emit prefix bytes that were part of the
+                # ``<think>`` opener (when start_in_prev is True the
+                # opener has already been consumed; if held bytes
+                # were ALSO consumed as part of the now-complete end
+                # tag, those bytes must be excluded from reasoning).
+                reasoning_part = current_text[emitted_so_far:end_idx_cur]
+                content_part = current_text[end_idx_cur + len(self.end_token) :]
+                # ``content_part`` includes everything after the end
+                # tag in current_text — but only the portion in
+                # ``delta_text`` is new. Anything from ``previous_text``
+                # past the end tag was already emitted on a prior
+                # delta. Slice to keep only the new content bytes.
                 prev_len = len(current_text) - len(delta_text)
-                if end_idx_cur >= 0 and end_idx_cur < prev_len:
-                    # Close tag straddles boundary. Pre-tag bytes of
-                    # delta_text belong to the in-progress tag (already
-                    # tail-end of ``</think>``); drop them. Post-tag
-                    # bytes are content.
-                    after_tag_in_current = end_idx_cur + len(self.end_token)
-                    post_tag_offset = max(0, after_tag_in_current - prev_len)
-                    content_part = delta_text[post_tag_offset:]
-                    return DeltaMessage(content=content_part or None)
-                # Still in reasoning phase — but withhold any trailing
-                # bytes that could be a partial end-tag (the next
-                # delta may complete it).
-                held = self._held_partial_tag_len(current_text)
-                if held > 0:
-                    safe = delta_text[: max(0, len(delta_text) - held)]
-                    if not safe:
-                        return None
-                    return DeltaMessage(reasoning=safe)
-                return DeltaMessage(reasoning=delta_text)
+                content_start_in_current = end_idx_cur + len(self.end_token)
+                if content_start_in_current < prev_len:
+                    content_part = content_part[prev_len - content_start_in_current :]
+                # ``reasoning_part`` may be empty if the held bytes
+                # turned out to be the start of the end tag (e.g. we
+                # held ``</thi`` and now see ``nk>``); in that case
+                # ``emitted_so_far`` already passes ``end_idx_cur``
+                # and reasoning_part is empty — OK.
+                if end_idx_cur < emitted_so_far:
+                    reasoning_part = ""
+                return DeltaMessage(
+                    reasoning=reasoning_part or None,
+                    content=content_part or None,
+                )
+            # End tag not yet in current_text. Withhold any trailing
+            # partial-tag suffix so the next delta can complete it.
+            held = self._held_partial_tag_len(current_text)
+            safe_end = len(current_text) - held
+            self._held_tag_suffix_len = held
+            if safe_end <= emitted_so_far:
+                return None
+            emit = current_text[emitted_so_far:safe_end]
+            if not emit:
+                return None
+            return DeltaMessage(reasoning=emit)
 
         elif start_in_delta:
             # Start token is in this delta
@@ -340,6 +375,16 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # old ``return DeltaMessage(content=delta_text)`` fallback and
         # leak literally into ``content`` — the original live-fuzz
         # bug shape on phi-4-mini-reasoning / nanbeige4.1.
+        #
+        # Codex r2 P2 follow-up: clear ``_held_tag_suffix_len`` after
+        # consuming the straddle. The held bytes were part of the
+        # start tag (not pending reasoning) and on the NEXT delta the
+        # ``start_in_prev`` branch's emit-by-position bookkeeping uses
+        # the held value to compute ``already_emitted_after_opener``.
+        # Leaving it non-zero would cause the bookkeeping to treat
+        # the just-emitted reasoning bytes as "still un-emitted" and
+        # re-emit them, duplicating the streamed reasoning (codex
+        # caught this with the ``['<thi', 'nk>Okay', ' more']`` repro).
         start_idx_cur = current_text.find(self.start_token)
         prev_len = len(current_text) - len(delta_text)
         # Bytes of delta_text BEFORE the start_token's last char —
@@ -357,10 +402,31 @@ class BaseThinkingReasoningParser(ReasoningParser):
             if end_idx >= 0:
                 content_part = reasoning_part[end_idx + len(self.end_token) :]
                 reasoning_part = reasoning_part[:end_idx]
+                self._held_tag_suffix_len = 0
                 return DeltaMessage(
                     reasoning=reasoning_part or None,
                     content=content_part or None,
                 )
+        # Codex r4 P2 follow-up: when the same chunk that completes a
+        # split opener ALSO ends with a partial ``</think>`` (e.g.
+        # chunks ``"<thi"``, ``"nk>OK</thi"``, ``"nk>ans"``), we must
+        # withhold the trailing partial-end-tag bytes so they don't
+        # leak literally into ``reasoning_content``. Reuse the same
+        # ``_held_partial_tag_len`` machinery as the Case-3 / start_in_prev
+        # branches so the next delta's ``start_in_prev`` path can
+        # complete the close cleanly.
+        held = self._held_partial_tag_len(current_text)
+        self._held_tag_suffix_len = held
+        if held > 0 and reasoning_part:
+            # Strip the trailing partial-tag bytes from this emit.
+            # The withhold is measured on ``current_text``; convert to
+            # a slice on ``reasoning_part`` (which is the suffix of
+            # delta_text after the opener overlap).
+            safe_end_in_current = len(current_text) - held
+            # Position in current_text where reasoning_part starts:
+            reasoning_start_in_current = prev_len + tag_overlap
+            keep = max(0, safe_end_in_current - reasoning_start_in_current)
+            reasoning_part = reasoning_part[:keep]
         return DeltaMessage(reasoning=reasoning_part or None)
 
     def _handle_implicit_think(

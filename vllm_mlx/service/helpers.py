@@ -469,6 +469,8 @@ def _rescue_silent_drop_from_reasoning(
     tool_calls: list | None,
     finish_reason: str | None = None,
     raw_text: str | None = None,
+    *,
+    reasoning_is_case4: bool = False,
 ) -> str | None:
     """Issue #569: never silently drop an assistant turn.
 
@@ -562,12 +564,28 @@ def _rescue_silent_drop_from_reasoning(
     # (e.g. a non-thinking model truncated mid-answer where reasoning
     # was empty but content was building) still get rescued — the
     # opener check is the discriminator.
+    #
+    # Also gate on the helper-Case-4 signal (``reasoning_is_case4``)
+    # passed from the route — covers the PR #715-bundle live-test
+    # repro where VibeThinker is asked a no-tool no-think prompt:
+    # the chat template doesn't pre-inject ``<think>``, the model
+    # answers in plain prose (no ``<think>`` token emitted), but the
+    # route still defaults ``enable_thinking=True`` for the family.
+    # The parser's Case-4 fallback routes the WHOLE output to
+    # reasoning AND the helper blanks ``cleaned_text=""``. The
+    # ``raw_text`` opener check then misses (raw_text doesn't start
+    # with ``<think>``), and the rescue without the Case-4 signal
+    # mistakes the no-content state for a #569 silent drop and
+    # surfaces the reasoning as content — duplicating the trace
+    # byte-identically. The Case-4 signal stops that.
     if (
         finish_reason == "length"
         and raw_text
         and raw_text.lstrip().startswith("<think>")
         and "</think>" not in raw_text
     ):
+        return final_content
+    if finish_reason == "length" and reasoning_is_case4:
         return final_content
     return reasoning_text
 

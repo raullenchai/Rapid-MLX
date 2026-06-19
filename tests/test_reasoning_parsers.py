@@ -511,6 +511,82 @@ class TestThinkParserSSEBoundary:
         assert reasoning == "plain answer"
         assert content == ""
 
+    def test_false_partial_tag_inside_think_block_flushed(self):
+        """Codex r1 P2 follow-up: when a ``<`` appears mid-reasoning
+        and the next delta resolves it to non-tag content, the held
+        ``<`` must be flushed back into reasoning. Without the
+        recovery the byte was silently dropped — reasoning text
+        ``2 < 5`` would render as ``2  5`` (the comparison operator
+        eaten by the partial-tag withhold).
+
+        This case fires inside an OPEN ``<think>`` block
+        (``start_in_prev`` True), distinct from the Case-3 fallback
+        path the prior tests cover. Codex flagged the asymmetry
+        before merge."""
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            ["<think>2 ", "<", " 5</think>", "ans"],
+        )
+        assert reasoning == "2 < 5", (
+            f"false partial tag inside <think> block must flush — got "
+            f"reasoning={reasoning!r}"
+        )
+        assert content == "ans"
+
+    def test_in_think_block_with_lt_and_gt_chars(self):
+        """Counter-test: reasoning that includes both ``<`` and ``>``
+        characters mid-text (common in math / code) must not be
+        garbled by the partial-tag withhold."""
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            ["<think>x > 5 and y < 10", "</think>", "done"],
+        )
+        assert reasoning == "x > 5 and y < 10"
+        assert content == "done"
+
+    def test_split_opener_completed_with_reasoning_no_duplication(self):
+        """Codex r2 P2 follow-up: when the start tag straddles SSE
+        chunks AND the completing chunk also carries reasoning bytes
+        (``['<thi', 'nk>Okay', ' more']``), the held suffix from the
+        prior ``<thi`` delta must be cleared after consumption. A
+        leftover held value caused the next ``start_in_prev`` delta to
+        compute ``already_emitted_after_opener`` as if the held bytes
+        were un-emitted reasoning, re-emitting the just-sent text and
+        duplicating streamed reasoning."""
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            ["<thi", "nk>Okay", " more", "</think>", "done"],
+        )
+        assert reasoning == "Okay more", (
+            f"split opener + reasoning in same delta must not duplicate "
+            f"reasoning on subsequent deltas — got reasoning={reasoning!r}"
+        )
+        assert content == "done"
+
+    def test_split_opener_completes_with_partial_end_tag_no_leak(self):
+        """Codex r4 P2 follow-up: when the same chunk that completes a
+        split opener ALSO ends with a partial ``</think>``, the recovery
+        branch must withhold the partial-end-tag suffix from the emit
+        so the next chunk can complete the close. Otherwise the literal
+        ``</thi`` bytes leak into ``reasoning_content`` and the client
+        sees stray closing-tag bytes (live-fuzz repro shape:
+        ``['<thi', 'nk>OK</thi', 'nk>ans']``)."""
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            ["<thi", "nk>OK</thi", "nk>ans"],
+        )
+        assert reasoning == "OK", (
+            f"split opener + split closer in same completing delta must "
+            f"not leak partial-end-tag bytes — got reasoning={reasoning!r}"
+        )
+        assert content == "ans", (
+            f"content after split closer must be clean — got content={content!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # GptOssReasoningParser

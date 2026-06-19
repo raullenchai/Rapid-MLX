@@ -1347,6 +1347,7 @@ async def _create_chat_completion_impl(
     # The tool_calls vs no-tool_calls split is encapsulated in
     # _finalize_content_and_reasoning so the regression test suite can exercise
     # the same orchestration without re-implementing it.
+    cleaned_text_before_helper = cleaned_text
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
         raw_text=output.raw_text or output.text,
         cleaned_text=cleaned_text,
@@ -1430,12 +1431,31 @@ async def _create_chat_completion_impl(
     # 1 inlined the check here only; codex round 2 caught the
     # streaming path drifting because it had no gate at all.
     if not _is_structured_output_requested(response_format):
+        # PR #715 bundle, fuzz finding C / live-test repro: when the
+        # parser's Case-4 fallback blanked ``cleaned_text`` (no tags +
+        # ``enable_thinking=True`` → route the whole output to
+        # reasoning, #575), the rescue must NOT then surface that
+        # reasoning back as ``content`` — that would duplicate the
+        # trace byte-identically into both fields. The helper signals
+        # Case-4 by returning an empty ``cleaned_text`` when the
+        # pre-helper text was non-empty AND a reasoning_parser was
+        # wired AND the engine wasn't already routing (engine path
+        # has its own plug). Detect by comparing the pre- and post-
+        # helper ``cleaned_text``.
+        reasoning_is_case4 = bool(
+            cleaned_text_before_helper
+            and not cleaned_text
+            and reasoning_text
+            and cfg.reasoning_parser is not None
+            and not (getattr(output, "reasoning_text", "") or "")
+        )
         final_content = _rescue_silent_drop_from_reasoning(
             final_content,
             reasoning_text,
             tool_calls,
             finish_reason=finish_reason,
             raw_text=output.raw_text or output.text,
+            reasoning_is_case4=reasoning_is_case4,
         )
 
     # Build logprobs for response if requested
@@ -1807,12 +1827,29 @@ async def stream_chat_completion(
                     if saw_open_no_close
                     else processor.accumulated_reasoning or ""
                 )
+                # PR #715 bundle, fuzz finding C: streaming Case-4
+                # mirror of the non-streaming detection. When the
+                # parser never saw a ``<think>``/``</think>`` token
+                # (``_saw_any_tag`` False) BUT routed everything into
+                # reasoning (accumulated_text empty, accumulated_reasoning
+                # non-empty) AND a parser is wired, the streamer's
+                # Case-3 fallback ("no tags seen yet → reasoning") IS
+                # firing — analogous to the non-streaming Case-4
+                # blanking. Suppress the rescue on length-truncated
+                # streams in that state too.
+                reasoning_is_case4_stream = bool(
+                    rp
+                    and not getattr(rp, "_saw_any_tag", False)
+                    and processor.accumulated_reasoning
+                    and not processor.accumulated_text
+                )
                 rescued_content = _rescue_silent_drop_from_reasoning(
                     terminal_content or None,
                     processor.accumulated_reasoning,
                     None,
                     finish_reason=finish_event.finish_reason,
                     raw_text=synthetic_raw,
+                    reasoning_is_case4=reasoning_is_case4_stream,
                 )
                 # The helper returns the rescued reasoning ONLY when
                 # all four predicates pass (empty/whitespace content,

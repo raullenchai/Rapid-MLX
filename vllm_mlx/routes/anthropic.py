@@ -312,6 +312,7 @@ async def create_anthropic_message(
         # uses (chat.py). Skipping this is what #413 fixed — the Anthropic surface
         # used to silently drop ``<think>...</think>`` content on the non-streaming
         # path while OpenAI preserved it as ``reasoning_content``.
+        cleaned_text_before_helper = cleaned_text
         cleaned_text, reasoning_text = _finalize_content_and_reasoning(
             raw_text=output.raw_text or output.text,
             cleaned_text=cleaned_text,
@@ -355,12 +356,24 @@ async def create_anthropic_message(
         # rescued ``content`` into a TextBlock; without this it would
         # emit a completely empty ``content=[]`` Messages response.
         finish_reason = "tool_calls" if tool_calls else output.finish_reason
+        # PR #715 bundle, fuzz finding C: detect helper Case-4 blank
+        # (parser routed whole no-tag output to reasoning, helper
+        # cleared cleaned_text=""). See chat.py route for the full
+        # rationale.
+        reasoning_is_case4 = bool(
+            cleaned_text_before_helper
+            and not cleaned_text
+            and reasoning_text
+            and cfg.reasoning_parser is not None
+            and not (getattr(output, "reasoning_text", "") or "")
+        )
         final_content = _rescue_silent_drop_from_reasoning(
             final_content,
             reasoning_text,
             tool_calls,
             finish_reason=finish_reason,
             raw_text=output.raw_text or output.text,
+            reasoning_is_case4=reasoning_is_case4,
         )
 
         openai_response = ChatCompletionResponse(
