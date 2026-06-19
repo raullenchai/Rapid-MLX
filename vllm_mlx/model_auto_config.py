@@ -105,6 +105,16 @@ class ModelConfig:
 # Model family patterns → optimal config.
 # Order matters: first match wins. More specific patterns go first.
 _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
+    # Liquid LFM models. Word-boundary on "lfm" so the substring inside
+    # an unrelated model name (e.g. "...wolfman...") can't hijack the
+    # first-match-wins scan.
+    (
+        re.compile(r"\blfm|\bliquid", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="lfm",
+            reasoning_parser=None,
+        ),
+    ),
     # DeepSeek V4 / V4-Flash — sparse MoE with sliding-window attention
     # (RotatingKVCache). Pure-attention so spec decode is safe; tool
     # parser inherits the standard DeepSeek format. Upstream chat

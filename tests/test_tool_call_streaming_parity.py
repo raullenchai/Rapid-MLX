@@ -190,6 +190,17 @@ PARITY_FIXTURES: list = [
         ),
         [("read_file", {"path": "/etc/hostname"})],
     ),
+    # lfm — pythonic bracket calls (Liquid LFM2.x). Parity here depends on
+    # finalize()'s plausible-markup pre-check recognizing ``[name(`` —
+    # ``[f(x="y")]`` contains none of the ``<`` / ``{`` / ``[Calling``
+    # markers the pre-check originally looked for, so the streaming path
+    # silently skipped extraction while non-stream succeeded.
+    (
+        "lfm",
+        "pythonic_bracket",
+        'Checking. [get_current_weather(location="Paris", unit="celsius")]',
+        [("get_current_weather", {"location": "Paris", "unit": "celsius"})],
+    ),
 ]
 
 
@@ -240,6 +251,7 @@ _PARITY_COVERAGE_EXEMPT: dict[str, str] = {
     "qwen3": "alias of qwen",
     "qwen3_coder": "alias of hermes",
     "nous": "alias of hermes",
+    "liquid": "alias of lfm",
     "auto": "router, not a wire-format parser",
     "generic": "router, not a wire-format parser",
 }
