@@ -358,6 +358,45 @@ def test_serve_command_dispatches_uvicorn_with_host_port_when_listen_fd_unset(
     assert cfg.bind_listen_fd is None
 
 
+def test_serve_command_skips_port_preflight_when_listen_fd_set(
+    stub_heavy_serve_deps,
+):
+    """When ``--listen-fd N`` is set, ``serve_command`` MUST skip the
+    ``host``/``port`` bind preflight. The supervisor has already bound
+    the socket; running our own bind check against the same address
+    always collides and would refuse to start.
+
+    Regression: PR #696 introduced ``--listen-fd`` but the preflight at
+    the top of ``serve_command`` kept running unconditionally, so any
+    real socket-activation launcher hit "Port N is already in use" and
+    ``sys.exit(1)`` before ever reaching ``uvicorn.run``.
+    """
+    import socket
+
+    captured = _capture_uvicorn_run(stub_heavy_serve_deps)
+
+    # Pre-bind the default serve port so the preflight WOULD fail if it
+    # ran. Using SO_REUSEADDR matches the production preflight's own
+    # socket setup — the preflight only fails when something is actively
+    # listening, not when the port is in TIME_WAIT.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        blocked_port = blocker.getsockname()[1]
+
+        ns = _minimal_serve_ns(listen_fd=11, host="127.0.0.1", port=blocked_port)
+        # If the preflight runs, this raises SystemExit(1) before reaching
+        # the uvicorn.run stub. The test passes only when the preflight
+        # is correctly skipped in the listen-fd branch.
+        cli.serve_command(ns)
+
+    assert captured.get("fd") == 11, (
+        f"expected uvicorn.run(fd=11, ...), got {captured!r}"
+    )
+    assert "host" not in captured
+    assert "port" not in captured
+
+
 def test_serve_command_resets_stale_bind_fields_between_invocations(
     stub_heavy_serve_deps,
 ):
