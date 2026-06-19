@@ -111,12 +111,27 @@ class BaseThinkingReasoningParser(ReasoningParser):
             _, _, after_start = text.partition(self.start_token)
             # Split on end token
             reasoning, _, content = after_start.partition(self.end_token)
+            # Sweep any residual think blocks the naive first-pair
+            # partition left in ``content``. The first-pair split
+            # consumes ONLY the first ``<think>…</think>`` block, so
+            # multi-block outputs (phi-4-mini-reasoning emits a second
+            # block after the answer when ``reasoning_max_tokens``
+            # truncates mid-thought — 2026-06-19 round-1 fuzz repro)
+            # would otherwise ship the trailing ``<think>`` or
+            # ``</think>`` literal bytes through to ``message.content``.
+            reasoning, content = self._sweep_residual_think_tags(reasoning, content)
             return reasoning.strip() or None, content.strip() or None
 
         # Case 2: Only closing tag (think was injected in prompt)
         # Everything before </think> is reasoning
         if self.end_token in text:
             reasoning, _, content = text.partition(self.end_token)
+            # Same multi-block sweep as Case 1 — Case 2 hits when the
+            # chat template pre-injected ``<think>`` and the model
+            # emitted ``</think>answer<think>more</think>`` (the
+            # implicit-think analogue of the phi-4-mini-reasoning
+            # repro).
+            reasoning, content = self._sweep_residual_think_tags(reasoning, content)
             return reasoning.strip() or None, content.strip() or None
 
         # Case 3: Only start tag (incomplete reasoning, no end yet)
@@ -228,6 +243,102 @@ class BaseThinkingReasoningParser(ReasoningParser):
             return None
         return DeltaMessage(reasoning=emit)
 
+    def _sweep_residual_think_tags(
+        self, reasoning: str, content: str
+    ) -> tuple[str, str]:
+        """Strip any residual ``<think>…</think>`` blocks left in
+        ``content`` after the first-pair partition, and reroute
+        unclosed trailing thoughts into ``reasoning``.
+
+        2026-06-19 round-1 fuzz repro (phi-4-mini-reasoning-4bit):
+        when the model emits two ``<think>`` blocks (an inner
+        closed one before the answer and a SECOND opener after the
+        answer that ``reasoning_max_tokens`` / ``max_tokens``
+        truncates before its closing tag), the naive
+        ``partition(<think>)`` + ``partition(</think>)`` in
+        ``extract_reasoning`` Case 1 consumes ONLY the first pair.
+        The trailing ``<think>thought2…`` opener was leaking
+        verbatim into ``message.content`` — neither
+        ``strip_thinking_tags`` (matches closed blocks only) nor
+        ``sanitize_output`` (matches a stray ``</think>`` only)
+        catch an orphan ``<think>`` opener, so the tag bytes
+        survived all the way to the wire.
+
+        Sweep algorithm (operates on ``content`` only — ``reasoning``
+        is already authoritative from the first partition):
+
+        * Iteratively strip any complete ``<think>…</think>`` block
+          and accumulate its body into ``reasoning`` (preserves
+          ordering: appears AFTER the first thought, which matches
+          the model's emission order).
+        * If a trailing unclosed ``<think>…`` remains, append its
+          body to ``reasoning`` and drop everything from the
+          opener onward from ``content`` (matches the Case 3
+          "no end tag → reasoning" semantics).
+        * Strip any orphan ``</think>`` left after step 1 — these
+          appear when the model emits a stray closer with no
+          matching opener (or when downstream regex passes have
+          already eaten the opener but left the closer).
+
+        The fix lives in the base class so every thinking-tag
+        parser (DeepSeek-R1, Qwen3, VibeThinker, …) benefits
+        without per-subclass duplication — the user's directive
+        was explicit on this. ``GLM4`` / ``Minimax`` / ``Gemma4``
+        parsers do not subclass ``BaseThinkingReasoningParser`` so
+        their wire formats are unaffected; they have their own
+        sweepers where the wire grammar requires them.
+        """
+        if not content:
+            return reasoning, content
+        # Step 1: strip closed blocks left-to-right, accumulating
+        # their bodies into ``reasoning`` in emission order. Cap the
+        # loop at the actual occurrence count so a pathological
+        # input (no further tags) doesn't loop. ``find`` returns -1
+        # on miss so the ``while`` exits cleanly.
+        max_passes = content.count(self.start_token) + 1
+        passes = 0
+        while passes < max_passes:
+            start_idx = content.find(self.start_token)
+            if start_idx < 0:
+                break
+            after_start = content[start_idx + len(self.start_token) :]
+            end_idx = after_start.find(self.end_token)
+            if end_idx < 0:
+                # Unclosed trailing ``<think>…`` — append the body
+                # to reasoning and truncate content at the opener.
+                trailing_reasoning = after_start.rstrip()
+                if trailing_reasoning:
+                    reasoning = (
+                        (reasoning.rstrip() + "\n" + trailing_reasoning)
+                        if reasoning
+                        else trailing_reasoning
+                    )
+                content = content[:start_idx].rstrip()
+                break
+            # Closed block: pull body into reasoning, splice the
+            # block out of content.
+            block_body = after_start[:end_idx]
+            if block_body:
+                reasoning = (
+                    (reasoning.rstrip() + "\n" + block_body)
+                    if reasoning
+                    else block_body
+                )
+            block_end = (
+                start_idx + len(self.start_token) + end_idx + len(self.end_token)
+            )
+            content = content[:start_idx] + content[block_end:]
+            passes += 1
+        # Step 2: strip any orphan ``</think>`` closers left in
+        # content. These would otherwise survive
+        # ``sanitize_output``'s stray-closer strip ONLY if the input
+        # is empty after stripping (the helper collapses empty
+        # results to ``None``), so belt-and-braces here keeps the
+        # bytes off the wire when content remains non-empty.
+        if self.end_token in content:
+            content = content.replace(self.end_token, "")
+        return reasoning, content
+
     def _held_partial_tag_len(self, current_text: str) -> int:
         """Length of the suffix of ``current_text`` that could be a strict
         prefix of ``start_token`` or ``end_token``.
@@ -289,11 +400,21 @@ class BaseThinkingReasoningParser(ReasoningParser):
             )
             emitted_so_far = after_start_in_current + already_emitted_after_opener
             if end_in_prev:
-                # Already past reasoning phase - pure content. No
-                # held bookkeeping (we're outside the reasoning
-                # region); just emit the delta.
+                # We're past the FIRST ``</think>`` — but the model
+                # may have re-entered reasoning by emitting another
+                # ``<think>`` after the answer (the 2026-06-19
+                # round-1 fuzz repro on phi-4-mini-reasoning-4bit
+                # emits 6–7 think blocks across a single 2 K-token
+                # response when ``reasoning_max_tokens`` truncates
+                # the first one). Delegate to a multi-block-aware
+                # router so subsequent ``<think>…</think>`` pairs
+                # are correctly split instead of leaking the
+                # literal tag bytes into ``content`` via the prior
+                # "all delta = content" fallback.
                 self._held_tag_suffix_len = 0
-                return DeltaMessage(content=delta_text)
+                return self._handle_multi_block_after_close(
+                    previous_text, current_text, delta_text
+                )
             # End tag may be in current_text (delta or straddle) or
             # still pending.
             end_idx_cur = current_text.find(self.end_token)
@@ -348,13 +469,19 @@ class BaseThinkingReasoningParser(ReasoningParser):
             start_idx = delta_text.find(self.start_token)
 
             if end_in_delta:
-                # Both tokens in this delta
-                end_idx = delta_text.find(self.end_token)
-                reasoning_part = delta_text[start_idx + len(self.start_token) : end_idx]
-                content_part = delta_text[end_idx + len(self.end_token) :]
-                return DeltaMessage(
-                    reasoning=reasoning_part if reasoning_part else None,
-                    content=content_part if content_part else None,
+                # Both tokens in this delta. Use the multi-block router
+                # so a delta carrying ``<think>R1</think>A<think>R2</think>B…``
+                # (the model emitted multiple ``<think>`` blocks in a
+                # single SSE chunk — observed on small thinking models
+                # with low ``stream_interval`` settings or fast-batched
+                # output) splits cleanly without leaking the literal
+                # tag bytes of the second-and-later blocks into
+                # ``content``. 2026-06-19 round-1 fuzz follow-on.
+                # Pre-fix the single-pair partition below consumed only
+                # the FIRST opener/closer and emitted the rest as
+                # content verbatim.
+                return self._handle_multi_block_after_close(
+                    previous_text, current_text, delta_text
                 )
             else:
                 # Only start token - beginning of reasoning
@@ -428,6 +555,111 @@ class BaseThinkingReasoningParser(ReasoningParser):
             keep = max(0, safe_end_in_current - reasoning_start_in_current)
             reasoning_part = reasoning_part[:keep]
         return DeltaMessage(reasoning=reasoning_part or None)
+
+    def _handle_multi_block_after_close(
+        self,
+        previous_text: str,
+        current_text: str,
+        delta_text: str,
+    ) -> DeltaMessage | None:
+        """Route a delta that arrives AFTER the first ``</think>``.
+
+        2026-06-19 round-1 fuzz repro (phi-4-mini-reasoning-4bit):
+        the model re-enters reasoning after the answer by emitting a
+        SECOND ``<think>`` block (and may do this many times before
+        ``max_tokens`` hits). The pre-fix streaming path emitted the
+        whole post-close delta as ``content``, leaking every
+        subsequent ``<think>`` / ``</think>`` literal to the wire.
+
+        Multi-block streaming rule:
+
+        * Determine the current phase from ``<think>`` / ``</think>``
+          counts in ``current_text``. Equal counts → CONTENT. One
+          excess opener → REASONING (inside an unclosed block).
+        * Compute the position in ``current_text`` where the LAST
+          phase transition happened (last ``<think>`` for a
+          REASONING phase, last ``</think>`` for a CONTENT phase).
+        * Emit only the bytes in ``delta_text`` that lie in the
+          current phase. Bytes from ``delta_text`` that span a
+          phase boundary are split — pre-boundary goes to the prior
+          phase, post-boundary to the new one.
+        * Withhold any trailing partial-tag suffix so a tag that
+          straddles SSE chunks gets recovered on the next delta
+          (same machinery as the Case-3 / start_in_prev branches).
+        * Strip the tag bytes themselves — they're structural, not
+          user-visible.
+
+        The simpler single-block streaming path is unchanged; this
+        helper only fires when ``start_in_prev AND end_in_prev``
+        (i.e. at least one full ``<think>…</think>`` pair has
+        already been streamed).
+        """
+        prev_len = len(current_text) - len(delta_text)
+        # Phase at the END OF PREVIOUS DELTA (start of this delta).
+        # REASONING if there's an unclosed opener up to that point,
+        # CONTENT otherwise. The walk below shifts phase as it
+        # crosses tag boundaries inside the delta.
+        prev_n_open = previous_text.count(self.start_token)
+        prev_n_close = previous_text.count(self.end_token)
+        in_reasoning_prev = prev_n_open > prev_n_close
+        # Walk through ``current_text`` from ``prev_len`` to the end,
+        # splitting at each tag boundary. Emit the segments in the
+        # appropriate phase, stripping the tag bytes themselves.
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        cursor = prev_len
+        # Build a sorted list of all tag occurrences in current_text.
+        # We only need the ones that fall within the delta range
+        # [prev_len, len(current_text)] — earlier tags affect phase
+        # accounting but their bytes were already emitted on prior
+        # deltas. Include tags whose START is at or after ``prev_len``.
+        tags: list[tuple[int, int, str]] = []
+        # ``find`` from prev_len so we never emit bytes already shipped.
+        idx = current_text.find(self.start_token, prev_len)
+        while idx != -1:
+            tags.append((idx, len(self.start_token), "open"))
+            idx = current_text.find(self.start_token, idx + 1)
+        idx = current_text.find(self.end_token, prev_len)
+        while idx != -1:
+            tags.append((idx, len(self.end_token), "close"))
+            idx = current_text.find(self.end_token, idx + 1)
+        tags.sort(key=lambda t: t[0])
+        # Phase at cursor — start with the phase that was active at
+        # the end of previous_text.
+        phase = "reasoning" if in_reasoning_prev else "content"
+        for tag_start, tag_len, tag_kind in tags:
+            # Emit bytes between cursor and tag_start in the current
+            # phase.
+            if tag_start > cursor:
+                segment = current_text[cursor:tag_start]
+                if phase == "reasoning":
+                    reasoning_parts.append(segment)
+                else:
+                    content_parts.append(segment)
+            # Drop the tag bytes (structural) and flip phase.
+            cursor = tag_start + tag_len
+            phase = "reasoning" if tag_kind == "open" else "content"
+        # Trailing bytes after the last tag. Withhold any partial-tag
+        # suffix so an in-progress tag at the SSE boundary gets
+        # recovered on the next delta.
+        held = self._held_partial_tag_len(current_text)
+        self._held_tag_suffix_len = held
+        safe_end = len(current_text) - held
+        if safe_end > cursor:
+            segment = current_text[cursor:safe_end]
+            if phase == "reasoning":
+                reasoning_parts.append(segment)
+            else:
+                content_parts.append(segment)
+        # Phase invariant: after walking all tags in the delta,
+        # ``phase`` matches ``current_text``'s overall open/close
+        # parity (REASONING if open > close, CONTENT otherwise) —
+        # modulo the held partial-tag suffix.
+        reasoning = "".join(reasoning_parts) or None
+        content = "".join(content_parts) or None
+        if reasoning is None and content is None:
+            return None
+        return DeltaMessage(reasoning=reasoning, content=content)
 
     def _handle_implicit_think(
         self,

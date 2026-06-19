@@ -202,12 +202,20 @@ class TestBaseThinkExtractReasoning:
         assert "Line 3" in reasoning
         assert content == "Answer"
 
-    def test_multiple_think_tags_uses_first(self):
+    def test_multiple_think_tags_merges_all_into_reasoning(self):
+        # Pre-2026-06-19 behaviour: partition consumed only the first
+        # pair and left the second ``<think>second</think>`` literal in
+        # ``content`` (the source of the round-1 fuzz repro on phi-4-
+        # mini-reasoning-4bit). The sweep added in
+        # ``_sweep_residual_think_tags`` now pulls every closed block
+        # into ``reasoning`` and rejoins the inter-block content
+        # segments, so no tag bytes survive on either channel.
         text = "<think>first</think>middle<think>second</think>end"
         reasoning, content = self.parser.extract_reasoning(text)
-        # partition finds first occurrence
-        assert reasoning == "first"
-        assert "middle" in content
+        assert reasoning == "first\nsecond"
+        assert content == "middleend"
+        assert "<think>" not in (content or "")
+        assert "</think>" not in (content or "")
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +594,384 @@ class TestThinkParserSSEBoundary:
         assert content == "ans", (
             f"content after split closer must be clean — got content={content!r}"
         )
+
+
+class TestMultiBlockThinkStreaming:
+    """Streaming-path multi-block ``<think>`` handling — companion to
+    the non-streaming sweep in ``TestResidualThinkTagSweep``.
+
+    The streaming postprocessor calls
+    ``extract_reasoning_streaming`` per chunk and pre-fix the
+    ``end_in_prev`` branch in ``_handle_explicit_think`` returned the
+    whole delta as ``content`` regardless of whether a new
+    ``<think>`` opener appeared. Phi-4-mini-reasoning emits 6–7
+    ``<think>`` blocks across a single 2 K-token response when
+    ``reasoning_max_tokens`` truncates the first one (2026-06-19
+    round-1 fuzz), so the literal tag bytes streamed straight to the
+    SSE consumer.
+
+    Tests drive the parser directly with synthetic chunks (same
+    ``_run_stream`` helper the SSE-boundary tests use) and assert
+    no tag bytes survive on either channel.
+    """
+
+    @staticmethod
+    def _run_stream(parser, chunks):
+        parser.reset_state()
+        prev = ""
+        reasoning = ""
+        content = ""
+        for ch in chunks:
+            cur = prev + ch
+            msg = parser.extract_reasoning_streaming(prev, cur, ch)
+            if msg:
+                if msg.reasoning:
+                    reasoning += msg.reasoning
+                if msg.content:
+                    content += msg.content
+            prev = cur
+        return reasoning, content
+
+    def test_phi4_repro_second_block_after_answer(self):
+        """The streaming analogue of the non-streaming phi-4-mini
+        repro: ``<think>R1</think>answer<think>R2</think>tail``
+        streamed in chunks must NOT leak ``<think>`` or ``</think>``
+        bytes to ``content``."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        chunks = [
+            "<think>",
+            "thought1 with details",
+            "</think>",
+            "The answer is ",
+            "\\boxed{Paris}",
+            "<think>",
+            "thought2 continues",
+            "</think>",
+            "tail",
+        ]
+        reasoning, content = self._run_stream(parser, chunks)
+        assert "<think>" not in content, f"<think> leaked into content: {content!r}"
+        assert "</think>" not in content, f"</think> leaked into content: {content!r}"
+        assert "<think>" not in reasoning
+        assert "</think>" not in reasoning
+        assert "thought1 with details" in reasoning
+        assert "thought2 continues" in reasoning
+        assert "The answer is " in content
+        assert "\\boxed{Paris}" in content
+        assert "tail" in content
+
+    def test_unclosed_second_block_truncated(self):
+        """Second ``<think>`` is never closed (max_tokens hit) — the
+        trailing reasoning must go to ``reasoning`` channel, not
+        leak into ``content``."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        chunks = [
+            "<think>",
+            "first thought",
+            "</think>",
+            "Paris",
+            "<think>",
+            "second thought truncated",
+        ]
+        reasoning, content = self._run_stream(parser, chunks)
+        assert "<think>" not in content
+        assert "</think>" not in content
+        assert "first thought" in reasoning
+        assert "second thought truncated" in reasoning
+        assert content == "Paris"
+
+    def test_multi_block_qwen3_inherits(self):
+        """Qwen3 inherits the multi-block fix via the base streaming
+        machinery — same shape as the deepseek_r1 test above."""
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        parser = Qwen3ReasoningParser()
+        chunks = [
+            "<think>",
+            "R1",
+            "</think>",
+            "answerA",
+            "<think>",
+            "R2",
+            "</think>",
+            "answerB",
+        ]
+        reasoning, content = self._run_stream(parser, chunks)
+        assert "<think>" not in content
+        assert "</think>" not in content
+        assert reasoning == "R1R2"
+        assert content == "answerAanswerB"
+
+    def test_three_consecutive_blocks_streamed(self):
+        """Three ``<think>…</think>`` blocks streamed back-to-back
+        with intermediate content — all reasoning bytes accumulate
+        on reasoning channel, all content bytes on content."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        chunks = [
+            "<think>t1</think>A<think>t2</think>B<think>t3</think>C",
+        ]
+        reasoning, content = self._run_stream(parser, chunks)
+        assert "<think>" not in content
+        assert "</think>" not in content
+        assert reasoning == "t1t2t3"
+        assert content == "ABC"
+
+    def test_normal_single_block_streaming_unchanged(self):
+        """Regression: single-block streaming (the common case) must
+        behave identically to pre-fix behaviour."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            ["<think>", "reasoning", "</think>", "answer"],
+        )
+        assert reasoning == "reasoning"
+        assert content == "answer"
+
+
+class TestResidualThinkTagSweep:
+    """Multi-block ``<think>`` sweep (2026-06-19 round-1 fuzz repro).
+
+    ``phi-4-mini-reasoning-4bit`` was observed emitting a SECOND
+    ``<think>`` opener after the answer when ``reasoning_max_tokens``
+    truncated mid-thought — the model returns to thinking mode after
+    delivering ``\\boxed{Paris}`` and runs out of ``max_tokens`` before
+    closing the second block. The naive first-pair partition in
+    ``BaseThinkingReasoningParser.extract_reasoning`` consumed only the
+    first ``<think>…</think>`` pair, leaving the trailing opener (and
+    any subsequent closer-only sequences) literally in
+    ``message.content``. Neither ``strip_thinking_tags`` (closed
+    blocks only) nor ``sanitize_output`` (stray ``</think>`` only)
+    catches an orphan ``<think>`` opener so the bytes survived to the
+    wire.
+
+    The sweep added in ``_sweep_residual_think_tags`` lives in the
+    base class, so every thinking-tag parser (DeepSeek-R1, Qwen3,
+    VibeThinker, …) inherits the fix. Tests drive each subclass's
+    public ``extract_reasoning`` to keep coverage at the layer the
+    route actually exercises.
+    """
+
+    def _check(self, parser, text, *, expected_content, expected_in_reasoning):
+        reasoning, content = parser.extract_reasoning(text)
+        # Hard guarantee: no literal tag bytes survive to either channel.
+        assert "<think>" not in (content or ""), (
+            f"<think> opener leaked into content: {content!r}"
+        )
+        assert "</think>" not in (content or ""), (
+            f"</think> closer leaked into content: {content!r}"
+        )
+        assert "<think>" not in (reasoning or ""), (
+            f"<think> opener leaked into reasoning: {reasoning!r}"
+        )
+        assert "</think>" not in (reasoning or ""), (
+            f"</think> closer leaked into reasoning: {reasoning!r}"
+        )
+        if expected_content is not None:
+            assert content == expected_content, (
+                f"unexpected content: {content!r} (expected {expected_content!r})"
+            )
+        for needle in expected_in_reasoning:
+            assert needle in (reasoning or ""), (
+                f"expected {needle!r} in reasoning, got {reasoning!r}"
+            )
+
+    def test_phi4_repro_second_unclosed_block_after_answer(self):
+        """The exact 2026-06-19 round-1 fuzz repro shape:
+        ``<think>thought1</think>answer<think>thought2`` where the
+        second block is truncated by ``max_tokens`` before its
+        ``</think>``. Pre-fix this leaked ``<think>thought2…`` into
+        ``message.content``; post-fix the trailing thought is
+        appended to ``reasoning`` and content stops at the second
+        opener."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        text = (
+            "<think>thought1 with details</think>"
+            "The answer is \\boxed{Paris}"
+            "<think>\nthought2 trailing, truncated"
+        )
+        self._check(
+            parser,
+            text,
+            expected_content="The answer is \\boxed{Paris}",
+            expected_in_reasoning=["thought1", "thought2"],
+        )
+
+    def test_three_closed_blocks_all_merged(self):
+        """Three closed ``<think>…</think>`` blocks with content
+        segments in between — all blocks fold into ``reasoning``
+        and the inter-block content rejoins as content."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        text = "<think>t1</think>A<think>t2</think>B<think>t3</think>C"
+        self._check(
+            parser,
+            text,
+            expected_content="ABC",
+            expected_in_reasoning=["t1", "t2", "t3"],
+        )
+
+    def test_orphan_closer_in_content_stripped(self):
+        """A stray ``</think>`` with no matching opener (model
+        artefact / decoder glitch) must be stripped from content —
+        otherwise it survives ``strip_thinking_tags`` (which needs a
+        matching opener) and gets to the wire via
+        ``sanitize_output`` only when the whole content collapses."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        text = "<think>thought</think>part1</think>part2"
+        self._check(
+            parser,
+            text,
+            expected_content="part1part2",
+            expected_in_reasoning=["thought"],
+        )
+
+    def test_qwen3_inherits_sweep(self):
+        """Qwen3 parser inherits the sweep via
+        ``super().extract_reasoning`` — same multi-block shape as the
+        phi-4-mini-reasoning repro."""
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        parser = Qwen3ReasoningParser()
+        text = "<think>first thought</think>middle text<think>\nsecond truncated"
+        self._check(
+            parser,
+            text,
+            expected_content="middle text",
+            expected_in_reasoning=["first thought", "second truncated"],
+        )
+
+    def test_vibethinker_inherits_sweep(self):
+        """VibeThinker parser is a thin DeepSeek-R1 subclass —
+        inherits the sweep transparently."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            VibeThinkerReasoningParser,
+        )
+
+        parser = VibeThinkerReasoningParser()
+        text = "<think>vibe analysis</think>The answer<think>more thought"
+        self._check(
+            parser,
+            text,
+            expected_content="The answer",
+            expected_in_reasoning=["vibe analysis", "more thought"],
+        )
+
+    def test_normal_single_block_unchanged(self):
+        """Regression guard: the happy path (single closed block) must
+        behave identically to pre-sweep behaviour — single-block
+        outputs are by far the common case and the sweep must be a
+        no-op for them."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = parser.extract_reasoning(
+            "<think>thinking</think>final answer"
+        )
+        assert reasoning == "thinking"
+        assert content == "final answer"
+
+    def test_case2_implicit_think_orphan_closer_in_content_sweep(self):
+        """Case 2 (chat template injects ``<think>`` so only
+        ``</think>`` appears in output) plus a stray secondary
+        ``</think>`` later in the content — the sweep must strip the
+        secondary closer so the tag bytes don't reach the wire.
+
+        Realistic Case 2 — a multi-block ``<think>…</think>`` AFTER
+        the initial implicit-mode close would re-enter Case 1
+        (``<think>`` IS in the text) and be tested by the Case 1
+        path. The interesting Case-2 leak is an ORPHAN ``</think>``
+        with no matching opener after the answer."""
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        parser = Qwen3ReasoningParser()
+        # Note: no leading <think> — it was injected in the prompt.
+        text = "implicit reasoning</think>answer</think>tail"
+        reasoning, content = parser.extract_reasoning(text)
+        assert "<think>" not in (content or "")
+        assert "</think>" not in (content or ""), (
+            f"orphan </think> leaked into content: {content!r}"
+        )
+        assert "implicit reasoning" in (reasoning or "")
+        assert content == "answertail"
+
+    def test_reasoning_max_tokens_cap_no_tag_leak(self):
+        """End-to-end through the route helper: when
+        ``reasoning_max_tokens`` overflow is prepended to ``content``
+        AND the parsed ``content`` carries the residue of multiple
+        ``<think>`` blocks, the combined output stays tag-free.
+        This is the integration shape that PR #715's
+        ``_truncate_reasoning_only`` did NOT cover (its plug only
+        fires for the single-truncated-thought case, not for
+        ``<think>R1</think>answer<think>R2`` where R1 closes
+        cleanly)."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+        from vllm_mlx.service.helpers import (
+            _finalize_content_and_reasoning,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        # Long first thought to trigger the reasoning cap (>400 chars).
+        long_first = "thought1 " + "X" * 1000
+        raw = (
+            f"<think>{long_first}</think>"
+            "\\boxed{Paris}"
+            "<think>\nthought2 trailing, truncated by max_tokens"
+        )
+        cleaned_text, reasoning_text = _finalize_content_and_reasoning(
+            raw_text=raw,
+            cleaned_text=raw,
+            tool_calls=[],
+            reasoning_parser=parser,
+            engine_reasoning_text="",
+            enable_thinking=True,
+            reasoning_max_tokens=100,  # 100 * 4 = 400-char cap
+        )
+        assert "<think>" not in (cleaned_text or ""), (
+            f"opener leaked through cap: cleaned_text={cleaned_text!r}"
+        )
+        assert "</think>" not in (cleaned_text or ""), (
+            f"closer leaked through cap: cleaned_text={cleaned_text!r}"
+        )
+        # The final answer survives (somewhere — overflow may prepend
+        # part of the reasoning tail, but ``\\boxed{Paris}`` is intact
+        # because the sweep restitched the content segments).
+        assert "\\boxed{Paris}" in (cleaned_text or "")
+        # Reasoning got capped at 400 chars and starts with the first
+        # thought (sweep appended thought2 AFTER thought1 in emission
+        # order).
+        assert reasoning_text is not None
+        assert len(reasoning_text) <= 400
 
 
 # ---------------------------------------------------------------------------
