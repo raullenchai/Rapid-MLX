@@ -943,8 +943,6 @@ class MLXMultimodalLM:
 
         # Use HF processor's chat template (handles timestamp interleaving)
         template_kwargs: dict = {}
-        if tools:
-            template_kwargs["tools"] = tools
 
         # Neutralise chat-template role markers in user-supplied
         # content before passing to the processor's template — same
@@ -959,10 +957,10 @@ class MLXMultimodalLM:
         # reopen the prompt-injection bypass on any quirk that trips
         # the sanitiser.
         from ..utils.chat_template import (
-            _CHAT_TEMPLATE_ROLE_MARKERS,
-            _build_marker_pattern,
-            _sanitize_message_content,
+            _baseline_sanitize_messages,
+            _baseline_sanitize_tools,
             _sanitize_messages_for_template,
+            _sanitize_tools_for_template,
         )
 
         try:
@@ -970,22 +968,18 @@ class MLXMultimodalLM:
                 native_messages, self.processor
             )
         except Exception:
-            # Baseline-marker fallback. Same hard-coded marker list the
-            # full sanitiser would have started from; still neutralises
-            # the canonical ChatML / Llama / Gemma / Harmony openers.
-            baseline_pattern = _build_marker_pattern(set(_CHAT_TEMPLATE_ROLE_MARKERS))
-            if baseline_pattern is not None:
-                fallback_msgs = []
-                for _m in native_messages:
-                    if isinstance(_m, dict) and "content" in _m:
-                        _new = dict(_m)
-                        _new["content"] = _sanitize_message_content(
-                            _m["content"], baseline_pattern
-                        )
-                        fallback_msgs.append(_new)
-                    else:
-                        fallback_msgs.append(_m)
-                native_messages = fallback_msgs
+            native_messages = _baseline_sanitize_messages(native_messages)
+
+        # Tool definitions are also client-controlled and reach the
+        # processor via ``template_kwargs["tools"]`` — sanitise them
+        # with the same fail-closed semantics or the marker bypass is
+        # still open for video requests (codex r8 BLOCKING).
+        if tools:
+            try:
+                sanitised_tools = _sanitize_tools_for_template(tools, self.processor)
+            except Exception:
+                sanitised_tools = _baseline_sanitize_tools(tools)
+            template_kwargs["tools"] = sanitised_tools
 
         text = self.processor.apply_chat_template(
             native_messages,

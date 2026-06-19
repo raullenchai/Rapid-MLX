@@ -3421,16 +3421,27 @@ class Scheduler:
                         stop_trimmed = True
                         # Adjust new_text so streaming clients only see the
                         # valid prefix, never the stop marker itself.
-                        # Reconstruct ``prev_text`` from the same surface
-                        # the stop check used so the slice math stays
-                        # consistent (the streaming decoder's text up to
-                        # the previous token is recoverable as
-                        # ``decoded_so_far - new_text``).
-                        prev_text = (
-                            decoded_so_far[: -len(new_text)]
-                            if new_text
-                            else decoded_so_far
-                        )
+                        # Pre-token streaming surface ≡ the decoder's
+                        # ``prev_text``  — what the client has seen so
+                        # far. Computing it as ``decoded_so_far -
+                        # new_text`` is fragile: when the incremental
+                        # decoder holds back a U+FFFD-incomplete
+                        # sequence ``new_text == ""`` but
+                        # ``decoded_so_far`` grew, so the subtraction
+                        # math reset to the wrong boundary and could
+                        # leak or drop text on multibyte streams
+                        # (codex r8 BLOCKING). Falling back to
+                        # ``decoded_so_far - new_text`` only when no
+                        # decoder is attached (text-only paths that
+                        # decode in bulk).
+                        if decoder is not None:
+                            prev_text = decoder.prev_text
+                        else:
+                            prev_text = (
+                                decoded_so_far[: -len(new_text)]
+                                if new_text
+                                else decoded_so_far
+                            )
                         if len(trimmed_total) > len(prev_text):
                             output.new_text = trimmed_total[len(prev_text) :]
                         else:

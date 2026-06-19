@@ -132,3 +132,46 @@ def test_stop_check_decoder_surface_truncates_streaming_new_text():
     assert outputs[0].finish_reason == "stop"
     assert "STOP" not in outputs[0].output_text
     assert "STOP" not in outputs[0].new_text
+
+
+def test_stop_check_uses_decoder_prev_text_not_length_subtraction():
+    """When the incremental decoder held back the previous token
+    (``new_text == ""`` because a U+FFFD-incomplete sequence is
+    pending), the stop-trim path must reconstruct the streaming
+    surface from the decoder's ``prev_text`` accessor — NOT from
+    ``decoded_so_far[:-len(new_text)]`` (which degenerates to the
+    full surface, dropping the stop-marker truncation, codex r8
+    BLOCKING)."""
+    scheduler = _make_scheduler()
+    req = _make_request_with_decoder(
+        scheduler,
+        "rF",
+        stop_strings=["END"],
+        accumulated_full_text="visible ENDtail",
+        decoder_new_text="",  # held-back step
+        prefilled_tokens=[10, 11],
+    )
+    # Decoder records the streaming surface as of the LAST emitted
+    # delta — must be everything BEFORE the in-flight (held-back)
+    # token slice. Streaming clients have only seen "visible ".
+    req._decoder.prev_text = "visible "
+    scheduler.running["rF"] = req
+    scheduler.uid_to_request_id[0] = "rF"
+    scheduler._decode_tokens = lambda tokens: "visible "  # type: ignore[method-assign]
+
+    response = MagicMock()
+    response.uid = 0
+    response.token = 12
+    response.finish_reason = None
+    response.logprobs = None
+    del response.prompt_cache
+
+    outputs, _finished = scheduler._process_batch_responses([response])
+    out = outputs[0]
+    assert out.finish_reason == "stop"
+    # Final output is the surface before the stop marker — must NOT
+    # contain ``END`` or ``tail``.
+    assert out.output_text == "visible "
+    # ``new_text`` is the delta between prev_text and trimmed_total;
+    # both equal "visible " so the delta is empty.
+    assert out.new_text == ""
