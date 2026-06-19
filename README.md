@@ -510,7 +510,7 @@ Decoded examples:
 
 ### Full model lineup
 
-83 explicit aliases across 13 families ship today. Run `rapid-mlx models` for the live list with parser, hybrid / MoE flags, and DFlash eligibility.
+83 explicit aliases across 14 families ship today. Run `rapid-mlx models` for the live list with parser, hybrid / MoE flags, and DFlash eligibility.
 
 <details>
 <summary><strong>Show all 83 aliases by family</strong></summary>
@@ -519,11 +519,12 @@ Decoded examples:
 |---|---|---|
 | **Qwen3.5** | `qwen3.5-4b-4bit`, `-4b-8bit`, `-9b-4bit`, `-9b-8bit`, `-27b-4bit`, `-27b-8bit` ✨, `-35b-4bit`, `-35b-8bit`, `-122b-mxfp4`, `-122b-8bit` | DeltaNet hybrid; **27b-8bit DFlash-eligible** |
 | **Qwen3.6** | `qwen3.6-27b-4bit`, `-27b-8bit` ✨, `-27b-ud`, `-35b-4bit`, `-35b-6bit`, `-35b-8bit`, `-35b-dwq`, `-35b-ud` | 262K ctx, 256 MoE experts; **27b-8bit DFlash-eligible** |
-| **Qwen3** | `qwen3-0.6b-8bit`, `-4b-8bit`, `-8b-8bit`, `qwen3-coder-4bit`, `qwen3-coder-30b-4bit`, `qwen3-vl-4b-4bit`, `-8b-4bit`, `-30b-4bit` | Coding + vision |
+| **Qwen3** | `qwen3-0.6b-4bit`, `-0.6b-8bit`, `-4b-8bit`, `-8b-4bit`, `-8b-8bit`, `qwen3-coder-4bit`, `qwen3-coder-30b-4bit`, `qwen3-vl-4b-4bit`, `-8b-4bit`, `-30b-4bit` | Coding + vision |
+| **Qwen2.5** | `qwen2.5-14b-4bit` | Legacy 14B base for back-compat agents |
 | **Qwopus** | `qwopus-9b-4bit`, `qwopus-27b-4bit`, `qwopus-27b-8bit` | 92 MHI on tool calling |
-| **DeepSeek** | `deepseek-r1-8b-4bit`, `-32b-4bit`, `deepseek-v4-flash-2bit`, `-4bit`, `-8bit` | R1 reasoning + V4 Flash 158B-A13B day-0 |
-| **Gemma** | `gemma-3n-e4b-4bit`, `gemma-4-12b-4bit`, `-12b-qat-4bit`, `-12b-qat-8bit`, `-26b-4bit`, `-26b-qat-4bit`, `-31b-4bit`, `-31b-8bit`, `-31b-qat-4bit`, `-31b-qat-8bit`, `gemma3-1b-4bit`, `-12b-4bit`, `-27b-4bit` | Vision-capable; QAT variants |
-| **Llama / Hermes** | `llama3-1b-4bit`, `-3b-4bit`, `llama-3.1-8b-8bit`, `hermes3-8b-4bit`, `hermes4-70b-4bit` | |
+| **DeepSeek** | `deepseek-r1-8b-4bit`, `-32b-4bit`, `deepseek-v4-flash-2bit`, `-4bit`, `-8bit`, `deepseek-coder-v2-lite-16b-4bit` | R1 reasoning + V4 Flash 158B-A13B day-0 + Coder V2 Lite |
+| **Gemma** | `gemma-4-e2b-4bit`, `-e4b-4bit`, `gemma-4-12b-4bit`, `-12b-8bit`, `-12b-qat-4bit`, `-12b-qat-8bit`, `-26b-4bit`, `-26b-qat-4bit`, `-31b-4bit`, `-31b-8bit`, `-31b-qat-4bit`, `-31b-qat-8bit`, `gemma3-1b-4bit`, `-1b-qat-4bit`, `-4b-qat-4bit`, `-12b-4bit`, `-27b-4bit`, `-27b-qat-4bit` | Vision-capable; QAT variants; Gemma 4 e-series mobile sizes |
+| **Llama / Hermes** | `llama3-1b-4bit`, `-3b-4bit`, `llama-3.1-8b-4bit`, `-8b-8bit`, `hermes3-8b-4bit`, `hermes4-70b-4bit` | |
 | **GLM** | `glm4.5-air-4bit`, `glm4.7-9b-4bit` | |
 | **GPT-OSS** | `gpt-oss-20b-mxfp4-q8` | Harmony native |
 | **MiniMax** | `minimax-m2.5-4bit`, `minimax-m2.7-mxfp4` | |
