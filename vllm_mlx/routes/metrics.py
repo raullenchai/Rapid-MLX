@@ -15,16 +15,19 @@ Design choices
   ``engine.get_stats()`` already returns — no per-request hot-path cost,
   no new counters scattered across the engine.
 - **Unauthenticated**, on ``probe_router`` rather than the auth-gated
-  router, to match the standard Prometheus scrape model (the scraper
-  cannot send a bearer). Mirrors ``/healthz`` exactly.
+  router, to match the standard Prometheus scrape model. Mirrors
+  ``/healthz`` exactly.
 
   The disclosure surface is intentional and matches industry convention
   (Linkerd, Envoy, nginx-prom-exporter, kubelet, etcd all expose /metrics
   without auth). The trust boundary is the network — operators are
   expected to put /metrics behind a private VIP, mTLS, or a sidecar
-  proxy. Adding bearer auth here would break the standard Prometheus
-  scrape model (scrapers do not send Authorization headers by
-  convention) and is therefore deliberately out of scope.
+  proxy. Prometheus 2.x scrape configs *can* carry bearer tokens
+  (``authorization`` section in ``scrape_config``), so this is a
+  deliberate convention choice rather than a protocol limitation:
+  matching the de-facto pattern keeps rapid-mlx interoperable with the
+  large body of existing Prometheus tooling that assumes an unauth
+  ``/metrics`` target.
 - **Engine-not-loaded** is a 200, not a 500 — Prometheus would otherwise
   drop the entire target. Build info is always emitted.
 - **Counter monotonicity** — the cache stats backing the
