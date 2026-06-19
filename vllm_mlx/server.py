@@ -983,11 +983,13 @@ from .routes.embeddings import router as _embeddings_router
 from .routes.health import probe_router as _probe_router
 from .routes.health import router as _health_router
 from .routes.mcp_routes import router as _mcp_router
+from .routes.metrics import router as _metrics_router
 from .routes.models import router as _models_router
 from .routes.responses import router as _responses_router
 
 app.include_router(_probe_router)
 app.include_router(_health_router)
+app.include_router(_metrics_router)
 app.include_router(_models_router)
 app.include_router(_chat_router)
 app.include_router(_completions_router)
