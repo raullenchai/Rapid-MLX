@@ -75,6 +75,14 @@ def _parse_json_tool_call(json_str: str) -> dict[str, Any] | None:
     fragment). Caller treats ``None`` as "leave as content, not a tool
     call" — false positives here would silently swallow user-visible
     assistant text.
+
+    Disambiguation rule: we require BOTH a non-empty ``name`` AND one of
+    ``parameters``/``arguments`` to be present. The Llama 3.1/3.2 chat
+    template always emits the ``parameters`` key (even ``{}`` for no-arg
+    calls — ``"parameters": " + tool_call.arguments | tojson``), so this
+    is a tight fit for the trained shape. Prose like
+    ``Here is an example: {"name": "Alice"}`` no longer false-matches as
+    a tool call named ``Alice``.
     """
     try:
         obj = json.loads(json_str)
@@ -86,14 +94,16 @@ def _parse_json_tool_call(json_str: str) -> dict[str, Any] | None:
     if not isinstance(name, str) or not name.strip():
         return None
     # Llama 3.1/3.2 canonical key is "parameters"; accept "arguments" as
-    # an OpenAI-style alias. Missing → empty dict (a no-arg tool call is
-    # legitimate, e.g. ``get_current_time()``).
+    # an OpenAI-style alias for fine-tunes that drifted to OpenAI's key.
     if "parameters" in obj:
         args = obj["parameters"]
     elif "arguments" in obj:
         args = obj["arguments"]
     else:
-        args = {}
+        # No args key — this is prose JSON that happens to have a
+        # ``name`` field (user / object literal in assistant text).
+        # Refuse to route as a tool call.
+        return None
     return _build_tool_call(name, args)
 
 
@@ -158,10 +168,19 @@ class LlamaToolParser(ToolParser):
     def has_pending_tool_call(self, text: str) -> bool:
         if "<function=" in text or PYTHON_TAG in text:
             return True
-        # Bare-JSON path: only treat the response as a tool call once we
-        # see a ``"name"`` key — otherwise prose JSON would be mis-routed.
-        stripped = text.lstrip()
-        return stripped.startswith("{") and '"name"' in stripped
+        # Bare-JSON path: a streamed tool call begins with the very first
+        # ``{`` token. We MUST treat the response as pending from that
+        # first token onward — otherwise the partial ``{`` / ``{"na`` /
+        # ``{"name"`` prefix leaks as assistant content before the JSON
+        # closes (streaming false-negative — P1 / codex r1).
+        #
+        # Worst case for prose: the assistant decides to open the reply
+        # with an unstructured object literal. That's vanishingly rare
+        # (Llama 3.1's chat template steers structured replies to
+        # ``{"name": ...}``) and the eventual ``extract_tool_calls``
+        # falls back to "no tool" so the JSON is surfaced as content on
+        # close. Net effect: at most a single multi-token buffer delay.
+        return text.lstrip().startswith("{")
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -303,7 +322,12 @@ class LlamaToolParser(ToolParser):
 
         result = self.extract_tool_calls(current_text)
         if not result.tools_called:
-            return None
+            # We buffered the bare-JSON prefix (suppressing intermediate
+            # content deltas) on the bet that this would resolve to a
+            # tool call. It didn't (e.g. prose that opened with ``{`` but
+            # never carried a ``name``/``parameters`` pair). Flush the
+            # full buffered content now so the client doesn't lose text.
+            return {"content": current_text}
         return {
             "tool_calls": [
                 {

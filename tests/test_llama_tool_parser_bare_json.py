@@ -122,9 +122,15 @@ class TestBareJsonShape:
         assert result.tools_called
         assert json.loads(result.tool_calls[0]["arguments"]) == {"n": 5}
 
-    def test_bare_json_no_args(self, parser: LlamaToolParser):
-        # No-arg tool calls are legitimate (``get_current_time()``).
-        text = '{"name": "get_current_time"}'
+    def test_bare_json_no_arg_uses_empty_parameters(
+        self, parser: LlamaToolParser
+    ):
+        # No-arg tool calls render an explicit ``"parameters": {}`` in
+        # the Llama 3.1/3.2 chat template (``arguments | tojson`` on an
+        # empty dict). Bare ``{"name": "X"}`` with no args key is *not*
+        # a tool call — it's prose JSON that happens to have a ``name``
+        # field; see TestNoFalsePositives.
+        text = '{"name": "get_current_time", "parameters": {}}'
         result = parser.extract_tool_calls(text)
         assert result.tools_called
         assert json.loads(result.tool_calls[0]["arguments"]) == {}
@@ -178,6 +184,17 @@ class TestNoFalsePositives:
         assert not result.tools_called
         assert result.content == text
 
+    def test_prose_json_with_name_but_no_args(self, parser: LlamaToolParser):
+        # Regression for codex r1 P2: a JSON object that *happens* to
+        # carry a ``name`` field but no ``parameters``/``arguments`` key
+        # must NOT be routed as a no-arg tool call — that's almost
+        # always prose, not a Llama-template tool call (the template
+        # always emits ``parameters``).
+        text = 'Here is a user: {"name": "Alice", "age": 30}'
+        result = parser.extract_tool_calls(text)
+        assert not result.tools_called
+        assert result.content == text
+
     def test_json_with_empty_name(self, parser: LlamaToolParser):
         text = '{"name": "", "parameters": {}}'
         result = parser.extract_tool_calls(text)
@@ -212,6 +229,56 @@ class TestStreaming:
             delta_text=partial,
         )
         assert result is None or "tool_calls" not in result
+
+    def test_first_brace_token_is_pending_not_content(
+        self, parser: LlamaToolParser
+    ):
+        """Regression for codex r1 P1: the very first ``{`` token of a
+        streamed bare-JSON tool call must be treated as pending — we
+        cannot wait for the ``"name"`` key to appear because that would
+        leak the opening bytes as assistant content."""
+        for delta in ("{", '{"', '{"na'):
+            result = parser.extract_tool_calls_streaming(
+                previous_text="",
+                current_text=delta,
+                delta_text=delta,
+            )
+            # Must NOT pass through as content. Either None (still
+            # buffering) or already a structured tool_calls dict — but
+            # crucially not ``{"content": "{"}``.
+            assert result is None or "content" not in result, (
+                f"streaming leaked partial JSON prefix as content: "
+                f"delta={delta!r} -> {result!r}"
+            )
+
+    def test_streaming_buffered_prefix_flushed_if_not_tool(
+        self, parser: LlamaToolParser
+    ):
+        """Companion to test_first_brace_token_is_pending_not_content:
+        if we buffered a ``{``-prefixed stream on the bet that it was a
+        tool call, and the eventual close reveals it wasn't (no
+        ``name``/``parameters`` pair), the buffered text MUST be
+        flushed back to the client as content so we don't drop it."""
+        # Mid-stream: still pending (no emit).
+        previous = '{"city": "Tokyo", "temp"'
+        mid = parser.extract_tool_calls_streaming(
+            previous_text="",
+            current_text=previous,
+            delta_text=previous,
+        )
+        assert mid is None or "content" not in mid
+
+        # Closing brace arrives — not a tool call → flush as content.
+        delta = ": 22}"
+        current = previous + delta
+        final = parser.extract_tool_calls_streaming(
+            previous_text=previous,
+            current_text=current,
+            delta_text=delta,
+        )
+        assert final is not None
+        assert "content" in final
+        assert final["content"] == current
 
     def test_bare_json_emits_tool_calls_on_close(
         self, parser: LlamaToolParser
