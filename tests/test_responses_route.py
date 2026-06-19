@@ -354,6 +354,42 @@ class TestStatelessGate:
         assert engine.calls == []
 
 
+class TestResponsesPydanticValidation:
+    """Codex bundled-review finding on the v0.7.32 bundle: #685 added a
+    strict ``reasoning_max_tokens`` ``model_validator(mode="before")``
+    that raises ``ValidationError`` on bad input (``0``, ``true``,
+    ``"100"``). Since ``create_response()`` constructs
+    ``ResponsesRequest(**body)`` manually outside of FastAPI's body
+    binding, an uncaught ``ValidationError`` would surface as 500. The
+    route wraps construction in try/except and re-raises as 400 —
+    matches the same pattern in ``routes/anthropic.py``.
+    """
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [0, -1, True, False, "100"],
+        ids=["zero", "negative", "bool-true", "bool-false", "string"],
+    )
+    def test_invalid_reasoning_max_tokens_returns_400(
+        self, responses_client, bad_value
+    ):
+        client = responses_client.client
+        engine = responses_client.engine
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(reasoning_max_tokens=bad_value),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 400, (
+            f"reasoning_max_tokens={bad_value!r} must surface as 400, "
+            f"got {response.status_code}: {response.text}"
+        )
+        assert "reasoning_max_tokens" in response.text
+        assert engine.calls == []
+
+
 # ---------------------------------------------------------------------------
 # Codex-style multi-item input replay
 # ---------------------------------------------------------------------------

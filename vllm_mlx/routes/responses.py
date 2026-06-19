@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from pydantic import ValidationError
 
 from ..api.models import (
     AssistantMessage,
@@ -107,7 +108,19 @@ async def create_response(request: Request):
     path is the hot path.
     """
     body = await request.json()
-    responses_request = ResponsesRequest(**body)
+    # ``ResponsesRequest`` is constructed manually (not as a FastAPI body
+    # parameter), so Pydantic ``ValidationError`` would otherwise surface
+    # as a generic 500. Catch it explicitly to give clients a 400 with
+    # the actual validation detail — matches the same pattern in
+    # ``routes/anthropic.py``. Codex bundled-review finding on the
+    # v0.7.32 release bundle: #685's strict ``reasoning_max_tokens``
+    # ``model_validator(mode="before")`` now raises on bad input
+    # (``0``, ``true``, ``"100"``), and without this catch a malformed
+    # client request would 500 here instead of 400.
+    try:
+        responses_request = ResponsesRequest(**body)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # Statelessness gate — see module docstring. Codex CLI does not set
     # this field; clients that DO use it would get silent prompt loss
