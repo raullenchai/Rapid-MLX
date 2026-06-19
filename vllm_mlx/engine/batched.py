@@ -1318,10 +1318,13 @@ class BatchedEngine(BaseEngine):
         # (e.g. ``<tool_call>\n{"name": "X", "arguments":``) and we
         # append it directly to the rendered prompt. The model continues
         # from there, completing the tool call body in the parser's wire
-        # format. This is the assistant-turn pre-injection lever
-        # described in the OpenAI tool_choice contract — works on EVERY
-        # text-parser path (hermes / qwen3coder / llama / kimi / glm47)
-        # because the same wire opener is what each parser expects.
+        # format.  Currently the route only emits a prefix for the
+        # ``hermes`` parser (the only verified JSON-body ``<tool_call>``
+        # parser — see ``_verified_json_tool_call_parsers`` in
+        # ``routes/chat.py``); other parsers fall through to the
+        # post-parse synthesis fallback. Engine support is parser-
+        # agnostic — any parser whose wire opener can be precomputed
+        # by the route can opt in by extending the allowlist (codex r7 NIT).
         forced_assistant_prefix = kwargs.pop("forced_assistant_prefix", None)
         if forced_assistant_prefix:
             prompt = prompt + forced_assistant_prefix

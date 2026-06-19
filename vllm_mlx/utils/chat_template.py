@@ -223,6 +223,58 @@ def _sanitize_messages_for_template(
     return sanitized
 
 
+def _baseline_sanitize_messages(messages):
+    """Fail-closed fallback for ``_sanitize_messages_for_template``.
+
+    Applies the literal ``_CHAT_TEMPLATE_ROLE_MARKERS`` baseline (no
+    tokenizer-registry probe — that's what failed) so a sanitiser
+    exception cannot reopen the prompt-injection vector by passing
+    raw user content through to ``apply_chat_template`` (codex r7
+    BLOCKING). Mirrors the fallback in ``vllm_mlx/models/mllm.py``.
+    """
+    baseline_pattern = _build_marker_pattern(set(_CHAT_TEMPLATE_ROLE_MARKERS))
+    if baseline_pattern is None:
+        return messages
+    fallback: list = []
+    for msg in messages:
+        if isinstance(msg, dict) and "content" in msg:
+            new_msg = dict(msg)
+            new_msg["content"] = _sanitize_message_content(
+                msg["content"], baseline_pattern
+            )
+            fallback.append(new_msg)
+        else:
+            fallback.append(msg)
+    return fallback
+
+
+def _baseline_sanitize_tools(tools):
+    """Fail-closed fallback for ``_sanitize_tools_for_template``.
+
+    Walks the tool definition tree with the literal baseline marker
+    set when the tokenizer-registry-aware sanitiser raises — same
+    rationale as ``_baseline_sanitize_messages`` (codex r7 BLOCKING).
+    """
+    if not tools:
+        return tools
+    baseline_pattern = _build_marker_pattern(set(_CHAT_TEMPLATE_ROLE_MARKERS))
+    if baseline_pattern is None:
+        return tools
+
+    def _walk(obj):
+        if isinstance(obj, str):
+            return _neutralize_in_string(obj, baseline_pattern)
+        if isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_walk(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(_walk(v) for v in obj)
+        return obj
+
+    return _walk(tools)
+
+
 def _sanitize_tools_for_template(tools, template_applicator):
     """Neutralise chat-template role markers in user-supplied tool
     definitions (names, descriptions, parameter schemas).
@@ -366,18 +418,33 @@ def apply_chat_template(
     # every template-render path in the project (this is the single
     # wrapper every caller funnels through), so the fix is template-
     # agnostic — no per-model handling. See ``_sanitize_messages_for_template``.
+    # Fail CLOSED on sanitiser exceptions — falling back to the literal
+    # ``_CHAT_TEMPLATE_ROLE_MARKERS`` baseline. Swallowing the failure
+    # and rendering raw input would reopen the exact prompt-injection
+    # vector this PR closes (codex r7 BLOCKING — same fallback shape as
+    # ``vllm_mlx/models/mllm.py::_apply_native_video_template``).
     try:
         messages = _sanitize_messages_for_template(messages, template_applicator)
-    except Exception as e:  # never let sanitisation break a render
-        logger.debug("Chat-template marker sanitisation failed: %s", e)
+    except Exception as e:
+        logger.debug(
+            "Chat-template marker sanitisation failed (%s); applying "
+            "baseline-marker fallback",
+            e,
+        )
+        messages = _baseline_sanitize_messages(messages)
     # Same defence on tool definitions (codex r5 P1) — they are also
     # client-supplied strings rendered into the prompt via the
     # template's ``tools=`` kwarg or the system-prompt injection
     # fallback (``_inject_tools_into_messages``).
     try:
         tools = _sanitize_tools_for_template(tools, template_applicator)
-    except Exception as e:  # never let sanitisation break a render
-        logger.debug("Chat-template tool-marker sanitisation failed: %s", e)
+    except Exception as e:
+        logger.debug(
+            "Chat-template tool-marker sanitisation failed (%s); applying "
+            "baseline-marker fallback",
+            e,
+        )
+        tools = _baseline_sanitize_tools(tools)
 
     if not hasattr(template_applicator, "apply_chat_template"):
         # Fallback for models without apply_chat_template.
