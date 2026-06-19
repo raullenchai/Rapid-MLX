@@ -859,3 +859,104 @@ def test_stream_route_preserves_intra_thinking_whitespace():
     assert text_text == "ANSWER", f"answer text missing or wrong: got {text_text!r}"
 
     reset_config()
+
+
+class _StreamingNonThinkingChannelHelloSpace:
+    """Engine that streams ``("reasoning", "hello") -> ("reasoning", " ")
+    -> ("content", "world")`` to exercise the codex r5 MAJOR fix.
+
+    On a non-thinking alias the gate demotes the first delta to a text
+    block. The second (whitespace-only) reasoning delta MUST also
+    demote to text so the open text block continues to receive
+    ``"hello "`` rather than truncating to ``"hello"``. The third
+    (content) delta then appends ``"world"`` to the same block.
+    """
+
+    preserve_native_tool_format = False
+    is_mllm = False
+    supports_guided_generation = False
+    tokenizer = None
+
+    def __init__(self):
+        self.stream_calls: list[dict[str, Any]] = []
+
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        return "PROMPT"
+
+    async def stream_chat(self, messages, **kwargs):
+        self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+        yield GenerationOutput(
+            text="hello",
+            new_text="hello",
+            tokens=[1],
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=False,
+            finish_reason=None,
+            channel="reasoning",
+        )
+        yield GenerationOutput(
+            text="hello ",
+            new_text=" ",
+            tokens=[1, 2],
+            prompt_tokens=4,
+            completion_tokens=2,
+            finished=False,
+            finish_reason=None,
+            channel="reasoning",
+        )
+        yield GenerationOutput(
+            text="hello world",
+            new_text="world",
+            tokens=[1, 2, 3],
+            prompt_tokens=4,
+            completion_tokens=3,
+            finished=True,
+            finish_reason="stop",
+            channel="content",
+        )
+
+
+def test_stream_route_demoted_text_keeps_intra_block_whitespace():
+    """Codex r5 MAJOR: on a non-thinking alias, a whitespace-only
+    reasoning delta that arrives AFTER a non-empty reasoning delta
+    must demote into the open text block (giving ``"hello world"``),
+    not be dropped (which would give ``"helloworld"``).
+    """
+    engine = _StreamingNonThinkingChannelHelloSpace()
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+
+    # No thinking block should be opened.
+    thinking_starts = [
+        e
+        for e in events
+        if e.get("type") == "content_block_start"
+        and e.get("content_block", {}).get("type") == "thinking"
+    ]
+    assert thinking_starts == [], (
+        f"non-thinking alias opened a thinking block: {thinking_starts!r}"
+    )
+
+    text_deltas = [
+        e["delta"]["text"]
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    ]
+    assembled = "".join(text_deltas)
+    assert assembled == "hello world", (
+        f"expected 'hello world' (whitespace preserved into open text "
+        f"block); got {assembled!r} from {text_deltas!r}"
+    )

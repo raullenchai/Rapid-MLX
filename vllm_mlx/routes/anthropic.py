@@ -596,52 +596,60 @@ async def _stream_anthropic_messages(
         "thinking" we ALWAYS keep whitespace because it's an intra-block
         continuation, never a block opener.
         """
-        # First, walk pieces and compute whether each whitespace-only
-        # thinking piece sits at a "block-opening" position. The piece
-        # opens a block iff no thinking block is currently open at the
-        # emitter AND no earlier piece in this batch already emitted
-        # non-whitespace thinking content.
-        thinking_block_open = current_block_type == "thinking"
+        # Track the EFFECTIVE open block type — i.e. what the
+        # downstream emitter currently has open after the gate's
+        # rewrites, NOT the raw piece type the model emitted. This
+        # lets the non-thinking branch route a whitespace-only
+        # ``("thinking", " ")`` piece into an already-open TEXT block
+        # (demoted to ("text", " ")) instead of dropping it. Codex r5
+        # MAJOR.
+        #
+        # ``effective`` is one of None / "text" / "thinking" and
+        # reflects what ``_emit_content_pieces`` will have open after
+        # consuming the pieces ``out`` so far.
+        effective: str | None = current_block_type
         out: list[tuple[str, str]] = []
         for block_type, text in pieces:
             if block_type == "thinking":
                 if not text.strip():
-                    # Whitespace-only thinking piece.
-                    if not thinking_block_open:
-                        # Would open a blank thinking block — drop it.
-                        # On the non-thinking branch we also drop it
-                        # because demoting to ("text", "   ") would
-                        # likewise open a blank text block.
-                        continue
-                    # An intra-thinking separator. Keep it on the
-                    # reasoning-enabled path; demote on the non-thinking
-                    # path (it stays inside an already-open text block
-                    # on that branch because demoted "thinking" became
-                    # "text" earlier in this same pass).
-                    if _reasoning_enabled:
+                    # Whitespace-only thinking piece. Decide whether to
+                    # drop, keep as thinking, or demote to text based
+                    # on which (if any) block is currently open.
+                    if effective == "thinking":
+                        # Intra-thinking separator — keep as-is on the
+                        # reasoning-enabled path. (The non-thinking
+                        # branch can't see ``effective == "thinking"``
+                        # because demotion below sets ``effective`` to
+                        # "text" rather than "thinking".)
                         out.append(("thinking", text))
-                    else:
+                    elif effective == "text" and not _reasoning_enabled:
+                        # Non-thinking branch with an open text block:
+                        # demote the whitespace so it lands inside the
+                        # current text block (codex r5 MAJOR — without
+                        # this, ``("thinking", "hello") + ("thinking",
+                        # " ")`` would stream as ``"hello"`` instead of
+                        # ``"hello "``).
                         out.append(("text", text))
+                    else:
+                        # No relevant open block — dropping it avoids
+                        # opening a blank thinking OR blank text block.
+                        # The non-stream predicate (.strip()) does the
+                        # same.
+                        continue
                     continue
-                # Non-whitespace thinking content. On the reasoning-
-                # enabled branch keep as thinking; on the non-thinking
-                # branch demote to text.
+                # Non-whitespace thinking content. Reasoning-enabled
+                # keeps as thinking; non-thinking demotes to text.
                 if _reasoning_enabled:
                     out.append(("thinking", text))
+                    effective = "thinking"
                 else:
                     out.append(("text", text))
-                # A non-empty thinking piece opens a thinking block on
-                # the reasoning-enabled path; track so subsequent
-                # whitespace pieces in this batch are kept as
-                # intra-block continuations.
-                thinking_block_open = _reasoning_enabled
+                    effective = "text"
             else:
                 out.append((block_type, text))
-                # A non-thinking piece closes any open thinking block
-                # (the emitter will emit a content_block_stop on the
-                # type switch).
-                if block_type != "thinking":
-                    thinking_block_open = False
+                # ``block_type`` is already not "thinking" in this
+                # branch — track the effective open block as that type.
+                effective = block_type
         return out
 
     # Emit message_start
