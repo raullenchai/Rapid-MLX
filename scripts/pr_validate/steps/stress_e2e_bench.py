@@ -65,6 +65,13 @@ SERVER_REQUEST_TIMEOUT_S = 180
 # the prefix cache to disk — for large models this can run past the old
 # 10s budget. 30s covers a 35B model's cache flush comfortably.
 PORT_FREE_TIMEOUT_S = 30
+# Default wall-clock budget for ``scripts/stress_test.py``. Sized for
+# autoregressive models on the 27-35B golden registry; intentionally
+# tight to surface regressions. Text-diffusion candidates override this
+# via ``stress_timeout_s`` in golden_models.yaml — see ``ModelChoice``
+# and issue #664. Do NOT bump this default to accommodate diffusion;
+# that would weaken regression detection on autoregressive models.
+DEFAULT_STRESS_TIMEOUT_S = 900
 RAM_HEADROOM_GB = 8.0  # leave this much free for the OS + model load spike
 
 
@@ -75,6 +82,14 @@ class ModelChoice:
     ram_gb_required: float
     quality_tier: str
     extra_args: list[str]
+    # Per-candidate override for the ``scripts/stress_test.py`` wall-clock
+    # budget. Default ``None`` falls back to ``DEFAULT_STRESS_TIMEOUT_S``
+    # (900s / 15min) which is sized for autoregressive models. Text-
+    # diffusion models (e.g. DiffusionGemma) iteratively denoise all
+    # positions in parallel per step, so per-token wall-clock is materially
+    # higher and the long-generation sub-test can blow the 15-min budget.
+    # See issue #664.
+    stress_timeout_s: int | None = None
 
 
 class StressE2EBenchStep(Step):
@@ -230,6 +245,8 @@ def _select_models(registry: dict[str, Any], usable_gb: float) -> list[ModelChoi
     for family in registry.get("families", []):
         for cand in family["candidates"]:
             if cand["ram_gb_required"] <= usable_gb:
+                raw_timeout = cand.get("stress_timeout_s")
+                stress_timeout_s = int(raw_timeout) if raw_timeout is not None else None
                 out.append(
                     ModelChoice(
                         family=family["family"],
@@ -239,6 +256,7 @@ def _select_models(registry: dict[str, Any], usable_gb: float) -> list[ModelChoi
                         extra_args=list(
                             (overrides.get(cand["id"], {}) or {}).get("args", [])
                         ),
+                        stress_timeout_s=stress_timeout_s,
                     )
                 )
                 break  # stop at first fit per family
@@ -450,6 +468,16 @@ def _force_kill_port(port: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _effective_stress_timeout(choice: ModelChoice) -> int:
+    """Resolve the wall-clock budget for ``scripts/stress_test.py`` for
+    ``choice``. Returns the per-candidate ``stress_timeout_s`` override
+    when set in golden_models.yaml, else ``DEFAULT_STRESS_TIMEOUT_S``.
+
+    Extracted so the resolution is unit-testable without mocking
+    ``subprocess.run`` (see issue #664)."""
+    return choice.stress_timeout_s or DEFAULT_STRESS_TIMEOUT_S
+
+
 def _run_stress(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
     log = ctx.artifact_path(f"stress-{_safe_name(choice.model_id)}.log")
     proc = subprocess.run(  # noqa: S603
@@ -457,7 +485,7 @@ def _run_stress(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
         capture_output=True,
         text=True,
         cwd=str(ctx.repo_root),
-        timeout=900,
+        timeout=_effective_stress_timeout(choice),
     )
     log.write_text((proc.stdout or "") + (proc.stderr or ""))
     summary = _grep_last(proc.stdout, "passed")

@@ -149,6 +149,7 @@ families:
       - id: mlx-community/diffusiongemma-26B-A4B-it-4bit
         ram_gb_required: 20
         quality_tier: smoke
+        stress_timeout_s: 1800  # text-diffusion: ~2x autoregressive per-token wall-clock
 
   - family: harmony
     candidates:
