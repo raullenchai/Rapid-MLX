@@ -866,6 +866,27 @@ def serve_command(args):
     # backwards-compat with existing scripts.
     server._api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
     server._default_timeout = args.timeout
+
+    # Per-request body-size cap. Resolution order:
+    #   1. ``--max-request-bytes`` (explicit CLI flag, including 0 to disable)
+    #   2. ``RAPID_MLX_MAX_REQUEST_BYTES`` env var
+    #   3. ``ServerConfig`` dataclass default (8 MiB)
+    # See vllm_mlx/middleware/body_size.py for the DoS rationale.
+    _max_body_arg = getattr(args, "max_request_bytes", None)
+    if _max_body_arg is not None:
+        server._max_request_bytes = max(0, int(_max_body_arg))
+    else:
+        _env_name = "RAPID_MLX_MAX_REQUEST_BYTES"
+        _env = os.environ.get(_env_name, "").strip()
+        if _env:
+            try:
+                server._max_request_bytes = max(0, int(_env))
+            except ValueError:
+                logger.warning(
+                    "%s=%r is not an integer; falling back to the 8 MiB default",
+                    _env_name,
+                    _env,
+                )
     # Configure CORS
     cors_origins = args.cors_origins if args.cors_origins else ["*"]
     server.configure_cors(cors_origins)
@@ -4521,6 +4542,22 @@ Examples:
         type=int,
         default=0,
         help="Rate limit requests per minute per client (0 = disabled)",
+    )
+    # Hard cap on per-request body size — DoS defense.
+    # See ``vllm_mlx/middleware/body_size.py`` for the rationale (pre-fix:
+    # a 10 MB body silently ran a ~60 s full prefill on a 27B alias before
+    # the client timed out; rapid-desktop#273 + #463). Default 8 MiB fits
+    # a 128k-token prompt with tool schemas; 0 disables the cap.
+    serve_parser.add_argument(
+        "--max-request-bytes",
+        type=int,
+        default=None,
+        help=(
+            "Maximum HTTP request body size in bytes (default: 8 MiB = "
+            "8388608). Requests over this cap are rejected with HTTP 413 "
+            "before JSON parsing or tokenization runs. 0 disables the cap. "
+            "Falls back to the RAPID_MLX_MAX_REQUEST_BYTES env var if unset."
+        ),
     )
     serve_parser.add_argument(
         "--timeout",

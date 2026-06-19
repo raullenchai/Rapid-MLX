@@ -158,6 +158,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # bearer key in argv (visible to ``ps`` for any local user).
         # Pure auth-config knob; routing decisions never read it.
         "RAPID_MLX_API_KEY",
+        # Server-side: fallback for ``--max-request-bytes`` (DoS defense,
+        # rapid-desktop#273 / #463). Enforces the ASGI-layer body cap in
+        # ``vllm_mlx/middleware/body_size.py``. Pure wire-level size gate
+        # — never selects a model, parser, or routing tier; it only
+        # decides whether a request body is admitted at all.
+        "RAPID_MLX_MAX_REQUEST_BYTES",
         # Path to the MCP server config file (formerly VLLM_MLX_MCP_CONFIG).
         # Plumbs ``--mcp-config`` from the CLI to the FastAPI lifespan and is
         # consumed only by ``vllm_mlx/mcp/config.py`` to discover MCP tool

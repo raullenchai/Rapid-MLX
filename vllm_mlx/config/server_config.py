@@ -101,6 +101,21 @@ class ServerConfig:
     # --- Auth ---
     api_key: str | None = None
 
+    # --- Request-body size cap (DoS defense, #463 / rapid-desktop#273) ---
+    # Hard cap on the wire-level request body size (bytes). Enforced at
+    # the ASGI layer by ``RequestBodyLimitMiddleware`` BEFORE FastAPI
+    # JSON parsing or tokenization runs, so an attacker who sends a
+    # multi-MB body (10 MB → ~60 s hang, 100 MB → ~90 s hang were
+    # observed pre-fix on a 27B alias) is bounced with 413 in
+    # microseconds instead of starving a worker through full prefill.
+    #
+    # Default 8 MiB comfortably fits a 128k-token Qwen prompt
+    # (≈ 500 KB JSON) plus tool schemas and a small inline image_url,
+    # while still rejecting the 10–100 MB DoS payloads documented in
+    # rapid-desktop#273. Overridable via ``--max-request-bytes`` or
+    # ``RAPID_MLX_MAX_REQUEST_BYTES``; ``0`` disables the cap.
+    max_request_bytes: int = 8 * 1024 * 1024
+
     # --- Cloud routing ---
     cloud_router: Any = None
 

@@ -67,6 +67,8 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    count_prompt_tokens,
+    enforce_context_length,
     get_engine,
     get_usage,
 )
@@ -736,6 +738,37 @@ async def _create_chat_completion_impl(
 
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
+
+    # Context-length pre-check (DoS defense + UX, rapid-desktop#273 / #463).
+    #
+    # Even within the wire-level body cap from ``middleware/body_size.py``,
+    # a 8 MiB ASCII body can hold ~2M tokens — well past every model
+    # context window. Counting prompt tokens here lets us return
+    # ``context_length_exceeded`` (400) BEFORE the scheduler starts
+    # prefill, instead of running prefill to its useless conclusion
+    # (the symptom F-007 documented: 60–90 s of wasted compute, worker
+    # starved, client times out).
+    #
+    # Scoped to non-MLLM engines for the same reason cloud routing is:
+    # ``build_prompt`` rejects MLLM, image tokens have a separate
+    # accounting path, and a vision request's "prompt size" isn't
+    # purely a text-token count. MLLM context limits are tracked
+    # separately by the scheduler.
+    if not engine.is_mllm:
+        try:
+            _ctx_prompt = engine.build_prompt(messages, tools=request.tools)
+        except HTTPException:
+            raise
+        except Exception:  # pragma: no cover - template errors handled downstream
+            _ctx_prompt = None
+        if _ctx_prompt is not None:
+            _prompt_tokens = count_prompt_tokens(engine, _ctx_prompt)
+            if _prompt_tokens > 0:
+                enforce_context_length(
+                    engine,
+                    _prompt_tokens,
+                    max_tokens=chat_kwargs.get("max_tokens"),
+                )
 
     # Cloud routing: offload large-context requests to cloud LLM.
     #

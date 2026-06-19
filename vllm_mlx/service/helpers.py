@@ -1424,3 +1424,158 @@ async def _wait_with_disconnect(
             disconnect_task.cancel()
         if not task.done():
             task.cancel()
+
+
+# ─── Context-length pre-check (DoS defense, rapid-desktop#273 / #463) ──
+#
+# A 8 MiB body of plain ASCII is still ~2M tokens — well past any model's
+# context window. The body-size middleware ``vllm_mlx/middleware/body_size.py``
+# stops the worst of the DoS, but a request that fits inside the byte
+# cap can still drag a small-context model into pointless prefill.
+#
+# These helpers surface the model's max context length and raise a
+# structured OpenAI ``context_length_exceeded`` error when a prompt is
+# too long, so the rejection lands BEFORE the engine starts prefill.
+
+# Sentinel-large fallback used when the model exposes no useful context
+# field. We do NOT silently bypass the gate (returning ``None`` would
+# accept any prompt); instead we use a value so large that legitimate
+# requests pass while the DoS pattern (≈ millions of tokens in one body)
+# still trips. Sized for 8 MiB body cap × ~3.5 chars/token worst-case.
+_FALLBACK_MAX_CONTEXT_TOKENS = 4_194_304
+
+
+def get_model_max_context(engine) -> int:
+    """Return the model's max prompt-token context window for ``engine``.
+
+    Resolution order (first hit wins):
+      1. ``engine._model.args.max_position_embeddings`` — mlx-lm dense
+         LLMs and most MLX models expose the HF config there.
+      2. ``engine._model.args.text_config.max_position_embeddings`` —
+         multimodal Qwen3.5 / Gemma 4 nest the text-config inside.
+      3. ``engine._model.config.max_position_embeddings`` — older
+         attribute style.
+      4. ``engine.tokenizer.model_max_length`` if not the HuggingFace
+         "VERY_LARGE_INTEGER" sentinel (``1e30``). Some tokenizers
+         report a useful cap here even when the model object doesn't.
+      5. ``_FALLBACK_MAX_CONTEXT_TOKENS`` — see module-level comment.
+
+    The function is intentionally permissive about missing fields: we'd
+    rather pass through a request the model can handle than refuse a
+    legitimate one on metadata absence. The byte cap stays as the
+    last-resort DoS gate even if every probe falls through.
+    """
+
+    def _maybe_int(value) -> int | None:
+        try:
+            ivalue = int(value)
+        except (TypeError, ValueError):
+            return None
+        if ivalue <= 0:
+            return None
+        return ivalue
+
+    model = getattr(engine, "_model", None) or getattr(engine, "model", None)
+
+    if model is not None:
+        args = getattr(model, "args", None)
+        if args is not None:
+            direct = _maybe_int(getattr(args, "max_position_embeddings", None))
+            if direct is not None:
+                return direct
+            text_cfg = getattr(args, "text_config", None)
+            if text_cfg is not None:
+                nested = _maybe_int(
+                    getattr(text_cfg, "max_position_embeddings", None)
+                )
+                if nested is not None:
+                    return nested
+        config = getattr(model, "config", None)
+        if config is not None:
+            cfg_direct = _maybe_int(getattr(config, "max_position_embeddings", None))
+            if cfg_direct is not None:
+                return cfg_direct
+            text_cfg = getattr(config, "text_config", None)
+            if text_cfg is not None:
+                nested = _maybe_int(
+                    getattr(text_cfg, "max_position_embeddings", None)
+                )
+                if nested is not None:
+                    return nested
+
+    tokenizer = getattr(engine, "tokenizer", None) or getattr(engine, "_tokenizer", None)
+    if tokenizer is not None:
+        tok_max = getattr(tokenizer, "model_max_length", None)
+        if tok_max is not None:
+            # HuggingFace tokenizers report 1e30 ("no cap known") which
+            # is useless as a guard. Treat anything above 10M as the
+            # sentinel since no real model has that context yet.
+            if isinstance(tok_max, int | float) and 0 < tok_max < 10_000_000:
+                return int(tok_max)
+
+    return _FALLBACK_MAX_CONTEXT_TOKENS
+
+
+def count_prompt_tokens(engine, prompt: str) -> int:
+    """Return the integer prompt-token count under ``engine``'s tokenizer.
+
+    Mirrors the BOS-handling that ``BatchedEngine.estimate_new_tokens``
+    does — adds special tokens only when the prompt doesn't already
+    start with the model's BOS. Returns 0 on tokenizer failure so the
+    caller falls through to engine-side validation rather than 500-ing
+    on a metadata edge case.
+    """
+    tokenizer = getattr(engine, "tokenizer", None) or getattr(engine, "_tokenizer", None)
+    if tokenizer is None:
+        return 0
+    try:
+        bos = getattr(tokenizer, "bos_token", None)
+        add_special_tokens = bos is None or not prompt.startswith(bos)
+        token_ids = tokenizer.encode(prompt, add_special_tokens=add_special_tokens)
+        return len(token_ids)
+    except Exception:
+        logger.debug("count_prompt_tokens: tokenizer.encode failed", exc_info=True)
+        return 0
+
+
+def enforce_context_length(
+    engine,
+    prompt_tokens: int,
+    *,
+    max_tokens: int | None = None,
+) -> None:
+    """Raise HTTP 400 ``context_length_exceeded`` if ``prompt_tokens`` is
+    over the model's max context window.
+
+    The check also includes ``max_tokens`` (the requested completion
+    budget) so a borderline prompt that would force the decoder past
+    the cap is rejected up-front rather than mid-generation. OpenAI's
+    own error is shaped the same way — ``context_length_exceeded``
+    fires when ``prompt + completion > model max``.
+    """
+    max_context = get_model_max_context(engine)
+    completion = int(max_tokens) if max_tokens else 0
+    requested_total = int(prompt_tokens) + max(0, completion)
+    if requested_total <= max_context:
+        return
+
+    # Format the message in the OpenAI shape so SDKs can branch on the
+    # ``code`` field. The exception handler in ``vllm_mlx/server.py``
+    # wraps the ``detail`` payload back into the OpenAI envelope.
+    detail = (
+        f"This model's maximum context length is {max_context} tokens. "
+        f"However, you requested {requested_total} tokens "
+        f"({int(prompt_tokens)} prompt + {max(0, completion)} completion). "
+        "Please reduce the length of the messages or completion."
+    )
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error": {
+                "message": detail,
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded",
+                "param": "messages",
+            }
+        },
+    )

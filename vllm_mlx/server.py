@@ -207,6 +207,13 @@ _embedding_model_locked: str | None = None  # Set when --embedding-model is used
 _api_key: str | None = None
 _auth_warning_logged: bool = False
 
+# Per-request body size cap (DoS defense). 0 disables. Resolved from
+# CLI ``--max-request-bytes`` / ``RAPID_MLX_MAX_REQUEST_BYTES`` and
+# pushed into ``ServerConfig.max_request_bytes`` via ``_sync_config``;
+# the ASGI middleware (``middleware/body_size.py``) reads it per
+# request, so a test fixture mutating the config takes effect immediately.
+_max_request_bytes: int = 8 * 1024 * 1024
+
 # Reasoning parser (for models like Qwen3, DeepSeek-R1, MiniMax)
 _reasoning_parser = None  # ReasoningParser instance when enabled
 _reasoning_parser_name: str | None = None  # Parser name (e.g., "minimax")
@@ -444,6 +451,19 @@ from .routes.audio import install_audio_body_limit_middleware  # noqa: E402
 
 install_audio_body_limit_middleware(app)
 
+# SECURITY: blanket request-body size cap across all /v1/* routes.
+# Defends against the DoS pattern documented in rapid-desktop#273 / #463
+# where a 10–100 MB JSON body silently runs full prefill (~60–90 s on a
+# 27B alias) before the client times out. See middleware/body_size.py
+# for the design rationale, the path-scoping (skips
+# ``/v1/audio/transcriptions`` so the multipart-aware 25 MB cap upstream
+# is not trampled by the generic 8 MiB JSON cap), and the limit lookup
+# (ServerConfig.max_request_bytes, overridable via --max-request-bytes /
+# RAPID_MLX_MAX_REQUEST_BYTES).
+from .middleware.body_size import install_request_body_limit_middleware  # noqa: E402
+
+install_request_body_limit_middleware(app)
+
 # CORS configuration — configurable via --cors-origins CLI flag
 
 
@@ -496,6 +516,21 @@ async def _http_exception_handler(
         409: "conflict_error",
         429: "rate_limit_error",
     }
+
+    # Structured-detail escape hatch: route handlers may raise
+    # ``HTTPException(detail={"error": {...}})`` to emit a custom
+    # OpenAI-shaped envelope (e.g. ``code: "context_length_exceeded"``
+    # for the token-budget gate). When the detail already carries the
+    # full ``{"error": {...}}`` shape, pass it through unchanged so the
+    # ``code`` / ``param`` fields land in the response. Bare-string
+    # detail keeps the legacy wrapping below.
+    detail = exc.detail
+    if isinstance(detail, dict) and isinstance(detail.get("error"), dict):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=detail,
+            headers=getattr(exc, "headers", None),
+        )
 
     return JSONResponse(
         status_code=exc.status_code,
@@ -915,6 +950,7 @@ def _sync_config() -> None:
     cfg.embedding_engine = _embedding_engine
     cfg.embedding_model_locked = _embedding_model_locked
     cfg.api_key = _api_key
+    cfg.max_request_bytes = _max_request_bytes
     cfg.cloud_router = _cloud_router
     cfg.gc_control = _gc_control
     cfg.no_thinking = _no_thinking
