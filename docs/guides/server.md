@@ -741,6 +741,62 @@ sudo systemctl enable rapid-mlx
 sudo systemctl start rapid-mlx
 ```
 
+### Authentication and bind→auth ordering
+
+When `--api-key` (or the `RAPID_MLX_API_KEY` env var) is set, every
+request to the OpenAI-style routes (`/v1/chat/completions`,
+`/v1/embeddings`, `/v1/audio/*`, `/v1/models`, ...) must carry a valid
+`Authorization: Bearer <key>` header — anonymous requests get `401`.
+
+The auth check is wired via FastAPI route dependencies at app
+construction time, **before** uvicorn binds the listening socket.
+There is no window where the port is accepting connections but the
+auth dependency has not yet been registered. A regression test
+(`tests/test_server_auth_ordering.py`) pins this invariant so a
+future refactor can't silently reopen it.
+
+### Socket activation (`--listen-fd`) for strongest guarantee
+
+On a multi-tenant box, the strongest closure of the bind→auth race is
+to let an external supervisor (launchd, systemd, or a parent process)
+bind the listening socket and validate the auth secret **before**
+`execve`-ing into `rapid-mlx`. That way the only process holding the
+fd at any point is one with auth in place.
+
+`rapid-mlx serve <alias> --listen-fd N` adopts the inherited fd
+instead of binding fresh. `--host` and `--port` are ignored when
+`--listen-fd` is set.
+
+Example (parent-process style, mirroring `LISTEN_FDS=1` conventions):
+
+```python
+import os
+import socket
+
+# Supervisor binds 127.0.0.1:8000 and validates the auth secret.
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 8000))
+s.listen(128)
+os.set_inheritable(s.fileno(), True)
+
+# Pass the bound fd to rapid-mlx as fd 3 (the systemd / launchd
+# convention for the first inherited socket).
+os.dup2(s.fileno(), 3)
+os.execvpe(
+    "rapid-mlx",
+    [
+        "rapid-mlx", "serve", "qwen3.5-4b-4bit",
+        "--api-key", os.environ["RAPID_MLX_API_KEY"],
+        "--listen-fd", "3",
+    ],
+    {**os.environ, "LISTEN_FDS": "1"},
+)
+```
+
+Validation: `--listen-fd` accepts integers in `[3, 1023]`. Stdio fds
+(0/1/2), negatives, and out-of-range values are rejected with `rc=2`
+at the argparse layer.
+
 ### Recommended Settings
 
 For production with 50+ concurrent users:
