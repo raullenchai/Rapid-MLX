@@ -150,6 +150,81 @@ def _earliest_stop_index(text: str, stops: list[str]) -> int:
     return best
 
 
+def _break_mlx_vlm_eos_token_id_aliasing(model: Any, processor: Any) -> None:
+    """Break a list-aliasing bug in mlx-vlm 0.6.x that causes
+    ``stream_diffusion_generate`` to leak GBs of process RSS per
+    request after request ~22 (issue #698, RCA finalised here).
+
+    Root cause (Blaizzy/mlx-vlm upstream, vendored at
+    ``site-packages/mlx_vlm/utils.py``):
+
+      * ``load_processor`` constructs a ``StoppingCriteria`` from
+        ``tokenizer.eos_token_id``. ``StoppingCriteria.__init__``
+        STORES the list by reference, not by copy
+        (utils.py:1890 ``self.eos_token_ids = eos_token_ids``).
+      * ``model.config.generation_config["eos_token_id"]`` is the
+        SAME list object that ``tokenizer.eos_token_id`` was built
+        from (HuggingFace loader path), so we end up with a triple
+        alias:
+            stopping_criteria.eos_token_ids
+            is generation_config["eos_token_id"]
+            is tokenizer.eos_token_id     # for some checkpoints
+      * Every call to ``stream_diffusion_generate`` does
+        ``tokenizer.stopping_criteria.add_eos_token_ids(
+        generation_config["eos_token_id"])`` (diffusion.py:615).
+      * ``add_eos_token_ids`` extends ``self.eos_token_ids`` with
+        the items in ``new_eos_token_ids`` — but the two are the
+        SAME list, so it extends a list with itself, doubling its
+        length on every request.
+
+    We measured this directly: ``len(eos_token_ids)`` goes
+    3 → 6 → 12 → 24 → 48 … on the first 4 calls. After 22 requests
+    the list crosses 12 M ints (~3 GB Python heap), which is
+    exactly the +200, +500, +700, +1500, +3800 MB / request
+    explosion we see in the in-process probe AND in the production
+    soak. ``mx.metal.get_active_memory()`` stays flat the whole
+    time — the leak is pure Python heap, which is why
+    ``gc.collect()`` and ``mx.clear_cache()`` made zero difference
+    (the list is reachable; no cycle to break).
+
+    Fix: copy both lists once, at engine-load time. Aliasing is
+    now broken — subsequent ``add_eos_token_ids(generation_config
+    ["eos_token_id"])`` calls extend our private list with the
+    items of the (also now-private) generation_config list, so the
+    growth becomes linear at ~3 ints/request (~24 KB after 1000
+    requests, indistinguishable from noise) instead of doubling.
+
+    An upstream fix should land in mlx-vlm itself (change line
+    1890 to ``self.eos_token_ids = list(eos_token_ids)``); when
+    rapid-mlx's mlx-vlm floor moves past the fixed release this
+    workaround can be deleted.
+    """
+    try:
+        tokenizer = getattr(processor, "tokenizer", processor)
+        criteria = getattr(tokenizer, "stopping_criteria", None)
+        if criteria is not None and isinstance(criteria.eos_token_ids, list):
+            criteria.eos_token_ids = list(criteria.eos_token_ids)
+        gen_cfg = getattr(getattr(model, "config", None), "generation_config", None)
+        # ``generation_config`` is a dict on Gemma 4 (Blaizzy ports use a
+        # raw dict, not the transformers GenerationConfig object). Guard
+        # generically so we don't blow up on a checkpoint that ships it
+        # as None or as a class instance.
+        if isinstance(gen_cfg, dict):
+            eos = gen_cfg.get("eos_token_id")
+            if isinstance(eos, list):
+                gen_cfg["eos_token_id"] = list(eos)
+    except BaseException:  # noqa: BLE001
+        # The workaround is defensive — if the structure ever
+        # changes upstream and our attribute walk fails, log nothing
+        # and let load continue. The worst case is the old leak
+        # behaviour comes back, NOT a crashed load.
+        logger.exception(
+            "DiffusionEngine: failed to break mlx-vlm eos_token_id aliasing; "
+            "the leak workaround for issue #698 is now inactive. "
+            "Continuing load anyway — model will still work."
+        )
+
+
 @dataclass(frozen=True)
 class DiffusionGenerationConfig:
     """Sampling / decoding knobs for the diffusion lane.
@@ -628,6 +703,7 @@ class DiffusionEngine(BaseEngine):
                     "DiffusionEngine only supports DiffusionGemma-family "
                     "block-canvas checkpoints."
                 )
+            _break_mlx_vlm_eos_token_id_aliasing(model, processor)
             self._model = model
             self._processor = processor
             self._loaded = True

@@ -3273,3 +3273,178 @@ class TestGeneratorClosedOnEveryExit:
             "generator yielded items despite pre-cancel — _run_generator "
             "did NOT short-circuit before stream_diffusion_generate"
         )
+
+
+class TestEosTokenIdAliasingWorkaround:
+    """Issue #698 root cause (RCA round 3).
+
+    mlx-vlm 0.6.x ``StoppingCriteria.__init__`` stores the
+    ``eos_token_ids`` list BY REFERENCE (utils.py:1890). The same
+    underlying list is also referenced by
+    ``model.config.generation_config["eos_token_id"]``. Then
+    ``stream_diffusion_generate`` line 615 calls
+    ``add_eos_token_ids(generation_config["eos_token_id"])`` which
+    EXTENDS ``self.eos_token_ids`` with the items of the SAME list —
+    so the list doubles on every request. After 22 requests:
+    3 → 6 → 12 → 24 → 48 → … → 12 581 376 ints (~3 GB heap).
+
+    rapid-mlx works around this defensively in
+    ``_break_mlx_vlm_eos_token_id_aliasing`` (called from
+    ``_worker_loop`` right after ``load()``): both lists are
+    shallow-copied so they are no longer the same object. Subsequent
+    ``add_eos_token_ids`` calls still extend, but they extend a
+    private list with the (small, fixed-size) generation_config
+    list — linear growth at ~3 ints/request, harmless.
+
+    These tests pin the workaround. Without them, a future refactor
+    of the loader path could silently re-introduce the aliasing and
+    we'd ship the regression.
+    """
+
+    def _wire_aliased_eos_tokens(
+        self, monkeypatch: pytest.MonkeyPatch, shared_eos: list[int]
+    ) -> Any:
+        """Install the mlx-vlm mocks but with the alias chain wired
+        the same way mlx-vlm itself wires it (one list reachable from
+        both ``stopping_criteria.eos_token_ids`` and
+        ``model.config.generation_config["eos_token_id"]``).
+
+        Returns the engine ready to load (caller invokes ``_load_blocking``)
+        plus the shared list reference for post-load identity checks.
+        """
+        _install_mlx_vlm_mock(monkeypatch)
+
+        # Patch the mocked ``load`` so it returns a model/processor
+        # pair that exhibits the upstream aliasing bug. Without this,
+        # the test couldn't catch a regression in the workaround
+        # because the default fakes never aliased the lists.
+        mlx_vlm_utils = sys.modules["mlx_vlm.utils"]
+
+        class _FakeStoppingCriteria:
+            def __init__(self, ids: list[int]) -> None:
+                self.eos_token_ids = ids  # alias on purpose
+
+        class _AliasingTokenizer:
+            def __init__(self, ids: list[int]) -> None:
+                self.eos_token_ids = ids
+                self.stopping_criteria = _FakeStoppingCriteria(ids)
+
+            def encode(self, text: str) -> list[int]:
+                return [ord(c) % 256 for c in text]
+
+            def apply_chat_template(self, *_a: Any, **_k: Any) -> str:
+                return "templated"
+
+        class _AliasingProcessor:
+            def __init__(self, ids: list[int]) -> None:
+                self.tokenizer = _AliasingTokenizer(ids)
+
+        class _AliasingConfig:
+            def __init__(self, ids: list[int]) -> None:
+                self.generation_config = {"eos_token_id": ids}
+                self.canvas_length = 256
+                self.eos_token_id = ids
+
+        class _AliasingModel:
+            def __init__(self, ids: list[int]) -> None:
+                self.config = _AliasingConfig(ids)
+
+        def _aliasing_load(_hf_path: str) -> tuple[Any, Any]:
+            return _AliasingModel(shared_eos), _AliasingProcessor(shared_eos)
+
+        mlx_vlm_utils.load = _aliasing_load  # type: ignore[attr-defined]
+        return _aliasing_load
+
+    def test_load_breaks_eos_token_ids_aliasing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After load, ``stopping_criteria.eos_token_ids`` MUST be a
+        different list object from
+        ``model.config.generation_config["eos_token_id"]``. If they
+        are the same object, the upstream mlx-vlm bug doubles the
+        list on every request (issue #698)."""
+        shared_eos = [1, 106, 50]
+        self._wire_aliased_eos_tokens(monkeypatch, shared_eos)
+
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        sc_eos = engine._processor.tokenizer.stopping_criteria.eos_token_ids
+        gen_cfg_eos = engine._model.config.generation_config["eos_token_id"]
+
+        assert sc_eos is not gen_cfg_eos, (
+            "engine load did NOT break the aliasing between "
+            "stopping_criteria.eos_token_ids and "
+            "generation_config['eos_token_id']; mlx-vlm's "
+            "add_eos_token_ids will double the list per request "
+            "(issue #698 regression)"
+        )
+        assert sc_eos is not shared_eos, (
+            "stopping_criteria.eos_token_ids is STILL the originally-"
+            "passed list; workaround did not copy"
+        )
+        assert gen_cfg_eos is not shared_eos, (
+            "generation_config['eos_token_id'] is STILL the originally-"
+            "passed list; workaround did not copy"
+        )
+        # Content must be preserved — we don't want the copy to drop
+        # legitimately-configured EOS tokens.
+        assert sc_eos == shared_eos == gen_cfg_eos == [1, 106, 50], (
+            f"copy mutated content: sc={sc_eos} gen_cfg={gen_cfg_eos} "
+            f"shared={shared_eos}"
+        )
+
+    def test_simulated_add_eos_does_not_double_after_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After the workaround breaks the alias, repeated calls
+        that mimic ``stream_diffusion_generate``'s line 615
+        (``add_eos_token_ids(generation_config['eos_token_id'])``)
+        must produce LINEAR growth (3 ints/call), not exponential.
+
+        Without the workaround the same pattern doubles
+        (3 → 6 → 12 → 24 → 48). With it: 3 → 6 → 9 → 12 → 15 (linear).
+        """
+        shared_eos = [1, 106, 50]
+        self._wire_aliased_eos_tokens(monkeypatch, shared_eos)
+
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        sc = engine._processor.tokenizer.stopping_criteria
+        gen_cfg_eos = engine._model.config.generation_config["eos_token_id"]
+
+        # Simulate mlx-vlm's actual extend pattern from
+        # stream_diffusion_generate line 615.
+        for _ in range(5):
+            sc.eos_token_ids.extend(gen_cfg_eos)
+
+        assert len(sc.eos_token_ids) == 3 + 5 * 3, (
+            f"len(sc.eos_token_ids)={len(sc.eos_token_ids)} after 5 simulated "
+            f"extend calls; expected linear growth to {3 + 5 * 3}. "
+            f"Exponential growth here means the aliasing workaround "
+            f"regressed (issue #698)."
+        )
+
+    def test_workaround_no_op_on_int_eos_token_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Some checkpoints store ``eos_token_id`` as a plain int
+        (not a list). The workaround must skip those without crashing
+        — there's nothing to copy and no alias to break."""
+        _install_mlx_vlm_mock(monkeypatch)
+        # Default fakes already use ``eos_token_id = 7`` (an int)
+        # so the existing happy path covers this case. Just confirm
+        # that load succeeds and the engine becomes ready.
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+        assert engine._loaded, (
+            "engine failed to load when generation_config has a scalar "
+            "eos_token_id; the workaround must tolerate non-list cases"
+        )
