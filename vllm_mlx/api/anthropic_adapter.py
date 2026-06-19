@@ -161,6 +161,8 @@ def _resolve_reasoning_max_tokens(request: AnthropicRequest) -> int | None:
 def openai_to_anthropic(
     response: ChatCompletionResponse,
     model: str,
+    *,
+    reasoning_enabled: bool = True,
 ) -> AnthropicResponse:
     """
     Convert an OpenAI Chat Completions response to Anthropic Messages API format.
@@ -168,6 +170,14 @@ def openai_to_anthropic(
     Args:
         response: OpenAI ChatCompletionResponse
         model: Model name for the response
+        reasoning_enabled: Whether the served alias is configured with a
+            ``reasoning_parser`` (i.e. structurally capable of producing
+            reasoning text). When False, the ``thinking`` block is never
+            emitted regardless of what ``reasoning_content`` carries —
+            matches Anthropic's public API where non-extended-thinking
+            models never emit a ``thinking`` block. Defaults to True so
+            external callers that don't pass the flag keep their existing
+            behavior (pre-issue #702).
 
     Returns:
         Anthropic Messages API response
@@ -176,24 +186,57 @@ def openai_to_anthropic(
     choice = response.choices[0] if response.choices else None
 
     if choice:
+        # Issue #702: emit a ``thinking`` block iff the alias is
+        # reasoning-capable AND the reasoning text is genuinely distinct
+        # from the answer text.
+        #
+        # Without this gate, two failure modes leak into Anthropic clients:
+        #   (1) An alias with ``reasoning_parser: null`` whose OpenAI-side
+        #       response happens to carry ``reasoning_content`` would
+        #       still get a ``thinking`` block. Anthropic's public API
+        #       never emits one for non-extended-thinking models, so any
+        #       client branching on ``content[0].type == "thinking"``
+        #       mis-detects capability.
+        #   (2) The ``_rescue_silent_drop_from_reasoning`` helper (#569)
+        #       deliberately promotes a stuck reasoning trace into
+        #       ``content`` so the OpenAI-side message isn't silently
+        #       empty. The adapter has no other way to know
+        #       ``reasoning_content == content`` is a rescue artifact, so
+        #       it would dutifully emit BOTH blocks carrying the same
+        #       string — Claude Code / claude-cli / langchain-anthropic
+        #       render the same paragraph twice.
+        #
+        # Both cases collapse to "emit text only" under the same
+        # predicate: the reasoning channel must be enabled AND the
+        # reasoning bytes must differ from the content bytes (and be
+        # non-empty). When the predicate fails we still surface the
+        # answer as ``text`` — silent drop is the worse failure mode
+        # (#569).
+        reasoning_text = choice.message.reasoning_content
+        text = choice.message.content
+        emit_thinking = (
+            reasoning_enabled
+            and bool(reasoning_text)
+            and reasoning_text != text
+        )
         # Add thinking block FIRST so it appears before the answer text,
         # matching Anthropic's extended-thinking SDK convention. Without
         # this block ``<think>...</think>`` reasoning would silently
         # disappear from the non-streaming response — issue #413.
-        if choice.message.reasoning_content:
+        if emit_thinking:
             content.append(
                 AnthropicResponseContentBlock(
                     type="thinking",
-                    thinking=choice.message.reasoning_content,
+                    thinking=reasoning_text,
                 )
             )
 
         # Add text content
-        if choice.message.content:
+        if text:
             content.append(
                 AnthropicResponseContentBlock(
                     type="text",
-                    text=choice.message.content,
+                    text=text,
                 )
             )
 

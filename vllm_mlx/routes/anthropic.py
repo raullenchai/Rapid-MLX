@@ -342,8 +342,20 @@ async def create_anthropic_message(
             usage=_build_usage(output, reasoning_text),
         )
 
+        # Issue #702: signal the alias's reasoning capability to the
+        # adapter so it can suppress the ``thinking`` content block when
+        # the served alias has ``reasoning_parser: null`` in
+        # ``aliases.json``. Without this gate, an OpenAI-side response
+        # that happens to carry ``reasoning_content`` (or the
+        # ``_rescue_silent_drop_from_reasoning`` duplication into
+        # ``content`` above) would emit a ``thinking`` block on a model
+        # that Anthropic's public API would never produce one for,
+        # breaking client capability detection and rendering the same
+        # paragraph twice.
         anthropic_response = openai_to_anthropic(
-            openai_response, cfg.model_name or anthropic_request.model
+            openai_response,
+            cfg.model_name or anthropic_request.model,
+            reasoning_enabled=cfg.reasoning_parser is not None,
         )
         return Response(
             content=anthropic_response.model_dump_json(exclude_none=True),

@@ -604,3 +604,81 @@ class TestOpenaiToAnthropic:
         resp = self._make_response(content="hi", reasoning_content=None)
         result = openai_to_anthropic(resp, "default")
         assert all(b.type != "thinking" for b in result.content)
+
+    def test_reasoning_disabled_omits_thinking_block(self):
+        """Issue #702: when the served alias has ``reasoning_parser:
+        null`` in ``aliases.json``, the route passes
+        ``reasoning_enabled=False`` to the adapter. The adapter must
+        suppress the ``thinking`` block regardless of what
+        ``reasoning_content`` carries — Anthropic's public API never
+        emits one for non-extended-thinking models, so emitting it
+        would break client capability detection.
+        """
+        resp = self._make_response(
+            content="hello world",
+            reasoning_content="this trace must not leak",
+        )
+        result = openai_to_anthropic(resp, "default", reasoning_enabled=False)
+        # No thinking block at all.
+        assert all(b.type != "thinking" for b in result.content)
+        # Text block survives.
+        text_blocks = [b for b in result.content if b.type == "text"]
+        assert len(text_blocks) == 1
+        assert text_blocks[0].text == "hello world"
+
+    def test_reasoning_equals_content_suppresses_thinking_block(self):
+        """Issue #702: ``_rescue_silent_drop_from_reasoning`` (#569)
+        deliberately promotes a stuck reasoning trace into ``content``
+        so the OpenAI-side message isn't silently empty. The Anthropic
+        adapter has no other way to know
+        ``reasoning_content == content`` is a rescue artifact, so it
+        would dutifully emit BOTH blocks carrying the same string.
+        Claude Code / claude-cli / langchain-anthropic then render the
+        same paragraph twice. Suppress the ``thinking`` block in that
+        case and surface only ``text``.
+        """
+        duplicated = "I think this is the answer."
+        resp = self._make_response(
+            content=duplicated,
+            reasoning_content=duplicated,
+        )
+        # ``reasoning_enabled=True`` matches a thinking-capable alias —
+        # the dedup guard must fire even on those, because the rescue
+        # path runs for thinking-capable aliases too.
+        result = openai_to_anthropic(resp, "default", reasoning_enabled=True)
+        assert all(b.type != "thinking" for b in result.content)
+        text_blocks = [b for b in result.content if b.type == "text"]
+        assert len(text_blocks) == 1
+        assert text_blocks[0].text == duplicated
+
+    def test_reasoning_enabled_distinct_reasoning_still_emits_thinking(self):
+        """Regression guard for #702: a genuinely thinking-capable
+        alias that produced a real thought trace (distinct from the
+        answer) must still get its ``thinking`` block.
+        """
+        resp = self._make_response(
+            content="Final answer.",
+            reasoning_content="Let me think.",
+        )
+        result = openai_to_anthropic(resp, "default", reasoning_enabled=True)
+        assert len(result.content) == 2
+        assert result.content[0].type == "thinking"
+        assert result.content[0].thinking == "Let me think."
+        assert result.content[1].type == "text"
+        assert result.content[1].text == "Final answer."
+
+    def test_reasoning_enabled_default_preserves_legacy_behavior(self):
+        """``reasoning_enabled`` defaults to True so external callers
+        that don't pass the kwarg (older tests, third-party imports)
+        keep their existing pre-#702 behavior. Only the explicit
+        equality dedup gate fires.
+        """
+        # Distinct reasoning + content → thinking block still appears
+        # without passing the kwarg.
+        resp = self._make_response(
+            content="Final answer.",
+            reasoning_content="Let me think.",
+        )
+        result = openai_to_anthropic(resp, "default")  # kwarg omitted
+        assert any(b.type == "thinking" for b in result.content)
+        assert any(b.type == "text" for b in result.content)
