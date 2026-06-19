@@ -366,9 +366,41 @@ class MLLMBatchGenerator:
                 f"MLLMBatchGenerator: Vision cache enabled (size={vision_cache_size})"
             )
 
-        # Generation stream
+        # Generation stream.
+        #
+        # Use the WORKER THREAD's default stream rather than a freshly
+        # created ``mx.new_stream(...)``. mlx-lm 0.31.3+ tags every
+        # ``mx.array`` with the stream it was produced on, and a stream
+        # created by ``mx.new_stream`` is bound to the caller thread —
+        # any other thread that later tries to materialise (lazy
+        # ``mx.eval`` / ``np.array(...)``) one of those arrays crashes
+        # with ``There is no Stream(gpu, N) in current thread``.
+        #
+        # That crash path went live the moment PR #716 plumbed
+        # ``MLLMBatchResponse.logprobs`` through to the route layer:
+        # the per-step logprob slice was produced inside ``with
+        # mx.stream(MLLMBatchGenerator._stream):`` blocks on the
+        # ``mllm-step`` worker, then the route handler (asyncio loop
+        # thread) called ``np.array(logprobs_array)`` from
+        # ``service.helpers._extract_token_logprob`` — and the loop
+        # thread does not own ``Stream(gpu, 4)``. The server worker
+        # aborted on every ``logprobs=true`` chat completion against
+        # qwen3-vl-2b-4bit / gemma-3n-e2b-4bit / gemma-3n-e4b-4bit
+        # (0.7.41 hotfix candidate).
+        #
+        # The text scheduler avoids this by running on a dedicated
+        # ``mlx-step`` worker initialised via ``_init_mlx_step_thread``
+        # (engine_core.py), which adopts
+        # ``mx.default_stream(mx.default_device())`` — the process-wide
+        # default that every thread can materialise against. Mirror
+        # that here: the MLLM worker (``mllm-step``) was already
+        # initialised by the same ``_init_mlx_step_thread`` callback
+        # at executor construction, so its default stream is the same
+        # process-wide default the model weights / KV cache were
+        # tagged with. Logprob arrays produced under this default
+        # round-trip cleanly to the route handler thread.
         if MLLMBatchGenerator._stream is None:
-            MLLMBatchGenerator._stream = mx.new_stream(mx.default_device())
+            MLLMBatchGenerator._stream = mx.default_stream(mx.default_device())
 
         # Memory management
         self._old_wired_limit = None
@@ -922,6 +954,19 @@ class MLLMBatchGenerator:
         y, logprobs = batch.y, batch.logprobs
         batch.y, batch.logprobs = self._step(y[:, None], batch.cache, batch.requests)
         mx.async_eval(batch.y, batch.logprobs)
+
+        # Force evaluation of the OUTGOING per-step logprobs on the
+        # worker thread before they are handed off to ``MLLMBatchResponse``
+        # (and consumed by the route handler thread for ``np.array`` /
+        # top-k extraction). ``mx.async_eval`` above only queues work —
+        # any residual laziness on the response slice would otherwise be
+        # resolved on the consumer thread, which under mlx-lm 0.31.3+
+        # thread-local-stream rules crashes with ``There is no Stream(...)
+        # in current thread``. Pairs with the worker-default-stream
+        # adoption in ``__init__`` so logprobs survive a cross-thread
+        # ``np.array(...)`` even if ``MLLMBatchGenerator._stream`` is
+        # ever re-pointed.
+        mx.eval(logprobs)
 
         y = y.tolist()
         toc = time.perf_counter()
