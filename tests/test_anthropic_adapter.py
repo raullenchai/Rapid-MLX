@@ -682,3 +682,20 @@ class TestOpenaiToAnthropic:
         result = openai_to_anthropic(resp, "default")  # kwarg omitted
         assert any(b.type == "thinking" for b in result.content)
         assert any(b.type == "text" for b in result.content)
+
+    def test_whitespace_only_reasoning_omits_thinking_block(self):
+        """Codex r1 NIT on #702: whitespace-only ``reasoning_content``
+        (``"   \\n"``) must NOT open a leading ``thinking`` block
+        — Claude Code would render it as a blank thought. Mirrors the
+        ``_rescue_silent_drop_from_reasoning`` whitespace guard so the
+        two paths agree on what "semantically empty reasoning" means.
+        """
+        resp = self._make_response(
+            content="real answer",
+            reasoning_content="   \n  \t  ",
+        )
+        result = openai_to_anthropic(resp, "default", reasoning_enabled=True)
+        assert all(b.type != "thinking" for b in result.content)
+        text_blocks = [b for b in result.content if b.type == "text"]
+        assert len(text_blocks) == 1
+        assert text_blocks[0].text == "real answer"

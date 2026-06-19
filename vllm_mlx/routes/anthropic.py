@@ -47,6 +47,7 @@ from ..service.helpers import (
     _rescue_silent_drop_from_reasoning,
     _resolve_enable_thinking,
     _resolve_max_tokens,
+    _resolve_reasoning_enabled,
     _resolve_temperature,
     _resolve_top_p,
     _validate_model_name,
@@ -352,10 +353,17 @@ async def create_anthropic_message(
         # that Anthropic's public API would never produce one for,
         # breaking client capability detection and rendering the same
         # paragraph twice.
+        #
+        # Resolve via ``_resolve_reasoning_enabled`` so the predicate
+        # consults the per-request registry entry first (multi-model
+        # mode) and only falls back to the global ``cfg.reasoning_parser``
+        # singleton. Codex r1 BLOCKING on PR #705 — global-only lookup
+        # would let the duplicate leak when a non-thinking alias is
+        # served alongside a thinking default.
         anthropic_response = openai_to_anthropic(
             openai_response,
             cfg.model_name or anthropic_request.model,
-            reasoning_enabled=cfg.reasoning_parser is not None,
+            reasoning_enabled=_resolve_reasoning_enabled(anthropic_request.model),
         )
         return Response(
             content=anthropic_response.model_dump_json(exclude_none=True),
@@ -500,6 +508,46 @@ async def _stream_anthropic_messages(
     resolved_thinking = _resolve_enable_thinking(openai_request)
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
+
+    # Issue #702: per-request alias-level reasoning capability gate.
+    # When the served alias declares ``reasoning_parser: null`` in
+    # ``aliases.json``, the streaming path must NEVER open a
+    # ``thinking`` content block — Anthropic's public API doesn't
+    # emit one for non-extended-thinking models, so any client that
+    # branches on ``content_block.type == "thinking"`` would
+    # mis-detect capability. Resolved through
+    # ``_resolve_reasoning_enabled`` so it consults the per-request
+    # registry entry first (multi-model mode) instead of the
+    # process-global ``cfg.reasoning_parser_name`` (codex r1 BLOCKING
+    # on PR #705). Applied via ``_gate_thinking_pieces`` below to
+    # every place this function constructs ``("thinking", ...)``
+    # pieces: channel-routed (engine OutputRouter), reasoning-parser
+    # delta split, and the raw ``<think>`` think_router heuristic.
+    # When the gate fires the reasoning bytes are demoted to a
+    # ``text`` piece so the assistant turn still surfaces the model's
+    # output (silent drop is the worse failure mode, #569).
+    _reasoning_enabled = _resolve_reasoning_enabled(anthropic_request.model)
+
+    def _gate_thinking_pieces(
+        pieces: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """Suppress ``thinking`` pieces when the alias is non-thinking.
+
+        Returns a new list where every ``("thinking", text)`` piece is
+        rewritten to ``("text", text)`` when ``_reasoning_enabled`` is
+        False. The rewrite preserves order so the SSE block stream
+        still matches what the model actually emitted; downstream
+        ``_emit_content_pieces`` merges consecutive same-type pieces
+        into a single content block. No-op (return input unchanged)
+        when the alias IS reasoning-capable, so this is a zero-cost
+        wrapper on the happy path.
+        """
+        if _reasoning_enabled:
+            return pieces
+        return [
+            ("text", text) if block_type == "thinking" else (block_type, text)
+            for block_type, text in pieces
+        ]
 
     # Emit message_start
     message_start = {
@@ -710,8 +758,22 @@ async def _stream_anthropic_messages(
                         delta_text[:64],
                     )
                 if pieces_routed:
+                    # Issue #702: gate thinking-piece emission on the
+                    # alias's reasoning capability. ``OutputRouter`` is
+                    # purely token-based and would surface reasoning
+                    # for ANY alias whose tokenizer carries
+                    # ``<|channel>thought`` / harmony analysis tokens
+                    # — including aliases that declared
+                    # ``reasoning_parser: null`` (capability opt-out
+                    # for a tokenizer that nominally supports
+                    # channels). Demote to text so the model output
+                    # still surfaces and clients don't see a
+                    # ``thinking`` block on a non-extended-thinking
+                    # alias.
                     events, current_block_type, block_index = _emit_content_pieces(
-                        pieces_routed, current_block_type, block_index
+                        _gate_thinking_pieces(pieces_routed),
+                        current_block_type,
+                        block_index,
                     )
                     for event in events:
                         yield event
@@ -859,7 +921,9 @@ async def _stream_anthropic_messages(
                             pieces.append(("text", filtered))
                 if pieces:
                     events, current_block_type, block_index = _emit_content_pieces(
-                        pieces, current_block_type, block_index
+                        _gate_thinking_pieces(pieces),
+                        current_block_type,
+                        block_index,
                     )
                     for event in events:
                         yield event
@@ -877,7 +941,9 @@ async def _stream_anthropic_messages(
                     continue
                 pieces = think_router.process(filtered)
                 events, current_block_type, block_index = _emit_content_pieces(
-                    pieces, current_block_type, block_index
+                    _gate_thinking_pieces(pieces),
+                    current_block_type,
+                    block_index,
                 )
                 for event in events:
                     yield event
@@ -893,7 +959,9 @@ async def _stream_anthropic_messages(
         else:
             pieces_flush = think_router.process(remaining)
         events, current_block_type, block_index = _emit_content_pieces(
-            pieces_flush, current_block_type, block_index
+            _gate_thinking_pieces(pieces_flush),
+            current_block_type,
+            block_index,
         )
         for event in events:
             yield event
@@ -902,7 +970,9 @@ async def _stream_anthropic_messages(
         flush_pieces = think_router.flush()
         if flush_pieces:
             events, current_block_type, block_index = _emit_content_pieces(
-                flush_pieces, current_block_type, block_index
+                _gate_thinking_pieces(flush_pieces),
+                current_block_type,
+                block_index,
             )
             for event in events:
                 yield event

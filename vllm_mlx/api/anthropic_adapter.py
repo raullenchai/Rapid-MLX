@@ -209,14 +209,20 @@ def openai_to_anthropic(
         # Both cases collapse to "emit text only" under the same
         # predicate: the reasoning channel must be enabled AND the
         # reasoning bytes must differ from the content bytes (and be
-        # non-empty). When the predicate fails we still surface the
-        # answer as ``text`` — silent drop is the worse failure mode
-        # (#569).
+        # non-empty AND non-whitespace). When the predicate fails we
+        # still surface the answer as ``text`` — silent drop is the
+        # worse failure mode (#569). The whitespace-only guard mirrors
+        # ``_rescue_silent_drop_from_reasoning`` which treats
+        # ``"   \n"`` as semantically empty — without this gate the
+        # adapter would emit a leading ``thinking`` block of pure
+        # whitespace that Claude Code surfaces as a blank thought.
+        # Codex r1 NIT on PR #705.
         reasoning_text = choice.message.reasoning_content
         text = choice.message.content
         emit_thinking = (
             reasoning_enabled
             and bool(reasoning_text)
+            and reasoning_text.strip() != ""
             and reasoning_text != text
         )
         # Add thinking block FIRST so it appears before the answer text,

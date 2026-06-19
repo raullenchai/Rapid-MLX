@@ -933,6 +933,37 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
     return cfg.engine
 
 
+def _resolve_reasoning_enabled(model_name: str | None) -> bool:
+    """Return whether the selected alias is reasoning-capable.
+
+    Issue #702: the Anthropic-compat route gates the ``thinking``
+    content block on this predicate so that a non-thinking alias (i.e.
+    one whose ``aliases.json`` entry declares ``reasoning_parser:
+    null``) never emits one regardless of what the OpenAI-side
+    response carries.
+
+    In multi-model mode (``cfg.model_registry`` set) the served alias
+    can be a per-request choice rather than the process-wide default,
+    so consult the registry entry first. Fall back to the global
+    ``cfg.reasoning_parser`` / ``cfg.reasoning_parser_name`` pair
+    (single-model mode) when registry lookup fails — both fields are
+    populated together by ``server.load_model`` so either being set
+    means "this serve has a reasoning parser configured". Accept
+    either to keep test fixtures that only set
+    ``cfg.reasoning_parser_name`` working unchanged. Codex r1
+    BLOCKING on PR #705.
+    """
+    cfg = get_config()
+    if cfg.model_registry:
+        try:
+            entry = cfg.model_registry.get_entry(model_name)
+        except KeyError:
+            entry = None
+        if entry is not None:
+            return bool(getattr(entry, "reasoning_parser", None))
+    return cfg.reasoning_parser is not None or bool(cfg.reasoning_parser_name)
+
+
 def _validate_model_name(request_model: str) -> None:
     """Validate that the request model name matches a served model."""
     if request_model is None:
