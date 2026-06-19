@@ -743,6 +743,78 @@ class TestMultiBlockThinkStreaming:
         assert reasoning == "reasoning"
         assert content == "answer"
 
+    def test_post_close_second_opener_straddles_sse_boundary(self):
+        """Codex r1 BLOCKING on PR #722: the second ``<think>``
+        opener split across SSE chunk boundaries (``A<thi`` then
+        ``nk>R``) AFTER the first close was not recognised by the
+        multi-block router because it scanned from ``prev_len``
+        only — the held suffix from the prior chunk was missed
+        and ``nk>R`` leaked as content with the closing tag
+        bytes on the wire. Fix backs the scan window up by
+        ``_held_tag_suffix_len`` so straddles span the boundary
+        correctly. Symmetric to the existing single-block SSE
+        boundary test."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        # First block closes, then content, then a SECOND
+        # ``<think>`` opener split as ``<thi`` / ``nk>``.
+        reasoning, content = self._run_stream(
+            parser,
+            [
+                "<think>",
+                "R1",
+                "</think>",
+                "answer",
+                "<thi",  # opener withheld
+                "nk>",  # opener completes
+                "R2",
+                "</think>",
+                "tail",
+            ],
+        )
+        assert "<think>" not in content, (
+            f"split second-opener leaked into content: {content!r}"
+        )
+        assert "<thi" not in content, (
+            f"partial tag bytes leaked into content: {content!r}"
+        )
+        assert "</think>" not in content
+        assert reasoning == "R1R2"
+        assert content == "answertail"
+
+    def test_post_close_second_closer_straddles_sse_boundary(self):
+        """Closer ``</think>`` split across the SSE boundary in a
+        multi-block stream — must not leak the partial closer
+        bytes into either channel."""
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        reasoning, content = self._run_stream(
+            parser,
+            [
+                "<think>",
+                "R1",
+                "</think>",
+                "answer",
+                "<think>",
+                "R2",
+                "</thi",  # closer withheld
+                "nk>",  # closer completes
+                "tail",
+            ],
+        )
+        assert "<think>" not in content
+        assert "</think>" not in content
+        assert "</thi" not in content
+        assert "</thi" not in reasoning
+        assert reasoning == "R1R2"
+        assert content == "answertail"
+
 
 class TestResidualThinkTagSweep:
     """Multi-block ``<think>`` sweep (2026-06-19 round-1 fuzz repro).

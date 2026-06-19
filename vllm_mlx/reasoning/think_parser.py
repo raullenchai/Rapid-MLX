@@ -411,7 +411,17 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 # are correctly split instead of leaking the
                 # literal tag bytes into ``content`` via the prior
                 # "all delta = content" fallback.
-                self._held_tag_suffix_len = 0
+                #
+                # Codex r1 BLOCKING on PR #722: do NOT clear
+                # ``_held_tag_suffix_len`` here. The held suffix
+                # from the prior chunk encodes a partial tag that
+                # may STRADDLE into this delta (e.g. prev ended
+                # with ``A<thi``, delta is ``nk>R``) — the router
+                # needs to see the held value to back its scan
+                # window up by that many bytes and recognise the
+                # completed straddle. The router resets the held
+                # value itself based on this delta's trailing
+                # partial-tag suffix.
                 return self._handle_multi_block_after_close(
                     previous_text, current_text, delta_text
                 )
@@ -608,24 +618,46 @@ class BaseThinkingReasoningParser(ReasoningParser):
         reasoning_parts: list[str] = []
         content_parts: list[str] = []
         cursor = prev_len
-        # Build a sorted list of all tag occurrences in current_text.
-        # We only need the ones that fall within the delta range
-        # [prev_len, len(current_text)] — earlier tags affect phase
-        # accounting but their bytes were already emitted on prior
-        # deltas. Include tags whose START is at or after ``prev_len``.
+        # Codex r1 BLOCKING fix: backtrack the scan window by the
+        # ``_held_tag_suffix_len`` so a tag that STRADDLES the SSE
+        # boundary (e.g. ``previous_text`` ends with ``<thi``,
+        # ``delta_text`` opens with ``nk>R``) is recognised as a
+        # complete tag at position ``prev_len - prev_held``. Without
+        # this backtrack, the scan from ``prev_len`` misses the
+        # straddle and the ``nk>R`` bytes fall through to the
+        # trailing-emit path as raw content, leaking the closing tag
+        # bytes onto the wire — symmetric to the
+        # ``start_in_prev`` straddle case the single-block path
+        # already handles. The held suffix bytes were withheld on
+        # the prior delta and have NOT been emitted, so including
+        # them in the scan is safe (they're not double-counted).
+        prev_held = self._held_tag_suffix_len
+        scan_from = max(0, prev_len - prev_held)
+        # When a straddle is recognised, ``cursor`` also needs to
+        # back up to ``scan_from`` so the tag bytes (including the
+        # held prefix from previous_text) are dropped. The
+        # emit-by-position bookkeeping naturally handles this
+        # because the inter-tag segments start from ``cursor`` and
+        # we advance ``cursor`` past each tag.
+        cursor = scan_from
+        # Build a sorted list of all tag occurrences in current_text
+        # from ``scan_from`` onwards.
         tags: list[tuple[int, int, str]] = []
-        # ``find`` from prev_len so we never emit bytes already shipped.
-        idx = current_text.find(self.start_token, prev_len)
+        idx = current_text.find(self.start_token, scan_from)
         while idx != -1:
             tags.append((idx, len(self.start_token), "open"))
             idx = current_text.find(self.start_token, idx + 1)
-        idx = current_text.find(self.end_token, prev_len)
+        idx = current_text.find(self.end_token, scan_from)
         while idx != -1:
             tags.append((idx, len(self.end_token), "close"))
             idx = current_text.find(self.end_token, idx + 1)
         tags.sort(key=lambda t: t[0])
         # Phase at cursor — start with the phase that was active at
-        # the end of previous_text.
+        # the end of previous_text MINUS the held suffix region
+        # (which we've now folded back into the scan, so its
+        # contribution to the prev_n_open/prev_n_close counts
+        # — always zero because a partial-tag prefix is strictly
+        # shorter than the tag — is unchanged).
         phase = "reasoning" if in_reasoning_prev else "content"
         for tag_start, tag_len, tag_kind in tags:
             # Emit bytes between cursor and tag_start in the current
