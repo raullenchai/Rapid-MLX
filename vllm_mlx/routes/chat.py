@@ -1799,8 +1799,7 @@ async def stream_chat_completion(
                     and getattr(rp, "_saw_any_tag", False)
                     and "</think>"
                     not in (
-                        processor.accumulated_reasoning
-                        + processor.accumulated_text
+                        processor.accumulated_reasoning + processor.accumulated_text
                     )
                 )
                 synthetic_raw = (

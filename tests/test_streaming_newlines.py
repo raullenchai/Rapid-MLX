@@ -248,7 +248,9 @@ class TestDeepSeekNoTagComparison:
             "guarantee) and stay under the vibethinker subclass's 1024-char "
             "threshold."
         )
-        reasoning_body = "<think>\nStep 1: scan the intervals. Step 2: merge overlaps.\n</think>"
+        reasoning_body = (
+            "<think>\nStep 1: scan the intervals. Step 2: merge overlaps.\n</think>"
+        )
         answer = "def merge_intervals(intervals):\n    return sorted(intervals)"
 
         full_text = preamble + reasoning_body + answer

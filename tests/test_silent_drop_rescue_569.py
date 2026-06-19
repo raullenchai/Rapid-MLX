@@ -1150,6 +1150,5 @@ def test_streaming_rescue_still_fires_for_gemma4_stuck_thought_shape():
         raw_text=trace,
     )
     assert rescued == trace, (
-        "gemma-4 #569 failure mode must still rescue — got "
-        f"rescued={rescued!r}"
+        f"gemma-4 #569 failure mode must still rescue — got rescued={rescued!r}"
     )
