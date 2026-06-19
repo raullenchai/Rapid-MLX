@@ -143,41 +143,48 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
     """
     if not function_name:
         return None
-    # The hermes / qwen3coder wire is identical at the opener
-    # (``<tool_call>\\n{"name": "X", "arguments":`` ). Nemotron-XML
-    # variants accept this as an alternate path (the parser tries both
-    # JSON and XML body shapes). Same opener works for llama / kimi /
-    # glm47 because their parsers ALSO recognise ``<tool_call>`` as
-    # one of their primary shapes (or accept bare JSON, which the
-    # opener also satisfies). The empty-arguments default is "{}"; the
-    # model will overwrite it with a real object as part of the JSON
-    # continuation.
-    hermes_family = {
+    # Verified parsers that explicitly recognise the hermes ``<tool_call>``
+    # JSON-body wire shape in their primary path (both non-streaming
+    # ``extract_tool_calls`` regex AND the streaming state-machine
+    # sentinel set). Each one's source was audited against this opener
+    # before being added:
+    #   - ``hermes`` (vllm_mlx/tool_parsers/hermes_tool_parser.py):
+    #     ``TOOL_CALL_PATTERN = <tool_call>{JSON}</tool_call>``;
+    #     ``_STREAMING_SENTINELS = ("<tool_call>", "<function=")``
+    #   - ``qwen3_coder_xml`` / ``qwen3coder``
+    #     (qwen3coder_tool_parser.py): same opener
+    #     (``self.tool_call_start_token = "<tool_call>"``)
+    #
+    # Parsers EXCLUDED on purpose because their primary wire is NOT
+    # the JSON ``<tool_call>`` shape — injecting the prefix would
+    # confuse their streaming state machine and leak raw wire bytes
+    # as ``delta.content`` (codex r1 P2 on this PR):
+    #   - ``minimax``  → ``<minimax:tool_call>`` / ``<invoke name="...">``
+    #   - ``mistral``  → ``[TOOL_CALLS]``
+    #   - ``deepseek`` → ``<｜tool▁calls▁begin｜>``
+    #   - ``llama``    → ``<|python_tag|>`` / bare JSON (its own opener)
+    #   - ``kimi``     → ``<|tool_calls_section_begin|>``
+    #   - ``glm47``    → ``<tool_call>...<arg_key>...</arg_value>``
+    #     (XML body, NOT JSON — the opener matches but the body
+    #     shape conflicts with the parser's XML expectations)
+    #   - ``granite``, ``xlam``, ``functionary``, ``nemotron``,
+    #     ``seed_oss`` — distinct wire formats; defer to the
+    #     post-parse synthesis fallback rather than risk a wrong
+    #     opener.
+    _verified_json_tool_call_parsers = {
         "hermes",
         "qwen3coder",
         "qwen3_coder",
         "qwen3_coder_xml",
-        "llama",
-        "kimi",
-        "glm47",
-        "minimax",
-        "mistral",
-        "deepseek",
-        "deepseekv31",
-        "nemotron",
-        "xlam",
-        "functionary",
-        "granite",
-        "qwen",
-        "seed_oss",
     }
-    if parser_name in hermes_family:
+    if parser_name in _verified_json_tool_call_parsers:
         # JSON envelope opener — model continues with the arguments
         # object body. Leave a trailing space so the model picks up
         # immediately with ``{...}``.
         return f'<tool_call>\n{{"name": "{function_name}", "arguments": '
-    # Channel-routed (harmony / gemma4) and unknown parsers: no prefix
-    # injection. The post-parse synthesis path remains as a fallback.
+    # Channel-routed (harmony / gemma4) and parsers whose wire shape
+    # we have NOT audited: no prefix injection. The post-parse
+    # synthesis path remains as a fallback (``_synthesize_forced_tool_call``).
     return None
 
 
@@ -1186,6 +1193,23 @@ async def _create_chat_completion_impl(
                     output,
                     text="".join(routed_content_parts),
                     reasoning_text="".join(routed_reasoning_parts),
+                )
+            # Forced-tool prefix on the logprobs path: the stream
+            # yields a synthetic first chunk carrying the prefix
+            # bytes for the SSE postprocessor, but THIS internal
+            # consumer only retains the last chunk. Fold the prefix
+            # into ``output.text`` so the downstream tool parser sees
+            # the full ``<tool_call>{"name":...,"arguments":...}``
+            # envelope and recovers the model-generated arguments
+            # instead of falling through to ``_synthesize_forced_tool_call``'s
+            # empty-args default (codex r1 P2 on this PR).
+            _forced_prefix_value = chat_kwargs.get("forced_assistant_prefix")
+            if _forced_prefix_value and output is not None and not (
+                output.text or ""
+            ).startswith(_forced_prefix_value):
+                output = _dc_replace(
+                    output,
+                    text=_forced_prefix_value + (output.text or ""),
                 )
         elif use_guided and json_schema:
             try:

@@ -36,11 +36,22 @@ def test_prefix_qwen3coder():
     assert '"name": "lookup_user"' in out
 
 
-def test_prefix_llama_kimi_glm_minimax():
-    for parser in ("llama", "kimi", "glm47", "minimax", "mistral"):
-        out = _forced_tool_call_prefix(parser, "fn")
-        assert out is not None, parser
-        assert '"name": "fn"' in out
+def test_prefix_non_hermes_wire_returns_none():
+    """Parsers whose primary wire is NOT JSON-bodied ``<tool_call>`` must
+    NOT receive the prefix — injecting the hermes opener confuses their
+    streaming state machine and leaks raw wire bytes as ``delta.content``.
+
+    Pinned by direct audit of the listed parsers' ``_STREAMING_SENTINELS``
+    / ``bot_token`` markers (codex r1 P2 on PR #716)."""
+    for parser in (
+        "llama",  # ``<|python_tag|>`` / bare JSON
+        "kimi",  # ``<|tool_calls_section_begin|>``
+        "glm47",  # ``<tool_call>`` but XML body, not JSON
+        "minimax",  # ``<minimax:tool_call>``
+        "mistral",  # ``[TOOL_CALLS]``
+        "deepseek",  # ``<｜tool▁calls▁begin｜>``
+    ):
+        assert _forced_tool_call_prefix(parser, "fn") is None, parser
 
 
 def test_prefix_channel_routed_returns_none():
