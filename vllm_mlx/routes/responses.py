@@ -262,7 +262,17 @@ async def _non_stream(
             raise HTTPException(
                 status_code=400, detail=f"Chat template error: {err_msg}"
             )
-        if "Failed to process image" in err_msg or "Failed to process video" in err_msg:
+        # Multimodal fetch failures + MLLM per-batch-cap errors → 400
+        # (parity with chat route, #457 / #682). The MLLM scheduler
+        # classifier already treats both as client-actionable; this route
+        # must map both to 400 or the /v1/responses surface returns a 500
+        # for what is really an oversized-image / oversized-prompt user
+        # error.
+        if (
+            "Failed to process image" in err_msg
+            or "Failed to process video" in err_msg
+            or "exceeds the per-batch cap" in err_msg
+        ):
             raise HTTPException(status_code=400, detail=err_msg)
         raise
 

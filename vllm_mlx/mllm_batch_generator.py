@@ -685,13 +685,29 @@ class MLLMBatchGenerator:
 
         # Guard against excessive memory usage during cache merge.
         # Each token in the batch requires KV entries across all layers.
+        #
+        # The error string MUST keep the ``exceeds the per-batch cap``
+        # phrase — ``MLLMScheduler._step_no_queue`` matches on it to
+        # classify the error as client-actionable (#682) and ``routes/
+        # chat.py`` maps it to HTTP 400 with the actionable message.
+        # If the phrase ever drifts, the soft-truncation regression
+        # comes back: the route would return HTTP 200 with empty
+        # content + ``finish_reason="length"`` and the Desktop client
+        # would render "Reached max_tokens before any output".
+        #
+        # The message also calls out image-downscale as a lever
+        # explicitly, because vision tokens dominate the prompt budget
+        # on a typical screenshot and "shorten the prompt" is not a
+        # useful instruction when the prompt is mostly image patches.
         max_batch_tokens = self.prefill_step_size * len(requests)
         if total_prompt_tokens > max_batch_tokens:
             raise ValueError(
                 f"Total prompt tokens ({total_prompt_tokens}) exceeds the "
                 f"per-batch cap ({max_batch_tokens} = prefill_step_size "
                 f"{self.prefill_step_size} × {len(requests)} request(s)). "
-                f"Raise the cap with --prefill-step-size, or shorten the prompt."
+                f"For image inputs, downscale the image; for text inputs, "
+                f"shorten the prompt or restart the server with "
+                f"--prefill-step-size set higher."
             )
 
         # Run vision encoding for each request with its own KVCache.

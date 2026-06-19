@@ -1156,7 +1156,20 @@ async def _create_chat_completion_impl(
         # "Failed to process image|video" prefix. Convert to 400 so VLM
         # clients get a clear error instead of a 200 with empty completion
         # (#457).
-        if "Failed to process image" in err_msg or "Failed to process video" in err_msg:
+        #
+        # The "exceeds the per-batch cap" marker comes from
+        # ``mllm_batch_generator._process_prompts`` when vision + text
+        # tokens exceed the configured cap. The MLLM scheduler now flags
+        # this as a client-actionable error (#682); without the explicit
+        # 400 mapping the engine would still return ``HTTPException``-less
+        # 500. Surface as 400 so Desktop / curl clients see the actionable
+        # message ("downscale image / raise --prefill-step-size") instead
+        # of a generic server error.
+        if (
+            "Failed to process image" in err_msg
+            or "Failed to process video" in err_msg
+            or "exceeds the per-batch cap" in err_msg
+        ):
             raise HTTPException(status_code=400, detail=err_msg)
         raise
     finally:

@@ -275,9 +275,16 @@ async def create_anthropic_message(
                     status_code=400, detail=f"Chat template error: {err_msg}"
                 )
             # Multimodal fetch failures → 400 (parity with chat route, #457).
+            # Per-batch-cap errors from the MLLM engine also surface as
+            # client-actionable → 400 (parity with chat route, #682). The
+            # MLLM scheduler classifier in ``mllm_scheduler._step_no_queue``
+            # treats both as client errors; this route must map both to 400
+            # or Anthropic-style clients get a 500 for what is really an
+            # oversized-image / oversized-prompt user error.
             if (
                 "Failed to process image" in err_msg
                 or "Failed to process video" in err_msg
+                or "exceeds the per-batch cap" in err_msg
             ):
                 raise HTTPException(status_code=400, detail=err_msg)
             raise

@@ -10,6 +10,7 @@ pass it through — including when it's ``None``.
 """
 
 import mlx.core as mx
+import pytest
 
 from vllm_mlx.mllm_batch_generator import MLLMBatchGenerator, MLLMBatchRequest
 
@@ -441,3 +442,255 @@ def test_step_heterogeneous_then_homogeneous_populates_shared(monkeypatch):
     assert gen._shared_batch_sampler[0] == (0.5, 0.85)
     # 3 total: 2 from the het batch + 1 fresh for the new homogeneous key.
     assert len(make_sampler_calls) == 3
+
+
+# ---------------------------------------------------------------------------
+# Per-batch cap regression — issue #682
+# ---------------------------------------------------------------------------
+#
+# A high-resolution image (e.g. a 1920×1080 desktop screenshot) decodes to
+# ~2200 vision tokens with Qwen3-VL's preprocessor. The original
+# ``MLLMSchedulerConfig.prefill_step_size=1024`` default + the
+# ``BatchedEngine._start_mllm`` fallback of 2048 (from SchedulerConfig)
+# were both too low for typical VLM workloads. With ``prefill_step_size=
+# 2048`` a single-request 2292-token batch failed the cap and the
+# MLLMScheduler swallowed the ValueError as a soft truncation — the
+# route returned 200 OK with empty content + finish_reason=length and
+# Desktop rendered the misleading "Reached max_tokens before any output"
+# error.
+#
+# The fix bumps the MLLM-side prefill_step_size to 8192 in two places:
+#   - ``MLLMSchedulerConfig.prefill_step_size`` default (for direct
+#     scheduler construction, e.g. programmatic use).
+#   - ``BatchedEngine._start_mllm`` reads the SchedulerConfig value and
+#     applies ``_resolve_mllm_prefill_step_size`` (a bump-policy, NOT a
+#     floor) so a server started with the text-LLM default
+#     (--prefill-step-size 2048) gets the VLM-tuned 8192. Explicit
+#     operator-set values are honored as-is — including smaller ones
+#     for memory-constrained deployments (codex r2 MAJOR contract).
+#
+# The cap arithmetic itself is unchanged — it still bounds aggregate
+# merge-time memory; the bump-policy only raises the per-request budget
+# for image-heavy prompts on the default code path.
+
+
+def _make_cap_request(uid: int, token_count: int) -> MLLMBatchRequest:
+    """Build a request whose ``input_ids.size`` is ``token_count``."""
+    return MLLMBatchRequest(
+        uid=uid,
+        request_id=f"r{uid}",
+        prompt="x",
+        max_tokens=8,
+        input_ids=mx.zeros((token_count,), dtype=mx.int32),
+    )
+
+
+def _gen_with_prefill_cap(prefill_step_size: int) -> MLLMBatchGenerator:
+    """Generator with a tunable cap, no real model/processor needed.
+
+    ``_process_prompts`` only reads ``self.prefill_step_size`` /
+    ``self._stats`` / ``self.vision_cache`` before raising the cap error,
+    so a bare construction is enough to exercise the check.
+    """
+    gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    gen.prefill_step_size = prefill_step_size
+    gen.vision_cache = None
+    gen.model = object()
+    gen.language_model = object()
+    gen.processor = object()
+    gen.mm_processor = None
+
+    class _Stats:
+        prompt_tokens = 0
+        prompt_time = 0.0
+        num_images_processed = 0
+        vision_encoding_time = 0.0
+
+    gen._stats = _Stats()
+    return gen
+
+
+def test_mllm_scheduler_config_default_prefill_step_size_covers_screenshot():
+    """``MLLMSchedulerConfig.prefill_step_size`` default must cover a
+    typical 1920×1080 screenshot's vision-token count.
+
+    Pre-fix the default was 1024 — even an 800×600 image would have
+    failed the cap on a direct ``MLLMSchedulerConfig()`` construction.
+    Post-fix the default is 8192, comfortably above the ~2200-token
+    Qwen3-VL output for 1920×1080.
+    """
+    from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+
+    cfg = MLLMSchedulerConfig()
+    # 1920×1080 Qwen3-VL: ~2200 vision tokens + chat-template + text.
+    # Default must be high enough that a single such request never
+    # trips the cap on its own size (#682).
+    assert cfg.prefill_step_size >= 8192, (
+        f"MLLMSchedulerConfig.prefill_step_size default ({cfg.prefill_step_size}) "
+        f"must be at least 8192 to cover 1920×1080 screenshots without "
+        f"tripping the per-batch cap (#682)."
+    )
+
+
+def test_resolve_mllm_prefill_step_size_bumps_text_default_to_mllm_default():
+    """Pin the MLLM ``prefill_step_size`` bump-policy (#682).
+
+    The CLI ships ``--prefill-step-size 2048`` (text-LLM tuned). Without
+    the bump, every Desktop sidecar serving a VLM would inherit 2048
+    and trip the per-batch cap on a 1920×1080 screenshot.
+
+    Codex r2 MAJOR: an earlier draft used ``max(value, 8192)`` which
+    silently overrode memory-constrained operators who explicitly set
+    a smaller value. The fix bumps only when the value matches the
+    SchedulerConfig dataclass default — any explicit value is honored.
+
+    Codex r3 NIT: the bump-policy is extracted as
+    ``_resolve_mllm_prefill_step_size`` so this test exercises the
+    production helper directly (not a copied mirror expression) and
+    is robust to refactors of ``_start_mllm``.
+    """
+    from types import SimpleNamespace
+
+    from vllm_mlx.engine.batched import _resolve_mllm_prefill_step_size
+    from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    text_default = SchedulerConfig.__dataclass_fields__[
+        "prefill_step_size"
+    ].default
+    mllm_default = MLLMSchedulerConfig.__dataclass_fields__[
+        "prefill_step_size"
+    ].default
+
+    # The MLLM default must exceed the text default — otherwise the
+    # bump is a no-op — and must cover a typical 1920×1080 screenshot.
+    assert mllm_default > text_default, (
+        f"MLLM default ({mllm_default}) must exceed text default "
+        f"({text_default}); otherwise the #682 bump is inert."
+    )
+    assert mllm_default >= 8192, (
+        f"MLLM default ({mllm_default}) must cover 1920×1080 Qwen3-VL "
+        f"(~2200 tokens) with headroom for multi-image messages (#682)."
+    )
+
+    def _resolved(user_value):
+        return _resolve_mllm_prefill_step_size(
+            user_value,
+            text_default=text_default,
+            mllm_default=mllm_default,
+        )
+
+    # Default → bumped (the Desktop sidecar case).
+    assert _resolved(text_default) == mllm_default, (
+        f"text-LLM default ({text_default}) must bump to MLLM default "
+        f"({mllm_default}) — this is the #682 fix for Desktop sidecars."
+    )
+
+    # Explicit smaller value → honored. This is the codex r2 MAJOR
+    # contract: the engine must NOT silently override a user's
+    # explicit smaller choice.
+    for explicit_smaller in [256, 512, 1024, 1500]:
+        assert _resolved(explicit_smaller) == explicit_smaller, (
+            f"explicit prefill_step_size={explicit_smaller} must be "
+            f"honored as-is (codex r2 MAJOR); got {_resolved(explicit_smaller)}"
+        )
+
+    # Explicit larger value → honored (high-end deployment).
+    for explicit_larger in [4096, 8192, 16384, 65536]:
+        assert _resolved(explicit_larger) == explicit_larger, (
+            f"explicit prefill_step_size={explicit_larger} must be "
+            f"honored as-is; got {_resolved(explicit_larger)}"
+        )
+
+    # ``None`` covers BOTH the "no scheduler_config" path AND the
+    # "config object without the attribute" path — the latter via
+    # ``getattr(cfg, "prefill_step_size", None)`` in ``_start_mllm``
+    # returning ``None`` when the attribute is missing (codex r3 NIT).
+    assert _resolved(None) == mllm_default, (
+        "missing attribute / no scheduler_config must default to MLLM-tuned"
+    )
+
+    # And the getattr path: an object that genuinely lacks the attribute
+    # also resolves to the MLLM default. Pins the "config attribute
+    # absent" contract that codex r3 NIT called out as untested.
+    cfg_without_attr = SimpleNamespace()  # no prefill_step_size attribute
+    resolved_missing = _resolve_mllm_prefill_step_size(
+        getattr(cfg_without_attr, "prefill_step_size", None),
+        text_default=text_default,
+        mllm_default=mllm_default,
+    )
+    assert resolved_missing == mllm_default
+
+    # Explicit value EXACTLY equal to text_default is treated as
+    # "took the default" — documented trade-off, #682 outweighs the
+    # rare operator who explicitly wants 2048 on VLM. Pinned here so
+    # a future refactor that flips the equality direction is caught.
+    assert _resolved(text_default) == mllm_default
+
+
+def test_per_batch_cap_fires_on_oversized_batch_with_actionable_message(
+    monkeypatch,
+):
+    """The cap is still a real guard — it MUST fire when prompts truly
+    exceed the budget, with an actionable error message.
+
+    Codex r1 BLOCKING: an earlier draft made the cap tautological by
+    deriving ``per_request_cap`` from the batch's own max. That removed
+    the memory guard entirely. This test pins the cap as a real check
+    and pins the error message wording so the MLLMScheduler client-error
+    classifier and the routes/chat.py 400-mapping continue to match.
+    """
+    # Tiny cap to force the check to fire with a small request size.
+    gen = _gen_with_prefill_cap(prefill_step_size=100)
+    monkeypatch.setattr(gen, "_preprocess_request", lambda req: None)
+
+    # 500-token request, cap = 100 × 1 = 100 ⇒ 500 > 100 ⇒ raises.
+    request = _make_cap_request(uid=0, token_count=500)
+
+    with pytest.raises(ValueError) as excinfo:
+        MLLMBatchGenerator._process_prompts(gen, [request])
+
+    msg = str(excinfo.value)
+    # Must keep this exact substring — MLLMScheduler's client-error
+    # classifier matches on it (#682). If the phrase drifts the
+    # soft-truncation regression comes back.
+    assert "exceeds the per-batch cap" in msg, (
+        f"cap error must keep the marker substring; got: {msg}"
+    )
+    # Actionable levers — must call out image-downscale for VLM users.
+    assert "downscale the image" in msg, (
+        f"cap error must suggest image downscale; got: {msg}"
+    )
+    assert "--prefill-step-size" in msg, (
+        f"cap error must mention --prefill-step-size for the text path; got: {msg}"
+    )
+
+
+def test_per_batch_cap_does_not_fail_at_default_on_typical_screenshot(
+    monkeypatch,
+):
+    """End-to-end pin: with the production MLLM default
+    ``prefill_step_size=8192``, a single 2292-token request (Qwen3-VL
+    on a 1920×1080 screenshot) must NOT trip the cap.
+
+    Pre-fix with default 2048 this raised ValueError("exceeds the
+    per-batch cap") which the scheduler swallowed as
+    ``finish_reason="length"`` + empty content (#682).
+    """
+    gen = _gen_with_prefill_cap(prefill_step_size=8192)
+    monkeypatch.setattr(gen, "_preprocess_request", lambda req: None)
+
+    # 2292 tokens — typical Qwen3-VL token count for a 1920×1080 image.
+    request = _make_cap_request(uid=0, token_count=2292)
+
+    # The function will still raise SOMETHING downstream (we handed it
+    # bare ``object()`` for model / language_model so the real prefill
+    # path can't run), but it must NOT be the per-batch-cap error.
+    with pytest.raises(Exception) as excinfo:  # noqa: BLE001 — see below
+        MLLMBatchGenerator._process_prompts(gen, [request])
+
+    err_msg = str(excinfo.value)
+    assert "exceeds the per-batch cap" not in err_msg, (
+        f"with the production MLLM default (8192), a 2292-token "
+        f"single-request batch must pass the cap; got: {err_msg}"
+    )

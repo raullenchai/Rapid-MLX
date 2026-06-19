@@ -109,6 +109,51 @@ def _channel_name(channel: Channel) -> str:
     return _CHANNEL_TO_STRING[channel]
 
 
+def _resolve_mllm_prefill_step_size(
+    user_value: int | None,
+    *,
+    text_default: int,
+    mllm_default: int,
+) -> int:
+    """Apply the MLLM ``prefill_step_size`` bump-policy (#682).
+
+    A 1920×1080 screenshot decoded by Qwen3-VL produces ~2200 vision
+    tokens — past the 2048 text-LLM default that ``SchedulerConfig``
+    ships with. The per-batch cap in
+    ``mllm_batch_generator._process_prompts`` would otherwise fire
+    silently and surface as ``finish_reason="length"`` + empty content
+    (#682).
+
+    Policy:
+    - ``None`` or value equal to ``text_default`` → ``mllm_default``
+      (the Desktop-sidecar happy path).
+    - Any other value → honored as-is (memory-constrained operators
+      and high-end deployments keep their explicit choice; codex r2
+      MAJOR contract).
+
+    Trade-off: a user who explicitly picks exactly ``text_default``
+    on a VLM is treated as "took the default" and gets bumped. Closing
+    #682 outweighs the rare operator who deliberately wants the text
+    default on VLM. Operators who want the smaller value can pick any
+    nearby number (e.g. 2049) and it's honored.
+
+    Args:
+        user_value: ``getattr(scheduler_config, "prefill_step_size", None)``
+            — ``None`` covers both "no scheduler_config" and "config
+            object without the attribute".
+        text_default: ``SchedulerConfig.prefill_step_size``'s
+            dataclass default (the CLI default).
+        mllm_default: ``MLLMSchedulerConfig.prefill_step_size``'s
+            dataclass default (the MLLM-tuned value).
+
+    Returns:
+        The resolved ``prefill_step_size`` for the MLLM scheduler.
+    """
+    if user_value is None or user_value == text_default:
+        return mllm_default
+    return user_value
+
+
 def _compute_metal_cache_limit(soft_limit_bytes: int) -> int:
     """Pick a Metal free-cache size that scales with the device's working set.
 
@@ -511,6 +556,15 @@ class BatchedEngine(BaseEngine):
         from ..engine_core import _init_mlx_step_thread
         from ..mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
         from ..models.mllm import MLXMultimodalLM
+        from ..scheduler import SchedulerConfig
+
+        # MLLM-tuned default for ``prefill_step_size``. Vision tokens balloon
+        # the prompt size on VLMs (~2200 tokens for a 1920×1080 Qwen3-VL
+        # screenshot), so we override only when the user left the text-LLM
+        # default (2048) — see the bump-policy comment below for the rationale.
+        _MLLM_DEFAULT_PREFILL_STEP_SIZE = MLLMSchedulerConfig.__dataclass_fields__[
+            "prefill_step_size"
+        ].default
 
         # Load the MLLM model on a dedicated worker thread (#170 / #174 fix
         # extended to MLLM). mlx-lm 0.31.3+ tags every mx.array with the
@@ -574,7 +628,17 @@ class BatchedEngine(BaseEngine):
         completion_batch_size = getattr(
             self._scheduler_config, "completion_batch_size", 32
         )
-        prefill_step_size = getattr(self._scheduler_config, "prefill_step_size", 2048)
+        # ``prefill_step_size`` for MLLM is the per-request budget that
+        # caps total prompt tokens (vision + text). See
+        # ``_resolve_mllm_prefill_step_size`` for the bump-policy
+        # rationale (#682).
+        prefill_step_size = _resolve_mllm_prefill_step_size(
+            getattr(self._scheduler_config, "prefill_step_size", None),
+            text_default=SchedulerConfig.__dataclass_fields__[
+                "prefill_step_size"
+            ].default,
+            mllm_default=_MLLM_DEFAULT_PREFILL_STEP_SIZE,
+        )
         # Carry the user-configured admission cap across to the MLLM
         # scheduler. Without this, a server started with
         # ``SchedulerConfig(max_concurrent_requests=N)`` would always

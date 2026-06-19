@@ -62,8 +62,15 @@ class MLLMSchedulerConfig:
     prefill_batch_size: int = 16
     # Completion batch size
     completion_batch_size: int = 16
-    # Prefill step size for chunked prefill
-    prefill_step_size: int = 1024
+    # Prefill step size — per-request prompt-token budget. Vision tokens
+    # balloon the prompt size on VLMs (a 1920×1080 screenshot alone is
+    # ~2200 tokens on Qwen3-VL), so the MLLM-side default is 8192 to
+    # cover typical desktop screenshots and small multi-image messages
+    # out-of-the-box. ``BatchedEngine._start_mllm`` applies a bump-policy
+    # (see ``_resolve_mllm_prefill_step_size``) so a SchedulerConfig
+    # carrying the text-LLM default (2048) gets bumped to 8192, while
+    # any explicit operator-set value is honored as-is (#682, codex r2).
+    prefill_step_size: int = 8192
     # Enable vision embedding cache
     enable_vision_cache: bool = True
     # Maximum cache entries
@@ -714,22 +721,30 @@ class MLLMScheduler:
                     if uids_to_remove:
                         self.batch_generator.remove(uids_to_remove)
 
-                # Differentiate CLIENT errors (image/video fetch failures)
-                # from SERVER errors (oversized prompt, runtime crash).
+                # Differentiate CLIENT errors (image/video fetch failures,
+                # oversized prompt) from SERVER errors (runtime crash).
                 # Client errors get a non-None ``error`` field so
                 # ``stream_outputs`` can raise — letting the route layer
                 # convert to HTTP 400 instead of the previous silent
                 # 200+empty-content+finish_reason=length pattern that
                 # caused #457 (Anthropic SDK clients + curl saw a 200 OK
-                # with no signal that the image fetch had failed).
+                # with no signal that the image fetch had failed) and
+                # #682 (Desktop users sending 1920×1080 screenshots to a
+                # VLM saw an empty assistant message + "Reached max_tokens
+                # before any output" rendered by the client).
                 #
-                # Non-client errors keep the legacy
-                # finish_reason="length"+empty-text behavior to avoid
-                # breaking callers that handle oversized-prompt as a soft
-                # truncation rather than a hard failure.
+                # The "per-batch cap" string is the marker raised by
+                # ``mllm_batch_generator._process_prompts`` when prompt
+                # tokens (vision + text) exceed the configured cap. For
+                # VLM the typical trigger is a high-resolution image; the
+                # error message already tells the user to downscale or
+                # raise --prefill-step-size, so surfacing the message
+                # is strictly more informative than the legacy soft
+                # truncation.
                 is_client_error = (
                     "Failed to process image" in err_msg
                     or "Failed to process video" in err_msg
+                    or "exceeds the per-batch cap" in err_msg
                 )
                 # Create error outputs (queue delivery deferred to caller).
                 for request_id in error_ids:
