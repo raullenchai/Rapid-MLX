@@ -50,12 +50,27 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # prefix. Used to flush them on the next delta when the prefix
         # turned out NOT to be a tag.
         self._held_tag_suffix_len = 0
+        # Codex r3 BLOCKING on PR #722: track streaming phase
+        # explicitly instead of recomputing it from whole-history
+        # ``previous_text.count(...)``. Counting historical tag
+        # occurrences misclassifies literal ``<think>`` or
+        # ``</think>`` substrings inside ALREADY-EMITTED CONTENT
+        # (e.g. a closed ``<think>...</think>`` pair that survived
+        # the conservative sweep) as structural tags and flips the
+        # phase. ``None`` means we have not yet entered the
+        # multi-block router; the router seeds it the first time it
+        # fires (always "content" at that point, because the FIRST
+        # ``</think>`` has just been consumed). Subsequent deltas
+        # read this field and update it as they cross structural
+        # tags inside the delta.
+        self._streaming_phase: str | None = None
 
     def reset_state(self):
         """Reset state for a new streaming request."""
         super().reset_state()
         self._saw_any_tag = False
         self._held_tag_suffix_len = 0
+        self._streaming_phase = None
 
     def extract_reasoning(
         self,
@@ -170,11 +185,23 @@ class BaseThinkingReasoningParser(ReasoningParser):
         Returns:
             DeltaMessage with reasoning/content, or None to skip.
         """
-        # Skip if delta is just the special tokens themselves
+        # Skip if delta is just the special tokens themselves.
+        # Codex r3 BLOCKING follow-up on PR #722: when the multi-block
+        # router has already taken over phase tracking
+        # (``_streaming_phase is not None``), flip the phase here so
+        # the NEXT delta enters the router with the correct phase
+        # state. The router's intra-delta walk only sees tags
+        # scanned from ``prev_len - held``, so a tag that arrived as
+        # a stand-alone delta would otherwise be missed and the
+        # phase would lie on the following delta.
         stripped_delta = delta_text.strip()
         if stripped_delta == self.start_token:
+            if self._streaming_phase is not None:
+                self._streaming_phase = "reasoning"
             return None
         if stripped_delta == self.end_token:
+            if self._streaming_phase is not None:
+                self._streaming_phase = "content"
             return None
 
         # Check token positions in text (stateless text-based detection)
@@ -614,12 +641,29 @@ class BaseThinkingReasoningParser(ReasoningParser):
         """
         prev_len = len(current_text) - len(delta_text)
         # Phase at the END OF PREVIOUS DELTA (start of this delta).
-        # REASONING if there's an unclosed opener up to that point,
-        # CONTENT otherwise. The walk below shifts phase as it
-        # crosses tag boundaries inside the delta.
-        prev_n_open = previous_text.count(self.start_token)
-        prev_n_close = previous_text.count(self.end_token)
-        in_reasoning_prev = prev_n_open > prev_n_close
+        #
+        # Codex r3 BLOCKING fix on PR #722: do NOT recompute phase
+        # from whole-history ``previous_text.count(<think>)`` vs
+        # ``count(</think>)``. A literal ``<think>`` or ``</think>``
+        # substring in already-emitted content (e.g. a closed
+        # ``<think>...</think>`` pair that survived the conservative
+        # non-streaming sweep, or a user-facing answer that mentions
+        # the tag) inflates the historical count and makes the
+        # phase decision lie — subsequent structural reasoning
+        # chunks would then leak into ``content`` (or vice versa).
+        # Instead, persist the phase as instance state and update
+        # it ONLY when this router crosses structural tag
+        # boundaries. ``_streaming_phase is None`` means this is
+        # the first time the multi-block router fires — by
+        # construction (we dispatched on ``end_in_prev`` or on a
+        # full pair landing in this delta) the phase at that
+        # entry point is "content" (we've just exited the first
+        # ``<think>...</think>`` block). For subsequent calls we
+        # read the field directly.
+        if self._streaming_phase is None:
+            in_reasoning_prev = False
+        else:
+            in_reasoning_prev = self._streaming_phase == "reasoning"
         # Walk through ``current_text`` from ``prev_len`` to the end,
         # splitting at each tag boundary. Emit the segments in the
         # appropriate phase, stripping the tag bytes themselves.
@@ -692,9 +736,11 @@ class BaseThinkingReasoningParser(ReasoningParser):
             else:
                 content_parts.append(segment)
         # Phase invariant: after walking all tags in the delta,
-        # ``phase`` matches ``current_text``'s overall open/close
-        # parity (REASONING if open > close, CONTENT otherwise) —
-        # modulo the held partial-tag suffix.
+        # ``phase`` reflects the end-of-delta structural state
+        # (modulo the held partial-tag suffix). Persist it so the
+        # NEXT delta starts from the correct phase without having
+        # to recount historical tags (codex r3 BLOCKING fix).
+        self._streaming_phase = phase
         reasoning = "".join(reasoning_parts) or None
         content = "".join(content_parts) or None
         if reasoning is None and content is None:

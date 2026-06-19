@@ -901,6 +901,55 @@ class TestMultiBlockThinkStreaming:
         assert "The user said:" in (content or "")
         assert "tag" in (content or "")
 
+    def test_streaming_phase_uses_explicit_state_not_history_counts(self):
+        """Codex r3 BLOCKING on PR #722: the multi-block router
+        previously computed ``in_reasoning_prev`` from whole-history
+        ``previous_text.count(<think>)`` vs ``count(</think>)``.
+        A literal ``</think>`` substring inside already-emitted
+        content (e.g. a closed pair that survived the conservative
+        non-streaming sweep when echoed back in the answer, or a
+        user prompt repeating tag-like text) inflated the close
+        count and flipped the phase decision, causing subsequent
+        structural reasoning chunks to leak into ``content``.
+
+        Fix: track ``_streaming_phase`` as instance state, updated
+        ONLY when this router crosses structural tags within the
+        delta. This test pins that an already-emitted literal
+        ``</think>`` does not corrupt the phase decision for a
+        subsequent structural ``<think>`` block.
+        """
+        from vllm_mlx.reasoning.deepseek_r1_parser import (
+            DeepSeekR1ReasoningParser,
+        )
+
+        parser = DeepSeekR1ReasoningParser()
+        # Stream: <think>R1</think> then content containing a
+        # LITERAL </think> token (just text), then a structural
+        # <think>R2</think> block. The router must keep R2 in
+        # reasoning regardless of how many </think> bytes appear
+        # in the already-emitted content.
+        chunks = [
+            "<think>",
+            "R1",
+            "</think>",
+            "answer mentions </think> literally",
+            "<think>",
+            "R2",
+            "</think>",
+            "tail",
+        ]
+        reasoning, content = self._run_stream(parser, chunks)
+        # Structural reasoning bytes are preserved.
+        assert "R1" in reasoning
+        assert "R2" in reasoning
+        # No structural tag bytes leak via the router.
+        # (The literal </think> in the answer text survives in
+        # content — by the streaming protocol there is no way to
+        # distinguish it from a structural close, and the test
+        # ``test_literal_closed_think_in_answer_preserved_non_streaming``
+        # documents the analogous limitation.)
+        assert "R2" not in content
+
 
 class TestResidualThinkTagSweep:
     """Multi-block ``<think>`` sweep (2026-06-19 round-1 fuzz repro).
@@ -1002,8 +1051,7 @@ class TestResidualThinkTagSweep:
         last_open = content.rfind("<think>")
         if last_open >= 0:
             assert "</think>" in content[last_open + 7 :], (
-                "trailing unclosed <think> survived the sweep: "
-                f"content={content!r}"
+                f"trailing unclosed <think> survived the sweep: content={content!r}"
             )
 
     def test_orphan_closer_left_for_downstream(self):
@@ -1016,10 +1064,10 @@ class TestResidualThinkTagSweep:
         parser layer doing it again risked obscuring an orphan
         closer that was actually a model artefact the operator
         wanted to debug. The parser leaves it for the sanitizer."""
+        from vllm_mlx.api.utils import sanitize_output
         from vllm_mlx.reasoning.deepseek_r1_parser import (
             DeepSeekR1ReasoningParser,
         )
-        from vllm_mlx.api.utils import sanitize_output
 
         parser = DeepSeekR1ReasoningParser()
         text = "<think>thought</think>part1</think>part2"
@@ -1087,8 +1135,8 @@ class TestResidualThinkTagSweep:
         ``</think>`` later in the content — the orphan closer is
         LEFT for ``sanitize_output`` (the last-mile route filter),
         matching the codex r3-final conservative scope."""
-        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
         from vllm_mlx.api.utils import sanitize_output
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
         parser = Qwen3ReasoningParser()
         # Note: no leading <think> — it was injected in the prompt.
