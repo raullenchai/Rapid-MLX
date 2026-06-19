@@ -856,6 +856,18 @@
     "supports_spec_decode": true,
     "suffix_decoding_tier": "unknown"
   },
+  "vibethinker-1.5b-4bit": {
+    "hf_path": "mlx-community/VibeThinker-1.5B-mlx-4bit",
+    "tool_call_parser": null,
+    "reasoning_parser": "deepseek_r1",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95
+    }
+  },
   "vibethinker-3b-8bit": {
     "hf_path": "mlx-community/VibeThinker-3B-8bit",
     "tool_call_parser": null,

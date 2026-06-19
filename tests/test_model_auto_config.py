@@ -159,16 +159,20 @@ class TestDetectModelConfig:
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is True
 
-    # VibeThinker (Weibo AI reasoning derivative, base = Qwen2.5-Coder-3B).
-    # Verify both the alias path (vibethinker-3b-8bit → JSON profile) and
-    # the bare-HF-path regex fallback (WeiboAI/VibeThinker-3B, served by
-    # full repo id without an alias) wire ``deepseek_r1`` reasoning parser
-    # so ``<think>...</think>`` blocks land in ``reasoning_content`` not
+    # VibeThinker (Weibo AI reasoning family; 1.5B base = Qwen2.5-Math-1.5B,
+    # 3B base = Qwen2.5-Coder-3B). Verify both the alias paths
+    # (vibethinker-{1.5b-4bit,3b-8bit} → JSON profile) and the bare-HF-path
+    # regex fallback (WeiboAI/VibeThinker-{1.5B,3B}, served by full repo id
+    # without an alias) wire ``deepseek_r1`` reasoning parser so
+    # ``<think>...</think>`` blocks land in ``reasoning_content`` not
     # ``content``. ``tool_call_parser`` stays None — model card explicitly
     # disowns tool calling.
     @pytest.mark.parametrize(
         "model_path",
         [
+            "vibethinker-1.5b-4bit",
+            "mlx-community/VibeThinker-1.5B-mlx-4bit",
+            "WeiboAI/VibeThinker-1.5B",
             "vibethinker-3b-8bit",
             "mlx-community/VibeThinker-3B-8bit",
             "WeiboAI/VibeThinker-3B",

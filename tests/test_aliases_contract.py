@@ -602,24 +602,30 @@ def test_deepseek_v4_flash_family_wires_deepseek_r1_reasoning_parser() -> None:
         )
 
 
-def test_vibethinker_family_wires_deepseek_r1_reasoning_parser() -> None:
-    """VibeThinker-3B (Weibo AI, base = Qwen2.5-Coder-3B) is a reasoning
-    model whose chat template does NOT inject ``<think>`` — the model
-    emits ``<think>...</think>`` blocks autonomously on every response.
-    Without ``reasoning_parser`` set, those blocks leak into
-    ``choices[0].message.content`` as plain text and break clients that
-    expect ``reasoning_content`` to carry the chain-of-thought.
+@pytest.mark.parametrize(
+    "alias",
+    ["vibethinker-1.5b-4bit", "vibethinker-3b-8bit"],
+)
+def test_vibethinker_family_wires_deepseek_r1_reasoning_parser(alias: str) -> None:
+    """VibeThinker (Weibo AI; 1.5B base = Qwen2.5-Math-1.5B, 3B base =
+    Qwen2.5-Coder-3B) is a reasoning family whose chat template does
+    NOT inject ``<think>`` — the model emits ``<think>...</think>``
+    blocks autonomously on every response. Without ``reasoning_parser``
+    set, those blocks leak into ``choices[0].message.content`` as plain
+    text and break clients that expect ``reasoning_content`` to carry
+    the chain-of-thought.
 
-    Pin the wiring so a future PR can't silently revert it to ``null``.
-    Also pins ``tool_call_parser=None`` — the model card explicitly
-    states tool calling is unsupported even though the inherited Qwen2
-    vocab carries ``<tool_call>`` tokens (community reports confirm the
-    model reasons about the template instead of emitting tool calls).
-    Verified format source:
+    Pin the wiring so a future PR can't silently revert it to ``null``
+    for either size. Also pins ``tool_call_parser=None`` — the model
+    card explicitly states tool calling is unsupported even though the
+    inherited Qwen2 vocab carries ``<tool_call>`` tokens (community
+    reports confirm the model reasons about the template instead of
+    emitting tool calls).
+    Verified format sources:
     https://huggingface.co/mlx-community/VibeThinker-3B-8bit
+    https://huggingface.co/mlx-community/VibeThinker-1.5B-mlx-4bit
     """
     profiles = list_profiles()
-    alias = "vibethinker-3b-8bit"
     assert alias in profiles, f"{alias} missing from aliases.json"
     assert profiles[alias].reasoning_parser == "deepseek_r1", (
         f"{alias}: reasoning_parser must be 'deepseek_r1' (VibeThinker emits "
