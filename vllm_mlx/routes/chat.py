@@ -151,31 +151,30 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
     #   - ``hermes`` (vllm_mlx/tool_parsers/hermes_tool_parser.py):
     #     ``TOOL_CALL_PATTERN = <tool_call>{JSON}</tool_call>``;
     #     ``_STREAMING_SENTINELS = ("<tool_call>", "<function=")``
-    #   - ``qwen3_coder_xml`` / ``qwen3coder``
-    #     (qwen3coder_tool_parser.py): same opener
-    #     (``self.tool_call_start_token = "<tool_call>"``)
     #
     # Parsers EXCLUDED on purpose because their primary wire is NOT
-    # the JSON ``<tool_call>`` shape — injecting the prefix would
-    # confuse their streaming state machine and leak raw wire bytes
-    # as ``delta.content`` (codex r1 P2 on this PR):
+    # the JSON ``<tool_call>`` body shape — even when the OPENER
+    # matches, the body shape conflicts with the parser's
+    # expectations (codex r1 + r3 P2 on this PR):
+    #   - ``qwen3coder`` / ``qwen3_coder_xml`` — same ``<tool_call>``
+    #     opener but the body uses XML ``<function=NAME>...`` markers,
+    #     NOT JSON. ``Qwen3CoderToolParser.extract_tool_calls`` looks
+    #     for ``<function=`` after the opener and would miss a JSON
+    #     body entirely.
     #   - ``minimax``  → ``<minimax:tool_call>`` / ``<invoke name="...">``
     #   - ``mistral``  → ``[TOOL_CALLS]``
     #   - ``deepseek`` → ``<｜tool▁calls▁begin｜>``
     #   - ``llama``    → ``<|python_tag|>`` / bare JSON (its own opener)
     #   - ``kimi``     → ``<|tool_calls_section_begin|>``
     #   - ``glm47``    → ``<tool_call>...<arg_key>...</arg_value>``
-    #     (XML body, NOT JSON — the opener matches but the body
-    #     shape conflicts with the parser's XML expectations)
+    #     (XML body, NOT JSON — same body-shape conflict as
+    #     qwen3coder above)
     #   - ``granite``, ``xlam``, ``functionary``, ``nemotron``,
     #     ``seed_oss`` — distinct wire formats; defer to the
     #     post-parse synthesis fallback rather than risk a wrong
     #     opener.
     _verified_json_tool_call_parsers = {
         "hermes",
-        "qwen3coder",
-        "qwen3_coder",
-        "qwen3_coder_xml",
     }
     if parser_name in _verified_json_tool_call_parsers:
         # JSON envelope opener — model continues with the arguments

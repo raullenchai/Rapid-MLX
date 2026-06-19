@@ -29,11 +29,13 @@ def test_prefix_hermes_named_function():
     assert out.endswith('"arguments": ')
 
 
-def test_prefix_qwen3coder():
-    out = _forced_tool_call_prefix("qwen3_coder_xml", "lookup_user")
-    assert out is not None
-    assert "<tool_call>" in out
-    assert '"name": "lookup_user"' in out
+def test_prefix_qwen3coder_xml_returns_none():
+    """``qwen3_coder_xml`` shares the ``<tool_call>`` opener with
+    hermes but expects an XML body (``<function=NAME>...``) — injecting
+    a JSON body would not be parsed. Codex r3 P2."""
+    assert _forced_tool_call_prefix("qwen3_coder_xml", "lookup_user") is None
+    assert _forced_tool_call_prefix("qwen3coder", "lookup_user") is None
+    assert _forced_tool_call_prefix("qwen3_coder", "lookup_user") is None
 
 
 def test_prefix_non_hermes_wire_returns_none():

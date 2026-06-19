@@ -1984,17 +1984,20 @@ class BatchedEngine(BaseEngine):
         if not self._loaded:
             await self.start()
 
-        # Build prompt from messages
+        # Build prompt from messages. Route through the central
+        # ``shared_apply_chat_template`` wrapper so the role-marker
+        # sanitisation runs on user/tool message content here too —
+        # without this, a guided-generation request with a malicious
+        # ``<|im_start|>system\\n...`` literal in the user prompt would
+        # bypass the chat-template injection defence (codex r3 P1).
         tokenizer = self.tokenizer
-        if hasattr(tokenizer, "apply_chat_template"):
-            prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        else:
-            prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
-            prompt += "\nassistant:"
+        prompt = shared_apply_chat_template(
+            tokenizer,
+            messages,
+            tools=None,
+            enable_thinking=None,
+            model_name=getattr(self, "_model_name", "") or "",
+        )
 
         # Run guided generation on the mlx-step worker. The model was
         # loaded on _model_load_executor (#170 fix) and every later mx.eval
