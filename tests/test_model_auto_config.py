@@ -201,7 +201,9 @@ class TestDetectModelConfig:
     # but NOT a vanilla Meta-LLaMA-3 chat checkpoint. Pinned ahead of
     # the generic ``llama`` regex in model_auto_config.py so a bare HF
     # path serve picks up the upstream-Nanbeige tool/reasoning shape
-    # (hermes + None) instead of the LLaMA tool parser.
+    # (``hermes`` + ``deepseek_r1`` — the 3B preview emits autonomous
+    # ``<think>...</think>`` blocks on every response, smoke-verified)
+    # instead of the LLaMA tool parser.
     @pytest.mark.parametrize(
         "model_path",
         [
