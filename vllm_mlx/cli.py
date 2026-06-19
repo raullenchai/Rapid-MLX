@@ -882,6 +882,14 @@ def serve_command(args):
             try:
                 server._max_request_bytes = max(0, int(_env))
             except ValueError:
+                # Explicit reset (codex round-2 NIT): without this,
+                # an in-process callsite that mutated ``_max_request_bytes``
+                # before serve_command runs would silently leak a stale
+                # value past a malformed env var, which is the worst
+                # possible failure shape — bigger cap than the operator
+                # intended. Fall back to the documented 8 MiB default
+                # explicitly.
+                server._max_request_bytes = 8 * 1024 * 1024
                 logger.warning(
                     "%s=%r is not an integer; falling back to the 8 MiB default",
                     _env_name,

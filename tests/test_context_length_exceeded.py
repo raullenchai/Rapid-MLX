@@ -164,6 +164,45 @@ def test_count_prompt_tokens_returns_zero_on_no_tokenizer():
     assert count_prompt_tokens(eng, "hello") == 0
 
 
+def test_count_prompt_tokens_handles_list_of_ints():
+    """codex round-2 BLOCKING #3: token-id list prompts must be
+    counted directly via ``len()``, not run through
+    ``tokenizer.encode`` (which would 0-out the count and bypass the
+    DoS gate)."""
+    from vllm_mlx.service.helpers import count_prompt_tokens
+
+    # No tokenizer needed — the helper short-circuits on list shape.
+    eng = _StubEngine()
+    assert count_prompt_tokens(eng, [1, 2, 3, 4, 5]) == 5
+
+
+def test_count_prompt_tokens_handles_list_of_token_id_lists():
+    """Multi-prompt batched-token form (``list[list[int]]``) — the
+    helper returns the worst-case (longest) so the DoS gate fires on
+    the worst entry, not silently bypasses."""
+    from vllm_mlx.service.helpers import count_prompt_tokens
+
+    eng = _StubEngine()
+    assert count_prompt_tokens(eng, [[1, 2], [1, 2, 3, 4]]) == 4
+
+
+def test_count_prompt_tokens_returns_zero_on_empty_list():
+    """Empty token-id list — no DoS risk, no count."""
+    from vllm_mlx.service.helpers import count_prompt_tokens
+
+    eng = _StubEngine()
+    assert count_prompt_tokens(eng, []) == 0
+
+
+def test_count_prompt_tokens_returns_zero_on_unknown_shape():
+    """Non-str / non-list — caller should be using a different code
+    path. Return 0 so the cap defers to engine-side validation."""
+    from vllm_mlx.service.helpers import count_prompt_tokens
+
+    eng = _StubEngine(tokenizer=_StubTokenizer())
+    assert count_prompt_tokens(eng, 42) == 0
+
+
 def test_count_prompt_tokens_handles_encode_exception():
     """If the tokenizer raises (model isn't fully loaded yet, edge
     case), we still want 0 — not a 500. The downstream engine call

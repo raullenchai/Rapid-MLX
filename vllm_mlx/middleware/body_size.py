@@ -69,6 +69,7 @@ class _BodyTooLargeError(Exception):
         super().__init__(f"streamed {streamed_bytes} bytes over body cap")
         self.streamed_bytes = streamed_bytes
 
+
 # Path prefixes the cap applies to. We deliberately scope to ``/v1/``
 # (and ``/internal/`` for parity) so internal probes like
 # ``/docs``/``/openapi.json``/``/metrics`` are never gated — those
@@ -166,7 +167,20 @@ class RequestBodyLimitMiddleware:
         # its own response between the trip and our wrapper noticing,
         # leading to a 413 colliding with an in-flight 200/499.
         total = {"bytes": 0}
+        # Two-stage state machine: track whether ``http.response.start``
+        # is on the wire (downstream began responding) and whether a
+        # terminal ``http.response.body`` with ``more_body=False`` has
+        # been flushed (response fully complete). Both are needed to
+        # decide what to do when ``_BodyTooLargeError`` propagates out
+        # of the downstream app:
+        #   * neither set  → emit a fresh 413, normal path
+        #   * start only   → response is incomplete; emit a terminal
+        #                    empty body frame so the client doesn't
+        #                    hang waiting for more bytes (codex round-2
+        #                    BLOCKING #1)
+        #   * both set     → response already complete; nothing to do
         downstream_started_response = {"value": False}
+        downstream_completed_response = {"value": False}
 
         async def bounded_receive():
             msg = await receive()
@@ -178,32 +192,57 @@ class RequestBodyLimitMiddleware:
             return msg
 
         async def guarded_send(msg):
-            # Track whether the downstream app has begun writing its own
-            # response. If the cap trips AFTER the start frame is on the
-            # wire we cannot safely emit a 413 (would corrupt the stream)
-            # — log and let the response complete naturally. This window
-            # is tiny in practice: a chat handler reads the body BEFORE
-            # emitting a response start, so trip→raise happens long
-            # before any send.
-            if msg.get("type") == "http.response.start":
+            # Track the lifecycle of the downstream's own response so
+            # the boundary catch below can decide between "emit 413",
+            # "close the stream", or "do nothing" without guessing.
+            mtype = msg.get("type")
+            if mtype == "http.response.start":
                 downstream_started_response["value"] = True
+            elif mtype == "http.response.body" and not msg.get("more_body", False):
+                downstream_completed_response["value"] = True
             await send(msg)
 
         try:
             await self.app(scope, bounded_receive, guarded_send)
         except _BodyTooLargeError as exc:
+            if downstream_completed_response["value"]:
+                # Response is fully on the wire — somehow the cap tripped
+                # AFTER the final body frame. Nothing to do; the
+                # exception is just bubbling out of a tail coroutine.
+                logger.debug(
+                    "body cap tripped after downstream completed response "
+                    "(streamed=%d, limit=%d)",
+                    exc.streamed_bytes,
+                    limit,
+                )
+                return
             if downstream_started_response["value"]:
-                # Cannot inject a 413 mid-stream without writing
-                # ill-formed HTTP — the response frame has already been
-                # flushed. Log and let the connection close. In practice
-                # this is unreachable: handlers consume the full body
-                # before emitting any response.
+                # Headers flushed but no terminal body frame. We cannot
+                # change the status code, but we MUST close the body
+                # stream so the client doesn't hang on Content-Length /
+                # chunked-trailer expectations. Emit an empty terminal
+                # frame and log a warning. (codex round-2 BLOCKING #1)
                 logger.warning(
                     "request body cap (%d) tripped after downstream "
-                    "began writing response; %d bytes streamed",
+                    "began writing response; %d bytes streamed — "
+                    "closing response body stream",
                     limit,
                     exc.streamed_bytes,
                 )
+                try:
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": b"",
+                            "more_body": False,
+                        }
+                    )
+                except Exception:
+                    # Connection may already be torn down — best-effort.
+                    logger.debug(
+                        "terminal body frame send failed after cap trip",
+                        exc_info=True,
+                    )
                 return
             await _send_413(
                 send,

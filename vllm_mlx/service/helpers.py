@@ -1514,15 +1514,49 @@ def get_model_max_context(engine) -> int:
     return _FALLBACK_MAX_CONTEXT_TOKENS
 
 
-def count_prompt_tokens(engine, prompt: str) -> int:
+def count_prompt_tokens(engine, prompt) -> int:
     """Return the integer prompt-token count under ``engine``'s tokenizer.
 
-    Mirrors the BOS-handling that ``BatchedEngine.estimate_new_tokens``
-    does — adds special tokens only when the prompt doesn't already
-    start with the model's BOS. Returns 0 on tokenizer failure so the
-    caller falls through to engine-side validation rather than 500-ing
-    on a metadata edge case.
+    Accepts both string prompts (chat-template output, raw completions)
+    and pre-tokenised forms (list[int] / list[list[int]]). The
+    completions API contract today is ``str | list[str]`` (token-id
+    prompts would be an OpenAI feature flag), but the helper is the
+    one DoS-gate boundary and codex round-2 BLOCKING #3 flagged that a
+    list arriving there should not silently bypass the cap. So we
+    handle both shapes explicitly: token-id lists skip tokenization
+    entirely and use ``len()``; strings flow through ``tokenizer.encode``
+    with BOS-aware ``add_special_tokens`` handling that mirrors
+    ``BatchedEngine.estimate_new_tokens``.
+
+    Returns 0 on tokenizer failure / unknown shape so the caller
+    falls through to engine-side validation rather than 500-ing on a
+    metadata edge case. The wire-level body cap stays as the last
+    line of DoS defense.
     """
+    # Pre-tokenised forms — pure-arithmetic answer, no tokenizer needed.
+    if isinstance(prompt, list):
+        if not prompt:
+            return 0
+        first = prompt[0]
+        if isinstance(first, int):
+            # list[int] — a single tokenised prompt.
+            return len(prompt)
+        if isinstance(first, list):
+            # list[list[int]] — multi-prompt batch; conservatively
+            # return the longest so the cap fires on the worst entry.
+            try:
+                return max((len(p) for p in prompt if isinstance(p, list)), default=0)
+            except TypeError:
+                return 0
+        # Fall through for list[str] — caller should have unpacked it,
+        # but defensively handle the single-string case.
+        if isinstance(first, str) and len(prompt) == 1:
+            prompt = first
+        else:
+            return 0
+    if not isinstance(prompt, str):
+        return 0
+
     tokenizer = getattr(engine, "tokenizer", None) or getattr(
         engine, "_tokenizer", None
     )
@@ -1630,7 +1664,7 @@ def enforce_context_length_for_messages(
 
 def enforce_context_length_for_prompt(
     engine,
-    prompt: str,
+    prompt,
     *,
     max_tokens: int | None = None,
 ) -> None:
@@ -1638,7 +1672,10 @@ def enforce_context_length_for_prompt(
 
     Same shape as :func:`enforce_context_length_for_messages` but for
     routes that already hold a raw text prompt (``/v1/completions``).
-    No chat template applied — the client provided the string verbatim.
+    No chat template applied — the client provided the string (or
+    list-of-ints token sequence) verbatim. ``count_prompt_tokens``
+    handles both shapes; see its docstring for the codex round-2
+    BLOCKING #3 rationale on non-string prompts.
     """
     if getattr(engine, "is_mllm", False):
         return

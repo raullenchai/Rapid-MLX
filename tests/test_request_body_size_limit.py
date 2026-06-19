@@ -405,12 +405,25 @@ def test_no_double_response_when_handler_already_sent_headers():
 
     # Exactly one http.response.start frame on the wire — no 413
     # injected after the 200 went out. This is the load-bearing
-    # assertion that the codex BLOCKING was about.
+    # assertion that the codex round-1 BLOCKING #2 was about.
     starts = [m for m in sent if m["type"] == "http.response.start"]
     assert len(starts) == 1, sent
     assert starts[0]["status"] == 200, (
         "middleware injected a 413 on top of an in-flight 200 — "
         "double-response regression"
+    )
+    # codex round-2 BLOCKING #2: the test must also assert the
+    # response stream was properly terminated. Without the close-frame
+    # logic added in round 2, the middleware would silently return
+    # leaving the client hanging on a Content-Length / chunked
+    # trailer that never arrived.
+    terminal_bodies = [
+        m
+        for m in sent
+        if m["type"] == "http.response.body" and not m.get("more_body", False)
+    ]
+    assert len(terminal_bodies) == 1, (
+        f"response stream not terminated after cap trip — got {sent}"
     )
 
 

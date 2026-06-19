@@ -87,9 +87,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # ``service/helpers.py::enforce_context_length_for_prompt``.
         _resolved_max = _resolve_max_tokens(request.max_tokens)
         for _p in prompts:
-            enforce_context_length_for_prompt(
-                engine, _p, max_tokens=_resolved_max
-            )
+            enforce_context_length_for_prompt(engine, _p, max_tokens=_resolved_max)
 
         if request.stream:
             _admission_committed = True
