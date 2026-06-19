@@ -3427,7 +3427,9 @@ class Scheduler:
                         # the previous token is recoverable as
                         # ``decoded_so_far - new_text``).
                         prev_text = (
-                            decoded_so_far[: -len(new_text)] if new_text else decoded_so_far
+                            decoded_so_far[: -len(new_text)]
+                            if new_text
+                            else decoded_so_far
                         )
                         if len(trimmed_total) > len(prev_text):
                             output.new_text = trimmed_total[len(prev_text) :]

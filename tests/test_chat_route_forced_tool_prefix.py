@@ -73,3 +73,35 @@ def test_prefix_unknown_parser_returns_none():
 
 def test_prefix_empty_name_returns_none():
     assert _forced_tool_call_prefix("hermes", "") is None
+
+
+def test_prefix_json_escapes_hostile_function_name():
+    """A function name containing quotes / backslashes / control chars
+    must NOT corrupt the wire envelope. Codex r4 BLOCKING."""
+    import json as _json
+
+    hostile = 'x"], "arguments": {"injected": true}, "_":"'
+    out = _forced_tool_call_prefix("hermes", hostile)
+    assert out is not None
+    # The encoded name MUST appear as a valid JSON-escaped string.
+    assert _json.dumps(hostile) in out
+    # And the raw injected key must NOT appear unescaped — i.e. the
+    # wire envelope is still a single ``"name": ...`` field, not
+    # ``"name": ..., "injected": true``.
+    # Round-trip parse the partial envelope to confirm it's still a
+    # well-formed JSON object with the expected ``name`` value.
+    body = out[len("<tool_call>\n") :] + "{}}"  # close arguments+wrapper
+    parsed = _json.loads(body)
+    assert parsed["name"] == hostile
+    assert "injected" not in parsed  # injection key did not escape
+
+
+def test_prefix_json_escapes_newline_in_name():
+    """Newlines / control characters in the function name must be
+    encoded; raw insertion would break the wire envelope's first line."""
+    import json as _json
+
+    name_with_nl = "func\nwith\nnewlines"
+    out = _forced_tool_call_prefix("hermes", name_with_nl)
+    assert out is not None
+    assert _json.dumps(name_with_nl) in out

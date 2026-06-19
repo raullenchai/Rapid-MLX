@@ -951,14 +951,41 @@ class MLXMultimodalLM:
         # sanitisation layer as ``utils.chat_template.apply_chat_template``
         # so this bespoke video path doesn't bypass the prompt-injection
         # defence.
-        from ..utils.chat_template import _sanitize_messages_for_template
+        #
+        # Defence-in-depth: if the registry-driven sanitiser fails (an
+        # unusual processor quirk), fall back to the literal baseline
+        # marker set instead of letting raw input reach the tokenizer.
+        # Codex r4 BLOCKING — silently swallowing the exception would
+        # reopen the prompt-injection bypass on any quirk that trips
+        # the sanitiser.
+        from ..utils.chat_template import (
+            _CHAT_TEMPLATE_ROLE_MARKERS,
+            _build_marker_pattern,
+            _sanitize_message_content,
+            _sanitize_messages_for_template,
+        )
 
         try:
             native_messages = _sanitize_messages_for_template(
                 native_messages, self.processor
             )
         except Exception:
-            pass
+            # Baseline-marker fallback. Same hard-coded marker list the
+            # full sanitiser would have started from; still neutralises
+            # the canonical ChatML / Llama / Gemma / Harmony openers.
+            baseline_pattern = _build_marker_pattern(set(_CHAT_TEMPLATE_ROLE_MARKERS))
+            if baseline_pattern is not None:
+                fallback_msgs = []
+                for _m in native_messages:
+                    if isinstance(_m, dict) and "content" in _m:
+                        _new = dict(_m)
+                        _new["content"] = _sanitize_message_content(
+                            _m["content"], baseline_pattern
+                        )
+                        fallback_msgs.append(_new)
+                    else:
+                        fallback_msgs.append(_m)
+                native_messages = fallback_msgs
 
         text = self.processor.apply_chat_template(
             native_messages,

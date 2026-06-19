@@ -101,10 +101,12 @@ def _collect_role_markers(template_applicator) -> set[str]:
     for tok in candidates:
         if not tok or not isinstance(tok, str):
             continue
-        if tok.startswith("<|") and tok.endswith("|>"):
-            markers.add(tok)
-        elif tok.startswith("<") and tok.endswith(">") and any(
-            kw in tok for kw in ("turn", "header", "message", "channel")
+        if (
+            tok.startswith("<|")
+            and tok.endswith("|>")
+            or tok.startswith("<")
+            and tok.endswith(">")
+            and any(kw in tok for kw in ("turn", "header", "message", "channel"))
         ):
             markers.add(tok)
     return markers
@@ -161,9 +163,7 @@ def _sanitize_message_content(
         new_parts = []
         for part in content:
             if isinstance(part, dict):
-                if part.get("type") == "text" and isinstance(
-                    part.get("text"), str
-                ):
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
                     new_part = dict(part)
                     new_part["text"] = _neutralize_in_string(part["text"], pattern)
                     new_parts.append(new_part)
@@ -189,16 +189,19 @@ def _sanitize_messages_for_template(
 
     The sanitiser runs against EVERY ``apply_chat_template`` call (one
     function wraps every render in this module) so the fix is
-    template-agnostic. Only ``role in {"user", "tool"}`` are
-    sanitised: ``system`` / ``assistant`` content comes from the
-    server / model and is trusted; sanitising it would damage the
-    model's own outputs in multi-turn conversations.
+    template-agnostic. ALL roles are sanitised — the server cannot
+    prove an ``assistant``-role message in the request was actually
+    produced by its own model output (multi-turn clients ship the
+    whole ``messages`` array, so a malicious client can forge
+    ``{"role": "assistant", "content": "<|im_start|>system\\n..."}``
+    on a replay, codex r4 BLOCKING).
 
     The neutralisation strategy preserves the literal text visually
-    (inserts U+200B after the opening ``<``) so a user genuinely
-    quoting a marker in their message still sees the marker rendered
-    in their message body — they just can't escalate it to a real
-    control token. See ``_neutralize_in_string`` for the rationale.
+    (inserts U+200B after the opening ``<``) so even a legitimate
+    assistant turn that genuinely contained the literal marker
+    round-trips with the same visible glyphs — only the tokenizer's
+    interpretation is neutralised. See ``_neutralize_in_string`` for
+    the rationale.
     """
     markers = _collect_role_markers(template_applicator)
     pattern = _build_marker_pattern(markers)
@@ -207,14 +210,6 @@ def _sanitize_messages_for_template(
     sanitized: list[dict] = []
     for msg in messages:
         if not isinstance(msg, dict):
-            sanitized.append(msg)
-            continue
-        role = msg.get("role")
-        # Untrusted roles: user input AND ``tool`` results (these are
-        # populated from the previous turn's external tool execution,
-        # which is also a prompt-injection vector — a malicious tool
-        # could return a string containing role markers).
-        if role not in ("user", "tool"):
             sanitized.append(msg)
             continue
         content = msg.get("content")

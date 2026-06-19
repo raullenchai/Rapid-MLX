@@ -1020,9 +1020,7 @@ class BatchedEngine(BaseEngine):
             # path would fall through to the post-parse synthesis
             # fallback because the parser sees only the model
             # continuation, not the prefixed envelope).
-            mllm_assistant_text_prefix = (
-                kwargs.pop("_assistant_text_prefix", "") or ""
-            )
+            mllm_assistant_text_prefix = kwargs.pop("_assistant_text_prefix", "") or ""
             output = await self._mllm_scheduler.generate(
                 prompt=prompt,
                 images=images,

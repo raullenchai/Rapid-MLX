@@ -180,7 +180,13 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
         # JSON envelope opener — model continues with the arguments
         # object body. Leave a trailing space so the model picks up
         # immediately with ``{...}``.
-        return f'<tool_call>\n{{"name": "{function_name}", "arguments": '
+        #
+        # ``json.dumps(function_name)`` escapes any quoted / backslash /
+        # control character in the function name so a hostile tool
+        # spec (``{"name": "x\\\\\\", \\"arguments\\": ..."}``) cannot
+        # corrupt the wire envelope or inject extra fields. Codex r4
+        # BLOCKING — direct f-string interpolation was vulnerable.
+        return f'<tool_call>\n{{"name": {json.dumps(function_name)}, "arguments": '
     # Channel-routed (harmony / gemma4) and parsers whose wire shape
     # we have NOT audited: no prefix injection. The post-parse
     # synthesis path remains as a fallback (``_synthesize_forced_tool_call``).
@@ -1203,9 +1209,11 @@ async def _create_chat_completion_impl(
             # instead of falling through to ``_synthesize_forced_tool_call``'s
             # empty-args default (codex r1 P2 on this PR).
             _forced_prefix_value = chat_kwargs.get("forced_assistant_prefix")
-            if _forced_prefix_value and output is not None and not (
-                output.text or ""
-            ).startswith(_forced_prefix_value):
+            if (
+                _forced_prefix_value
+                and output is not None
+                and not (output.text or "").startswith(_forced_prefix_value)
+            ):
                 output = _dc_replace(
                     output,
                     text=_forced_prefix_value + (output.text or ""),
