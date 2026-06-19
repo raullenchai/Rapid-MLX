@@ -604,13 +604,29 @@ class MLLMScheduler:
                 logprobs=getattr(response, "logprobs", None),
             )
 
-            # Check text-based stop sequences
+            # Check text-based stop sequences. The detokenizer's
+            # accumulated text is the AUTHORITATIVE stream surface — what
+            # the route layer is forwarding to clients chunk-by-chunk —
+            # so matching against it (when available) keeps the stop
+            # surface aligned with the streamed surface and avoids the
+            # text-skew the text scheduler hit on SentencePiece-default-
+            # skip-special-tokens families (qwen3-vl / gemma-3n in the
+            # 2026-06-18 fuzz battery). Fall back to a fresh
+            # ``tokenizer.decode(...)`` if the detokenizer isn't usable.
             finish_reason = response.finish_reason
             stop_trimmed = False
             if finish_reason is None and request.stop:
-                decoded_so_far = tokenizer.decode(request.output_tokens)
+                detok = self._detokenizer_pool.get(request_id)
+                decoded_so_far: str
+                if detok is not None and hasattr(detok, "text"):
+                    try:
+                        decoded_so_far = detok.text
+                    except Exception:
+                        decoded_so_far = tokenizer.decode(request.output_tokens)
+                else:
+                    decoded_so_far = tokenizer.decode(request.output_tokens)
                 for stop_str in request.stop:
-                    if stop_str in decoded_so_far:
+                    if stop_str and stop_str in decoded_so_far:
                         finish_reason = "stop"
                         # Trim output at stop string
                         idx = decoded_so_far.index(stop_str)
@@ -618,9 +634,12 @@ class MLLMScheduler:
                         stop_trimmed = True
                         # Emit only the valid prefix before the stop marker
                         # in new_text so streaming clients don't lose content.
-                        # Compute what was already streamed vs the trimmed total.
-                        prev_text = tokenizer.decode(request.output_tokens[:-1])
+                        # Reconstruct the prev-surface from the same source
+                        # the stop check used.
                         trimmed_total = decoded_so_far[:idx]
+                        prev_text = (
+                            decoded_so_far[: -len(new_text)] if new_text else decoded_so_far
+                        )
                         if len(trimmed_total) > len(prev_text):
                             output.new_text = trimmed_total[len(prev_text) :]
                         else:
