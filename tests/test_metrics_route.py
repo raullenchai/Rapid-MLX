@@ -23,19 +23,23 @@ def metrics_client():
 
     Using a per-test app instance keeps the global ``ServerConfig``
     singleton in a known shape and avoids interfering with other tests
-    that share the same process.
+    that share the same process. Also resets the module-level sticky
+    counter accumulator so each test sees a fresh ``(last_raw=0, baseline=0)``
+    starting state.
     """
     from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.metrics import router
+    from vllm_mlx.routes.metrics import _reset_accumulator_for_tests, router
 
     cfg = reset_config()
     cfg.model_name = "qwen3.5-4b"
     cfg.api_key = "test-secret"  # auth IS set, but /metrics must ignore it.
+    _reset_accumulator_for_tests()
 
     app = FastAPI()
     app.include_router(router)
     yield SimpleNamespace(client=TestClient(app), cfg=cfg)
     reset_config()
+    _reset_accumulator_for_tests()
 
 
 def _fake_engine(stats: dict[str, Any]):
@@ -291,3 +295,177 @@ def test_metrics_body_ends_with_newline(metrics_client):
     metrics_client.cfg.engine = _fake_engine(_FULL_STATS)
     body = metrics_client.client.get("/metrics").text
     assert body.endswith("\n")
+
+
+# ---------------------------------------------------------------------------
+# Counter monotonicity (sticky-counter accumulator — codex r1 MEDIUM)
+# ---------------------------------------------------------------------------
+
+
+def test_cache_counters_monotonic_across_cache_clear(metrics_client):
+    """Prefix-cache ``_total`` counters never decrease across a cache clear.
+
+    Prometheus contract: counters MUST be monotonically non-decreasing for
+    ``rate()`` to work. The raw cache stats reset to zero on
+    ``cache.clear()`` (admin ``POST /cache/clear`` or recovery paths) —
+    the accumulator must fold the reset into a baseline so the exposed
+    counter resumes from the previous total rather than dropping to 0.
+
+    Sequence simulated:
+      1) cache reports hits=10        → exposed should be 10
+      2) cache reports hits=15        → exposed should be 15
+      3) cache CLEARED, reports hits=0 → exposed should remain ≥ 15
+      4) cache reports hits=3         → exposed should be 18 (15 + 3)
+    """
+    stats: dict[str, Any] = {
+        "num_waiting": 0,
+        "num_running": 0,
+        "num_requests_processed": 0,
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "steps_executed": 0,
+        "uptime_seconds": 0,
+        "prefix_cache": {
+            "hits": 10,
+            "misses": 5,
+            "evictions": 2,
+            "tokens_saved": 100,
+        },
+    }
+    metrics_client.cfg.engine = _fake_engine(stats)
+
+    def _hits_value(body: str) -> int:
+        for line in body.splitlines():
+            if line.startswith("rapid_mlx_prefix_cache_hits_total ") and not line.startswith("#"):
+                return int(line.rsplit(" ", 1)[1])
+        raise AssertionError("hits_total line not found")
+
+    # Step 1: hits=10 → exposed 10
+    body = metrics_client.client.get("/metrics").text
+    assert _hits_value(body) == 10
+
+    # Step 2: hits=15 → exposed 15
+    stats["prefix_cache"]["hits"] = 15
+    body = metrics_client.client.get("/metrics").text
+    assert _hits_value(body) == 15
+
+    # Step 3: simulate cache.clear() — raw drops to 0; exposed must stay ≥ 15
+    stats["prefix_cache"]["hits"] = 0
+    body = metrics_client.client.get("/metrics").text
+    after_clear = _hits_value(body)
+    assert after_clear >= 15, (
+        f"counter regressed: was 15, now {after_clear} (cache.clear must not "
+        f"decrement the Prometheus counter)"
+    )
+
+    # Step 4: hits=3 — fresh activity after clear; exposed should be 15+3=18
+    stats["prefix_cache"]["hits"] = 3
+    body = metrics_client.client.get("/metrics").text
+    assert _hits_value(body) == 18, (
+        "after a reset the accumulator should fold the previous total "
+        "(15) into the baseline and add new raw (3) on top → 18"
+    )
+
+
+def test_sticky_accumulator_unit_behavior():
+    """Direct unit test of the accumulator — covers branches the route test misses.
+
+    The integration test above only exercises one key (hits). Verify the
+    accumulator handles a multi-key state (each key independent) and a
+    no-op same-value advance correctly.
+    """
+    from vllm_mlx.routes.metrics import _StickyCounterAccumulator
+
+    acc = _StickyCounterAccumulator()
+
+    # First advance establishes baseline=0, last_raw=raw.
+    assert acc.advance("k1", 5) == 5
+    assert acc.advance("k2", 100) == 100
+
+    # Same value twice in a row — no-op.
+    assert acc.advance("k1", 5) == 5
+
+    # Monotonic increase.
+    assert acc.advance("k1", 8) == 8
+
+    # Reset — raw drops; exposed must NOT drop.
+    assert acc.advance("k1", 0) == 8  # 8 (baseline) + 0 (raw)
+    assert acc.advance("k1", 2) == 10  # 8 (baseline) + 2 (raw)
+
+    # The other key is untouched by k1's reset.
+    assert acc.advance("k2", 105) == 105
+
+    # Defensive: negative raw is floored to 0.
+    assert acc.advance("k1", -1) == 10  # 10 (baseline so far) + 0
+    # After previous step state is (last_raw=0, baseline=10); next reset
+    # check needs raw < 0 (impossible after flooring) so baseline stays.
+    assert acc.advance("k1", 4) == 14
+
+
+# ---------------------------------------------------------------------------
+# Format-compliance smoke test (codex r1 LOW: tests should parse the body)
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_output_parses_cleanly_via_prometheus_client(metrics_client):
+    """The emitted body parses without errors via the official Prometheus parser.
+
+    Catches whole classes of regression that the hand-picked substring
+    assertions don't: malformed escapes, locale-dependent float formatting,
+    bad HELP/TYPE ordering, etc. The dependency is dev-only (see
+    ``pyproject.toml`` ``dev`` extras); the runtime route still hand-rolls
+    the format.
+    """
+    from prometheus_client.parser import text_string_to_metric_families
+
+    metrics_client.cfg.engine = _fake_engine(_FULL_STATS)
+    body = metrics_client.client.get("/metrics").text
+
+    families = list(text_string_to_metric_families(body))
+    assert len(families) > 0, "parser found zero metric families"
+
+    # Every emitted family should have at least one sample.
+    for fam in families:
+        assert len(fam.samples) > 0, f"family {fam.name} has no samples"
+
+    # Verify a few specific families round-trip the values we set.
+    by_name = {fam.name: fam for fam in families}
+    assert "rapid_mlx_requests_processed" in by_name  # parser strips _total
+    assert by_name["rapid_mlx_requests_processed"].samples[0].value == 17
+
+    # build_info gauge round-trips labels.
+    assert "rapid_mlx_build_info" in by_name
+    build_sample = by_name["rapid_mlx_build_info"].samples[0]
+    assert build_sample.labels["model"] == "qwen3.5-4b"
+    assert build_sample.value == 1.0
+
+
+def test_metrics_output_parses_cleanly_with_escaped_label(metrics_client):
+    """Output with escaped quote/backslash in a label still parses cleanly.
+
+    Regression guard for ``_escape_label_value`` — a broken escape would
+    let the body pass substring assertions but choke the real parser.
+    """
+    from prometheus_client.parser import text_string_to_metric_families
+
+    metrics_client.cfg.model_name = 'foo"bar\\baz'
+    metrics_client.cfg.engine = _fake_engine(_FULL_STATS)
+    body = metrics_client.client.get("/metrics").text
+
+    families = list(text_string_to_metric_families(body))
+    by_name = {fam.name: fam for fam in families}
+    assert "rapid_mlx_build_info" in by_name
+    # The parser should reverse the escapes to recover the original string.
+    assert by_name["rapid_mlx_build_info"].samples[0].labels["model"] == 'foo"bar\\baz'
+
+
+def test_metrics_output_parses_cleanly_when_engine_missing(metrics_client):
+    """Even the build-info-only fallback path parses cleanly."""
+    from prometheus_client.parser import text_string_to_metric_families
+
+    metrics_client.cfg.engine = None
+    body = metrics_client.client.get("/metrics").text
+
+    families = list(text_string_to_metric_families(body))
+    assert len(families) == 1
+    assert families[0].name == "rapid_mlx_build_info"

@@ -17,12 +17,30 @@ Design choices
 - **Unauthenticated**, on ``probe_router`` rather than the auth-gated
   router, to match the standard Prometheus scrape model (the scraper
   cannot send a bearer). Mirrors ``/healthz`` exactly.
+
+  The disclosure surface is intentional and matches industry convention
+  (Linkerd, Envoy, nginx-prom-exporter, kubelet, etcd all expose /metrics
+  without auth). The trust boundary is the network — operators are
+  expected to put /metrics behind a private VIP, mTLS, or a sidecar
+  proxy. Adding bearer auth here would break the standard Prometheus
+  scrape model (scrapers do not send Authorization headers by
+  convention) and is therefore deliberately out of scope.
 - **Engine-not-loaded** is a 200, not a 500 — Prometheus would otherwise
   drop the entire target. Build info is always emitted.
+- **Counter monotonicity** — the cache stats backing the
+  ``rapid_mlx_prefix_cache_*_total`` series are reset to zero whenever
+  the cache is cleared (admin-triggered via ``POST /cache/clear`` or
+  internal recovery paths). Prometheus counters MUST be monotonically
+  non-decreasing for ``rate()`` to work; otherwise ``rate()`` will spike
+  to ``+Inf`` or go negative the scrape after a clear. The
+  ``_StickyCounterAccumulator`` below snapshots the previous raw value
+  on every scrape and folds resets into a baseline, so the exposed
+  counter never decreases for the lifetime of the process.
 """
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from fastapi import APIRouter
@@ -35,6 +53,72 @@ router = APIRouter()
 
 # Prometheus text exposition format 0.0.4.
 _CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+
+
+class _StickyCounterAccumulator:
+    """Make a resettable underlying counter look monotonic to Prometheus.
+
+    The prefix/paged/memory-aware caches expose ``hits``/``misses``/
+    ``evictions``/``tokens_saved`` that reset to zero on ``cache.clear()``
+    (admin ``POST /cache/clear`` and a few internal recovery paths). If we
+    forwarded those raw values to Prometheus they would decrement, and
+    ``rate()`` would either spike to ``+Inf`` (overflow detection in
+    Prometheus 2.x) or go negative for one scrape — both visibly wrong on
+    dashboards.
+
+    Strategy: on each ``advance(key, raw)`` call, compare ``raw`` to the
+    previously-seen raw value for that ``key``. If ``raw < last_raw`` we
+    assume the underlying source was reset (e.g. ``cache.clear()``) and
+    fold the previously-exposed total into a baseline. The exposed value
+    is always ``baseline + raw``, which is monotonic.
+
+    Race notes (audit-relevant):
+    - All state mutations happen under a single ``threading.Lock``. A
+      concurrent scrape will see either the pre-advance or post-advance
+      snapshot — never a torn baseline.
+    - Reads use ``int`` so the bookkeeping is allocation-free per scrape.
+    - The accumulator state is process-local. A process restart resets
+      all counters to whatever the cache currently reports (matches every
+      other Prometheus client library — ``process_start_time_seconds`` is
+      how scrapers detect this).
+    """
+
+    def __init__(self) -> None:
+        # key → (last_raw_seen, baseline_added_on_resets)
+        self._state: dict[str, tuple[int, int]] = {}
+        self._lock = threading.Lock()
+
+    def advance(self, key: str, raw: int) -> int:
+        """Return a monotonic value for ``raw``, recording state for ``key``.
+
+        Args:
+            key: stable identifier for the underlying counter (we use the
+                fully-qualified Prometheus metric name).
+            raw: latest raw value read from the cache stats dict.
+
+        Returns:
+            Monotonic counter value to expose to Prometheus.
+        """
+        raw = max(0, int(raw))  # defensively floor at 0
+        with self._lock:
+            last_raw, baseline = self._state.get(key, (0, 0))
+            if raw < last_raw:
+                # The underlying counter was reset. Fold what we'd already
+                # exposed (last_raw) into the baseline so the series
+                # resumes from there.
+                baseline = baseline + last_raw
+            self._state[key] = (raw, baseline)
+            return baseline + raw
+
+
+# Module-level accumulator — one process, one cumulative cache series.
+_cache_counter_accumulator = _StickyCounterAccumulator()
+
+
+def _reset_accumulator_for_tests() -> None:
+    """Test-only hook: clear the sticky-counter state between tests."""
+    global _cache_counter_accumulator
+    _cache_counter_accumulator = _StickyCounterAccumulator()
 
 
 def _escape_label_value(value: str) -> str:
@@ -216,38 +300,34 @@ def _render_prometheus(cfg: Any) -> str:
             break
 
     if cache_stats is not None:
-        lines.extend(
-            _fmt_metric(
+        # The raw cache counters are reset by ``cache.clear()``; pipe each
+        # one through the sticky accumulator so the exposed value never
+        # decreases (Prometheus counter contract — required by rate()).
+        for raw_key, metric_name, help_text in (
+            (
+                "hits",
                 "rapid_mlx_prefix_cache_hits_total",
-                "counter",
                 "Prefix-cache lookups that hit a cached entry.",
-                int(_coerce_number(cache_stats.get("hits"))),
-            )
-        )
-        lines.extend(
-            _fmt_metric(
+            ),
+            (
+                "misses",
                 "rapid_mlx_prefix_cache_misses_total",
-                "counter",
                 "Prefix-cache lookups that missed.",
-                int(_coerce_number(cache_stats.get("misses"))),
-            )
-        )
-        lines.extend(
-            _fmt_metric(
+            ),
+            (
+                "evictions",
                 "rapid_mlx_prefix_cache_evictions_total",
-                "counter",
                 "Prefix-cache entries evicted by the LRU policy.",
-                int(_coerce_number(cache_stats.get("evictions"))),
-            )
-        )
-        lines.extend(
-            _fmt_metric(
+            ),
+            (
+                "tokens_saved",
                 "rapid_mlx_prefix_cache_tokens_saved_total",
-                "counter",
                 "Prompt tokens skipped thanks to prefix-cache hits.",
-                int(_coerce_number(cache_stats.get("tokens_saved"))),
-            )
-        )
+            ),
+        ):
+            raw = int(_coerce_number(cache_stats.get(raw_key)))
+            monotonic = _cache_counter_accumulator.advance(metric_name, raw)
+            lines.extend(_fmt_metric(metric_name, "counter", help_text, monotonic))
 
     # Prometheus requires a trailing newline.
     return "\n".join(lines) + "\n"

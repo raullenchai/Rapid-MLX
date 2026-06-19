@@ -129,6 +129,10 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
+    # Test-only: parse the /metrics output through the official Prometheus
+    # parser to catch format regressions. NOT used at runtime — the route
+    # hand-rolls the exposition format to avoid a runtime dep.
+    "prometheus_client>=0.16.0",
 ]
 vllm = [
     "vllm>=0.4.0",
