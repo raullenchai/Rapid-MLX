@@ -361,6 +361,170 @@ class TestStreaming:
 
 
 # ---------------------------------------------------------------------------
+# Codex r3 regressions: re-emit, sentinel split, XML string with closer,
+# stream-end flush.
+# ---------------------------------------------------------------------------
+
+
+class TestCodexR3Regressions:
+    def test_no_reemit_after_tool_close(self, parser: LlamaToolParser):
+        """Codex r3 BLOCKING: once a bare-JSON tool call has been
+        streamed as a ``tool_calls`` delta, subsequent prose deltas
+        MUST NOT re-emit the same tool call. The old
+        ``_buffered_region_start``-based path re-scanned from position
+        0 on every call and kept hitting the already-emitted span."""
+        prev = '{"name": "a", "parameters": {}}'
+        r1 = parser.extract_tool_calls_streaming(
+            previous_text="", current_text=prev, delta_text=prev
+        )
+        assert r1 is not None and "tool_calls" in r1
+
+        delta = " some prose"
+        r2 = parser.extract_tool_calls_streaming(
+            previous_text=prev,
+            current_text=prev + delta,
+            delta_text=delta,
+        )
+        assert r2 == {"content": " some prose"}
+
+    def test_back_to_back_bare_json_tool_calls(self, parser: LlamaToolParser):
+        """Codex r3 BLOCKING: two bare-JSON tool objects in a row must
+        each be emitted once, with ``index`` incremented on the second.
+        Pre-fix path either duplicated the first call or dropped the
+        second."""
+        d1 = '{"name": "a", "parameters": {}}'
+        r1 = parser.extract_tool_calls_streaming(
+            previous_text="", current_text=d1, delta_text=d1
+        )
+        assert r1 is not None and "tool_calls" in r1
+        assert r1["tool_calls"][0]["function"]["name"] == "a"
+        assert r1["tool_calls"][0]["index"] == 0
+
+        d2 = '{"name": "b", "parameters": {}}'
+        cur = d1 + d2
+        r2 = parser.extract_tool_calls_streaming(
+            previous_text=d1, current_text=cur, delta_text=d2
+        )
+        assert r2 is not None and "tool_calls" in r2
+        assert len(r2["tool_calls"]) == 1
+        assert r2["tool_calls"][0]["function"]["name"] == "b"
+        # Continuation index — clients identify tool calls by index.
+        assert r2["tool_calls"][0]["index"] == 1
+
+    def test_idempotent_double_call_on_same_prefix(self, parser: LlamaToolParser):
+        """Codex r3 BLOCKING corollary: feeding the same
+        ``(previous_text, current_text, delta_text)`` triple twice must
+        not double-emit. The state-machine is purely a diff of
+        ``_emitted_state`` so identical input yields identical output."""
+        prev = '{"name": "a", "parameters": {}}'
+        r1 = parser.extract_tool_calls_streaming(
+            previous_text="", current_text=prev, delta_text=prev
+        )
+        assert r1 is not None and "tool_calls" in r1
+
+        # Re-call with the SAME previous_text — invariant means there
+        # is no new content past previous_text, so nothing to emit.
+        r1_again = parser.extract_tool_calls_streaming(
+            previous_text=prev, current_text=prev, delta_text=""
+        )
+        assert r1_again is None
+
+    @pytest.mark.parametrize(
+        "split_at",
+        [1, 2, 4, 6, 8, 10, 12],  # various split points within '<|python_tag|>'
+    )
+    def test_python_tag_split_across_deltas(
+        self, parser: LlamaToolParser, split_at: int
+    ):
+        """Codex r3 MAJOR: partial ``<|python_tag|>`` prefixes (``<|``,
+        ``<|py``, ``<|python_ta``...) MUST be held back so per-char SSE
+        doesn't leak them as content before the full tag arrives."""
+        full = '<|python_tag|>{"name": "x", "parameters": {}}'
+        d1 = full[:split_at]
+        d2 = full[split_at:]
+
+        r1 = parser.extract_tool_calls_streaming(
+            previous_text="", current_text=d1, delta_text=d1
+        )
+        # The first chunk is a strict prefix of the sentinel — never
+        # emit it as content.
+        assert r1 is None or "content" not in r1
+
+        r2 = parser.extract_tool_calls_streaming(
+            previous_text=d1, current_text=full, delta_text=d2
+        )
+        assert r2 is not None and "tool_calls" in r2
+        assert r2["tool_calls"][0]["function"]["name"] == "x"
+
+    @pytest.mark.parametrize("split_at", [1, 3, 5, 8])
+    def test_function_open_split_across_deltas(
+        self, parser: LlamaToolParser, split_at: int
+    ):
+        """Codex r3 MAJOR: partial ``<function=`` prefixes (``<f``,
+        ``<fun``, ``<function``...) MUST be held back."""
+        full = '<function=greet>{"name": "Alice"}</function>'
+        d1 = full[:split_at]
+        d2 = full[split_at:]
+
+        r1 = parser.extract_tool_calls_streaming(
+            previous_text="", current_text=d1, delta_text=d1
+        )
+        assert r1 is None or "content" not in r1
+
+        r2 = parser.extract_tool_calls_streaming(
+            previous_text=d1, current_text=full, delta_text=d2
+        )
+        assert r2 is not None and "tool_calls" in r2
+        assert r2["tool_calls"][0]["function"]["name"] == "greet"
+
+    def test_xml_arg_value_contains_function_closer(self, parser: LlamaToolParser):
+        """Codex r3 MAJOR: a JSON string inside the XML-wrapped args
+        that *contains* ``}</function>`` must NOT terminate the wrapper
+        early. The old ``re.compile(r"<function=([^>]+)>(\\{.*?\\})</function>")``
+        was delimiter-unsafe and corrupted both the args and the
+        trailing content."""
+        text = '<function=echo>{"msg": "close }</function> trick"}</function>'
+        result = parser.extract_tool_calls(text)
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "echo"
+        assert json.loads(result.tool_calls[0]["arguments"]) == {
+            "msg": "close }</function> trick"
+        }
+        # Nothing trails the genuine ``</function>`` — content is empty.
+        assert result.content is None
+
+    def test_flush_held_content_at_stream_end(self, parser: LlamaToolParser):
+        """Codex r3 MAJOR: when the stream ends with bytes still being
+        held as a possible sentinel prefix AND no tool call ever fired,
+        those bytes must be released as ordinary content. Mirror of the
+        Hermes / harmony streaming-cluster fix."""
+        # Held suffix — ``<|python`` is a strict prefix of the
+        # python_tag opener.
+        assert parser.flush_held_content("abc<|python") == "<|python"
+        # No held bytes — flush returns empty so no spurious event.
+        assert parser.flush_held_content("hello world") == ""
+
+    def test_streaming_postprocessor_invariant_violation(self, parser: LlamaToolParser):
+        """Codex r3 NIT: when ``current_text`` does not start with
+        ``previous_text`` (a postprocessor bug), the parser must not
+        crash. We accept a defensive over-emission (extra bytes flushed
+        as content) — losing tokens or raising is worse than briefly
+        duplicating content under a contract violation."""
+        # Pathological input: postprocessor changed history mid-stream.
+        previous = "old prefix "
+        delta = "new tail"
+        current = "DIFFERENT old prefix " + delta  # doesn't start with previous
+        # Must not raise and must produce a content event with a string.
+        r = parser.extract_tool_calls_streaming(
+            previous_text=previous, current_text=current, delta_text=delta
+        )
+        # Either None (everything held) or a content event — never raise.
+        if r is not None:
+            assert "content" in r
+            assert isinstance(r["content"], str)
+
+
+# ---------------------------------------------------------------------------
 # Wire-format declaration — keep ``test_tool_parser_wire_formats`` happy
 # and document the upgrade explicitly.
 # ---------------------------------------------------------------------------
