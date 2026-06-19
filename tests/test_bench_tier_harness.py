@@ -315,8 +315,7 @@ def test_harness_dead_server_between_profiles_reboots(capsys):
 
     # All 5 profiles must have been visited despite the mid-sweep death.
     assert tuple(invocations) == HARNESS_PROFILES, (
-        "cascade fix must keep iterating after a server reboot; "
-        f"got {invocations}"
+        f"cascade fix must keep iterating after a server reboot; got {invocations}"
     )
 
     # At least 2 serve() calls: initial boot + 1 reboot between profiles.
@@ -458,8 +457,7 @@ def test_harness_profile_timeout_does_not_block_next_profile(capsys):
     # Every profile still got tried — the hung codex didn't block the
     # next four.
     assert tuple(invocations) == HARNESS_PROFILES, (
-        "per-profile timeout must let the sweep continue; "
-        f"got {invocations}"
+        f"per-profile timeout must let the sweep continue; got {invocations}"
     )
     # Codex must surface as a FAIL with the timeout marker.
     assert "timed out" in captured.out, (

@@ -49,6 +49,7 @@ HARNESS_PROFILES: tuple[str, ...] = (
 TIER_PORT_MIN = 8500
 TIER_PORT_MAX = 8599
 
+
 def _resolve_harness_profile_timeout() -> int:
     """Read the per-profile harness timeout from the environment.
 
@@ -672,10 +673,7 @@ class _HarnessServerSession:
         try:
             info = ctx.__enter__()
         except Exception as exc:  # noqa: BLE001 — failed reboot must surface
-            note = (
-                f"reboot from port {old_port} failed: "
-                f"{type(exc).__name__}: {exc}"
-            )
+            note = f"reboot from port {old_port} failed: {type(exc).__name__}: {exc}"
             return False, note
 
         released = {"done": False}
@@ -774,8 +772,7 @@ def _run_single_profile(
                 "(no detail)",
             )
             detail = (
-                f"{report.passed}p {n_fail}f {n_err}e {report.skipped}s "
-                f"| {first_bad}"
+                f"{report.passed}p {n_fail}f {n_err}e {report.skipped}s | {first_bad}"
             )
         return ok, detail
 
