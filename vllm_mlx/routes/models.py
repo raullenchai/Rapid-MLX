@@ -14,11 +14,49 @@ on ``qwen3.5-9b-4bit`` doesn't have to hand-tune sliders.
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..api.models import ModelInfo, ModelsResponse
+from ..api.utils import is_mllm_model
 from ..config import get_config
 from ..middleware.auth import verify_api_key
 from ..model_aliases import resolve_profile
 
 router = APIRouter()
+
+
+def _reported_modality(model_id: str, profile_modality: str) -> str:
+    """Return the modality the wire-level ``/v1/models`` should advertise.
+
+    ``AliasProfile.modality`` is an engine-routing discriminator:
+    ``text`` selects the AR ``BatchedEngine`` lane, ``text-diffusion``
+    selects the diffusion lane. Vision-Language aliases (qwen3-vl-*,
+    gemma-3n-*, etc.) deliberately keep ``modality="text"`` internally
+    because their language backbone IS routed through the AR lane —
+    the multimodal path is layered on top via ``MLLMBatchGenerator``,
+    not a separate engine. Reusing the routing discriminator as the
+    externally-reported modality therefore mislabels VL models as
+    text-only and downstream clients skip the image content shapes
+    they otherwise would have sent (F-067).
+
+    The fix derives the reported value from the same ``is_mllm_model``
+    detector the rest of the codebase already trusts to gate VLM
+    routing (see ``cli.py``/``server.py``: ``is_mllm=getattr(args,
+    "mllm", False) or is_mllm_model(args.model)``). This keeps engine
+    routing untouched while reporting an accurate capability hint on
+    the wire. Non-``text`` profile modalities (e.g. ``text-diffusion``)
+    bypass the detector entirely so existing dispatched lanes still
+    advertise their canonical value.
+    """
+    if profile_modality != "text":
+        return profile_modality
+    try:
+        if is_mllm_model(model_id):
+            return "image"
+    except Exception:  # noqa: BLE001
+        # ``is_mllm_model`` reads local config / HF cache; any IO or
+        # parse failure must NOT block ``/v1/models``. Fall back to
+        # the profile's declared modality so the endpoint stays
+        # available even when the cache layer is misbehaving.
+        pass
+    return profile_modality
 
 
 def _build_model_info(model_id: str) -> ModelInfo:
@@ -29,11 +67,18 @@ def _build_model_info(model_id: str) -> ModelInfo:
     HF path (``mlx-community/Qwen3.5-4B-MLX-4bit``); ``resolve_profile``
     handles both. Unknown ids (operator-supplied custom paths, models
     not yet in ``aliases.json``) get the OpenAI baseline shape with
-    every extension field at ``None``.
+    every extension field at ``None`` — except modality, which still
+    runs through the multimodal detector so an unregistered VLM repo
+    id still advertises ``image`` (F-067 layer fix covers raw HF paths
+    too, not just registered aliases).
     """
     profile = resolve_profile(model_id)
     if profile is None:
-        return ModelInfo(id=model_id)
+        try:
+            inferred = "image" if is_mllm_model(model_id) else None
+        except Exception:  # noqa: BLE001
+            inferred = None
+        return ModelInfo(id=model_id, modality=inferred)
     # ``recommended_sampling`` lives on the dataclass as a tuple of
     # ``(key, value)`` pairs (frozen-dataclass requirement); convert
     # back to a dict for JSON serialization. ``None`` stays ``None``
@@ -52,7 +97,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         is_moe=profile.is_moe,
         tool_call_parser=profile.tool_call_parser,
         reasoning_parser=profile.reasoning_parser,
-        modality=profile.modality,
+        modality=_reported_modality(model_id, profile.modality),
     )
 
 
