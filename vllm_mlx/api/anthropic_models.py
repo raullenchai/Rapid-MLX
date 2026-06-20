@@ -36,6 +36,54 @@ class AnthropicContentBlock(BaseModel):
     # image block
     source: dict | None = None
 
+    @field_validator("text", mode="before")
+    @classmethod
+    def _reject_non_string_text(cls, value: Any) -> Any:
+        """Reject non-string ``text`` with a clean, field-named error
+        message (H-15).
+
+        ``text: str | None`` already 422s on a non-string value, but
+        Pydantic's default message buries ``text`` under a
+        ``messages.0.content.str: Input should be a valid string`` loc
+        trail because the parent ``AnthropicMessage.content`` is a
+        ``str | list[AnthropicContentBlock]`` union (the str-arm fails
+        first, then the list-arm fails on ``text`` — two confusing
+        union errors). Run an explicit before-validator so the client
+        sees a single actionable message naming ``content[].text``
+        directly.
+        """
+        if value is None or isinstance(value, str):
+            return value
+        raise ValueError(
+            f"content[].text must be a string (got {type(value).__name__})"
+        )
+
+    @model_validator(mode="after")
+    def _validate_image_source_type(self) -> "AnthropicContentBlock":
+        """Reject non-string ``source.data`` / ``source.url`` (H-15
+        sibling).
+
+        Anthropic image blocks ship the payload inside ``source`` with
+        either ``{"type":"base64","media_type":"…","data":"…"}`` or
+        ``{"type":"url","url":"…"}``. ``source`` is declared ``dict``
+        (no inner schema) so a non-string ``data`` / ``url`` value
+        (e.g. a nested list — the same H-15 shape) used to fall through
+        the schema layer and surface as an uninformative downstream
+        error. Pin a string-typed check here for parity with the
+        OpenAI-side ``image_url.url`` rule (F-066) so the failure
+        names the field cleanly at the schema layer.
+        """
+        if self.type == "image" and isinstance(self.source, dict):
+            for key in ("data", "url"):
+                if key in self.source:
+                    val = self.source[key]
+                    if val is not None and not isinstance(val, str):
+                        raise ValueError(
+                            f"image source.{key} must be a string "
+                            f"(got {type(val).__name__})"
+                        )
+        return self
+
 
 class AnthropicMessage(BaseModel):
     """A message in an Anthropic conversation."""

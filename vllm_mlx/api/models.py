@@ -328,6 +328,33 @@ class ContentPart(BaseModel):
     video_url: VideoUrl | dict | str | None = None
     audio_url: AudioUrl | dict | str | None = None
 
+    @field_validator("text", mode="before")
+    @classmethod
+    def _validate_text_type(cls, value):  # noqa: ANN001, ANN206
+        """Reject non-string ``text`` on a content part with a clean,
+        field-named error message (H-15).
+
+        ``text`` is declared ``str | None`` so direct ContentPart
+        construction already 422s on a non-string value — but Pydantic's
+        default ``string_type`` message buries ``text`` under a nested
+        loc trail. Run a ``mode="before"`` field validator so the error
+        surfaces a single actionable line naming ``content[].text``.
+
+        The dict-fallback escape (where ``Message.content`` falls back
+        to ``list[dict]`` because the ``list[ContentPart]`` arm rejected)
+        is pinned separately at the parent ``Message`` validator — see
+        ``Message._validate_media_url_types`` below. That's the path
+        that actually escaped to ``_join_text_parts`` pre-H-15 (and
+        500'd with raw ``TypeError``); the validator here keeps direct
+        ``ContentPart(...)`` construction (engine tests, the gradio
+        app, the speculative server) covered as well.
+        """
+        if value is None or isinstance(value, str):
+            return value
+        raise ValueError(
+            f"content[].text must be a string (got {type(value).__name__})"
+        )
+
     @model_validator(mode="after")
     def _validate_media_url_types(self) -> "ContentPart":
         """Reject non-string ``url`` inside multimodal-content dicts (F-066)
@@ -442,6 +469,23 @@ class Message(BaseModel):
             if not isinstance(item, dict):
                 continue
             item_type = item.get("type")
+            # H-15: dict-arm non-string ``text`` slot. The
+            # ``list[ContentPart] | list[dict]`` union falls back to
+            # ``list[dict]`` when the ContentPart arm rejects (e.g. a
+            # nested-list or dict ``text`` value fails the
+            # ``str | None`` declaration on ``ContentPart.text``), so
+            # the malformed payload used to slip past the schema layer
+            # and crash inside ``_join_text_parts`` with raw
+            # ``TypeError: sequence item 0: expected str instance, X
+            # found`` (HTTP 500). Pin it at this dict-fallback path so
+            # the client sees a clean 400 naming ``content[].text``.
+            if "text" in item:
+                text_value = item["text"]
+                if text_value is not None and not isinstance(text_value, str):
+                    raise ValueError(
+                        "content[].text must be a string "
+                        f"(got {type(text_value).__name__})"
+                    )
             for field in ("image_url", "video_url", "audio_url"):
                 value = item.get(field)
                 if value is None:
