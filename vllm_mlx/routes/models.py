@@ -74,11 +74,20 @@ def _build_model_info(model_id: str) -> ModelInfo:
     """
     profile = resolve_profile(model_id)
     if profile is None:
+        # Preserve the prior unknown-id wire shape (``ModelInfo(id=model_id)``
+        # with the schema-default ``modality``) and only override when the
+        # multimodal detector matches. Codex round-2 BLOCKING on PR #743
+        # flagged that passing ``modality=None`` explicitly is technically
+        # the same value today but would silently regress if
+        # ``ModelInfo.modality``'s default ever flipped from ``None``.
+        # Branch on the detector instead so the default path keeps using
+        # the schema default.
         try:
-            inferred = "image" if is_mllm_model(model_id) else None
+            if is_mllm_model(model_id):
+                return ModelInfo(id=model_id, modality="image")
         except Exception:  # noqa: BLE001
-            inferred = None
-        return ModelInfo(id=model_id, modality=inferred)
+            pass
+        return ModelInfo(id=model_id)
     # ``recommended_sampling`` lives on the dataclass as a tuple of
     # ``(key, value)`` pairs (frozen-dataclass requirement); convert
     # back to a dict for JSON serialization. ``None`` stays ``None``
