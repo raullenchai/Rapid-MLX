@@ -100,6 +100,31 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 "(OpenAI legacy spec)."
             ),
         )
+    # F-152 follow-up (codex r1 BLOCKING): legacy clients use
+    # ``echo:true + logprobs:N`` SPECIFICALLY to score prompt tokens
+    # (lm-evaluation-harness, ``openai.Completion.create`` with
+    # ``echo=True``). Producing logprobs arrays that cover only the
+    # generated tokens — with a leading prompt prefix in ``text`` —
+    # would mis-align the ``text_offset`` cursor against ``tokens``
+    # and silently corrupt every prompt-conditioned score. We don't
+    # replay the prompt through the sampler (no per-token
+    # distributions available without a dedicated prefill-with-
+    # logprobs path), so reject the combination with a clear 400
+    # instead of returning partial-but-wrong data. Either knob
+    # alone keeps working; only the combination is rejected.
+    if request.echo and request.logprobs is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "`echo` combined with `logprobs` is not supported on "
+                "/v1/completions: Rapid-MLX does not replay the prompt "
+                "through the sampler, so we cannot return per-token "
+                "logprobs for the echoed prefix. Send `echo` and "
+                "`logprobs` in separate requests (the `echo` request "
+                "returns the prompt-prefixed text; the `logprobs` "
+                "request returns the generated-token distributions)."
+            ),
+        )
     engine = get_engine(request.model)
 
     # Pre-flight admission gate (C4). Reservation is released by the
@@ -246,23 +271,15 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
             # Build the legacy logprobs payload per OpenAI spec: four
             # parallel arrays keyed positionally per generated token.
-            # ``echo`` does NOT extend the logprobs arrays — the
-            # prompt tokens have no model-emitted distribution
-            # available here (we don't replay prefill through the
-            # sampler) so emitting fake ``None``-equivalent entries
-            # would mislead eval code. Document on the route and
-            # treat ``echo + logprobs`` as "response text echoes
-            # prompt; logprobs cover the GENERATED tokens only" —
-            # which matches what OpenAI's legacy endpoint did when
-            # echo was paired with non-int logprobs prior to the
-            # 2024 deprecation.
+            # ``echo + logprobs`` is rejected upstream (see route
+            # entry) so ``offset`` always starts at 0 here.
             choice_logprobs = None
             if want_logprobs:
                 tokens_arr: list[str] = []
                 token_lps: list[float] = []
                 top_lps: list[dict[str, float]] = []
                 text_offset: list[int] = []
-                offset = len(prompt) if request.echo else 0
+                offset = 0  # echo+logprobs is rejected upstream
                 for entry in token_logprobs_list:
                     tokens_arr.append(entry.token)
                     token_lps.append(entry.logprob)
@@ -371,7 +388,7 @@ async def stream_completion(
     want_logprobs = request.logprobs is not None
     top_k_logprobs = request.logprobs or 0
     effective_top_k = max(1, top_k_logprobs)  # see non-stream branch
-    text_offset_cursor = len(prompt) if request.echo else 0
+    text_offset_cursor = 0  # echo+logprobs is rejected upstream
 
     async for output in engine.stream_generate(
         prompt=prompt,

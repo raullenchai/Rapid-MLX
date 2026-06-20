@@ -297,6 +297,176 @@ class TestLogprobsSchema:
 # ---------------------------------------------------------------------------
 
 
+class TestEchoLogprobsCombination:
+    """Codex r1 BLOCKING: ``echo + logprobs`` must NOT return partial
+    arrays (would mis-align ``text_offset`` against ``tokens`` and
+    silently corrupt prompt-conditioned scores in lm-eval-harness).
+    Reject with 400 until we wire prompt-prefill-with-logprobs."""
+
+    def test_echo_with_logprobs_rejected_with_400(
+        self, patched_config, monkeypatch
+    ):
+        client, _ = _build_completions_app(patched_config, monkeypatch)
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hi",
+                "echo": True,
+                "logprobs": 3,
+            },
+        )
+        assert r.status_code == 400
+        detail = (r.json().get("error") or {}).get("message") or r.json().get(
+            "detail", ""
+        )
+        assert "echo" in detail.lower() and "logprobs" in detail.lower()
+
+    def test_echo_with_logprobs_zero_still_rejected(
+        self, patched_config, monkeypatch
+    ):
+        """``logprobs:0`` is still a logprobs request — must reject too."""
+        client, _ = _build_completions_app(patched_config, monkeypatch)
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hi",
+                "echo": True,
+                "logprobs": 0,
+            },
+        )
+        assert r.status_code == 400
+
+    def test_echo_alone_still_works(self, patched_config, monkeypatch):
+        async def _fake_generate(*_a, **_kw):
+            return _StubGenerationOutput(text=" world!")
+
+        def _factory():
+            e = MagicMock()
+            e.generate = _fake_generate
+            return e
+
+        client, _ = _build_completions_app(
+            patched_config, monkeypatch, engine_factory=_factory
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "Hello",
+                "max_tokens": 4,
+                "echo": True,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["choices"][0]["text"] == "Hello world!"
+
+
+class TestLogprobsResponseShape:
+    """Codex r1 NIT: validate the actual response payload for
+    ``logprobs=5`` and ``logprobs=0`` carries the legacy four-array
+    shape. Pre-fix the route returned no ``logprobs`` slot at all."""
+
+    def _build_streaming_engine(self, top_k_returned: int):
+        """Return an engine whose ``stream_generate`` yields one
+        ``GenerationOutput`` chunk with synthetic per-token logprobs.
+        The helper ``_extract_streaming_token_logprobs`` reads
+        ``chunk.logprobs`` + ``chunk.tokens`` + ``chunk.new_text`` —
+        wire all three on a dataclass-ish stub.
+        """
+
+        class _Chunk:
+            def __init__(self):
+                self.text = "Hi"
+                self.new_text = "Hi"
+                self.tokens = [2]
+                self.new_token_ids = [2]
+                self.prompt_tokens = 1
+                self.completion_tokens = 1
+                self.finished = True
+                self.finish_reason = "stop"
+                self.cached_tokens = 0
+                # MLX array per-vocab logprobs (small synthetic vocab
+                # so the helper can argpartition cleanly). The
+                # extractor calls ``.astype(mx.float32)`` on this
+                # value — must be a real ``mx.array``.
+                import mlx.core as mx
+
+                self.logprobs = mx.array(
+                    [-3.0, -2.0, -1.0, -4.0, -5.0], dtype=mx.float32
+                )
+
+        async def _stream(*_a, **_kw):
+            yield _Chunk()
+
+        class _Tokenizer:
+            def decode(self, ids):
+                return f"<t{ids[0]}>" if ids[0] != 42 else "Hi"
+
+        e = MagicMock()
+        e.stream_generate = _stream
+        e.tokenizer = _Tokenizer()
+        return e
+
+    def test_logprobs_five_returns_four_arrays(
+        self, patched_config, monkeypatch
+    ):
+        client, _ = _build_completions_app(
+            patched_config,
+            monkeypatch,
+            engine_factory=lambda: self._build_streaming_engine(5),
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "x",
+                "max_tokens": 1,
+                "logprobs": 5,
+            },
+        )
+        assert r.status_code == 200, r.text
+        lp = r.json()["choices"][0]["logprobs"]
+        # All four legacy arrays must be present.
+        assert set(lp.keys()) == {
+            "tokens",
+            "token_logprobs",
+            "top_logprobs",
+            "text_offset",
+        }
+        # Parallel arrays — same length.
+        n = len(lp["tokens"])
+        assert n == len(lp["token_logprobs"]) == len(lp["top_logprobs"])
+        assert n == len(lp["text_offset"])
+        # logprobs=5 → each top_logprobs dict has 5 entries (small
+        # synthetic vocab of size 5 in the fixture).
+        assert all(len(d) == 5 for d in lp["top_logprobs"])
+
+    def test_logprobs_zero_returns_empty_top_dicts(
+        self, patched_config, monkeypatch
+    ):
+        client, _ = _build_completions_app(
+            patched_config,
+            monkeypatch,
+            engine_factory=lambda: self._build_streaming_engine(0),
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "x",
+                "max_tokens": 1,
+                "logprobs": 0,
+            },
+        )
+        assert r.status_code == 200, r.text
+        lp = r.json()["choices"][0]["logprobs"]
+        # Sampled-token logprob still surfaced, but no alternatives.
+        assert lp["token_logprobs"]  # non-empty
+        assert all(d == {} for d in lp["top_logprobs"])
+
+
 class TestFieldDeclarations:
     """The pre-fix schema silently dropped ``n``, ``best_of``, ``echo``
     on parse — equivalent to the silent-compat lie F-152 closes."""
