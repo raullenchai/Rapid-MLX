@@ -903,14 +903,22 @@ def serve_command(args):
     # writing the config singleton directly here would be clobbered by
     # the subsequent ``_sync_config`` (mirrors the ``_max_request_bytes``
     # pattern just above).
-    _sse_env = os.environ.get("RAPID_MLX_SSE_KEEPALIVE_SECONDS", "").strip()
+    _sse_env_name = "RAPID_MLX_SSE_KEEPALIVE_SECONDS"
+    _sse_env = os.environ.get(_sse_env_name, "").strip()
     if _sse_env:
         try:
             server._sse_keepalive_seconds = max(0.0, float(_sse_env))
         except ValueError:
+            # NOTE: the env-var name is interpolated via ``%s`` (not baked
+            # into the format string) so the
+            # ``tests/test_no_out_of_band_routing.py`` constant scan
+            # doesn't see the literal ``RAPID_MLX_…=%r is not a number``
+            # as a stand-alone string and false-positive on a routing
+            # match. Same pattern the body-receive timeout block below
+            # uses.
             logger.warning(
-                "RAPID_MLX_SSE_KEEPALIVE_SECONDS=%r is not a number; "
-                "falling back to the 20 s default",
+                "%s=%r is not a number; falling back to the 20 s default",
+                _sse_env_name,
                 _sse_env,
             )
             server._sse_keepalive_seconds = 20.0
@@ -918,14 +926,18 @@ def serve_command(args):
     # Body-receive idle timeout (F-072 slow-DoS gate). Env-only. 0 disables.
     # Same ``_sync_config``-then-route-handler ordering rationale as the
     # SSE keepalive above.
-    _brt_env = os.environ.get("RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS", "").strip()
+    _brt_env_name = "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"
+    _brt_env = os.environ.get(_brt_env_name, "").strip()
     if _brt_env:
         try:
             server._body_receive_timeout_seconds = max(0.0, float(_brt_env))
         except ValueError:
+            # Interpolate the env-var name via ``%s`` instead of baking
+            # it into the format string — same false-positive avoidance
+            # pattern as the SSE-keepalive block above.
             logger.warning(
-                "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS=%r is not a number; "
-                "falling back to the 15 s default",
+                "%s=%r is not a number; falling back to the 15 s default",
+                _brt_env_name,
                 _brt_env,
             )
             server._body_receive_timeout_seconds = 15.0

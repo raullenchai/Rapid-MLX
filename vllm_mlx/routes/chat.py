@@ -43,9 +43,9 @@ from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
-    SSE_RESPONSE_HEADERS,
     _TOOL_USE_REQUIRED_SUFFIX,
     _TOOL_USE_SYSTEM_SUFFIX,
+    SSE_RESPONSE_HEADERS,
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,

@@ -204,6 +204,24 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # refuses ``--submit`` while it's set so a scoped sweep can't
         # silently produce a schema-incomplete community-bench payload.
         "RAPID_MLX_HARNESS_PROFILES_FILTER",
+        # F-070 SSE keepalive interval (seconds, float). Mapped to
+        # ``ServerConfig.sse_keepalive_seconds`` and consumed by
+        # ``_disconnect_guard`` to emit ``: keepalive\n\n`` SSE comments
+        # while the upstream generator is silent (prevents EventSource /
+        # nginx / Cloudflare idle-timeouts on long prefills). 0 disables.
+        # Pure connection-keepalive knob — never selects a model, parser,
+        # or routing tier.
+        "RAPID_MLX_SSE_KEEPALIVE_SECONDS",
+        # F-072 slow-DoS body-receive idle timeout (seconds, float).
+        # Mapped to ``ServerConfig.body_receive_timeout_seconds`` and
+        # consumed by ``RequestBodyLimitMiddleware`` to bound each
+        # ``receive()`` ASGI call in ``asyncio.wait_for`` until the body
+        # is fully on the wire. 0 disables. Pure wire-level DoS gate
+        # paired with ``RAPID_MLX_MAX_REQUEST_BYTES`` — never selects a
+        # model, parser, or routing tier; it only decides whether a
+        # slow-shipping client is bounced with 408 vs allowed to stall
+        # the worker indefinitely.
+        "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS",
     }
 )
 
