@@ -736,11 +736,15 @@ def _is_date_time(value: str) -> bool:
         dt = datetime.datetime.fromisoformat(candidate)
     except (ValueError, TypeError):
         return False
-    # RFC 3339 requires the ``T`` separator (or a space, per the
-    # spec's relaxation note) between date and time. ``fromisoformat``
-    # accepts a bare ``YYYY-MM-DD`` on 3.11+, which is the wrong
-    # format — date, not date-time. Require ``T`` or space.
-    if "T" not in value and " " not in value:
+    # codex r4 BLOCKING: JSON-schema ``date-time`` is RFC 3339 ``date-time``
+    # whose grammar requires the literal ``T`` separator between
+    # ``full-date`` and ``full-time``. The space form is a NOTE in the
+    # spec ("Applications that generate this format SHOULD use uppercase
+    # T") and is NOT part of the production rule we enforce here.
+    # ``fromisoformat`` accepts a bare ``YYYY-MM-DD`` on 3.11+ (wrong
+    # format — date, not date-time) and ``"2024-01-15 10:30:00+00:00"``
+    # (RFC-non-conformant separator), so reject both.
+    if "T" not in value:
         return False
     # codex r2 BLOCKING: RFC 3339 also requires a timezone offset (``Z``
     # or ``±HH:MM``). ``datetime.fromisoformat`` accepts a bare

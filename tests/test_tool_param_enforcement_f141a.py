@@ -189,6 +189,29 @@ class TestFormatEnforcement:
             tools,
         )
 
+    def test_date_time_rejects_space_separator(self):
+        """codex r4 BLOCKING: JSON-schema ``format: date-time`` is RFC
+        3339 ``date-time``, whose grammar requires the literal ``T``
+        between date and time. ``datetime.fromisoformat`` happily
+        accepts the space-separated form (``"2024-01-15 10:30:00+00:00"``),
+        and the pre-fix ``" " in value`` short-circuit let it through.
+        Strict-RFC: space separator must be rejected."""
+        import json as _json
+
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("f", {"x": {"type": "string", "format": "date-time"}})]
+        with pytest.raises(HTTPException):
+            _validate_tool_call_params(
+                [_call("f", _json.dumps({"x": "2024-01-15 10:30:00+00:00"}))],
+                tools,
+            )
+        # Sanity: same instant with ``T`` separator still passes.
+        _validate_tool_call_params(
+            [_call("f", _json.dumps({"x": "2024-01-15T10:30:00+00:00"}))],
+            tools,
+        )
+
 
 # ---------------------------------------------------------------------------
 # multipleOf enforcement
