@@ -10,7 +10,7 @@ Claude Code to communicate with rapid-mlx.
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # =============================================================================
 # Request Models
@@ -164,6 +164,70 @@ class AnthropicRequest(BaseModel):
     # The adapter consults ``thinking.budget_tokens`` only when
     # ``output_config.effort`` is unset (newer surface wins).
     thinking: dict | None = None
+
+    # M-03 (#742 follow-up): the Anthropic Messages spec only accepts
+    # four ``tool_choice.type`` values — ``auto``, ``any``, ``tool``,
+    # ``none``. Without parse-time validation, unknown types like
+    # ``{"type": "banana"}`` silently fall through ``_convert_tool_choice``'s
+    # final ``return "auto"`` (anthropic_adapter.py L452) and the
+    # request HTTP 200s with plain text instead of the 400 the OpenAI
+    # route surfaces. The validator below mirrors the strict-Literal
+    # discipline ``AnthropicOutputConfig.effort`` already uses (codex
+    # round-6 NIT precedent): fail loud + fast at the schema boundary
+    # so a client typo can't silently degrade tool-forcing semantics.
+    #
+    # Pre-Pydantic-coercion so the ``dict`` type slot doesn't strip
+    # the keys we need to inspect, and so the typed ``tool_choice``
+    # field remains ``dict`` for the downstream adapter (which
+    # already calls ``.get("type")`` + ``.get("name")``). Keeping the
+    # field type unchanged means zero churn on the adapter and on
+    # the downstream chat route.
+    @field_validator("tool_choice", mode="before")
+    @classmethod
+    def _validate_tool_choice(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, dict):
+            raise ValueError(
+                "tool_choice must be an object with a 'type' field "
+                f"(got {type(v).__name__})."
+            )
+        # Match the Anthropic public spec — see
+        # https://docs.anthropic.com/en/api/messages#body-tool-choice.
+        # Includes ``none`` because the adapter (anthropic_adapter.py
+        # L449) already maps it through to OpenAI's ``"none"``; the
+        # existing TestConvertToolChoice.test_none_type test pins this.
+        # An entirely missing ``type`` key (``tool_choice={}``) is
+        # preserved as a no-op by the adapter (defaults to ``"auto"``,
+        # TestConvertToolChoice.test_missing_type_defaults_to_auto);
+        # only EXPLICITLY-set unknown values trip the gate so we
+        # don't tighten beyond M-03's wording.
+        allowed = ("auto", "any", "tool", "none")
+        if "type" not in v:
+            return v
+        choice_type = v["type"]
+        if choice_type not in allowed:
+            raise ValueError(
+                "tool_choice.type must be one of "
+                f"{list(allowed)} (got {choice_type!r}). "
+                "See https://docs.anthropic.com/en/api/messages."
+            )
+        # Anthropic's spec requires ``name`` on the forced-tool form.
+        # The Anthropic SDK enforces this client-side but a raw HTTP
+        # client can omit it; without this guard the adapter builds
+        # an OpenAI ``{"type":"function","function":{"name":""}}`` and
+        # the chat-route ``tool_choice with type='function' requires
+        # function.name`` 400 fires deep into the routing stack, with
+        # a less Anthropic-shape error message. Surface the contract
+        # at parse time so the message points at the right field.
+        if choice_type == "tool":
+            name = v.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(
+                    "tool_choice with type='tool' requires a non-empty "
+                    "string 'name' field."
+                )
+        return v
 
     @model_validator(mode="after")
     def _validate_thinking_budget(self) -> "AnthropicRequest":
