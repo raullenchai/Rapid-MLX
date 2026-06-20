@@ -769,8 +769,7 @@ def _validate_response_format(response_format) -> None:
         raise HTTPException(
             status_code=400,
             detail=(
-                "response_format.type must be 'text', 'json_object', "
-                "or 'json_schema'"
+                "response_format.type must be 'text', 'json_object', or 'json_schema'"
             ),
         )
 

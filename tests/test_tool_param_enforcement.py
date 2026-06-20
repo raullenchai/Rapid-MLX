@@ -37,7 +37,6 @@ from fastapi import HTTPException
 
 from vllm_mlx.api.models import FunctionCall, ToolCall
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -267,9 +266,7 @@ class TestDeferredPassThrough:
         """``format`` violations remain advisory (TODO(F-141-followup))."""
         from vllm_mlx.service.helpers import _validate_tool_call_params
 
-        tools = [
-            _tool("set_email", {"email": {"type": "string", "format": "email"}})
-        ]
+        tools = [_tool("set_email", {"email": {"type": "string", "format": "email"}})]
         # "notanemail" is not an email; deferred.
         _validate_tool_call_params(
             [_call("set_email", '{"email": "notanemail"}')], tools
