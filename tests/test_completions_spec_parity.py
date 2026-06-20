@@ -368,12 +368,15 @@ class TestLogprobsResponseShape:
     ``logprobs=5`` and ``logprobs=0`` carries the legacy four-array
     shape. Pre-fix the route returned no ``logprobs`` slot at all."""
 
-    def _build_streaming_engine(self, top_k_returned: int):
+    def _build_streaming_engine(self):
         """Return an engine whose ``stream_generate`` yields one
         ``GenerationOutput`` chunk with synthetic per-token logprobs.
         The helper ``_extract_streaming_token_logprobs`` reads
         ``chunk.logprobs`` + ``chunk.tokens`` + ``chunk.new_text`` —
-        wire all three on a dataclass-ish stub.
+        wire all three on a dataclass-ish stub. Top-k extraction is
+        handled by the route logic (``effective_top_k`` + the
+        ``top_logprobs == {}`` strip when ``logprobs=0``); the
+        fixture provides the raw per-vocab distribution.
         """
 
         class _Chunk:
@@ -397,12 +400,14 @@ class TestLogprobsResponseShape:
                     [-3.0, -2.0, -1.0, -4.0, -5.0], dtype=mx.float32
                 )
 
+        _VOCAB = {0: "<a>", 1: "<b>", 2: "Hi", 3: "<d>", 4: "<e>"}
+
         async def _stream(*_a, **_kw):
             yield _Chunk()
 
         class _Tokenizer:
             def decode(self, ids):
-                return f"<t{ids[0]}>" if ids[0] != 42 else "Hi"
+                return _VOCAB.get(ids[0], "?")
 
         e = MagicMock()
         e.stream_generate = _stream
@@ -415,7 +420,7 @@ class TestLogprobsResponseShape:
         client, _ = _build_completions_app(
             patched_config,
             monkeypatch,
-            engine_factory=lambda: self._build_streaming_engine(5),
+            engine_factory=self._build_streaming_engine,
         )
         r = client.post(
             "/v1/completions",
@@ -449,7 +454,7 @@ class TestLogprobsResponseShape:
         client, _ = _build_completions_app(
             patched_config,
             monkeypatch,
-            engine_factory=lambda: self._build_streaming_engine(0),
+            engine_factory=self._build_streaming_engine,
         )
         r = client.post(
             "/v1/completions",
@@ -465,6 +470,182 @@ class TestLogprobsResponseShape:
         # Sampled-token logprob still surfaced, but no alternatives.
         assert lp["token_logprobs"]  # non-empty
         assert all(d == {} for d in lp["top_logprobs"])
+
+
+class TestLogprobsEngineCapability:
+    """Codex r2 BLOCKING #1: engines without ``stream_generate`` or
+    without a ``tokenizer`` must NOT crash with 500 when a client
+    sends ``logprobs:N`` — return a controlled 501 instead."""
+
+    def test_engine_without_stream_generate_returns_501(
+        self, patched_config, monkeypatch
+    ):
+        def _factory():
+            class _NoStreamEngine:
+                tokenizer = object()
+
+                async def generate(self, *_a, **_kw):
+                    return _StubGenerationOutput()
+
+                # Intentionally NO ``stream_generate``.
+
+            return _NoStreamEngine()
+
+        client, _ = _build_completions_app(
+            patched_config, monkeypatch, engine_factory=_factory
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hi",
+                "max_tokens": 1,
+                "logprobs": 3,
+            },
+        )
+        assert r.status_code == 501
+        detail = (r.json().get("error") or {}).get("message") or r.json().get(
+            "detail", ""
+        )
+        assert "logprobs" in detail.lower()
+
+    def test_engine_without_tokenizer_returns_501(
+        self, patched_config, monkeypatch
+    ):
+        def _factory():
+            e = MagicMock()
+            e.tokenizer = None
+            return e
+
+        client, _ = _build_completions_app(
+            patched_config, monkeypatch, engine_factory=_factory
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hi",
+                "max_tokens": 1,
+                "logprobs": 3,
+            },
+        )
+        assert r.status_code == 501
+
+
+class TestEmptyStreamNotMistakenForDisconnect:
+    """Codex r2 BLOCKING #2: an engine that yields zero chunks must
+    return an empty completion, NOT HTTP 499 (false disconnect)."""
+
+    def test_empty_stream_returns_200_with_empty_text(
+        self, patched_config, monkeypatch
+    ):
+        async def _empty_stream(*_a, **_kw):
+            if False:
+                yield None  # never yields — empty async gen
+
+        class _Tokenizer:
+            def decode(self, ids):
+                return ""
+
+        def _factory():
+            e = MagicMock()
+            e.stream_generate = _empty_stream
+            e.tokenizer = _Tokenizer()
+            return e
+
+        client, _ = _build_completions_app(
+            patched_config, monkeypatch, engine_factory=_factory
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hi",
+                "max_tokens": 1,
+                "logprobs": 3,
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["choices"][0]["text"] == ""
+        # Logprobs slot present but arrays empty (no generated tokens).
+        lp = body["choices"][0].get("logprobs")
+        # ``exclude_none=True`` may drop ``logprobs`` if it was never
+        # constructed — accept that or empty arrays.
+        if lp is not None:
+            assert lp["tokens"] == []
+            assert lp["token_logprobs"] == []
+
+
+class TestTextOffsetAlignment:
+    """Codex r2 BLOCKING #3: ``text_offset`` must be byte-exact
+    against ``choices[0].text`` so SDK consumers can slice."""
+
+    def _build_engine(self):
+        class _Chunk:
+            def __init__(self):
+                self.text = "Hi there"  # would mismatch token concat
+                self.new_text = "Hi there"
+                self.tokens = [1, 2]
+                self.new_token_ids = [1, 2]
+                self.prompt_tokens = 1
+                self.completion_tokens = 2
+                self.finished = True
+                self.finish_reason = "stop"
+                self.cached_tokens = 0
+                import mlx.core as mx
+
+                # Sampled token ids are 1 and 2; ids 0/3 are
+                # alternatives. Use a 4-vocab distribution.
+                self.logprobs = [
+                    mx.array([-3.0, -1.0, -2.0, -2.5], dtype=mx.float32),
+                    mx.array([-3.5, -2.5, -0.3, -1.5], dtype=mx.float32),
+                ]
+
+        async def _stream(*_a, **_kw):
+            yield _Chunk()
+
+        _VOCAB = {0: "<a>", 1: "Hi", 2: " there", 3: "<d>"}
+
+        class _Tokenizer:
+            def decode(self, ids):
+                # Decoded forms intentionally differ from
+                # ``chunk.text`` ("Hi there" vs "Hi" + " there") to
+                # expose any offset misalignment between
+                # ``output.text`` and the token concatenation.
+                return _VOCAB.get(ids[0], "?")
+
+        e = MagicMock()
+        e.stream_generate = _stream
+        e.tokenizer = _Tokenizer()
+        return e
+
+    def test_text_offset_byte_exact_against_choice_text(
+        self, patched_config, monkeypatch
+    ):
+        client, _ = _build_completions_app(
+            patched_config, monkeypatch, engine_factory=self._build_engine
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "x",
+                "max_tokens": 2,
+                "logprobs": 2,
+            },
+        )
+        assert r.status_code == 200, r.text
+        c = r.json()["choices"][0]
+        text = c["text"]
+        lp = c["logprobs"]
+        # Every offset must point at the start of the matching token
+        # within ``text`` — slice and verify.
+        for i, (token, offset) in enumerate(zip(lp["tokens"], lp["text_offset"])):
+            assert text[offset : offset + len(token)] == token, (
+                f"token #{i}={token!r} at offset {offset} did not "
+                f"align in text={text!r}"
+            )
 
 
 class TestFieldDeclarations:

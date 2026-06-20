@@ -200,6 +200,29 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         top_k_logprobs = request.logprobs or 0
         effective_top_k = max(1, top_k_logprobs)
 
+        # Codex r2 BLOCKING #1: only route through ``stream_generate``
+        # when the concrete engine implements it AND a tokenizer is
+        # available (the extractor decodes ids to text). The MLLM
+        # batch generator does both; alternative engines (dflash, any
+        # future ``BaseEngine`` subclass that ships only ``generate``)
+        # would otherwise crash on a previously-valid non-streaming
+        # request when a client adds ``logprobs:N``. Refuse with a
+        # controlled 501 instead of an AttributeError 500.
+        if want_logprobs and (
+            not hasattr(engine, "stream_generate")
+            or getattr(engine, "tokenizer", None) is None
+        ):
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "logprobs requested but this engine does not expose "
+                    "the streaming logprobs extraction path "
+                    "(``stream_generate`` + ``tokenizer``). Reissue "
+                    "without ``logprobs`` or use a model that supports "
+                    "per-token distributions."
+                ),
+            )
+
         for i, prompt in enumerate(prompts):
             token_logprobs_list = []
             if want_logprobs:
@@ -210,6 +233,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 # ``service/helpers.py::_extract_streaming_token_logprobs``).
                 output = None
                 _accum_text_parts: list[str] = []
+                _stream_yielded = False
                 stream_iter = engine.stream_generate(
                     prompt=prompt,
                     max_tokens=_resolve_max_tokens(request.max_tokens),
@@ -220,8 +244,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 )
 
                 async def _drain_stream(it=stream_iter):
-                    nonlocal output
+                    nonlocal output, _stream_yielded
                     async for chunk in it:
+                        _stream_yielded = True
                         output = chunk
                         _accum_text_parts.append(chunk.new_text or "")
                         token_logprobs_list.extend(
@@ -234,8 +259,29 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 output = await _wait_with_disconnect(
                     _drain_stream(), raw_request, timeout=timeout
                 )
+                # Codex r2 BLOCKING #2: ``_wait_with_disconnect``
+                # returns ``None`` on client disconnect, but
+                # ``_drain_stream`` ALSO returns ``None`` when the
+                # engine yields zero chunks (empty completion).
+                # Distinguish by checking the inner sentinel: if the
+                # stream produced no chunks at all, return a valid
+                # empty completion shape rather than a false 499.
                 if output is None:
-                    return Response(status_code=499)  # Client closed request
+                    if _stream_yielded:
+                        # Client disconnect — _drain_stream did yield
+                        # but _wait_with_disconnect bailed mid-flight.
+                        return Response(status_code=499)
+                    # Stream is empty AND client is still connected
+                    # — synthesize an empty output so the response
+                    # shape matches OpenAI's empty-completion case.
+                    from ..engine.base import GenerationOutput
+
+                    output = GenerationOutput(
+                        text="",
+                        finish_reason="stop",
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                    )
                 # The stream's last chunk carries the aggregate text on
                 # the LLM engine path (it's accumulated by
                 # ``RequestOutput.output_text``), but the MLLM
@@ -273,6 +319,19 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             # parallel arrays keyed positionally per generated token.
             # ``echo + logprobs`` is rejected upstream (see route
             # entry) so ``offset`` always starts at 0 here.
+            #
+            # Codex r2 BLOCKING #3: ``text_offset`` is documented as
+            # offsets into ``choices[0].text``. We compute offsets
+            # cumulatively from ``len(decoded_token)`` so they
+            # ALWAYS align with ``"".join(tokens_arr)``. When
+            # ``output.text`` differs from that concatenation
+            # (whitespace normalization in ``clean_output_text``,
+            # tokenizer-side cleanup) the spec-correct move is to
+            # surface the token-concatenated text as ``text`` so
+            # ``text_offset`` is byte-exact against the field it
+            # references. Falls back to ``output.text`` only when no
+            # token entries were captured (empty stream / engine
+            # quirk).
             choice_logprobs = None
             if want_logprobs:
                 tokens_arr: list[str] = []
@@ -306,6 +365,13 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     top_logprobs=top_lps,
                     text_offset=text_offset,
                 )
+                # Pin ``final_text`` to the token concatenation so
+                # ``text_offset`` is byte-exact. Skip when no tokens
+                # were captured (e.g. engine quirk that yielded
+                # ``new_text`` without ``new_token_ids``) — keep the
+                # accumulated raw text in that case.
+                if tokens_arr:
+                    final_text = "".join(tokens_arr)
 
             choices.append(
                 CompletionChoice(
