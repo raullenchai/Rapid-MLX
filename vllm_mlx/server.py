@@ -522,6 +522,77 @@ _DEFAULT_CORS_HEADERS: tuple[str, ...] = (
 _DEFAULT_CORS_MAX_AGE: int = 3600
 
 
+class _SpecAlignedCORSMiddleware(CORSMiddleware):
+    """``CORSMiddleware`` whose preflight rejection is spec-aligned (L-02).
+
+    Upstream Starlette returns ``400 Bad Request`` with body
+    ``"Disallowed CORS …"`` when a preflight ``OPTIONS`` fails any of the
+    origin / method / headers checks. The upstream comment even concedes
+    the 400 is an opinionated debugging aid:
+
+        # We don't strictly need to use 400 responses here, since its up
+        # to the browser to enforce the CORS policy, but its more
+        # informative if we do.
+
+    The 400 is noisy in real-world devtools (the spec only requires that
+    the response omit ``Access-Control-Allow-Origin`` — the browser then
+    blocks the real request). It also surprises authenticated reverse
+    proxies that interpret a 4xx preflight as "the origin is wrong".
+
+    This subclass returns ``200 OK`` with **no** ``Access-Control-Allow-Origin``
+    header and ``Vary: Origin`` (so caches that key on Origin don't bleed
+    across origins). Browsers still block the request because ACAO is
+    absent; devtools shows the missing-header signal that operators
+    expect when CORS denies their origin.
+
+    The fail-closed empty-CSV path (#758 ``3da8230``) is unaffected: that
+    branch never registers any middleware at all, so the preflight ``OPTIONS``
+    still 405s (no allowed method on the route). Only the env-locked /
+    explicit-allowlist mismatch surface flips from 400 to 200.
+    """
+
+    def preflight_response(self, request_headers):  # type: ignore[override]
+        # Re-use upstream's diagnostic logic to compute "is this preflight
+        # actually allowed?" — it builds the right headers dict, mutates
+        # ``Access-Control-Allow-Origin`` only when the origin is in the
+        # allowlist, and accumulates a ``failures`` list. We just trade
+        # the 400 envelope on failure for a 200 + ``Vary: Origin``.
+        response = super().preflight_response(request_headers)
+        if response.status_code == 200:
+            return response
+        # Strip ``Access-Control-Allow-Origin`` (upstream may have written
+        # it on a partial-allow path — defensive; current upstream never
+        # writes it when the origin is the failing dimension, but a
+        # future patch could broaden the partial-allow path) and pin
+        # ``Vary: Origin`` so caches don't reuse this 200 across origins.
+        # ``response.headers`` is a starlette ``MutableHeaders`` whose
+        # ``items()`` repeats duplicate keys (e.g. two ``vary`` rows).
+        # We build a single-row dict so the spec-aligned response doesn't
+        # carry ``Vary: Origin, Origin`` (upstream already set ``Vary:
+        # Origin`` in ``preflight_headers`` for non-wildcard configs).
+        headers: dict[str, str] = {}
+        for k, v in response.headers.items():
+            lk = k.lower()
+            if lk == "access-control-allow-origin":
+                continue
+            if lk == "vary":
+                continue  # canonicalized below
+            headers[k] = v
+        headers["Vary"] = "Origin"
+        # Body is a constant ``"OK"`` so a curious operator who hits the
+        # preflight by hand (``curl -X OPTIONS``) sees a non-empty 200
+        # rather than a confusing blank response. The browser never
+        # surfaces the preflight body to JS regardless — what makes the
+        # browser block the real request is the missing
+        # ``Access-Control-Allow-Origin`` header. Codex round-1 NIT
+        # flagged the prior "200 with empty body" comment as diverging
+        # from this body shape; pinning ``"OK"`` here and in the
+        # regression suite keeps code, comment, and tests aligned.
+        from starlette.responses import PlainTextResponse
+
+        return PlainTextResponse("OK", status_code=200, headers=headers)
+
+
 def configure_cors(
     origins: list[str],
     *,
@@ -585,8 +656,14 @@ def configure_cors(
     # caller" — preserve the legacy ``["*"]`` so existing clients keep
     # working. ``configure_cors_from_env`` always passes explicit lists,
     # so it gets the F-091 narrowing.
+    #
+    # L-02: the subclass returns 200 + ``Vary: Origin`` (no
+    # ``Access-Control-Allow-Origin``) instead of 400 ``Disallowed CORS
+    # …`` on origin/method/headers mismatch. Browsers still block the
+    # real request because ACAO is absent; devtools sees the missing
+    # header instead of a cryptic 400 envelope.
     app.add_middleware(
-        CORSMiddleware,
+        _SpecAlignedCORSMiddleware,
         allow_origins=origins,
         allow_credentials=allow_credentials,
         allow_methods=list(methods) if methods is not None else ["*"],

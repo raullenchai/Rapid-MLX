@@ -70,6 +70,7 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    enable_thinking_warning_header,
     enforce_context_length_for_messages,
     get_engine,
     get_usage,
@@ -1135,6 +1136,11 @@ async def _create_chat_completion_impl(
                     )
                     if result is None:
                         return Response(status_code=499, content="Client disconnected")
+                    # NOTE: L-05's enable_thinking warning intentionally
+                    # does NOT fire on the cloud-routed path — the local
+                    # ``cfg.reasoning_parser_name`` isn't authoritative
+                    # for what the cloud provider does with the ctk
+                    # hint. A warning here would be misleading.
                     return Response(
                         content=json.dumps(result),
                         media_type="application/json",
@@ -1331,6 +1337,17 @@ async def _create_chat_completion_impl(
                     )
                 raise
         _commit_state[0] = True
+        # L-05: surface silent ``enable_thinking`` drop on non-Qwen
+        # parsers via response headers. Merging here lets the SSE
+        # ``Cache-Control`` / ``Connection`` headers stay intact.
+        _thinking_warning = enable_thinking_warning_header(
+            request, getattr(cfg, "reasoning_parser_name", None)
+        )
+        _sse_headers = (
+            {**SSE_RESPONSE_HEADERS, **_thinking_warning}
+            if _thinking_warning
+            else SSE_RESPONSE_HEADERS
+        )
         if use_guided and json_schema:
             # Constrained streaming: run guided generation buffered, then
             # synthesize an SSE stream from the buffered output. Falls
@@ -1345,7 +1362,7 @@ async def _create_chat_completion_impl(
                     engine=engine,
                 ),
                 media_type="text/event-stream",
-                headers=SSE_RESPONSE_HEADERS,
+                headers=_sse_headers,
             )
         return StreamingResponse(
             _disconnect_guard(
@@ -1354,7 +1371,7 @@ async def _create_chat_completion_impl(
                 engine=engine,
             ),
             media_type="text/event-stream",
-            headers=SSE_RESPONSE_HEADERS,
+            headers=_sse_headers,
         )
 
     # Non-streaming response with timing and timeout
@@ -1813,9 +1830,16 @@ async def _create_chat_completion_impl(
         ],
         usage=_build_usage(output, reasoning_text),
     )
+    # L-05: surface silent ``enable_thinking`` drop on non-Qwen parsers.
+    # Empty dict when the client didn't set the flag OR the active
+    # parser honors it (qwen3) — kwargs spread is the right shape.
+    response_headers = enable_thinking_warning_header(
+        request, getattr(cfg, "reasoning_parser_name", None)
+    )
     return Response(
         content=chat_response.model_dump_json(exclude_none=True),
         media_type="application/json",
+        headers=response_headers or None,
     )
 
 
