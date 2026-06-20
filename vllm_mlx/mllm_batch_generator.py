@@ -638,6 +638,15 @@ class MLLMBatchGenerator:
         #   * ``routes/chat.py`` / ``routes/anthropic.py`` /
         #     ``routes/responses.py`` map the marker to HTTP 400 with
         #     an actionable message.
+        # Catch the *narrow* set of exception types that PIL / mlx_vlm
+        # raise for bad image bytes — ``OSError`` (PIL "broken data
+        # stream when reading image file"), ``PIL.UnidentifiedImageError``
+        # (a subclass of ``OSError``), and ``ValueError`` ("Failed to
+        # load image from …"). Internal bugs in the processor /
+        # tokenizer / MLX runtime (``AttributeError`` / ``TypeError`` /
+        # ``RuntimeError`` / arbitrary ``Exception``) MUST keep
+        # propagating as server errors so the caller sees HTTP 500
+        # instead of a misleading HTTP 400 "Failed to process image".
         try:
             inputs = prepare_inputs(
                 self.processor,
@@ -645,7 +654,7 @@ class MLLMBatchGenerator:
                 prompts=request.prompt,
                 image_token_index=image_token_index,
             )
-        except Exception as e:
+        except (OSError, ValueError) as e:
             # Already-canonical messages (the ``process_image_input``
             # branch above raises ``ValueError("Failed to process image:
             # …")``) pass through unchanged; everything else gets the
