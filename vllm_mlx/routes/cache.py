@@ -276,7 +276,16 @@ async def cache_info(path: str | None = None):
     root = _resolve_or_400(path)
     manifest = _read_manifest_or_http(root)
 
-    logger.info(
+    # Codex r1 follow-up: log at DEBUG (not INFO) so the resolved root
+    # only lands in operator logs when the operator explicitly opts in
+    # (RAPID_MLX_LOG_LEVEL=DEBUG or equivalent). Routine 200 traffic
+    # carries no path on the wire AND no path in the default log stream
+    # — but the breadcrumb is still there for ops who need to debug a
+    # peer-sync issue. Sibling concern: H-02's logger.warning on the
+    # 403 path is fine because that's an anomaly worth recording at
+    # default verbosity, whereas every successful info read shouldn't
+    # rewrite the sandbox path into the rolling log.
+    logger.debug(
         "cache/info: resolved root=%s model_id=%s entries=%s",
         root,
         manifest.model_id,

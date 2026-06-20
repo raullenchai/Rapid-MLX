@@ -363,7 +363,6 @@ def test_cache_import_501_envelope_does_not_leak_operator_path(
         ".cache",
         "cache_exports",
         "rapid-mlx",
-        "$HOME",
     ],
 )
 def test_cache_info_does_not_leak_operator_path(
@@ -380,7 +379,9 @@ def test_cache_info_does_not_leak_operator_path(
     in the resolved path even though ``tmp_path`` lives under ``/private
     /var/folders/...``. Drop a valid manifest, then sweep the 200 body
     for each leak needle (parametrized so a failure pinpoints which
-    substring leaked).
+    substring leaked). Codex r1 NIT: the needle list mirrors the H-02
+    sibling sweep — substrings that actually appear in the constructed
+    sandbox path, not unexpanded shell variables like ``$HOME``.
     """
     # Build a tmp sandbox whose absolute path contains every leak needle
     # we care about — so a route that echoes ``str(root)`` would fail
