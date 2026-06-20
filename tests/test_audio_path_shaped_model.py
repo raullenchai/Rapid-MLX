@@ -101,16 +101,16 @@ class TestPathShapedRejection:
             "org/-leading-dash",
             "org/trailing-dash-",
             "org/repo.git",
-            "org/notebook.ipynb",
         ],
     )
     def test_rejects_hf_structurally_invalid_repo_ids(self, model_string: str):
         """codex r2 BLOCKING: HF rejects ``.hidden``, ``..``, ``--``,
-        leading/trailing ``.``/``-``, ``.git`` suffix, and ``.ipynb``
-        suffix as repo-id components. The bare-regex check accepted
-        these and let them through to ``STTEngine.load`` where the HF
-        resolver also fails — surfacing as a 500 instead of the
-        intended 404. Add per-component structural validation."""
+        leading/trailing ``.``/``-``, and ``.git`` suffix as repo-id
+        components. The bare-regex check accepted these and let them
+        through to ``STTEngine.load`` where the HF resolver also fails
+        — surfacing as a 500 instead of the intended 404. Per-component
+        structural validation matching ``huggingface_hub.utils.
+        validate_repo_id``."""
         from vllm_mlx.routes.audio import _resolve_stt_model
 
         with pytest.raises(HTTPException) as exc_info:
@@ -118,6 +118,28 @@ class TestPathShapedRejection:
         assert exc_info.value.status_code == 404, (
             f"expected 404 for {model_string!r}, got {exc_info.value.status_code}"
         )
+        detail = exc_info.value.detail
+        assert isinstance(detail, dict)
+        assert detail["error"]["type"] == "model_not_found_error"
+
+    def test_accepts_notebook_ipynb_repo_id(self):
+        """codex r3 BLOCKING: ``.ipynb`` is NOT a HF-reserved suffix
+        (only ``.git`` is). Must continue to pass through."""
+        from vllm_mlx.routes.audio import _resolve_stt_model
+
+        assert _resolve_stt_model("org/notebook.ipynb") == "org/notebook.ipynb"
+
+    def test_rejects_over_length_repo_id(self):
+        """codex r3 BLOCKING: HF's overall repo_id length cap is 96.
+        A 193-char ``namespace/repo`` previously slipped past the
+        per-component bound and crashed in ``STTEngine.load``."""
+        from vllm_mlx.routes.audio import _resolve_stt_model
+
+        # 90 + 1 ('/') + 90 = 181 chars — over the 96-char total cap.
+        over_long = "a" * 90 + "/" + "b" * 90
+        with pytest.raises(HTTPException) as exc_info:
+            _resolve_stt_model(over_long)
+        assert exc_info.value.status_code == 404
         detail = exc_info.value.detail
         assert isinstance(detail, dict)
         assert detail["error"]["type"] == "model_not_found_error"

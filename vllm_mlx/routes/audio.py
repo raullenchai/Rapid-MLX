@@ -56,25 +56,31 @@ STT_MODEL_ALIASES: dict[str, str] = {
 # Allowed characters mirror HuggingFace's repo-id conventions
 # (alphanumeric, underscore, dot, hyphen). ``+`` is intentionally NOT
 # allowed — HF repo ids are restricted to ``[A-Za-z0-9._-]`` (see
-# huggingface_hub.utils.validate_repo_id). Length cap (96) per component
-# matches HF's documented limit; longest legitimate HF repo id observed
-# in the wild is ~80.
-_STT_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,96}(?:/[A-Za-z0-9_.\-]{1,96})?$")
+# huggingface_hub.utils.validate_repo_id).
+#
+# Codex r3 BLOCKING: the *total* repo_id length cap is 96 chars (not
+# per-component). The per-component bound stays at 96 too because the
+# total bound already implies it. Anchor the regex with the 96-char
+# overall cap (enforced as a separate ``len(model) <= 96`` check below
+# so the regex itself stays cheap to read).
+_STT_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)?$")
+_HF_REPO_ID_MAX_LEN = 96
 
 
 def _is_valid_repo_component(comp: str) -> bool:
-    """Codex r2 BLOCKING follow-up: mirror HF's structural rules.
+    """Codex r2 / r3 BLOCKING follow-up: mirror HF's structural rules.
 
     A bare regex character-class check accepts strings that HF itself
-    rejects (e.g. ``.hidden``, ``repo..name``, ``repo.git``,
-    components starting/ending with ``.`` or ``-``). Those still
+    rejects (e.g. ``.hidden``, ``repo..name``, components starting/
+    ending with ``.`` or ``-``, or ``.git`` suffix). Those still
     crash inside ``STTEngine.load`` as a 500 because the HF resolver
     fails the same way for them. Enforce the structural rules HF
-    documents (``huggingface_hub.utils.validate_repo_id``) so the
-    F-210 guard actually catches *every* model string that the codec
-    layer would refuse, not just the obviously path-shaped ones.
+    documents (``huggingface_hub.utils.validate_repo_id``).
+
+    Codex r3 BLOCKING: ``.ipynb`` is NOT a HF-rejected suffix, only
+    ``.git`` is. Removed the over-eager ``.ipynb`` check.
     """
-    if not comp or len(comp) > 96:
+    if not comp:
         return False
     if comp.startswith((".", "-")) or comp.endswith((".", "-")):
         return False
@@ -85,7 +91,9 @@ def _is_valid_repo_component(comp: str) -> bool:
     # ``--`` is rejected by HF's repo-id validator as well.
     if "--" in comp:
         return False
-    if comp.endswith(".git") or comp.endswith(".ipynb"):
+    # Only ``.git`` is explicitly reserved by HF (codex r3 — ``.ipynb``
+    # was an over-rejection on my part).
+    if comp.endswith(".git"):
         return False
     return True
 
@@ -128,11 +136,15 @@ def _resolve_stt_model(model: str) -> str:
     #
     # codex r2: char-class alone isn't enough — HF also rejects
     # ``..``/``--``/``.hidden``/``trailing-dot.``/``repo.git`` shapes.
-    # Apply both the regex (cheap fast-path) AND the per-component
-    # structural rules so the F-210 guard matches HF's own validator.
+    # Apply the regex (cheap fast-path), then the 96-char total cap
+    # (codex r3 BLOCKING — was per-component, HF's actual rule is
+    # ``len(repo_id) <= 96``), then per-component structural rules.
     _regex_ok = bool(_STT_MODEL_NAME_RE.fullmatch(model))
-    _components_ok = _regex_ok and all(
-        _is_valid_repo_component(c) for c in model.split("/")
+    _length_ok = len(model) <= _HF_REPO_ID_MAX_LEN
+    _components_ok = (
+        _regex_ok
+        and _length_ok
+        and all(_is_valid_repo_component(c) for c in model.split("/"))
     )
     if not _components_ok:
         available = ", ".join(sorted(STT_MODEL_ALIASES.keys()))
