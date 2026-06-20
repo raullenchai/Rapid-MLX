@@ -69,40 +69,48 @@ def _build_engine_core_mock():
 
 
 @pytest.mark.asyncio
-async def test_add_request_cancellation_aborts_scheduler_state():
+async def test_add_request_cancellation_aborts_after_executor_completes():
     """When ``add_request`` is cancelled while the executor is queuing
-    the request, the scheduler MUST be told to abort and per-request
-    state MUST be cleaned up — otherwise the request orphans (F-012
-    root cause).
+    the request, the cleanup ordering MUST be: executor finishes
+    (request landed in scheduler) → THEN ``scheduler.abort_request``
+    fires. If the production code aborts BEFORE the executor catches
+    up, the request still lands in the scheduler later and orphans —
+    the exact F-012 timing window.
 
-    Drives the fix at ``vllm_mlx.engine_core.EngineCore.add_request``:
-    the executor await is now ``asyncio.shield``-ed (so the executor
-    task always completes regardless of caller cancellation) AND the
-    except branch enqueues a deferred abort + drops per-request state.
-    The deferred-abort path (``scheduler._pending_abort_ids`` set
-    processed at the head of the next ``step()``) correctly handles
-    both timing orders: executor-finishes-then-cancel-fires (abort
-    finds the request and removes it) and cancel-fires-then-executor-
-    finishes (abort id is queued; ``step()`` will process it once the
-    executor catches up).
+    Codex r1 P1 #2: this test pins the ORDERING, not just the call.
+    We record a monotonic timestamp when ``slow_add_request`` returns
+    (= the moment the request is in the scheduler) and when
+    ``scheduler.abort_request`` is invoked, and require the abort to
+    fire AFTER the executor completes — proving the drain in the fix
+    runs to completion before cleanup.
     """
+    import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
     from vllm_mlx.request import SamplingParams
 
     eng = _build_engine_core_mock()
 
-    # Slow executor: simulate the MLX worker thread taking ~50ms to
+    # Slow executor: simulate the MLX worker thread taking ~100ms to
     # actually run scheduler.add_request, so we can cancel mid-flight.
     started = threading.Event()
+    executor_returned_at: list[float] = []
+    abort_called_at: list[float] = []
 
     def slow_add_request(request):
         started.set()
-        # Block briefly so we can cancel while the executor is busy.
         threading.Event().wait(0.1)
+        # Record the moment the scheduler "sees" the request — the
+        # ordering invariant is that abort fires AFTER this point.
+        executor_returned_at.append(_time.monotonic())
         return None
 
+    def record_abort(request_id):
+        abort_called_at.append(_time.monotonic())
+        return True
+
     eng.scheduler.add_request = MagicMock(side_effect=slow_add_request)
+    eng.scheduler.abort_request = MagicMock(side_effect=record_abort)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         eng._mlx_executor = pool
@@ -123,12 +131,37 @@ async def test_add_request_cancellation_aborts_scheduler_state():
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        # The scheduler MUST have been told to abort — without this,
-        # the request stays alive in the scheduler with no awaiter
-        # and runs to its full max_tokens budget (F-012 leak).
-        assert eng.scheduler.abort_request.called, (
-            "add_request must call scheduler.abort_request on the"
-            " cancellation path or the request orphans (F-012)"
+        # CancelledError unwinds before the executor finishes (the
+        # underlying ``concurrent.futures.Future`` is independent of
+        # asyncio cancellation). Give the executor a deadline to
+        # actually complete + the done-callback to fire its cleanup.
+        # Without this the test would race ahead of the production
+        # cleanup that runs from the done-callback on the executor
+        # thread.
+        deadline = _time.monotonic() + 2.0
+        while _time.monotonic() < deadline:
+            if executor_returned_at and abort_called_at:
+                break
+            await asyncio.sleep(0.01)
+
+        # Executor MUST have completed BEFORE the abort fires — the
+        # core ordering invariant of the F-012 fix.
+        assert executor_returned_at, (
+            "executor never recorded its completion — the cleanup"
+            " path in engine_core.add_request did not wait for it"
+        )
+        assert abort_called_at, (
+            "scheduler.abort_request was never called on the"
+            " cancellation path (F-012 leak path)"
+        )
+        assert abort_called_at[0] >= executor_returned_at[0], (
+            "scheduler.abort_request fired BEFORE the executor"
+            " completed (executor_returned_at="
+            f"{executor_returned_at[0]:.6f},"
+            f" abort_called_at={abort_called_at[0]:.6f}). "
+            "The abort then races with scheduler.add_request and"
+            " can fail to remove the zombie request — the exact"
+            " F-012 race window."
         )
 
         # Per-request state (collectors, finished events, stream state)
@@ -200,9 +233,7 @@ async def test_stream_generate_aborts_on_generatorexit():
     # stream_outputs yields ONE chunk and then awaits forever so we
     # can close the generator after the first yield.
     fake_engine = MagicMock()
-    fake_engine.add_request = MagicMock(
-        return_value=_completed_future("req-xyz")
-    )
+    fake_engine.add_request = MagicMock(return_value=_completed_future("req-xyz"))
 
     async def stream_outputs(request_id):
         # Single chunk so the consumer enters the loop body

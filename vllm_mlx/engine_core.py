@@ -696,48 +696,73 @@ class EngineCore:
         # consuming KV cache until Metal OOM kills the process (the
         # upstream cause of F-010 and F-030).
         #
-        # ``asyncio.shield`` makes the executor await uninterruptible
-        # at THIS layer: cancellation lands AFTER the executor finishes,
-        # so by the time we re-raise we know with certainty that
-        # ``scheduler.add_request`` has completed (the request IS in
-        # the scheduler). The except branch then enqueues an abort —
-        # the scheduler step loop processes it at the head of its
-        # next iteration via ``_process_pending_aborts`` — and cleans
-        # up the per-request collectors/events allocated above. Using
-        # the deferred ``scheduler.abort_request`` (which adds to
-        # ``_pending_abort_ids`` and is processed by the executor
-        # thread) keeps the cleanup safe across threads, identical to
-        # the path stream_outputs.finally would take.
+        # Fix (codex r1 P1): keep a reference to the underlying
+        # ``concurrent.futures.Future`` from ``pool.submit`` and, if
+        # the outer task is cancelled, register a done-callback that
+        # cleans up AFTER the executor task actually returns. The
+        # earlier ``asyncio.shield`` approach was incorrect — once
+        # ``Task.cancel()`` propagates to the asyncio Future wrapper
+        # returned by ``run_in_executor``, the wrapper is marked
+        # CANCELLED immediately (``done() == True``) while the
+        # executor thread continues running ``scheduler.add_request``
+        # in the background, so the cleanup could fire BEFORE the
+        # request actually landed in the scheduler — exactly the
+        # zombie window we are trying to close.
+        #
+        # ``submit`` returns a ``concurrent.futures.Future`` whose
+        # state is independent of asyncio cancellation. We wrap it
+        # in ``asyncio.wrap_future`` for the happy-path await, and
+        # on cancellation we hand the SCHEDULER-thread cleanup off
+        # via ``cf.add_done_callback`` — guaranteed to fire once the
+        # executor task actually completes. The callback runs on the
+        # executor thread (NOT the asyncio thread), so we bounce the
+        # asyncio-thread parts (collector dict mutation, idle-event
+        # set) back via ``loop.call_soon_threadsafe`` to avoid mixing
+        # writers on the per-request dicts.
         if self._mlx_executor is not None:
             loop = asyncio.get_running_loop()
+            cf = self._mlx_executor.submit(self.scheduler.add_request, request)
             try:
-                await asyncio.shield(
-                    loop.run_in_executor(
-                        self._mlx_executor,
-                        self.scheduler.add_request,
-                        request,
-                    )
-                )
+                await asyncio.wrap_future(cf, loop=loop)
             except BaseException:
-                # Schedule deferred abort + drop the per-request state we
-                # allocated above. Without this the request stays in the
-                # scheduler's waiting queue with no consumer, gets picked
-                # up by the next ``step()``, runs to ``max_tokens`` and
-                # holds KV slots until Metal OOM.
-                try:
-                    self.scheduler.abort_request(request_id)
-                except Exception:
-                    logger.warning(
-                        "[add_request] abort_request raised during"
-                        " cancellation cleanup for %s",
-                        request_id,
-                        exc_info=True,
-                    )
-                self._cleanup_request(request_id)
-                if self._idle_event is not None:
-                    # Wake the engine loop so it can process the pending
-                    # abort even if no other request is in flight.
-                    self._idle_event.set()
+                # The executor task may still be running. Hand
+                # cleanup off to fire AFTER it completes (the abort
+                # MUST land AFTER ``scheduler.add_request`` returns or
+                # the abort id is consumed by ``_process_pending_aborts``
+                # BEFORE the late-arriving request reaches the
+                # scheduler — the zombie path).
+                def _on_executor_done(_future: Any) -> None:
+                    # Runs on the executor thread.
+                    try:
+                        self.scheduler.abort_request(request_id)
+                    except Exception:
+                        logger.warning(
+                            "[add_request] abort_request raised during"
+                            " executor-done cleanup for %s",
+                            request_id,
+                            exc_info=True,
+                        )
+                    # Bounce the asyncio-thread cleanup back onto the
+                    # event loop so we don't race the dict writers
+                    # in ``add_request`` (which all run on the
+                    # asyncio thread normally).
+                    try:
+                        loop.call_soon_threadsafe(
+                            self._cleanup_request_safe, request_id
+                        )
+                    except RuntimeError:
+                        # Loop already closed (shutdown race) — fall
+                        # back to a direct (best-effort) call so the
+                        # dicts don't leak.
+                        self._cleanup_request_safe(request_id)
+
+                if cf.done():
+                    # Executor already finished — run cleanup inline
+                    # to preserve the ordering invariant (abort fires
+                    # AFTER the request landed in the scheduler).
+                    _on_executor_done(cf)
+                else:
+                    cf.add_done_callback(_on_executor_done)
                 raise
         else:
             self.scheduler.add_request(request)
@@ -765,6 +790,26 @@ class EngineCore:
         self._stream_buffers.pop(request_id, None)
         self._finished_events.pop(request_id, None)
         self.scheduler.remove_finished_request(request_id)
+
+    def _cleanup_request_safe(self, request_id: str) -> None:
+        """``_cleanup_request`` + wake the engine idle event.
+
+        Used by the F-012 cancellation-cleanup path: when
+        ``add_request`` was cancelled mid-executor, the cleanup
+        callback runs on the executor thread and bounces back here
+        via ``loop.call_soon_threadsafe`` so the per-request dicts
+        are mutated on the asyncio thread (single writer). Sets
+        ``_idle_event`` so the engine loop wakes up to process the
+        ``scheduler.abort_request`` we just enqueued — without this
+        the abort id sits in ``_pending_abort_ids`` until the next
+        natural ``step()``, which may be never if no other request
+        is in flight.
+        """
+        try:
+            self._cleanup_request(request_id)
+        finally:
+            if self._idle_event is not None:
+                self._idle_event.set()
 
     @staticmethod
     def _merge_stream_buffer(
