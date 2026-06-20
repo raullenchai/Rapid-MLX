@@ -635,8 +635,20 @@ def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
                 # remainder. ``abs(parsed / multiple_of -
                 # round(parsed / multiple_of))`` is the canonical
                 # "distance to nearest multiple" measure.
+                #
+                # codex r3 BLOCKING: the default ``rel_tol=1e-9`` lets
+                # large non-multiples through because the relative
+                # error stays small (e.g. ``quotient = 1e10 +
+                # epsilon`` rounds to ``1e10`` with relative drift
+                # well under 1e-9). Pin ``rel_tol=0.0`` so only the
+                # absolute tolerance applies, which is the operator's
+                # intent for "the model emitted a value that *should*
+                # be a multiple but is off by a few floating-point
+                # ulps".
                 quotient = parsed / multiple_of
-                if not math.isclose(quotient, round(quotient), abs_tol=1e-9):
+                if not math.isclose(
+                    quotient, round(quotient), rel_tol=0.0, abs_tol=1e-9
+                ):
                     return (
                         False,
                         f"Value {parsed} is not a multiple of {multiple_of}",
@@ -766,10 +778,21 @@ def _uniqueitems_canonical(value: object) -> object:
     if isinstance(value, (int, float)):
         # Normalise int / float to a single canonical numeric form so
         # ``1`` and ``1.0`` hash equal (per JSON-schema value equality).
-        # ``float`` is the lossy direction, but JSON-schema's
-        # ``uniqueItems`` rule explicitly compares numeric value, not
-        # representation.
-        return ("num", float(value))
+        #
+        # codex r3 BLOCKING: ``float(value)`` is lossy for large ints
+        # (``9007199254740992`` and ``9007199254740993`` collapse to
+        # the same float), so two genuinely distinct JSON integers
+        # would be falsely flagged as duplicates. Use ``Decimal`` to
+        # preserve the full numeric value while still hashing
+        # ``Decimal("1")`` and ``Decimal("1.0")`` equal (their
+        # internal coefficients differ but ``__hash__`` is computed
+        # from the numeric value).
+        from decimal import Decimal
+
+        # ``Decimal(str(value))`` is the round-trip-safe constructor
+        # — going through ``str`` preserves int exactness and reads
+        # float values at full ``repr`` precision.
+        return ("num", Decimal(str(value)))
     if isinstance(value, str):
         return ("str", value)
     if value is None:

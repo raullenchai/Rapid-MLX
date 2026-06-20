@@ -312,3 +312,43 @@ class TestUniqueItemsEnforcement:
             )
         ]
         _validate_tool_call_params([_call("nums", '{"items": [1, 2, 3.5]}')], tools)
+
+    def test_large_distinct_integers_are_not_collapsed(self):
+        """codex r3 BLOCKING: ``float(9007199254740993) ==
+        float(9007199254740992)`` because IEEE-754 double can't
+        represent both. The canonical-key path must use ``Decimal``
+        so genuinely distinct large ints stay distinct."""
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [
+            _tool(
+                "nums",
+                {"items": {"type": "array", "uniqueItems": True}},
+            )
+        ]
+        # 2**53 and 2**53 + 1 — both exact ints, distinct values.
+        _validate_tool_call_params(
+            [_call("nums", '{"items": [9007199254740992, 9007199254740993]}')],
+            tools,
+        )
+
+
+class TestMultipleOfPrecision:
+    """codex r3 BLOCKING: ``math.isclose(..., rel_tol=0.0,
+    abs_tol=1e-9)`` so large non-multiples don't slip through on
+    relative-tolerance grounds."""
+
+    def test_large_non_multiple_is_rejected(self):
+        """``rel_tol`` default would have accepted this — pinning it
+        to 0.0 means the absolute tolerance is the only allowance."""
+        import json as _json
+
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("f", {"x": {"type": "number", "multipleOf": 0.5}})]
+        # Far above the absolute tolerance, but the default relative
+        # tolerance (1e-9) was nearly enough to make this slip.
+        with pytest.raises(HTTPException):
+            _validate_tool_call_params(
+                [_call("f", _json.dumps({"x": 10000000000.3}))], tools
+            )
