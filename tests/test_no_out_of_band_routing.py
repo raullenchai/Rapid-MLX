@@ -222,6 +222,19 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # slow-shipping client is bounced with 408 vs allowed to stall
         # the worker indefinitely.
         "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS",
+        # F-090 + F-091 CORS env-var family. None of these select a
+        # model, parser, or routing tier — they only decide whether the
+        # CORS middleware is registered and, if so, what the
+        # ``Access-Control-*`` response headers look like. Pure
+        # wire-level browser-security knobs paired with the existing
+        # ``--cors-origins`` CLI flag. See
+        # ``vllm_mlx/server.py::configure_cors_from_env`` for the
+        # default-deny stance (unset → no middleware, preflight 405).
+        "RAPID_MLX_CORS_ALLOW_ORIGINS",
+        "RAPID_MLX_CORS_ALLOW_METHODS",
+        "RAPID_MLX_CORS_ALLOW_HEADERS",
+        "RAPID_MLX_CORS_MAX_AGE",
+        "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
     }
 )
 

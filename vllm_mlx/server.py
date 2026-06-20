@@ -499,26 +499,190 @@ from .middleware.body_size import install_request_body_limit_middleware  # noqa:
 
 install_request_body_limit_middleware(app)
 
-# CORS configuration — configurable via --cors-origins CLI flag
+# CORS configuration — configurable via --cors-origins CLI flag and the
+# ``RAPID_MLX_CORS_*`` env-var family (F-090 / F-091). The previous default
+# registered CORSMiddleware with ``allow_origins=["*"]`` and
+# ``allow_methods=["*"]`` (DELETE/GET/HEAD/OPTIONS/PATCH/POST/PUT) for
+# every request, which let any browser-side attacker make authenticated
+# requests to ``/v1/chat/completions`` if the user had an open tab. The
+# new default is **no CORS at all**: operators opt in by setting
+# ``RAPID_MLX_CORS_ALLOW_ORIGINS`` (or ``--cors-origins`` for ad-hoc use).
+# A wildcard is still permitted for back-compat but logs a startup WARNING
+# so the operator notices.
+
+# Default method/header allowlists used when CORS is enabled. ``POST,GET,
+# OPTIONS`` matches every route this server actually exposes — DELETE /
+# PATCH / PUT are not routed at all (closes F-091's over-broad ACAM).
+_DEFAULT_CORS_METHODS: tuple[str, ...] = ("POST", "GET", "OPTIONS")
+_DEFAULT_CORS_HEADERS: tuple[str, ...] = (
+    "Content-Type",
+    "Authorization",
+    "X-Rapid-MLX-Internal",
+)
+_DEFAULT_CORS_MAX_AGE: int = 3600
 
 
-def configure_cors(origins: list[str]) -> None:
-    """Configure CORS middleware with the given allowed origins.
+def configure_cors(
+    origins: list[str],
+    *,
+    methods: list[str] | None = None,
+    headers: list[str] | None = None,
+    max_age: int | None = None,
+    allow_credentials: bool | None = None,
+) -> None:
+    """Register the CORS middleware with the given allowlist.
+
+    Backwards-compatible signature: callers that pass a single ``origins``
+    list (tests, ``share`` CLI, the dflash speculative server) still work
+    unchanged. New callers pass ``methods=`` / ``headers=`` to mirror the
+    F-091 fix.
 
     When the wildcard ``*`` is present, ``allow_credentials`` is forced to
     False to comply with the Fetch standard — browsers reject responses
     that combine ``Access-Control-Allow-Origin: *`` with
     ``Access-Control-Allow-Credentials: true``, so the previous default
     silently broke any cross-origin client that sent cookies or
-    Authorization headers."""
-    allow_credentials = "*" not in origins
+    Authorization headers.
+
+    NOTE: this function unconditionally registers the middleware on the
+    module-level ``app``. ``configure_cors_from_env`` is the production
+    entry-point — it skips registration entirely when no origins are
+    configured, which is what closes F-090 at the default-deny layer.
+    """
+    if not origins:
+        # Defensive: callers should not invoke ``configure_cors`` with an
+        # empty list (production goes through ``configure_cors_from_env``
+        # which short-circuits earlier). Bail rather than register a
+        # middleware that would deny everything but still leak the
+        # ``Access-Control-*`` header surface.
+        return
+    wildcard = "*" in origins
+    if allow_credentials is None:
+        allow_credentials = not wildcard
+    elif allow_credentials and wildcard:
+        # Operator explicitly asked for credentials AND wildcard. The
+        # Fetch spec rejects this combination; force-disable credentials
+        # so the response stays valid and log a warning so the operator
+        # notices. ``%s`` interpolation (rather than baking the literal
+        # ``RAPID_MLX_…`` env-var name into the format string) avoids
+        # the ``tests/test_no_out_of_band_routing.py`` constant-scan
+        # false-positive — same trick used by the body-receive timeout
+        # / SSE keepalive blocks in cli.py.
+        logger.warning(
+            "%s requested with a wildcard origin is invalid per the "
+            "Fetch spec; forcing allow_credentials=False",
+            "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
+        )
+        allow_credentials = False
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=allow_credentials,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=list(methods) if methods else list(_DEFAULT_CORS_METHODS),
+        allow_headers=list(headers) if headers else list(_DEFAULT_CORS_HEADERS),
+        max_age=max_age if max_age is not None else _DEFAULT_CORS_MAX_AGE,
     )
+
+
+def _parse_csv(value: str) -> list[str]:
+    """Split a comma-separated env-var value, trimming whitespace and
+    dropping empty entries. Used by ``configure_cors_from_env`` so a
+    trailing comma or stray space doesn't accidentally register an empty
+    origin (which CORSMiddleware would silently never match)."""
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def configure_cors_from_env(
+    cli_origins: list[str] | None = None,
+) -> list[str]:
+    """Resolve CORS configuration from CLI args + env vars and conditionally
+    register the middleware.
+
+    Resolution order:
+      1. ``cli_origins`` (CLI ``--cors-origins`` flag) — when supplied,
+         takes precedence over the env var (matches the pattern used by
+         ``--max-request-bytes`` vs ``RAPID_MLX_MAX_REQUEST_BYTES``).
+      2. ``RAPID_MLX_CORS_ALLOW_ORIGINS`` env var (comma-separated).
+      3. Unset / empty → CORS middleware is NOT registered. Cross-origin
+         requests get no ``Access-Control-Allow-Origin`` header and the
+         preflight ``OPTIONS`` returns 405 (no leak of allowed methods).
+         This is the production-friendly default (F-090).
+
+    Method / header / max-age / credentials overrides come from the rest
+    of the ``RAPID_MLX_CORS_*`` family; see ``vllm_mlx/cli.py``.
+
+    Returns the resolved origin list (empty list when CORS is disabled).
+    """
+    origins: list[str] = []
+    if cli_origins:
+        origins = list(cli_origins)
+    else:
+        env_origins = os.environ.get("RAPID_MLX_CORS_ALLOW_ORIGINS", "").strip()
+        if env_origins:
+            origins = _parse_csv(env_origins)
+
+    if not origins:
+        # Default-deny: log at INFO so operators who expected CORS notice
+        # the missing config, but don't shout — most production deployments
+        # do not need CORS at all (the server fronts a backend, not a
+        # browser).
+        logger.info(
+            "CORS middleware not registered (RAPID_MLX_CORS_ALLOW_ORIGINS unset). "
+            "Set RAPID_MLX_CORS_ALLOW_ORIGINS to a comma-separated allowlist "
+            "(e.g. 'https://chat.openai.com,https://claude.ai') to enable."
+        )
+        return []
+
+    if "*" in origins:
+        logger.warning(
+            "CORS allow-origin set to wildcard '*' — any origin can call this "
+            "server from a browser. Set RAPID_MLX_CORS_ALLOW_ORIGINS to an "
+            "explicit origin list for production deployments."
+        )
+
+    # Resolve method / header / max-age / credentials overrides.
+    methods_env = os.environ.get("RAPID_MLX_CORS_ALLOW_METHODS", "").strip()
+    methods = _parse_csv(methods_env) if methods_env else list(_DEFAULT_CORS_METHODS)
+
+    headers_env = os.environ.get("RAPID_MLX_CORS_ALLOW_HEADERS", "").strip()
+    headers = _parse_csv(headers_env) if headers_env else list(_DEFAULT_CORS_HEADERS)
+
+    max_age_env = os.environ.get("RAPID_MLX_CORS_MAX_AGE", "").strip()
+    max_age = _DEFAULT_CORS_MAX_AGE
+    if max_age_env:
+        try:
+            max_age = max(0, int(max_age_env))
+        except ValueError:
+            logger.warning(
+                "%s=%r is not an integer; falling back to the %d s default",
+                "RAPID_MLX_CORS_MAX_AGE",
+                max_age_env,
+                _DEFAULT_CORS_MAX_AGE,
+            )
+
+    creds_env = os.environ.get("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "").strip().lower()
+    allow_credentials: bool | None = None
+    if creds_env:
+        if creds_env in ("1", "true", "yes", "on"):
+            allow_credentials = True
+        elif creds_env in ("0", "false", "no", "off"):
+            allow_credentials = False
+        else:
+            logger.warning(
+                "%s=%r is not a boolean; falling back to default (False with "
+                "wildcard, True with explicit origins)",
+                "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
+                creds_env,
+            )
+
+    configure_cors(
+        origins,
+        methods=methods,
+        headers=headers,
+        max_age=max_age,
+        allow_credentials=allow_credentials,
+    )
+    return origins
 
 
 # Auth and rate limiting — moved to middleware/auth.py

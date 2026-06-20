@@ -942,9 +942,21 @@ def serve_command(args):
             )
             server._body_receive_timeout_seconds = 15.0
 
-    # Configure CORS
-    cors_origins = args.cors_origins if args.cors_origins else ["*"]
-    server.configure_cors(cors_origins)
+    # Configure CORS (F-090 + F-091). Default behavior changed in this PR:
+    # previously the server registered ``allow_origins=["*"]`` and
+    # ``allow_methods=["*"]`` whenever no ``--cors-origins`` flag was
+    # supplied, which let any browser-side attacker make authenticated
+    # cross-origin requests against ``/v1/chat/completions``. The new
+    # default is **no CORS middleware at all** — operators opt in by
+    # passing ``--cors-origins`` or setting ``RAPID_MLX_CORS_ALLOW_ORIGINS``.
+    #
+    # NOTE: this is a BREAKING change from 0.7.x for any caller that relied
+    # on the implicit wildcard. The fix is to set
+    # ``RAPID_MLX_CORS_ALLOW_ORIGINS='*'`` (logs a startup warning) for
+    # back-compat, or — preferred — pin to the actual frontend origin list.
+    # See vllm_mlx/server.py::configure_cors_from_env for the env-var
+    # family (METHODS / HEADERS / MAX_AGE / ALLOW_CREDENTIALS).
+    cors_origins = server.configure_cors_from_env(args.cors_origins)
     if args.rate_limit > 0:
         server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
 
@@ -1115,8 +1127,11 @@ def serve_command(args):
         features.append("gc-control")
     if args.pin_system_prompt:
         features.append("pin-system-prompt")
-    if args.cors_origins:
-        features.append(f"cors: {', '.join(args.cors_origins)}")
+    # Show CORS in the startup banner when CLI flag or env-var-driven
+    # config produced an origin list (``configure_cors_from_env`` is what
+    # actually resolved it — see the call site earlier in this function).
+    if cors_origins:
+        features.append(f"cors: {', '.join(cors_origins)}")
     if args.enable_dflash:
         features.append("dflash: single-user")
     if features:
