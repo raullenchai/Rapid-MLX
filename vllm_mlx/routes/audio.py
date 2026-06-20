@@ -56,9 +56,38 @@ STT_MODEL_ALIASES: dict[str, str] = {
 # Allowed characters mirror HuggingFace's repo-id conventions
 # (alphanumeric, underscore, dot, hyphen). ``+`` is intentionally NOT
 # allowed — HF repo ids are restricted to ``[A-Za-z0-9._-]`` (see
-# huggingface_hub.utils.validate_repo_id). Length cap (128) is
-# defensive; longest legitimate HF repo id observed in the wild is ~80.
-_STT_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,128}(?:/[A-Za-z0-9_.\-]{1,128})?$")
+# huggingface_hub.utils.validate_repo_id). Length cap (96) per component
+# matches HF's documented limit; longest legitimate HF repo id observed
+# in the wild is ~80.
+_STT_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,96}(?:/[A-Za-z0-9_.\-]{1,96})?$")
+
+
+def _is_valid_repo_component(comp: str) -> bool:
+    """Codex r2 BLOCKING follow-up: mirror HF's structural rules.
+
+    A bare regex character-class check accepts strings that HF itself
+    rejects (e.g. ``.hidden``, ``repo..name``, ``repo.git``,
+    components starting/ending with ``.`` or ``-``). Those still
+    crash inside ``STTEngine.load`` as a 500 because the HF resolver
+    fails the same way for them. Enforce the structural rules HF
+    documents (``huggingface_hub.utils.validate_repo_id``) so the
+    F-210 guard actually catches *every* model string that the codec
+    layer would refuse, not just the obviously path-shaped ones.
+    """
+    if not comp or len(comp) > 96:
+        return False
+    if comp.startswith((".", "-")) or comp.endswith((".", "-")):
+        return False
+    # ``..`` is a parent-directory traversal sentinel; HF rejects it
+    # to keep repo ids resolvable as filesystem paths.
+    if ".." in comp:
+        return False
+    # ``--`` is rejected by HF's repo-id validator as well.
+    if "--" in comp:
+        return False
+    if comp.endswith(".git") or comp.endswith(".ipynb"):
+        return False
+    return True
 
 
 def _resolve_stt_model(model: str) -> str:
@@ -96,7 +125,16 @@ def _resolve_stt_model(model: str) -> str:
     # Canonicalize these to the same 404 ``model_not_found_error`` the
     # bogus-alias path returns (F-167 / PR #735) by enforcing the
     # repo-id regex BEFORE attempting any codec open.
-    if not _STT_MODEL_NAME_RE.fullmatch(model):
+    #
+    # codex r2: char-class alone isn't enough — HF also rejects
+    # ``..``/``--``/``.hidden``/``trailing-dot.``/``repo.git`` shapes.
+    # Apply both the regex (cheap fast-path) AND the per-component
+    # structural rules so the F-210 guard matches HF's own validator.
+    _regex_ok = bool(_STT_MODEL_NAME_RE.fullmatch(model))
+    _components_ok = _regex_ok and all(
+        _is_valid_repo_component(c) for c in model.split("/")
+    )
+    if not _components_ok:
         available = ", ".join(sorted(STT_MODEL_ALIASES.keys()))
         raise HTTPException(
             status_code=404,

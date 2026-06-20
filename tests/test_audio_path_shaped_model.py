@@ -89,6 +89,39 @@ class TestPathShapedRejection:
         assert isinstance(detail, dict)
         assert detail["error"]["type"] == "model_not_found_error"
 
+    @pytest.mark.parametrize(
+        "model_string",
+        [
+            "org/.hidden",
+            ".hidden/repo",
+            "org/repo.",
+            "org/.",
+            "org/repo..name",
+            "org/repo--name",
+            "org/-leading-dash",
+            "org/trailing-dash-",
+            "org/repo.git",
+            "org/notebook.ipynb",
+        ],
+    )
+    def test_rejects_hf_structurally_invalid_repo_ids(self, model_string: str):
+        """codex r2 BLOCKING: HF rejects ``.hidden``, ``..``, ``--``,
+        leading/trailing ``.``/``-``, ``.git`` suffix, and ``.ipynb``
+        suffix as repo-id components. The bare-regex check accepted
+        these and let them through to ``STTEngine.load`` where the HF
+        resolver also fails — surfacing as a 500 instead of the
+        intended 404. Add per-component structural validation."""
+        from vllm_mlx.routes.audio import _resolve_stt_model
+
+        with pytest.raises(HTTPException) as exc_info:
+            _resolve_stt_model(model_string)
+        assert exc_info.value.status_code == 404, (
+            f"expected 404 for {model_string!r}, got {exc_info.value.status_code}"
+        )
+        detail = exc_info.value.detail
+        assert isinstance(detail, dict)
+        assert detail["error"]["type"] == "model_not_found_error"
+
     def test_alias_still_resolves(self):
         """F-165 contract: known aliases continue to map to repos."""
         from vllm_mlx.routes.audio import _resolve_stt_model
