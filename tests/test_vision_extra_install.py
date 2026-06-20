@@ -23,7 +23,28 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import tomllib
+# Codex round-1 BLOCKING: ``import tomllib`` at module-import time would
+# crash on Python 3.10 (the floor in ``pyproject.toml`` →
+# ``requires-python = ">=3.10"``) before the version-floor test could
+# emit a diagnostic. Fall back to the third-party ``tomli`` backport
+# (same API surface) so the file imports cleanly on every supported
+# interpreter. The runtime is identical on 3.11+ where ``tomllib`` is
+# stdlib; on 3.10 the user must ``pip install tomli`` to run the
+# vision-extra lock-in tests (skipped at the file level otherwise).
+try:
+    import tomllib  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover — 3.10 fallback
+    try:
+        import tomli as tomllib  # type: ignore[import-not-found,no-redef]
+    except ModuleNotFoundError:
+        import pytest
+
+        pytest.skip(
+            "tomllib (stdlib ≥3.11) or tomli (3.10 backport) is required "
+            "to parse pyproject.toml; install one with `pip install tomli` "
+            "to run the L-07 lock-in tests.",
+            allow_module_level=True,
+        )
 
 
 def _load_pyproject() -> dict:
@@ -199,19 +220,32 @@ def test_all_extra_includes_mlx_vlm() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Tooling sanity — tomllib was stdlib starting in 3.11 (we require
-# Python >=3.10 in pyproject). On 3.10 we'd need ``tomli`` as a
-# fallback — skip this assertion there. ``sys.version_info`` is the
-# right gate (the import would already have failed at module load).
+# Tooling sanity — pyproject pins ``requires-python = ">=3.10"`` and the
+# module-level import block now falls back to ``tomli`` on 3.10
+# (codex round-1 BLOCKING). This test pins that contract: a 3.10
+# contributor with tomli installed runs the L-07 suite; a 3.10
+# contributor without it sees a clean module-level skip (not the
+# pre-fix ``ModuleNotFoundError`` that masked the lock-in tests).
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_python_version_supports_tomllib() -> None:
-    """We use stdlib ``tomllib`` for the pyproject parse — it's the
-    Python ≥3.11 path. The repo's ``requires-python = ">=3.10"`` means
-    a 3.10 contributor would see this test fail at import-time. Pin
-    the version requirement here so the failure mode is obvious."""
-    assert sys.version_info >= (3, 11), (
-        "tomllib is stdlib on Python ≥3.11. On 3.10 install ``tomli`` "
-        "and import-fallback if you need to backport these tests."
+def test_pyproject_requires_python_floor_matches_tomllib_fallback() -> None:
+    """The TOML import block falls back to ``tomli`` on Python <3.11 so
+    the L-07 lock-in tests work on every Python the project supports.
+    Pin both halves of that contract here so a future floor bump
+    (e.g. ``>=3.11``) lets a reviewer notice the now-dead fallback."""
+    py = _load_pyproject()
+    requires = py.get("project", {}).get("requires-python", "")
+    assert requires, "pyproject.toml must declare requires-python"
+    # The floor must be ``>=3.10`` or stricter — anything looser would
+    # widen the surface this test file's tomli fallback covers.
+    assert ">=3." in requires, (
+        f"requires-python={requires!r} doesn't pin a 3.x floor — the "
+        f"tomli fallback in this file assumes a Python 3 floor."
+    )
+    # Document the runtime we're using so a 3.10 contributor sees a
+    # meaningful trail when reviewing the fallback.
+    assert sys.version_info >= (3, 10), (
+        f"Test runtime {sys.version_info[:2]} is below the project's "
+        f"3.10 floor — the tomli fallback can't help here."
     )

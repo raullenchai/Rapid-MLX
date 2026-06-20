@@ -579,9 +579,15 @@ class _SpecAlignedCORSMiddleware(CORSMiddleware):
                 continue  # canonicalized below
             headers[k] = v
         headers["Vary"] = "Origin"
-        # 200 with empty body matches the spec-minimum preflight ACK
-        # shape. Upstream's ``PlainTextResponse("Disallowed CORS …")``
-        # body is dropped — devtools shows the missing ACAO instead.
+        # Body is a constant ``"OK"`` so a curious operator who hits the
+        # preflight by hand (``curl -X OPTIONS``) sees a non-empty 200
+        # rather than a confusing blank response. The browser never
+        # surfaces the preflight body to JS regardless — what makes the
+        # browser block the real request is the missing
+        # ``Access-Control-Allow-Origin`` header. Codex round-1 NIT
+        # flagged the prior "200 with empty body" comment as diverging
+        # from this body shape; pinning ``"OK"`` here and in the
+        # regression suite keeps code, comment, and tests aligned.
         from starlette.responses import PlainTextResponse
 
         return PlainTextResponse("OK", status_code=200, headers=headers)

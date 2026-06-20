@@ -93,6 +93,15 @@ def test_disallowed_origin_preflight_is_200_not_400(
         f"Expected 200 (spec-aligned, browser blocks via missing ACAO) "
         f"but got {r.status_code} with body {r.text!r}"
     )
+    # Codex round-1 NIT: pin the constant body so code, comment, and
+    # tests agree. ``"OK"`` lets a curious operator hitting the
+    # preflight by hand see a non-empty 200; the browser never
+    # surfaces the body to JS regardless.
+    assert r.text == "OK", (
+        f'Spec-aligned rejection body should be the constant ``"OK"``; '
+        f"got {r.text!r}. If the body is intentionally being changed, "
+        f"update the comment in ``_SpecAlignedCORSMiddleware.preflight_response``."
+    )
 
 
 def test_disallowed_origin_preflight_omits_acao(
