@@ -20,6 +20,21 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
+# The audio route transitively pulls in ``mlx`` / ``mlx_lm`` through
+# ``vllm_mlx.config`` → engine wiring. Linux CI runners don't ship MLX,
+# so importing ``vllm_mlx.routes.audio`` raises ``ModuleNotFoundError``
+# there. Mirror ``tests/test_audio_upload_size_limit.py``: skip cleanly
+# when those deps are missing so the diff-aware ``targeted_tests`` step
+# in ``scripts/pr_validate`` doesn't flag the whole file as regressions.
+pytest.importorskip(
+    "mlx.core",
+    reason="audio route transitively imports mlx; runs on Apple Silicon / dev",
+)
+pytest.importorskip(
+    "mlx_lm",
+    reason="audio route transitively imports mlx_lm; runs on Apple Silicon / dev",
+)
+
 # ---------------------------------------------------------------------------
 # Unit-level — exercise the resolver directly
 # ---------------------------------------------------------------------------
