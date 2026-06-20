@@ -36,10 +36,25 @@ def _extract_param_schemas(tools: list[dict] | None) -> dict[str, dict]:
 
     schemas: dict[str, dict] = {}
     for tool in tools:
+        if not isinstance(tool, dict):
+            continue
         func = tool.get("function", tool)
+        if not isinstance(func, dict):
+            continue
         tool_name = func.get("name", "")
         params = func.get("parameters", {})
+        # Tolerate malformed tool schemas: ``parameters`` may legally be
+        # omitted (treated as no-args) but client JSON sometimes ships it
+        # as ``null``, a bare string, a list, or a number. Skip cleanly
+        # instead of letting ``params.get(...)`` raise ``AttributeError``
+        # — that bubbles up as an unmapped 500 and leaks raw Python error
+        # text. ``properties`` has the same exposure (F-140 / retires
+        # F-031).
+        if not isinstance(params, dict):
+            continue
         properties = params.get("properties", {})
+        if not isinstance(properties, dict):
+            continue
         for param_name, param_schema in properties.items():
             key = f"{tool_name}.{param_name}"
             schemas[key] = param_schema
@@ -416,6 +431,13 @@ def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
     Returns:
         (is_valid, error_message) tuple.
     """
+    # Defensive guard: ``_extract_param_schemas`` may publish a non-dict
+    # entry when a future change to the extraction shape is bug-prone
+    # (e.g. earlier ``properties`` of mixed types reaching here as the
+    # leaf schema). Treat non-dict as "no constraint" rather than letting
+    # ``schema.get(...)`` raise ``AttributeError`` and 500. (F-140)
+    if not isinstance(schema, dict):
+        return True, None
     param_type = schema.get("type", "")
 
     # Try to parse as JSON first
