@@ -223,6 +223,127 @@ def _sanitize_messages_for_template(
     return sanitized
 
 
+# =============================================================================
+# F-111: content-array → string normalization
+# =============================================================================
+#
+# OpenAI's o1/o3 client SDKs ship ``tool``-role replies (and many
+# ``user``/``assistant`` turns) in the multipart-content shape
+# ``content: [{"type": "text", "text": "..."}]`` even when the payload
+# is text-only. Most HF chat templates render ``content`` by string
+# concatenation (Jinja ``{{ content }}``) or by indexing
+# ``content[0].text`` — both produce an empty / wrong render when the
+# wire shape is a list of typed parts. Confirmed silent drops on Qwen3
+# (renders empty ``<tool_response>``) and a hard ``TypeError`` on
+# Hermes3. The fix is one normalization pass right before
+# ``apply_chat_template`` — flatten any text-only content array down to
+# the single concatenated string the templates expect. Multimodal
+# content (image/video/audio parts) is preserved unchanged so the
+# vision/audio branches keep working.
+#
+# A ``tool``-role message can ONLY carry text (tool replies are not
+# multimodal in the OpenAI spec — even the o1 wire shape is
+# ``[{type:text,text:...}]``). If a caller smuggles a non-text part
+# into a ``tool`` reply we raise ``ValueError`` and the
+# ``apply_chat_template`` caller surfaces it as HTTP 400 — silently
+# dropping would re-open the same "tool content missing" footgun this
+# normalization closes.
+
+
+def _part_type_and_text(part) -> tuple[str | None, str | None]:
+    """Return ``(type, text)`` for a content part regardless of wire shape.
+
+    A content part can arrive as a ``dict`` (pre-dumped or
+    ``extract_multimodal_content`` output), as a pydantic ``ContentPart``
+    instance (request-validation hand-off), or as something else (we
+    treat that as "unknown" so the caller can decide what to do).
+    """
+    if isinstance(part, dict):
+        t = part.get("type")
+        x = part.get("text")
+    else:
+        t = getattr(part, "type", None)
+        x = getattr(part, "text", None)
+    if isinstance(t, str) or t is None:
+        t_norm = t
+    else:
+        t_norm = None
+    x_norm = x if isinstance(x, str) else None
+    return t_norm, x_norm
+
+
+def _is_text_only_content_array(content) -> bool:
+    """Return True iff ``content`` is a non-empty list whose every
+    element is a text part — ``{"type": "text", "text": str}`` or the
+    equivalent pydantic ``ContentPart``.
+
+    Multipart content with any non-text part (image_url / video /
+    audio_url / input_audio / ...) is left alone for the multimodal
+    rendering branches to handle.
+    """
+    if not isinstance(content, list) or not content:
+        return False
+    for part in content:
+        t, x = _part_type_and_text(part)
+        if t != "text" or x is None:
+            return False
+    return True
+
+
+def _join_text_parts(content: list) -> str:
+    """Concatenate ``{"type": "text", "text": X}`` parts into one string.
+
+    Multiple text parts are joined verbatim (no separator) — OpenAI's
+    o1+ SDK ships single-part arrays in practice, and a separator
+    would corrupt single-part renders. Multi-part text arrays are an
+    accepted edge case and join verbatim mirrors HF tokenizer
+    expectations.
+    """
+    return "".join((_part_type_and_text(part)[1] or "") for part in content)
+
+
+def _normalize_text_only_content_arrays(messages: list[dict]) -> list[dict]:
+    """Flatten text-only ``content`` arrays into plain strings so chat
+    templates that expect ``content`` to be a string render correctly.
+
+    Applies to every role; multipart content with non-text parts
+    (image/video/audio) is preserved unchanged. For ``tool``-role
+    messages with non-text parts we raise ``ValueError`` — tool replies
+    are text-only per the OpenAI spec, and silently dropping the
+    non-text part would reopen the same "tool content missing"
+    bug-class this normalization closes (F-111).
+    """
+    out: list[dict] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        content = msg.get("content")
+        role = msg.get("role")
+        if isinstance(content, list) and content:
+            if _is_text_only_content_array(content):
+                new_msg = dict(msg)
+                new_msg["content"] = _join_text_parts(content)
+                out.append(new_msg)
+                continue
+            if role == "tool":
+                # Tool replies are text-only per OpenAI spec. A non-text
+                # part here would be silently dropped by the renderer
+                # (the exact F-111 footgun), so reject explicitly. In
+                # the live path the route-level validator in
+                # ``vllm_mlx/routes/chat.py`` has already 400'd non-text
+                # tool parts; this raise is a defence-in-depth for
+                # direct callers of ``apply_chat_template`` (engine
+                # tests, the speculative server, the gradio app).
+                raise ValueError(
+                    "tool-role message content must be a string or a "
+                    "text-only array of {type:'text', text:str} parts; "
+                    "got a non-text content part"
+                )
+        out.append(msg)
+    return out
+
+
 def _baseline_sanitize_messages(messages):
     """Fail-closed fallback for ``_sanitize_messages_for_template``.
 
@@ -413,6 +534,17 @@ def apply_chat_template(
         ``role: content`` format if the applicator has no
         ``apply_chat_template`` method.
     """
+    # F-111: flatten text-only OpenAI-o1+ content arrays
+    # (``content: [{"type":"text","text":"X"}]``) into the plain string
+    # the HF chat templates expect. Runs FIRST so the sanitiser and the
+    # template itself both see a uniform ``content`` shape. A non-text
+    # part on a ``tool``-role message raises ``ValueError`` — surfaced
+    # by the caller (``routes/chat.py``) as HTTP 400. NOT wrapped in a
+    # try/except: silently dropping a non-text tool part would reopen
+    # the same "tool content missing" footgun (Qwen3 rendered an empty
+    # ``<tool_response>``, Hermes3 ``TypeError``-d).
+    messages = _normalize_text_only_content_arrays(messages)
+
     # Neutralize chat-template role markers in untrusted (user/tool)
     # content BEFORE the tokenizer parses them. Runs unconditionally for
     # every template-render path in the project (this is the single

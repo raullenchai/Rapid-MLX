@@ -1012,7 +1012,23 @@ def extract_multimodal_content(
                 tool_call_id = msg.get("tool_call_id", "") or ""
             else:
                 tool_call_id = getattr(msg, "tool_call_id", None) or ""
-            tool_content = content if content else ""
+            # F-111: tool replies routinely arrive as
+            # ``content: [{"type":"text","text":"X"}]`` (OpenAI o1/o3
+            # SDK default). Downstream the message is run through
+            # ``_normalize_tool_call_arguments_for_template`` which
+            # serialises everything with ``json.dumps(..., default=str)``;
+            # a pydantic ``ContentPart`` instance there is coerced to its
+            # ``repr()`` string and the chat template renders garbage.
+            # Flatten text-only content arrays to a plain string at the
+            # API boundary so every downstream stage sees the same shape
+            # as the legacy ``content: "X"`` string form. ``_content_to_text``
+            # already does the right thing for text parts and is what the
+            # assistant branch uses too — single source of truth. The
+            # F-111 route-level validator has already rejected non-text
+            # parts on a ``tool`` role before we get here, so the flatten
+            # is loss-free in production (the only non-text path here is
+            # the tests that bypass the route validator).
+            tool_content = _content_to_text(content) if content else ""
 
             if preserve_native_format:
                 # Preserve native tool format for models that support it
