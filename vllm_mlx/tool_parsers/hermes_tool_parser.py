@@ -151,6 +151,13 @@ class HermesToolParser(ToolParser):
         r"<function>\s*<name>\s*(.*?)\s*</name>\s*<arguments>\s*(.*?)\s*</arguments>\s*</function>",
         re.DOTALL,
     )
+    # Streaming disambiguation gate (codex round-1 BLOCKING): a bare
+    # ``<function>`` in prose is NOT a tool-call opener — only
+    # ``<function>`` immediately followed (after optional whitespace)
+    # by ``<name>`` is. The streaming branch uses this regex to count
+    # plausible named-XML openers and to decide whether to enter the
+    # hold-back path at all, leaving ordinary content untouched.
+    _FUNCTION_XML_OPENER_RE = re.compile(r"<function>\s*<name\b", re.DOTALL)
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -471,14 +478,24 @@ class HermesToolParser(ToolParser):
         # ``</function>`` closer with this branch, so count both opener
         # shapes against the same close-tag count. Both shapes resolve
         # to tool_calls via ``extract_tool_calls``.
+        #
+        # Disambiguation guard (codex round-1 BLOCKING): a bare literal
+        # ``<function>`` in ordinary streamed prose (e.g. the model
+        # explaining tool-call syntax) MUST NOT trigger the hold-back
+        # branch — otherwise the stream is suppressed until a
+        # ``</function>`` arrives that may never come. The named-XML
+        # opener is always ``<function>`` followed (after optional
+        # whitespace / a partial ``<name`` prefix) by the ``<name>`` tag.
+        # Require that pattern before claiming a named-XML opener; any
+        # other ``<function>`` literal falls through to the safe-content
+        # emit path.
         has_bare_function = "<function=" in current_text
-        has_named_xml_function = "<function>" in current_text
-        if has_bare_function or has_named_xml_function:
+        has_named_xml_opener = bool(self._FUNCTION_XML_OPENER_RE.search(current_text))
+        if has_bare_function or has_named_xml_opener:
             func_close_count = current_text.count("</function>")
             prev_func_close = previous_text.count("</function>")
-            open_total = current_text.count("<function=") + current_text.count(
-                "<function>"
-            )
+            named_open_count = len(self._FUNCTION_XML_OPENER_RE.findall(current_text))
+            open_total = current_text.count("<function=") + named_open_count
 
             if open_total > func_close_count:
                 # Inside an incomplete function block, suppress output
