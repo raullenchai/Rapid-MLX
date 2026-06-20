@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .models import _enforce_max_generation_tokens_ceiling
+
 # =============================================================================
 # Request Models
 # =============================================================================
@@ -258,6 +260,18 @@ class AnthropicRequest(BaseModel):
                 )
             if budget < 1:
                 raise ValueError("thinking.budget_tokens must be >= 1 when set.")
+        return self
+
+    # M-04: opt-in per-request generation-budget ceiling, mirroring the
+    # OpenAI surfaces (``ChatCompletionRequest`` /
+    # ``CompletionRequest``). Anthropic ``max_tokens`` is required (not
+    # ``int | None``), so the ceiling check fires on every request when
+    # the env var is set. See ``models._enforce_max_generation_tokens_ceiling``
+    # for the opt-in contract — the cap is only applied when
+    # ``RAPID_MLX_MAX_GENERATION_TOKENS`` is set to a positive integer.
+    @model_validator(mode="after")
+    def _enforce_generation_budget_ceiling(self) -> "AnthropicRequest":
+        _enforce_max_generation_tokens_ceiling(self.max_tokens)
         return self
 
 

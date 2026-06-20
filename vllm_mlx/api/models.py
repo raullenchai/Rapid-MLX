@@ -198,6 +198,94 @@ def _scrub_nonfinite_sampling_raw(data):
 
 
 # =============================================================================
+# Optional generation-budget ceiling (M-04 — opt-in)
+# =============================================================================
+#
+# Aanya (round-2 dogfooding) demonstrated that the F-007 body-bytes cap
+# does not constrain ``max_tokens``: a small JSON body (e.g. 5K-token
+# system prompt + ``max_tokens=10000``) sails through the body-size
+# middleware because the wire bytes are well under the 8 MiB cap, yet
+# the multi-tenant cost surface is determined by the *generation budget*
+# the request claims, not the body size. A request asking for 10K
+# output tokens on a model that costs $X/1K tokens is a cost vector
+# regardless of how few bytes the request body weighs.
+#
+# This validator adds an OPT-IN ceiling on ``max_tokens`` so multi-tenant
+# operators can cap the per-request generation budget without affecting
+# single-machine ("Yuki posture") users who never set the env var.
+#
+# Contract:
+#   * ``RAPID_MLX_MAX_GENERATION_TOKENS`` unset / blank / non-positive
+#     → no enforcement. Identical behaviour to pre-fix; the body-bytes
+#     cap remains the only generic DoS gate.
+#   * ``RAPID_MLX_MAX_GENERATION_TOKENS=N`` with positive int N → reject
+#     at parse time when ``max_tokens`` (after the
+#     ``max_completion_tokens``/``max_tokens`` normalization on the
+#     OpenAI side) exceeds N.
+#
+# Enforcement is intentionally narrow:
+#   * Does NOT add a ``prompt_tokens + max_tokens <= context_window``
+#     early-reject. Context window varies per model and that check
+#     belongs in the engine (where the tokenizer is loaded). The cap
+#     here is purely a *budget ceiling* — a hard policy lever an
+#     operator can set without coupling to model state.
+#   * Reads the env var at validator time (not module-import time) so
+#     a test/operator can flip the ceiling without restarting the
+#     process. Cost is one ``os.environ.get`` per request — negligible.
+
+
+_MAX_GEN_TOKENS_ENV = "RAPID_MLX_MAX_GENERATION_TOKENS"
+
+
+def _resolve_max_generation_tokens_ceiling() -> int | None:
+    """Return the configured ceiling, or ``None`` when unset / invalid.
+
+    Read at validator time so tests can monkeypatch the env var without
+    re-importing the module. Invalid values (non-int, ``0``, negative)
+    are treated the same as ``unset`` — the opt-in stays opt-in even
+    when an operator types a typo, and we never raise from here (the
+    request validator stays the only error surface).
+    """
+    import os
+
+    raw = os.environ.get(_MAX_GEN_TOKENS_ENV)
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        ceiling = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if ceiling <= 0:
+        return None
+    return ceiling
+
+
+def _enforce_max_generation_tokens_ceiling(max_tokens: int | None) -> None:
+    """Raise ``ValueError`` if ``max_tokens`` exceeds the opt-in ceiling.
+
+    ``None`` is always accepted — an absent ``max_tokens`` falls back to
+    a route-level default that is itself bounded by the loaded model's
+    ``max_tokens`` (see ``load_model`` in ``server.py``). The ceiling
+    only applies when the caller *explicitly* asks for a large budget.
+    """
+    if max_tokens is None:
+        return
+    ceiling = _resolve_max_generation_tokens_ceiling()
+    if ceiling is None:
+        return
+    if max_tokens > ceiling:
+        raise ValueError(
+            f"max_tokens ({max_tokens}) exceeds the per-request generation "
+            f"budget ceiling of {ceiling} configured via the "
+            f"{_MAX_GEN_TOKENS_ENV} environment variable. Lower max_tokens "
+            f"or raise the ceiling on the server."
+        )
+
+
+# =============================================================================
 # Content Types (for multimodal messages)
 # =============================================================================
 
@@ -819,6 +907,18 @@ class ChatCompletionRequest(BaseModel):
             self.max_tokens = self.max_completion_tokens
         return self
 
+    # M-04: opt-in per-request generation-budget ceiling. Runs AFTER
+    # ``_normalize_max_completion_tokens`` so the canonical
+    # ``self.max_tokens`` is what gets checked (callers that send
+    # ``max_completion_tokens=N`` get the same enforcement as callers
+    # that send ``max_tokens=N``). See the module-level rationale block
+    # for why this is opt-in and why we deliberately don't add a
+    # ``prompt_tokens + max_tokens <= context_window`` check here.
+    @model_validator(mode="after")
+    def _enforce_generation_budget_ceiling(self) -> "ChatCompletionRequest":
+        _enforce_max_generation_tokens_ceiling(self.max_tokens)
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def _validate_reasoning_max_tokens_raw(cls, data):
@@ -1145,6 +1245,15 @@ class CompletionRequest(BaseModel):
                 "Pass `logprobs: <int>` instead."
             )
         return data
+
+    # M-04: opt-in per-request generation-budget ceiling. Mirrors the
+    # ``ChatCompletionRequest._enforce_generation_budget_ceiling``
+    # validator so both OpenAI surfaces share the same env-var hook.
+    # See the module-level rationale block for the opt-in design.
+    @model_validator(mode="after")
+    def _enforce_generation_budget_ceiling(self) -> "CompletionRequest":
+        _enforce_max_generation_tokens_ceiling(self.max_tokens)
+        return self
 
 
 class CompletionChoice(BaseModel):
