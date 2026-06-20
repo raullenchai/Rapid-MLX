@@ -21,8 +21,9 @@ shape as H-08's embeddings crash).
 from __future__ import annotations
 
 import sys
-import tomllib
 from pathlib import Path
+
+import tomllib
 
 
 def _load_pyproject() -> dict:
@@ -43,11 +44,7 @@ def _load_pyproject() -> dict:
 def _extra_specs(pyproject: dict, extra: str) -> list[str]:
     """Return the dep-spec list for a given ``[project.optional-dependencies]``
     extra. PEP 621 keeps these under ``project.optional-dependencies``."""
-    return (
-        pyproject.get("project", {})
-        .get("optional-dependencies", {})
-        .get(extra, [])
-    )
+    return pyproject.get("project", {}).get("optional-dependencies", {}).get(extra, [])
 
 
 def _split_spec(spec: str) -> tuple[str, str]:

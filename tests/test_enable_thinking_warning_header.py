@@ -39,7 +39,6 @@ from vllm_mlx.service.helpers import (
     enable_thinking_warning_header,
 )
 
-
 # ──────────────────────────────────────────────────────────────────────
 # Source of truth: only ``qwen3`` honors ``enable_thinking``
 # ──────────────────────────────────────────────────────────────────────
@@ -51,7 +50,7 @@ def test_honoring_parsers_set_is_just_qwen3() -> None:
     consults ``True`` for Case-4 routing. If a future parser truly
     honors ``False`` as a strict switch, it MUST be added here AND its
     chat template MUST skip the ``<think>`` pre-injection."""
-    assert _THINKING_FLAG_HONORING_PARSERS == frozenset({"qwen3"})
+    assert frozenset({"qwen3"}) == _THINKING_FLAG_HONORING_PARSERS
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -172,9 +171,7 @@ def test_header_value_is_ascii_safe_and_carries_parser_name() -> None:
     request = SimpleNamespace(
         chat_template_kwargs={"enable_thinking": False}, enable_thinking=None
     )
-    value = enable_thinking_warning_header(request, "vibethinker")[
-        "X-RapidMLX-Warning"
-    ]
+    value = enable_thinking_warning_header(request, "vibethinker")["X-RapidMLX-Warning"]
     assert value == "enable_thinking ignored for parser=vibethinker"
     # ASCII-only — no smart quotes, no unicode dashes that could
     # confuse an HTTP/1.1 hop or a header-sniffing client.

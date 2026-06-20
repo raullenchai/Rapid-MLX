@@ -143,8 +143,7 @@ def test_disallowed_origin_preflight_sets_vary_origin(
     vary = r.headers.get("vary", "")
     vary_tokens = {t.strip().lower() for t in vary.split(",") if t.strip()}
     assert "origin" in vary_tokens, (
-        f"Expected ``Vary: Origin`` on the spec-aligned rejection; "
-        f"got Vary={vary!r}"
+        f"Expected ``Vary: Origin`` on the spec-aligned rejection; got Vary={vary!r}"
     )
     # Sanity: no duplicate-row ``Vary: Origin, Origin`` (could trip
     # downstream cache normalizers).

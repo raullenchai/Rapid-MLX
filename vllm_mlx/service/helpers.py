@@ -1114,9 +1114,7 @@ def _resolve_enable_thinking(request) -> bool | None:
 _THINKING_FLAG_HONORING_PARSERS: frozenset[str] = frozenset({"qwen3"})
 
 
-def enable_thinking_warning_header(
-    request, parser_name: str | None
-) -> dict[str, str]:
+def enable_thinking_warning_header(request, parser_name: str | None) -> dict[str, str]:
     """Build the response-header dict that surfaces a silent
     ``enable_thinking`` drop. Empty dict means "no warning needed".
 
@@ -1144,11 +1142,7 @@ def enable_thinking_warning_header(
     ctk = getattr(request, "chat_template_kwargs", None)
     if not isinstance(ctk, dict) or "enable_thinking" not in ctk:
         return {}
-    return {
-        "X-RapidMLX-Warning": (
-            f"enable_thinking ignored for parser={parser_name}"
-        )
-    }
+    return {"X-RapidMLX-Warning": (f"enable_thinking ignored for parser={parser_name}")}
 
 
 def _effective_enable_thinking(
