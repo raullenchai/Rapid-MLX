@@ -12,7 +12,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .models import _enforce_max_generation_tokens_ceiling
+from .models import (
+    _enforce_max_generation_tokens_ceiling,
+    _scrub_nonfinite_sampling_raw,
+    _validate_finite_in_range,
+    _validate_nonnegative_int,
+)
 
 # =============================================================================
 # Request Models
@@ -146,13 +151,24 @@ class AnthropicRequest(BaseModel):
     messages: list[AnthropicMessage]
     system: str | list[dict] | None = None
     max_tokens: int  # Required in Anthropic API
-    temperature: float | None = None
-    top_p: float | None = None
+    # H-10: Anthropic spec narrows ``temperature`` to ``[0, 1]`` (the
+    # OpenAI ``[0, 2]`` range is a different surface). Pre-H-10 this
+    # field had no Field bound AND no finite check — a NaN ``temperature``
+    # HTTP-200'd into the Metal kernel and crashed the server, same
+    # silent-burn class as F-011 on the OpenAI route. The ``ge``/``le``
+    # bound catches finite out-of-range; the ``_reject_nonfinite_sampling``
+    # validator below catches NaN/inf (Field bounds skip NaN).
+    temperature: float | None = Field(default=None, ge=0.0, le=1.0)
+    # H-10: same finite-range gate on ``top_p`` (Anthropic spec: ``(0, 1]``).
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
     stream: bool = False
     stop_sequences: list[str] | None = None
     tools: list[AnthropicToolDef] | None = None
     tool_choice: dict | None = None
     metadata: dict | None = None
+    # H-10: ``top_k`` range gate — the ``_validate_top_k`` validator
+    # below 4xx's negative values (mlx-lm would otherwise silently
+    # ignore them, same family as M-14).
     top_k: int | None = None
     # Upstream vLLM PR #42396 (v0.22.0) — native structured output on
     # /v1/messages via ``output_config.format = json_schema`` AND
@@ -166,6 +182,52 @@ class AnthropicRequest(BaseModel):
     # The adapter consults ``thinking.budget_tokens`` only when
     # ``output_config.effort`` is unset (newer surface wins).
     thinking: dict | None = None
+
+    # H-10: NaN/inf scrub BEFORE Pydantic coerces a non-finite value
+    # onto the typed ``float | None`` slot. Mirrors the
+    # ``ChatCompletionRequest`` / ``CompletionRequest`` block — without
+    # this, ``temperature=NaN`` would survive into the
+    # ``ValidationError.input_value`` and starlette's JSONResponse
+    # would crash serializing the error body (``allow_nan=False``),
+    # turning the intended 422 into a silent 500 (or worse — uvicorn
+    # death on the engine path). One source of truth: the helper
+    # lives in ``models.py`` so every API surface scrubs identically.
+    @model_validator(mode="before")
+    @classmethod
+    def _scrub_nonfinite_sampling(cls, data):
+        return _scrub_nonfinite_sampling_raw(data)
+
+    # H-10: belt-and-braces finite + range check on the typed slots.
+    # The Field ``ge``/``le`` bounds already 422 finite out-of-range,
+    # but the field-level call lets us pin the exact spec range
+    # (Anthropic ``[0, 1]`` for temperature) in one shared helper and
+    # keeps the contract sound even if a future cleanup drops the
+    # Field bound. ``_validate_finite_in_range`` emits a message that
+    # names the field, so the unified validation-error handler
+    # renders something a client can act on.
+    @field_validator("temperature")
+    @classmethod
+    def _validate_temperature(cls, v: float | None) -> float | None:
+        return _validate_finite_in_range(
+            v, min_value=0.0, max_value=1.0, field_name="temperature"
+        )
+
+    @field_validator("top_p")
+    @classmethod
+    def _validate_top_p(cls, v: float | None) -> float | None:
+        return _validate_finite_in_range(
+            v,
+            min_value=0.0,
+            max_value=1.0,
+            min_inclusive=False,
+            field_name="top_p",
+        )
+
+    # H-10: ``top_k`` range gate — mirrors the OpenAI surfaces.
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def _validate_top_k(cls, v) -> int | None:
+        return _validate_nonnegative_int(v, field_name="top_k")
 
     # M-03 (#742 follow-up): the Anthropic Messages spec only accepts
     # four ``tool_choice.type`` values — ``auto``, ``any``, ``tool``,

@@ -111,6 +111,203 @@ def _reject_nonfinite_float(v: float | None) -> float | None:
     return v
 
 
+# =============================================================================
+# Shared finite-range guard (H-10) — one source of truth
+# =============================================================================
+#
+# H-10 generalized F-011: ``repetition_penalty=-1.0`` slipped past every
+# gate, reached ``mlx_lm/sample_utils.py:298`` (``make_repetition_penalty``
+# raises ``ValueError`` on ``penalty < 0``), and the un-caught exception
+# escaped the request scheduler and crashed uvicorn — port goes dead.
+# Same shape as the F-011 silent-burn cases, just on a different param
+# that F-011 didn't have a Field bound on.
+#
+# The systemic fix is one tiny helper used by every sampling-param
+# validator on every route. Future contributors who add a new sampling
+# param have a single place to wire it through (Field bound + finite
+# check + scrub), so the next "new param leaks NaN to Metal kernel"
+# bug class never reopens.
+#
+# Legal ranges (OpenAI spec + Anthropic spec + mlx-lm contract):
+#
+#   * temperature        OpenAI: [0, 2]   Anthropic: [0, 1]
+#   * top_p              OpenAI: (0, 1]   Anthropic: (0, 1]
+#   * min_p              OpenAI: [0, 1]
+#   * top_k              OpenAI: >= 0     Anthropic: >= 0
+#                        (mlx-lm: 0 == "disabled", > 0 keeps top-k tokens;
+#                         negative is a no-op silent-ignore which M-14
+#                         calls out, but the H-10 mandate is finite-range
+#                         sweep, so we 4xx it here)
+#   * repetition_penalty [0, 2]
+#                        (mlx-lm requires >= 0; bug repro: -1.0 ValueError
+#                         → server death. Upper bound is a safety cap that
+#                         matches the most common convention across HF
+#                         libraries — values much above 2 collapse the
+#                         distribution to a single token, mathematically
+#                         degenerate.)
+#   * presence_penalty   OpenAI: [-2, 2]
+#   * frequency_penalty  OpenAI: [-2, 2]
+#   * logit_bias values  finite floats (no spec-stated range, but NaN/inf
+#                        propagates through softmax and re-creates the
+#                        F-011 silent-burn surface — H-10 closes it
+#                        defensively even though the chat route already
+#                        4xx's non-empty logit_bias).
+def _validate_finite_in_range(
+    v: float | None,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+    min_inclusive: bool = True,
+    max_inclusive: bool = True,
+    field_name: str = "value",
+) -> float | None:
+    """One-stop sampling-param value guard (H-10).
+
+    Pre-H-10 each Pydantic field declared its own ``Field(ge=, le=)``
+    + ``field_validator`` finite check. Half the routes (Anthropic in
+    particular) had neither, so a NaN ``temperature`` HTTP-200'd into a
+    Metal kernel. Centralising the rule into a single helper makes the
+    contract enforceable at code-review time: every sampling-param
+    validator MUST call this with explicit bounds.
+
+    Contract:
+      * ``None`` passes through unchanged (preserves default-None
+        semantics so untouched fields don't trip the gate).
+      * ``NaN`` / ``±inf`` → ``ValueError`` (Pydantic 422 → 400).
+      * Out-of-``[min, max]`` → ``ValueError`` (same envelope).
+      * Inside the range → returned unchanged.
+
+    The error message uses ``field_name`` so the project's unified
+    validation-error handler can render a message that names the
+    offending wire field exactly, matching the F-011 contract pinned
+    by ``test_sampling_validation.py``.
+
+    Booleans deliberately do NOT short-circuit here — Pydantic v2
+    rejects ``bool`` on ``float`` fields when ``strict=True`` and
+    coerces ``True`` → ``1.0`` otherwise, which is the historical
+    contract preserved through F-011. The scrub layer
+    (``_scrub_nonfinite_sampling_raw``) also skips bools, so this
+    helper only ever sees post-coercion floats.
+    """
+    if v is None:
+        return None
+    if not math.isfinite(v):
+        raise ValueError(f"{field_name} must be a finite number (not NaN or inf)")
+    if min_value is not None:
+        ok = v >= min_value if min_inclusive else v > min_value
+        if not ok:
+            comp = ">=" if min_inclusive else ">"
+            raise ValueError(f"{field_name} must be {comp} {min_value} (got {v})")
+    if max_value is not None:
+        ok = v <= max_value if max_inclusive else v < max_value
+        if not ok:
+            comp = "<=" if max_inclusive else "<"
+            raise ValueError(f"{field_name} must be {comp} {max_value} (got {v})")
+    return v
+
+
+def _validate_nonnegative_int(
+    v,
+    *,
+    max_value: int | None = None,
+    field_name: str = "value",
+):
+    """Integer counterpart to ``_validate_finite_in_range`` (H-10).
+
+    Used by ``top_k`` on every route. Integers don't carry NaN, so the
+    finite check is moot — but the range check matters because mlx-lm
+    silently ignores ``top_k < 0`` (M-14 also notes this) and
+    Pydantic v2 would happily coerce ``top_k: -5`` onto an ``int | None``
+    slot without complaint. H-10's sweep mandate says: every sampling
+    param needs a range gate, so we 4xx the negative form rather than
+    silent-accept it.
+
+    Compatibility with Pydantic v2's lax int coercion:
+      * ``True``/``False`` are explicitly rejected (``bool`` is an
+        ``int`` subclass in Python; without this, ``top_k: true``
+        would silently become ``top_k=1``). Mirrors
+        ``_reject_non_one_n`` + ``_validate_thinking_budget``.
+      * Integer-valued floats (e.g. ``64.0``) are accepted and
+        coerced to ``int`` — Pydantic v2 lax mode also accepts these,
+        and a pre-H-10 client sending ``{"top_k": 64.0}`` would have
+        worked. Preserving that contract keeps H-10 a pure tightening
+        (only rejects shapes the legacy path also rejected OR shapes
+        F-011 / H-10 specifically targets), no new regressions.
+      * NaN / ±inf floats are rejected for the same reason
+        ``_reject_nonfinite_float`` rejects them on float fields:
+        they propagate into the engine with mathematically-undefined
+        behavior (kept out of the legal-int domain by the
+        ``math.isfinite`` check).
+      * Genuine non-numeric types (str, list, dict, ...) → 422.
+
+    The mode="before" attachment lets this validator decide the
+    type-coercion contract per field instead of inheriting Pydantic's
+    default int-coercion (which silently turns ``True`` into ``1``).
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        raise ValueError(f"{field_name} must be an integer when set (got bool)")
+    if isinstance(v, float):
+        if not math.isfinite(v):
+            raise ValueError(f"{field_name} must be a finite integer (not NaN or inf)")
+        if not v.is_integer():
+            raise ValueError(f"{field_name} must be an integer when set (got {v})")
+        v = int(v)
+    elif not isinstance(v, int):
+        # Defensive — Pydantic v2's int field already 422s on
+        # arbitrary types, but mode="before" paths see the raw value.
+        raise ValueError(
+            f"{field_name} must be an integer when set (got {type(v).__name__})"
+        )
+    if v < 0:
+        raise ValueError(f"{field_name} must be >= 0 (got {v}); use 0 to disable.")
+    if max_value is not None and v > max_value:
+        raise ValueError(f"{field_name} must be <= {max_value} (got {v})")
+    return v
+
+
+def _validate_logit_bias_finite(
+    v: dict | None, *, field_name: str = "logit_bias"
+) -> dict | None:
+    """Reject NaN/±inf inside ``logit_bias`` values (H-10).
+
+    The chat route already 4xx's non-empty ``logit_bias`` (the
+    server doesn't wire it through to the sampler yet), but the
+    schema layer never inspected the *values* — so a defensively
+    crafted ``{"42": NaN}`` would survive the Pydantic parse, get
+    embedded in the ``ValidationError.input_value`` if a downstream
+    validator failed, and recreate the F-011 NaN-in-error-body
+    silent-500. H-10's sweep mandate is "every sampling param is
+    finite-checked at the schema layer" — covering ``logit_bias``
+    here means the same gate applies even if a future PR routes
+    the field through to a real logits processor.
+
+    Returns ``None`` unchanged (defaults preserved). An empty dict
+    is fine — it's the spec's "no bias applied" form.
+    """
+    if v is None:
+        return None
+    if not isinstance(v, dict):
+        # Pydantic's type-check normally catches this first, but
+        # this validator may run in ``mode="before"`` paths so the
+        # explicit guard keeps the error message coherent.
+        raise ValueError(f"{field_name} must be a mapping of token-id (str) → float.")
+    for k, vv in v.items():
+        if isinstance(vv, bool):
+            raise ValueError(f"{field_name}[{k!r}] must be a finite number (got bool).")
+        if not isinstance(vv, (int, float)):
+            raise ValueError(
+                f"{field_name}[{k!r}] must be a finite number "
+                f"(got {type(vv).__name__})."
+            )
+        if not math.isfinite(vv):
+            raise ValueError(
+                f"{field_name}[{k!r}] must be a finite number (not NaN or inf)."
+            )
+    return v
+
+
 # Fields that must reject NaN / ±inf BEFORE pydantic coerces them onto a
 # typed ``float | None`` slot. Pydantic v2's default ``ValidationError``
 # embeds ``input_value`` in the error dict; when the bad value is
@@ -765,9 +962,20 @@ class ChatCompletionRequest(BaseModel):
     # Pydantic drops them on parse (#355). top_k / min_p flow through to the
     # mlx-lm sampler; repetition_penalty / presence_penalty / frequency_penalty
     # flow through to mlx-lm's make_logits_processors().
+    # H-10: ``top_k`` is range-checked by ``_validate_top_k`` below (mlx-lm
+    # silently ignores negative values; we 4xx them).
     top_k: int | None = None
     min_p: float | None = Field(default=None, ge=0.0, le=1.0)
-    repetition_penalty: float | None = None
+    # H-10 root: ``repetition_penalty=-1.0`` previously slipped past every
+    # gate, reached ``mlx_lm/sample_utils.py:298``
+    # (``make_repetition_penalty`` raises ``ValueError`` on negative
+    # values), and the uncaught exception escaped the request scheduler
+    # and crashed uvicorn. Field bound catches finite out-of-range;
+    # the ``_reject_nonfinite_sampling`` validator below catches NaN/inf
+    # (which Field bounds skip — every NaN comparison is False).
+    # Upper bound is a safety cap (values >> 2 collapse the distribution
+    # to a single token; the upstream HF/vLLM convention also caps here).
+    repetition_penalty: float | None = Field(default=None, ge=0.0, le=2.0)
     # F-011: presence_penalty / frequency_penalty are bounded [-2, 2] by
     # OpenAI spec. Field bounds catch finite out-of-range values (e.g.
     # ``presence_penalty=10`` previously HTTP 200'd as silent
@@ -892,6 +1100,28 @@ class ChatCompletionRequest(BaseModel):
     @classmethod
     def _reject_nonfinite_sampling(cls, v: float | None) -> float | None:
         return _reject_nonfinite_float(v)
+
+    # H-10: ``top_k`` had no range gate pre-fix — ``top_k=-5`` and
+    # ``top_k=0`` (acceptable on mlx-lm as "disabled") slid through.
+    # M-14 noted the silent-ignore on negatives; H-10's finite-range
+    # sweep mandate is to 4xx instead. ``mode="before"`` so booleans
+    # (``True``/``False`` are int subclasses in Python) are caught
+    # before Pydantic coerces them to 1/0 — same pattern as
+    # ``_validate_n``.
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def _validate_top_k(cls, v) -> int | None:
+        return _validate_nonnegative_int(v, field_name="top_k")
+
+    # H-10: defensive finite-check on ``logit_bias`` values. The chat
+    # route already 4xx's non-empty ``logit_bias`` (see ``routes/chat.py``
+    # L699), but if a downstream PR ever wires it through, NaN/inf in
+    # the values would re-create the F-011 silent-burn surface. Cheap
+    # gate, large defense-in-depth payoff.
+    @field_validator("logit_bias", mode="before")
+    @classmethod
+    def _validate_logit_bias(cls, v):
+        return _validate_logit_bias_finite(v, field_name="logit_bias")
 
     @model_validator(mode="after")
     def _normalize_max_completion_tokens(self) -> "ChatCompletionRequest":
@@ -1137,9 +1367,17 @@ class CompletionRequest(BaseModel):
     stop: list[str] | None = None
     # Extended OpenAI-compatible sampling parameters — see #355 + the
     # matching block on ChatCompletionRequest for wiring + caveats.
+    # H-10: ``top_k`` / ``repetition_penalty`` finite-range gates
+    # mirror the chat schema so both OpenAI routes share one contract.
     top_k: int | None = None
     min_p: float | None = Field(default=None, ge=0.0, le=1.0)
-    repetition_penalty: float | None = None
+    # H-10: ``repetition_penalty=-1.0`` previously slipped past the
+    # schema, reached ``mlx_lm.sample_utils.make_repetition_penalty``,
+    # raised ``ValueError``, escaped the request scheduler, and
+    # crashed uvicorn. Field bound catches finite negatives;
+    # ``_reject_nonfinite_sampling`` catches NaN/inf. Same rationale +
+    # safety upper bound as the chat schema.
+    repetition_penalty: float | None = Field(default=None, ge=0.0, le=2.0)
     presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     # Logprobs — per the *legacy* OpenAI completions schema, this is an
@@ -1198,6 +1436,13 @@ class CompletionRequest(BaseModel):
     @classmethod
     def _reject_nonfinite_sampling(cls, v: float | None) -> float | None:
         return _reject_nonfinite_float(v)
+
+    # H-10: ``top_k`` range gate — mirror the chat schema (4xx for
+    # negative; 0 means "disabled" and is fine).
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def _validate_top_k(cls, v) -> int | None:
+        return _validate_nonnegative_int(v, field_name="top_k")
 
     # F-155: enforce ``n == 1`` at parse time, mirroring the chat
     # surface. The route already 400's ``n > 1``; the schema layer
