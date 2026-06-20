@@ -366,7 +366,15 @@ class TestProcessImageInputDefenseInDepth:
     from the Anthropic / Responses adapters and from internal code
     paths where the schema-layer guard doesn't apply. The function's
     own ``isinstance(image, str)`` check raises a clean ValueError
-    instead of bubbling the raw ``startswith`` AttributeError."""
+    instead of bubbling the raw ``startswith`` AttributeError.
+
+    Critical preservation contract (codex r2): the existing dict
+    unwrapping at the top of ``process_image_input`` (``{"url": "..."}``
+    → ``url``) MUST still run before the type guard so valid
+    dict-shaped callers keep working — the guard only fires on the
+    POST-unwrap value, never on the original dict. Tests below pin
+    both branches.
+    """
 
     def test_int_image_raises_clean_value_error(self):
         from vllm_mlx.models.mllm import process_image_input
@@ -374,14 +382,58 @@ class TestProcessImageInputDefenseInDepth:
         with pytest.raises(ValueError) as ei:
             process_image_input(123)  # type: ignore[arg-type]
         assert "must be a string" in str(ei.value)
+        # Must surface the type name in the error for client debuggability
+        # (codex r2 NIT: prior assertion didn't pin the ``got X`` shape).
+        assert "got int" in str(ei.value)
         assert "startswith" not in str(ei.value)
 
     def test_dict_with_int_url_raises_clean_value_error(self):
-        """Dict-shape path: ``{"url": 123}`` unwraps to ``123`` and
-        then trips the new isinstance gate."""
+        """Dict-shape path: ``{"url": 123}`` is unwrapped at the
+        function's top (line ~525) to ``image = 123``, then the
+        type guard catches the non-string and raises. The error
+        message names the post-unwrap type (``int``), not ``dict``,
+        which is the load-bearing test (codex r2 BLOCKING)."""
         from vllm_mlx.models.mllm import process_image_input
 
         with pytest.raises(ValueError) as ei:
             process_image_input({"url": 123})  # type: ignore[arg-type]
         assert "must be a string" in str(ei.value)
+        assert "got int" in str(ei.value)
         assert "startswith" not in str(ei.value)
+
+    def test_dict_with_valid_string_url_still_processed(self):
+        """Codex r2 BLOCKING coverage: valid ``{"url": "<str>"}``
+        dict shape MUST still unwrap and proceed past the type guard.
+        The downstream call hits ``Path.exists()`` and raises
+        ``Cannot process image`` because the path is fake — that's
+        downstream behavior, not the type guard rejecting the dict."""
+        from vllm_mlx.models.mllm import process_image_input
+
+        # Pick a path that's <4096 chars and definitely doesn't exist
+        # — proves we got past the type guard into the body of the
+        # function.
+        with pytest.raises(ValueError) as ei:
+            process_image_input(
+                {"url": "/nonexistent/__rapid_mlx_test_path__.png"}
+            )
+        # The error must be the downstream "Cannot process image"
+        # marker (path not found), NOT the type guard's "must be a
+        # string" — proves the dict was unwrapped and the unwrapped
+        # string was accepted by the type guard.
+        assert "Cannot process image" in str(ei.value)
+        assert "must be a string" not in str(ei.value)
+
+    def test_nested_dict_url_unwrapped_correctly(self):
+        """The function also handles the nested ``{"url": {"url":
+        "..."}}`` shape (line ~527-528). Pin that the unwrap still
+        works through both levels."""
+        from vllm_mlx.models.mllm import process_image_input
+
+        with pytest.raises(ValueError) as ei:
+            process_image_input(
+                {"url": {"url": "/nonexistent/__nested_test__.png"}}
+            )
+        # Same as above — should fall through to the path-not-found
+        # error, not be caught by the type guard.
+        assert "Cannot process image" in str(ei.value)
+        assert "must be a string" not in str(ei.value)
