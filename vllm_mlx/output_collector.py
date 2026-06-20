@@ -150,6 +150,14 @@ class RequestOutputCollector:
             completion_tokens=new.completion_tokens,
             cached_tokens=new.cached_tokens,
             logprobs=new.logprobs,  # Use latest token's logprobs
+            # H-03: prefer the newer chunk's matched_stop (the scheduler
+            # pins it exactly once on the chunk where the stop fires);
+            # fall back to the existing buf so we never demote a
+            # previously-set value to None just because a later flush
+            # arrived after the stop already fired. Anthropic
+            # ``/v1/messages`` reads this on the FINAL output and would
+            # otherwise lose the stop_sequence signal under aggregation.
+            matched_stop=new.matched_stop or existing.matched_stop,
         )
 
     def clear(self) -> None:

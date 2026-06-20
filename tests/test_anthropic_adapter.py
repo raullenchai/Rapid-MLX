@@ -574,6 +574,60 @@ class TestOpenaiToAnthropic:
         result = openai_to_anthropic(resp, "default")
         assert result.stop_reason == "max_tokens"
 
+    # H-03 — matched_stop surface
+    def test_matched_stop_promotes_end_turn_to_stop_sequence(self):
+        """When the engine surfaces a matched stop string the adapter
+        must rewrite ``stop_reason="stop"`` (which would otherwise
+        map to ``end_turn``) to Anthropic's dedicated
+        ``stop_sequence`` value and populate the ``stop_sequence``
+        field verbatim. Pre-fix the adapter always emitted
+        ``end_turn`` with ``stop_sequence: None`` even when a stop
+        fired."""
+        resp = self._make_response(content="say ", finish_reason="stop")
+        result = openai_to_anthropic(resp, "default", matched_stop="END")
+        assert result.stop_reason == "stop_sequence"
+        assert result.stop_sequence == "END"
+
+    def test_matched_stop_none_keeps_end_turn(self):
+        """No matched stop means EOS / length / no-stop; the legacy
+        ``stop → end_turn`` mapping holds and ``stop_sequence`` stays
+        ``None``."""
+        resp = self._make_response(finish_reason="stop")
+        result = openai_to_anthropic(resp, "default", matched_stop=None)
+        assert result.stop_reason == "end_turn"
+        assert result.stop_sequence is None
+
+    def test_matched_stop_does_not_override_max_tokens(self):
+        """A length cap MUST still win — Anthropic's stop_reason
+        values are mutually exclusive, and the matched-stop rewrite
+        only applies to the ``end_turn`` bucket. Otherwise a request
+        that ran past max_tokens AND happened to also include the
+        stop bytes mid-output would be mis-classified."""
+        resp = self._make_response(finish_reason="length")
+        result = openai_to_anthropic(resp, "default", matched_stop="END")
+        assert result.stop_reason == "max_tokens"
+        # ``stop_sequence`` MUST stay None — Anthropic spec invariant:
+        # "stop_sequence is set iff stop_reason == 'stop_sequence'".
+        assert result.stop_sequence is None
+
+    def test_matched_stop_does_not_override_tool_use(self):
+        """Same invariant for the tool_use bucket: a tool_calls
+        finish must keep stop_reason='tool_use' even if a stop
+        string happened to surface earlier in the response."""
+        tc = ToolCall(
+            id="call_1",
+            type="function",
+            function=FunctionCall(name="search", arguments='{"q":"x"}'),
+        )
+        resp = self._make_response(
+            content="Calling.",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        result = openai_to_anthropic(resp, "default", matched_stop="END")
+        assert result.stop_reason == "tool_use"
+        assert result.stop_sequence is None
+
     def test_response_has_id(self):
         resp = self._make_response()
         result = openai_to_anthropic(resp, "test-model")

@@ -1236,12 +1236,17 @@ class TestGenerationOutputFieldOrder:
             "reasoning_text",
             "tool_calls",
             "cached_tokens",
+            # H-03 appended ``matched_stop`` after ``cached_tokens``. New
+            # additions must keep growing this tail in chronological
+            # order — anything inserted MID-LIST silently rebinds
+            # positional construction for pre-v0.6.65 callers.
+            "matched_stop",
         ], (
             f"new GenerationOutput fields must be APPENDED in order "
-            f"(raw_text → reasoning_text → tool_calls → cached_tokens) "
-            f"to preserve positional-arg compatibility for the "
-            f"pre-v0.6.65 surface. Current trailing fields after "
-            f"``channel``: {appended}"
+            f"(raw_text → reasoning_text → tool_calls → cached_tokens "
+            f"→ matched_stop) to preserve positional-arg compatibility "
+            f"for the pre-v0.6.65 surface. Current trailing fields "
+            f"after ``channel``: {appended}"
         )
 
 

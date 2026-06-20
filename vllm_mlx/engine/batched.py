@@ -1043,6 +1043,9 @@ class BatchedEngine(BaseEngine):
                 prompt_tokens=output.prompt_tokens,
                 completion_tokens=output.completion_tokens,
                 finish_reason=output.finish_reason,
+                # H-03: MLLM non-stream parity — propagate the matched
+                # stop string for the Anthropic adapter.
+                matched_stop=getattr(output, "matched_stop", None),
             )
 
         # Use LLM engine for text-only (non-MLLM models)
@@ -1128,6 +1131,13 @@ class BatchedEngine(BaseEngine):
             finish_reason=output.finish_reason,
             tool_calls=structured_tool_calls,
             cached_tokens=output.cached_tokens,
+            # H-03: propagate the scheduler-pinned stop string so the
+            # Anthropic ``/v1/messages`` adapter can surface
+            # ``stop_reason="stop_sequence"`` + ``stop_sequence: <str>``.
+            # ``None`` for EOS / length / no-stop and harmless to ignore
+            # on the OpenAI surface (it already lumps stop+EOS under
+            # ``finish_reason="stop"``).
+            matched_stop=getattr(output, "matched_stop", None),
         )
 
     async def stream_generate(
@@ -1193,6 +1203,9 @@ class BatchedEngine(BaseEngine):
                     finished=output.finished,
                     finish_reason=output.finish_reason,
                     logprobs=output.logprobs,
+                    # H-03: MLLM stream parity — propagate the matched
+                    # stop string for the Anthropic adapter.
+                    matched_stop=getattr(output, "matched_stop", None),
                 )
             return
 
@@ -1264,6 +1277,9 @@ class BatchedEngine(BaseEngine):
                     finish_reason=output.finish_reason,
                     logprobs=output.logprobs,
                     cached_tokens=output.cached_tokens,
+                    # H-03: text stream parity — propagate the matched
+                    # stop string for the Anthropic adapter.
+                    matched_stop=getattr(output, "matched_stop", None),
                 )
         finally:
             # Best-effort defensive abort. Codex r2 P1 #2 concern: this
@@ -1652,6 +1668,10 @@ class BatchedEngine(BaseEngine):
             channel=_channel_name(event.channel),
             tool_calls=tool_calls,
             cached_tokens=source.cached_tokens,
+            # H-03: preserve matched_stop through the router-wrapped
+            # streaming chunks so the terminal chunk still carries it
+            # for /v1/messages stop_sequence surfacing.
+            matched_stop=source.matched_stop,
         )
 
     def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:
@@ -1666,6 +1686,10 @@ class BatchedEngine(BaseEngine):
             logprobs=source.logprobs,
             channel=None,
             cached_tokens=source.cached_tokens,
+            # H-03: preserve matched_stop on the terminal sentinel so
+            # /v1/messages stop_sequence surfacing works on router-led
+            # streams (harmony / gemma4).
+            matched_stop=source.matched_stop,
         )
 
     def _finalize_output_router(

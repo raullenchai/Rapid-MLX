@@ -3461,6 +3461,14 @@ class Scheduler:
                 for stop_str in stop_params:
                     if stop_str and stop_str in decoded_so_far:
                         finish_reason = "stop"
+                        # H-03: pin WHICH user-supplied stop fired so
+                        # the Anthropic adapter can surface
+                        # ``stop_reason="stop_sequence"`` +
+                        # ``stop_sequence: <str>`` per the public spec.
+                        # OpenAI's ``finish_reason="stop"`` bucket
+                        # already lumps EOS and stop-string together so
+                        # the OpenAI surface ignores this field.
+                        output.matched_stop = stop_str
                         idx = decoded_so_far.index(stop_str)
                         trimmed_total = decoded_so_far[:idx]
                         request.output_text = trimmed_total

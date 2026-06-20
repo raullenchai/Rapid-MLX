@@ -163,6 +163,7 @@ def openai_to_anthropic(
     model: str,
     *,
     reasoning_enabled: bool = True,
+    matched_stop: str | None = None,
 ) -> AnthropicResponse:
     """
     Convert an OpenAI Chat Completions response to Anthropic Messages API format.
@@ -178,6 +179,14 @@ def openai_to_anthropic(
             models never emit a ``thinking`` block. Defaults to True so
             external callers that don't pass the flag keep their existing
             behavior (pre-issue #702).
+        matched_stop: H-03 — when a user-supplied ``stop_sequences`` entry
+            fired, the engine surfaces the matched string via
+            ``GenerationOutput.matched_stop``. The route passes it through
+            here so the response carries
+            ``stop_reason="stop_sequence"`` + ``stop_sequence: <str>`` per
+            Anthropic's public spec. ``None`` (the default) means EOS /
+            length / no-stop, and the legacy ``_convert_stop_reason``
+            mapping (``stop`` → ``end_turn``) applies.
 
     Returns:
         Anthropic Messages API response
@@ -264,6 +273,15 @@ def openai_to_anthropic(
                 )
 
         stop_reason = _convert_stop_reason(choice.finish_reason)
+        # H-03: when a user-supplied stop fired, override the generic
+        # "stop"→"end_turn" mapping with Anthropic's dedicated
+        # ``stop_sequence`` value. Tool/length finishes still win — a
+        # tool_calls finish_reason should not be reclassified just
+        # because the engine happened to also see a stop string in
+        # auxiliary text. Matches Anthropic's public spec where
+        # ``stop_sequence`` is mutually exclusive with the other reasons.
+        if matched_stop is not None and stop_reason == "end_turn":
+            stop_reason = "stop_sequence"
     else:
         stop_reason = "end_turn"
 
@@ -304,6 +322,12 @@ def openai_to_anthropic(
         model=model,
         content=content,
         stop_reason=stop_reason,
+        # H-03: only surface ``stop_sequence`` when the matched-stop
+        # rewrite actually took effect (``stop_reason == "stop_sequence"``).
+        # Carrying the matched bytes alongside an ``end_turn`` /
+        # ``max_tokens`` / ``tool_use`` reason would violate Anthropic's
+        # spec ("stop_sequence is set iff stop_reason == 'stop_sequence'").
+        stop_sequence=matched_stop if stop_reason == "stop_sequence" else None,
         usage=AnthropicUsage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,

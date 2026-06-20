@@ -614,6 +614,13 @@ async def create_anthropic_message(
             openai_response,
             cfg.model_name or anthropic_request.model,
             reasoning_enabled=_resolve_reasoning_enabled(anthropic_request.model),
+            # H-03: forward the engine-surfaced matched stop string so
+            # the response carries ``stop_reason="stop_sequence"`` +
+            # ``stop_sequence: <str>`` per Anthropic's public spec.
+            # ``getattr`` keeps the call defensive against engines that
+            # haven't been rebuilt against the new ``GenerationOutput``
+            # field (None → legacy ``stop`` → ``end_turn`` mapping).
+            matched_stop=getattr(output, "matched_stop", None),
         )
         return Response(
             content=anthropic_response.model_dump_json(exclude_none=True),
@@ -1097,6 +1104,15 @@ async def _stream_anthropic_messages(
     prompt_tokens = 0
     completion_tokens = 0
     cached_tokens = 0
+    # H-03: track the most-recently-surfaced ``matched_stop`` so the
+    # terminal ``message_delta`` can emit Anthropic's
+    # ``stop_reason="stop_sequence"`` + ``stop_sequence: <str>`` per the
+    # public spec. The scheduler pins this exactly once (on the chunk
+    # that fires the stop check) and downstream wrappers preserve it
+    # through to the terminal sentinel, so reading the latest non-None
+    # value is equivalent to "did any stop fire on this request?".
+    # Stays ``None`` for EOS / length / no-stop terminations.
+    stream_matched_stop: str | None = None
 
     current_block_type = None
     block_index = 0
@@ -1193,6 +1209,12 @@ async def _stream_anthropic_messages(
             completion_tokens = output.completion_tokens
         if hasattr(output, "cached_tokens") and output.cached_tokens:
             cached_tokens = output.cached_tokens
+        # H-03: latch the matched stop string from whichever chunk
+        # carries it. ``getattr`` keeps legacy mocks without the field
+        # working unchanged.
+        _chunk_matched_stop = getattr(output, "matched_stop", None)
+        if _chunk_matched_stop:
+            stream_matched_stop = _chunk_matched_stop
 
         # Capture engine-surfaced structured tool calls (HarmonyStreamingRouter
         # via openai-harmony's StreamableParser). The delta_text on these
@@ -1796,6 +1818,18 @@ async def _stream_anthropic_messages(
             yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': tool_index})}\n\n"
 
     stop_reason = "tool_use" if tool_calls else "end_turn"
+    # H-03: when a user-supplied ``stop_sequences`` entry fired (and the
+    # turn would otherwise have terminated normally with ``end_turn``),
+    # surface Anthropic's dedicated ``stop_sequence`` reason + populate
+    # the matched bytes — mirroring the non-stream adapter. Tool-use
+    # finishes still win: the model emitting a tool_call AND happening
+    # to also surface a stop string in auxiliary text should not be
+    # reclassified, matching Anthropic's mutually-exclusive
+    # ``stop_reason`` semantics.
+    stop_sequence: str | None = None
+    if stream_matched_stop is not None and stop_reason == "end_turn":
+        stop_reason = "stop_sequence"
+        stop_sequence = stream_matched_stop
 
     # Anthropic-side cache fields mirror what the non-streaming adapter
     # at ``api/anthropic_adapter.openai_to_anthropic`` produces. Per
@@ -1820,7 +1854,7 @@ async def _stream_anthropic_messages(
         usage_payload["cache_read_input_tokens"] = cached_tokens
     message_delta = {
         "type": "message_delta",
-        "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+        "delta": {"stop_reason": stop_reason, "stop_sequence": stop_sequence},
         "usage": usage_payload,
     }
     yield f"event: message_delta\ndata: {json.dumps(message_delta)}\n\n"
