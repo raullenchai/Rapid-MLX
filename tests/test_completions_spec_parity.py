@@ -781,7 +781,26 @@ class TestStreamingCompletionIdStable:
         request start time. Clients that derive request latency from
         the first/last chunk timestamps would see jitter rather than
         a stable origin.
+
+        Codex round-1 BLOCKING on PR #752: a real-time test would
+        usually pass even against the pre-fix code because three
+        synthetic chunks generally fit inside a single integer second,
+        so ``int(time.time())`` returns the same value for each call.
+        Monkeypatch ``time.time`` to return a strictly-increasing
+        sequence (1000.0, 1001.0, 1002.0, ...) so every call yields a
+        distinct integer — if the production code calls ``time.time``
+        once per chunk we'd see 3 distinct timestamps; if it calls it
+        once per request we see 1. This makes the test actually
+        exercise the fix instead of accidentally passing on timing.
         """
+        from vllm_mlx.routes import completions as comp_route
+
+        _tick = iter(range(1000, 2000))
+
+        def _fake_time():
+            return float(next(_tick))
+
+        monkeypatch.setattr(comp_route.time, "time", _fake_time)
         client, _ = _build_completions_app(
             patched_config,
             monkeypatch,

@@ -251,8 +251,15 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     async for chunk in it:
                         _stream_yielded = True
                         output = chunk
-                        _accum_text_parts.append(chunk.new_text or "")
-                        token_logprobs_list.extend(
+                        # B023 is a false positive here: the closure is
+                        # invoked synchronously inside the same loop
+                        # iteration via ``await _wait_with_disconnect``
+                        # below, so ``_accum_text_parts`` /
+                        # ``token_logprobs_list`` always reference the
+                        # current iteration's bindings. Suppress so the
+                        # ruff baseline stays clean.
+                        _accum_text_parts.append(chunk.new_text or "")  # noqa: B023
+                        token_logprobs_list.extend(  # noqa: B023
                             _extract_streaming_token_logprobs(
                                 chunk, engine.tokenizer, effective_top_k
                             )
