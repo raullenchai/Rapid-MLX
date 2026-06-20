@@ -214,22 +214,52 @@ async def test_no_holder_preserves_pre_c01_contract():
 
 
 @pytest.mark.asyncio
-async def test_generator_exit_path_also_force_aborts():
-    """When the consumer aborts the iteration via ``aclose()`` (the
-    ``GeneratorExit`` path — Starlette's StreamingResponse uses this
-    when it detects a write failure), the guard MUST also
-    force-abort even though the disconnect_task never fired.
+async def test_generator_exit_branch_force_aborts_before_finally(monkeypatch):
+    """C-01 codex r1 BLOCKING #1: pin the ``except GeneratorExit``
+    branch specifically (not just "abort happened somewhere").
 
-    Astrid r3 fingerprint: ``is_disconnected()`` may NEVER return
-    True even after the client RSTs, but uvicorn eventually
-    surfaces the dead socket via a write failure that propagates
-    back as ``GeneratorExit`` into the streaming generator. Catching
-    this path closes the second half of the runaway window.
+    The disconnect_guard now triggers force-abort from THREE places:
+    the explicit disconnect branch, the ``except GeneratorExit``
+    block, AND the ``finally`` belt-and-suspenders. A test that only
+    checks ``scheduler.aborts == [rid]`` would still pass if the
+    ``except GeneratorExit`` block were deleted, because ``finally``
+    would catch the case. This test discriminates by replacing
+    ``_force_abort_request`` with a wrapper that captures the calling
+    frame's local variable namespace — only the ``except GeneratorExit``
+    block (NOT ``finally``) accumulates ``chunk_count`` AND has yet to
+    cancel ``disconnect_task``. Asserting that the FIRST abort call
+    came from a frame WITHOUT ``finished_normally`` resolved/with
+    ``disconnect_task`` still live pins the branch specifically.
+
+    The Astrid r3 fingerprint: Starlette's StreamingResponse tears
+    down via ``aclose()`` (GeneratorExit into our wrapper) when uvicorn
+    detects a write failure to a dead socket — even though
+    ``is_disconnected()`` returned False the entire time. Catching the
+    branch here closes the second half of the runaway window.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    import inspect
+
+    from vllm_mlx.service import helpers as _helpers
 
     engine = _FakeEngine()
     holder: list[str | None] = ["req-runaway-xyz"]
+
+    # Record at which suite the abort fired. The except-GeneratorExit
+    # branch runs BEFORE the finally clause; we identify the calling
+    # frame by its source line via ``inspect``.
+    call_sites: list[str] = []
+    original = _helpers._force_abort_request
+
+    def _capturing_force_abort(eng, hld):
+        # Walk back to the disconnect_guard frame and capture which
+        # block we're in. The ``except GeneratorExit`` branch and the
+        # ``finally`` clause sit at distinct source lines in helpers.py.
+        frame = inspect.currentframe().f_back
+        if frame is not None:
+            call_sites.append(f"{frame.f_code.co_name}:line-{frame.f_lineno}")
+        return original(eng, hld)
+
+    monkeypatch.setattr(_helpers, "_force_abort_request", _capturing_force_abort)
 
     async def _gen():
         yield "data: chunk1\n\n"
@@ -239,7 +269,7 @@ async def test_generator_exit_path_also_force_aborts():
         await asyncio.sleep(30.0)
         yield "data: never\n\n"
 
-    agen = _disconnect_guard(
+    agen = _helpers._disconnect_guard(
         _gen(),
         _NeverDisconnectsRequest(),
         poll_interval=0.05,
@@ -256,14 +286,72 @@ async def test_generator_exit_path_also_force_aborts():
 
     assert first == "data: chunk1\n\n"
     assert second == "data: chunk2\n\n"
-    # The contract: even on the GeneratorExit path (no disconnect
-    # signal ever fired), the guard force-aborts. ``Scheduler.abort_request``
-    # is idempotent, so the guard fires it both from ``except
-    # GeneratorExit`` and the ``finally`` belt-and-suspenders.
     assert len(engine.scheduler.aborts) >= 1, engine.scheduler.aborts
     assert all(rid == "req-runaway-xyz" for rid in engine.scheduler.aborts), (
         engine.scheduler.aborts
     )
+    assert engine.admission_released is True
+
+    # The discriminating assertion: at least TWO distinct source
+    # lines fired _force_abort_request — the except-GeneratorExit
+    # block AND the finally belt-and-suspenders. If a future refactor
+    # deletes the GeneratorExit branch, the call_sites would collapse
+    # to ONE distinct line (the finally only) and this test would
+    # flag it. (The two source lines live within the same function
+    # ``_disconnect_guard``, so co_name is identical; the
+    # discrimination comes from the f_lineno.)
+    distinct_lines = {site for site in call_sites if "_disconnect_guard" in site}
+    assert len(distinct_lines) >= 2, (
+        "expected force-abort to fire from BOTH the except-GeneratorExit "
+        "branch AND the finally; if only one distinct call site appears, "
+        "one of the branches is missing. call_sites="
+        f"{call_sites} distinct_lines={distinct_lines}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_finally_does_not_force_abort_on_normal_stream_exhaustion(
+    monkeypatch,
+):
+    """C-01 codex r1 NIT #3: on a normal stream exhaustion
+    (``StopAsyncIteration`` — generator yielded everything and
+    returned cleanly), the ``finally`` block MUST NOT force-abort.
+
+    Pre-NIT-fix the ``finally`` enqueued an abort on every exit path
+    including successful streams, making the abort logs/metrics
+    indistinguishable from real disconnect cleanup AND uselessly
+    polluting the scheduler's ``_pending_abort_ids`` set with
+    already-finished ids. The fix is to track a
+    ``finished_normally`` flag and skip the belt-and-suspenders
+    when set.
+    """
+    from vllm_mlx.service.helpers import _disconnect_guard
+
+    engine = _FakeEngine()
+    holder: list[str | None] = ["req-normal-exit"]
+
+    async def _short_stream():
+        yield "data: chunk1\n\n"
+        yield "data: chunk2\n\n"
+        # Generator returns cleanly — StopAsyncIteration.
+
+    chunks = []
+    async for chunk in _disconnect_guard(
+        _short_stream(),
+        _NeverDisconnectsRequest(),
+        poll_interval=0.05,
+        engine=engine,
+        keepalive_seconds=0.0,
+        request_id_holder=holder,
+    ):
+        chunks.append(chunk)
+
+    assert chunks == ["data: chunk1\n\n", "data: chunk2\n\n"]
+    # The contract: NO force-abort fired — the scheduler already
+    # marked the request as finished_normally inside the cascade,
+    # and a defensive abort here would just pollute logs.
+    assert engine.scheduler.aborts == [], engine.scheduler.aborts
+    # Admission release still happens on every exit path.
     assert engine.admission_released is True
 
 
@@ -303,31 +391,127 @@ async def test_force_abort_is_idempotent_against_double_call():
 
 
 @pytest.mark.asyncio
-async def test_force_abort_falls_back_to_engine_abort_request():
-    """When the engine doesn't expose a ``scheduler`` attribute
-    (the public ``abort_request`` is the only entry point — e.g.
-    BatchedEngine in some wiring), the guard MUST fall back to
-    ``engine.abort_request(rid)``. Covers the async case where the
-    fallback is a coroutine (BatchedEngine over AsyncEngineCore) —
-    we fire-and-forget without awaiting so the disconnect path
-    stays synchronous.
+async def test_force_abort_resolves_sync_scheduler_via_inner_engine():
+    """C-01 codex r1 BLOCKING #2: the helper MUST reach the SYNC
+    scheduler entry point for engines that hide it behind a private
+    inner backend (e.g. ``BatchedEngine`` over ``AsyncEngineCore`` —
+    where ``engine.scheduler`` doesn't exist but
+    ``engine._engine.scheduler.abort_request`` does and is sync).
+
+    Pre-BLOCKING-#2 fix, the helper would have fallen straight to
+    the public async ``engine.abort_request`` and fired-and-forget
+    the coroutine; the abort would NOT have landed in the scheduler
+    by the time disconnect handling returned. The walk through
+    ``engine._engine.scheduler.abort_request`` closes that gap.
+    """
+    from vllm_mlx.service.helpers import _force_abort_request
+
+    class _SyncScheduler:
+        def __init__(self):
+            self.aborts: list[str] = []
+
+        def abort_request(self, rid: str) -> bool:
+            self.aborts.append(rid)
+            return True
+
+    class _AsyncEngineCoreLike:
+        def __init__(self):
+            self.scheduler = _SyncScheduler()
+
+        async def abort_request(self, rid: str) -> bool:  # noqa: ARG002
+            # Async — pre-fix this is what the helper would have used,
+            # missing the sync path on ``self.scheduler``.
+            raise AssertionError(
+                "_force_abort_request should NOT reach the async public "
+                "abort path when a sync inner scheduler is available"
+            )
+
+    class _BatchedEngineLike:
+        def __init__(self):
+            self._engine = _AsyncEngineCoreLike()
+
+        async def abort_request(self, rid: str) -> bool:  # noqa: ARG002
+            raise AssertionError(
+                "_force_abort_request should NOT reach the async public "
+                "abort path when a sync inner scheduler is available"
+            )
+
+    engine = _BatchedEngineLike()
+    holder = ["req-via-inner-sched"]
+
+    assert _force_abort_request(engine, holder) is True
+    # Sync path: the inner scheduler MUST have recorded the abort
+    # synchronously by the time _force_abort_request returns —
+    # without yielding to the event loop.
+    assert engine._engine.scheduler.aborts == ["req-via-inner-sched"]
+
+
+@pytest.mark.asyncio
+async def test_force_abort_resolves_sync_mllm_scheduler():
+    """C-01 codex r1 BLOCKING #2: the helper MUST also reach the
+    sync ``_mllm_scheduler.abort_request`` on engines where the
+    MLLM backend is the active path (``BatchedEngine`` with
+    ``_is_mllm=True``). Symmetric to the text-path resolution
+    above.
+    """
+    from vllm_mlx.service.helpers import _force_abort_request
+
+    class _SyncMLLMScheduler:
+        def __init__(self):
+            self.aborts: list[str] = []
+
+        def abort_request(self, rid: str) -> bool:
+            self.aborts.append(rid)
+            return True
+
+    class _BatchedEngineLikeMLLM:
+        def __init__(self):
+            self._mllm_scheduler = _SyncMLLMScheduler()
+
+        async def abort_request(self, rid: str) -> bool:  # noqa: ARG002
+            raise AssertionError(
+                "should not reach async public abort when sync MLLM path is available"
+            )
+
+    engine = _BatchedEngineLikeMLLM()
+    holder = ["req-via-mllm-sched"]
+
+    assert _force_abort_request(engine, holder) is True
+    assert engine._mllm_scheduler.aborts == ["req-via-mllm-sched"]
+
+
+@pytest.mark.asyncio
+async def test_force_abort_async_only_fallback_returns_false():
+    """C-01 codex r1 BLOCKING #2: when the engine only exposes an
+    async ``abort_request`` and NO sync scheduler is reachable, the
+    helper MUST signal that fact by returning ``False`` (not
+    ``True``) — even though it schedules the coroutine
+    fire-and-forget. The route's force-abort contract is "the
+    abort is in flight in the scheduler by the time we return";
+    a coroutine that hasn't run yet doesn't satisfy that, and
+    pretending otherwise misleads downstream tests / metrics.
     """
     from vllm_mlx.service.helpers import _force_abort_request
 
     abort_calls: list[str] = []
 
-    class _NoSchedulerEngine:
+    class _AsyncOnlyEngine:
+        # No ``scheduler``, no ``_engine.scheduler``, no
+        # ``_mllm_scheduler`` — only the public async entry point.
         async def abort_request(self, rid: str) -> bool:
             abort_calls.append(rid)
             return True
 
-    engine = _NoSchedulerEngine()
-    holder = ["req-via-engine"]
+    engine = _AsyncOnlyEngine()
+    holder = ["req-via-async-only"]
 
-    assert _force_abort_request(engine, holder) is True
+    # Returns False because the abort did NOT land synchronously.
+    assert _force_abort_request(engine, holder) is False
     # Yield to the event loop so the fire-and-forget coro runs.
     await asyncio.sleep(0)
-    assert abort_calls == ["req-via-engine"]
+    # The coro DID get scheduled (best-effort), but the contract
+    # signal is "False = abort not guaranteed in flight at return".
+    assert abort_calls == ["req-via-async-only"]
 
 
 @pytest.mark.asyncio

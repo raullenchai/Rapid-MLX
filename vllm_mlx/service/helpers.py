@@ -1897,23 +1897,78 @@ def _maybe_pin_system_prompt(messages: list) -> None:
 # ── Disconnect detection ───────────────────────────────────────────
 
 
+def _resolve_sync_scheduler_for_abort(engine):
+    """C-01 codex r1 BLOCKING #2 helper: find the SYNC scheduler-side
+    ``abort_request`` entry point for the loaded backend.
+
+    The codex reviewer pointed out that ``engine.abort_request`` may
+    be a coroutine (``BatchedEngine.abort_request`` when the LLM path
+    is loaded, because ``AsyncEngineCore.abort_request`` is async).
+    Fire-and-forget via ``asyncio.ensure_future`` doesn't actually
+    free the GPU on the next ``step()`` — the coroutine has to run
+    to reach ``scheduler.abort_request`` (which IS sync). So we walk
+    the engine's backend graph to find that sync entry point
+    directly:
+
+      * ``engine.scheduler``                  — plain engines exposing
+                                                the scheduler directly.
+      * ``engine._mllm_scheduler``            — MLLM path on
+                                                BatchedEngine; sync.
+      * ``engine._engine.scheduler``          — text path on
+                                                BatchedEngine via
+                                                AsyncEngineCore's
+                                                ``.scheduler``.
+
+    Returns the first callable found, or ``None`` when none of the
+    paths resolve (caller falls back to the public async
+    ``engine.abort_request`` as a last resort with documented
+    fire-and-forget semantics).
+    """
+    for path in ("scheduler", "_mllm_scheduler"):
+        backend = getattr(engine, path, None)
+        if backend is not None:
+            abort = getattr(backend, "abort_request", None)
+            if abort is not None and not asyncio.iscoroutinefunction(abort):
+                return abort
+    inner = getattr(engine, "_engine", None)
+    if inner is not None:
+        inner_sched = getattr(inner, "scheduler", None)
+        if inner_sched is not None:
+            abort = getattr(inner_sched, "abort_request", None)
+            if abort is not None and not asyncio.iscoroutinefunction(abort):
+                return abort
+    return None
+
+
 def _force_abort_request(engine, request_id_holder) -> bool:
     """C-01: synchronously enqueue an abort for the live request id.
 
     Looks up ``request_id_holder[0]`` (populated by
     ``BatchedEngine.stream_generate`` once ``add_request`` returns)
-    and invokes ``engine.scheduler.abort_request(rid)`` — a thread-
-    safe, non-blocking ``set.add`` per ``Scheduler.abort_request``
-    docstring. Falls back to ``engine.abort_request(rid)`` (the
-    public engine-level entry point, async on the text path / sync
-    on the MLLM path) when the engine doesn't expose a direct
-    scheduler attr; the async case is fire-and-forget via
-    ``asyncio.ensure_future`` so the caller stays synchronous.
+    and invokes the loaded backend's SYNC
+    ``scheduler.abort_request(rid)`` — a thread-safe, non-blocking
+    ``set.add`` per ``Scheduler.abort_request`` docstring. The
+    sync-path resolver (``_resolve_sync_scheduler_for_abort``) walks
+    ``engine.scheduler`` → ``engine._mllm_scheduler`` →
+    ``engine._engine.scheduler`` so both the MLLM and text branches
+    of ``BatchedEngine`` reach a sync entry point.
 
-    Returns ``True`` when an abort was issued, ``False`` for the no-op
-    cases (holder unset, engine missing, no request id yet). Never
-    raises — log on the warning channel and swallow so disconnect
-    handling never derails on an engine-side error.
+    Falls back to ``engine.abort_request(rid)`` (the public engine
+    surface — may be async on engines that haven't been refactored)
+    only when no sync path exists. In that case the async coroutine
+    is scheduled with ``asyncio.ensure_future`` so the caller stays
+    synchronous, and we log a warning so operators can see that the
+    abort is NOT guaranteed to be in flight by the time the
+    disconnect path returns (codex r1 BLOCKING #2). The cascade via
+    ``generator.aclose()`` remains as the safety net for that case.
+
+    Returns ``True`` when a sync abort was issued (force-abort
+    contract satisfied), ``False`` for the no-op cases (holder unset,
+    engine missing, no request id yet) AND for the
+    async-fallback-only case where the abort was scheduled but
+    didn't reach the scheduler synchronously. Never raises — log on
+    the warning channel and swallow so disconnect handling never
+    derails on an engine-side error.
     """
     if request_id_holder is None or engine is None:
         return False
@@ -1924,40 +1979,41 @@ def _force_abort_request(engine, request_id_holder) -> bool:
     if not request_id:
         return False
     try:
-        # Prefer the direct scheduler entry point — strictly
-        # synchronous + thread-safe per Scheduler.abort_request
-        # docstring (single ``set.add`` + log).
-        scheduler = getattr(engine, "scheduler", None)
-        if scheduler is not None and hasattr(scheduler, "abort_request"):
-            result = scheduler.abort_request(request_id)
+        sync_abort = _resolve_sync_scheduler_for_abort(engine)
+        if sync_abort is not None:
+            result = sync_abort(request_id)
             logger.info(
                 f"[disconnect_guard] force-abort scheduler.abort_request("
                 f"{str(request_id)[:12]}) -> {result}"
             )
             return True
-        # MLLM and BatchedEngine surface a public ``abort_request``
-        # method that may be sync (MLLMScheduler) or async
-        # (AsyncEngineCore via BatchedEngine). Fire-and-forget the
-        # async variant so the caller stays synchronous and the
-        # disconnect branch doesn't block the event loop on a coro.
+        # No sync path resolved — the engine is wrapping its scheduler
+        # behind an async-only ``abort_request``. Best-effort fire-and-
+        # forget; return ``False`` so the contract reflects that the
+        # abort did NOT land synchronously and the cascade through
+        # ``generator.aclose()`` is the operative defense (codex r1
+        # BLOCKING #2). Tests that pin the "force-abort fired sync"
+        # contract should fail loudly on this fallback path.
         public_abort = getattr(engine, "abort_request", None)
         if public_abort is not None:
             result = public_abort(request_id)
             if asyncio.iscoroutine(result):
-                # Fire-and-forget: the abort enqueue is non-blocking
-                # inside the engine (it just defers to the scheduler's
-                # ``_pending_abort_ids`` set), so awaiting the coro
-                # just adds an unnecessary event-loop hop.
                 asyncio.ensure_future(result)
-                logger.info(
-                    f"[disconnect_guard] force-abort engine.abort_request("
-                    f"{str(request_id)[:12]}) scheduled"
+                logger.warning(
+                    f"[disconnect_guard] force-abort fell back to async "
+                    f"engine.abort_request({str(request_id)[:12]}); the "
+                    f"scheduler abort is NOT guaranteed in flight by the "
+                    f"time disconnect handling returns. The "
+                    f"generator-close cascade is the remaining defense."
                 )
-            else:
-                logger.info(
-                    f"[disconnect_guard] force-abort engine.abort_request("
-                    f"{str(request_id)[:12]}) -> {result}"
-                )
+                # ``False`` so the contract reflects async-fallback;
+                # callers / tests treat that as "I tried, cascade is
+                # the remaining defense".
+                return False
+            logger.info(
+                f"[disconnect_guard] force-abort engine.abort_request("
+                f"{str(request_id)[:12]}) -> {result}"
+            )
             return True
     except Exception:
         logger.warning(
@@ -2059,6 +2115,13 @@ async def _disconnect_guard(
     keepalive_count = 0
     disconnect_task: asyncio.Task | None = None
     anext_task: asyncio.Task | None = None
+    # C-01 codex r1 NIT #3: track whether we got to a clean
+    # ``StopAsyncIteration`` exhaust (normal stream end). When True,
+    # the ``finally`` block skips the belt-and-suspenders force-abort —
+    # otherwise every successful response would enqueue a spurious
+    # abort against an already-finished request id, making the abort
+    # logs/metrics indistinguishable from real disconnect cleanup.
+    finished_normally = False
     try:
         aiter = generator.__aiter__()
         disconnect_task = asyncio.create_task(_wait_disconnect())
@@ -2150,6 +2213,12 @@ async def _disconnect_guard(
                     f"{chunk_count} chunks ({keepalive_count} keepalives), "
                     f"elapsed={_elapsed()}"
                 )
+                # C-01 codex r1 NIT #3: mark the clean-exit case so
+                # ``finally`` skips the force-abort. The upstream
+                # generator already drained, the scheduler already
+                # marked the request as finished — a defensive abort
+                # here would only pollute logs.
+                finished_normally = True
                 break
             except Exception as exc:
                 logger.error(
@@ -2221,12 +2290,20 @@ async def _disconnect_guard(
             disconnect_task.cancel()
         if anext_task and not anext_task.done():
             anext_task.cancel()
-        # C-01 belt-and-suspenders: if we got here through any path
-        # other than the disconnect or GeneratorExit branches (e.g.
-        # an exception inside the SSE generator), still try to
-        # abort. The scheduler abort_request is idempotent against
-        # double-enqueue.
-        _force_abort_request(engine, request_id_holder)
+        # C-01 belt-and-suspenders: cover the abnormal-exit paths the
+        # explicit ``if disconnect_task in done`` and ``except
+        # GeneratorExit`` branches don't see — e.g. an exception
+        # raised mid-stream that escaped the ``except Exception`` inline
+        # handler. Codex r1 NIT #3 fix: skip when the stream
+        # exhausted cleanly via ``StopAsyncIteration`` — the upstream
+        # generator already finished and the scheduler already marked
+        # the request finished, so a defensive abort here would just
+        # pollute logs without freeing any GPU work. The
+        # ``Scheduler.abort_request`` idempotency contract still
+        # protects against the case where this fires concurrently
+        # with the cascade through ``generator.aclose()``.
+        if not finished_normally:
+            _force_abort_request(engine, request_id_holder)
         try:
             await generator.aclose()
         except Exception:
