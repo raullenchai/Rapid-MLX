@@ -636,6 +636,7 @@ def configure_cors_from_env(
     # ``RAPID_MLX_CORS_ALLOW_METHODS`` / ``_HEADERS``.
     origins: list[str] = []
     came_from_cli = False
+    came_from_default = False
     if cli_origins:
         origins = list(cli_origins)
         came_from_cli = True
@@ -645,18 +646,24 @@ def configure_cors_from_env(
             origins = _parse_csv(env_origins)
 
     if not origins:
-        # Default-deny: log at INFO so operators who expected CORS notice
-        # the missing config, but don't shout — most production deployments
-        # do not need CORS at all (the server fronts a backend, not a
-        # browser).
+        # Default-allow wildcard for friendly single-machine UX. rapid-mlx
+        # is primarily run locally — defaulting to deny would break any
+        # browser-based frontend ("CORS error" in the console) without an
+        # obvious server-side signal. Operators on multi-tenant or
+        # production deployments lock down via
+        # ``RAPID_MLX_CORS_ALLOW_ORIGINS=https://your.app`` (the existing
+        # env-var family still applies).
+        origins = ["*"]
+        came_from_default = True
         logger.info(
-            "CORS middleware not registered (RAPID_MLX_CORS_ALLOW_ORIGINS unset). "
-            "Set RAPID_MLX_CORS_ALLOW_ORIGINS to a comma-separated allowlist "
-            "(e.g. 'https://chat.openai.com,https://claude.ai') to enable."
+            "CORS allow-origin defaulting to wildcard '*' (no "
+            "RAPID_MLX_CORS_ALLOW_ORIGINS set). Set the env var to an "
+            "explicit origin list (e.g. "
+            "'https://chat.openai.com,https://claude.ai') to lock down "
+            "for production / multi-tenant deployments."
         )
-        return []
 
-    if "*" in origins:
+    if "*" in origins and not came_from_default:
         logger.warning(
             "CORS allow-origin set to wildcard '*' — any origin can call this "
             "server from a browser. Set RAPID_MLX_CORS_ALLOW_ORIGINS to an "

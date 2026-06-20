@@ -942,20 +942,20 @@ def serve_command(args):
             )
             server._body_receive_timeout_seconds = 15.0
 
-    # Configure CORS (F-090 + F-091). Default behavior changed in this PR:
-    # previously the server registered ``allow_origins=["*"]`` and
-    # ``allow_methods=["*"]`` whenever no ``--cors-origins`` flag was
-    # supplied, which let any browser-side attacker make authenticated
-    # cross-origin requests against ``/v1/chat/completions``. The new
-    # default is **no CORS middleware at all** — operators opt in by
-    # passing ``--cors-origins`` or setting ``RAPID_MLX_CORS_ALLOW_ORIGINS``.
+    # Configure CORS (F-090 + F-091). Default: wildcard ``*`` for friendly
+    # single-machine UX — rapid-mlx is primarily run locally and a
+    # browser frontend at ``http://localhost:3000`` hitting the API at
+    # ``http://localhost:8000`` "just works". Operators on multi-tenant /
+    # production deployments lock down via
+    # ``RAPID_MLX_CORS_ALLOW_ORIGINS=https://your.app,https://other.app``.
+    # The full env-var family (METHODS / HEADERS / MAX_AGE /
+    # ALLOW_CREDENTIALS) still applies; see
+    # ``vllm_mlx/server.py::configure_cors_from_env``.
     #
-    # NOTE: this is a BREAKING change from 0.7.x for any caller that relied
-    # on the implicit wildcard. The fix is to set
-    # ``RAPID_MLX_CORS_ALLOW_ORIGINS='*'`` (logs a startup warning) for
-    # back-compat, or — preferred — pin to the actual frontend origin list.
-    # See vllm_mlx/server.py::configure_cors_from_env for the env-var
-    # family (METHODS / HEADERS / MAX_AGE / ALLOW_CREDENTIALS).
+    # Wildcard + credentials is spec-invalid (Fetch spec rejects the
+    # combination), so the resolver forces ``allow_credentials=False``
+    # when ``*`` is in the origin list. Operators who need cookie /
+    # ``Authorization`` auto-forwarding must pin to specific origins.
     cors_origins = server.configure_cors_from_env(args.cors_origins)
     if args.rate_limit > 0:
         server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)

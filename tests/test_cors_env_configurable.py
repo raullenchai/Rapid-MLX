@@ -75,45 +75,78 @@ def _server_mod():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# F-090: default-deny when neither CLI flag nor env var is set
+# Default: wildcard ``*`` for friendly single-machine UX. Operators on
+# multi-tenant deployments lock down via RAPID_MLX_CORS_ALLOW_ORIGINS.
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_default_no_cors_middleware_registered(fresh_app: FastAPI) -> None:
-    """No env, no CLI flag → no CORSMiddleware. Cross-origin POST must
-    return 200 (auth not enforced in this fixture) but WITHOUT any
-    ``Access-Control-Allow-Origin`` header — i.e. browsers will block
-    the response when they enforce same-origin."""
+def test_default_wildcard_cors_registered(fresh_app: FastAPI) -> None:
+    """No env, no CLI flag → CORSMiddleware with ``*``. Cross-origin POST
+    returns 200 + ``Access-Control-Allow-Origin: *`` so a local browser
+    frontend (e.g. ``http://localhost:3000``) can call the API without
+    extra config."""
     origins = _server_mod().configure_cors_from_env(cli_origins=None)
-    assert origins == []
+    assert origins == ["*"]
 
     client = TestClient(fresh_app)
     r = client.post(
         "/v1/chat/completions",
         json={"messages": []},
-        headers={"Origin": "https://evil.com"},
+        headers={"Origin": "https://anywhere.example"},
     )
     assert r.status_code == 200
-    assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
+    assert r.headers.get("access-control-allow-origin") == "*"
 
 
-def test_default_preflight_returns_405(fresh_app: FastAPI) -> None:
-    """Without CORS middleware, ``OPTIONS /v1/chat/completions`` falls
-    through to Starlette's default router and returns 405 (route is
-    POST-only). Critically, no ``Access-Control-*`` headers leak."""
+def test_default_preflight_returns_200_with_wildcard(fresh_app: FastAPI) -> None:
+    """Default-wildcard preflight returns 200 with ``ACAO: *`` so the
+    browser proceeds to the real POST."""
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
     r = client.options(
         "/v1/chat/completions",
         headers={
-            "Origin": "https://evil.com",
+            "Origin": "https://anywhere.example",
             "Access-Control-Request-Method": "POST",
         },
     )
-    assert r.status_code == 405
-    leaked = [k for k in r.headers if k.lower().startswith("access-control-")]
-    assert leaked == [], f"CORS headers leaked on default-deny preflight: {leaked}"
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "*"
+
+
+def test_default_wildcard_forces_credentials_false(fresh_app: FastAPI) -> None:
+    """Fetch spec: ``Access-Control-Allow-Origin: *`` is incompatible with
+    ``Access-Control-Allow-Credentials: true``. The resolver MUST force
+    ``allow_credentials=False`` when the default wildcard is in play.
+    Otherwise browsers reject every cookie-bearing response."""
+    _server_mod().configure_cors_from_env(cli_origins=None)
+
+    client = TestClient(fresh_app)
+    r = client.options(
+        "/v1/chat/completions",
+        headers={
+            "Origin": "https://anywhere.example",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert r.status_code == 200
+    assert "access-control-allow-credentials" not in {k.lower() for k in r.headers}
+
+
+def test_default_does_not_log_wildcard_warning(
+    fresh_app: FastAPI, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The wildcard-warning is meaningful ONLY when the operator opts in
+    explicitly. With the default ``*`` we log an INFO line; no WARNING."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="vllm_mlx.server")
+    _server_mod().configure_cors_from_env(cli_origins=None)
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not warnings, (
+        f"Default wildcard should not log WARNING; got {[r.message for r in warnings]!r}"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -311,24 +344,24 @@ def test_empty_csv_value_treated_as_unset(
     fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``RAPID_MLX_CORS_ALLOW_ORIGINS=" , ,, "`` (whitespace + empty
-    fragments) parses to an empty list and falls back to default-deny.
-    Defends against the easy-to-miss config bug where a deploy script
-    expands an empty array variable."""
+    fragments) parses to an empty list and falls back to the default
+    wildcard ``*``. Defends against the easy-to-miss config bug where a
+    deploy script expands an empty array variable — instead of silent
+    no-CORS, the operator gets the friendly default and an INFO log."""
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", " , ,, ")
     origins = _server_mod().configure_cors_from_env(cli_origins=None)
-    assert origins == []
+    assert origins == ["*"]
 
     client = TestClient(fresh_app)
     r = client.options(
         "/v1/chat/completions",
         headers={
-            "Origin": "https://evil.com",
+            "Origin": "https://anywhere.example",
             "Access-Control-Request-Method": "POST",
         },
     )
-    # No CORS middleware → preflight returns 405 with no ACAO leak.
-    assert r.status_code == 405
-    assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "*"
 
 
 # ──────────────────────────────────────────────────────────────────────
