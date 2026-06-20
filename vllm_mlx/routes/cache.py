@@ -56,6 +56,21 @@ _NOT_IMPLEMENTED_DETAIL = {
     }
 }
 
+# H-02: sandbox-escape 403 envelope. The underlying
+# ``InvalidExportPathError`` carries the caller-supplied path AND the
+# fully resolved sandbox root (``/Users/<username>/.cache/rapid-mlx/
+# cache_exports``). Echoing either to an unauthenticated caller leaks
+# the operator's home dir + username. Same treatment as the #756 501
+# envelope: generic wire message, full detail goes to the server log.
+_SANDBOX_ESCAPE_MSG = "destination must resolve under the cache-export sandbox"
+_SANDBOX_ESCAPE_DETAIL = {
+    "error": {
+        "message": _SANDBOX_ESCAPE_MSG,
+        "type": "invalid_request_error",
+        "code": "sandbox_escape",
+    }
+}
+
 
 router = APIRouter(
     prefix="/v1/cache",
@@ -124,13 +139,24 @@ class ImportRequest(BaseModel):
 
 
 def _resolve_or_400(caller_path: str | None) -> Path:
-    """Wrap ``resolve_cache_dir`` so path violations surface as 403."""
+    """Wrap ``resolve_cache_dir`` so path violations surface as 403.
+
+    H-02: ``InvalidExportPathError`` carries the caller-supplied path AND
+    the resolved sandbox root (which expands to ``/Users/<USERNAME>/.cache
+    /rapid-mlx/cache_exports`` on macOS). Both stay in the server log via
+    ``logger.warning`` — only the sanitized envelope reaches the wire.
+    """
     try:
         return resolve_cache_dir(caller_path)
     except InvalidExportPathError as exc:
         # 403 (not 400) because the request is well-formed JSON — what's
         # rejected is the *authorization* to write/read outside the sandbox.
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+        logger.warning(
+            "cache: sandbox-escape rejected (caller_path=%r): %s",
+            caller_path,
+            exc,
+        )
+        raise HTTPException(status_code=403, detail=_SANDBOX_ESCAPE_DETAIL) from exc
 
 
 def _read_manifest_or_http(root: Path):

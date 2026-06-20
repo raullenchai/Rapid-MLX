@@ -321,7 +321,11 @@ def test_export_rejects_path_traversal(cache_client):
         headers=_auth(),
     )
     assert resp.status_code == 403
-    assert "not allowed" in resp.json()["detail"]
+    # H-02: 403 body is sanitized — error.code identifies the failure
+    # mode, the caller-supplied path stays in server logs only.
+    detail = resp.json()["detail"]
+    assert detail["error"]["code"] == "sandbox_escape"
+    assert detail["error"]["type"] == "invalid_request_error"
 
 
 def test_export_rejects_absolute_outside(cache_client):

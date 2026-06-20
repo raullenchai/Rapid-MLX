@@ -255,6 +255,61 @@ def test_cache_export_501_envelope_does_not_leak_operator_path(client_factory):
     assert body.get("detail") == _EXPECTED_NOT_IMPLEMENTED_ENVELOPE, body
 
 
+_EXPECTED_SANDBOX_ESCAPE_ENVELOPE = {
+    "error": {
+        "message": "destination must resolve under the cache-export sandbox",
+        "type": "invalid_request_error",
+        "code": "sandbox_escape",
+    }
+}
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "/tmp/foo",
+        "/",
+        "../../etc/passwd",
+        "/Users/x",
+        "/etc/passwd",
+    ],
+)
+def test_cache_export_403_sandbox_escape_does_not_leak_operator_path(
+    client_factory, destination
+):
+    """H-02: ``POST /v1/cache/export`` with an out-of-sandbox destination
+    returns 403, and the body must NOT echo the resolved sandbox root.
+
+    Pre-fix the 403 detail expanded ``InvalidExportPathError`` via
+    ``str(exc)``, which embeds ``/Users/<USERNAME>/.cache/rapid-mlx/
+    cache_exports`` — username + home-dir disclosure to any LAN caller
+    after the #756 auth-gate revert. Mirrors the strictness of the
+    sibling ``test_cache_export_501_envelope_does_not_leak_operator_path``
+    so a future regression at the same site is caught by the same
+    needles.
+    """
+    from pathlib import Path
+
+    from vllm_mlx.routes.cache import router as cache_router
+
+    build, _ = client_factory
+    client = build(api_key=None)
+    client.app.include_router(cache_router)
+
+    r = client.post("/v1/cache/export", json={"destination": destination})
+    assert r.status_code == 403, r.text
+    body = r.json()
+    # Belt + braces leak sweep — these are the substrings that the
+    # pre-fix envelope leaked verbatim. Same shape as the 501 test.
+    home = str(Path.home())
+    for needle in (home, "/Users/", ".cache", "rapid-mlx", "cache_exports"):
+        assert needle not in r.text, (
+            f"{needle!r} leaked into 403 sandbox-escape body for "
+            f"destination={destination!r}: {r.text!r}"
+        )
+    assert body.get("detail") == _EXPECTED_SANDBOX_ESCAPE_ENVELOPE, body
+
+
 def test_cache_import_501_envelope_does_not_leak_operator_path(
     client_factory, tmp_path, monkeypatch
 ):
