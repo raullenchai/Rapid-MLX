@@ -39,6 +39,7 @@ from fastapi.testclient import TestClient
 
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
+from vllm_mlx.middleware.exception_handlers import install_exception_handlers
 from vllm_mlx.routes.chat import _tool_call_name
 from vllm_mlx.routes.chat import router as chat_router
 
@@ -336,17 +337,27 @@ def test_tool_choice_function_missing_name_with_no_tools_returns_400():
 @pytest.mark.parametrize("tools_field", [None, []])
 def test_tool_choice_required_without_tools_returns_400(tools_field):
     """F-034: ``tool_choice="required"`` with ``tools`` absent or empty
-    must surface as a 4xx error — the request is unsatisfiable, since
+    must surface as HTTP 400 — the request is unsatisfiable, since
     "required" guarantees a tool_call but there is no tool to call.
     Pre-fix both cases silently 200'd as plain chat completions,
-    masking a client bug. The Pydantic ``ValueError`` raised in
-    ``ChatCompletionRequest._validate_tool_choice_against_tools``
-    surfaces as HTTP 400 via ``vllm_mlx.middleware.exception_handlers``
-    (Pydantic 422 → 400 OpenAI-shape envelope; same conversion the
-    F-011 reasoning_max_tokens / nonfinite-sampling validators rely on).
+    masking a client bug.
+
+    Wires the production OpenAI-shape exception middleware via
+    ``install_exception_handlers`` so the assertion pins the SAME wire
+    behavior the real serve binary returns (Pydantic ValidationError
+    -> 400 with ``error.type='invalid_request_error'`` envelope).
     """
     engine = _RecordingEngine()
-    client = _make_client(engine)
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(chat_router)
+    client = TestClient(app)
     payload: dict[str, Any] = {
         "model": "test-model",
         "messages": [{"role": "user", "content": "hi"}],
@@ -356,14 +367,13 @@ def test_tool_choice_required_without_tools_returns_400(tools_field):
     if tools_field is not None:
         payload["tools"] = tools_field
     resp = client.post("/v1/chat/completions", json=payload)
-    # Direct Pydantic ValidationError surfaces as 422 from raw FastAPI;
-    # the OpenAI-shape middleware in the real serve binary rewrites to
-    # 400. This test harness mounts only the chat router (no middleware),
-    # so accept either — the contract being pinned is "non-200 plus the
-    # 'tool_choice=required requires non-empty tools' string".
-    assert resp.status_code in (400, 422), resp.text
-    assert "tool_choice='required'" in resp.text
-    assert "non-empty 'tools'" in resp.text
+    # Production wire contract: middleware rewrites the Pydantic 422
+    # into the OpenAI ``invalid_request_error`` 400 envelope.
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["type"] == "invalid_request_error"
+    assert "tool_choice='required'" in body["error"]["message"]
+    assert "non-empty 'tools'" in body["error"]["message"]
 
 
 # ──────────────────────────────────────────────────────────────────
