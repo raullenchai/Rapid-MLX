@@ -105,6 +105,35 @@ def test_responses_request_preserves_seed_through_adapter():
     )
 
 
+def test_responses_request_rejects_bool_seed():
+    """Codex r4 BLOCKING regression guard. Without an explicit
+    ``mode="before"`` validator on ResponsesRequest.seed, Pydantic v2
+    silently coerces ``seed: true`` → ``1`` before the chat-layer's
+    bool guard sees it, the adapter then materialises a valid-looking
+    ChatCompletionRequest with ``seed=1``, and the chat-layer bool
+    rejection is bypassed. ResponsesRequest must enforce the same
+    contract at its own parse layer."""
+    from vllm_mlx.api.responses_models import ResponsesRequest
+
+    with pytest.raises(ValidationError):
+        ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=True)
+
+
+def test_responses_request_rejects_negative_seed():
+    """Range guard mirrors ChatCompletionRequest — uint32 narrowing."""
+    from vllm_mlx.api.responses_models import ResponsesRequest
+
+    with pytest.raises(ValidationError):
+        ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=-1)
+
+
+def test_responses_request_rejects_above_uint32_seed():
+    from vllm_mlx.api.responses_models import ResponsesRequest
+
+    with pytest.raises(ValidationError):
+        ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=0x1_00000000)
+
+
 def test_seed_accepts_zero():
     """``seed=0`` is a legitimate value — eval harnesses use it as the
     default. The forwarding gate in ``build_extended_sampling_kwargs``

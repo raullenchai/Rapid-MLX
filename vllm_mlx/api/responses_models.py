@@ -16,7 +16,9 @@ client).
 import uuid
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from .models import _validate_seed
 
 # =============================================================================
 # Request Models
@@ -104,11 +106,24 @@ class ResponsesRequest(BaseModel):
     reasoning_max_tokens: int | None = None
     # H-11: OpenAI Responses API exposes ``seed`` on its own surface —
     # without declaring it here Pydantic drops it before the adapter
-    # converts to ``ChatCompletionRequest``. Range / validation live on
-    # the ChatCompletionRequest layer (re-applied after conversion), so
-    # this field only needs to survive the parse. See the matching
-    # declaration on ``ChatCompletionRequest`` for the full rationale.
-    seed: int | None = None
+    # converts to ``ChatCompletionRequest``.
+    #
+    # Codex round-4 BLOCKING fix: apply the SAME ``Field(ge=, le=)`` +
+    # ``mode="before"`` bool/non-int guard the chat schema uses,
+    # because the conversion path
+    # (``ResponsesRequest.seed: True`` → Pydantic coerces to ``1`` →
+    # ``responses_to_openai`` passes ``1`` to ChatCompletionRequest →
+    # ChatCompletionRequest sees a legitimate ``int=1``) silently
+    # swallows the bool. Validating AT THIS LAYER closes the bypass
+    # so the contract is enforced regardless of which surface the
+    # client hit. See ``api/models.py::_validate_seed`` for the
+    # rationale block.
+    seed: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
+
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _validate_seed_field(cls, v) -> int | None:
+        return _validate_seed(v)
 
     @model_validator(mode="before")
     @classmethod
