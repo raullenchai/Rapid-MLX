@@ -1162,13 +1162,33 @@ class BatchedEngine(BaseEngine):
             stop: Stop sequences
             images: Optional image URLs/paths (for MLLM)
             videos: Optional video URLs/paths (for MLLM)
-            **kwargs: Additional model-specific parameters
+            **kwargs: Additional model-specific parameters. C-01:
+                ``request_id_holder`` (``list[str | None]``) — when
+                provided, the engine writes the admitted scheduler
+                ``request_id`` into ``holder[0]`` the moment
+                ``add_request`` returns. The route layer's
+                ``_disconnect_guard`` reads the same holder so it can
+                force-call ``scheduler.abort_request`` on client
+                disconnect WITHOUT relying solely on the
+                generator-close cascade (which can stall in production
+                when Starlette's ``is_disconnected()`` never reports
+                True — Astrid r3 saw ``disconnect_guard`` poll 70+
+                times before the runaway generation finally hit its
+                token cap). When ``None`` (default) this is a no-op —
+                preserves the pre-C-01 contract for callers that don't
+                need force-abort.
 
         Yields:
             GenerationOutput with incremental text
         """
         if not self._loaded:
             await self.start()
+
+        # C-01: extract optional request_id holder so the route's
+        # disconnect_guard can force-abort the scheduler on client
+        # disconnect. Popped from kwargs so it never reaches the
+        # scheduler's add_request (which would reject unknown kwargs).
+        request_id_holder = kwargs.pop("request_id_holder", None)
 
         if self._is_mllm and self._mllm_scheduler:
             # Use MLLM scheduler for all streaming when model is multimodal
@@ -1183,6 +1203,16 @@ class BatchedEngine(BaseEngine):
                 video_fps=kwargs.pop("video_fps", None),
                 video_max_frames=kwargs.pop("video_max_frames", None),
             )
+            # C-01 force-abort: publish the scheduler request id so the
+            # route's disconnect_guard can call abort_request directly.
+            if request_id_holder is not None:
+                try:
+                    request_id_holder[0] = request_id
+                except Exception:
+                    logger.debug(
+                        "[stream_generate] request_id_holder publish failed",
+                        exc_info=True,
+                    )
 
             async for output in self._mllm_scheduler.stream_outputs(request_id):
                 # ``logprobs`` is now wired through from
@@ -1243,6 +1273,17 @@ class BatchedEngine(BaseEngine):
             has_tools=has_tools,
             requires_prompt_integrity=requires_prompt_integrity,
         )
+        # C-01 force-abort: publish the scheduler request id (text path)
+        # so the route's disconnect_guard can call abort_request directly
+        # on client disconnect.
+        if request_id_holder is not None:
+            try:
+                request_id_holder[0] = request_id
+            except Exception:
+                logger.debug(
+                    "[stream_generate] request_id_holder publish failed",
+                    exc_info=True,
+                )
 
         # F-012 belt-and-suspenders: ``stream_outputs.finally`` already
         # aborts on any abnormal exit AFTER it enters its ``try`` block.

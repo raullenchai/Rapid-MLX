@@ -1348,6 +1348,14 @@ async def _create_chat_completion_impl(
             if _thinking_warning
             else SSE_RESPONSE_HEADERS
         )
+        # C-01: holder list the engine writes the admitted scheduler
+        # request id into. ``_disconnect_guard`` reads the SAME list
+        # and force-calls ``scheduler.abort_request`` on client
+        # disconnect, closing the Astrid r3 hang where the
+        # generator-close cascade alone took ~35s to actually free
+        # the GPU once the client TCP-RST'd.
+        request_id_holder: list[str | None] = [None]
+        chat_kwargs["request_id_holder"] = request_id_holder
         if use_guided and json_schema:
             # Constrained streaming: run guided generation buffered, then
             # synthesize an SSE stream from the buffered output. Falls
@@ -1360,6 +1368,7 @@ async def _create_chat_completion_impl(
                     ),
                     raw_request,
                     engine=engine,
+                    request_id_holder=request_id_holder,
                 ),
                 media_type="text/event-stream",
                 headers=_sse_headers,
@@ -1369,6 +1378,7 @@ async def _create_chat_completion_impl(
                 stream_chat_completion(engine, messages, request, **chat_kwargs),
                 raw_request,
                 engine=engine,
+                request_id_holder=request_id_holder,
             ),
             media_type="text/event-stream",
             headers=_sse_headers,

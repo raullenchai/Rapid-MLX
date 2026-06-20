@@ -377,13 +377,22 @@ async def create_anthropic_message(
 
         if anthropic_request.stream:
             _admission_committed = True
+            # C-01 force-abort: holder list the engine populates with
+            # the admitted scheduler request id; the disconnect_guard
+            # reads it and force-calls scheduler.abort_request on
+            # client disconnect.
+            _anth_rid_holder: list[str | None] = [None]
             return StreamingResponse(
                 _disconnect_guard(
                     _stream_anthropic_messages(
-                        engine, openai_request, anthropic_request
+                        engine,
+                        openai_request,
+                        anthropic_request,
+                        request_id_holder=_anth_rid_holder,
                     ),
                     request,
                     engine=engine,
+                    request_id_holder=_anth_rid_holder,
                 ),
                 media_type="text/event-stream",
                 # ``SSE_RESPONSE_HEADERS`` (Cache-Control no-cache/no-transform +
@@ -842,8 +851,19 @@ async def _stream_anthropic_messages(
     engine: BaseEngine,
     openai_request: ChatCompletionRequest,
     anthropic_request: AnthropicRequest,
+    *,
+    request_id_holder: list | None = None,
 ) -> AsyncIterator[str]:
-    """Stream Anthropic Messages API SSE events."""
+    """Stream Anthropic Messages API SSE events.
+
+    Args:
+        request_id_holder: C-01 force-abort plumbing. Forwarded to
+            ``engine.stream_chat`` so the engine writes the admitted
+            scheduler request id into ``holder[0]``; the route's
+            ``_disconnect_guard`` reads the same holder and force-calls
+            ``scheduler.abort_request`` on client disconnect. ``None``
+            (default) is a no-op.
+    """
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     start_time = time.perf_counter()
 
@@ -859,6 +879,10 @@ async def _stream_anthropic_messages(
         ),
         **_resolved_sampling_kwargs(openai_request),
     }
+    # C-01: thread the request_id holder to the engine so disconnect
+    # detection can force-call scheduler.abort_request.
+    if request_id_holder is not None:
+        chat_kwargs["request_id_holder"] = request_id_holder
 
     if openai_request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)

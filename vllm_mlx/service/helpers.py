@@ -1897,12 +1897,84 @@ def _maybe_pin_system_prompt(messages: list) -> None:
 # ── Disconnect detection ───────────────────────────────────────────
 
 
+def _force_abort_request(engine, request_id_holder) -> bool:
+    """C-01: synchronously enqueue an abort for the live request id.
+
+    Looks up ``request_id_holder[0]`` (populated by
+    ``BatchedEngine.stream_generate`` once ``add_request`` returns)
+    and invokes ``engine.scheduler.abort_request(rid)`` — a thread-
+    safe, non-blocking ``set.add`` per ``Scheduler.abort_request``
+    docstring. Falls back to ``engine.abort_request(rid)`` (the
+    public engine-level entry point, async on the text path / sync
+    on the MLLM path) when the engine doesn't expose a direct
+    scheduler attr; the async case is fire-and-forget via
+    ``asyncio.ensure_future`` so the caller stays synchronous.
+
+    Returns ``True`` when an abort was issued, ``False`` for the no-op
+    cases (holder unset, engine missing, no request id yet). Never
+    raises — log on the warning channel and swallow so disconnect
+    handling never derails on an engine-side error.
+    """
+    if request_id_holder is None or engine is None:
+        return False
+    try:
+        request_id = request_id_holder[0]
+    except (IndexError, TypeError):
+        return False
+    if not request_id:
+        return False
+    try:
+        # Prefer the direct scheduler entry point — strictly
+        # synchronous + thread-safe per Scheduler.abort_request
+        # docstring (single ``set.add`` + log).
+        scheduler = getattr(engine, "scheduler", None)
+        if scheduler is not None and hasattr(scheduler, "abort_request"):
+            result = scheduler.abort_request(request_id)
+            logger.info(
+                f"[disconnect_guard] force-abort scheduler.abort_request("
+                f"{str(request_id)[:12]}) -> {result}"
+            )
+            return True
+        # MLLM and BatchedEngine surface a public ``abort_request``
+        # method that may be sync (MLLMScheduler) or async
+        # (AsyncEngineCore via BatchedEngine). Fire-and-forget the
+        # async variant so the caller stays synchronous and the
+        # disconnect branch doesn't block the event loop on a coro.
+        public_abort = getattr(engine, "abort_request", None)
+        if public_abort is not None:
+            result = public_abort(request_id)
+            if asyncio.iscoroutine(result):
+                # Fire-and-forget: the abort enqueue is non-blocking
+                # inside the engine (it just defers to the scheduler's
+                # ``_pending_abort_ids`` set), so awaiting the coro
+                # just adds an unnecessary event-loop hop.
+                asyncio.ensure_future(result)
+                logger.info(
+                    f"[disconnect_guard] force-abort engine.abort_request("
+                    f"{str(request_id)[:12]}) scheduled"
+                )
+            else:
+                logger.info(
+                    f"[disconnect_guard] force-abort engine.abort_request("
+                    f"{str(request_id)[:12]}) -> {result}"
+                )
+            return True
+    except Exception:
+        logger.warning(
+            "[disconnect_guard] force-abort raised; falling back to "
+            "generator-close cascade",
+            exc_info=True,
+        )
+    return False
+
+
 async def _disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
     poll_interval: float = 0.5,
     engine=None,
     keepalive_seconds: float | None = None,
+    request_id_holder: list | None = None,
 ) -> AsyncIterator[str]:
     """Wrap streaming generator to abort on client disconnect.
 
@@ -1925,6 +1997,25 @@ async def _disconnect_guard(
     ~45 s) from tearing down the connection during long prefills. Set
     ``keepalive_seconds=0`` or ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0``
     to disable.
+
+    C-01 force-abort (Astrid r3 dogfooding): when
+    ``request_id_holder`` is a mutable list AND the engine publishes
+    the admitted scheduler ``request_id`` into ``holder[0]``, the
+    guard force-calls ``engine.scheduler.abort_request(holder[0])`` (or
+    ``engine.abort_request(holder[0])`` as a thread-safe alternative)
+    the moment a client disconnect is detected. Pre-C-01 the abort
+    relied entirely on the generator-close cascade
+    (``generator.aclose()`` in the ``finally`` → ``GeneratorExit``
+    propagates upstream → ``stream_generate.finally`` calls
+    ``scheduler.abort_request``). That cascade still runs as a
+    belt-and-suspenders, but the EXPLICIT abort here closes Astrid's
+    failure mode where a runaway no-EOS generation kept consuming GPU
+    for >35 s after the client TCP-RST'd because nothing on the path
+    actually reached into the scheduler with an abort signal until
+    the generation hit its token cap. ``holder=None`` (default)
+    preserves the pre-C-01 contract for non-streaming callers and for
+    cloud-routed streams that don't have a local scheduler request
+    id.
     """
     import time as _time
 
@@ -2012,6 +2103,24 @@ async def _disconnect_guard(
                     f"{chunk_count} chunks ({keepalive_count} keepalives), "
                     f"elapsed={_elapsed()}"
                 )
+                # C-01 force-abort: call into the scheduler directly
+                # the moment the disconnect signal fires, BEFORE we
+                # cancel the in-flight ``anext_task`` and close the
+                # upstream generator. Pre-C-01 the abort relied solely
+                # on the close cascade kicking ``stream_generate.finally``
+                # → ``scheduler.abort_request``; Astrid r3 showed that
+                # path can stall for ~35s under a runaway no-EOS
+                # generation because the cancellation of ``anext_task``
+                # only interrupts the in-flight ``__anext__``, while
+                # the upstream batch step continues to chew GPU until
+                # the next yield boundary. Hitting the scheduler's
+                # ``_pending_abort_ids`` set NOW means the very next
+                # ``step()`` drops the request and frees the slot. This
+                # is purely defense in depth — the cascade still runs
+                # via ``generator.aclose()`` in ``finally`` and
+                # ``scheduler.abort_request`` is idempotent against
+                # double-enqueue.
+                _force_abort_request(engine, request_id_holder)
                 anext_task.cancel()
                 try:
                     await anext_task
@@ -2100,11 +2209,24 @@ async def _disconnect_guard(
         # before the cleanup runs.
         if anext_task is not None and not anext_task.done():
             anext_task.cancel()
+        # C-01: GeneratorExit means the consumer (Starlette's
+        # ``StreamingResponse`` task) is tearing down — usually
+        # because uvicorn detected a write failure to the closed
+        # socket. Force-abort the scheduler request before we close
+        # the generator so the upstream doesn't get one more
+        # token-worth of GPU work between here and the cascade.
+        _force_abort_request(engine, request_id_holder)
     finally:
         if disconnect_task and not disconnect_task.done():
             disconnect_task.cancel()
         if anext_task and not anext_task.done():
             anext_task.cancel()
+        # C-01 belt-and-suspenders: if we got here through any path
+        # other than the disconnect or GeneratorExit branches (e.g.
+        # an exception inside the SSE generator), still try to
+        # abort. The scheduler abort_request is idempotent against
+        # double-enqueue.
+        _force_abort_request(engine, request_id_holder)
         try:
             await generator.aclose()
         except Exception:

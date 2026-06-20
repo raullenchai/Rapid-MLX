@@ -183,11 +183,24 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
         if request.stream:
             _admission_committed = True
+            # C-01 force-abort: holder list the engine populates with
+            # the admitted scheduler request id; the disconnect_guard
+            # reads it and force-calls scheduler.abort_request on
+            # client disconnect (closes the Astrid r3 hang where the
+            # generator-close cascade alone left ~6144 tokens of
+            # runaway generation eating GPU after the client RST'd).
+            _completion_rid_holder: list[str | None] = [None]
             return StreamingResponse(
                 _disconnect_guard(
-                    stream_completion(engine, prompts[0], request),
+                    stream_completion(
+                        engine,
+                        prompts[0],
+                        request,
+                        request_id_holder=_completion_rid_holder,
+                    ),
                     raw_request,
                     engine=engine,
+                    request_id_holder=_completion_rid_holder,
                 ),
                 media_type="text/event-stream",
                 headers=SSE_RESPONSE_HEADERS,
@@ -437,9 +450,24 @@ async def stream_completion(
     engine,
     prompt: str,
     request: CompletionRequest,
+    *,
+    request_id_holder: list | None = None,
 ) -> AsyncIterator[str]:
-    """Stream completion response."""
+    """Stream completion response.
+
+    Args:
+        request_id_holder: C-01 force-abort plumbing. When provided,
+            forwarded as a kwarg to ``engine.stream_generate`` so the
+            engine writes the admitted scheduler request id into
+            ``holder[0]``. The route's ``_disconnect_guard`` reads the
+            same holder to force-call ``scheduler.abort_request`` on
+            client disconnect. ``None`` (default) is a no-op.
+    """
     extended_kwargs = build_extended_sampling_kwargs(request)
+    # C-01: pass the holder through so the engine can publish the
+    # scheduler request id without changing every engine signature.
+    if request_id_holder is not None:
+        extended_kwargs["request_id_holder"] = request_id_holder
 
     # F-152: ``echo`` on the streaming path emits the prompt as the
     # FIRST SSE chunk, then continues with generated tokens. Without

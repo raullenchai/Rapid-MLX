@@ -199,11 +199,22 @@ async def create_response(request: Request):
 
         if responses_request.stream:
             _admission_committed = True
+            # C-01 force-abort: holder list the engine populates with
+            # the admitted scheduler request id; the disconnect_guard
+            # reads it and force-calls scheduler.abort_request on
+            # client disconnect.
+            _resp_rid_holder: list[str | None] = [None]
             return StreamingResponse(
                 _disconnect_guard(
-                    _stream_responses(engine, openai_request, responses_request),
+                    _stream_responses(
+                        engine,
+                        openai_request,
+                        responses_request,
+                        request_id_holder=_resp_rid_holder,
+                    ),
                     request,
                     engine=engine,
+                    request_id_holder=_resp_rid_holder,
                 ),
                 media_type="text/event-stream",
                 # ``SSE_RESPONSE_HEADERS`` (Cache-Control no-cache/no-transform +
@@ -369,6 +380,8 @@ async def _stream_responses(
     engine: BaseEngine,
     openai_request: ChatCompletionRequest,
     responses_request: ResponsesRequest,
+    *,
+    request_id_holder: list | None = None,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -428,6 +441,10 @@ async def _stream_responses(
         resolved_thinking = _resolve_enable_thinking(openai_request)
         if resolved_thinking is not None:
             chat_kwargs["enable_thinking"] = resolved_thinking
+        # C-01: thread the request_id holder so disconnect_guard can
+        # force-call scheduler.abort_request on client RST.
+        if request_id_holder is not None:
+            chat_kwargs["request_id_holder"] = request_id_holder
 
         accumulated_text = ""
         accumulated_raw = ""
