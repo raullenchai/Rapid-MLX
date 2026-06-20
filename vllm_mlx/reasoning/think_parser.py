@@ -256,6 +256,28 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # This handles when <think> was injected in the prompt
         if self.end_token in current_text:
             self._saw_any_tag = True
+            # F-100 (2026-06-19): in implicit mode, once we've already
+            # crossed the first ``</think>`` (``end_in_prev=True``) the
+            # model can re-enter reasoning by autonomously emitting a
+            # SECOND ``<think>`` opener after the answer (phi-4-mini-
+            # reasoning streams ``…JSON…<think>more thought</think>tail``
+            # under ``response_format=json_schema`` + ``stream=true``).
+            # The naive ``end_in_prev → content=delta_text`` fallback in
+            # ``_handle_implicit_think`` leaks the literal ``<think>``
+            # bytes (including SSE-split fragments like ``<th``, ``ink``,
+            # ``>\n``) into ``delta.content`` and routes the second
+            # block's body to content instead of reasoning. Delegate to
+            # the multi-block router — it already handles partial-tag
+            # withhold AND ``_streaming_phase`` flip on subsequent
+            # deltas, so the second block streams as reasoning and the
+            # following ``</think>`` flips cleanly back to content.
+            # Symmetric with the explicit-mode multi-block dispatch in
+            # ``_handle_explicit_think`` (``start_in_prev`` AND
+            # ``end_in_prev``).
+            if end_in_prev:
+                return self._handle_multi_block_after_close(
+                    previous_text, current_text, delta_text
+                )
             return self._handle_implicit_think(delta_text, end_in_prev, end_in_delta)
 
         # Case 3: No think tags seen yet
@@ -509,6 +531,15 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 # and reasoning_part is empty — OK.
                 if end_idx_cur < emitted_so_far:
                     reasoning_part = ""
+                # F-100: synchronise ``_streaming_phase`` with the
+                # post-close state so a SUBSEQUENT delta routed through
+                # the multi-block dispatch starts from the correct phase
+                # rather than inheriting whatever the SSE-boundary
+                # recovery branch left behind (a split-opener earlier in
+                # the same request would otherwise keep the phase at
+                # ``"reasoning"`` and leak post-``</think>`` bytes into
+                # ``reasoning_content``).
+                self._streaming_phase = "content"
                 return DeltaMessage(
                     reasoning=reasoning_part or None,
                     content=content_part or None,
@@ -591,6 +622,14 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 content_part = reasoning_part[end_idx + len(self.end_token) :]
                 reasoning_part = reasoning_part[:end_idx]
                 self._held_tag_suffix_len = 0
+                # F-100: synchronise ``_streaming_phase`` with the
+                # post-close state so a SUBSEQUENT delta routed through
+                # the multi-block dispatch (``start_in_prev AND
+                # end_in_prev`` after this) starts from the correct
+                # phase instead of defaulting to ``in_reasoning_prev =
+                # False``. We just emitted the close inside this delta;
+                # post-close state is ``content``.
+                self._streaming_phase = "content"
                 return DeltaMessage(
                     reasoning=reasoning_part or None,
                     content=content_part or None,
@@ -615,6 +654,16 @@ class BaseThinkingReasoningParser(ReasoningParser):
             reasoning_start_in_current = prev_len + tag_overlap
             keep = max(0, safe_end_in_current - reasoning_start_in_current)
             reasoning_part = reasoning_part[:keep]
+        # F-100: synchronise ``_streaming_phase`` with the just-opened
+        # block so a SUBSEQUENT delta routed through the multi-block
+        # dispatch (``start_in_prev AND end_in_prev`` after this) starts
+        # from the correct phase. We just emitted the opener inside this
+        # delta; post-opener state is ``reasoning``. Without this seed,
+        # ``_handle_multi_block_after_close`` falls back to
+        # ``in_reasoning_prev = False`` and the next-delta body of a
+        # second ``<think>`` block leaks into ``content`` (F-100 repro
+        # tail: ``Okay`` / ``second think`` after a split second opener).
+        self._streaming_phase = "reasoning"
         return DeltaMessage(reasoning=reasoning_part or None)
 
     def _handle_multi_block_after_close(
