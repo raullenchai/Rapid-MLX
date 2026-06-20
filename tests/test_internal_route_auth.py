@@ -275,8 +275,7 @@ def test_cache_import_501_envelope_does_not_leak_operator_path(
     # The resolved source path is the most direct leak the 501 stub
     # could surface — exact-string check before the substring sweep.
     assert str(tmp_path) not in r.text, (
-        f"resolved source path {str(tmp_path)!r} leaked into 501 body: "
-        f"{r.text!r}"
+        f"resolved source path {str(tmp_path)!r} leaked into 501 body: {r.text!r}"
     )
     for needle in ("/Users/", ".cache", "cache_exports"):
         assert needle not in r.text, f"{needle!r} leaked into 501 body: {r.text!r}"
