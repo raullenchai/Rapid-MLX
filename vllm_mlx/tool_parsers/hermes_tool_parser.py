@@ -404,6 +404,18 @@ class HermesToolParser(ToolParser):
         prefix of any ``_STREAMING_SENTINELS`` entry that also forms a
         suffix of ``text``. Returns an empty string when the entire
         ``text`` is a sentinel prefix (e.g. ``"<"`` ⇒ hold everything).
+
+        F-042 codex round-2 BLOCKING: the named-XML opener has a
+        variable-length partial form ``<function>\\s*<name?...`` (whitespace
+        and a growing ``<name`` prefix) that cannot be enumerated as
+        literal sentinels. Use ``_FUNCTION_XML_OPENER_PARTIAL_RE`` to find
+        a matching suffix and fold its length into the hold count, so
+        the same prefix-hold + ``flush_held_content`` release mechanism
+        applies. Codex round-3 BLOCKING follow-up: this means a stream
+        legitimately ending with the literal ``<function>`` (e.g. a doc
+        about tool-call syntax) releases the held bytes via
+        ``flush_held_content`` at stream end rather than being silently
+        suppressed.
         """
         max_hold = 0
         for sentinel in cls._STREAMING_SENTINELS:
@@ -412,6 +424,16 @@ class HermesToolParser(ToolParser):
                     if length > max_hold:
                         max_hold = length
                     break
+        partial_match = cls._FUNCTION_XML_OPENER_PARTIAL_RE.search(text)
+        if partial_match is not None:
+            partial_len = len(partial_match.group(0))
+            # Don't hold if the suffix is the FULL canonical named-XML
+            # opener ``<function><name>...``: the named-opener-claim
+            # branch above handles that case. The partial-hold only
+            # covers strictly-shorter prefixes of the opener.
+            if cls._FUNCTION_XML_OPENER_RE.search(partial_match.group(0)) is None:
+                if partial_len > max_hold:
+                    max_hold = partial_len
         return text if max_hold == 0 else text[: len(text) - max_hold]
 
     @classmethod
@@ -531,20 +553,17 @@ class HermesToolParser(ToolParser):
 
             return self._emit_safe_content(previous_text, current_text)
 
-        # In-flight named-XML opener (codex round-2 BLOCKING): the tail of
-        # ``current_text`` is still a viable prefix of
-        # ``<function>\s*<name>``. ``<function>`` is in flight but
-        # ``<name`` has not fully streamed yet (e.g. ``<function><n``,
-        # ``<function>\n <na``). Without this guard the
-        # ``<function>`` literal would leak as content before the
-        # opener-claim branch above can fire. Suppress to hold the
-        # partial bytes. When the next chunk completes the ``<name``
-        # token the opener-claim branch above takes over; when the next
-        # chunk disambiguates as prose (e.g. ``<function>!``) the regex
-        # stops matching and the bytes get released via
-        # ``_emit_safe_content``.
-        if self._FUNCTION_XML_OPENER_PARTIAL_RE.search(current_text):
-            return None
+        # In-flight named-XML opener (codex round-2 BLOCKING / round-3
+        # follow-up): the tail of ``current_text`` is still a viable
+        # prefix of ``<function>\s*<name>``. ``<function>`` is in flight
+        # but ``<name`` has not fully streamed yet (e.g. ``<function><n``,
+        # ``<function>\n <na``). Handled inside
+        # ``_safe_content_prefix`` via
+        # ``_FUNCTION_XML_OPENER_PARTIAL_RE`` so the partial bytes
+        # participate in the standard prefix-hold + ``flush_held_content``
+        # release mechanism: a stream that legitimately ends with
+        # ``<function>`` releases the held bytes at end-of-stream rather
+        # than being silently suppressed.
 
         # Fallback: check for raw JSON tool calls (detect closing brace pattern)
         if '{"name":' in current_text and '"arguments":' in current_text:

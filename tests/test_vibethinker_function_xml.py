@@ -317,3 +317,40 @@ class TestVibeThinkerFunctionXmlStreaming:
         )
         if delta is not None:
             assert "tool_calls" not in delta
+
+    def test_stream_ending_with_partial_opener_flushes_on_end(self, parser):
+        """Codex round-3 BLOCKING regression:
+
+        If a stream legitimately ends with a literal ``<function>`` (e.g.
+        a doc paragraph about tool-call syntax that just so happens to
+        finish on the tag), the partial-hold mechanism MUST release the
+        held bytes at end-of-stream via ``flush_held_content``. Otherwise
+        the user sees the closing bytes silently dropped.
+
+        The round-3 fix folds the partial-opener regex into
+        ``_safe_content_prefix`` so the existing
+        ``flush_held_content`` (already in place for the literal
+        sentinels) covers the variable-length partial-opener case too.
+        """
+        full_text = "The tag is `<function>"
+        # During streaming, ``_emit_safe_content`` holds back the
+        # ``<function>`` tail (it is a viable opener prefix). Once the
+        # stream ends, ``flush_held_content`` must release the held
+        # suffix — losing it would be a silent content drop.
+        flushed = parser.flush_held_content(full_text)
+        assert flushed == "<function>", (
+            f"flush_held_content dropped the held <function> suffix; got "
+            f"{flushed!r} — F-042 codex round-3 BLOCKING regression."
+        )
+
+    def test_stream_ending_with_partial_name_chunk_flushes_on_end(self, parser):
+        """Variant of the round-3 BLOCKING regression: the stream ends
+        mid-``<name`` token. The standard ``flush_held_content`` must
+        release the held bytes — both the ``<function>`` portion and the
+        partial ``<n``/``<na``/etc. suffix."""
+        full_text = "Streaming ended early at <function><n"
+        flushed = parser.flush_held_content(full_text)
+        assert flushed == "<function><n", (
+            f"flush_held_content dropped the held partial-named-opener "
+            f"suffix; got {flushed!r}."
+        )
