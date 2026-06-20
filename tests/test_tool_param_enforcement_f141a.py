@@ -25,9 +25,23 @@ uniqueItems: structural equality via JSON-canonical serialisation.
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
 
-from vllm_mlx.api.models import FunctionCall, ToolCall
+# Linux CI runners don't ship MLX; ``vllm_mlx.service.helpers``
+# transitively imports it through the engine wiring. Skip cleanly so the
+# diff-aware targeted_tests step doesn't flag the whole file as
+# regressions. Same pattern as ``tests/test_audio_upload_size_limit.py``.
+pytest.importorskip(
+    "mlx.core",
+    reason="tool-arg validator helper imports transitively pull in mlx",
+)
+pytest.importorskip(
+    "mlx_lm",
+    reason="tool-arg validator helper imports transitively pull in mlx_lm",
+)
+
+from fastapi import HTTPException  # noqa: E402
+
+from vllm_mlx.api.models import FunctionCall, ToolCall  # noqa: E402
 
 
 def _tool(name: str, properties: dict) -> dict:
