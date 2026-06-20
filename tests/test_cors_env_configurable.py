@@ -329,3 +329,100 @@ def test_empty_csv_value_treated_as_unset(
     # No CORS middleware → preflight returns 405 with no ACAO leak.
     assert r.status_code == 405
     assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Codex round-1 BLOCKING: explicit empty-CSV methods/headers must fall
+# back to the default with a WARNING (not silently broaden / narrow)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_empty_methods_env_warns_and_falls_back(
+    fresh_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An operator typo like ``RAPID_MLX_CORS_ALLOW_METHODS=" , "`` must
+    NOT be treated as "use default" silently — that would broaden the
+    surface back to ``POST,GET,OPTIONS`` despite the operator clearly
+    intending to set the env var. Log a WARNING and fall back to the
+    default; the operator sees the typo at boot.
+    """
+    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_METHODS", " , ,, ")
+    with caplog.at_level("WARNING", logger="vllm_mlx.server"):
+        _server_mod().configure_cors_from_env(cli_origins=None)
+    assert any(
+        "RAPID_MLX_CORS_ALLOW_METHODS" in rec.message
+        and "empty list" in rec.message.lower()
+        for rec in caplog.records
+    ), f"Expected an empty-methods warning; got {[r.message for r in caplog.records]!r}"
+
+
+def test_empty_headers_env_warns_and_falls_back(
+    fresh_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Same as the methods case — ``RAPID_MLX_CORS_ALLOW_HEADERS=" , "``
+    parses to an empty list; warn and fall back to the default header
+    allowlist rather than silently propagating the (broken) empty
+    intention as the broader default."""
+    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_HEADERS", " , ,, ")
+    with caplog.at_level("WARNING", logger="vllm_mlx.server"):
+        _server_mod().configure_cors_from_env(cli_origins=None)
+    assert any(
+        "RAPID_MLX_CORS_ALLOW_HEADERS" in rec.message
+        and "empty list" in rec.message.lower()
+        for rec in caplog.records
+    ), f"Expected an empty-headers warning; got {[r.message for r in caplog.records]!r}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Codex round-1 NIT: documented credentials default is False, not True.
+# Explicit origin + unset RAPID_MLX_CORS_ALLOW_CREDENTIALS must not flip
+# the credentials header to true.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_credentials_default_false_with_explicit_origin(
+    fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``RAPID_MLX_CORS_ALLOW_ORIGINS`` is set to a real origin and
+    ``RAPID_MLX_CORS_ALLOW_CREDENTIALS`` is unset, the resolver must not
+    silently enable credentials — the documented default is False.
+    Operators who need cookies must set the env var to ``true``."""
+    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    _server_mod().configure_cors_from_env(cli_origins=None)
+
+    client = TestClient(fresh_app)
+    r = client.post(
+        "/v1/chat/completions",
+        json={"messages": []},
+        headers={"Origin": "https://chat.openai.com"},
+    )
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "https://chat.openai.com"
+    # Documented default: credentials disabled.
+    assert "access-control-allow-credentials" not in {k.lower() for k in r.headers}
+
+
+def test_credentials_opt_in_via_env(
+    fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setting ``RAPID_MLX_CORS_ALLOW_CREDENTIALS=true`` enables the
+    ``Access-Control-Allow-Credentials: true`` response header so
+    cookie / Authorization-bearing fetches succeed."""
+    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "true")
+    _server_mod().configure_cors_from_env(cli_origins=None)
+
+    client = TestClient(fresh_app)
+    r = client.post(
+        "/v1/chat/completions",
+        json={"messages": []},
+        headers={"Origin": "https://chat.openai.com"},
+    )
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-credentials") == "true"

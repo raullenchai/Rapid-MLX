@@ -641,11 +641,48 @@ def configure_cors_from_env(
         )
 
     # Resolve method / header / max-age / credentials overrides.
-    methods_env = os.environ.get("RAPID_MLX_CORS_ALLOW_METHODS", "").strip()
-    methods = _parse_csv(methods_env) if methods_env else list(_DEFAULT_CORS_METHODS)
+    #
+    # Codex round-1 BLOCKING: distinguish ``env unset`` from ``env set to
+    # an all-whitespace / all-empty CSV``. If we treated both as "use
+    # default", an operator typo like ``RAPID_MLX_CORS_ALLOW_METHODS=" , "``
+    # would silently broaden the surface to the default POST/GET/OPTIONS
+    # instead of narrowing it. The defensive shape is: ``env present but
+    # empty after parse`` → log a WARNING and fall back to the default,
+    # so the operator sees the typo in the startup log rather than
+    # discovering it via a Sentry alert later.
+    methods_env = os.environ.get("RAPID_MLX_CORS_ALLOW_METHODS")
+    if methods_env is None:
+        methods = list(_DEFAULT_CORS_METHODS)
+    else:
+        methods = _parse_csv(methods_env)
+        if not methods:
+            logger.warning(
+                "%s=%r parsed to an empty list (whitespace / trailing "
+                "commas only); falling back to the default %s allowlist. "
+                "Set the env var to a real comma-separated method list, "
+                "or unset it entirely to use the default.",
+                "RAPID_MLX_CORS_ALLOW_METHODS",
+                methods_env,
+                list(_DEFAULT_CORS_METHODS),
+            )
+            methods = list(_DEFAULT_CORS_METHODS)
 
-    headers_env = os.environ.get("RAPID_MLX_CORS_ALLOW_HEADERS", "").strip()
-    headers = _parse_csv(headers_env) if headers_env else list(_DEFAULT_CORS_HEADERS)
+    headers_env = os.environ.get("RAPID_MLX_CORS_ALLOW_HEADERS")
+    if headers_env is None:
+        headers = list(_DEFAULT_CORS_HEADERS)
+    else:
+        headers = _parse_csv(headers_env)
+        if not headers:
+            logger.warning(
+                "%s=%r parsed to an empty list (whitespace / trailing "
+                "commas only); falling back to the default %s allowlist. "
+                "Set the env var to a real comma-separated header list, "
+                "or unset it entirely to use the default.",
+                "RAPID_MLX_CORS_ALLOW_HEADERS",
+                headers_env,
+                list(_DEFAULT_CORS_HEADERS),
+            )
+            headers = list(_DEFAULT_CORS_HEADERS)
 
     max_age_env = os.environ.get("RAPID_MLX_CORS_MAX_AGE", "").strip()
     max_age = _DEFAULT_CORS_MAX_AGE
@@ -660,8 +697,19 @@ def configure_cors_from_env(
                 _DEFAULT_CORS_MAX_AGE,
             )
 
+    # Codex round-1 NIT: the documented default is ``False`` (matching
+    # the security-correct default-deny stance of the rest of the
+    # ``RAPID_MLX_CORS_*`` family), but the legacy ``configure_cors``
+    # back-compat path defaults to ``True`` for any non-wildcard origin
+    # (Fetch-spec-correct but at odds with the documentation). Resolve by
+    # making the default explicit here: env unset → False. Operators who
+    # need cookies / Authorization auto-forwarded must opt in by setting
+    # ``RAPID_MLX_CORS_ALLOW_CREDENTIALS=true``. Existing
+    # ``configure_cors(origins)`` callers in tests / share / dflash still
+    # see the legacy behavior — those callers don't go through this
+    # resolver.
     creds_env = os.environ.get("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "").strip().lower()
-    allow_credentials: bool | None = None
+    allow_credentials: bool = False
     if creds_env:
         if creds_env in ("1", "true", "yes", "on"):
             allow_credentials = True
@@ -669,8 +717,7 @@ def configure_cors_from_env(
             allow_credentials = False
         else:
             logger.warning(
-                "%s=%r is not a boolean; falling back to default (False with "
-                "wildcard, True with explicit origins)",
+                "%s=%r is not a boolean; falling back to the False default",
                 "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
                 creds_env,
             )
