@@ -996,25 +996,38 @@ class TestValidateToolCallParams:
             self._make_tools(),
         )
 
-    def test_type_mismatch_no_crash(self):
+    def test_type_mismatch_raises_400(self):
+        """F-141: type violation now enforced as HTTPException(400)."""
+        from fastapi import HTTPException
+
         from vllm_mlx.server import _validate_tool_call_params
 
-        _validate_tool_call_params(
-            self._make_tool_calls(arguments='{"location": 123}'),
-            self._make_tools(properties={"location": {"type": "string"}}),
-        )
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_tool_call_params(
+                self._make_tool_calls(arguments='{"location": 123}'),
+                self._make_tools(properties={"location": {"type": "string"}}),
+            )
+        assert exc_info.value.status_code == 400
+        assert "location" in exc_info.value.detail
 
-    def test_enum_violation_no_crash(self):
+    def test_enum_violation_raises_400(self):
+        """F-141: enum violation now enforced as HTTPException(400)."""
+        from fastapi import HTTPException
+
         from vllm_mlx.server import _validate_tool_call_params
 
-        _validate_tool_call_params(
-            self._make_tool_calls(arguments='{"unit": "kelvin"}'),
-            self._make_tools(
-                properties={
-                    "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
-                }
-            ),
-        )
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_tool_call_params(
+                self._make_tool_calls(arguments='{"unit": "kelvin"}'),
+                self._make_tools(
+                    properties={
+                        "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
+                    }
+                ),
+            )
+        assert exc_info.value.status_code == 400
+        assert "unit" in exc_info.value.detail
+        assert "kelvin" in exc_info.value.detail or "enum" in exc_info.value.detail
 
     def test_empty_tool_calls(self):
         from vllm_mlx.server import _validate_tool_call_params

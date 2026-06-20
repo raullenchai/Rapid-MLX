@@ -422,7 +422,14 @@ def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
     """
     Validate a parameter value against its JSON schema (lightweight).
 
-    Lightweight validation of a parameter value against its JSON schema.
+    Enforced constraints (F-141 scoped fix): ``type`` (strict — booleans
+    are NOT accepted for ``integer``/``number`` even though
+    ``isinstance(True, int)`` is True in Python), ``enum``, ``minimum`` /
+    ``maximum`` (numeric only), ``minLength`` / ``maxLength`` (string
+    only). Other JSON-schema keywords (``pattern``, ``format``,
+    ``multipleOf``, ``uniqueItems``, ``required``, ``oneOf``/``anyOf``,
+    ``additionalProperties``) are intentionally left pass-through and
+    tracked as a follow-up — see TODO below.
 
     Args:
         value: The parameter value string.
@@ -449,12 +456,17 @@ def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
             return True, None  # Bare strings are acceptable for string params
         return False, f"Invalid JSON value: {value!r}"
 
-    # Type check
+    # Type check (strict — exclude bool from integer/number; pydantic
+    # treats ``True``/``False`` as their own type, not as ``1``/``0``).
     if param_type == "string" and not isinstance(parsed, str):
         return False, f"Expected string, got {type(parsed).__name__}"
-    elif param_type == "integer" and not isinstance(parsed, int):
+    elif param_type == "integer" and (
+        not isinstance(parsed, int) or isinstance(parsed, bool)
+    ):
         return False, f"Expected integer, got {type(parsed).__name__}"
-    elif param_type == "number" and not isinstance(parsed, (int, float)):
+    elif param_type == "number" and (
+        not isinstance(parsed, (int, float)) or isinstance(parsed, bool)
+    ):
         return False, f"Expected number, got {type(parsed).__name__}"
     elif param_type == "boolean" and not isinstance(parsed, bool):
         return False, f"Expected boolean, got {type(parsed).__name__}"
@@ -466,5 +478,41 @@ def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
     # Enum check
     if "enum" in schema and parsed not in schema["enum"]:
         return False, f"Value {parsed!r} not in enum {schema['enum']}"
+
+    # Numeric range (only when the parsed value is actually numeric —
+    # the type-check branch above already rejected non-numeric values
+    # for declared ``integer``/``number`` types, but a schema may omit
+    # ``type`` and still carry ``minimum``/``maximum``).
+    if isinstance(parsed, (int, float)) and not isinstance(parsed, bool):
+        minimum = schema.get("minimum")
+        if isinstance(minimum, (int, float)) and not isinstance(minimum, bool):
+            if parsed < minimum:
+                return False, f"Value {parsed} below minimum {minimum}"
+        maximum = schema.get("maximum")
+        if isinstance(maximum, (int, float)) and not isinstance(maximum, bool):
+            if parsed > maximum:
+                return False, f"Value {parsed} above maximum {maximum}"
+
+    # String length
+    if isinstance(parsed, str):
+        min_length = schema.get("minLength")
+        if isinstance(min_length, int) and not isinstance(min_length, bool):
+            if len(parsed) < min_length:
+                return (
+                    False,
+                    f"String length {len(parsed)} below minLength {min_length}",
+                )
+        max_length = schema.get("maxLength")
+        if isinstance(max_length, int) and not isinstance(max_length, bool):
+            if len(parsed) > max_length:
+                return (
+                    False,
+                    f"String length {len(parsed)} above maxLength {max_length}",
+                )
+
+    # TODO(F-141-followup): enforce pattern/format/multipleOf/uniqueItems.
+    # Deferred because regex/format implementations are non-trivial and
+    # the scoped fix targets the high-traffic constraints (enum/type/
+    # range/length). See TODO.md F-141 partial-fixed entry.
 
     return True, None

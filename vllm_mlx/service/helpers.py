@@ -1643,7 +1643,25 @@ def _parse_tool_calls_with_parser(
 
 
 def _validate_tool_call_params(tool_calls: list, tools: list) -> None:
-    """Validate tool call parameter values against their schemas (post-generation)."""
+    """Validate tool call parameter values against their schemas (post-generation).
+
+    F-141 scoped fix: enforce JSON-schema constraints on the model's
+    emitted ``tool_calls[].function.arguments`` instead of merely
+    logging. When a violation is detected we raise ``HTTPException(400)``
+    so the caller can decide how to recover (retry with a stricter
+    prompt, fall back to text, etc.) rather than silently propagating a
+    schema-violating payload as a normal success. This matches the
+    OpenAI contract: when a ``tool_calls[i]`` is present, its arguments
+    are expected to satisfy the declared parameter schema.
+
+    Enforced today (intentionally narrow, see ``validate_param_value``):
+    ``type``, ``enum``, ``minimum``/``maximum``, ``minLength``/``maxLength``.
+    Deferred (TODO(F-141-followup)): ``pattern``, ``format``,
+    ``multipleOf``, ``uniqueItems``. Non-JSON ``arguments`` and non-dict
+    parsed args remain warn-only because they indicate a model/parser
+    issue rather than a schema violation, and the upstream parser layer
+    already surfaces them.
+    """
     from ..api.tool_logits import _extract_param_schemas, validate_param_value
 
     tool_defs = [t.model_dump() if hasattr(t, "model_dump") else t for t in tools]
@@ -1676,7 +1694,15 @@ def _validate_tool_call_params(tool_calls: list, tools: list) -> None:
                 continue
             is_valid, error = validate_param_value(json.dumps(param_value), schema)
             if not is_valid:
-                logger.warning(f"Tool call '{func_name}' param '{param_name}': {error}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Tool call '{func_name}' parameter '{param_name}' "
+                        f"violates declared schema: {error}. The model "
+                        "produced a schema-violating argument value; retry "
+                        "with a more constrained prompt or relax the schema."
+                    ),
+                )
 
 
 # ── Message helpers ────────────────────────────────────────────────
