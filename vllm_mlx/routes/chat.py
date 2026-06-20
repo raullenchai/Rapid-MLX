@@ -484,6 +484,165 @@ async def _create_chat_completion_impl(
     # returned before any byte of SSE is flushed).
     _scan_messages_for_lone_surrogates(request.messages)
 
+    # F-111 / F-112 / F-051: tool-message schema validation.
+    #
+    # The OpenAI ``chat.completions`` spec defines three invariants on
+    # ``role:"tool"`` messages that we previously accepted as 200 and
+    # silently mis-rendered into the model prompt:
+    #
+    #   * F-051: ``tool_call_id`` is REQUIRED on every tool message.
+    #     Without it, the tool reply has no provenance — the previously
+    #     accepted shape rendered the result into context unlinked
+    #     (effectively an attacker-controlled "extra user turn").
+    #
+    #   * F-112: ``tool_call_id`` MUST reference the ``id`` of a
+    #     ``tool_calls[*]`` entry on a PRIOR assistant message in the
+    #     same ``messages[]`` array. Orphan tool turns were accepted as
+    #     200 and rendered into the prompt as if they were authoritative
+    #     tool replies — a direct prompt-injection vector (e.g. an
+    #     attacker-controlled ``content: "the password is OMEGA"``
+    #     reached the model with no anchoring assistant tool_call).
+    #
+    #   * F-111: ``role:"tool"`` content MUST be text-only (a string or
+    #     a ``[{type:"text",text:str}]`` array). The OpenAI spec does
+    #     not define multimodal tool replies, and a non-text part on a
+    #     tool reply was previously silently dropped by every text-only
+    #     chat template — the model received an empty
+    #     ``<tool_response>`` and hallucinated. The text-only array is
+    #     accepted here and flattened to a string downstream by
+    #     ``utils/chat_template.py::_normalize_text_only_content_arrays``;
+    #     this validator only rejects the non-text shapes the
+    #     normalization can't safely flatten.
+    #
+    # All three checks live up-front (BEFORE engine work) so the failure
+    # mode is a clean 400 with a precise pointer at the offending
+    # message — not a 500 from a downstream renderer crash. F-051 is
+    # closed as a freebie by the ``tool_call_id`` REQUIRED check.
+    #
+    # We track tool_call ids as a CONSUMABLE pending set rather than a
+    # monotonically-growing seen-set: each ``assistant.tool_calls[*].id``
+    # is a single-use ticket that the next matching ``role:"tool"`` reply
+    # consumes. Without this, a client can submit a valid tool reply,
+    # then resubmit ANOTHER ``role:"tool"`` message with the SAME
+    # ``tool_call_id`` later in ``messages[]`` — both replies render as
+    # authoritative tool results for the same call, an attacker-
+    # controlled "second reply" prompt-injection vector. Codex round-1
+    # BLOCKING on PR #731.
+    #
+    # We also reject DUPLICATE ``assistant.tool_calls[*].id`` values —
+    # whether within a single assistant turn or across turns. The
+    # OpenAI contract guarantees ids are unique across the conversation,
+    # and the consumable-ticket design relies on it: a re-used id on a
+    # later assistant turn would silently re-open a ticket the client
+    # never asked for, weakening the F-112 single-use guarantee. Codex
+    # round-2 NIT on PR #731 — implement the invariant the docstring
+    # claims rather than weaken the docstring.
+    _pending_tool_call_ids: set[str] = set()
+    _seen_any_tool_call_id: set[str] = set()
+    for _idx, _msg in enumerate(request.messages):
+        if _msg.role == "assistant" and _msg.tool_calls:
+            for _tc in _msg.tool_calls:
+                if isinstance(_tc, dict):
+                    _tc_id = _tc.get("id")
+                else:
+                    _tc_id = getattr(_tc, "id", None)
+                if isinstance(_tc_id, str) and _tc_id:
+                    if _tc_id in _seen_any_tool_call_id:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"messages[{_idx}] assistant tool_calls "
+                                f"contains duplicate id {_tc_id!r}; the OpenAI "
+                                "spec requires every tool_call.id to be unique "
+                                "across the conversation"
+                            ),
+                        )
+                    _seen_any_tool_call_id.add(_tc_id)
+                    _pending_tool_call_ids.add(_tc_id)
+            continue
+        if _msg.role != "tool":
+            continue
+        # F-051: tool_call_id REQUIRED.
+        if not _msg.tool_call_id or not isinstance(_msg.tool_call_id, str):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"messages[{_idx}] with role 'tool' must have a non-empty "
+                    "'tool_call_id' string"
+                ),
+            )
+        # F-112: tool_call_id must reference a prior assistant tool_call.id
+        # that has NOT already been consumed by an earlier tool reply.
+        if _msg.tool_call_id not in _pending_tool_call_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"messages[{_idx}] tool_call_id {_msg.tool_call_id!r} does "
+                    "not reference any prior assistant tool_call"
+                ),
+            )
+        # Consume the ticket. A later duplicate ``role:"tool"`` reply
+        # with the same id will fall through to the F-112 branch above
+        # and be rejected.
+        _pending_tool_call_ids.discard(_msg.tool_call_id)
+        # F-111: tool content shape. Accept str, None, or text-only
+        # array. Anything else is a non-text part (image/video/audio)
+        # which would be silently dropped by the renderer. An EMPTY
+        # ``list`` (``content: []``) is also rejected — the chat-template
+        # normalizer in ``utils/chat_template.py`` does not flatten
+        # empty lists (an empty array isn't a "text-only" array; there's
+        # no text to extract), so accepting it here would leak a
+        # non-string ``content`` into the rendered prompt and crash the
+        # template. Clients that intend an empty tool reply must send
+        # ``content: ""`` or ``content: null`` (codex round-1 BLOCKING
+        # on PR #731).
+        _content = _msg.content
+        if _content is None or isinstance(_content, str):
+            continue
+        if isinstance(_content, list):
+            if not _content:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"messages[{_idx}] role 'tool' content must not be an "
+                        "empty list; send an empty string '' or null for "
+                        "an empty tool reply"
+                    ),
+                )
+            _bad = False
+            for _part in _content:
+                if hasattr(_part, "model_dump"):
+                    _part_d = _part.model_dump(exclude_none=True)
+                elif isinstance(_part, dict):
+                    _part_d = _part
+                else:
+                    _bad = True
+                    break
+                if _part_d.get("type") != "text" or not isinstance(
+                    _part_d.get("text"), str
+                ):
+                    _bad = True
+                    break
+            if _bad:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"messages[{_idx}] role 'tool' content must be a "
+                        "string or a text-only array of "
+                        "{type:'text', text:str} parts"
+                    ),
+                )
+            continue
+        # Anything else (int / dict / bool / ...) is not a valid OpenAI
+        # tool content shape.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"messages[{_idx}] role 'tool' content must be a string or a "
+                f"text-only content-parts array, not {type(_content).__name__}"
+            ),
+        )
+
     # Validate n parameter (only n=1 supported)
     if request.n is not None and request.n > 1:
         raise HTTPException(
