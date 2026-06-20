@@ -62,6 +62,7 @@ from ..service.helpers import (
     _resolve_model_name,
     _resolve_temperature,
     _resolve_top_p,
+    _scan_messages_for_lone_surrogates,
     _tool_use_required_named_suffix,
     _validate_model_name,
     _validate_tool_call_params,
@@ -468,6 +469,19 @@ async def _create_chat_completion_impl(
                 status_code=400,
                 detail=f"Invalid role '{msg.role}'. Must be one of: {', '.join(sorted(_valid_roles))}",
             )
+
+    # Reject lone-surrogate codepoints in any message-content slot
+    # (F-130 + F-131). ``json.loads`` accepts ``"\\uD800"`` as a valid
+    # JSON string and binds it to a Python ``str`` carrying the
+    # unpaired surrogate; HuggingFace ``tokenizers`` then raises
+    # ``TypeError: TextEncodeInput must be …`` deep inside the
+    # chat-template render, producing either a 500 (non-stream) or —
+    # WORSE — an HTTP 200 with the raw Python error text leaked in an
+    # SSE ``data:`` chunk (stream). The route-layer gate runs BEFORE
+    # the streaming branch opens its ``StreamingResponse``, so the
+    # SSE-leak path in F-131 is closed by construction (a 400 is
+    # returned before any byte of SSE is flushed).
+    _scan_messages_for_lone_surrogates(request.messages)
 
     # Validate n parameter (only n=1 supported)
     if request.n is not None and request.n > 1:

@@ -1231,6 +1231,142 @@ def _resolve_reasoning_enabled(model_name: str | None) -> bool:
     return cfg.reasoning_parser is not None or bool(cfg.reasoning_parser_name)
 
 
+# ── Unicode validation (F-130 / F-131) ─────────────────────────────
+
+
+def _find_lone_surrogate(s: str) -> int | None:
+    """Return the offset of the first lone surrogate codepoint in ``s``,
+    or ``None`` when the string is encodable as UTF-8.
+
+    A Python ``str`` is a sequence of Unicode codepoints; ``json.loads``
+    happily decodes ``"\\uD800"`` into a single-code-unit ``str``
+    carrying codepoint U+D800. That codepoint is RESERVED for the
+    high half of a UTF-16 surrogate pair and is not valid UTF-8 on its
+    own — every downstream consumer (HuggingFace ``tokenizers`` /
+    chat-template renderers / ``str.encode("utf-8")``) raises when
+    handed one. F-130 (non-stream 500) and F-131 (stream 200 + raw
+    Python error leak via SSE) are the same crash class surfacing on
+    different lanes; rejecting the payload at the JSON-input boundary
+    closes both at once.
+
+    Properly-paired surrogates from JSON ``\\uD83D\\uDE00`` are
+    coalesced by ``json.loads`` into a single astral codepoint
+    (U+1F600 😀, ``len(s)==1``) before the ``str`` reaches Python, so
+    valid emoji never hit this branch — we only catch the unpaired
+    case the spec leaves ambiguous.
+
+    Returning the offset (instead of just a bool) lets the caller
+    surface a precise location in the error message, matching the
+    diagnostic surface of the sibling ``max_tokens`` / ``top_p``
+    validators in the chat route.
+    """
+    for i, ch in enumerate(s):
+        cp = ord(ch)
+        # Surrogate range per Unicode 15.1 §3.8: high surrogates
+        # U+D800–U+DBFF, low surrogates U+DC00–U+DFFF. Any codepoint
+        # in the combined range that survived ``json.loads`` is by
+        # definition unpaired (paired surrogates from JSON are
+        # coalesced into the astral codepoint they encode).
+        if 0xD800 <= cp <= 0xDFFF:
+            return i
+    return None
+
+
+def _scan_messages_for_lone_surrogates(messages: list) -> None:
+    """Raise ``HTTPException(400)`` if any message slot carries a lone
+    surrogate codepoint (F-130 / F-131).
+
+    Covered slots — every string surface a client can populate that
+    eventually flows into the chat template / tokenizer:
+
+      * ``messages[i].content`` — plain string AND every ``text`` /
+        ``image_url.url`` / ``video_url.url`` / ``audio_url.url`` slot
+        of the multimodal ``list[ContentPart|dict]`` form
+      * ``messages[i].tool_call_id`` — tool-response messages
+      * ``messages[i].tool_calls[].function.name`` /
+        ``messages[i].tool_calls[].function.arguments`` /
+        ``messages[i].tool_calls[].id`` — assistant turns replaying
+        prior tool calls
+      * ``messages[i].name`` — OpenAI optional message author name
+
+    Running at the route layer (sibling to the ``_valid_roles`` /
+    ``max_tokens`` / ``top_p`` block) means the gate fires BEFORE the
+    streaming branch opens an SSE response, so F-131's
+    ``200 + data: chunk-with-Python-error`` leak cannot happen — the
+    client sees a clean 400 with the precise offset before any byte
+    of SSE is flushed.
+    """
+
+    def _check(value, path: str) -> None:
+        if isinstance(value, str):
+            offset = _find_lone_surrogate(value)
+            if offset is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Invalid unicode in {path}: lone surrogate "
+                        f"codepoint U+{ord(value[offset]):04X} at offset "
+                        f"{offset} (surrogates must appear as paired "
+                        "high/low to encode an astral codepoint)."
+                    ),
+                )
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                _check(v, f"{path}.{k}" if isinstance(k, str) else path)
+        elif isinstance(value, list):
+            for j, item in enumerate(value):
+                _check(item, f"{path}[{j}]")
+        elif hasattr(value, "model_dump"):
+            # Pydantic ``BaseModel`` instance — e.g. ``ContentPart`` for
+            # multimodal messages, or ``ImageUrl`` / ``VideoUrl`` /
+            # ``AudioUrl`` nested URLs. Recurse via ``model_dump`` so the
+            # scan covers every string field without enumerating each
+            # pydantic class by hand (declared on ``api/models.py``).
+            # Without this branch, ``content=[ContentPart(text="\\uD801")]``
+            # bypasses the scan (the value is neither str/dict/list) and
+            # the lone surrogate falls through to the tokenizer crash —
+            # exactly the F-130 surface in the "multimodal text part"
+            # slot.
+            _check(value.model_dump(), path)
+
+    for i, msg in enumerate(messages):
+        # Pydantic Message or raw dict — normalize via attribute lookup.
+        # ``content`` may be str | list[ContentPart] | list[dict] | None;
+        # the recursive ``_check`` walks all three shapes uniformly.
+        content = msg.content if hasattr(msg, "content") else msg.get("content")
+        if content is not None:
+            _check(content, f"messages[{i}].content")
+
+        tcid = (
+            msg.tool_call_id
+            if hasattr(msg, "tool_call_id")
+            else (msg.get("tool_call_id") if isinstance(msg, dict) else None)
+        )
+        if tcid is not None:
+            _check(tcid, f"messages[{i}].tool_call_id")
+
+        # ``name`` is an OpenAI-spec optional message-author field. Not
+        # declared on our ``Message`` pydantic model today (silently
+        # dropped on parse), but client SDKs still send it and a
+        # future-proof scanner shouldn't depend on whether the field
+        # makes it past pydantic — check the raw dict form too.
+        name = (
+            msg.name
+            if hasattr(msg, "name") and getattr(msg, "name", None) is not None
+            else (msg.get("name") if isinstance(msg, dict) else None)
+        )
+        if name is not None:
+            _check(name, f"messages[{i}].name")
+
+        tcs = (
+            msg.tool_calls
+            if hasattr(msg, "tool_calls")
+            else (msg.get("tool_calls") if isinstance(msg, dict) else None)
+        )
+        if tcs:
+            _check(tcs, f"messages[{i}].tool_calls")
+
+
 def _validate_model_name(request_model: str) -> None:
     """Validate that the request model name matches a served model."""
     if request_model is None:
@@ -1592,11 +1728,28 @@ async def _disconnect_guard(
                 )
                 import json as _json
 
+                # F-131 belt-and-suspenders: never leak the raw Python
+                # exception message or class name through the SSE
+                # ``data:`` payload. Pre-fix, a tokenizer crash (e.g.
+                # the lone-surrogate ``TypeError``) surfaced inline in
+                # the stream as
+                # ``{"error":{"message":"Internal error during
+                # streaming: TextEncodeInput must be …","type":
+                # "TypeError"}}`` — useful for HuggingFace-library
+                # fingerprinting and breaking the OpenAI SSE contract
+                # (error payloads should not carry Python type names).
+                # The route-level ``_scan_messages_for_lone_surrogates``
+                # gate closes the primary path; this sanitization
+                # remains for any OTHER mid-stream exception so the
+                # ``200 + raw Python traceback in SSE`` shape can never
+                # surface from this entry point. The full exception is
+                # logged above with ``exc_info`` so operators retain
+                # the diagnostic detail server-side.
                 error_data = _json.dumps(
                     {
                         "error": {
-                            "message": f"Internal error during streaming: {exc}",
-                            "type": type(exc).__name__,
+                            "message": "Internal error during streaming",
+                            "type": "internal_error",
                         }
                     }
                 )
