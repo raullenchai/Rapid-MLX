@@ -54,11 +54,11 @@ STT_MODEL_ALIASES: dict[str, str] = {
 # the canonical 404 ``model_not_found_error`` fires instead.
 #
 # Allowed characters mirror HuggingFace's repo-id conventions
-# (alphanumeric, underscore, dot, hyphen, plus). Length cap (128) is
+# (alphanumeric, underscore, dot, hyphen). ``+`` is intentionally NOT
+# allowed — HF repo ids are restricted to ``[A-Za-z0-9._-]`` (see
+# huggingface_hub.utils.validate_repo_id). Length cap (128) is
 # defensive; longest legitimate HF repo id observed in the wild is ~80.
-_STT_MODEL_NAME_RE = re.compile(
-    r"^[A-Za-z0-9_.\-+]{1,128}(?:/[A-Za-z0-9_.\-+]{1,128})?$"
-)
+_STT_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,128}(?:/[A-Za-z0-9_.\-]{1,128})?$")
 
 
 def _resolve_stt_model(model: str) -> str:

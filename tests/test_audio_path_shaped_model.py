@@ -20,7 +20,6 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-
 # ---------------------------------------------------------------------------
 # Unit-level — exercise the resolver directly
 # ---------------------------------------------------------------------------
@@ -66,24 +65,35 @@ class TestPathShapedRejection:
             "mlx-community/whisper-large-v3-mlx",
             "user-name/repo.name",
             "org/repo-with-hyphens",
-            "org/repo+with+plus",
             "org/repo_with_underscore",
         ],
     )
     def test_accepts_canonical_hf_repo_ids(self, model_string: str):
         """Single-slash ``<org>/<repo>`` is the canonical HuggingFace
-        shape; must continue to pass through unchanged."""
+        shape; must continue to pass through unchanged. Allowed char
+        class mirrors HF's ``[A-Za-z0-9._-]`` repo-id rule (no ``+``)."""
         from vllm_mlx.routes.audio import _resolve_stt_model
 
         assert _resolve_stt_model(model_string) == model_string
+
+    def test_rejects_repo_id_with_plus(self):
+        """codex-r1 BLOCKING: ``+`` is not a valid HF repo-id character.
+        Must be rejected as ``model_not_found_error`` rather than
+        passed through to ``STTEngine.load`` (which would 500)."""
+        from vllm_mlx.routes.audio import _resolve_stt_model
+
+        with pytest.raises(HTTPException) as exc_info:
+            _resolve_stt_model("org/repo+with+plus")
+        assert exc_info.value.status_code == 404
+        detail = exc_info.value.detail
+        assert isinstance(detail, dict)
+        assert detail["error"]["type"] == "model_not_found_error"
 
     def test_alias_still_resolves(self):
         """F-165 contract: known aliases continue to map to repos."""
         from vllm_mlx.routes.audio import _resolve_stt_model
 
-        assert (
-            _resolve_stt_model("whisper-small") == "mlx-community/whisper-small-mlx"
-        )
+        assert _resolve_stt_model("whisper-small") == "mlx-community/whisper-small-mlx"
 
     def test_empty_string_still_400(self):
         """Empty string must remain a 400 ``invalid_request_error``,
@@ -118,9 +128,7 @@ def _audio_client(monkeypatch):
 
 
 @pytest.mark.parametrize("model_string", ["foo/bar/baz", "////"])
-def test_route_path_shaped_model_returns_404_not_500(
-    _audio_client, model_string: str
-):
+def test_route_path_shaped_model_returns_404_not_500(_audio_client, model_string: str):
     """Live route surface mirrors the BEFORE/AFTER repro in TODO.md F-210.
 
     Pre-fix: HTTP 500 ``transcription_failed``.
