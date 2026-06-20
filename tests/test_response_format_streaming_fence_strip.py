@@ -307,6 +307,58 @@ class TestJsonObjectFenceStripping:
         )
         assert joined == '{"answer": 42}'
 
+    def test_preamble_example_json_before_json_fence_wins_real_answer(self):
+        """Codex r8 BLOCKING #1: re-anchor unconditionally when a
+        JSON-bearing fence opener is present in the scan buffer.
+
+        Earlier the scan path required ``fence_pos < json_start``
+        before re-anchoring — so a preamble that included an example
+        JSON BEFORE the fence (``Example: {"k":1}\\n```json\\n{...}``)
+        anchored on the example and lost the real answer."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            [
+                'Example shape: {"k": 1}\n'
+                "Now the real answer:\n"
+                "```json\n"
+                '{"answer": 42}\n'
+                "```",
+            ],
+        )
+        assert joined == '{"answer": 42}'
+
+    def test_bare_json_followed_by_markdown_fence_passes_through(self):
+        """Codex r8 BLOCKING #2: a bare, unfenced json-mode stream
+        that legitimately continues with markdown / code-fence text
+        AFTER the JSON root must NOT be truncated at the first ``` ``` ``.
+
+        The non-stream ``extract_json_from_response`` leaves unfenced
+        text alone; streaming has to match. The fix records whether an
+        opening fence was actually consumed in the scan phase and only
+        suppresses a closing markdown fence in that mode.
+
+        We assert the post-JSON markdown ``` ``` `` block survives in
+        the streamed output (the contract is "no truncation at a
+        non-fence-paired ``` ``` ``"). The exact non-stream output is
+        produced after a ``text.strip()``, so byte-equality isn't the
+        right oracle — we want the structural guarantee."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        bare = '{"k": 1}\n\nHere\'s how I derived it:\n```python\nx = 1\n```\n'
+        joined = _stream_chunks(pp, [bare])
+
+        # JSON intact at the head.
+        assert joined.startswith('{"k": 1}')
+        # Post-JSON markdown survives — both the opener and the
+        # closer of the python fence are present.
+        assert "```python" in joined
+        assert "x = 1" in joined
+        assert joined.rstrip().endswith("```")
+
     def test_nested_json_root_close_only_at_outermost(self):
         """Inner ``}``/``]`` must NOT trigger truncation — only the
         closing markdown fence ``` ``` `` does. JSON values with nested

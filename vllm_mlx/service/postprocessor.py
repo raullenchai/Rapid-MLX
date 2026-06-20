@@ -376,6 +376,18 @@ class StreamingPostProcessor:
         # snapshotted at the start of the held tail. Codex r5
         # BLOCKING.
         self._json_fence_bracket_depth: int = 0
+        # Whether the scan phase actually consumed an opening
+        # ``` ```json `` (or bare ``` ``` `` wrapping JSON) fence.
+        # Codex r8 BLOCKING #2: ``_guard_closing_fence`` only
+        # suppresses a closing ``` ``` `` when an opening fence was
+        # consumed; bare-JSON streams (model returned ``{...}`` straight
+        # with no markdown wrapper) pass markdown content after the
+        # root close THROUGH UNCHANGED, mirroring the non-stream
+        # ``extract_json_from_response`` which leaves unfenced text
+        # alone. Without this gate, a model that legitimately
+        # continues with prose containing ``` ``` `` after the JSON
+        # would have the prose truncated.
+        self._json_fence_opener_consumed: bool = False
 
         # Forced ``tool_choice`` assistant-prefix replay swallow (PR #716
         # codex r9 BLOCKING #1). When the route layer forces a function via
@@ -534,7 +546,15 @@ class StreamingPostProcessor:
             # ``_guard_closing_fence`` walker handles it later).
             json_start = _find_json_start(buf)
             fence_pos = _find_json_fence_opener(buf)
-            if fence_pos >= 0 and (json_start < 0 or fence_pos < json_start):
+            # Codex r8 BLOCKING #1: re-anchor whenever a JSON-bearing
+            # fence opener exists ANYWHERE in the buffer — not only
+            # when ``fence_pos < json_start``. A preamble like
+            # ``Example: {"k":1}\n```json\n{"answer":42}\n``` `` has
+            # the example JSON BEFORE the fence; without unconditional
+            # re-anchoring we'd land on the example. ``_find_json_fence_opener``
+            # already requires the fence's payload to start with
+            # ``{``/``[``, so the candidate is reliable.
+            if fence_pos >= 0:
                 # Opening fence in preamble. Re-anchor the JSON
                 # search to after the fence + optional ``json`` tag
                 # + whitespace, so an illustrative example JSON
@@ -562,6 +582,13 @@ class StreamingPostProcessor:
                         ]
                     return ""
                 json_start = search_from + rel_start
+                # Codex r8 BLOCKING #2: record that an opening fence
+                # was actually consumed in the scan phase. The
+                # closing-fence walker uses this flag to decide
+                # whether to suppress a later ``` `` ``` — a bare-JSON
+                # stream (no opening fence) must pass markdown after
+                # the JSON root through unchanged.
+                self._json_fence_opener_consumed = True
             elif json_start < 0:
                 # No JSON delimiter AND no opening fence yet. Keep
                 # scanning. If the buffer grew past the cap, drop
@@ -619,6 +646,17 @@ class StreamingPostProcessor:
         # suffix as a single string.
         combined = self._json_fence_tail + content
         self._json_fence_tail = ""
+
+        # Codex r8 BLOCKING #2: bare-JSON streams (no opening fence
+        # consumed in the scan phase) must not have closing-fence
+        # detection or fence-tail hold applied. The non-stream
+        # ``extract_json_from_response`` leaves unfenced text alone;
+        # streaming has to match. Without this fast-path, a model
+        # that returns ``{...}\n\nHere's how I did it:\n```python...```
+        # would get truncated at the first ``` ``` ``. Flush any held
+        # tail and pass the rest through unchanged.
+        if not self._json_fence_opener_consumed:
+            return combined
 
         # Walk the buffer character-by-character, tracking JSON-string
         # state, so the FIRST ``` `` ` ``` we treat as a closing fence
@@ -1490,6 +1528,7 @@ class StreamingPostProcessor:
         self._json_fence_in_string = False
         self._json_fence_string_escape = False
         self._json_fence_bracket_depth = 0
+        self._json_fence_opener_consumed = False
         # Forced-prefix swallow buffer reset to baseline. The route layer
         # re-seeds via ``seed_forced_assistant_prefix`` after ``reset()``
         # when the request carries ``forced_assistant_prefix``; without
@@ -2169,6 +2208,23 @@ class StreamingPostProcessor:
                 json_start = _find_json_start(self._json_preamble_buffer)
                 if json_start >= 0:
                     self._json_preamble_stripped = True
+                    # Codex r8 BLOCKING #2: if the preamble we're about
+                    # to strip ends in an opening ``` ```json `` /
+                    # ``` ``` `` fence (whose payload IS the JSON we
+                    # just landed on), the downstream fence-walker
+                    # must know an opening fence WAS consumed so it
+                    # will suppress the matching closing fence.
+                    # Without this signal the bare-JSON pass-through
+                    # fast-path fires and the closing ``` ``` `` leaks
+                    # onto the wire. ``_find_json_fence_opener`` needs
+                    # the JSON delimiter visible to recognise the
+                    # fence's payload, so we run it over the FULL
+                    # buffer (preamble + JSON) and check whether the
+                    # found fence sits inside the about-to-be-stripped
+                    # preamble.
+                    fence_in_full = _find_json_fence_opener(self._json_preamble_buffer)
+                    if 0 <= fence_in_full < json_start:
+                        self._json_fence_opener_consumed = True
                     content = self._json_preamble_buffer[json_start:]
                 else:
                     return []
