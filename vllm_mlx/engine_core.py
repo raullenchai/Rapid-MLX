@@ -882,6 +882,15 @@ class EngineCore:
             completion_tokens=req_output.completion_tokens,
             cached_tokens=req_output.cached_tokens,
             logprobs=(prev_lp + new_lp) or None,
+            # H-03: prefer the newer step's matched_stop (the scheduler
+            # pins it exactly once on the chunk where the stop fires);
+            # fall back to the existing buffer so a stop that fired on a
+            # previous flush is not erased by a later step where the
+            # field is None. ``buf`` may be None on the first step.
+            matched_stop=(
+                req_output.matched_stop
+                or (buf.matched_stop if buf is not None else None)
+            ),
         )
 
     async def stream_outputs(

@@ -83,6 +83,20 @@ class GenerationOutput:
     # the prefix-cache path (guided generation, dflash speculative
     # server) — semantically "no cache hits", not "unknown".
     cached_tokens: int = 0
+    # H-03: when a user-supplied ``stop`` string fired (vs an EOS token
+    # or ``max_tokens`` cap), the scheduler/engine records the matched
+    # string here so route adapters can surface the precise reason.
+    # The Anthropic ``/v1/messages`` adapter maps this onto
+    # ``stop_reason="stop_sequence"`` + ``stop_sequence: <str>`` per the
+    # public spec; OpenAI ``/v1/completions`` and ``/v1/chat/
+    # completions`` keep ``finish_reason="stop"`` (a single bucket for
+    # both EOS and stop-string per OpenAI's wire spec) so the field is
+    # harmless to ignore on the OpenAI surface. ``None`` means "no
+    # user stop matched" — ``finish_reason`` was set by EOS, the
+    # length cap, or never fired. Appended LAST per the field-order
+    # note above to preserve positional constructor arg indices for
+    # pre-existing fields.
+    matched_stop: str | None = None
 
 
 class BaseEngine(ABC):

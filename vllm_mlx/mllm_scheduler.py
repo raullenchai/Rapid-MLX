@@ -656,6 +656,14 @@ class MLLMScheduler:
                 for stop_str in request.stop:
                     if stop_str and stop_str in decoded_so_far:
                         finish_reason = "stop"
+                        # H-03: pin WHICH user-supplied stop fired so
+                        # the Anthropic adapter can surface
+                        # ``stop_reason="stop_sequence"`` +
+                        # ``stop_sequence: <str>`` per the public spec.
+                        # Mirrors the text-scheduler companion change so
+                        # MLLM-backed ``/v1/messages`` traffic gets the
+                        # same surface as the text path.
+                        output.matched_stop = stop_str
                         # Trim output at stop string
                         idx = decoded_so_far.index(stop_str)
                         request.output_text = decoded_so_far[:idx]
