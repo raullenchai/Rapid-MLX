@@ -1984,9 +1984,10 @@ def _force_abort_request(engine, request_id_holder) -> bool:
     ``scheduler.abort_request(rid)`` — a thread-safe, non-blocking
     ``set.add`` per ``Scheduler.abort_request`` docstring. The
     sync-path resolver (``_resolve_sync_scheduler_for_abort``) walks
-    ``engine.scheduler`` → ``engine._mllm_scheduler`` →
-    ``engine._engine.scheduler`` so both the MLLM and text branches
-    of ``BatchedEngine`` reach a sync entry point.
+    ``engine.scheduler`` first, then the active-backend branch on
+    ``BatchedEngine`` (gated by ``engine._is_mllm`` per codex r2
+    BLOCKING #1): MLLM → ``engine._mllm_scheduler``, text →
+    ``engine._engine.scheduler``.
 
     Falls back to ``engine.abort_request(rid)`` (the public engine
     surface — may be async on engines that haven't been refactored)
