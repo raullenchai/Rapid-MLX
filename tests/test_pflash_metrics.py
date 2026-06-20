@@ -196,7 +196,12 @@ def test_scheduler_counters_untouched_when_pflash_skips():
 
     assert scheduler.get_stats()["pflash_bypass_count"] == 0
     assert scheduler.get_stats()["pflash_compressed_tokens_dropped"] == 0
+    # Threshold-skip path: BOTH counters must stay at zero. Asserting only
+    # ``pflash_bypass_count`` would let a regression that silently
+    # incremented ``pflash_compressed_tokens_dropped`` on threshold skips
+    # slip through unnoticed (codex review nit, M-02 PR).
     assert scheduler_auto.get_stats()["pflash_bypass_count"] == 0
+    assert scheduler_auto.get_stats()["pflash_compressed_tokens_dropped"] == 0
 
 
 def test_scheduler_counters_zero_when_pflash_disabled():
