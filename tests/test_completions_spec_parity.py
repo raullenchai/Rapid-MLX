@@ -88,16 +88,25 @@ class TestN:
     """``n>1`` must 400 (mirroring the chat-completions route)."""
 
     def test_n_above_one_rejected_with_400(self, patched_config, monkeypatch):
+        # F-155: schema-layer validator now catches ``n != 1`` BEFORE
+        # the route layer's ``n > 1`` reject runs, so the test app
+        # (which does not install the production
+        # ``RequestValidationError`` handler that rewrites 422→400)
+        # surfaces the raw Pydantic 422 instead. The production server
+        # still emits 400 with the OpenAI-shaped envelope — this test
+        # pins the schema-layer contract; the envelope is covered by
+        # the live curl repro in the F-155 PR.
         client, _ = _build_completions_app(patched_config, monkeypatch)
         r = client.post(
             "/v1/completions",
             json={"model": "stub-model", "prompt": "hi", "n": 3},
         )
-        assert r.status_code == 400
-        detail = (r.json().get("error") or {}).get("message") or r.json().get(
-            "detail", ""
-        )
-        assert "n > 1" in detail or "n>1" in detail.replace(" ", "")
+        assert r.status_code == 422
+        detail = str(r.json())
+        # The new message names the rule ("n must equal 1") rather than
+        # the old "n > 1" wording, since the schema layer enforces a
+        # tighter equality contract that also covers ``n=0`` / ``n=-1``.
+        assert "must equal 1" in detail
 
     def test_n_one_is_accepted(self, patched_config, monkeypatch):
         """``n: 1`` is the OpenAI default — must not trip the new guard."""
