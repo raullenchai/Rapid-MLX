@@ -605,6 +605,45 @@ class MLLMBatchGenerator:
             getattr(model_config, "image_token_index", None) if model_config else None
         )
 
+        # F-063: extreme-aspect-ratio guard.
+        #
+        # When an image has ``min(w, h) <= 2`` (e.g. 1x10000, 10000x1,
+        # 2x2, 1x100), the Qwen3-VL patch-tokenizer (patch_size=14)
+        # rounds the short dimension to 0 patches and emits an empty
+        # vision-token sequence. The language model then has nothing
+        # to attend to and silently hallucinates a generic reply, so
+        # the HTTP response is ``200 OK`` with content like "The image
+        # is a solid green color" — indistinguishable from a real
+        # answer to the caller.
+        #
+        # mlx_vlm's own ``smart_resize`` only rejects extreme aspect
+        # ratios (``abs ratio > 200``), which catches 1x500 / 2x500
+        # but lets 1x100 / 2x2 / 3x2 sail through.
+        #
+        # Pre-filter with PIL here so the request fails fast with a
+        # canonical ``Failed to process image: image too small …``
+        # ``ValueError`` — the same marker the
+        # ``except (OSError, ValueError)`` block below uses, so
+        # ``is_client_error`` fires and routes map it to HTTP 400.
+        if all_images:
+            from PIL import Image as _PILImage
+
+            _MIN_DIM = 3  # patches collapse to zero below this
+            for _img_path in all_images:
+                try:
+                    with _PILImage.open(_img_path) as _im:
+                        _w, _h = _im.size
+                except Exception:
+                    # Decode failures are handled by the prepare_inputs
+                    # try/except below; don't double-report here.
+                    continue
+                if min(_w, _h) < _MIN_DIM:
+                    raise ValueError(
+                        f"Failed to process image: image too small "
+                        f"(min dimension must be >= {_MIN_DIM}, "
+                        f"got {_w}x{_h})"
+                    )
+
         # Prepare inputs using mlx_vlm.
         #
         # mlx_vlm's ``prepare_inputs`` opens each saved image via PIL,
