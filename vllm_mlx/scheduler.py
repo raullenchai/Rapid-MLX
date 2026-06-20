@@ -2986,11 +2986,37 @@ class Scheduler:
             request_id: The request ID to abort
 
         Returns:
-            True (abort is always enqueued)
+            True when an active/queued request was enqueued for abort, False
+            when ``request_id`` is unknown to this scheduler. F-151 hardening:
+            previously this method returned True unconditionally — including
+            for arbitrary attacker-supplied strings — which let the route
+            layer respond ``{"cancelled": true}`` for any id. The route uses
+            the False return as the 404 signal.
         """
-        self._pending_abort_ids.add(request_id)
-        logger.info(f"[abort_request] {request_id[:12]} enqueued for deferred abort")
-        return True
+        # Consider the request "known" if it lives in any of: the canonical
+        # ``requests`` dict (admitted but not finished), the BatchGenerator
+        # uid map (admitted into a live batch — may already have been popped
+        # from ``requests`` by an in-flight ``_cleanup_request``), the
+        # ``running`` map (currently scheduled), or ``_pending_abort_ids``
+        # (a concurrent abort enqueue made this method idempotent — return
+        # True so a double-cancel doesn't 404 the second caller). We do NOT
+        # treat ``finished_req_ids`` as "known" because the abort would be
+        # a no-op and the route contract is "404 when already finished".
+        if (
+            request_id in self.requests
+            or request_id in self.request_id_to_uid
+            or request_id in self.running
+            or request_id in self._pending_abort_ids
+        ):
+            self._pending_abort_ids.add(request_id)
+            logger.info(
+                f"[abort_request] {request_id[:12]} enqueued for deferred abort"
+            )
+            return True
+        logger.info(
+            "[abort_request] unknown request_id (rejected without enqueue)"
+        )
+        return False
 
     def _process_pending_aborts(self) -> None:
         """Drain and process pending abort requests. Called from executor thread."""

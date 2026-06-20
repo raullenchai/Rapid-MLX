@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..config import get_config
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import verify_api_key, verify_internal_admin
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +16,19 @@ logger = logging.getLogger(__name__)
 # `--api-key X` makes every probe fail and pods get marked unhealthy.
 probe_router = APIRouter()
 
-# Management endpoints (auth-gated when --api-key is configured) — request
-# cancellation, cache clears, internal /v1/status snapshot.
+# Management endpoints (auth-gated when --api-key is configured) — read-only
+# status / cache stats. ``verify_api_key`` is a no-op when ``--api-key`` is
+# unset; that's fine for status reads but NOT for destructive routes — those
+# live on ``admin_router`` below.
 router = APIRouter(dependencies=[Depends(verify_api_key)])
+
+# Destructive control-plane routes (F-150 / F-151 fix). ``verify_internal_admin``
+# ALWAYS requires ``X-Rapid-MLX-Internal: true`` even when ``--api-key`` is unset,
+# so an unauthenticated LAN client cannot wipe the prefix cache (DoS amplifier)
+# or fan out spurious abort calls. When ``--api-key`` IS configured the dep also
+# requires a valid Bearer / x-api-key — the internal-header is additive, not a
+# bypass.
+admin_router = APIRouter(dependencies=[Depends(verify_internal_admin)])
 
 
 @probe_router.api_route("/", methods=["GET", "HEAD"])
@@ -113,7 +123,7 @@ async def livez():
     return {"status": "alive"}
 
 
-@router.post("/v1/requests/{request_id}/cancel")
+@admin_router.post("/v1/requests/{request_id}/cancel")
 async def cancel_request(request_id: str):
     """Cancel an active or queued request.
 
@@ -121,6 +131,22 @@ async def cancel_request(request_id: str):
     streaming chunk (or in the non-streaming response body). Returns 404 if
     the request is not found, has already finished, or the loaded engine
     does not implement abort.
+
+    F-151 hardening:
+    * Schedulers used to return ``True`` for *any* string (the abort was
+      enqueued unconditionally), so the route would 200-OK an attacker who
+      poked random IDs — both an info leak (confirmed the route exists with
+      a real engine behind it) and a validation bypass. The underlying
+      schedulers now return False for unknown IDs; this route forwards that
+      as 404.
+    * The success response previously embedded ``cfg.model_name`` (which is
+      the HF repo id when ``--served-model-name`` is not set), so any
+      anonymous caller could learn which weights are loaded. We no longer
+      echo the model in the cancel envelope — clients that need it can hit
+      ``/v1/models``.
+    * The 500 fallback used to include ``{exc}`` raw; engine exception
+      messages sometimes carry the HF path. We now emit a generic message
+      and rely on the server log for diagnosis.
     """
     cfg = get_config()
     if cfg.engine is None:
@@ -128,35 +154,44 @@ async def cancel_request(request_id: str):
 
     try:
         aborted = await cfg.engine.abort_request(request_id)
-    except Exception as exc:  # pragma: no cover - engine-side errors are rare
+    except Exception:  # pragma: no cover - engine-side errors are rare
+        # F-151: don't echo the exception (some engine messages carry the
+        # HF repo path / model snapshot location). The full traceback goes
+        # to the server log for the operator.
         logger.exception("Failed to cancel request %s", request_id)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to cancel request {request_id}: {exc}",
-        ) from exc
+            detail="Failed to cancel request (see server logs)",
+        ) from None
 
     if not aborted:
+        # F-151: keep the detail short and avoid echoing model_name. The
+        # request_id IS user-supplied so echoing it back is fine; what we
+        # must NOT echo is server-side state (model / engine internals).
         raise HTTPException(
             status_code=404,
-            detail=f"Request not found or cancellation is unsupported: {request_id}",
+            detail="Request not found or already finished",
         )
 
     logger.info("[cancel_request] accepted request_id=%s", request_id)
+    # F-151: drop ``model`` field. Anyone who can cancel a request they own
+    # already knows which model they targeted; an attacker who pokes random
+    # IDs (now 404'd above) must not be able to fingerprint the loaded
+    # weights via the success envelope.
     return {
         "object": "request.cancel",
         "id": request_id,
         "cancelled": True,
-        "model": cfg.model_name,
     }
 
 
-@router.delete("/v1/requests/{request_id}")
+@admin_router.delete("/v1/requests/{request_id}")
 async def delete_request(request_id: str):
     """OpenAI-style alias for cancelling an active or queued request."""
     return await cancel_request(request_id)
 
 
-@router.post("/v1/cache/clear")
+@admin_router.post("/v1/cache/clear")
 async def clear_cache():
     """Clear the prompt KV cache."""
     cfg = get_config()
@@ -243,7 +278,7 @@ async def cache_stats():
         }
 
 
-@router.delete("/v1/cache")
+@admin_router.delete("/v1/cache")
 async def clear_all_caches():
     """Clear all caches."""
     try:

@@ -107,6 +107,12 @@ class TestBaseEngineDefaultAbort:
 
 
 class TestCancelRequestEndpoint:
+    # Per F-150, the cancel route now lives on ``admin_router`` and requires
+    # ``X-Rapid-MLX-Internal: true``. All tests in this class pass it via
+    # ``_HDRS`` — the header-only-403 path is exercised separately in
+    # ``test_internal_route_auth.py``.
+    _HDRS = {"X-Rapid-MLX-Internal": "true"}
+
     @pytest.fixture
     def client_with_engine(self):
         """Build a FastAPI test client with a stub engine wired into the
@@ -115,7 +121,7 @@ class TestCancelRequestEndpoint:
         from fastapi.testclient import TestClient
 
         from vllm_mlx.config import get_config
-        from vllm_mlx.routes.health import router
+        from vllm_mlx.routes.health import admin_router, router
 
         cfg = get_config()
         prev_engine, prev_model_name = cfg.engine, cfg.model_name
@@ -127,6 +133,7 @@ class TestCancelRequestEndpoint:
 
         app = FastAPI()
         app.include_router(router)
+        app.include_router(admin_router)
         client = TestClient(app)
         try:
             yield client, engine
@@ -137,14 +144,19 @@ class TestCancelRequestEndpoint:
     def test_post_cancel_returns_200_when_engine_aborts(self, client_with_engine):
         client, engine = client_with_engine
 
-        response = client.post("/v1/requests/chatcmpl-abc123/cancel")
+        response = client.post(
+            "/v1/requests/chatcmpl-abc123/cancel", headers=self._HDRS
+        )
 
         assert response.status_code == 200
         body = response.json()
         assert body["object"] == "request.cancel"
         assert body["id"] == "chatcmpl-abc123"
         assert body["cancelled"] is True
-        assert body["model"] == "test-model"
+        # F-151: ``model`` MUST NOT appear in the cancel envelope. Echoing
+        # ``cfg.model_name`` here used to leak the HF repo id to anonymous
+        # callers (which, before the F-150 gate, was every LAN client).
+        assert "model" not in body
         engine.abort_request.assert_awaited_once_with("chatcmpl-abc123")
 
     def test_post_cancel_returns_404_when_engine_returns_false(
@@ -153,25 +165,32 @@ class TestCancelRequestEndpoint:
         client, engine = client_with_engine
         engine.abort_request.return_value = False
 
-        response = client.post("/v1/requests/missing/cancel")
+        response = client.post("/v1/requests/missing/cancel", headers=self._HDRS)
 
         assert response.status_code == 404
         assert "Request not found" in response.json()["detail"]
+        # F-151: the 404 detail MUST NOT echo server-side state like the
+        # raw model name (``cfg.model_name`` happens to be "test-model" in
+        # this fixture).
+        assert "test-model" not in response.text
 
     def test_delete_alias_returns_200(self, client_with_engine):
         client, _ = client_with_engine
 
-        response = client.delete("/v1/requests/chatcmpl-xyz")
+        response = client.delete("/v1/requests/chatcmpl-xyz", headers=self._HDRS)
 
         assert response.status_code == 200
-        assert response.json()["cancelled"] is True
+        body = response.json()
+        assert body["cancelled"] is True
+        # Same F-151 leak assertion as the POST path.
+        assert "model" not in body
 
     def test_post_cancel_returns_503_when_no_engine(self):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
         from vllm_mlx.config import get_config
-        from vllm_mlx.routes.health import router
+        from vllm_mlx.routes.health import admin_router, router
 
         cfg = get_config()
         prev_engine = cfg.engine
@@ -179,9 +198,10 @@ class TestCancelRequestEndpoint:
         try:
             app = FastAPI()
             app.include_router(router)
+            app.include_router(admin_router)
             client = TestClient(app)
 
-            response = client.post("/v1/requests/any/cancel")
+            response = client.post("/v1/requests/any/cancel", headers=self._HDRS)
 
             assert response.status_code == 503
         finally:

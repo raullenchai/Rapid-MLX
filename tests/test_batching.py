@@ -292,15 +292,32 @@ class TestSchedulerBasic:
         assert "test-1" in scheduler.finished_req_ids
 
     def test_abort_nonexistent_request(self, mock_model, mock_tokenizer):
-        """Test aborting non-existent request (deferred abort always enqueues)."""
+        """Aborting a non-existent request returns False (F-151 hardening).
+
+        Pre-F-151 ``abort_request`` returned True for any string, even ones
+        never admitted into the scheduler. That let the
+        ``/v1/requests/{id}/cancel`` route respond ``{"cancelled": true}`` to
+        attacker-supplied IDs — an info-leak + validation bypass. The route
+        relies on the False return as the 404 signal.
+        """
         scheduler = Scheduler(
             model=mock_model,
             tokenizer=mock_tokenizer,
         )
 
-        # abort_request() always returns True (enqueue is always successful)
         result = scheduler.abort_request("nonexistent")
-        assert result is True
+        assert result is False
+        # Idempotency cross-check: a request that IS known returns True,
+        # and a follow-up abort on the SAME id (now in _pending_abort_ids)
+        # also returns True so double-cancel doesn't 404 the second caller.
+        request = Request(
+            request_id="known-1",
+            prompt="Hello",
+            sampling_params=SamplingParams(),
+        )
+        scheduler.add_request(request)
+        assert scheduler.abort_request("known-1") is True
+        assert scheduler.abort_request("known-1") is True
 
     def test_get_stats(self, mock_model, mock_tokenizer):
         """Test getting scheduler stats."""

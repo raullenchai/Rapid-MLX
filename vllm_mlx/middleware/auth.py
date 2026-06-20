@@ -270,3 +270,55 @@ async def verify_api_key_or_x_api_key(
     """Verify OpenAI Bearer auth or Anthropic x-api-key auth."""
     bearer_key = credentials.credentials if credentials is not None else None
     return _verify_api_key_values(bearer_key, request.headers.get("x-api-key"))
+
+
+# Header gate for destructive control-plane routes that live on the main
+# bind (not a separate admin port). The header acts as a "you meant this"
+# signal — defense in depth against accidental cross-site form POSTs,
+# opportunistic scanners, and the F-150 root cause: ``verify_api_key``
+# returns True (open) when ``--api-key`` is not configured, leaving
+# ``/v1/cache/clear`` and ``/v1/requests/{id}/cancel`` reachable from any
+# LAN client to wipe the prefix cache (DoS amplifier) or fire abort calls
+# into the engine.
+#
+# Pattern mirrors trio's ``/internal/cookie-status`` (``X-Trio-Internal:
+# true``). When ``cfg.api_key`` is also set, a valid Bearer / x-api-key is
+# ALSO required — the header alone does not grant access on an
+# authenticated server, it only adds a second factor on an unauthenticated
+# one.
+_INTERNAL_HEADER_NAME = "X-Rapid-MLX-Internal"
+_INTERNAL_HEADER_EXPECTED = "true"
+
+
+async def verify_internal_admin(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Gate for destructive control-plane routes (cache clear, request cancel).
+
+    Always requires ``X-Rapid-MLX-Internal: true`` (case-insensitive value
+    match). When ``cfg.api_key`` is configured, ALSO requires a valid Bearer
+    token or ``x-api-key`` header — the internal-header gate does not bypass
+    API auth on an authenticated server, it only adds a second factor on an
+    unauthenticated one.
+
+    Returns 403 on missing/wrong header. 401 on missing/invalid API key when
+    one is configured — matches ``verify_api_key`` so monitoring rules that
+    grep for 401-on-control-plane keep working.
+    """
+    header_value = request.headers.get(_INTERNAL_HEADER_NAME, "")
+    # Strict case-insensitive value match. We accept ``true`` / ``True`` /
+    # ``TRUE`` (some shells uppercase by reflex) but reject ``1``, ``yes``,
+    # empty string — anything that could be a typo'd misfire from an
+    # unrelated client middleware injecting a default header.
+    if header_value.strip().lower() != _INTERNAL_HEADER_EXPECTED:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Forbidden: {_INTERNAL_HEADER_NAME}: "
+                f"{_INTERNAL_HEADER_EXPECTED} header required for "
+                "control-plane routes"
+            ),
+        )
+    bearer_key = credentials.credentials if credentials is not None else None
+    return _verify_api_key_values(bearer_key, request.headers.get("x-api-key"))

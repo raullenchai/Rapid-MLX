@@ -411,11 +411,29 @@ class MLLMScheduler:
             request_id: The request ID to abort
 
         Returns:
-            True (abort is always enqueued)
+            True when an active/queued request was enqueued for abort, False
+            when ``request_id`` is unknown to this scheduler. F-151
+            hardening: previously this method returned True unconditionally,
+            so the route layer would respond ``{"cancelled": true}`` for any
+            attacker-supplied string. The route uses the False return as the
+            404 signal.
         """
-        self._pending_abort_ids.add(request_id)
-        logger.debug(f"Enqueued abort for request {request_id}")
-        return True
+        # Match the text scheduler's notion of "known": currently admitted
+        # (``requests``), in a live batch (``request_id_to_uid``), currently
+        # running, or already pending abort (idempotent double-cancel). We
+        # do NOT count ``finished_req_ids`` — the route contract is
+        # "404 when already finished".
+        if (
+            request_id in self.requests
+            or request_id in self.request_id_to_uid
+            or request_id in self.running
+            or request_id in self._pending_abort_ids
+        ):
+            self._pending_abort_ids.add(request_id)
+            logger.debug(f"Enqueued abort for request {request_id}")
+            return True
+        logger.debug("Rejected abort for unknown MLLM request_id")
+        return False
 
     def _process_pending_aborts(self) -> None:
         """Drain and execute pending abort requests.

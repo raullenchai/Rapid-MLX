@@ -1016,6 +1016,7 @@ from .routes.cache import router as _cache_router
 from .routes.chat import router as _chat_router
 from .routes.completions import router as _completions_router
 from .routes.embeddings import router as _embeddings_router
+from .routes.health import admin_router as _health_admin_router
 from .routes.health import probe_router as _probe_router
 from .routes.health import router as _health_router
 from .routes.mcp_routes import router as _mcp_router
@@ -1025,6 +1026,9 @@ from .routes.responses import router as _responses_router
 
 app.include_router(_probe_router)
 app.include_router(_health_router)
+# Destructive control-plane routes (F-150 / F-151). Distinct router so the
+# ``X-Rapid-MLX-Internal: true`` gate ALSO applies when ``--api-key`` is unset.
+app.include_router(_health_admin_router)
 app.include_router(_metrics_router)
 app.include_router(_models_router)
 app.include_router(_chat_router)

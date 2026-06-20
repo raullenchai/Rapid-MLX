@@ -59,12 +59,22 @@ def mock_registry():
 
 class TestHealthRoutes:
     def _make_app(self):
-        from vllm_mlx.routes.health import probe_router, router
+        from vllm_mlx.routes.health import admin_router, probe_router, router
 
         app = FastAPI()
         app.include_router(probe_router)
         app.include_router(router)
+        # Destructive control-plane routes (F-150 / F-151) live on a separate
+        # router with the ``X-Rapid-MLX-Internal: true`` gate. Include it here
+        # so the existing test_cache_clear_* / test_health_router_accepts_*
+        # cases still resolve the route — they pass the internal header below.
+        app.include_router(admin_router)
         return app
+
+    # Convenience: every destructive route now needs ``X-Rapid-MLX-Internal:
+    # true`` to even reach the handler (F-150). Tests that care about the
+    # handler's behaviour — not the auth gate — pass this dict via ``headers=``.
+    _INTERNAL_HEADERS = {"X-Rapid-MLX-Internal": "true"}
 
     def _patch_config(self, **kwargs):
         """Patch config fields for testing."""
@@ -237,13 +247,18 @@ class TestHealthRoutes:
         this list — they live on a separate no-auth router so k8s/LB
         liveness checks work when --api-key is set. See
         test_probes_bypass_api_key.
+
+        Destructive routes (``/v1/cache/clear``, ``/v1/cache``) additionally
+        require ``X-Rapid-MLX-Internal: true`` per F-150 — we pass it here
+        so the assertion checks the API-key 401, not the F-150 403. The
+        header-only-403 path is exercised in ``test_internal_route_auth.py``.
         """
         orig = self._patch_config(api_key="test-secret", ready=True)
         try:
             app = self._make_app()
             client = TestClient(app)
 
-            r = getattr(client, method)(path)
+            r = getattr(client, method)(path, headers=self._INTERNAL_HEADERS)
 
             assert r.status_code == 401
             assert r.json()["detail"] == "API key required"
@@ -320,7 +335,12 @@ class TestHealthRoutes:
         ],
     )
     def test_health_router_accepts_valid_api_key(self, method, path, mock_engine):
-        """Valid Bearer token preserves access to protected management routes."""
+        """Valid Bearer token preserves access to protected management routes.
+
+        Destructive routes (``/v1/cache/clear``, ``/v1/cache`` DELETE) also
+        require ``X-Rapid-MLX-Internal: true`` per F-150 — pass it so the
+        success path resolves.
+        """
         orig = self._patch_config(
             api_key="test-secret",
             engine=mock_engine,
@@ -333,7 +353,11 @@ class TestHealthRoutes:
             client = TestClient(app)
 
             r = getattr(client, method)(
-                path, headers={"Authorization": "Bearer test-secret"}
+                path,
+                headers={
+                    "Authorization": "Bearer test-secret",
+                    **self._INTERNAL_HEADERS,
+                },
             )
 
             assert r.status_code != 401
@@ -456,7 +480,7 @@ class TestHealthRoutes:
         try:
             app = self._make_app()
             client = TestClient(app)
-            r = client.post("/v1/cache/clear")
+            r = client.post("/v1/cache/clear", headers=self._INTERNAL_HEADERS)
             assert r.status_code == 503
         finally:
             self._restore_config(orig)
@@ -468,7 +492,7 @@ class TestHealthRoutes:
         try:
             app = self._make_app()
             client = TestClient(app)
-            r = client.post("/v1/cache/clear")
+            r = client.post("/v1/cache/clear", headers=self._INTERNAL_HEADERS)
             assert r.status_code == 200
             assert "No prompt cache" in r.json()["message"]
         finally:
@@ -488,7 +512,7 @@ class TestHealthRoutes:
         """Cache delete endpoint works."""
         app = self._make_app()
         client = TestClient(app)
-        r = client.delete("/v1/cache")
+        r = client.delete("/v1/cache", headers=self._INTERNAL_HEADERS)
         assert r.status_code == 200
 
 
