@@ -698,9 +698,13 @@ class ChatCompletionRequest(BaseModel):
     # meant as ``n: 1``. Mirror the same rule on
     # ``CompletionRequest`` so the legacy completions surface is
     # consistent.
-    @field_validator("n")
+    @field_validator("n", mode="before")
     @classmethod
-    def _validate_n(cls, v: int | None) -> int | None:
+    def _validate_n(cls, v) -> int | None:
+        # ``mode="before"`` so Python's ``bool`` (an ``int`` subclass)
+        # is caught BEFORE Pydantic v2 coerces ``True`` → 1. Without
+        # this, ``n: true`` would silently coerce to ``n=1`` and the
+        # codex round-2 BLOCKING gap stays open.
         return _reject_non_one_n(v)
 
     # Belt-and-braces: catches non-finite values that bypass the
@@ -996,9 +1000,13 @@ class CompletionRequest(BaseModel):
     # F-155: enforce ``n == 1`` at parse time, mirroring the chat
     # surface. The route already 400's ``n > 1``; the schema layer
     # now also rejects ``n=0`` / ``n=-1`` (silent-200 pre-fix).
-    @field_validator("n")
+    @field_validator("n", mode="before")
     @classmethod
-    def _validate_n(cls, v: int | None) -> int | None:
+    def _validate_n(cls, v) -> int | None:
+        # ``mode="before"`` so Python's ``bool`` (an ``int`` subclass)
+        # is caught BEFORE Pydantic v2 coerces ``True`` → 1. Without
+        # this, ``n: true`` would silently coerce to ``n=1`` and the
+        # codex round-2 BLOCKING gap stays open.
         return _reject_non_one_n(v)
 
     @model_validator(mode="before")

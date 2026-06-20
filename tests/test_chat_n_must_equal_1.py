@@ -79,6 +79,19 @@ class TestChatCompletionRequestN:
         req = ChatCompletionRequest.model_validate(self._base())
         assert req.n is None
 
+    @pytest.mark.parametrize("bool_v", [True, False])
+    def test_bool_n_rejected_through_pydantic(self, bool_v):
+        """Codex round-2 BLOCKING: ``bool`` is an ``int`` subclass
+        and Pydantic v2 coerces ``True`` → 1 / ``False`` → 0 BEFORE
+        an after-mode validator runs — so a JSON ``"n": true`` wire
+        form silently passed as ``n=1`` even though the helper-level
+        ``_reject_non_one_n`` rejects booleans. Wire as
+        ``mode="before"`` so the bool check fires on the raw value.
+        """
+        with pytest.raises(ValidationError) as ei:
+            ChatCompletionRequest.model_validate(self._base(n=bool_v))
+        assert "bool" in str(ei.value).lower() or "must equal 1" in str(ei.value)
+
 
 class TestCompletionRequestN:
     """Mirror surface on the legacy completions schema —
@@ -106,3 +119,12 @@ class TestCompletionRequestN:
     def test_valid_n_accepted(self, n):
         req = CompletionRequest.model_validate(self._base(n=n))
         assert req.n == n
+
+    @pytest.mark.parametrize("bool_v", [True, False])
+    def test_bool_n_rejected_through_pydantic(self, bool_v):
+        """Mirror surface: bool wire form must also fail at parse
+        time on the legacy completions schema, same codex round-2
+        rationale as on the chat surface."""
+        with pytest.raises(ValidationError) as ei:
+            CompletionRequest.model_validate(self._base(n=bool_v))
+        assert "bool" in str(ei.value).lower() or "must equal 1" in str(ei.value)

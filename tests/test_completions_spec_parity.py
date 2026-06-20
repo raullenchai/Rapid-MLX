@@ -312,9 +312,7 @@ class TestEchoLogprobsCombination:
     silently corrupt prompt-conditioned scores in lm-eval-harness).
     Reject with 400 until we wire prompt-prefill-with-logprobs."""
 
-    def test_echo_with_logprobs_rejected_with_400(
-        self, patched_config, monkeypatch
-    ):
+    def test_echo_with_logprobs_rejected_with_400(self, patched_config, monkeypatch):
         client, _ = _build_completions_app(patched_config, monkeypatch)
         r = client.post(
             "/v1/completions",
@@ -331,9 +329,7 @@ class TestEchoLogprobsCombination:
         )
         assert "echo" in detail.lower() and "logprobs" in detail.lower()
 
-    def test_echo_with_logprobs_zero_still_rejected(
-        self, patched_config, monkeypatch
-    ):
+    def test_echo_with_logprobs_zero_still_rejected(self, patched_config, monkeypatch):
         """``logprobs:0`` is still a logprobs request — must reject too."""
         client, _ = _build_completions_app(patched_config, monkeypatch)
         r = client.post(
@@ -423,9 +419,7 @@ class TestLogprobsResponseShape:
         e.tokenizer = _Tokenizer()
         return e
 
-    def test_logprobs_five_returns_four_arrays(
-        self, patched_config, monkeypatch
-    ):
+    def test_logprobs_five_returns_four_arrays(self, patched_config, monkeypatch):
         client, _ = _build_completions_app(
             patched_config,
             monkeypatch,
@@ -457,9 +451,7 @@ class TestLogprobsResponseShape:
         # synthetic vocab of size 5 in the fixture).
         assert all(len(d) == 5 for d in lp["top_logprobs"])
 
-    def test_logprobs_zero_returns_empty_top_dicts(
-        self, patched_config, monkeypatch
-    ):
+    def test_logprobs_zero_returns_empty_top_dicts(self, patched_config, monkeypatch):
         client, _ = _build_completions_app(
             patched_config,
             monkeypatch,
@@ -518,9 +510,7 @@ class TestLogprobsEngineCapability:
         )
         assert "logprobs" in detail.lower()
 
-    def test_engine_without_tokenizer_returns_501(
-        self, patched_config, monkeypatch
-    ):
+    def test_engine_without_tokenizer_returns_501(self, patched_config, monkeypatch):
         def _factory():
             e = MagicMock()
             e.tokenizer = None
