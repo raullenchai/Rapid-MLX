@@ -750,20 +750,41 @@ def _validate_response_format(response_format) -> None:
         )
 
     if rf_type == "json_schema":
-        # Treat None AND empty dict the same — both fail the "non-empty
-        # json_schema spec" contract. The raw-leak path was specifically
-        # ``json_schema=None`` (omitted entirely); the silent-200 path
-        # was ``json_schema={}`` (present but empty so
-        # ``json_schema_spec.get("schema", {})`` returned ``{}`` and
-        # ``extract_json_schema_for_guided`` then bailed out at the
-        # ``if not schema: return None`` guard — request proceeded with
-        # no constraint).
+        # Treat None / empty dict / missing-``schema``-member all the
+        # same — each fails the "non-empty json_schema spec" contract.
+        # The raw-leak path was specifically ``json_schema=None``
+        # (omitted entirely); the silent-200 path was either
+        # ``json_schema={}`` or ``json_schema={"name":"r"}`` (present
+        # but with no ``schema`` member — codex r1 BLOCKING) because
+        # ``extract_json_schema_for_guided`` then bails out at
+        # ``if not schema: return None`` and the request proceeds
+        # unconstrained. The Pydantic-typed ``ResponseFormatJsonSchema``
+        # branch declares ``schema_`` as a required field so the typed
+        # path already rejects this shape — the explicit check here
+        # closes the raw-dict arm (the ``ResponseFormat | dict`` union
+        # on the request field).
         if not json_schema_field:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "response_format.type='json_schema' requires "
                     "non-empty 'json_schema' field"
+                ),
+            )
+        # Extract the inner ``schema`` member through both shapes:
+        # raw dict (json_schema_field is a dict) and Pydantic
+        # ``ResponseFormatJsonSchema`` (the field is aliased to
+        # ``schema_`` to dodge the BaseModel.schema collision).
+        if isinstance(json_schema_field, dict):
+            inner_schema = json_schema_field.get("schema")
+        else:
+            inner_schema = getattr(json_schema_field, "schema_", None)
+        if not inner_schema:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "response_format.type='json_schema' requires "
+                    "'json_schema.schema' to be a non-empty object"
                 ),
             )
 

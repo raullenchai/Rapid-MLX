@@ -61,6 +61,38 @@ class TestResponseFormatValidation:
         assert "json_schema" in ei.value.detail
         assert "non-empty" in ei.value.detail
 
+    def test_json_schema_type_with_name_but_no_schema_raises_400(self):
+        """Codex r1 BLOCKING follow-up: ``{"type":"json_schema",
+        "json_schema":{"name":"r"}}`` has a non-empty outer dict but no
+        inner ``schema`` member, so the prior round of the gate let it
+        through and ``extract_json_schema_for_guided`` still bailed at
+        ``if not schema: return None`` — request proceeded with no
+        constraint. Now → 400 naming the missing inner member."""
+        from vllm_mlx.service.helpers import _validate_response_format
+
+        with pytest.raises(HTTPException) as ei:
+            _validate_response_format(
+                {"type": "json_schema", "json_schema": {"name": "r"}}
+            )
+        assert ei.value.status_code == 400
+        assert "json_schema.schema" in ei.value.detail
+        assert "non-empty" in ei.value.detail
+
+    def test_json_schema_type_with_empty_schema_member_raises_400(self):
+        """Same shape as above but with ``schema:{}`` — an empty inner
+        schema is functionally equivalent to no schema at all."""
+        from vllm_mlx.service.helpers import _validate_response_format
+
+        with pytest.raises(HTTPException) as ei:
+            _validate_response_format(
+                {
+                    "type": "json_schema",
+                    "json_schema": {"name": "r", "schema": {}},
+                }
+            )
+        assert ei.value.status_code == 400
+        assert "json_schema.schema" in ei.value.detail
+
     def test_json_schema_type_with_empty_dict_field_raises_400(self):
         """``response_format={"type":"json_schema","json_schema":{}}``
         used to be silently accepted as HTTP 200 — the empty schema dict
