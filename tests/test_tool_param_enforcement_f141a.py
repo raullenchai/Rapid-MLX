@@ -1,0 +1,265 @@
+# SPDX-License-Identifier: Apache-2.0
+"""F-141a: extend tool-arg validator with ``pattern`` / ``format`` /
+``multipleOf`` / ``uniqueItems``.
+
+PR #736 (F-141 scoped) enforced ``enum`` / ``type`` / ``minimum`` /
+``maximum`` / ``minLength`` / ``maxLength`` by raising
+``HTTPException(400)`` on violation. ``pattern``, ``format``,
+``multipleOf`` and ``uniqueItems`` were deferred. F-141a closes that
+gap — these constraints now also escalate to a 400 with the same
+canonical "violates declared schema" envelope.
+
+Format scope (operator note): ``email`` / ``uri`` / ``uuid`` /
+``date`` / ``date-time``. Unknown ``format`` values pass through
+(advisory) to stay loose for real-world schemas.
+
+Pattern semantics: ``re.fullmatch``, not ``re.match`` — partial
+matches do not count.
+
+multipleOf: integer arithmetic for int values; ``math.isclose`` for
+float values so a 0.1-vs-0.3 float-drift case doesn't 400.
+
+uniqueItems: structural equality via JSON-canonical serialisation.
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi import HTTPException
+
+from vllm_mlx.api.models import FunctionCall, ToolCall
+
+
+def _tool(name: str, properties: dict) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "parameters": {"type": "object", "properties": properties},
+        },
+    }
+
+
+def _call(name: str, arguments: str) -> ToolCall:
+    return ToolCall(
+        id="call_abc",
+        type="function",
+        function=FunctionCall(name=name, arguments=arguments),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pattern enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestPatternEnforcement:
+    """``pattern`` (regex) — ``re.fullmatch`` per operator note."""
+
+    def test_pattern_violation_raises_400(self):
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [
+            _tool(
+                "book",
+                {"date": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$"}},
+            )
+        ]
+        with pytest.raises(HTTPException) as exc:
+            _validate_tool_call_params([_call("book", '{"date": "tomorrow"}')], tools)
+        assert exc.value.status_code == 400
+        assert "does not match pattern" in exc.value.detail
+
+    def test_pattern_partial_match_is_rejected(self):
+        """``re.fullmatch``, not ``re.match`` — ``"2024-01-01x"`` must
+        still 400 even though the prefix matches the regex."""
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [
+            _tool(
+                "book",
+                {"date": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$"}},
+            )
+        ]
+        with pytest.raises(HTTPException):
+            _validate_tool_call_params(
+                [_call("book", '{"date": "2024-01-01x"}')], tools
+            )
+
+    def test_pattern_valid_passes(self):
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [
+            _tool(
+                "book",
+                {"date": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$"}},
+            )
+        ]
+        _validate_tool_call_params([_call("book", '{"date": "2024-12-31"}')], tools)
+
+    def test_bogus_regex_in_schema_does_not_raise(self):
+        """If the *schema* ships an invalid regex (``[unclosed``), the
+        bug is the schema author's, not the model's. Fall back to
+        advisory pass-through rather than 400-ing on every call."""
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("f", {"x": {"type": "string", "pattern": "[unclosed"}})]
+        _validate_tool_call_params([_call("f", '{"x": "anything"}')], tools)
+
+
+# ---------------------------------------------------------------------------
+# Format enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestFormatEnforcement:
+    """``format`` — narrow allow-list per operator scope."""
+
+    @pytest.mark.parametrize(
+        "fmt, bad, good",
+        [
+            ("email", "notanemail", "user@example.com"),
+            ("uri", "no scheme here", "https://example.com/path"),
+            (
+                "uuid",
+                "not-a-uuid",
+                "550e8400-e29b-41d4-a716-446655440000",
+            ),
+            ("date", "tomorrow", "2024-01-15"),
+            ("date-time", "2024-01-15", "2024-01-15T10:30:00Z"),
+        ],
+    )
+    def test_format_enforced(self, fmt: str, bad: str, good: str):
+        """Each scoped format rejects the obvious bad value and
+        accepts the canonical good value."""
+        import json as _json
+
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("f", {"x": {"type": "string", "format": fmt}})]
+
+        with pytest.raises(HTTPException) as exc:
+            _validate_tool_call_params([_call("f", _json.dumps({"x": bad}))], tools)
+        assert exc.value.status_code == 400
+        assert f"not a valid {fmt}" in exc.value.detail
+
+        # Good value must NOT raise.
+        _validate_tool_call_params([_call("f", _json.dumps({"x": good}))], tools)
+
+    def test_unknown_format_passes_through(self):
+        """Operator scope: unknown ``format`` values stay loose (200)
+        rather than 400-ing on every bespoke format hint in the wild."""
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("f", {"x": {"type": "string", "format": "my-custom-format"}})]
+        _validate_tool_call_params([_call("f", '{"x": "anything"}')], tools)
+
+
+# ---------------------------------------------------------------------------
+# multipleOf enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestMultipleOfEnforcement:
+    """``multipleOf`` — integer / float."""
+
+    def test_int_multiple_of_violation_raises_400(self):
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("step", {"n": {"type": "integer", "multipleOf": 3}})]
+        with pytest.raises(HTTPException) as exc:
+            _validate_tool_call_params([_call("step", '{"n": 7}')], tools)
+        assert exc.value.status_code == 400
+        assert "not a multiple of 3" in exc.value.detail
+
+    def test_int_multiple_of_pass(self):
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("step", {"n": {"type": "integer", "multipleOf": 3}})]
+        _validate_tool_call_params([_call("step", '{"n": 9}')], tools)
+
+    def test_float_multiple_of_with_isclose_drift_pass(self):
+        """0.3 = 3 * 0.1 in math, but ``0.3 % 0.1 == 0.09999...`` in
+        float. Operator note: use ``math.isclose`` so this case passes."""
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("f", {"x": {"type": "number", "multipleOf": 0.1}})]
+        _validate_tool_call_params([_call("f", '{"x": 0.3}')], tools)
+
+    def test_float_multiple_of_violation_raises(self):
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("f", {"x": {"type": "number", "multipleOf": 0.5}})]
+        with pytest.raises(HTTPException):
+            _validate_tool_call_params([_call("f", '{"x": 0.7}')], tools)
+
+    def test_zero_multiple_of_treated_as_advisory(self):
+        """``multipleOf: 0`` is invalid per JSON-schema. Bogus schema,
+        fall back to advisory rather than 400-ing every call."""
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("f", {"x": {"type": "integer", "multipleOf": 0}})]
+        _validate_tool_call_params([_call("f", '{"x": 5}')], tools)
+
+
+# ---------------------------------------------------------------------------
+# uniqueItems enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestUniqueItemsEnforcement:
+    """``uniqueItems`` — array dedup."""
+
+    def test_duplicate_strings_raises_400(self):
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [
+            _tool(
+                "tags",
+                {"items": {"type": "array", "uniqueItems": True}},
+            )
+        ]
+        with pytest.raises(HTTPException) as exc:
+            _validate_tool_call_params(
+                [_call("tags", '{"items": ["a", "b", "a"]}')], tools
+            )
+        assert exc.value.status_code == 400
+        assert "uniqueItems" in exc.value.detail
+
+    def test_unique_strings_pass(self):
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [
+            _tool(
+                "tags",
+                {"items": {"type": "array", "uniqueItems": True}},
+            )
+        ]
+        _validate_tool_call_params([_call("tags", '{"items": ["a", "b", "c"]}')], tools)
+
+    def test_structurally_equal_dicts_count_as_duplicate(self):
+        """JSON-schema uniqueItems uses structural equality, not Python
+        identity. ``{"a": 1}`` and ``{"a": 1}`` are duplicates."""
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [
+            _tool(
+                "things",
+                {"items": {"type": "array", "uniqueItems": True}},
+            )
+        ]
+        with pytest.raises(HTTPException):
+            _validate_tool_call_params(
+                [_call("things", '{"items": [{"a": 1}, {"a": 1}]}')], tools
+            )
+
+    def test_unique_items_false_skips_check(self):
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [
+            _tool(
+                "tags",
+                {"items": {"type": "array", "uniqueItems": False}},
+            )
+        ]
+        _validate_tool_call_params([_call("tags", '{"items": ["a", "a"]}')], tools)

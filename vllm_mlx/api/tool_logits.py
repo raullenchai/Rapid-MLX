@@ -17,9 +17,13 @@ Usage:
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
+import math
 import re
+import uuid
+from collections.abc import Callable
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
@@ -569,9 +573,171 @@ def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
                     f"String length {len(parsed)} above maxLength {max_length}",
                 )
 
-    # TODO(F-141-followup): enforce pattern/format/multipleOf/uniqueItems.
-    # Deferred because regex/format implementations are non-trivial and
-    # the scoped fix targets the high-traffic constraints (enum/type/
-    # range/length). See TODO.md F-141 partial-fixed entry.
+    # F-141a: pattern / format / multipleOf / uniqueItems
+    #
+    # These were deferred from PR #736 (F-141 scoped). The follow-up
+    # set is intentionally narrow — only constraints with an
+    # unambiguous JSON-schema semantics. ``required``, ``oneOf``,
+    # ``anyOf``, ``additionalProperties`` are still deferred (compound
+    # semantics, multiple violation classes per call, schema-traversal
+    # rework).
+
+    # pattern — regex match (``re.fullmatch`` per operator note,
+    # NOT ``re.match`` which only anchors the start). Only string
+    # parsed values are checked; non-string parsed values fall
+    # through (the upstream ``type`` branch already rejected those
+    # when ``type:"string"`` was declared).
+    if isinstance(parsed, str):
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str) and pattern:
+            try:
+                if re.fullmatch(pattern, parsed) is None:
+                    return (
+                        False,
+                        f"String {parsed!r} does not match pattern {pattern!r}",
+                    )
+            except re.error:
+                # Bogus regex in the *schema* — fall back to advisory
+                # (the schema author is at fault, not the model).
+                pass
+
+    # format — best-effort, narrow allow-list. Unknown formats
+    # intentionally pass through as advisory (operator note:
+    # "reject unknown formats as 200 OK passthrough rather than
+    # 400, to stay loose"). Only string parsed values are checked.
+    if isinstance(parsed, str):
+        fmt = schema.get("format")
+        if isinstance(fmt, str) and fmt in _FORMAT_VALIDATORS:
+            if not _FORMAT_VALIDATORS[fmt](parsed):
+                return (
+                    False,
+                    f"String {parsed!r} is not a valid {fmt}",
+                )
+
+    # multipleOf — integer / float. ``value % multipleOf == 0`` for
+    # integers; ``math.isclose`` for floats (operator note) so a
+    # 0.1 + 0.2 == 0.3 float-drift case doesn't 400.
+    if isinstance(parsed, (int, float)) and not isinstance(parsed, bool):
+        multiple_of = schema.get("multipleOf")
+        if isinstance(multiple_of, (int, float)) and not isinstance(multiple_of, bool):
+            if multiple_of <= 0:
+                # JSON-schema requires multipleOf > 0; bogus schema,
+                # treat as advisory rather than 400.
+                pass
+            elif isinstance(parsed, int) and isinstance(multiple_of, int):
+                if parsed % multiple_of != 0:
+                    return (
+                        False,
+                        f"Value {parsed} is not a multiple of {multiple_of}",
+                    )
+            else:
+                # Float arithmetic — use ``math.isclose`` on the
+                # remainder. ``abs(parsed / multiple_of -
+                # round(parsed / multiple_of))`` is the canonical
+                # "distance to nearest multiple" measure.
+                quotient = parsed / multiple_of
+                if not math.isclose(quotient, round(quotient), abs_tol=1e-9):
+                    return (
+                        False,
+                        f"Value {parsed} is not a multiple of {multiple_of}",
+                    )
+
+    # uniqueItems — for arrays. Items must be hashable for ``set()``
+    # to work; nested dicts / lists are skipped (the JSON-schema spec
+    # uses structural equality, which Python doesn't give us for free
+    # on lists/dicts without a deep-equal pass). We use a JSON-canonical
+    # serialisation per item so structurally equal dicts compare equal.
+    if isinstance(parsed, list) and schema.get("uniqueItems") is True:
+        try:
+            canonical = [
+                json.dumps(item, sort_keys=True, ensure_ascii=False) for item in parsed
+            ]
+        except TypeError:
+            # Non-JSON-serialisable item somehow leaked in (parsed came
+            # from ``json.loads``, so this is unreachable in practice
+            # but defensive). Skip the uniqueness check.
+            canonical = None
+        if canonical is not None and len(set(canonical)) != len(canonical):
+            return False, f"Array {parsed!r} has duplicate items (uniqueItems)"
 
     return True, None
+
+
+# ---------------------------------------------------------------------
+# F-141a — narrow ``format`` validators.
+#
+# Per operator scope: ``email`` / ``uri`` / ``uuid`` / ``date`` /
+# ``date-time``. Unknown ``format`` values pass through (advisory) so
+# we stay loose for real-world schemas that ship bespoke format hints.
+# ---------------------------------------------------------------------
+
+
+def _is_email(value: str) -> bool:
+    # RFC 5321 / 5322 compliance is impossible without a real parser.
+    # Use a defensive regex: one ``@``, non-empty local part, non-empty
+    # domain part with at least one dot, no whitespace, no control
+    # chars. Mirrors what the openapi-style "loose email" check does.
+    if not value or len(value) > 254:
+        return False
+    if any(c.isspace() or ord(c) < 0x20 for c in value):
+        return False
+    return bool(_EMAIL_RE.fullmatch(value))
+
+
+def _is_uri(value: str) -> bool:
+    # Loose URI shape: ``scheme:rest`` with a non-empty scheme that
+    # starts with a letter and only contains letters / digits / ``+`` /
+    # ``-`` / ``.`` (RFC 3986 §3.1 scheme grammar). Doesn't validate
+    # the path / query — schema-level guards are best-effort.
+    if not value or any(c.isspace() for c in value):
+        return False
+    return bool(_URI_RE.match(value))
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        # ``UUID(str)`` accepts hyphenated 8-4-4-4-12, urn:uuid:..., and
+        # raw 32-char hex. JSON-schema's ``format: uuid`` is canonically
+        # the hyphenated form, so verify after a normalising round-trip.
+        u = uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return str(u) == value.lower().removeprefix("urn:uuid:")
+
+
+def _is_date(value: str) -> bool:
+    # JSON-schema ``date`` = RFC 3339 ``full-date`` = ``YYYY-MM-DD``.
+    try:
+        datetime.date.fromisoformat(value)
+    except (ValueError, TypeError):
+        return False
+    # ``fromisoformat`` accepts e.g. ``2024-01-01T00:00:00`` on Python
+    # 3.11+; reject anything carrying a time component.
+    return len(value) == 10 and value[4] == "-" and value[7] == "-"
+
+
+def _is_date_time(value: str) -> bool:
+    # JSON-schema ``date-time`` = RFC 3339 ``date-time``. ``Z`` is the
+    # UTC shorthand; ``datetime.fromisoformat`` doesn't accept it on
+    # pre-3.11 Pythons, so swap it for ``+00:00`` first.
+    candidate = value.replace("Z", "+00:00") if value.endswith("Z") else value
+    try:
+        datetime.datetime.fromisoformat(candidate)
+    except (ValueError, TypeError):
+        return False
+    # RFC 3339 requires the ``T`` separator (or a space, per the
+    # spec's relaxation note) between date and time. ``fromisoformat``
+    # accepts a bare ``YYYY-MM-DD`` on 3.11+, which is the wrong
+    # format — date, not date-time. Require ``T`` or space.
+    return "T" in value or " " in value
+
+
+_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+_URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+\-.]*:")
+_FORMAT_VALIDATORS: dict[str, Callable[[str], bool]] = {
+    "email": _is_email,
+    "uri": _is_uri,
+    "uuid": _is_uuid,
+    "date": _is_date,
+    "date-time": _is_date_time,
+}
