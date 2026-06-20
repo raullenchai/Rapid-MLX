@@ -417,12 +417,20 @@ class StreamingPostProcessor:
     # raw rather than swallow the entire stream on a runaway preamble.
 
     # Max bytes to accumulate while scanning for the JSON start. Past
-    # this point the model clearly is NOT emitting an opening fence, so
-    # release the buffer rather than swallow arbitrary content. Sized
-    # generously vs. realistic fence variants (``\n\n```json\n``,
-    # ``Sure! Here:\n```json\n``); large preambles already lose to the
-    # ``_json_preamble_buffer`` path on the no-reasoning branch.
+    # this point the buffer is trimmed to the last
+    # ``_JSON_FENCE_SCAN_KEEP_SUFFIX`` bytes — JUST enough to detect
+    # an opening fence split across the trim boundary — while older
+    # preamble bytes are dropped from the buffer. We never RELEASE the
+    # preamble onto the wire (codex r3 BLOCKING: doing so would leak
+    # the wrapper that the non-stream path strips); we just stop
+    # holding the entire history in memory.
     _JSON_FENCE_SCAN_CAP = 4096
+    # When the scan cap is hit, retain this many trailing bytes so
+    # a split ``...\\n``` `` opening fence can still be detected on
+    # the next chunk. ``"```json\n"`` is 8 bytes; 32 gives slack for
+    # rare opener variants like ``` ```json   \n ``` and is still
+    # negligible vs. the dropped 4KB.
+    _JSON_FENCE_SCAN_KEEP_SUFFIX = 32
 
     def _apply_json_fence_strip(self, content: str) -> str:
         """Strip ```json...``` markdown fence from streaming content.
@@ -457,13 +465,18 @@ class StreamingPostProcessor:
             # is handled identically to the existing preamble path.
             json_start = _find_json_start(buf)
             if json_start < 0:
-                # No JSON delimiter yet. If the buffer grew past the cap,
-                # we're clearly NOT in a fence scenario — release the
-                # buffer raw rather than swallow the entire stream.
+                # No JSON delimiter yet. If the buffer grew past the
+                # cap, drop the OLD bytes — but keep enough of the
+                # suffix to catch a fence-opener split across the
+                # boundary. Codex r3 BLOCKING: the earlier draft
+                # RELEASED the entire >4KB buffer raw, which leaked
+                # the preamble + opening fence onto the wire (the
+                # opposite of what response_format=json_* requires).
+                # The contract for json_mode is "suppress everything
+                # before the first ``{``/``[``", and that contract
+                # must hold regardless of preamble length.
                 if len(buf) > self._JSON_FENCE_SCAN_CAP:
-                    self._json_fence_state = "inside"
-                    self._json_fence_buffer = ""
-                    return self._guard_closing_fence(buf)
+                    self._json_fence_buffer = buf[-self._JSON_FENCE_SCAN_KEEP_SUFFIX :]
                 return ""
             # Found the JSON start. Strip everything before it (preamble
             # + opening fence). Symmetric with the non-stream

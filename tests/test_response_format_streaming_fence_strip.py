@@ -257,6 +257,26 @@ class TestJsonObjectFenceStripping:
         joined = _stream_chunks(pp, ['```json\n{"k": 1}\n```\n\n'])
         assert json.loads(joined) == {"k": 1}
 
+    def test_long_preamble_past_scan_cap_does_not_leak(self):
+        """Codex r3 BLOCKING: when the model emits >4KB of preamble
+        before the opening fence, the scan-cap fallback must NOT
+        release the preamble onto the wire. The contract for
+        json_mode is "suppress everything before the first
+        ``{``/``[``" regardless of preamble length — the cap is
+        about MEMORY (don't hold 100MB of history), not about
+        contract relaxation."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        # 8KB of preamble (twice the scan cap), then the canonical
+        # fenced JSON.
+        preamble = "Let me think about this carefully. " * 250  # ~8.75 KB
+        chunks = [preamble, '```json\n{"answer": 42}\n```']
+        joined = _stream_chunks(pp, chunks)
+        # No preamble bytes, no fence — just the bare JSON.
+        assert joined == '{"answer": 42}'
+        assert "Let me think" not in joined
+
     def test_triple_backticks_inside_json_string_preserved(self):
         """Codex r1 BLOCKING: a JSON STRING VALUE containing literal
         triple-backticks must NOT be truncated by the closing-fence
