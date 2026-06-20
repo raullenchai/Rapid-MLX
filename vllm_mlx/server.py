@@ -53,8 +53,10 @@ from fastapi.middleware.cors import CORSMiddleware
 # importing the heavy engine stack.
 from .middleware.exception_handlers import (  # noqa: E402
     _decode_error_response,  # noqa: F401 — re-exported for back-compat
-    _http_error_response as _http_exception_handler_impl,  # noqa: F401
     install_exception_handlers,  # noqa: F401 — re-exported for tests
+)
+from .middleware.exception_handlers import (
+    _http_error_response as _http_exception_handler_impl,  # noqa: F401
 )
 
 
@@ -65,6 +67,7 @@ from .middleware.exception_handlers import (  # noqa: E402
 # keep this signature stable so the existing test suites keep working.
 async def _http_exception_handler(request, exc):  # noqa: ARG001
     return _http_exception_handler_impl(exc)
+
 
 # Re-export for backwards compatibility with tests
 from .api.anthropic_adapter import (  # noqa: F401
@@ -513,7 +516,6 @@ from .middleware.auth import (  # noqa: E402
 from .middleware.auth import (
     rate_limiter as _rate_limiter,  # noqa: F401 — configured in main()
 )
-
 
 # ── Wire the unified exception handlers onto the production app ─────
 #

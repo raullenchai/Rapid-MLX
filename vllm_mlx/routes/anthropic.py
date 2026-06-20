@@ -499,8 +499,10 @@ async def count_anthropic_tokens(request: Request):
     # loaded engine just like in ``create_anthropic_message`` above
     # (PR #557 contract).
     requested_model = body.get("model")
-    if isinstance(requested_model, str) and requested_model and not requested_model.startswith(
-        ("claude-", "gpt-")
+    if (
+        isinstance(requested_model, str)
+        and requested_model
+        and not requested_model.startswith(("claude-", "gpt-"))
     ):
         _validate_model_name(requested_model)
 
