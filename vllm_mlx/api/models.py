@@ -64,6 +64,36 @@ from pydantic import (
 # drift away from the other.
 
 
+def _reject_non_one_n(v: int | None) -> int | None:
+    """Reject ``n`` values other than ``1`` (or omitted ``None``) on
+    chat/completion requests (F-155).
+
+    Rapid-MLX only generates one completion per request. Pre-fix the
+    route layer enforced ``n > 1`` → 400 but silently accepted
+    ``n == 0`` and ``n == -1`` (HTTP 200 with one choice). Both
+    forms are almost always client-side bugs — ``n=0`` is a typo for
+    ``n=1`` and ``n=-1`` is a serialization mistake (e.g. SDK
+    sentinel for "use server default"). Accepting them as 200 hid
+    the bug; rejecting at parse time surfaces it to the client with
+    the same error shape as ``n > 1``.
+
+    Returns ``None`` unchanged so the field's optional contract
+    is preserved (no value still means "1 choice"). Booleans are
+    rejected explicitly because Python's ``bool`` is an ``int``
+    subclass and Pydantic would otherwise coerce ``True`` → 1 and
+    ``False`` → 0 silently.
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        raise ValueError("n must be an integer equal to 1 (not bool)")
+    if v != 1:
+        raise ValueError(
+            "n must equal 1 (multi-choice is not supported; omit the field or pass n=1)"
+        )
+    return v
+
+
 def _reject_nonfinite_float(v: float | None) -> float | None:
     """Reject NaN / ±inf on a sampling-parameter float field.
 
@@ -628,7 +658,12 @@ class ChatCompletionRequest(BaseModel):
     # think before answering. Distinct from ``max_tokens`` (which caps the
     # overall completion length). ``None`` = no cap, model decides.
     reasoning_max_tokens: int | None = None
-    # Number of completions (only n=1 supported)
+    # Number of completions (only n=1 supported). F-155: the route used
+    # to reject ``n > 1`` only, so ``n=0`` / ``n=-1`` slipped through
+    # and HTTP 200'd with a single choice — asymmetric with the
+    # ``n > 1`` 400. The ``_validate_n`` field_validator below pins
+    # the contract: omitted (``None``) or ``1`` is the only legal
+    # surface; anything else (negative, zero, or > 1) → 422.
     n: int | None = None
 
     # F-011: NaN/inf scrub on the raw dict, BEFORE Pydantic coerces a
@@ -655,6 +690,18 @@ class ChatCompletionRequest(BaseModel):
     @classmethod
     def _validate_response_format(cls, v):
         return _validate_response_format_raw(v)
+
+    # F-155: enforce ``n == 1`` at parse time. The route already
+    # rejected ``n > 1`` (#733), but ``n=0`` and ``n=-1`` slipped
+    # through as HTTP 200 with one choice — asymmetric with the
+    # ``> 1`` 400, and indistinguishable from a typo'd ``n: 0``
+    # meant as ``n: 1``. Mirror the same rule on
+    # ``CompletionRequest`` so the legacy completions surface is
+    # consistent.
+    @field_validator("n")
+    @classmethod
+    def _validate_n(cls, v: int | None) -> int | None:
+        return _reject_non_one_n(v)
 
     # Belt-and-braces: catches non-finite values that bypass the
     # raw-dict path (e.g. ``ChatCompletionRequest(temperature=nan)``
@@ -945,6 +992,14 @@ class CompletionRequest(BaseModel):
     @classmethod
     def _reject_nonfinite_sampling(cls, v: float | None) -> float | None:
         return _reject_nonfinite_float(v)
+
+    # F-155: enforce ``n == 1`` at parse time, mirroring the chat
+    # surface. The route already 400's ``n > 1``; the schema layer
+    # now also rejects ``n=0`` / ``n=-1`` (silent-200 pre-fix).
+    @field_validator("n")
+    @classmethod
+    def _validate_n(cls, v: int | None) -> int | None:
+        return _reject_non_one_n(v)
 
     @model_validator(mode="before")
     @classmethod
