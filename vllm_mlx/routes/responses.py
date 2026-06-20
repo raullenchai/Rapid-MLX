@@ -165,7 +165,16 @@ async def create_response(request: Request):
                 cfg_for_log.model_name,
             )
 
-        openai_request = responses_to_openai(responses_request)
+        # F-034 (and any future ``ChatCompletionRequest``-layer validator):
+        # the adapter materializes a fresh ``ChatCompletionRequest`` from
+        # the Responses body, which now rejects unsatisfiable combinations
+        # (e.g. ``tool_choice="required"`` with no ``tools``). Surface as
+        # 400 with the validator's message instead of letting Pydantic
+        # crash the route into a 500.
+        try:
+            openai_request = responses_to_openai(responses_request)
+        except ValidationError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         # Context-length pre-check — same DoS gate the chat/completions/
         # anthropic routes enforce. Runs BEFORE the stream branch so

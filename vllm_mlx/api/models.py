@@ -755,6 +755,28 @@ class ChatCompletionRequest(BaseModel):
                 }
         return self
 
+    # F-034: ``tool_choice="required"`` with no ``tools`` array (or with
+    # an explicit ``tools: []``) is a malformed request per the OpenAI
+    # spec — "required" means the model MUST emit a tool_call, which is
+    # impossible to satisfy when the tools surface is empty. Without this
+    # gate the request silently degrades to a plain chat completion (200),
+    # masking a client bug. Fires AFTER ``_normalize_legacy_functions`` so
+    # a legacy ``functions=[...]`` payload that has already been promoted
+    # to ``tools`` is exempt. The ``{type:"function",function:{name:X}}``
+    # named-tool shape is intentionally NOT mirrored here — the chat-route
+    # validator (``vllm_mlx/routes/chat.py`` ~L748) already 400s on that
+    # case with a more informative error referencing the missing function
+    # name; duplicating that check at the schema layer would just produce
+    # a less-helpful message.
+    @model_validator(mode="after")
+    def _validate_tool_choice_against_tools(self) -> "ChatCompletionRequest":
+        if self.tool_choice == "required" and not self.tools:
+            raise ValueError(
+                "tool_choice='required' requires a non-empty 'tools' array; "
+                "got tools=None or tools=[]."
+            )
+        return self
+
 
 class AssistantMessage(BaseModel):
     """Response message from the assistant."""

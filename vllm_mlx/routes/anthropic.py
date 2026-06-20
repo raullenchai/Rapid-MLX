@@ -185,6 +185,15 @@ async def create_anthropic_message(
             openai_request = anthropic_to_openai(anthropic_request)
         except AnthropicOutputConfigError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except ValidationError as e:
+            # F-034 (and any future ``ChatCompletionRequest``-layer
+            # validator): the adapter constructs an OpenAI-shape request
+            # from the Anthropic body, and ``ChatCompletionRequest`` now
+            # rejects unsatisfiable combinations (e.g. ``tool_choice="required"``
+            # — Anthropic ``any`` — with no ``tools``). Surface as 400 with
+            # the validator's message instead of letting Pydantic crash
+            # the route into a 500.
+            raise HTTPException(status_code=400, detail=str(e))
 
         # Context-length pre-check — same DoS gate the chat/completions/
         # responses routes enforce. Render the prompt through the engine's

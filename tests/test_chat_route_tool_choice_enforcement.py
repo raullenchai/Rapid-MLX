@@ -333,6 +333,39 @@ def test_tool_choice_function_missing_name_with_no_tools_returns_400():
     assert resp.status_code == 400
 
 
+@pytest.mark.parametrize("tools_field", [None, []])
+def test_tool_choice_required_without_tools_returns_400(tools_field):
+    """F-034: ``tool_choice="required"`` with ``tools`` absent or empty
+    must surface as a 4xx error — the request is unsatisfiable, since
+    "required" guarantees a tool_call but there is no tool to call.
+    Pre-fix both cases silently 200'd as plain chat completions,
+    masking a client bug. The Pydantic ``ValueError`` raised in
+    ``ChatCompletionRequest._validate_tool_choice_against_tools``
+    surfaces as HTTP 400 via ``vllm_mlx.middleware.exception_handlers``
+    (Pydantic 422 → 400 OpenAI-shape envelope; same conversion the
+    F-011 reasoning_max_tokens / nonfinite-sampling validators rely on).
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    payload: dict[str, Any] = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tool_choice": "required",
+        "max_tokens": 32,
+    }
+    if tools_field is not None:
+        payload["tools"] = tools_field
+    resp = client.post("/v1/chat/completions", json=payload)
+    # Direct Pydantic ValidationError surfaces as 422 from raw FastAPI;
+    # the OpenAI-shape middleware in the real serve binary rewrites to
+    # 400. This test harness mounts only the chat router (no middleware),
+    # so accept either — the contract being pinned is "non-200 plus the
+    # 'tool_choice=required requires non-empty tools' string".
+    assert resp.status_code in (400, 422), resp.text
+    assert "tool_choice='required'" in resp.text
+    assert "non-empty 'tools'" in resp.text
+
+
 # ──────────────────────────────────────────────────────────────────
 # ``tool_choice="required"`` enforcement (#468)
 # ──────────────────────────────────────────────────────────────────

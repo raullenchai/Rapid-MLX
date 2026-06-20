@@ -355,7 +355,23 @@ class TestAnthropicToOpenai:
         assert result.tools[0].function["name"] == "search"
 
     def test_tool_choice_conversion(self):
-        req = self._make_request(tool_choice={"type": "any"})
+        # Anthropic ``tool_choice: any`` only makes sense alongside a
+        # non-empty ``tools`` array — pre-F-034 the test passed without
+        # tools, but ``ChatCompletionRequest`` now (correctly) rejects
+        # ``tool_choice="required"`` with no tools at the schema layer.
+        # Anthropic's own spec rejects ``any`` without tools, so feeding
+        # a tool here brings the unit fixture in line with the real wire
+        # contract.
+        req = self._make_request(
+            tools=[
+                AnthropicToolDef(
+                    name="search",
+                    description="Search",
+                    input_schema={"type": "object"},
+                )
+            ],
+            tool_choice={"type": "any"},
+        )
         result = anthropic_to_openai(req)
         assert result.tool_choice == "required"
 
