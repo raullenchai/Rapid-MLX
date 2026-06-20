@@ -875,6 +875,101 @@ class ChatCompletionRequest(BaseModel):
         # codex round-2 BLOCKING gap stays open.
         return _reject_non_one_n(v)
 
+    # H-16 (Pavel r3): mirror M-03 (PR #766) onto the OpenAI surface.
+    # The OpenAI spec accepts these ``tool_choice`` shapes:
+    #
+    #   * string: ``"none"`` / ``"auto"`` / ``"required"``
+    #   * object: ``{"type": "function", "function": {"name": "<X>"}}``
+    #
+    # Plus the deprecated bare-string ``"function"`` literal that
+    # some pre-2024 OpenAI SDKs still send to mean "force any
+    # function call" (codex r9 NIT #1 on #551, pinned by
+    # test_diffusion_engine.py::
+    # test_engine_opts_out_blocks_legacy_function_literal_tool_choice).
+    # The route's ``_forced_tool_choice`` check (routes/chat.py
+    # L1212) honors it; the schema must let it through so the
+    # route layer can apply its 422.
+    #
+    # Without this validator, a typo'd object like
+    # ``tool_choice={"foo":"bar"}`` (no ``type`` field) or
+    # ``tool_choice={"type":"banana"}`` (unknown ``type``) silently
+    # falls through the typed ``str | dict`` union onto the dict arm,
+    # the chat-route ``type=='function'`` guard (routes/chat.py L756)
+    # doesn't match, and the request HTTP 200s as a free-form chat
+    # completion — masking the client bug and diverging from the
+    # Anthropic surface that PR #766 closed. Run BEFORE the typed
+    # union resolves so the union's individual arms cannot swallow
+    # shapes either arm alone would reject; mirror the M-03
+    # envelope (``invalid_request_error`` with the field name) by
+    # raising ``ValueError`` here — the global validation handler
+    # (middleware/exception_handlers.py) maps the resulting
+    # ``RequestValidationError`` to the canonical 400.
+    @field_validator("tool_choice", mode="before")
+    @classmethod
+    def _validate_tool_choice(cls, v):
+        # ``None`` / absent is the default — server picks the
+        # default policy (``"auto"`` when ``tools`` is set, else
+        # ``"none"``). Don't tighten beyond the M-03 wording.
+        if v is None:
+            return v
+        # String form: closed-set. Spec values plus the deprecated
+        # ``"function"`` legacy literal (kept because the route's
+        # forced-tool-choice gate at L1212 still honors it; codex
+        # r9 NIT #1 on #551). Reject unknown strings (``"banana"``,
+        # ``"any"`` / ``"tool"`` (Anthropic's words), case
+        # variants like ``"AUTO"``) so a cross-API confusion 400s
+        # at parse instead of silently degrading. Pydantic v2
+        # treats ``bool`` as an ``int`` subclass but ``isinstance(v,
+        # str)`` is False for bools, so no boolean-leak concern
+        # here.
+        allowed_strings = ("none", "auto", "required", "function")
+        if isinstance(v, str):
+            if v not in allowed_strings:
+                raise ValueError(
+                    "tool_choice string must be one of "
+                    f"{list(allowed_strings)} (got {v!r}). "
+                    "See https://platform.openai.com/docs/api-reference/"
+                    "chat/create#chat-create-tool_choice."
+                )
+            return v
+        # Object form: must carry ``type=="function"``. Anything
+        # else (no ``type`` field, unknown ``type`` value) is
+        # outside the spec. The route-level guard at chat.py L756
+        # already covers ``type=='function'`` without ``function.name``
+        # with a more descriptive 400 (including the F-145
+        # case-insensitive name hint), so we defer that arm to the
+        # route and only reject the shapes the route silently
+        # accepts (no ``type`` key, unknown ``type`` value).
+        if isinstance(v, dict):
+            if "type" not in v:
+                raise ValueError(
+                    "tool_choice object must have a 'type' field. Legal "
+                    "shapes: a string from "
+                    f"{list(allowed_strings)} or "
+                    "{'type': 'function', 'function': {'name': '<X>'}}."
+                )
+            choice_type = v["type"]
+            if choice_type != "function":
+                raise ValueError(
+                    "tool_choice.type must be 'function' for the object "
+                    f"form (got {choice_type!r}). Legal shapes: a string "
+                    f"from {list(allowed_strings)} or "
+                    "{'type': 'function', 'function': {'name': '<X>'}}."
+                )
+            return v
+        # Neither string nor dict — e.g. ``tool_choice=42``,
+        # ``tool_choice=[1,2]``, ``tool_choice=true``. Pydantic's
+        # union dispatch would surface a multi-line error blaming
+        # both arms ("tool_choice.str: Input should be a valid
+        # string; tool_choice.dict[any,any]: ..."); flatten it to
+        # a single human-readable message that names the field.
+        raise ValueError(
+            "tool_choice must be a string from "
+            f"{list(allowed_strings)} or an object "
+            "{'type': 'function', 'function': {'name': '<X>'}} "
+            f"(got {type(v).__name__})."
+        )
+
     # Belt-and-braces: catches non-finite values that bypass the
     # raw-dict path (e.g. ``ChatCompletionRequest(temperature=nan)``
     # in-process). The Field range bounds also reject NaN as a side
