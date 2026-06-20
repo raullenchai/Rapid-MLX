@@ -770,13 +770,27 @@ async def _create_chat_completion_impl(
                 )
             filtered = [t for t in request.tools if t.function.get("name") == target]
             if not filtered:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"tool_choice references function {target!r} which "
-                        "is not present in the 'tools' array"
+                # F-145: tool names are case-sensitive (matches OpenAI).
+                # A bare 400 leaves the client guessing whether the typo
+                # is a missing tool or a casing mismatch — surface the
+                # case-insensitive match (if any) as an explicit hint so
+                # the fix is obvious without rereading the request body.
+                case_match = next(
+                    (
+                        t.function.get("name")
+                        for t in request.tools
+                        if isinstance(t.function.get("name"), str)
+                        and t.function.get("name", "").lower() == target.lower()
                     ),
+                    None,
                 )
+                msg = (
+                    f"tool_choice references function {target!r} which "
+                    "is not present in the 'tools' array"
+                )
+                if case_match is not None:
+                    msg += f". (Did you mean {case_match!r}? names are case-sensitive)"
+                raise HTTPException(status_code=400, detail=msg)
             request.tools = filtered
         elif tc == "none" and request.tools:
             request.tools = None

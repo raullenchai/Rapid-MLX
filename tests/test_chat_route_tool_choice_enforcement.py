@@ -210,6 +210,50 @@ def test_tool_choice_specific_function_unknown_name_returns_400():
     )
     assert resp.status_code == 400
     assert "nonexistent_function" in resp.text
+    # F-145: a no-match name (no case-insensitive partner either) must
+    # NOT trigger the "Did you mean" hint - it would mislead the client
+    # into chasing a non-existent typo.
+    assert "Did you mean" not in resp.text
+
+
+def test_tool_choice_specific_function_case_mismatch_returns_400_with_hint():
+    """F-145: when ``tool_choice`` references a name whose ONLY difference
+    from a known tool is letter casing, the 400 must include a
+    "Did you mean '<X>'? names are case-sensitive" hint so the client
+    sees the fix without re-reading the request body. Pre-fix the 400
+    just said "not present in the 'tools' array" and the client had no
+    clue casing was the cause.
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    # Tool fixture has ``get_weather`` (lowercase w); request asks for
+    # ``get_Weather`` (capital W). Both names are otherwise identical.
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_Weather",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "get_weather"},
+            },
+            "max_tokens": 5,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "get_weather" in resp.text
+    # Hint pins both the suggested name and the case-sensitivity explanation.
+    assert "Did you mean 'get_Weather'" in resp.text
+    assert "case-sensitive" in resp.text
 
 
 def test_tool_choice_function_missing_name_returns_400():
