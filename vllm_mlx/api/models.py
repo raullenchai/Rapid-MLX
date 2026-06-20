@@ -13,7 +13,15 @@ import time
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    model_serializer,
+    model_validator,
+)
 
 # =============================================================================
 # Content Types (for multimodal messages)
@@ -356,9 +364,51 @@ class AssistantMessage(BaseModel):
         """Add deprecated 'reasoning' alias for backward compatibility."""
         pass
 
+    @model_serializer(mode="wrap")
+    def _serialize_assistant_message(self, handler):
+        """Always emit ``content`` (and ``reasoning`` alias) on the wire.
+
+        Per OpenAI's ``chat.completion`` schema, ``message.content`` is a
+        REQUIRED field that is ``string`` or ``null`` — never absent. When
+        a reasoning model truncates inside ``<think>`` the parser yields
+        ``content=None`` and our callers serialize the response with
+        ``model_dump_json(exclude_none=True)``; pydantic then drops the
+        ``content`` key entirely and clients that read
+        ``resp["choices"][0]["message"]["content"]`` (the standard
+        OpenAI SDK pattern) crash with ``KeyError: 'content'``. This
+        wrap-mode serializer runs AFTER ``exclude_none`` pruning, so we
+        can put the field back as an explicit ``None`` (→ JSON ``null``)
+        regardless of how the parent was dumped.
+
+        Also forwards the deprecated ``reasoning`` alias for
+        backward-compat clients that read either field. (The legacy
+        ``model_dump`` override below covered direct ``.model_dump()``
+        calls but was bypassed when a parent's ``model_dump_json``
+        recursed — pydantic v2 routes JSON serialization through this
+        ``@model_serializer`` instead.)
+        """
+        d = handler(self)
+        # OpenAI contract: ``content`` is always present (string|null).
+        if "content" not in d:
+            d["content"] = None
+        if "reasoning_content" in d:
+            d["reasoning"] = d["reasoning_content"]
+        return d
+
     def model_dump(self, **kwargs) -> dict:
-        """Include 'reasoning' as alias of reasoning_content for clients expecting it."""
+        """Include 'reasoning' as alias of reasoning_content for clients expecting it.
+
+        Kept for callers that invoke ``.model_dump()`` directly (rather
+        than via a parent ``model_dump_json``). The wrap-mode
+        ``@model_serializer`` above already handles both paths, but this
+        override remains a defensive belt-and-braces for any external
+        caller relying on the historical behaviour.
+        """
         d = super().model_dump(**kwargs)
+        # Belt-and-braces: ensure ``content`` is always present, matching
+        # the OpenAI-spec invariant enforced by the wrap-mode serializer.
+        if "content" not in d:
+            d["content"] = None
         # Add backward-compat alias — clients may read either field
         if "reasoning_content" in d:
             d["reasoning"] = d["reasoning_content"]
@@ -713,6 +763,36 @@ class ChatCompletionChunkDelta(BaseModel):
     content: str | None = None
     reasoning_content: str | None = None
     tool_calls: list[dict] | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize_chunk_delta(self, handler):
+        """Ensure ``content`` is present on reasoning-only / terminal deltas.
+
+        Callers serialize streaming chunks with
+        ``model_dump_json(exclude_none=True)`` so per-token deltas stay
+        terse (most deltas carry exactly one of ``content`` /
+        ``reasoning_content`` / ``tool_calls``). When a generation
+        terminates mid-``<think>`` reasoning, the terminal delta carries
+        only ``reasoning_content`` plus a ``finish_reason`` on the
+        parent choice — and the missing ``content`` key crashes any
+        client that does ``chunk.choices[0].delta.content`` on the
+        terminal chunk (the standard OpenAI SDK pattern; see the
+        non-stream counterpart on ``AssistantMessage``).
+
+        Mirror the OpenAI on-the-wire shape: surface ``content: null``
+        on any delta that carries ``reasoning_content`` (or
+        ``tool_calls``) but no visible content, so the field is
+        addressable on every reasoning-bearing delta — including the
+        final one. Normal pure-content / pure-role / empty deltas keep
+        their current minimal shape, so the per-token streaming budget
+        is unchanged for non-reasoning paths.
+        """
+        d = handler(self)
+        if "content" not in d and (
+            "reasoning_content" in d or "tool_calls" in d
+        ):
+            d["content"] = None
+        return d
 
 
 class ChatCompletionChunkChoice(BaseModel):

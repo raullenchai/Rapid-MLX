@@ -670,27 +670,37 @@ def test_streaming_rescue_noop_when_reasoning_is_whitespace_only():
         events = _parse_sse(resp.text)
         assert events, "expected at least one SSE chunk"
 
-        # Codex round-4 BLOCKING on #676: collect EVERY ``delta.content``
-        # value without stripping, so an incorrectly-emitted
-        # whitespace-only payload (``"   \n\t  "``) is caught instead
-        # of being silently coerced to empty by ``.strip()``. Pre-fix
-        # this assertion was ``not streamed_content.strip()``, which
-        # would still pass under the exact regression we're guarding
-        # against — a self-defeating test. The new shape lists every
-        # raw ``delta.content`` value emitted on any chunk and asserts
-        # the list is empty; any emission at all (whitespace, empty
-        # string, real text) is a regression.
+        # Codex round-4 BLOCKING on #676: collect EVERY non-null
+        # ``delta.content`` value without stripping, so an
+        # incorrectly-emitted whitespace-only payload (``"   \n\t  "``)
+        # is caught instead of being silently coerced to empty by
+        # ``.strip()``. Pre-fix this assertion was
+        # ``not streamed_content.strip()``, which would still pass
+        # under the exact regression we're guarding against — a
+        # self-defeating test. The new shape lists every raw
+        # ``delta.content`` value emitted on any chunk and asserts
+        # the list is empty; any non-null emission at all
+        # (whitespace, empty string, real text) is a regression.
+        #
+        # F-040: ``content: null`` is now an INTENTIONAL part of the
+        # streaming shape on reasoning-only deltas (so clients reading
+        # ``delta.content`` on the terminal chunk don't crash with a
+        # KeyError). The original test caught any presence of the
+        # ``content`` key including ``None``; we tighten the check to
+        # only flag actual *promotions* (a non-null value), which is
+        # the regression we care about here.
         content_values = [
             (choice.get("delta") or {}).get("content")
             for ev in events
             for choice in ev.get("choices", [])
             if "content" in (choice.get("delta") or {})
+            and (choice.get("delta") or {}).get("content") is not None
         ]
         assert content_values == [], (
             "#676 round-4 BLOCKING (streaming): whitespace-only "
             "accumulated reasoning must NOT promote to delta.content "
-            "on any SSE chunk; expected zero content emissions but "
-            f"got {content_values!r}"
+            "on any SSE chunk; expected zero non-null content emissions "
+            f"but got {content_values!r}"
         )
     finally:
         reset_config()
