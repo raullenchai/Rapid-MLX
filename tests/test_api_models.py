@@ -800,9 +800,7 @@ class TestModelSerialization:
         finish must expose ``content: null`` so clients reading
         ``chunk.choices[0].delta.content`` on the last chunk do not crash.
         """
-        delta = ChatCompletionChunkDelta(
-            reasoning_content="…", content=None
-        )
+        delta = ChatCompletionChunkDelta(reasoning_content="…", content=None)
         data = json.loads(delta.model_dump_json(exclude_none=True))
         assert "content" in data
         assert data["content"] is None

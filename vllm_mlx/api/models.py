@@ -788,9 +788,7 @@ class ChatCompletionChunkDelta(BaseModel):
         is unchanged for non-reasoning paths.
         """
         d = handler(self)
-        if "content" not in d and (
-            "reasoning_content" in d or "tool_calls" in d
-        ):
+        if "content" not in d and ("reasoning_content" in d or "tool_calls" in d):
             d["content"] = None
         return d
 
