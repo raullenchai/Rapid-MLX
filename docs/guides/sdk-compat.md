@@ -109,7 +109,7 @@ across streaming and non-streaming makes client code symmetric.
 
 For chunk-by-chunk consumption patterns, see
 [Streaming with Reasoning](reasoning.md#streaming-with-reasoning) — and
-note the interleave caveat below in [L-06](#l-06--streaming-reasoning_content--content-deltas-interleave).
+note the interleave caveat below in [L-06](#l-06--streaming-reasoning_content-and-content-deltas-interleave).
 
 OpenAI reference for what the canonical schema actually contains:
 
