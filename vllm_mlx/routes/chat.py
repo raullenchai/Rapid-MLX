@@ -770,11 +770,38 @@ async def _create_chat_completion_impl(
                 )
             filtered = [t for t in request.tools if t.function.get("name") == target]
             if not filtered:
+                # F-145: surface a case-insensitive match as a hint when
+                # one exists, so clients see "did you mean 'get_Weather'?"
+                # instead of having to diff their tool list character-by-
+                # character. OpenAI's API is case-sensitive too, but its
+                # error message is equally terse — the rapid-mlx hint is
+                # additive and OpenAI-shape-compatible (clients that ignore
+                # the suffix still see the canonical 400).
+                hint = ""
+                target_lower = target.lower() if isinstance(target, str) else ""
+                if target_lower:
+                    case_matches = [
+                        name
+                        for t in request.tools
+                        if isinstance((name := t.function.get("name")), str)
+                        and name.lower() == target_lower
+                    ]
+                    if case_matches:
+                        # ``case_matches[0]`` is deterministic — Pydantic
+                        # preserves request order on ``request.tools`` so
+                        # the hint points at the first matching definition.
+                        # We only ever surface ONE hint; if the request
+                        # somehow contains multiple case-variants of the
+                        # same name (duplicate tool names are silently
+                        # accepted today, see F-144), the first wins —
+                        # which is the same tool the prompt-time
+                        # filter would have picked anyway.
+                        hint = f" (did you mean {case_matches[0]!r}? tool_choice is case-sensitive)"
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         f"tool_choice references function {target!r} which "
-                        "is not present in the 'tools' array"
+                        f"is not present in the 'tools' array{hint}"
                     ),
                 )
             request.tools = filtered

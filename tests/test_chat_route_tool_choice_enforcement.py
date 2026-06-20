@@ -212,6 +212,80 @@ def test_tool_choice_specific_function_unknown_name_returns_400():
     assert "nonexistent_function" in resp.text
 
 
+def test_tool_choice_case_mismatch_surfaces_did_you_mean_hint():
+    """F-145 regression: a case-mismatched ``tool_choice.function.name``
+    must still 400 (OpenAI-parity, case-sensitive), but the error
+    message now appends a ``(did you mean 'X'? tool_choice is
+    case-sensitive)`` hint pointing at the tool whose name matches
+    case-insensitively. Without the hint, clients see only ``'X' which
+    is not present in the 'tools' array`` and have to diff their tool
+    list character-by-character to spot the case typo.
+    """
+    case_variant_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_Weather",  # capital W
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                },
+            },
+        },
+    ]
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "what's the weather?"}],
+            "tools": case_variant_tools,
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "get_weather"},  # lowercase w
+            },
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 400
+    # Canonical OpenAI-shape message preserved.
+    assert "get_weather" in resp.text
+    assert "not present in the 'tools' array" in resp.text
+    # F-145 hint surfaces the case-matching tool name AND explains why.
+    assert "get_Weather" in resp.text, "F-145 hint must name the case-matching tool"
+    assert "case-sensitive" in resp.text, (
+        "F-145 hint must explain the case-sensitivity surface"
+    )
+
+
+def test_tool_choice_no_case_match_omits_hint():
+    """F-145 counterpart: when there is NO case-insensitive match in
+    the tools array, the error message must NOT append a hint (so we
+    don't surface a misleading "did you mean" for an unrelated tool).
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "do something"}],
+            "tools": _TOOLS_FIXTURE,  # get_weather, get_time
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "completely_unrelated_tool"},
+            },
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 400
+    assert "completely_unrelated_tool" in resp.text
+    # No "did you mean" suffix when no case-insensitive match exists.
+    assert "did you mean" not in resp.text
+    assert "case-sensitive" not in resp.text
+
+
 def test_tool_choice_function_missing_name_returns_400():
     """``tool_choice: {type: function}`` with no ``function.name`` is
     malformed per OpenAI spec — return 400 explicitly rather than
