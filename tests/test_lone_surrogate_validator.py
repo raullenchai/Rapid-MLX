@@ -32,15 +32,13 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from vllm_mlx.service.helpers import (
     _find_lone_surrogate,
     _scan_messages_for_lone_surrogates,
 )
-from fastapi import HTTPException
-
 
 # ---------------------------------------------------------------------------
 # Unit: the codepoint scanner itself
@@ -51,12 +49,12 @@ class TestFindLoneSurrogate:
     @pytest.mark.parametrize(
         "s,expected_offset",
         [
-            ("\uD800", 0),  # bare lone high
-            ("\uDFFF", 0),  # bare lone low (other end of range)
-            ("\uDC00", 0),  # bare lone low (lower end)
-            ("hello \uD800 world", 6),  # mid-string lone high
-            ("abc\uDFFFxyz", 3),  # mid-string lone low
-            ("\uD801\uD802", 0),  # two lone surrogates — first wins
+            ("\ud800", 0),  # bare lone high
+            ("\udfff", 0),  # bare lone low (other end of range)
+            ("\udc00", 0),  # bare lone low (lower end)
+            ("hello \ud800 world", 6),  # mid-string lone high
+            ("abc\udfffxyz", 3),  # mid-string lone low
+            ("\ud801\ud802", 0),  # two lone surrogates — first wins
         ],
     )
     def test_detects_lone_surrogate(self, s: str, expected_offset: int):
@@ -110,7 +108,7 @@ class TestScanMessagesForLoneSurrogates:
     def test_lone_surrogate_in_content_string(self, role):
         """F-130: bare lone surrogate in any role's content string."""
         with pytest.raises(HTTPException) as ei:
-            _scan_messages_for_lone_surrogates([_msg(content="hi \uD800 there")])
+            _scan_messages_for_lone_surrogates([_msg(content="hi \ud800 there")])
         assert ei.value.status_code == 400
         assert "lone surrogate" in ei.value.detail
         assert "U+D800" in ei.value.detail
@@ -119,7 +117,7 @@ class TestScanMessagesForLoneSurrogates:
     def test_lone_surrogate_in_tool_call_id(self):
         with pytest.raises(HTTPException) as ei:
             _scan_messages_for_lone_surrogates(
-                [_msg(content="ok", tool_call_id="\uDC00abc")]
+                [_msg(content="ok", tool_call_id="\udc00abc")]
             )
         assert ei.value.status_code == 400
         assert "messages[0].tool_call_id" in ei.value.detail
@@ -130,7 +128,7 @@ class TestScanMessagesForLoneSurrogates:
         widening doesn't quietly drop the gate."""
         with pytest.raises(HTTPException) as ei:
             _scan_messages_for_lone_surrogates(
-                [{"role": "user", "content": "ok", "name": "u_\uD800"}]
+                [{"role": "user", "content": "ok", "name": "u_\ud800"}]
             )
         assert ei.value.status_code == 400
         assert "messages[0].name" in ei.value.detail
@@ -147,7 +145,7 @@ class TestScanMessagesForLoneSurrogates:
                                 "type": "function",
                                 "function": {
                                     "name": "search",
-                                    "arguments": '{"q":"\uD801"}',
+                                    "arguments": '{"q":"\ud801"}',
                                 },
                             }
                         ],
@@ -165,7 +163,7 @@ class TestScanMessagesForLoneSurrogates:
 
         with pytest.raises(HTTPException) as ei:
             _scan_messages_for_lone_surrogates(
-                [_msg(content=[ContentPart(type="text", text="bad \uD800")])]
+                [_msg(content=[ContentPart(type="text", text="bad \ud800")])]
             )
         assert ei.value.status_code == 400
         assert "messages[0].content" in ei.value.detail
@@ -176,7 +174,7 @@ class TestScanMessagesForLoneSurrogates:
         envelopes."""
         with pytest.raises(HTTPException) as ei:
             _scan_messages_for_lone_surrogates(
-                [_msg(content=[{"type": "text", "text": "bad \uDC00"}])]
+                [_msg(content=[{"type": "text", "text": "bad \udc00"}])]
             )
         assert ei.value.status_code == 400
 
@@ -184,7 +182,7 @@ class TestScanMessagesForLoneSurrogates:
         """The error message must surface the exact offset so a client
         can locate the bad codepoint without re-scanning client-side."""
         with pytest.raises(HTTPException) as ei:
-            _scan_messages_for_lone_surrogates([_msg(content="0123456\uD800tail")])
+            _scan_messages_for_lone_surrogates([_msg(content="0123456\ud800tail")])
         assert "at offset 7" in ei.value.detail
 
     # ---- accept paths -------------------------------------------------------
@@ -218,7 +216,7 @@ class TestScanMessagesForLoneSurrogates:
         walker must still recurse — attribute-AND-dict access pattern."""
         with pytest.raises(HTTPException):
             _scan_messages_for_lone_surrogates(
-                [{"role": "user", "content": "hi \uD800"}]
+                [{"role": "user", "content": "hi \ud800"}]
             )
 
 
@@ -312,9 +310,7 @@ class TestChatRouteLoneSurrogate:
         assert "lone surrogate" in json.dumps(body)
         assert "U+D800" in json.dumps(body)
 
-    def test_stream_returns_400_before_sse_opens(
-        self, patched_config, monkeypatch
-    ):
+    def test_stream_returns_400_before_sse_opens(self, patched_config, monkeypatch):
         """F-131: stream=true with a lone surrogate must NOT open the
         SSE stream. The pre-fix behavior was HTTP 200 followed by a
         ``data:`` chunk carrying raw Python ``TypeError`` text — both
