@@ -107,21 +107,57 @@ def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) 
     return "<think>" in chat_template and "add_generation_prompt" in chat_template
 
 
+def _named_tool_choice_target(tool_choice) -> str | None:
+    """Return the target tool name when ``tool_choice`` pins a specific
+    tool, else ``None``.
+
+    The Anthropic adapter has already translated
+    ``{"type":"tool","name":X}`` into the OpenAI form
+    ``{"type":"function","function":{"name":X}}`` on
+    ``openai_request.tool_choice`` by the time we get here. ``"auto"`` /
+    ``"required"`` / ``"none"`` / unset shapes return ``None`` — they
+    have no defined "wrong tool" case to filter or enforce.
+    """
+    if not isinstance(tool_choice, dict):
+        return None
+    if tool_choice.get("type") != "function":
+        return None
+    target = (tool_choice.get("function") or {}).get("name")
+    return target or None
+
+
+def _tool_call_name_anthropic(tc) -> str | None:
+    """Extract the function name from a tool_call entry regardless of
+    shape. Three real shapes survive into this point — see
+    ``routes/chat.py:_tool_call_name`` for the same catalogue. Inlined
+    here to avoid a cross-route import dependency from ``routes/chat.py``
+    into ``routes/anthropic.py``.
+    """
+    if isinstance(tc, dict):
+        fn = tc.get("function")
+        if isinstance(fn, dict):
+            return fn.get("name")
+        if fn is not None:
+            return getattr(fn, "name", None)
+        return tc.get("name")
+    fn = getattr(tc, "function", None)
+    if fn is not None:
+        return getattr(fn, "name", None)
+    return getattr(tc, "name", None)
+
+
 def _filter_tool_calls_by_tool_choice(tool_calls, tool_choice) -> list:
     """Drop tool_use blocks that don't match a forced ``tool_choice``.
 
     H-05: Anthropic ``tool_choice={"type":"tool","name":X}`` pins WHICH
-    tool the model must call. The Anthropic adapter has already
-    translated that into the OpenAI form
-    ``{"type":"function","function":{"name":X}}`` on
-    ``openai_request.tool_choice`` by the time we get here. Local
-    inference has no decoder-level constraint, so a small model can
-    happily defy the pin and emit a call to a different tool (the
-    Sergei repro hit qwen3.5-4b on a two-tool prompt where the model
-    fired BOTH the pinned tool AND the un-pinned one). Pre-fix, the
-    downstream JSON-schema validator (F-220) then 400-ed on the
-    un-pinned tool's argument schema — leaking validation across a
-    tool the user never asked for and silently breaking ``tool_choice``.
+    tool the model must call. Local inference has no decoder-level
+    constraint, so a small model can happily defy the pin and emit a
+    call to a different tool (the Sergei repro hit qwen3.5-4b on a
+    two-tool prompt where the model fired BOTH the pinned tool AND the
+    un-pinned one). Pre-fix, the downstream JSON-schema validator
+    (F-220) then 400-ed on the un-pinned tool's argument schema —
+    leaking validation across a tool the user never asked for and
+    silently breaking ``tool_choice``.
 
     Policy: when the choice pins a specific tool, KEEP only the calls
     to that tool and drop the rest with a warning. This matches the
@@ -132,48 +168,36 @@ def _filter_tool_calls_by_tool_choice(tool_calls, tool_choice) -> list:
     case to filter.
 
     Chat.py's named-function path 422s on the same mismatch (see
-    ``routes/chat.py:1665``). The two routes intentionally diverge
-    here: ``/v1/chat/completions`` mirrors OpenAI's strict contract,
-    while ``/v1/messages`` mirrors Anthropic's more forgiving
-    "deliver the pinned tool's call" contract — a 422 on an extra
-    call would surface a confusing error to clients that pinned the
-    very tool the response carries. The validator scope refactor in
-    ``_validate_tool_call_params`` ensures we never validate against
-    the dropped tool's schema even if a future change weakens this
-    filter.
+    ``routes/chat.py:1665``). The two routes intentionally diverge on
+    the "got pinned + extras" case: ``/v1/chat/completions`` mirrors
+    OpenAI's strict contract (422), while ``/v1/messages`` mirrors
+    Anthropic's more forgiving "deliver the pinned tool's call"
+    contract — a 422 on an extra call would surface a confusing error
+    to clients that pinned the very tool the response already
+    carries. They CONVERGE on the "got zero pinned calls" case, which
+    is handled by ``_enforce_named_tool_choice_present`` below (PR
+    #763 codex round-1 BLOCKING #1: a filter that emptied the list
+    plus a downstream "no tool_calls? end_turn." branch would 200
+    with no ``tool_use`` block at all, silently violating the
+    forced-tool contract).
+
+    The validator scope refactor in ``_validate_tool_call_params``
+    ensures we never validate against the dropped tool's schema even
+    if a future change weakens this filter.
     """
     if not tool_calls or not isinstance(tool_choice, dict):
         return tool_calls or []
-    if tool_choice.get("type") != "function":
-        return tool_calls
-    target = (tool_choice.get("function") or {}).get("name")
+    target = _named_tool_choice_target(tool_choice)
     if not target:
         return tool_calls
-
-    def _name_of(tc) -> str | None:
-        # Three shapes survive into this point — see
-        # ``routes/chat.py:_tool_call_name`` for the catalogue. Inline
-        # here to avoid a cross-route import dependency from
-        # routes/chat.py into routes/anthropic.py.
-        if isinstance(tc, dict):
-            fn = tc.get("function")
-            if isinstance(fn, dict):
-                return fn.get("name")
-            if fn is not None:
-                return getattr(fn, "name", None)
-            return tc.get("name")
-        fn = getattr(tc, "function", None)
-        if fn is not None:
-            return getattr(fn, "name", None)
-        return getattr(tc, "name", None)
 
     filtered = []
     dropped: list[str] = []
     for tc in tool_calls:
-        if _name_of(tc) == target:
+        if _tool_call_name_anthropic(tc) == target:
             filtered.append(tc)
         else:
-            dropped.append(_name_of(tc) or "<unknown>")
+            dropped.append(_tool_call_name_anthropic(tc) or "<unknown>")
     if dropped:
         logger.warning(
             "tool_choice pinned %r but model also emitted calls to %s; "
@@ -183,6 +207,59 @@ def _filter_tool_calls_by_tool_choice(tool_calls, tool_choice) -> list:
             dropped,
         )
     return filtered
+
+
+def _enforce_named_tool_choice_present(
+    tool_calls,
+    tool_choice,
+    *,
+    original_call_count: int,
+) -> None:
+    """Raise 422 when ``tool_choice`` pinned a specific tool but no
+    matching tool_call survives.
+
+    PR #763 codex round-1 BLOCKING #1: ``_filter_tool_calls_by_tool_choice``
+    correctly drops un-pinned calls, but the downstream branch in
+    ``messages_endpoint`` treats ``tool_calls=[]`` as "model returned
+    text only → ``stop_reason=end_turn``". That is the wrong contract
+    when the client pinned a specific tool: an empty post-filter list
+    means EITHER the model emitted zero tool_calls at all (model
+    defied the pin entirely and answered as plain text) OR every
+    emitted call was to the wrong tool (model called something else
+    and we dropped them all). Both states violate the forced-tool
+    contract; clients that pinned ``X`` expect a ``tool_use`` block
+    for ``X`` and a 200 ``end_turn`` text response leaves them with
+    nothing to act on. Surface the failure explicitly so the caller
+    can retry / fall back instead of silently mis-routing.
+
+    Mirrors chat.py's ``tool_choice="required"`` no-call branch
+    (``routes/chat.py:1587``) which 422s with the same "local
+    inference cannot decoder-enforce" diagnostic. The streaming
+    branch uses the same body via an SSE ``event: error``.
+
+    ``original_call_count`` is the size of ``tool_calls`` BEFORE the
+    filter ran — we use it to disambiguate "model returned text"
+    (count == 0) from "model called the wrong tool(s) and the filter
+    emptied the list" (count > 0) in the error message.
+    """
+    target = _named_tool_choice_target(tool_choice)
+    if not target or tool_calls:
+        return
+    if original_call_count == 0:
+        detail = (
+            f"tool_choice pinned tool {target!r} but the model returned a text "
+            "response with no tool_calls. Local inference has no decoder-level "
+            "constraint; the system-prompt enforcement was insufficient for "
+            "this prompt. Retry with a more direct user message."
+        )
+    else:
+        detail = (
+            f"tool_choice pinned tool {target!r} but the model emitted "
+            f"{original_call_count} call(s), none to {target!r}. Local "
+            "inference cannot decoder-enforce a specific tool; retry with a "
+            "more direct user message."
+        )
+    raise HTTPException(status_code=422, detail=detail)
 
 
 @router.post(
@@ -407,10 +484,18 @@ async def create_anthropic_message(
         # ``lookup_zip``, 400 came back complaining about ``lookup_zip``.
         # Drop the un-pinned calls FIRST so the validator only sees the
         # pinned tool's call(s). See ``_filter_tool_calls_by_tool_choice``
-        # for the policy rationale vs chat.py's 422-on-mismatch.
-        if tool_calls and openai_request.tool_choice:
+        # for the policy rationale vs chat.py's 422-on-mismatch, and
+        # ``_enforce_named_tool_choice_present`` for the "filter dropped
+        # everything" guard added in PR #763 codex round-1.
+        original_call_count = len(tool_calls or [])
+        if openai_request.tool_choice:
             tool_calls = _filter_tool_calls_by_tool_choice(
-                tool_calls, openai_request.tool_choice
+                tool_calls or [], openai_request.tool_choice
+            )
+            _enforce_named_tool_choice_present(
+                tool_calls,
+                openai_request.tool_choice,
+                original_call_count=original_call_count,
             )
 
         # F-220: enforce the same tool_call JSON-schema validation
@@ -1514,10 +1599,39 @@ async def _stream_anthropic_messages(
     # see the non-stream call site for the policy rationale. Run
     # BEFORE validation so the F-220 enforcer never sees the dropped
     # tool's schema-violating arguments.
-    if tool_calls and openai_request.tool_choice:
+    #
+    # IMPORTANT (PR #763 codex round-1 BLOCKING #2 — confirm-and-lock):
+    # NO ``content_block_start`` for ``type=tool_use`` is emitted in the
+    # while-loop above. The structured tool-call payload is only
+    # collected into ``accumulated_structured_tool_calls`` (see the
+    # ``engine_tool_calls`` extend at the stream-chunk site), and the
+    # tool_use SSE events are emitted strictly below (after the
+    # filter + validation). If a future refactor moves tool_use deltas
+    # earlier in the stream, this filter MUST be re-applied at the
+    # earlier emission point or the dropped tool's content_block_start
+    # will reach the wire before we know to suppress it.
+    tool_choice_error: str | None = None
+    original_call_count_stream = len(tool_calls or [])
+    if openai_request.tool_choice:
         tool_calls = _filter_tool_calls_by_tool_choice(
-            tool_calls, openai_request.tool_choice
+            tool_calls or [], openai_request.tool_choice
         )
+        # Stream variant of ``_enforce_named_tool_choice_present``:
+        # headers are already on the wire so we can't 422 — surface
+        # the same diagnostic as an Anthropic ``event: error`` and
+        # close the stream with ``end_turn``. Mirrors how the F-220
+        # validation-failure branch below handles the same
+        # "headers-already-sent" constraint.
+        try:
+            _enforce_named_tool_choice_present(
+                tool_calls,
+                openai_request.tool_choice,
+                original_call_count=original_call_count_stream,
+            )
+        except HTTPException as exc:
+            tool_choice_error = (
+                exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            )
 
     # F-220: enforce JSON-schema validation on the model's emitted
     # tool_call arguments. On the streaming branch, headers are already
@@ -1537,15 +1651,27 @@ async def _stream_anthropic_messages(
             )
             tool_calls = []
 
-    if tool_validation_error:
+    # Emit a single SSE error event when either the tool_choice
+    # enforcement or the schema validator fired. Both classes are
+    # surfaced as ``invalid_request_error`` — they describe a
+    # client-actionable failure (retry / fall back / relax pin),
+    # whereas a true server failure would arrive via the route-level
+    # exception handler.
+    if tool_choice_error or tool_validation_error:
         error_event = {
             "type": "error",
             "error": {
                 "type": "invalid_request_error",
-                "message": tool_validation_error,
+                "message": tool_choice_error or tool_validation_error,
             },
         }
         yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
+        # When the pinned-tool enforcement fires, the only emit-worthy
+        # output is the error event — drop any surviving tool_calls so
+        # the loop below doesn't ship a ``tool_use`` for a state the
+        # error event already marked unrecoverable.
+        if tool_choice_error:
+            tool_calls = []
 
     if tool_calls:
         for i, tc in enumerate(tool_calls):
