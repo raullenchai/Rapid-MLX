@@ -177,6 +177,25 @@ class ChoiceLogProbs(BaseModel):
     content: list[TokenLogProb] | None = None
 
 
+class LegacyCompletionLogProbs(BaseModel):
+    """Log probability information for a legacy ``/v1/completions`` choice.
+
+    The OpenAI legacy completions schema (pre-chat) is *different* from
+    the chat-completions ``ChoiceLogProbs`` shape: it carries four
+    parallel arrays — ``tokens``, ``token_logprobs``, ``top_logprobs``
+    (a list of ``{token: logprob}`` dicts), and ``text_offset`` — keyed
+    positionally per generated token. This split is required by SDK
+    clients (the ``openai`` Python SDK, ``langchain``'s legacy
+    ``OpenAI`` LLM wrapper, eval harnesses like ``lm-evaluation-harness``)
+    that pre-1.0 OpenAI API never unified.
+    """
+
+    tokens: list[str]
+    token_logprobs: list[float]
+    top_logprobs: list[dict[str, float]]
+    text_offset: list[int]
+
+
 # =============================================================================
 # Chat Completion
 # =============================================================================
@@ -479,9 +498,35 @@ class CompletionRequest(BaseModel):
     repetition_penalty: float | None = None
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
-    # Logprobs
-    logprobs: bool | None = None
-    top_logprobs: int | None = None  # 0-20, per OpenAI spec
+    # Logprobs — per the *legacy* OpenAI completions schema, this is an
+    # *integer* (0..5) specifying the number of top alternative tokens
+    # to return alongside each generated token, NOT a boolean (that is
+    # the chat-completions shape). Wire-form ``bool`` is rejected by
+    # the validator below with a clear 422 — pre-fix, Pydantic parsed
+    # the field as ``bool`` and the canonical SDK call
+    # ``logprobs=5`` (every official OpenAI client does this on the
+    # legacy route) bounced with ``bool_parsing`` instead of being
+    # served. F-153.
+    logprobs: int | None = None
+    # Echo the prompt back as the prefix of the response text (legacy
+    # OpenAI behaviour — used by eval harnesses like
+    # ``lm-evaluation-harness`` to compute prompt-conditioned token
+    # log-probabilities). Pre-fix this was silently dropped (the
+    # Pydantic schema didn't declare it) so clients depending on the
+    # prompt prefix saw truncated output and proceeded with
+    # garbage-in-garbage-out. F-152.
+    echo: bool | None = None
+    # Number of completions per prompt (legacy OpenAI). Rapid-MLX only
+    # generates one completion per request — declared so Pydantic
+    # stops silently dropping it; rejected with 400 in
+    # ``routes/completions.py`` when ``> 1`` (mirroring the chat-route
+    # behaviour). F-152.
+    n: int | None = None
+    # Server-side top-k re-rank knob from legacy OpenAI completions.
+    # Not implementable on local MLX inference without a reranker;
+    # declared so Pydantic stops silently dropping it and rejected
+    # with 400 when ``> 1``. F-152.
+    best_of: int | None = None
     # OpenAI FIM (fill-in-the-middle) suffix. Declared so Pydantic stops
     # silently dropping it; rejected with 400 in routes/completions.py
     # when non-empty since no MLX engine implements FIM yet (and silently
@@ -490,6 +535,41 @@ class CompletionRequest(BaseModel):
     # Request timeout in seconds (None = use server default)
     timeout: float | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_bool_logprobs_raw(cls, data):
+        """Reject ``logprobs: bool`` wire form on legacy completions.
+
+        Same shape as ``ChatCompletionRequest._validate_reasoning_max_tokens_raw``:
+        Pydantic v2 coerces ``True`` → 1 / ``False`` → 0 silently when
+        the field is typed ``int | None``, but that coercion would be
+        a footgun — a client that learned the chat-completions
+        ``logprobs: bool`` shape would have its ``logprobs: true``
+        silently turned into ``top_k=1`` and ``logprobs: false`` into
+        ``top_k=0`` (no logprobs payload at all). Both surface as
+        wrong-shaped responses with no error, exactly the silent-compat
+        lie F-152 / F-153 closes. So a bool wire value gets a clear
+        422 telling the client to send the canonical integer instead.
+        """
+        if not isinstance(data, dict):
+            return data
+        if "logprobs" not in data:
+            return data
+        v = data["logprobs"]
+        # ``bool`` is an int subclass — check it BEFORE the integer
+        # acceptance branch so ``True``/``False`` are rejected even
+        # though they'd otherwise coerce to ``1``/``0``.
+        if isinstance(v, bool):
+            raise ValueError(
+                "`logprobs` on /v1/completions must be an integer "
+                "0-5 (number of top tokens to return), not a bool. "
+                "The chat-completions endpoint uses `logprobs: bool + "
+                "top_logprobs: int`; the legacy completions endpoint "
+                "merges both into a single integer field. "
+                "Pass `logprobs: <int>` instead."
+            )
+        return data
+
 
 class CompletionChoice(BaseModel):
     """A single choice in text completion response."""
@@ -497,7 +577,11 @@ class CompletionChoice(BaseModel):
     index: int = 0
     text: str
     finish_reason: str | None = "stop"
-    logprobs: ChoiceLogProbs | None = None
+    # Legacy completions uses the 4-parallel-array shape
+    # (``LegacyCompletionLogProbs``); chat-completions uses the
+    # ``ChoiceLogProbs`` shape — both are accepted here so the
+    # downstream serializer can pick the spec-correct one per route.
+    logprobs: LegacyCompletionLogProbs | ChoiceLogProbs | None = None
 
 
 class CompletionResponse(BaseModel):
