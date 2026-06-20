@@ -268,21 +268,28 @@ class HermesToolParser(ToolParser):
         # parallel ``<function>...</function>`` blocks as separate tool
         # calls — non-greedy ``.*?`` inside DOTALL prevents the first
         # opener from swallowing the second block.
-        if not tool_calls:
-            named_xml_matches = self.FUNCTION_XML_NAMED_PATTERN.findall(cleaned_text)
-            for name, params_block in named_xml_matches:
-                arguments = _parse_function_body(params_block)
-                tool_calls.append(
-                    {
-                        "id": generate_tool_id(),
-                        "name": name.strip(),
-                        "arguments": json.dumps(arguments, ensure_ascii=False),
-                    }
-                )
-            if named_xml_matches:
-                cleaned_text = self.FUNCTION_XML_NAMED_PATTERN.sub(
-                    "", cleaned_text
-                ).strip()
+        #
+        # Codex round-4 BLOCKING: the named-XML matcher is NOT gated on
+        # ``if not tool_calls``. The ``<function><name>...</name>...``
+        # shape is structurally disjoint from ``<function=NAME>...`` and
+        # both can co-occur in a single response (e.g. a Nemotron-style
+        # call followed by a VibeThinker-style call). Gating would
+        # silently drop the second call. Matching is additive across
+        # bare-function + named-XML; the ``<tool_call>`` JSON path
+        # remains a hard-precedence winner via the prior strip so it
+        # cannot be double-counted here.
+        named_xml_matches = self.FUNCTION_XML_NAMED_PATTERN.findall(cleaned_text)
+        for name, params_block in named_xml_matches:
+            arguments = _parse_function_body(params_block)
+            tool_calls.append(
+                {
+                    "id": generate_tool_id(),
+                    "name": name.strip(),
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                }
+            )
+        if named_xml_matches:
+            cleaned_text = self.FUNCTION_XML_NAMED_PATTERN.sub("", cleaned_text).strip()
 
         # Fallback: try lenient pattern for malformed tags like <tool_call without >
         if not tool_calls:

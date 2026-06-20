@@ -134,15 +134,17 @@ class TestVibeThinkerFunctionXmlNamed:
         # Stripping leaves at least the prose; trailing whitespace is OK.
         assert "Here you go:" in (result.content or "")
 
-    def test_pre_existing_tool_call_shape_still_wins(self, parser):
-        """The canonical ``<tool_call>{...}</tool_call>`` JSON shape must
-        still be matched first — no regression on existing wire format.
+    def test_mixed_tool_call_json_and_named_xml_both_emitted(self, parser):
+        """Codex round-4 BLOCKING: ``<tool_call>{...}</tool_call>`` and
+        ``<function><name>...</name>...</function>`` are structurally
+        disjoint and both are valid tool-call shapes. A response that
+        contains both must emit BOTH calls in wire order — silently
+        dropping one is a correctness bug.
 
-        Codex round-1 NIT: actually mix BOTH shapes in the same response
-        and assert ordering precedence — the ``<tool_call>`` JSON path
-        is tried before ``FUNCTION_XML_NAMED_PATTERN``, so a stray
-        ``<function>`` block alongside a real ``<tool_call>`` JSON block
-        must yield the JSON call (not double-emit, not swap order).
+        The previous version of this test asserted only the JSON call
+        was emitted (encoding the silent-drop bug as expected
+        behavior); round-4 fix makes the named-XML matcher additive
+        rather than gated by ``if not tool_calls``.
         """
         text = (
             '<tool_call>{"name":"get_weather","arguments":{"loc":"Paris"}}</tool_call>\n'
@@ -152,14 +154,34 @@ class TestVibeThinkerFunctionXmlNamed:
         )
         result = parser.extract_tool_calls(text)
         assert result.tools_called
-        # The <tool_call> JSON path wins (matcher ordering is
-        # deterministic) — only the JSON call is emitted. The
-        # FUNCTION_XML_NAMED_PATTERN is gated by
-        # ``if not tool_calls`` so it is skipped here.
-        assert len(result.tool_calls) == 1
-        call = _first(result.tool_calls)
-        assert call["name"] == "get_weather"
-        assert json.loads(call["arguments"]) == {"loc": "Paris"}
+        assert len(result.tool_calls) == 2, (
+            "Both tool_call JSON and named-XML calls must be emitted "
+            "(codex round-4 BLOCKING regression)."
+        )
+        names = [c["name"] for c in result.tool_calls]
+        assert names == ["get_weather", "get_news"]
+        args = [json.loads(c["arguments"]) for c in result.tool_calls]
+        assert args == [{"loc": "Paris"}, {"topic": "weather"}]
+
+    def test_mixed_bare_function_and_named_xml_both_emitted(self, parser):
+        """Codex round-4 BLOCKING (companion): the bare-function
+        Nemotron shape ``<function=NAME>...</function>`` and the
+        VibeThinker named-XML shape ``<function><name>...</name>...
+        </function>`` are also structurally disjoint and can co-occur.
+        Both must be emitted."""
+        text = (
+            '<function=get_weather>{"loc":"Paris"}</function>\n'
+            "<function><name>get_news</name>"
+            '<arguments>{"topic":"weather"}</arguments></function>'
+        )
+        result = parser.extract_tool_calls(text)
+        assert result.tools_called
+        assert len(result.tool_calls) == 2, (
+            "Both bare-function and named-XML calls must be emitted "
+            "(codex round-4 BLOCKING regression)."
+        )
+        names = [c["name"] for c in result.tool_calls]
+        assert set(names) == {"get_weather", "get_news"}
 
     def test_nemotron_bare_function_equal_form_still_wins(self, parser):
         """``<function=NAME>`` (Nemotron / Qwen3-Coder) is disjoint from
