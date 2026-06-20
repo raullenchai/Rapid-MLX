@@ -135,3 +135,7 @@ harness/runs/*
 !harness/runs/.gitkeep
 # Scorecard timestamped runs are local; only latest.md is tracked
 harness/scorecard/scorecard-*.md
+
+# Local agent tracker — never commit
+TODO.md
+.wrangler/
