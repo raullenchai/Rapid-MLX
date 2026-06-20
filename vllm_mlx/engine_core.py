@@ -679,11 +679,66 @@ class EngineCore:
         # batch_generator.next() raises "There is no Stream(gpu, N) in
         # current thread" inside `mx.eval([c.state for c in self.prompt_cache])`.
         # Complements the warmup/model-load fix in PR #173 / #174.
+        #
+        # F-012 (RST-mid-SSE zombie KV): a cancellation that lands while
+        # we're awaiting the executor leaves the scheduler in a
+        # genuinely unknown state — ``run_in_executor`` propagates
+        # ``CancelledError`` to the awaiter but does NOT cancel the
+        # blocking executor task, so ``scheduler.add_request(request)``
+        # may already have run, may be mid-run, or may still be
+        # waiting in the executor queue. Without protection the
+        # cancellation chain unwinds the route, ``stream_outputs`` is
+        # never entered, ``stream_outputs.finally`` never aborts, and
+        # the executor-side ``add_request`` completes some
+        # milliseconds later — leaving a request in the scheduler with
+        # no awaiter. Under a 30-RST storm this happens 0-30 times per
+        # storm; the orphaned requests then run to full ``max_tokens``
+        # consuming KV cache until Metal OOM kills the process (the
+        # upstream cause of F-010 and F-030).
+        #
+        # ``asyncio.shield`` makes the executor await uninterruptible
+        # at THIS layer: cancellation lands AFTER the executor finishes,
+        # so by the time we re-raise we know with certainty that
+        # ``scheduler.add_request`` has completed (the request IS in
+        # the scheduler). The except branch then enqueues an abort —
+        # the scheduler step loop processes it at the head of its
+        # next iteration via ``_process_pending_aborts`` — and cleans
+        # up the per-request collectors/events allocated above. Using
+        # the deferred ``scheduler.abort_request`` (which adds to
+        # ``_pending_abort_ids`` and is processed by the executor
+        # thread) keeps the cleanup safe across threads, identical to
+        # the path stream_outputs.finally would take.
         if self._mlx_executor is not None:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                self._mlx_executor, self.scheduler.add_request, request
-            )
+            try:
+                await asyncio.shield(
+                    loop.run_in_executor(
+                        self._mlx_executor,
+                        self.scheduler.add_request,
+                        request,
+                    )
+                )
+            except BaseException:
+                # Schedule deferred abort + drop the per-request state we
+                # allocated above. Without this the request stays in the
+                # scheduler's waiting queue with no consumer, gets picked
+                # up by the next ``step()``, runs to ``max_tokens`` and
+                # holds KV slots until Metal OOM.
+                try:
+                    self.scheduler.abort_request(request_id)
+                except Exception:
+                    logger.warning(
+                        "[add_request] abort_request raised during"
+                        " cancellation cleanup for %s",
+                        request_id,
+                        exc_info=True,
+                    )
+                self._cleanup_request(request_id)
+                if self._idle_event is not None:
+                    # Wake the engine loop so it can process the pending
+                    # abort even if no other request is in flight.
+                    self._idle_event.set()
+                raise
         else:
             self.scheduler.add_request(request)
 

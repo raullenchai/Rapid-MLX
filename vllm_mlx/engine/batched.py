@@ -1231,20 +1231,66 @@ class BatchedEngine(BaseEngine):
             requires_prompt_integrity=requires_prompt_integrity,
         )
 
-        async for output in self._engine.stream_outputs(request_id):
-            text = clean_output_text(output.output_text)
+        # F-012 belt-and-suspenders: ``stream_outputs.finally`` already
+        # aborts on any abnormal exit AFTER it enters its ``try`` block.
+        # But there is a narrow window between ``add_request`` returning
+        # (request is in the scheduler) and ``stream_outputs.try``
+        # actually starting (the implicit ``await __anext__`` on the
+        # async generator) where a propagated ``GeneratorExit`` /
+        # ``CancelledError`` would skip the inner ``finally`` entirely,
+        # leaving the request alive in the scheduler with no consumer.
+        # The window is one implicit ``await`` deep but real under
+        # storm conditions — cancellations triggered by the
+        # ``StreamingResponse`` task group can land between the two
+        # yields here. The outer ``try/finally`` below ensures we
+        # ALWAYS abort once ``add_request`` has succeeded, no matter
+        # how this generator unwinds. The deferred-abort scheduler
+        # path (``_pending_abort_ids`` set processed by the next
+        # ``step()``) is idempotent, so the common case where
+        # ``stream_outputs.finally`` also aborts cannot corrupt
+        # anything — the second abort just no-ops on a request that
+        # was already finished.
+        try:
+            async for output in self._engine.stream_outputs(request_id):
+                text = clean_output_text(output.output_text)
 
-            yield GenerationOutput(
-                text=text,
-                new_text=output.new_text,
-                tokens=output.new_token_ids,
-                prompt_tokens=output.prompt_tokens,
-                completion_tokens=output.completion_tokens,
-                finished=output.finished,
-                finish_reason=output.finish_reason,
-                logprobs=output.logprobs,
-                cached_tokens=output.cached_tokens,
-            )
+                yield GenerationOutput(
+                    text=text,
+                    new_text=output.new_text,
+                    tokens=output.new_token_ids,
+                    prompt_tokens=output.prompt_tokens,
+                    completion_tokens=output.completion_tokens,
+                    finished=output.finished,
+                    finish_reason=output.finish_reason,
+                    logprobs=output.logprobs,
+                    cached_tokens=output.cached_tokens,
+                )
+        finally:
+            # Best-effort defensive abort: hit the SYNC scheduler path
+            # so the finally is safe to run under GeneratorExit (Python
+            # 3.8+ allows ``await`` in an async generator's finally only
+            # for awaitables that resolve without suspending — the
+            # scheduler's ``abort_request`` adds to a thread-safe set
+            # and returns immediately). Idempotent against double-abort
+            # from ``stream_outputs.finally``: it just adds the same id
+            # to ``_pending_abort_ids`` twice, and ``_do_abort_request``
+            # is itself idempotent for the already-finished case.
+            #
+            # Also call ``_cleanup_request`` so per-request collectors /
+            # stream state / finished events are released even if
+            # ``stream_outputs.finally`` didn't run (the bug window).
+            try:
+                eng = self._engine
+                if eng is not None and hasattr(eng, "scheduler"):
+                    eng.scheduler.abort_request(request_id)
+                if eng is not None and hasattr(eng, "_cleanup_request"):
+                    eng._cleanup_request(request_id)
+            except Exception:
+                logger.debug(
+                    "[stream_generate] best-effort cleanup raised for %s",
+                    request_id,
+                    exc_info=True,
+                )
 
     async def chat(
         self,
