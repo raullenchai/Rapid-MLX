@@ -143,6 +143,11 @@ def _build_chat_app(patch_cfg, monkeypatch):
 
 class TestChatValidation:
     def test_top_p_above_one_rejected(self, patched_config, monkeypatch):
+        """F-011: Pydantic schema enforces ``top_p ∈ (0, 1]`` via Field
+        bounds, so out-of-range values now 422 from the schema layer
+        instead of the route's legacy 400. Either code is a clean
+        rejection — pin both so a future cleanup that drops the dead
+        route guard doesn't trip the test."""
         client = _build_chat_app(patched_config, monkeypatch)
         r = client.post(
             "/v1/chat/completions",
@@ -152,11 +157,14 @@ class TestChatValidation:
                 "top_p": 2.0,
             },
         )
-        assert r.status_code == 400
-        assert "top_p" in r.json()["detail"]
+        assert r.status_code in (400, 422)
+        assert "top_p" in r.text
 
     def test_top_p_zero_rejected(self, patched_config, monkeypatch):
-        """0 is invalid per OpenAI spec — the valid range is (0, 1]."""
+        """0 is invalid per OpenAI spec — the valid range is (0, 1].
+
+        F-011 promoted the route's 400 to a Pydantic 422; either code
+        is a clean rejection."""
         client = _build_chat_app(patched_config, monkeypatch)
         r = client.post(
             "/v1/chat/completions",
@@ -166,8 +174,8 @@ class TestChatValidation:
                 "top_p": 0,
             },
         )
-        assert r.status_code == 400
-        assert "top_p" in r.json()["detail"]
+        assert r.status_code in (400, 422)
+        assert "top_p" in r.text
 
     def test_top_p_one_passes_validation(self, patched_config, monkeypatch):
         """1.0 is the OpenAI default and must not trigger the top_p

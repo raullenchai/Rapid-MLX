@@ -9,6 +9,7 @@ These models define the request and response schemas for:
 - MCP (Model Context Protocol) integration
 """
 
+import math
 import time
 import uuid
 from typing import Literal
@@ -19,9 +20,131 @@ from pydantic import (
     Field,
     StrictInt,
     StrictStr,
+    field_validator,
     model_serializer,
     model_validator,
 )
+
+
+# =============================================================================
+# Shared sampling-parameter validators (F-011)
+# =============================================================================
+#
+# Range validators of the form ``not (0 < x <= 2)`` are False for NaN
+# because every comparison involving NaN returns False — so NaN slips
+# past as "valid" and is then handed to the sampler / Metal kernels.
+# Symptoms observed pre-fix on /v1/chat/completions and /v1/completions:
+#
+#   * ``temperature=NaN`` / ``top_p=NaN`` → HTTP 200 with
+#     ``choices[0].message.content=null`` + ``usage=0,0,0``; the Metal
+#     backend then aborts the command buffer with a GPU Timeout and the
+#     server process dies. Silent burn from the client's POV.
+#   * ``presence_penalty=±10`` / ``frequency_penalty=±10`` → HTTP 200
+#     with mathematically undefined logit shifts (OpenAI spec caps both
+#     at [-2, 2]).
+#   * ``presence_penalty=inf`` / ``frequency_penalty=inf`` → HTTP 200,
+#     same undefined-logit hazard.
+#
+# Fix shape: declare the OpenAI-spec range on the field itself (Field
+# ge=/le=) so Pydantic emits a 422 for finite out-of-range values, and
+# add a single ``field_validator`` that rejects NaN/inf. The
+# field-level Field bounds skip NaN (same comparison semantics as the
+# legacy in-route guard), so the finite check has to run separately —
+# Pydantic v2 invokes both gates per field, and either one failing
+# returns 422 with a clear "Input should be a finite number" / "Input
+# should be less than or equal to N" message.
+#
+# Range is OpenAI-spec-faithful:
+#   * temperature       : [0, 2]
+#   * top_p             : (0, 1]   — 0 disables sampling (illegal)
+#   * presence_penalty  : [-2, 2]
+#   * frequency_penalty : [-2, 2]
+#
+# Defined as module-level helpers so both ChatCompletionRequest and
+# CompletionRequest share the exact same logic — neither schema can
+# drift away from the other.
+
+
+def _reject_nonfinite_float(v: float | None) -> float | None:
+    """Reject NaN / ±inf on a sampling-parameter float field.
+
+    Returns ``None`` unchanged so the field's default-None semantics
+    are preserved. Raises ``ValueError`` (→ Pydantic 422) on any
+    non-finite value. Integer wire values that arrive as ``float``
+    (Pydantic coerces ``1`` → ``1.0`` on a ``float | None`` field) are
+    fine — ``math.isfinite`` handles them.
+    """
+    if v is None:
+        return None
+    if not math.isfinite(v):
+        raise ValueError("must be a finite number (not NaN or inf)")
+    return v
+
+
+# Fields that must reject NaN / ±inf BEFORE pydantic coerces them onto a
+# typed ``float | None`` slot. Pydantic v2's default ``ValidationError``
+# embeds ``input_value`` in the error dict; when the bad value is
+# ``float('nan')`` the downstream ``starlette.JSONResponse`` (which uses
+# stdlib ``json.dumps`` with ``allow_nan=False``) crashes mid-serialize
+# with ``ValueError: Out of range float values are not JSON compliant``
+# — meaning the client gets a 500 instead of a 422. We MUST sanitize
+# the raw dict before Pydantic ever sees the float so the error path
+# never carries a NaN payload. See F-011.
+_FINITE_SAMPLING_FIELDS: tuple[str, ...] = (
+    "temperature",
+    "top_p",
+    "min_p",
+    "repetition_penalty",
+    "presence_penalty",
+    "frequency_penalty",
+)
+
+
+def _scrub_nonfinite_sampling_raw(data):
+    """Pop NaN / ±inf sampling-param values out of the raw request
+    dict and raise a clean ``ValueError`` BEFORE Pydantic stores them.
+
+    Wire forms covered:
+      * raw JSON token ``NaN`` / ``Infinity`` / ``-Infinity`` (parsed
+        by Python's stdlib json decoder, which is non-strict by
+        default — every popular OpenAI client SDK plus ``requests``
+        emits these on the wire when the caller passes ``float('nan')``).
+      * String form ``"NaN"`` / ``"Infinity"`` / ``"-Infinity"`` (sent
+        by clients that defensively pre-stringify floats — the bug
+        repro under F-011 uses this form).
+
+    The string form is only checked case-insensitively against the
+    JSON spec tokens; any other string flows through untouched so
+    Pydantic still emits its native ``float_parsing`` 422 for
+    ``temperature: "hot"``.
+    """
+    if not isinstance(data, dict):
+        return data
+    for field in _FINITE_SAMPLING_FIELDS:
+        if field not in data:
+            continue
+        v = data[field]
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            # bool is an int subclass — let Pydantic's native rules
+            # decide (it currently coerces True/False to 1.0/0.0 onto
+            # ``float | None``; that's the historical contract and
+            # outside F-011's scope).
+            continue
+        if isinstance(v, (int, float)):
+            if not math.isfinite(v):
+                raise ValueError(
+                    f"{field} must be a finite number (not NaN or inf)"
+                )
+            continue
+        if isinstance(v, str):
+            stripped = v.strip().lower().lstrip("+-")
+            if stripped in ("nan", "inf", "infinity"):
+                raise ValueError(
+                    f"{field} must be a finite number (not NaN or inf)"
+                )
+    return data
 
 # =============================================================================
 # Content Types (for multimodal messages)
@@ -284,8 +407,14 @@ class ChatCompletionRequest(BaseModel):
 
     model: str = "default"
     messages: list[Message]
-    temperature: float | None = None
-    top_p: float | None = None
+    # F-011: range bounds match OpenAI spec; the field-level Field
+    # constraints cover finite out-of-range values (Pydantic 422). NaN
+    # slips past Field bounds (every NaN comparison is False) so the
+    # ``_reject_nonfinite_sampling`` validator below catches it
+    # separately. Same gate applied to top_p / presence_penalty /
+    # frequency_penalty + their CompletionRequest twins.
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
     max_tokens: int | None = None
     # OpenAI-canonical token cap since Sept 2024 (preferred over max_tokens for
     # reasoning models; newer SDKs >=1.45 send only this field). Normalized to
@@ -302,10 +431,16 @@ class ChatCompletionRequest(BaseModel):
     # mlx-lm sampler; repetition_penalty / presence_penalty / frequency_penalty
     # flow through to mlx-lm's make_logits_processors().
     top_k: int | None = None
-    min_p: float | None = None
+    min_p: float | None = Field(default=None, ge=0.0, le=1.0)
     repetition_penalty: float | None = None
-    presence_penalty: float | None = None
-    frequency_penalty: float | None = None
+    # F-011: presence_penalty / frequency_penalty are bounded [-2, 2] by
+    # OpenAI spec. Field bounds catch finite out-of-range values (e.g.
+    # ``presence_penalty=10`` previously HTTP 200'd as silent
+    # mathematically-undefined logit shifts); the
+    # ``_reject_nonfinite_sampling`` validator below catches NaN/inf,
+    # which Field bounds skip (NaN comparisons always return False).
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     # Tool calling
     tools: list[ToolDefinition] | None = None
     tool_choice: str | dict | None = None  # "auto", "none", or specific tool
@@ -358,6 +493,38 @@ class ChatCompletionRequest(BaseModel):
     reasoning_max_tokens: int | None = None
     # Number of completions (only n=1 supported)
     n: int | None = None
+
+    # F-011: NaN/inf scrub on the raw dict, BEFORE Pydantic coerces a
+    # bad value onto the typed float slot. Needed because (a) Field
+    # range bounds skip NaN (every NaN comparison is False) so they
+    # don't close the gap, and (b) even if we caught NaN at the
+    # field_validator layer the resulting Pydantic ValidationError
+    # would embed ``input_value=nan`` in the error dict — and
+    # starlette's ``JSONResponse`` then crashes serializing it with
+    # ``allow_nan=False``, turning a 422 into a 500. Sanitizing the
+    # raw dict avoids both pitfalls.
+    @model_validator(mode="before")
+    @classmethod
+    def _scrub_nonfinite_sampling(cls, data):
+        return _scrub_nonfinite_sampling_raw(data)
+
+    # Belt-and-braces: catches non-finite values that bypass the
+    # raw-dict path (e.g. ``ChatCompletionRequest(temperature=nan)``
+    # in-process). The Field range bounds also reject NaN as a side
+    # effect (NaN comparisons are False), but we wire the explicit
+    # finite check anyway so the field_validator-only path stays
+    # sound even if a future cleanup drops the Field bound.
+    @field_validator(
+        "temperature",
+        "top_p",
+        "min_p",
+        "repetition_penalty",
+        "presence_penalty",
+        "frequency_penalty",
+    )
+    @classmethod
+    def _reject_nonfinite_sampling(cls, v: float | None) -> float | None:
+        return _reject_nonfinite_float(v)
 
     @model_validator(mode="after")
     def _normalize_max_completion_tokens(self) -> "ChatCompletionRequest":
@@ -558,18 +725,22 @@ class CompletionRequest(BaseModel):
 
     model: str = "default"
     prompt: str | list[str]
-    temperature: float | None = None
-    top_p: float | None = None
+    # F-011: shared range bounds + NaN/inf reject — see
+    # ChatCompletionRequest for the rationale block. Field bounds
+    # mirror OpenAI spec; the ``_reject_nonfinite_sampling`` validator
+    # below catches NaN/inf, which Field bounds skip.
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
     max_tokens: int | None = None
     stream: bool = False
     stop: list[str] | None = None
     # Extended OpenAI-compatible sampling parameters — see #355 + the
     # matching block on ChatCompletionRequest for wiring + caveats.
     top_k: int | None = None
-    min_p: float | None = None
+    min_p: float | None = Field(default=None, ge=0.0, le=1.0)
     repetition_penalty: float | None = None
-    presence_penalty: float | None = None
-    frequency_penalty: float | None = None
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     # Logprobs — per the *legacy* OpenAI completions schema, this is an
     # *integer* (0..5) specifying the number of top alternative tokens
     # to return alongside each generated token, NOT a boolean (that is
@@ -606,6 +777,26 @@ class CompletionRequest(BaseModel):
     suffix: str | None = None
     # Request timeout in seconds (None = use server default)
     timeout: float | None = None
+
+    # F-011: NaN/inf scrub + finite belt-and-braces, exactly mirroring
+    # ChatCompletionRequest. See the rationale block at the top of
+    # this module + the matching validators on the chat schema.
+    @model_validator(mode="before")
+    @classmethod
+    def _scrub_nonfinite_sampling(cls, data):
+        return _scrub_nonfinite_sampling_raw(data)
+
+    @field_validator(
+        "temperature",
+        "top_p",
+        "min_p",
+        "repetition_penalty",
+        "presence_penalty",
+        "frequency_penalty",
+    )
+    @classmethod
+    def _reject_nonfinite_sampling(cls, v: float | None) -> float | None:
+        return _reject_nonfinite_float(v)
 
     @model_validator(mode="before")
     @classmethod
