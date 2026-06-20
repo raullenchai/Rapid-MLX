@@ -40,6 +40,7 @@ rapid-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 - [MCP & Tool Calling](guides/mcp-tools.md)
 - [Continuous Batching](guides/continuous-batching.md)
 - [AI Client Compatibility](guides/ai-clients.md)
+- [SDK Compatibility Notes](guides/sdk-compat.md)
 
 ### Reference
 - [CLI Commands](reference/cli.md)

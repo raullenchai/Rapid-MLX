@@ -46,6 +46,29 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{"model": "default", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
+### Anthropic SDK (`/v1/messages`)
+
+The same server also speaks the Anthropic Messages API. **Important:** point
+`base_url` at the server root, **not** `…/v1` — the Anthropic SDK appends
+`/v1/messages` itself, so passing `…/v1` produces `404` on every request
+(L-01 in [SDK Compatibility Notes](../guides/sdk-compat.md#l-01--anthropic-sdk-base_url-must-not-include-v1)).
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://localhost:8000",   # no trailing /v1
+    api_key="not-needed",
+)
+
+message = client.messages.create(
+    model="default",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(message.content[0].text)
+```
+
 ## Option 3: Gradio Web UI
 
 A browser-based chat UI ships in the optional `[chat]` extra:
@@ -138,4 +161,5 @@ rapid-mlx serve devstral-24b-4bit \
 - [Embeddings Guide](../guides/embeddings.md) - Text embeddings
 - [Reasoning Models](../guides/reasoning.md) - Thinking models
 - [Tool Calling](../guides/tool-calling.md) - Function calling
+- [SDK Compatibility Notes](../guides/sdk-compat.md) - Where rapid-mlx deviates from OpenAI/Anthropic specs
 - [Supported Models](../reference/models.md) - Available models

@@ -42,6 +42,13 @@ Base URL:  http://localhost:8000
 API Key:   not-needed
 ```
 
+> **Heads-up (L-01):** the Anthropic Python SDK silently appends
+> `/v1/messages` to whatever `base_url` you give it. If you pass
+> `http://localhost:8000/v1`, requests go to `/v1/v1/messages` and the
+> server returns `404`. Always pass the bare host (`http://localhost:8000`).
+> Full write-up in
+> [SDK Compatibility Notes — L-01](sdk-compat.md#l-01--anthropic-sdk-base_url-must-not-include-v1).
+
 ## Verified Compatible Clients
 
 These clients have been verified through automated integration tests

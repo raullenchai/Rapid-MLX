@@ -50,17 +50,34 @@ When reasoning parsing is enabled, the API response includes a `reasoning` field
 
 **Streaming response:**
 
-Chunks are sent separately for reasoning and content. During the reasoning phase, chunks have `reasoning` populated. When the model transitions to the final answer, chunks have `content` populated:
+Chunks are sent separately for reasoning and content. During the reasoning
+phase, chunks have `reasoning_content` (with a `reasoning` alias for
+backward compatibility) populated. When the model transitions to the final
+answer, chunks have `content` populated:
 
 ```json
-{"delta": {"reasoning": "Let me analyze"}}
-{"delta": {"reasoning": " this step by step."}}
-{"delta": {"reasoning": "\nFirst, I need to"}}
+{"delta": {"reasoning_content": "Let me analyze"}}
+{"delta": {"reasoning_content": " this step by step."}}
+{"delta": {"reasoning_content": "\nFirst, I need to"}}
 ...
 {"delta": {"content": "The prime"}}
 {"delta": {"content": " numbers less than 10"}}
 {"delta": {"content": " are: 2, 3, 5, 7."}}
 ```
+
+> **Note (L-03):** `delta.reasoning_content` is not part of the official
+> OpenAI Chat Completions streaming schema. The official `openai-python`
+> SDK tolerates the extra key (`chunk.choices[0].delta.model_extra` or
+> attribute access), but **strict / hand-rolled parsers may reject it**.
+> The naming intentionally mirrors the non-stream
+> `message.reasoning_content` field. See
+> [SDK Compatibility Notes — L-03](sdk-compat.md#l-03--streaming-deltareasoning_content-is-a-non-standard-openai-key).
+>
+> **Note (L-06):** Do not assume `reasoning_content` deltas fully
+> precede `content` deltas — they can interleave for many bytes after
+> the first `content` delta arrives. Buffer both streams separately and
+> join at the end. See
+> [SDK Compatibility Notes — L-06](sdk-compat.md#l-06--streaming-reasoning_content-and-content-deltas-interleave).
 
 ## Using with OpenAI SDK
 
@@ -265,3 +282,4 @@ curl http://localhost:8000/v1/chat/completions \
 - [Supported Models](../reference/models.md) - Models that support reasoning
 - [Server Configuration](server.md) - All server options
 - [CLI Reference](../reference/cli.md) - Command line options
+- [SDK Compatibility Notes](sdk-compat.md) - Non-standard streaming keys, `usage` chunk behavior, and other SDK gotchas
