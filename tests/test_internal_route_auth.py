@@ -349,3 +349,124 @@ def test_cache_import_501_envelope_does_not_leak_operator_path(
         assert needle not in r.text, f"{needle!r} leaked into 501 body: {r.text!r}"
     assert "secret-org-model" not in r.text
     assert body.get("detail") == _EXPECTED_NOT_IMPLEMENTED_ENVELOPE, body
+
+
+# ---------------------------------------------------------------------------
+# H-12: /v1/cache/info envelope must not leak the resolved sandbox path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "needle",
+    [
+        "/Users/",
+        ".cache",
+        "cache_exports",
+        "rapid-mlx",
+        "$HOME",
+    ],
+)
+def test_cache_info_does_not_leak_operator_path(
+    client_factory, tmp_path, monkeypatch, needle
+):
+    """H-12: ``GET /v1/cache/info`` returned ``{"path": str(root), ...}``
+    where ``root`` is the fully resolved sandbox subdirectory
+    (``/Users/<USERNAME>/.cache/rapid-mlx/cache_exports/<sub>`` on macOS).
+    Same shape as H-02 on a different cache endpoint — leaks the
+    operator's home dir + username to any LAN caller after the #756
+    auth-gate revert removed ``verify_internal_admin`` from this route.
+
+    Mimic the user-home-shaped sandbox so the substrings actually appear
+    in the resolved path even though ``tmp_path`` lives under ``/private
+    /var/folders/...``. Drop a valid manifest, then sweep the 200 body
+    for each leak needle (parametrized so a failure pinpoints which
+    substring leaked).
+    """
+    # Build a tmp sandbox whose absolute path contains every leak needle
+    # we care about — so a route that echoes ``str(root)`` would fail
+    # every parametrized case, not just the ones whose substring happens
+    # to land in the OS-provided ``tmp_path``.
+    sandbox = tmp_path / "Users" / "yuki" / ".cache" / "rapid-mlx" / "cache_exports"
+    sandbox.mkdir(parents=True)
+    monkeypatch.setenv("RAPID_MLX_CACHE_EXPORT_DIR", str(sandbox))
+
+    import json
+
+    from vllm_mlx.cache.protocol import PROTOCOL_VERSION
+    from vllm_mlx.routes.cache import router as cache_router
+
+    manifest = {
+        "protocol_version": PROTOCOL_VERSION,
+        "model_id": "secret-org-model-12b-8bit",
+        "entries": 0,
+        "total_bytes": 0,
+        "created_at": "2026-06-20T00:00:00Z",
+    }
+    (sandbox / "manifest.json").write_text(json.dumps(manifest))
+
+    build, _ = client_factory
+    client = build(api_key=None)
+    client.app.include_router(cache_router)
+
+    r = client.get("/v1/cache/info")
+    assert r.status_code == 200, r.text
+    assert needle not in r.text, (
+        f"{needle!r} leaked into /v1/cache/info 200 body: {r.text!r}"
+    )
+
+
+def test_cache_info_returns_canonical_shape_without_path_field(
+    client_factory, tmp_path, monkeypatch
+):
+    """H-12: positive contract pin. Post-fix the 200 envelope carries
+    ``protocol_version`` + ``manifest`` but NOT a top-level ``"path"``
+    field — the resolved sandbox root stays in the server log only.
+
+    The exact-string check on ``str(sandbox)`` catches a hypothetical
+    regression that serializes the path into a renamed field (e.g.
+    ``resolved_path``, ``root``, ``location``) which would slip past
+    the substring sweep when the tmp dir happens to live outside
+    ``/Users/``.
+    """
+    sandbox = tmp_path / "h12-canonical-shape"
+    sandbox.mkdir(parents=True)
+    monkeypatch.setenv("RAPID_MLX_CACHE_EXPORT_DIR", str(sandbox))
+
+    import json
+
+    from vllm_mlx.cache.protocol import PROTOCOL_VERSION
+    from vllm_mlx.routes.cache import router as cache_router
+
+    manifest = {
+        "protocol_version": PROTOCOL_VERSION,
+        "model_id": "secret-org-model-12b-8bit",
+        "entries": 7,
+        "total_bytes": 0,
+        "created_at": "2026-06-20T00:00:00Z",
+    }
+    (sandbox / "manifest.json").write_text(json.dumps(manifest))
+
+    build, _ = client_factory
+    client = build(api_key=None)
+    client.app.include_router(cache_router)
+
+    r = client.get("/v1/cache/info")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # H-12 wire-shape pin: top-level keys are exactly these two. A new
+    # field that re-introduces the path leak under a different name
+    # (``resolved_path``, ``root``, ``location``) trips this set check.
+    assert set(body.keys()) == {"protocol_version", "manifest"}, body
+    assert body["protocol_version"] == PROTOCOL_VERSION
+    # Manifest payload is intentionally preserved — the leak was the
+    # resolved sandbox root, NOT the manifest contents which the caller
+    # supplied / would receive on a full import.
+    assert body["manifest"]["model_id"] == "secret-org-model-12b-8bit"
+    assert body["manifest"]["entries"] == 7
+    # Belt + braces: the sandbox path is unique per test run and would
+    # not otherwise appear in the response. Catches a regression where
+    # the path field is renamed but still echoed.
+    assert str(sandbox) not in r.text, (
+        f"resolved root {str(sandbox)!r} leaked into /v1/cache/info "
+        f"200 body: {r.text!r}"
+    )
