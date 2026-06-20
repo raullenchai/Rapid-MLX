@@ -292,13 +292,21 @@ def test_export_default_destination_returns_501(cache_client):
     resp = cache_client.client.post("/v1/cache/export", json={}, headers=_auth())
     assert resp.status_code == 501
     body = resp.json()
-    detail = body["detail"]
-    # Sanitized envelope: only the error stub, no resolved paths or
-    # issue tracker URL.
-    assert detail["error"]["message"] == "engine integration pending"
-    assert detail["error"]["type"] == "not_implemented_error"
-    # Defense-in-depth: no leaked path / manifest data in the response
-    # body. The operator's resolved destination stays in server logs only.
+    # Codex r2 #3: assert the EXACT envelope, not just message + type.
+    # Catches any future change that reintroduces an extra field
+    # (resolved path, manifest excerpt, issue URL) which would slip past
+    # a soft string-denylist.
+    assert body["detail"] == {
+        "error": {
+            "message": "engine integration pending",
+            "type": "not_implemented_error",
+            "code": None,
+        }
+    }, body
+    # Defense-in-depth: also string-grep for the resolved path. Cheap
+    # extra check exercising a different code path than the dict
+    # comparison — catches a hypothetical regression that serialized
+    # the path inside one of the existing fields.
     serialized = resp.text
     sandbox_real = str(Path(cache_client.sandbox).resolve())
     assert sandbox_real not in serialized
@@ -475,9 +483,15 @@ def test_import_validated_request_returns_501(cache_client):
         headers=_auth(),
     )
     assert resp.status_code == 501
-    detail = resp.json()["detail"]
-    assert detail["error"]["message"] == "engine integration pending"
-    assert detail["error"]["type"] == "not_implemented_error"
+    body = resp.json()
+    # Codex r2 #3: exact envelope shape (not just message + type).
+    assert body["detail"] == {
+        "error": {
+            "message": "engine integration pending",
+            "type": "not_implemented_error",
+            "code": None,
+        }
+    }, body
     # Defense-in-depth: no leaked manifest fields / paths.
     serialized = resp.text
     assert "qwen3.5-9b-4bit" not in serialized
