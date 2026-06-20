@@ -1869,6 +1869,17 @@ class Scheduler:
         self.num_requests_processed = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        # PFlash observability (M-02 reframe). When PFlash compresses a
+        # prompt the request bypasses the prefix-cache fetch + store
+        # paths entirely (positional-fiction safety; see comment block
+        # near ``compress_request_tokens``). That bypass is correct but
+        # silences ``rapid_mlx_prefix_cache_*`` on PFlash-always tiers
+        # (e.g. verified-tier aliases), making /metrics look frozen at
+        # ``hits=0/misses=1``. These two counters let operators see
+        # PFlash is doing meaningful work even when the cache series
+        # stays flat. Observability only — bypass semantics unchanged.
+        self.pflash_bypass_count = 0
+        self.pflash_compressed_tokens_dropped = 0
 
         # Memory management: periodic mx.clear_cache() to free Metal command buffers
         # Lower interval = less VRAM spike during generation but slight throughput cost
@@ -2863,6 +2874,17 @@ class Scheduler:
             request.pflash_metadata = metadata
             if metadata["compressed"]:
                 pflash_compressed = True
+                # M-02: count every prompt that took the PFlash bypass
+                # so /metrics surfaces the work that prefix-cache
+                # counters can't (the compressed sequence skips both
+                # fetch and store — see the explanation block above).
+                # ``tokens_dropped`` = logical prompt length minus kept
+                # length, i.e. the saving operators want for capacity
+                # planning.
+                self.pflash_bypass_count += 1
+                self.pflash_compressed_tokens_dropped += max(
+                    0, len(original_tokens) - len(compressed_tokens)
+                )
                 request.original_prompt_token_ids = original_tokens
                 request.prompt_token_ids = compressed_tokens
                 request.model_prompt_tokens = len(compressed_tokens)
@@ -4023,6 +4045,16 @@ class Scheduler:
             "num_requests_processed": self.num_requests_processed,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
+            # M-02: PFlash observability counters. ``bypass_count`` is
+            # the number of requests where PFlash compression engaged
+            # and the prefix-cache fetch/store was skipped;
+            # ``compressed_tokens_dropped`` is the cumulative number of
+            # prompt tokens removed by the compressor (logical minus
+            # kept). Both default to zero on engines without PFlash so
+            # /metrics renders a flat-line 0 instead of an absent
+            # series.
+            "pflash_bypass_count": self.pflash_bypass_count,
+            "pflash_compressed_tokens_dropped": self.pflash_compressed_tokens_dropped,
         }
         # Include Metal memory stats
         try:

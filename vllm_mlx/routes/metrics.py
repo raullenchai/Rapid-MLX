@@ -332,6 +332,43 @@ def _render_prometheus(cfg: Any) -> str:
             monotonic = _cache_counter_accumulator.advance(metric_name, raw)
             lines.extend(_fmt_metric(metric_name, "counter", help_text, monotonic))
 
+    # ---- PFlash observability (M-02 reframe) ---------------------------
+    # When PFlash compression engages, the prompt skips the prefix-cache
+    # fetch + store paths entirely (the compressed sequence is a
+    # positional fiction — see ``compress_request_tokens`` in
+    # scheduler.py). Without these two counters, /metrics looks frozen
+    # at ``hits=0/misses=1`` on verified-tier aliases where PFlash is
+    # always-on, and operators conclude the prefix cache is broken.
+    # ``bypass_total`` counts requests that took the PFlash bypass;
+    # ``compressed_tokens_total`` is cumulative tokens dropped by the
+    # compressor (logical minus kept) and is the headline number for
+    # capacity planning.
+    #
+    # These come straight from the scheduler counters which only ever
+    # increment, so the sticky accumulator is not required.
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_pflash_bypass_total",
+            "counter",
+            (
+                "Requests where PFlash compression engaged and the "
+                "prefix-cache fetch/store was bypassed."
+            ),
+            int(_coerce_number(stats.get("pflash_bypass_count"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_pflash_compressed_tokens_total",
+            "counter",
+            (
+                "Cumulative prompt tokens dropped by PFlash compression "
+                "(logical minus kept) across all requests."
+            ),
+            int(_coerce_number(stats.get("pflash_compressed_tokens_dropped"))),
+        )
+    )
+
     # Prometheus requires a trailing newline.
     return "\n".join(lines) + "\n"
 
